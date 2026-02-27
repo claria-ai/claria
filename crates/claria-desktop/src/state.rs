@@ -1,16 +1,11 @@
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AwsConfig {
-    pub region: String,
-    pub bucket: String,
-}
+use crate::config::ClariaConfig;
 
 pub struct DesktopState {
-    pub config: Arc<Mutex<Option<AwsConfig>>>,
+    pub config: Arc<Mutex<Option<ClariaConfig>>>,
 }
 
 impl Default for DesktopState {

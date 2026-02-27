@@ -7,15 +7,11 @@ license.workspace = true
 [dependencies]
 claria-provisioner = { path = "../claria-provisioner" }
 aws-config = "=1.8.14"
-aws-sdk-s3 = "=1.124.0"
-aws-sdk-iam = "=1.105.0"
-aws-sdk-lambda = "=1.117.0"
-aws-sdk-apigatewayv2 = "=1.98.0"
-aws-sdk-bedrock = "=1.133.0"
-aws-sdk-cloudtrail = "=1.104.0"
-aws-sdk-cognitoidentityprovider = "=1.110.0"
+aws-sdk-sts = "=1.99.0"
 color-eyre = "=0.6.3"
+dirs = "=6.0.0"
 eyre = "=0.6.12"
+jiff = { version = "=0.2.21", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 tauri = { version = "=2.10.2", features = [] }

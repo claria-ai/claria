@@ -2,7 +2,9 @@
 
 use eyre::Result;
 
+mod aws;
 mod commands;
+mod config;
 mod state;
 
 fn main() -> Result<()> {
@@ -18,11 +20,16 @@ fn main() -> Result<()> {
     tauri::Builder::default()
         .manage(state::DesktopState::default())
         .invoke_handler(tauri::generate_handler![
-            commands::get_state,
+            commands::has_config,
+            commands::load_config,
+            commands::save_config,
+            commands::delete_config,
+            commands::validate_credentials,
+            commands::list_aws_profiles,
+            commands::scan_resources,
             commands::preview_plan,
             commands::provision,
             commands::destroy,
-            commands::configure,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| eyre::eyre!("tauri error: {e}"))?;
