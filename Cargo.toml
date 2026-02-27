@@ -4,14 +4,12 @@ members = [
     "crates/claria-core",
     "crates/claria-storage",
     "crates/claria-bedrock",
-    "crates/claria-auth",
     "crates/claria-audit",
     "crates/claria-search",
     "crates/claria-instruments",
     "crates/claria-export",
     "crates/claria-provisioner",
     "crates/claria-desktop",
-    "crates/claria-lambda",
 ]
 
 [workspace.package]
