@@ -22,9 +22,9 @@ async loadConfig() : Promise<Result<ConfigInfo, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async saveConfig(region: string, systemName: string, credentials: CredentialSource) : Promise<Result<null, string>> {
+async saveConfig(region: string, systemName: string, accountId: string, credentials: CredentialSource) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_config", { region, systemName, credentials }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_config", { region, systemName, accountId, credentials }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -273,7 +273,7 @@ export type CallerIdentity = { account_id: string; arn: string; user_id: string;
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null }
 /**
  * The result of `assess_credentials`.
  */

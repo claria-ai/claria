@@ -57,16 +57,20 @@ const DEFAULT_MODEL_IDS: &[&str] = &[
 /// The returned vec is ordered: S3 first (other resources depend on the bucket),
 /// then CloudTrail, then Bedrock verification. The desktop app passes this vec
 /// directly to [`scan`], [`build_plan`], and [`execute_plan`].
+///
+/// The `account_id` is the 12-digit AWS account ID, used to prefix the S3
+/// bucket name for global uniqueness.
 pub fn build_resources(
     config: &aws_config::SdkConfig,
     system_name: &str,
+    account_id: &str,
 ) -> Vec<Box<dyn Resource>> {
     let region = config
         .region()
         .map(|r| r.to_string())
         .unwrap_or_else(|| "us-east-1".to_string());
 
-    let bucket_name = format!("{system_name}-data");
+    let bucket_name = format!("{account_id}-{system_name}-data");
     let trail_name = format!("{system_name}-trail");
 
     let s3_client = aws_sdk_s3::Client::new(config);
@@ -101,9 +105,10 @@ pub fn build_resources(
 pub fn build_persistence(
     config: &aws_config::SdkConfig,
     system_name: &str,
+    account_id: &str,
 ) -> Result<StatePersistence, ProvisionerError> {
     let s3_client = aws_sdk_s3::Client::new(config);
-    let bucket = format!("{system_name}-data");
+    let bucket = format!("{account_id}-{system_name}-data");
     let s3_key = "_state/provisioner.json".to_string();
 
     let local_dir = dirs::config_dir()

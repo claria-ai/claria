@@ -56,9 +56,10 @@ export async function loadConfig() {
 export async function saveConfig(
   region: string,
   systemName: string,
+  accountId: string,
   credentials: import("./bindings").CredentialSource
 ): Promise<void> {
-  const result = await commands.saveConfig(region, systemName, credentials);
+  const result = await commands.saveConfig(region, systemName, accountId, credentials);
   unwrap(result);
 }
 

@@ -7,6 +7,7 @@ use specta::Type;
 pub struct ClariaConfig {
     pub region: String,
     pub system_name: String,
+    pub account_id: String,
     pub created_at: jiff::Timestamp,
     pub credentials: CredentialSource,
 }
@@ -31,6 +32,7 @@ pub enum CredentialSource {
 pub struct ConfigInfo {
     pub region: String,
     pub system_name: String,
+    pub account_id: String,
     pub created_at: String,
     pub credential_type: String,
     pub profile_name: Option<String>,
@@ -115,6 +117,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
     ConfigInfo {
         region: config.region.clone(),
         system_name: config.system_name.clone(),
+        account_id: config.account_id.clone(),
         created_at: config.created_at.to_string(),
         credential_type,
         profile_name,

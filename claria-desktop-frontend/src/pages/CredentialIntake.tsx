@@ -251,7 +251,7 @@ export default function CredentialIntake({
         mode === "sub_account"
           ? buildAssumedRoleCredentials() ?? buildCredentials()
           : buildCredentials();
-      await saveConfig(region, systemName, creds);
+      await saveConfig(region, systemName, assessment.identity.account_id, creds);
       setPhase("done");
     } catch (e) {
       setError(String(e));

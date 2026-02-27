@@ -39,11 +39,13 @@ pub async fn save_config(
     state: State<'_, DesktopState>,
     region: String,
     system_name: String,
+    account_id: String,
     credentials: CredentialSource,
 ) -> Result<(), String> {
     let cfg = ClariaConfig {
         region,
         system_name,
+        account_id,
         created_at: jiff::Timestamp::now(),
         credentials,
     };
@@ -218,6 +220,7 @@ pub async fn bootstrap_iam_user(
             let cfg = ClariaConfig {
                 region,
                 system_name,
+                account_id: result.account_id.clone().unwrap_or_default(),
                 created_at: jiff::Timestamp::now(),
                 credentials: CredentialSource::Inline {
                     access_key_id: new_creds.access_key_id.clone(),
@@ -280,7 +283,7 @@ pub async fn scan_resources(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<ScanResult>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name);
+    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name, &cfg.account_id);
 
     let results = claria_provisioner::scan(&resources).await;
     Ok(results)
@@ -296,8 +299,8 @@ pub async fn preview_plan(
     state: State<'_, DesktopState>,
 ) -> Result<Plan, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name);
-    let persistence = claria_provisioner::build_persistence(&sdk_config, &cfg.system_name)
+    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name, &cfg.account_id);
+    let persistence = claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
         .map_err(|e| e.to_string())?;
 
     let prov_state = persistence.load().await.map_err(|e| e.to_string())?;
@@ -317,8 +320,8 @@ pub async fn provision(
     state: State<'_, DesktopState>,
 ) -> Result<Plan, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name);
-    let persistence = claria_provisioner::build_persistence(&sdk_config, &cfg.system_name)
+    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name, &cfg.account_id);
+    let persistence = claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
         .map_err(|e| e.to_string())?;
 
     let mut prov_state = persistence.load().await.map_err(|e| e.to_string())?;
@@ -344,8 +347,8 @@ pub async fn destroy(
     state: State<'_, DesktopState>,
 ) -> Result<(), String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name);
-    let persistence = claria_provisioner::build_persistence(&sdk_config, &cfg.system_name)
+    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name, &cfg.account_id);
+    let persistence = claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
         .map_err(|e| e.to_string())?;
 
     claria_provisioner::destroy(&persistence, &resources)
