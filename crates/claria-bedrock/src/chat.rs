@@ -57,8 +57,10 @@ pub async fn list_chat_models(
         .inference_profile_summaries()
         .iter()
         .filter(|p| {
-            p.inference_profile_id().contains("anthropic.claude")
+            let id = p.inference_profile_id();
+            id.contains("anthropic.claude")
                 && *p.status() == InferenceProfileStatus::Active
+                && !is_legacy_model(id)
         })
         .map(|p| ChatModel {
             model_id: p.inference_profile_id().to_string(),
@@ -71,6 +73,29 @@ pub async fn list_chat_models(
     info!(count = models.len(), "discovered chat models");
 
     Ok(models)
+}
+
+/// Inference profile IDs containing any of these substrings are considered
+/// legacy and excluded from the model list. AWS still returns them as ACTIVE
+/// but invoking them fails with "marked by provider as Legacy".
+const LEGACY_MODEL_FRAGMENTS: &[&str] = &[
+    // Claude 3 family (all variants — superseded by 4.x)
+    "claude-3-sonnet-",
+    "claude-3-opus-",
+    "claude-3-haiku-",
+    "claude-3-5-sonnet-",
+    "claude-3-5-haiku-",
+    "claude-3-7-sonnet-",
+    // Original Claude 4 / 4.1 (superseded by 4.5+)
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-1-",
+];
+
+fn is_legacy_model(inference_profile_id: &str) -> bool {
+    LEGACY_MODEL_FRAGMENTS
+        .iter()
+        .any(|fragment| inference_profile_id.contains(fragment))
 }
 
 // ── Chat conversation ────────────────────────────────────────────────────────
