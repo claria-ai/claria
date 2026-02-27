@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::config::ClariaConfig;
+use claria_desktop::config::ClariaConfig;
 
 pub struct DesktopState {
     pub config: Arc<Mutex<Option<ClariaConfig>>>,

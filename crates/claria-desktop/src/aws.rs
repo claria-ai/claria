@@ -1,17 +1,13 @@
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
 use crate::config::CredentialSource;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CallerIdentity {
-    pub account_id: String,
-    pub arn: String,
-    pub user_id: String,
-}
-
 /// Build an `SdkConfig` from a region and credential source.
+///
+/// This is the only place in the desktop app that knows how to translate
+/// a `CredentialSource` (our config-level type) into an AWS SDK config.
+/// All AWS business logic lives in the provisioner — we just build the
+/// config and hand it over.
 pub async fn build_aws_config(
     region: &str,
     creds: &CredentialSource,
@@ -23,11 +19,12 @@ pub async fn build_aws_config(
         CredentialSource::Inline {
             access_key_id,
             secret_access_key,
+            session_token,
         } => {
             builder = builder.credentials_provider(aws_sdk_sts::config::Credentials::new(
                 access_key_id,
                 secret_access_key,
-                None,
+                session_token.clone(),
                 None,
                 "claria-config",
             ));
@@ -39,24 +36,6 @@ pub async fn build_aws_config(
     }
 
     builder.load().await
-}
-
-/// Call STS GetCallerIdentity to validate credentials.
-pub async fn validate_credentials(
-    config: &aws_config::SdkConfig,
-) -> eyre::Result<CallerIdentity> {
-    let sts = aws_sdk_sts::Client::new(config);
-    let resp = sts
-        .get_caller_identity()
-        .send()
-        .await
-        .map_err(|e| eyre::eyre!("STS GetCallerIdentity failed: {e}"))?;
-
-    Ok(CallerIdentity {
-        account_id: resp.account().unwrap_or_default().to_string(),
-        arn: resp.arn().unwrap_or_default().to_string(),
-        user_id: resp.user_id().unwrap_or_default().to_string(),
-    })
 }
 
 /// Parse AWS profile names from `~/.aws/credentials` and `~/.aws/config`.

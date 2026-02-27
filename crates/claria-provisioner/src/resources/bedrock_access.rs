@@ -33,33 +33,51 @@ impl Resource for BedrockAccessResource {
                 .await
                 .map_err(|e| ProvisionerError::Aws(e.to_string()))?;
 
-            let available: Vec<String> = models
+            let all_model_ids: Vec<String> = models
                 .model_summaries()
                 .iter()
-                .filter_map(|m| {
-                    let id = m.model_id().to_string();
-                    if self.model_ids.iter().any(|wanted| id.contains(wanted)) {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                })
+                .map(|m| m.model_id().to_string())
                 .collect();
 
-            if available.is_empty() {
-                // Models not found — return Found with an error hint so the plan
-                // can display a helpful message to the user.
+            // For each wanted prefix, find matching models and report per-family
+            let mut families: Vec<serde_json::Value> = Vec::new();
+            let mut all_available: Vec<String> = Vec::new();
+            let mut missing: Vec<String> = Vec::new();
+
+            for wanted in &self.model_ids {
+                let matches: Vec<String> = all_model_ids
+                    .iter()
+                    .filter(|id| id.contains(wanted.as_str()))
+                    .cloned()
+                    .collect();
+
+                let found = !matches.is_empty();
+                families.push(serde_json::json!({
+                    "prefix": wanted,
+                    "available": found,
+                    "models": matches,
+                }));
+
+                if found {
+                    all_available.extend(matches);
+                } else {
+                    missing.push(wanted.clone());
+                }
+            }
+
+            if !missing.is_empty() {
                 Ok(Some(serde_json::json!({
-                    "available_models": [],
+                    "available_models": all_available,
+                    "families": families,
                     "error": format!(
-                        "No Claude models found. Please enable model access in the AWS Bedrock console. \
-                         Looking for models matching: {}",
-                        self.model_ids.join(", ")
+                        "Missing model access. Please enable these in the AWS Bedrock console: {}",
+                        missing.join(", ")
                     ),
                 })))
             } else {
                 Ok(Some(serde_json::json!({
-                    "available_models": available,
+                    "available_models": all_available,
+                    "families": families,
                 })))
             }
         })

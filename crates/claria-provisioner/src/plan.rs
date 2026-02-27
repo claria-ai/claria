@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
+use specta::Type;
 
 /// A single entry in a provisioning plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct PlanEntry {
     pub resource_type: String,
     pub resource_id: String,
@@ -15,7 +16,7 @@ pub struct PlanEntry {
 /// - `modify` (yellow) — resources that need updating (e.g. missing encryption)
 /// - `create` (blue) — resources that don't exist yet
 /// - `delete` (red) — stale state entries to clean up
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
 pub struct Plan {
     pub ok: Vec<PlanEntry>,
     pub modify: Vec<PlanEntry>,

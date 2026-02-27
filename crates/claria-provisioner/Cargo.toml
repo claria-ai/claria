@@ -11,9 +11,13 @@ claria-audit = { path = "../claria-audit" }
 aws-config = "=1.8.14"
 aws-sdk-bedrock = "=1.133.0"
 aws-sdk-cloudtrail = "=1.104.0"
+aws-sdk-iam = "=1.88.0"
 aws-sdk-s3 = "=1.124.0"
+aws-sdk-sts = "=1.99.0"
 serde = { version = "=1.0.228", features = ["derive"] }
+specta = { version = "=2.0.0-rc.22", features = ["derive", "serde_json"] }
 serde_json = "=1.0.149"
+dirs = "=6.0.0"
 thiserror = "=2.0.18"
 tokio = { version = "=1.49.0", features = ["full"] }
 tracing = "=0.1.44"

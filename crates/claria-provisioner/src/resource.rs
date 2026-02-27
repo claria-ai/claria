@@ -21,6 +21,13 @@ pub trait Resource: Send + Sync {
     /// The resource type identifier (e.g. "s3_bucket", "cognito_user_pool").
     fn resource_type(&self) -> &str;
 
+    /// The expected resource name or identifier, even if the resource doesn't
+    /// exist yet. Used to show the user which resource will be
+    /// created/checked (e.g. the bucket name or trail name).
+    fn expected_id(&self) -> Option<&str> {
+        None
+    }
+
     /// Query the current state of this resource in AWS.
     /// Returns `Ok(None)` if the resource doesn't exist yet.
     fn current_state(

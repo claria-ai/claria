@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
+use specta::Type;
 
 use crate::resource::Resource;
 
 /// The status of a single resource after scanning AWS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ScanStatus {
     Found,
@@ -12,7 +13,7 @@ pub enum ScanStatus {
 }
 
 /// Result of scanning a single resource in AWS.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ScanResult {
     pub resource_type: String,
     pub status: ScanStatus,
@@ -51,7 +52,7 @@ pub async fn scan(resources: &[Box<dyn Resource>]) -> Vec<ScanResult> {
                 results.push(ScanResult {
                     resource_type,
                     status: ScanStatus::NotFound,
-                    resource_id: None,
+                    resource_id: resource.expected_id().map(String::from),
                     properties: None,
                     error: None,
                 });
@@ -60,7 +61,7 @@ pub async fn scan(resources: &[Box<dyn Resource>]) -> Vec<ScanResult> {
                 results.push(ScanResult {
                     resource_type,
                     status: ScanStatus::Error,
-                    resource_id: None,
+                    resource_id: resource.expected_id().map(String::from),
                     properties: None,
                     error: Some(e.to_string()),
                 });

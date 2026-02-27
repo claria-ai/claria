@@ -29,6 +29,10 @@ impl Resource for CloudTrailResource {
         "cloudtrail_trail"
     }
 
+    fn expected_id(&self) -> Option<&str> {
+        Some(&self.trail_name)
+    }
+
     fn current_state(&self) -> Bf<'_, Result<Option<serde_json::Value>, ProvisionerError>> {
         Box::pin(async {
             // Check if trail exists

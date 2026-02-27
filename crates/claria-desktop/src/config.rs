@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use specta::Type;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClariaConfig {
@@ -10,12 +11,14 @@ pub struct ClariaConfig {
     pub credentials: CredentialSource,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CredentialSource {
     Inline {
         access_key_id: String,
         secret_access_key: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        session_token: Option<String>,
     },
     Profile {
         profile_name: String,
@@ -24,7 +27,7 @@ pub enum CredentialSource {
 }
 
 /// Redacted config info safe to send to the frontend.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ConfigInfo {
     pub region: String,
     pub system_name: String,
@@ -90,9 +93,18 @@ pub fn delete_config() -> eyre::Result<()> {
 
 pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
     let (credential_type, profile_name, access_key_hint) = match &config.credentials {
-        CredentialSource::Inline { access_key_id, .. } => {
+        CredentialSource::Inline {
+            access_key_id,
+            session_token,
+            ..
+        } => {
+            let cred_type = if session_token.is_some() {
+                "temporary".to_string()
+            } else {
+                "inline".to_string()
+            };
             let hint = redact_access_key(access_key_id);
-            ("inline".to_string(), None, Some(hint))
+            (cred_type, None, Some(hint))
         }
         CredentialSource::Profile { profile_name } => {
             ("profile".to_string(), Some(profile_name.clone()), None)

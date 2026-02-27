@@ -160,6 +160,10 @@ impl Resource for S3BucketResource {
         "s3_bucket"
     }
 
+    fn expected_id(&self) -> Option<&str> {
+        Some(&self.bucket_name)
+    }
+
     fn current_state(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Option<serde_json::Value>, ProvisionerError>> + Send + '_>>

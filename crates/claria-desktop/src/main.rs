@@ -1,10 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eyre::Result;
+use tauri_specta::{collect_commands, Builder};
 
-mod aws;
 mod commands;
-mod config;
 mod state;
 
 fn main() -> Result<()> {
@@ -17,20 +16,47 @@ fn main() -> Result<()> {
         )
         .init();
 
-    tauri::Builder::default()
-        .manage(state::DesktopState::default())
-        .invoke_handler(tauri::generate_handler![
+    let builder = Builder::<tauri::Wry>::new()
+        .commands(collect_commands![
             commands::has_config,
             commands::load_config,
             commands::save_config,
             commands::delete_config,
-            commands::validate_credentials,
+            commands::assess_credentials,
+            commands::assume_role,
             commands::list_aws_profiles,
+            commands::list_user_access_keys,
+            commands::delete_user_access_key,
+            commands::bootstrap_iam_user,
             commands::scan_resources,
             commands::preview_plan,
             commands::provision,
             commands::destroy,
-        ])
+        ]);
+
+    #[cfg(debug_assertions)]
+    {
+        let bindings_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../claria-desktop-frontend/src/lib/bindings.ts");
+        builder
+            .export(specta_typescript::Typescript::default(), &bindings_path)
+            .expect("failed to export typescript bindings");
+
+        // Prepend // @ts-nocheck so the generated file passes strict TypeScript
+        // linting (specta emits some unused imports/functions).
+        let contents = std::fs::read_to_string(&bindings_path)
+            .expect("failed to read generated bindings");
+        std::fs::write(&bindings_path, format!("// @ts-nocheck\n{contents}"))
+            .expect("failed to write @ts-nocheck header");
+    }
+
+    tauri::Builder::default()
+        .manage(state::DesktopState::default())
+        .invoke_handler(builder.invoke_handler())
+        .setup(move |app| {
+            builder.mount_events(app);
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .map_err(|e| eyre::eyre!("tauri error: {e}"))?;
 
