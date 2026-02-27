@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { hasConfig } from "./lib/tauri";
 import StartScreen from "./pages/StartScreen";
 import AwsAccountGuide from "./pages/AwsAccountGuide";
@@ -20,16 +20,30 @@ export type Page =
 
 export default function App() {
   const [page, setPage] = useState<Page>("loading");
+  const [configExists, setConfigExists] = useState(false);
+
+  const refreshConfig = useCallback(async () => {
+    const exists = await hasConfig().catch(() => false);
+    setConfigExists(exists);
+    return exists;
+  }, []);
 
   useEffect(() => {
-    hasConfig()
-      .then((exists) => {
-        setPage(exists ? "dashboard" : "start");
-      })
-      .catch(() => {
-        setPage("start");
-      });
-  }, []);
+    refreshConfig().then((exists) => {
+      setPage(exists ? "dashboard" : "start");
+    });
+  }, [refreshConfig]);
+
+  const navigate = useCallback(
+    (target: Page) => {
+      // Refresh config knowledge on transitions that may have changed it
+      if (target === "start" || target === "dashboard") {
+        refreshConfig();
+      }
+      setPage(target);
+    },
+    [refreshConfig],
+  );
 
   if (page === "loading") {
     return (
@@ -41,13 +55,15 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
-      {page === "start" && <StartScreen navigate={setPage} />}
-      {page === "guide-aws" && <AwsAccountGuide navigate={setPage} />}
-      {page === "guide-iam" && <IamSetupGuide navigate={setPage} />}
-      {page === "credentials" && <CredentialIntake navigate={setPage} />}
-      {page === "scan" && <ScanProvision navigate={setPage} />}
-      {page === "dashboard" && <ManageDashboard navigate={setPage} />}
-      {page === "about" && <About navigate={setPage} />}
+      {page === "start" && (
+        <StartScreen navigate={navigate} configExists={configExists} />
+      )}
+      {page === "guide-aws" && <AwsAccountGuide navigate={navigate} />}
+      {page === "guide-iam" && <IamSetupGuide navigate={navigate} />}
+      {page === "credentials" && <CredentialIntake navigate={navigate} />}
+      {page === "scan" && <ScanProvision navigate={navigate} />}
+      {page === "dashboard" && <ManageDashboard navigate={navigate} />}
+      {page === "about" && <About navigate={navigate} />}
     </div>
   );
 }

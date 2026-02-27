@@ -1,19 +1,12 @@
-import { useState, useEffect } from "react";
-import { hasConfig } from "../lib/tauri";
 import type { Page } from "../App";
 
 export default function StartScreen({
   navigate,
+  configExists,
 }: {
   navigate: (page: Page) => void;
+  configExists: boolean;
 }) {
-  const [configExists, setConfigExists] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    hasConfig()
-      .then(setConfigExists)
-      .catch(() => setConfigExists(false));
-  }, []);
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-8">
@@ -23,7 +16,7 @@ export default function StartScreen({
       </p>
 
       <div className="flex flex-col gap-4 w-full max-w-xs">
-        {configExists === false && (
+        {!configExists && (
           <button
             onClick={() => navigate("guide-aws")}
             className="px-6 py-3 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
@@ -32,7 +25,7 @@ export default function StartScreen({
           </button>
         )}
 
-        {configExists === true && (
+        {configExists && (
           <button
             onClick={() => navigate("dashboard")}
             className="px-6 py-3 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
