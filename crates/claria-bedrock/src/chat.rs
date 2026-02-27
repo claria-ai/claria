@@ -1,7 +1,99 @@
 //! Chat-oriented Bedrock operations: model discovery, conversation, and
 //! agreement management.
+//!
+//! # Bedrock model concepts
+//!
+//! ## Foundation models vs. inference profiles
+//!
+//! AWS Bedrock exposes two overlapping layers:
+//!
+//! - **Foundation models** (`ListFoundationModels`) — the canonical model
+//!   registry. Each entry has a `model_id` like `anthropic.claude-sonnet-4-6`
+//!   and carries metadata including lifecycle status (`ACTIVE` or `LEGACY`).
+//!
+//! - **Inference profiles** (`ListInferenceProfiles`) — cross-region routing
+//!   wrappers. A single foundation model gets multiple profiles scoped by
+//!   region: `us.anthropic.claude-sonnet-4-6`, `eu.anthropic.claude-sonnet-4-6`,
+//!   `global.anthropic.claude-sonnet-4-6`, etc. The Converse API accepts an
+//!   inference profile ID as its `model_id` parameter.
+//!
+//! The relationship is: strip the scope prefix (everything before the first
+//! dot) from an inference profile ID to get the bare foundation model ID.
+//!
+//! ## Inference profile ID structure
+//!
+//! IDs follow the pattern `{scope}.{provider}.{model}-{version_info}`, but
+//! the version suffix is inconsistent across generations:
+//!
+//! ```text
+//! us.anthropic.claude-sonnet-4-6                      (no date, no version)
+//! us.anthropic.claude-sonnet-4-20250514-v1:0          (date + version)
+//! us.anthropic.claude-haiku-4-5-20251001-v1:0         (date + version)
+//! ```
+//!
+//! Because the suffix format varies, we don't parse these into structured
+//! tuples — we treat them as opaque strings and match against the foundation
+//! model registry by bare ID.
+//!
+//! ## Legacy model filtering
+//!
+//! AWS marks superseded models as `LEGACY` in the foundation model registry,
+//! but continues to list their inference profiles as `ACTIVE`. Attempting to
+//! invoke a legacy profile returns an error like:
+//!
+//! > "The model is marked by provider as Legacy."
+//!
+//! We originally maintained a hardcoded list of legacy model ID fragments,
+//! but this broke every time AWS deprecated another generation. The current
+//! approach is fully dynamic:
+//!
+//! 1. Call `ListFoundationModels(provider="anthropic")` and collect all IDs
+//!    where `model_lifecycle.status == LEGACY` into a `HashSet`.
+//! 2. Call `ListInferenceProfiles` and filter out any profile whose bare
+//!    model ID appears in the legacy set.
+//!
+//! This means Claria automatically excludes newly deprecated models without
+//! code changes.
+//!
+//! ## Marketplace agreements
+//!
+//! Before a model can be invoked, its Marketplace agreement must be accepted.
+//! New models (like Claude Sonnet 4 at launch) require this even if earlier
+//! Claude models were already accepted. The relevant APIs are:
+//!
+//! - `GetFoundationModelAvailability(model_id)` — returns
+//!   `agreement_availability.status`:
+//!   - `Available` → agreement exists but hasn't been accepted yet
+//!   - `NotAvailable` → already accepted, or no agreement required
+//!
+//! - `ListFoundationModelAgreementOffers(model_id)` → returns offer tokens
+//! - `CreateFoundationModelAgreement(model_id, offer_token)` → accepts it
+//!
+//! We run this during onboarding (`accept_all_model_agreements`) so users
+//! don't have to manually accept each model in the AWS console. The
+//! operation is idempotent — re-accepting an already-accepted model is a
+//! no-op.
+//!
+//! ## Required IAM permissions
+//!
+//! The scoped `claria-admin` IAM user needs these actions (provisioned by
+//! `claria-provisioner::account_setup`):
+//!
+//! ```text
+//! bedrock:ListFoundationModels
+//! bedrock:ListInferenceProfiles
+//! bedrock:GetFoundationModelAvailability
+//! bedrock:ListFoundationModelAgreementOffers
+//! bedrock:CreateFoundationModelAgreement
+//! bedrock:InvokeModel
+//! bedrock:InvokeModelWithResponseStream
+//! ```
 
-use aws_sdk_bedrock::types::{AgreementStatus, InferenceProfileStatus, InferenceProfileType};
+use std::collections::HashSet;
+
+use aws_sdk_bedrock::types::{
+    AgreementStatus, FoundationModelLifecycleStatus, InferenceProfileStatus, InferenceProfileType,
+};
 use aws_sdk_bedrockruntime::types::{ContentBlock, ConversationRole, Message, SystemContentBlock};
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -36,15 +128,25 @@ pub enum ChatRole {
 
 // ── Model discovery ──────────────────────────────────────────────────────────
 
-/// List available Anthropic Claude inference profiles.
+/// List available Anthropic Claude inference profiles, excluding legacy models.
 ///
-/// Calls `ListInferenceProfiles` filtered to system-defined, active profiles
-/// whose ID contains `"anthropic.claude"`. Results are sorted by name.
+/// 1. Calls `ListFoundationModels` to build a set of model IDs with `LEGACY`
+///    lifecycle status. This is the authoritative, dynamic signal from AWS —
+///    no hardcoded list needed.
+/// 2. Calls `ListInferenceProfiles` filtered to system-defined, active profiles
+///    whose ID contains `"anthropic.claude"`.
+/// 3. Filters out any profile whose underlying foundation model is legacy.
+///
+/// Results are sorted by name.
 pub async fn list_chat_models(
     config: &aws_config::SdkConfig,
 ) -> Result<Vec<ChatModel>, BedrockError> {
     let client = aws_sdk_bedrock::Client::new(config);
 
+    // Step 1: Build a set of legacy foundation model IDs.
+    let legacy_ids = fetch_legacy_model_ids(&client).await?;
+
+    // Step 2: List inference profiles.
     let response = client
         .list_inference_profiles()
         .type_equals(InferenceProfileType::SystemDefined)
@@ -60,7 +162,7 @@ pub async fn list_chat_models(
             let id = p.inference_profile_id();
             id.contains("anthropic.claude")
                 && *p.status() == InferenceProfileStatus::Active
-                && !is_legacy_model(id)
+                && !is_profile_legacy(id, &legacy_ids)
         })
         .map(|p| ChatModel {
             model_id: p.inference_profile_id().to_string(),
@@ -70,32 +172,55 @@ pub async fn list_chat_models(
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
 
-    info!(count = models.len(), "discovered chat models");
+    info!(
+        count = models.len(),
+        legacy = legacy_ids.len(),
+        "discovered chat models"
+    );
 
     Ok(models)
 }
 
-/// Inference profile IDs containing any of these substrings are considered
-/// legacy and excluded from the model list. AWS still returns them as ACTIVE
-/// but invoking them fails with "marked by provider as Legacy".
-const LEGACY_MODEL_FRAGMENTS: &[&str] = &[
-    // Claude 3 family (all variants — superseded by 4.x)
-    "claude-3-sonnet-",
-    "claude-3-opus-",
-    "claude-3-haiku-",
-    "claude-3-5-sonnet-",
-    "claude-3-5-haiku-",
-    "claude-3-7-sonnet-",
-    // Original Claude 4 / 4.1 (superseded by 4.5+)
-    "claude-opus-4-20250514",
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-1-",
-];
+/// Fetch all Anthropic foundation model IDs that have `LEGACY` lifecycle status.
+async fn fetch_legacy_model_ids(
+    client: &aws_sdk_bedrock::Client,
+) -> Result<HashSet<String>, BedrockError> {
+    let response = client
+        .list_foundation_models()
+        .by_provider("anthropic")
+        .send()
+        .await
+        .map_err(|e| BedrockError::Invocation(e.into_service_error().to_string()))?;
 
-fn is_legacy_model(inference_profile_id: &str) -> bool {
-    LEGACY_MODEL_FRAGMENTS
+    let legacy: HashSet<String> = response
+        .model_summaries()
         .iter()
-        .any(|fragment| inference_profile_id.contains(fragment))
+        .filter(|m| {
+            m.model_lifecycle()
+                .map(|lc| *lc.status() == FoundationModelLifecycleStatus::Legacy)
+                .unwrap_or(false)
+        })
+        .map(|m| m.model_id().to_string())
+        .collect();
+
+    Ok(legacy)
+}
+
+/// Check whether an inference profile's underlying model is in the legacy set.
+///
+/// Inference profile IDs look like `us.anthropic.claude-sonnet-4-6` or
+/// `global.anthropic.claude-opus-4-5-20251101-v1:0`. The foundation model ID
+/// is the part after the first dot: `anthropic.claude-...`. Each profile also
+/// lists its underlying model ARNs, but we can match more simply by stripping
+/// the scope prefix and checking if the bare ID is in the legacy set.
+fn is_profile_legacy(inference_profile_id: &str, legacy_ids: &HashSet<String>) -> bool {
+    // Strip scope prefix (e.g. "us." or "global.") to get the bare model ID.
+    let bare_id = inference_profile_id
+        .split_once('.')
+        .map(|(_, rest)| rest)
+        .unwrap_or(inference_profile_id);
+
+    legacy_ids.contains(bare_id)
 }
 
 // ── Chat conversation ────────────────────────────────────────────────────────
