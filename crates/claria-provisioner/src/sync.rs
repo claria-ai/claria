@@ -1,70 +1,79 @@
 use crate::error::ProvisionerError;
-use crate::plan::{ActionType, ExecutionPlan};
+use crate::persistence::StatePersistence;
+use crate::plan::Plan;
 use crate::resource::Resource;
 use crate::state::{ProvisionerState, ResourceState, ResourceStatus};
 
-/// Execute an execution plan, applying all actions.
+/// Execute a plan: process creates, then modifies, then deletes.
+/// Flushes state to disk + S3 after each resource action.
 pub async fn execute_plan(
-    plan: &ExecutionPlan,
+    plan: &Plan,
     resources: &[Box<dyn Resource>],
     state: &mut ProvisionerState,
+    persistence: &StatePersistence,
 ) -> Result<(), ProvisionerError> {
-    for action in &plan.actions {
-        if action.action == ActionType::NoOp {
-            continue;
-        }
+    // Process creates
+    for entry in &plan.create {
+        let resource = find_resource(resources, &entry.resource_type)?;
 
-        let resource = resources
-            .iter()
-            .find(|r| r.resource_type() == action.resource_type)
-            .ok_or_else(|| ProvisionerError::ResourceNotFound {
-                resource_type: action.resource_type.clone(),
-                resource_id: action.resource_id.clone(),
-            })?;
+        tracing::info!(
+            resource_type = %entry.resource_type,
+            "creating resource"
+        );
+        let result = resource.create().await?;
+        state.resources.insert(
+            entry.resource_type.clone(),
+            ResourceState {
+                resource_type: entry.resource_type.clone(),
+                resource_id: result.resource_id,
+                status: ResourceStatus::Created,
+                properties: result.properties,
+            },
+        );
+        persistence.flush(state).await?;
+    }
 
-        match action.action {
-            ActionType::Create => {
-                tracing::info!(
-                    resource_type = %action.resource_type,
-                    "creating resource"
-                );
-                let result = resource.create().await?;
-                state.resources.insert(
-                    action.resource_type.clone(),
-                    ResourceState {
-                        resource_type: action.resource_type.clone(),
-                        resource_id: result.resource_id,
-                        status: ResourceStatus::Created,
-                        properties: result.properties,
-                    },
-                );
-            }
-            ActionType::Update => {
-                tracing::info!(
-                    resource_type = %action.resource_type,
-                    resource_id = %action.resource_id,
-                    "updating resource"
-                );
-                let result = resource.update(&action.resource_id).await?;
-                if let Some(rs) = state.resources.get_mut(&action.resource_type) {
-                    rs.status = ResourceStatus::Updated;
-                    rs.properties = result.properties;
-                }
-            }
-            ActionType::Delete => {
-                tracing::info!(
-                    resource_type = %action.resource_type,
-                    resource_id = %action.resource_id,
-                    "deleting resource"
-                );
-                resource.delete(&action.resource_id).await?;
-                if let Some(rs) = state.resources.get_mut(&action.resource_type) {
-                    rs.status = ResourceStatus::Deleted;
-                }
-            }
-            ActionType::NoOp => {}
+    // Process modifies
+    for entry in &plan.modify {
+        let resource = find_resource(resources, &entry.resource_type)?;
+
+        tracing::info!(
+            resource_type = %entry.resource_type,
+            resource_id = %entry.resource_id,
+            "updating resource"
+        );
+        let result = resource.update(&entry.resource_id).await?;
+        if let Some(rs) = state.resources.get_mut(&entry.resource_type) {
+            rs.status = ResourceStatus::Updated;
+            rs.properties = result.properties;
         }
+        persistence.flush(state).await?;
+    }
+
+    // Process deletes (state cleanup only — the resource is already gone from AWS)
+    for entry in &plan.delete {
+        tracing::info!(
+            resource_type = %entry.resource_type,
+            resource_id = %entry.resource_id,
+            "removing stale state entry"
+        );
+        state.resources.remove(&entry.resource_type);
+        persistence.flush(state).await?;
     }
 
     Ok(())
+}
+
+fn find_resource<'a>(
+    resources: &'a [Box<dyn Resource>],
+    resource_type: &str,
+) -> Result<&'a dyn Resource, ProvisionerError> {
+    resources
+        .iter()
+        .find(|r| r.resource_type() == resource_type)
+        .map(|b| b.as_ref())
+        .ok_or_else(|| ProvisionerError::ResourceNotFound {
+            resource_type: resource_type.to_string(),
+            resource_id: String::new(),
+        })
 }

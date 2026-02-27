@@ -1,33 +1,31 @@
 use serde::{Deserialize, Serialize};
 
-/// An action to be taken on a resource.
+/// A single entry in a provisioning plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanAction {
+pub struct PlanEntry {
     pub resource_type: String,
     pub resource_id: String,
-    pub action: ActionType,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionType {
-    Create,
-    Update,
-    Delete,
-    NoOp,
-}
-
-/// An execution plan listing all actions needed to reach desired state.
+/// A provisioning plan with four categorized buckets.
+///
+/// The desktop UI renders these as color-coded lists:
+/// - `ok` (green) — resources in good shape, no action needed
+/// - `modify` (yellow) — resources that need updating (e.g. missing encryption)
+/// - `create` (blue) — resources that don't exist yet
+/// - `delete` (red) — stale state entries to clean up
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ExecutionPlan {
-    pub actions: Vec<PlanAction>,
+pub struct Plan {
+    pub ok: Vec<PlanEntry>,
+    pub modify: Vec<PlanEntry>,
+    pub create: Vec<PlanEntry>,
+    pub delete: Vec<PlanEntry>,
 }
 
-impl ExecutionPlan {
+impl Plan {
+    /// Returns true if the plan requires any changes.
     pub fn has_changes(&self) -> bool {
-        self.actions
-            .iter()
-            .any(|a| a.action != ActionType::NoOp)
+        !self.modify.is_empty() || !self.create.is_empty() || !self.delete.is_empty()
     }
 }

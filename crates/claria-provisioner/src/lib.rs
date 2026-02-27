@@ -1,66 +1,50 @@
 //! claria-provisioner
 //!
-//! Statically compiled IaC engine for provisioning and managing
-//! Claria's AWS infrastructure. Library consumed by the Tauri desktop app.
+//! IaC engine for provisioning and hardening Claria's AWS infrastructure.
+//! Library consumed by the Tauri desktop app.
+//!
+//! Public API:
+//! - `scan()` — query current state of all resources
+//! - `build_plan()` — compare scan results against state, produce four-bucket plan
+//! - `execute()` — apply a plan, flushing state after each action
+//! - `provision()` — convenience: scan → plan → execute
+//! - `destroy()` — tear down all managed resources
 
 pub mod drift;
 pub mod error;
+pub mod persistence;
 pub mod plan;
 pub mod resource;
 pub mod resources;
+pub mod scan;
 pub mod state;
 pub mod sync;
 
-use aws_sdk_s3::Client as S3Client;
+pub use crate::drift::build_plan;
+pub use crate::error::ProvisionerError;
+pub use crate::persistence::StatePersistence;
+pub use crate::plan::{Plan, PlanEntry};
+pub use crate::resource::Resource;
+pub use crate::scan::{scan, ScanResult, ScanStatus};
+pub use crate::state::ProvisionerState;
 
-use claria_core::s3_keys;
-use claria_storage::state::{load_state, save_state};
-
-use crate::error::ProvisionerError;
-use crate::resource::Resource;
-use crate::state::ProvisionerState;
-
-/// Load the provisioner state from S3.
-pub async fn load_provisioner_state(
-    s3: &S3Client,
-    bucket: &str,
-) -> Result<ProvisionerState, ProvisionerError> {
-    match load_state::<ProvisionerState>(s3, bucket, s3_keys::PROVISIONER_STATE).await {
-        Ok((state, _etag)) => Ok(state),
-        Err(claria_storage::error::StorageError::NotFound { .. }) => {
-            Ok(ProvisionerState::default())
-        }
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Save the provisioner state to S3.
-pub async fn save_provisioner_state(
-    s3: &S3Client,
-    bucket: &str,
-    state: &ProvisionerState,
-) -> Result<(), ProvisionerError> {
-    save_state(s3, bucket, s3_keys::PROVISIONER_STATE, state).await?;
-    Ok(())
-}
-
-/// Full provisioning: detect drift, plan, execute, save state.
+/// Full provisioning: scan → plan → execute.
 pub async fn provision(
-    s3: &S3Client,
-    bucket: &str,
+    persistence: &StatePersistence,
     resources: &[Box<dyn Resource>],
 ) -> Result<(), ProvisionerError> {
-    let mut state = load_provisioner_state(s3, bucket).await?;
-
-    let plan = drift::detect_drift(&state, resources).await?;
+    let mut state = persistence.load().await?;
+    let scan_results = scan::scan(resources).await;
+    let plan = drift::build_plan(&state, &scan_results, resources);
 
     if plan.has_changes() {
         tracing::info!(
-            actions = plan.actions.len(),
+            creates = plan.create.len(),
+            modifies = plan.modify.len(),
+            deletes = plan.delete.len(),
             "executing provisioning plan"
         );
-        sync::execute_plan(&plan, resources, &mut state).await?;
-        save_provisioner_state(s3, bucket, &state).await?;
+        sync::execute_plan(&plan, resources, &mut state, persistence).await?;
     } else {
         tracing::info!("all resources in sync, no changes needed");
     }
@@ -68,13 +52,12 @@ pub async fn provision(
     Ok(())
 }
 
-/// Destroy all managed resources.
+/// Destroy all managed resources in reverse order.
 pub async fn destroy(
-    s3: &S3Client,
-    bucket: &str,
+    persistence: &StatePersistence,
     resources: &[Box<dyn Resource>],
 ) -> Result<(), ProvisionerError> {
-    let mut state = load_provisioner_state(s3, bucket).await?;
+    let mut state = persistence.load().await?;
 
     for resource in resources.iter().rev() {
         let resource_type = resource.resource_type();
@@ -85,7 +68,7 @@ pub async fn destroy(
     }
 
     state.resources.clear();
-    save_provisioner_state(s3, bucket, &state).await?;
+    persistence.flush(&state).await?;
 
     Ok(())
 }

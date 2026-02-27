@@ -31,17 +31,40 @@ impl Resource for CloudTrailResource {
 
     fn current_state(&self) -> Bf<'_, Result<Option<serde_json::Value>, ProvisionerError>> {
         Box::pin(async {
-            match self.client.get_trail().name(&self.trail_name).send().await {
-                Ok(resp) => {
-                    let trail = resp.trail();
-                    Ok(Some(serde_json::json!({
-                        "trail_name": self.trail_name,
-                        "trail_arn": trail.map(|t| t.trail_arn().unwrap_or_default()),
-                        "s3_bucket": trail.map(|t| t.s3_bucket_name().unwrap_or_default()),
-                    })))
-                }
-                Err(_) => Ok(None),
-            }
+            // Check if trail exists
+            let trail_resp = match self.client.get_trail().name(&self.trail_name).send().await {
+                Ok(resp) => resp,
+                Err(_) => return Ok(None),
+            };
+
+            let trail = trail_resp.trail();
+            let trail_arn = trail
+                .and_then(|t| t.trail_arn())
+                .unwrap_or_default()
+                .to_string();
+            let s3_bucket = trail
+                .and_then(|t| t.s3_bucket_name())
+                .unwrap_or_default()
+                .to_string();
+
+            // Check if logging is active
+            let is_logging = match self
+                .client
+                .get_trail_status()
+                .name(&self.trail_name)
+                .send()
+                .await
+            {
+                Ok(status) => status.is_logging(),
+                Err(_) => Some(false),
+            };
+
+            Ok(Some(serde_json::json!({
+                "trail_name": self.trail_name,
+                "trail_arn": trail_arn,
+                "s3_bucket": s3_bucket,
+                "is_logging": is_logging,
+            })))
         })
     }
 
@@ -52,6 +75,7 @@ impl Resource for CloudTrailResource {
                 .create_trail()
                 .name(&self.trail_name)
                 .s3_bucket_name(&self.s3_bucket)
+                .s3_key_prefix("_cloudtrail")
                 .is_multi_region_trail(false)
                 .send()
                 .await
@@ -78,6 +102,7 @@ impl Resource for CloudTrailResource {
                     "trail_name": self.trail_name,
                     "trail_arn": trail_arn,
                     "s3_bucket": self.s3_bucket,
+                    "is_logging": true,
                 }),
             })
         })
@@ -85,14 +110,27 @@ impl Resource for CloudTrailResource {
 
     fn update(&self, resource_id: &str) -> Bf<'_, Result<ResourceResult, ProvisionerError>> {
         let rid = resource_id.to_string();
-        let trail_name = self.trail_name.clone();
-        let s3_bucket = self.s3_bucket.clone();
         Box::pin(async move {
+            // Ensure logging is active
+            self.client
+                .start_logging()
+                .name(&self.trail_name)
+                .send()
+                .await
+                .map_err(|e| ProvisionerError::UpdateFailed(e.to_string()))?;
+
+            tracing::info!(
+                trail_name = %self.trail_name,
+                "CloudTrail logging restarted"
+            );
+
             Ok(ResourceResult {
-                resource_id: rid,
+                resource_id: rid.clone(),
                 properties: serde_json::json!({
-                    "trail_name": trail_name,
-                    "s3_bucket": s3_bucket,
+                    "trail_name": self.trail_name,
+                    "trail_arn": rid,
+                    "s3_bucket": self.s3_bucket,
+                    "is_logging": true,
                 }),
             })
         })
@@ -100,6 +138,14 @@ impl Resource for CloudTrailResource {
 
     fn delete(&self, _resource_id: &str) -> Bf<'_, Result<(), ProvisionerError>> {
         Box::pin(async {
+            // Stop logging first
+            let _ = self
+                .client
+                .stop_logging()
+                .name(&self.trail_name)
+                .send()
+                .await;
+
             self.client
                 .delete_trail()
                 .name(&self.trail_name)

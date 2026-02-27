@@ -47,9 +47,20 @@ impl Resource for BedrockAccessResource {
                 .collect();
 
             if available.is_empty() {
-                Ok(None)
+                // Models not found — return Found with an error hint so the plan
+                // can display a helpful message to the user.
+                Ok(Some(serde_json::json!({
+                    "available_models": [],
+                    "error": format!(
+                        "No Claude models found. Please enable model access in the AWS Bedrock console. \
+                         Looking for models matching: {}",
+                        self.model_ids.join(", ")
+                    ),
+                })))
             } else {
-                Ok(Some(serde_json::json!({ "available_models": available })))
+                Ok(Some(serde_json::json!({
+                    "available_models": available,
+                })))
             }
         })
     }
@@ -57,6 +68,8 @@ impl Resource for BedrockAccessResource {
     fn create(&self) -> Bf<'_, Result<ResourceResult, ProvisionerError>> {
         let model_ids = self.model_ids.clone();
         Box::pin(async move {
+            // Bedrock model access can't be enabled programmatically.
+            // This "create" just records the verification state.
             tracing::info!(models = ?model_ids, "Bedrock model access verified");
             Ok(ResourceResult {
                 resource_id: "bedrock_access".to_string(),
@@ -69,6 +82,7 @@ impl Resource for BedrockAccessResource {
         let rid = resource_id.to_string();
         let model_ids = self.model_ids.clone();
         Box::pin(async move {
+            tracing::info!(models = ?model_ids, "Bedrock model access re-verified");
             Ok(ResourceResult {
                 resource_id: rid,
                 properties: serde_json::json!({ "model_ids": model_ids }),
