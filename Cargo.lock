@@ -184,6 +184,10 @@ name = "claria-instruments"
 version = "0.1.0"
 dependencies = [
  "claria-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ts-rs",
 ]
 
 [[package]]
