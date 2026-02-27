@@ -1,0 +1,9 @@
+[package]
+name = "claria-search"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+claria-core = { path = "../claria-core" }
+claria-storage = { path = "../claria-storage" }

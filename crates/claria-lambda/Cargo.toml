@@ -1,0 +1,15 @@
+[package]
+name = "claria-lambda"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+claria-core = { path = "../claria-core" }
+claria-storage = { path = "../claria-storage" }
+claria-bedrock = { path = "../claria-bedrock" }
+claria-auth = { path = "../claria-auth" }
+claria-audit = { path = "../claria-audit" }
+claria-search = { path = "../claria-search" }
+claria-instruments = { path = "../claria-instruments" }
+claria-export = { path = "../claria-export" }
