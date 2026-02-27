@@ -24,7 +24,22 @@ pub async fn has_config() -> Result<bool, String> {
 pub async fn load_config(
     state: State<'_, DesktopState>,
 ) -> Result<ConfigInfo, String> {
-    let cfg = config::load_config().map_err(|e| e.to_string())?;
+    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+
+    // Backfill account_id for configs saved before this field existed.
+    if cfg.account_id.is_empty() {
+        let sdk_config =
+            claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
+        let sts = aws_sdk_sts::Client::new(&sdk_config);
+        if let Ok(identity) = sts.get_caller_identity().send().await
+            && let Some(account_id) = identity.account()
+        {
+            cfg.account_id = account_id.to_string();
+            // Best-effort re-save so next load doesn't need STS again.
+            let _ = config::save_config(&cfg);
+        }
+    }
+
     let info = config::config_info(&cfg);
 
     let mut guard = state.config.lock().await;
@@ -43,6 +58,7 @@ pub async fn save_config(
     credentials: CredentialSource,
 ) -> Result<(), String> {
     let cfg = ClariaConfig {
+        config_version: 0, // save_config stamps CURRENT_VERSION
         region,
         system_name,
         account_id,
@@ -218,6 +234,7 @@ pub async fn bootstrap_iam_user(
         && let Some(new_creds) = &result.new_credentials
     {
             let cfg = ClariaConfig {
+                config_version: 0, // save_config stamps CURRENT_VERSION
                 region,
                 system_name,
                 account_id: result.account_id.clone().unwrap_or_default(),

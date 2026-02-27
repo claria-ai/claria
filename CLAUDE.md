@@ -83,6 +83,27 @@
 - `claria-desktop` is the only crate that reads/writes local config files
 - Crates communicate through well-defined public APIs, not shared mutable state
 
+## Config Versioning
+
+`config.json` carries a `config_version` field (u32). Current version: **1**.
+
+### Rules
+- Every schema change to `ClariaConfig` (new field, renamed field, changed type) bumps `CURRENT_VERSION` in `config.rs`
+- Each bump gets a migration function in `migrate()` that transforms the raw JSON from version N to N+1
+- Migrations are pure `serde_json::Value` transforms — no async, no network, no filesystem beyond the config itself
+- Async backfills (e.g. resolving `account_id` via STS) live in the Tauri command layer (`commands.rs`), not in migrations
+- `save_config` always stamps `config_version = CURRENT_VERSION`
+- `load_config` reads raw JSON, runs migrations in order, then deserializes into `ClariaConfig`
+- If `config_version` on disk is higher than `CURRENT_VERSION`, `load_config` returns an error telling the user to update
+- New fields must use `#[serde(default)]` so that pre-migration JSON still deserializes during the migration window
+- Never delete a migration — the chain must be able to upgrade from v0 to current in one pass
+
+### Adding a new version
+1. Bump `CURRENT_VERSION` in `config.rs`
+2. Add `#[serde(default)]` on any new fields in `ClariaConfig`
+3. Add `if from_version < N { ... }` block in `migrate()` that sets the new field and stamps `config_version = N`
+4. If the field needs async backfill, add logic in `load_config` command in `commands.rs`
+
 ## Claude Code
 - Run `cargo check` after medium and larger edits
 - Run `cargo test` before committing

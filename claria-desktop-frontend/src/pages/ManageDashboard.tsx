@@ -154,14 +154,41 @@ export default function ManageDashboard({
       <div className="max-w-2xl mx-auto p-8">
         <h2 className="text-2xl font-bold mb-6">Dashboard</h2>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800 text-sm">{error}</p>
+          <p className="text-red-800 font-medium text-sm mb-2">
+            Failed to load configuration
+          </p>
+          <p className="text-red-700 text-xs font-mono whitespace-pre-wrap">{error}</p>
         </div>
-        <button
-          onClick={() => navigate("start")}
-          className="mt-4 px-4 py-2 text-gray-600 hover:text-gray-800"
-        >
-          Back
-        </button>
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mt-4">
+          <p className="text-amber-800 text-sm">
+            Your config file may be corrupt or incompatible with this version of
+            Claria. You can clear it and start fresh.
+          </p>
+        </div>
+        <div className="flex gap-3 mt-4">
+          <button
+            onClick={() => navigate("start")}
+            className="px-4 py-2 text-gray-600 hover:text-gray-800"
+          >
+            Back
+          </button>
+          <button
+            onClick={async () => {
+              setDeleting(true);
+              try {
+                await deleteConfig();
+                navigate("start");
+              } catch (e) {
+                setError(String(e));
+                setDeleting(false);
+              }
+            }}
+            disabled={deleting}
+            className="px-4 py-2 text-sm text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
+          >
+            {deleting ? "Clearing..." : "Clear Config & Start Over"}
+          </button>
+        </div>
       </div>
     );
   }
