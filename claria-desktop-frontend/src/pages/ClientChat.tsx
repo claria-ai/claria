@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import Markdown from "react-markdown";
 import {
   acceptModelAgreement,
   chatMessage,
@@ -239,7 +240,13 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             : "bg-gray-100 text-gray-800"
         }`}
       >
-        <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+        {isUser ? (
+          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+        ) : (
+          <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
+            <Markdown>{message.content}</Markdown>
+          </div>
+        )}
       </div>
     </div>
   );
