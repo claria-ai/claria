@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import StepIndicator from "../components/StepIndicator";
 import {
+  loadConfig,
   scanResources,
   previewPlan,
   provision,
+  type ConfigInfo,
   type ScanResult,
   type Plan,
   type PlanEntry,
@@ -25,11 +27,16 @@ export default function ScanProvision({
 }: {
   navigate: (page: Page) => void;
 }) {
+  const [config, setConfig] = useState<ConfigInfo | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [scanResults, setScanResults] = useState<ScanResult[]>([]);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [executedPlan, setExecutedPlan] = useState<Plan | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadConfig().then(setConfig).catch(() => {});
+  }, []);
 
   async function handleScan() {
     setPhase("scanning");
@@ -126,7 +133,7 @@ export default function ScanProvision({
         phase === "provisioning" ||
         phase === "done") &&
         scanResults.length > 0 && (
-          <ScanResultsTable results={scanResults} />
+          <ScanResultsTable results={scanResults} config={config} />
         )}
 
       {/* After scan, show "Review Plan" button */}
@@ -287,6 +294,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   s3_bucket: "S3 Bucket",
   cloudtrail_trail: "CloudTrail Trail",
   bedrock_model_access: "Bedrock Model Access",
+  iam_user: "IAM User",
 };
 
 const STATUS_STYLES: Record<string, { label: string; color: string; icon: string }> = {
@@ -307,11 +315,20 @@ const STATUS_STYLES: Record<string, { label: string; color: string; icon: string
   },
 };
 
-function ScanResultsTable({ results }: { results: ScanResult[] }) {
+function ScanResultsTable({ results, config }: { results: ScanResult[]; config: ConfigInfo | null }) {
+  const identity = config?.account_id
+    ? `arn:aws:iam::${config.account_id}:user/claria-admin`
+    : null;
+
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden mt-6">
-      <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+      <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex items-baseline gap-2">
         <h3 className="text-sm font-semibold text-gray-700">Scan Results</h3>
+        {identity && (
+          <span className="text-xs font-mono text-gray-400 truncate">
+            running as {identity}
+          </span>
+        )}
       </div>
       <div className="divide-y divide-gray-100">
         {results.map((result, i) => {

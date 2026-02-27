@@ -1060,6 +1060,7 @@ name = "claria-bedrock"
 version = "0.1.0"
 dependencies = [
  "aws-config",
+ "aws-sdk-bedrock",
  "aws-sdk-bedrockruntime",
  "claria-core",
  "jiff",
@@ -1089,8 +1090,12 @@ name = "claria-desktop"
 version = "0.1.0"
 dependencies = [
  "aws-config",
+ "aws-sdk-s3",
  "aws-sdk-sts",
+ "claria-bedrock",
+ "claria-core",
  "claria-provisioner",
+ "claria-storage",
  "color-eyre",
  "dirs",
  "eyre",
@@ -1105,6 +1110,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -1145,6 +1151,7 @@ dependencies = [
  "claria-core",
  "claria-storage",
  "dirs",
+ "percent-encoding",
  "serde",
  "serde_json",
  "specta",

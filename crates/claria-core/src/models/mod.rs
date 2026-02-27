@@ -1,6 +1,7 @@
 pub mod anonymize;
 pub mod answer;
 pub mod assessment;
+pub mod client;
 pub mod cost;
 pub mod goal;
 pub mod report;

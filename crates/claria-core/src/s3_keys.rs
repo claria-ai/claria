@@ -37,6 +37,12 @@ pub fn report_transaction(id: Uuid) -> String {
     format!("reports/{id}/transaction.json")
 }
 
+pub fn client(id: Uuid) -> String {
+    format!("clients/{id}.json")
+}
+
+pub const CLIENTS_PREFIX: &str = "clients/";
+
 pub const INDEX: &str = "_index/tantivy.tar.zst";
 
 pub const PROVISIONER_STATE: &str = "_state/provisioner.json";

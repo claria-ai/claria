@@ -10,14 +10,16 @@ pub struct S3BucketResource {
     client: Client,
     bucket_name: String,
     region: String,
+    account_id: String,
 }
 
 impl S3BucketResource {
-    pub fn new(client: Client, bucket_name: String, region: String) -> Self {
+    pub fn new(client: Client, bucket_name: String, region: String, account_id: String) -> Self {
         Self {
             client,
             bucket_name,
             region,
+            account_id,
         }
     }
 
@@ -133,6 +135,49 @@ impl S3BucketResource {
                     .restrict_public_buckets(true)
                     .build(),
             )
+            .send()
+            .await
+            .map_err(|e| ProvisionerError::UpdateFailed(e.to_string()))?;
+
+        // Bucket policy: allow CloudTrail to write logs
+        let policy = serde_json::json!({
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "AWSCloudTrailAclCheck",
+                    "Effect": "Allow",
+                    "Principal": { "Service": "cloudtrail.amazonaws.com" },
+                    "Action": "s3:GetBucketAcl",
+                    "Resource": format!("arn:aws:s3:::{}", self.bucket_name),
+                    "Condition": {
+                        "StringEquals": {
+                            "AWS:SourceAccount": self.account_id
+                        }
+                    }
+                },
+                {
+                    "Sid": "AWSCloudTrailWrite",
+                    "Effect": "Allow",
+                    "Principal": { "Service": "cloudtrail.amazonaws.com" },
+                    "Action": "s3:PutObject",
+                    "Resource": format!(
+                        "arn:aws:s3:::{}/_cloudtrail/AWSLogs/{}/*",
+                        self.bucket_name, self.account_id
+                    ),
+                    "Condition": {
+                        "StringEquals": {
+                            "s3:x-amz-acl": "bucket-owner-full-control",
+                            "AWS:SourceAccount": self.account_id
+                        }
+                    }
+                }
+            ]
+        });
+
+        self.client
+            .put_bucket_policy()
+            .bucket(&self.bucket_name)
+            .policy(policy.to_string())
             .send()
             .await
             .map_err(|e| ProvisionerError::UpdateFailed(e.to_string()))?;

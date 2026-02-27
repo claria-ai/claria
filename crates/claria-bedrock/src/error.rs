@@ -19,4 +19,7 @@ pub enum BedrockError {
 
     #[error("AWS config error: {0}")]
     Config(String),
+
+    #[error("model agreement error: {0}")]
+    Agreement(String),
 }

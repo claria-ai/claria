@@ -20,4 +20,5 @@ serde_json = "=1.0.149"
 dirs = "=6.0.0"
 thiserror = "=2.0.18"
 tokio = { version = "=1.49.0", features = ["full"] }
+percent-encoding = "=2.3.2"
 tracing = "=0.1.44"

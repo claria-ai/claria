@@ -243,7 +243,14 @@ export default function ManageDashboard({
       {/* Resource Status */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">Resource Status</h3>
+          <div>
+            <h3 className="text-lg font-semibold">Resource Status</h3>
+            {config.account_id && (
+              <p className="text-xs font-mono text-gray-400 mt-0.5">
+                running as arn:aws:iam::{config.account_id}:user/claria-admin
+              </p>
+            )}
+          </div>
           <div className="flex gap-2">
             <button
               onClick={handleScan}
@@ -485,6 +492,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   s3_bucket: "S3 Bucket",
   cloudtrail_trail: "CloudTrail Trail",
   bedrock_model_access: "Bedrock Model Access",
+  iam_user: "IAM User",
 };
 
 const STATUS_STYLES: Record<
@@ -580,6 +588,32 @@ function ScanProperties({
     );
   }
 
+  if (resourceType === "iam_user") {
+    const policyAttached = properties.policy_attached as boolean;
+    const policyName = properties.policy_name as string | undefined;
+    const policyDoc = properties.policy_document as Record<string, unknown> | undefined;
+
+    return (
+      <div className="mt-1.5 space-y-2">
+        <div className="flex flex-wrap gap-2">
+          <PropertyBadge
+            label="Policy"
+            ok={policyAttached}
+            value={policyAttached ? (policyName ?? "attached") : "not attached"}
+          />
+        </div>
+        {policyAttached && policyDoc && (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-gray-500 hover:text-gray-700">
+              View policy document
+            </summary>
+            <PolicyDocument document={policyDoc} />
+          </details>
+        )}
+      </div>
+    );
+  }
+
   return null;
 }
 
@@ -601,6 +635,46 @@ function PropertyBadge({
       <span className="font-medium">{label}:</span>
       <span>{value}</span>
     </span>
+  );
+}
+
+function PolicyDocument({ document }: { document: Record<string, unknown> }) {
+  const statements = (document.Statement as Array<Record<string, unknown>>) ?? [];
+
+  if (statements.length === 0) {
+    return (
+      <pre className="mt-1 p-2 bg-gray-50 border border-gray-200 rounded text-xs font-mono overflow-x-auto whitespace-pre-wrap">
+        {JSON.stringify(document, null, 2)}
+      </pre>
+    );
+  }
+
+  return (
+    <div className="mt-1 border border-gray-200 rounded overflow-hidden divide-y divide-gray-100">
+      {statements.map((stmt, i) => {
+        const sid = (stmt.Sid as string) ?? `Statement ${i + 1}`;
+        const effect = (stmt.Effect as string) ?? "Unknown";
+        const actions = Array.isArray(stmt.Action) ? stmt.Action as string[] : [stmt.Action as string];
+        const resources = Array.isArray(stmt.Resource) ? stmt.Resource as string[] : [stmt.Resource as string];
+
+        return (
+          <div key={i} className="px-3 py-2 bg-gray-50">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-medium text-gray-700">{sid}</span>
+              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                effect === "Allow" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+              }`}>
+                {effect}
+              </span>
+            </div>
+            <div className="text-gray-500 space-y-0.5">
+              <p><span className="text-gray-400">Actions:</span> {actions.join(", ")}</p>
+              <p><span className="text-gray-400">Resources:</span> {resources.join(", ")}</p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

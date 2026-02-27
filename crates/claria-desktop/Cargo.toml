@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+claria-bedrock = { path = "../claria-bedrock" }
+claria-core = { path = "../claria-core" }
 claria-provisioner = { path = "../claria-provisioner" }
+claria-storage = { path = "../claria-storage" }
 aws-config = "=1.8.14"
+aws-sdk-s3 = "=1.124.0"
 aws-sdk-sts = "=1.99.0"
 color-eyre = "=0.6.3"
 dirs = "=6.0.0"
@@ -21,6 +25,7 @@ tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 tokio = { version = "=1.49.0", features = ["full"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.22", features = ["env-filter", "json"] }
+uuid = { version = "=1.21.0", features = ["v4"] }
 
 [build-dependencies]
 tauri-build = "=2.5.5"

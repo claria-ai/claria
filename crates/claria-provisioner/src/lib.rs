@@ -76,6 +76,7 @@ pub fn build_resources(
     let s3_client = aws_sdk_s3::Client::new(config);
     let cloudtrail_client = aws_sdk_cloudtrail::Client::new(config);
     let bedrock_client = aws_sdk_bedrock::Client::new(config);
+    let iam_client = aws_sdk_iam::Client::new(config);
 
     let model_ids: Vec<String> = DEFAULT_MODEL_IDS.iter().map(|s| (*s).to_string()).collect();
 
@@ -84,6 +85,7 @@ pub fn build_resources(
             s3_client,
             bucket_name.clone(),
             region,
+            account_id.to_string(),
         )),
         Box::new(resources::cloudtrail::CloudTrailResource::new(
             cloudtrail_client,
@@ -94,6 +96,7 @@ pub fn build_resources(
             bedrock_client,
             model_ids,
         )),
+        Box::new(resources::iam_user::IamUserResource::new(iam_client)),
     ]
 }
 

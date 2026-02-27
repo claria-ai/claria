@@ -180,6 +180,74 @@ async destroy() : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * List all client records from S3.
+ * 
+ * Loads each `clients/{id}.json` object, deserializes the Client, and
+ * returns summaries sorted by most recently created first.
+ */
+async listClients() : Promise<Result<ClientSummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_clients") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Create a new client record in S3.
+ */
+async createClient(name: string) : Promise<Result<ClientSummary, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_client", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List available Anthropic Claude models for chat.
+ * 
+ * Queries Bedrock for system-defined inference profiles and returns
+ * those matching Anthropic Claude models.
+ */
+async listChatModels() : Promise<Result<ChatModel[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_chat_models") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send a chat message to Bedrock and return the assistant's response.
+ * 
+ * The frontend maintains the full conversation history and sends it
+ * with each request so the model has context.
+ */
+async chatMessage(modelId: string, messages: ChatMessage[]) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("chat_message", { modelId, messages }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Accept the Marketplace agreement for a Bedrock foundation model.
+ * 
+ * Called when a model requires an agreement before it can be used.
+ * The frontend can detect this from the error message and offer
+ * a one-click accept flow.
+ */
+async acceptModelAgreement(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("accept_model_agreement", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -270,6 +338,13 @@ export type BootstrapStep = { name: string; status: StepStatus; detail: string |
  * Identity information returned by STS `GetCallerIdentity`.
  */
 export type CallerIdentity = { account_id: string; arn: string; user_id: string; is_root: boolean }
+export type ChatMessage = { role: ChatRole; content: string }
+/**
+ * Specta type mirroring `claria_bedrock::chat::ChatModel`.
+ */
+export type ChatModel = { model_id: string; name: string }
+export type ChatRole = "user" | "assistant"
+export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */

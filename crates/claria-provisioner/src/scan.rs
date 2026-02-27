@@ -38,6 +38,7 @@ pub async fn scan(resources: &[Box<dyn Resource>]) -> Vec<ScanResult> {
                     .and_then(|v| v.as_str())
                     .or_else(|| props.get("bucket_name").and_then(|v| v.as_str()))
                     .or_else(|| props.get("trail_arn").and_then(|v| v.as_str()))
+                    .or_else(|| props.get("user_name").and_then(|v| v.as_str()))
                     .map(String::from);
 
                 results.push(ScanResult {

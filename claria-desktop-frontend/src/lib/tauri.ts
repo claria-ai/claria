@@ -10,6 +10,10 @@ export type {
   BootstrapResult,
   BootstrapStep,
   CallerIdentity,
+  ChatMessage,
+  ChatModel,
+  ChatRole,
+  ClientSummary,
   ConfigInfo,
   CredentialAssessment,
   CredentialClass,
@@ -154,4 +158,32 @@ export async function provision() {
 
 export async function destroy(): Promise<void> {
   unwrap(await commands.destroy());
+}
+
+// ---------------------------------------------------------------------------
+// Client wrappers
+// ---------------------------------------------------------------------------
+
+export async function listClients() {
+  return unwrap(await commands.listClients());
+}
+
+export async function createClient(name: string) {
+  return unwrap(await commands.createClient(name));
+}
+
+// ---------------------------------------------------------------------------
+// Chat wrappers
+// ---------------------------------------------------------------------------
+
+export async function listChatModels() {
+  return unwrap(await commands.listChatModels());
+}
+
+export async function chatMessage(modelId: string, messages: import("./bindings").ChatMessage[]) {
+  return unwrap(await commands.chatMessage(modelId, messages));
+}
+
+export async function acceptModelAgreement(modelId: string): Promise<void> {
+  unwrap(await commands.acceptModelAgreement(modelId));
 }

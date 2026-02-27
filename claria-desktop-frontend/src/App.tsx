@@ -6,6 +6,8 @@ import IamSetupGuide from "./pages/IamSetupGuide";
 import CredentialIntake from "./pages/CredentialIntake";
 import ScanProvision from "./pages/ScanProvision";
 import ManageDashboard from "./pages/ManageDashboard";
+import ClientList from "./pages/ClientList";
+import ClientChat from "./pages/ClientChat";
 import About from "./pages/About";
 
 export type Page =
@@ -16,11 +18,15 @@ export type Page =
   | "credentials"
   | "scan"
   | "dashboard"
+  | "clients"
+  | "client-chat"
   | "about";
 
 export default function App() {
   const [page, setPage] = useState<Page>("loading");
   const [configExists, setConfigExists] = useState(false);
+  const [activeClientId, setActiveClientId] = useState<string | null>(null);
+  const [activeClientName, setActiveClientName] = useState<string | null>(null);
 
   const refreshConfig = useCallback(async () => {
     const exists = await hasConfig().catch(() => false);
@@ -63,6 +69,23 @@ export default function App() {
       {page === "credentials" && <CredentialIntake navigate={navigate} />}
       {page === "scan" && <ScanProvision navigate={navigate} />}
       {page === "dashboard" && <ManageDashboard navigate={navigate} />}
+      {page === "clients" && (
+        <ClientList
+          navigate={navigate}
+          onOpenClient={(id, name) => {
+            setActiveClientId(id);
+            setActiveClientName(name);
+            navigate("client-chat");
+          }}
+        />
+      )}
+      {page === "client-chat" && activeClientId && (
+        <ClientChat
+          navigate={navigate}
+          clientId={activeClientId}
+          clientName={activeClientName ?? "Client"}
+        />
+      )}
       {page === "about" && <About navigate={navigate} />}
     </div>
   );

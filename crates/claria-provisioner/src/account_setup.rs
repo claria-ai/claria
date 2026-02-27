@@ -33,8 +33,8 @@ use crate::error::ProvisionerError;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const IAM_USER_NAME: &str = "claria-admin";
-const IAM_POLICY_NAME: &str = "ClariaProvisionerAccess";
+pub(crate) const IAM_USER_NAME: &str = "claria-admin";
+pub(crate) const IAM_POLICY_NAME: &str = "ClariaProvisionerAccess";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -645,9 +645,12 @@ pub async fn delete_user_access_key(
 
 // ── Policy document ──────────────────────────────────────────────────────────
 
-/// Build the Claria minimal IAM policy document, scoped to buckets matching
-/// `{system_name}-*`.
-fn claria_policy_document(system_name: &str) -> String {
+/// Build the Claria minimal IAM policy document.
+///
+/// S3 actions are scoped to buckets matching `{system_name}-*`.
+/// IAM read actions are scoped to the `claria-admin` user and
+/// `ClariaProvisionerAccess` policy so the dashboard can verify its own setup.
+fn claria_policy_document(system_name: &str, account_id: &str) -> String {
     serde_json::json!({
         "Version": "2012-10-17",
         "Statement": [
@@ -672,8 +675,8 @@ fn claria_policy_document(system_name: &str) -> String {
                     "s3:ListBucket"
                 ],
                 "Resource": [
-                    format!("arn:aws:s3:::{system_name}-*"),
-                    format!("arn:aws:s3:::{system_name}-*/*")
+                    format!("arn:aws:s3:::{account_id}-{system_name}-*"),
+                    format!("arn:aws:s3:::{account_id}-{system_name}-*/*")
                 ]
             },
             {
@@ -693,9 +696,38 @@ fn claria_policy_document(system_name: &str) -> String {
                 "Sid": "ClariaBedrock",
                 "Effect": "Allow",
                 "Action": [
-                    "bedrock:ListFoundationModels"
+                    "bedrock:ListFoundationModels",
+                    "bedrock:ListInferenceProfiles",
+                    "bedrock:GetFoundationModelAvailability",
+                    "bedrock:ListFoundationModelAgreementOffers",
+                    "bedrock:CreateFoundationModelAgreement",
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream"
                 ],
                 "Resource": "*"
+            },
+            {
+                "Sid": "ClariaMarketplace",
+                "Effect": "Allow",
+                "Action": [
+                    "aws-marketplace:ViewSubscriptions",
+                    "aws-marketplace:Subscribe"
+                ],
+                "Resource": "*"
+            },
+            {
+                "Sid": "ClariaIAMReadSelf",
+                "Effect": "Allow",
+                "Action": [
+                    "iam:GetUser",
+                    "iam:ListAttachedUserPolicies",
+                    "iam:GetPolicy",
+                    "iam:GetPolicyVersion"
+                ],
+                "Resource": [
+                    format!("arn:aws:iam::{account_id}:user/{IAM_USER_NAME}"),
+                    format!("arn:aws:iam::{account_id}:policy/{IAM_POLICY_NAME}")
+                ]
             },
             {
                 "Sid": "ClariaSTS",
@@ -770,7 +802,8 @@ async fn create_policy(
     system_name: &str,
     account_id: &Option<String>,
 ) -> Result<String, ProvisionerError> {
-    let document = claria_policy_document(system_name);
+    let acct = account_id.as_deref().unwrap_or("*");
+    let document = claria_policy_document(system_name, acct);
 
     match client
         .create_policy()
@@ -801,13 +834,112 @@ async fn create_policy(
                 && let Some(acct) = account_id
             {
                 let arn = format!("arn:aws:iam::{acct}:policy/{IAM_POLICY_NAME}");
-                tracing::info!(policy_arn = %arn, "IAM policy already exists, reusing");
+                tracing::info!(policy_arn = %arn, "IAM policy already exists, updating document");
+
+                // Update the policy document to ensure it matches the current version.
+                // This handles the case where code adds new permissions (e.g. IAM read-self)
+                // after the policy was originally created.
+                update_policy_document(client, &arn, &document).await?;
+
                 return Ok(arn);
             }
 
             Err(ProvisionerError::Aws(format!(
                 "iam:CreatePolicy failed: {e}"
             )))
+        }
+    }
+}
+
+/// Create a new default policy version with the given document.
+///
+/// AWS allows up to 5 policy versions. If the limit is reached, we delete
+/// the oldest non-default version before creating the new one.
+async fn update_policy_document(
+    client: &aws_sdk_iam::Client,
+    policy_arn: &str,
+    document: &str,
+) -> Result<(), ProvisionerError> {
+    match client
+        .create_policy_version()
+        .policy_arn(policy_arn)
+        .policy_document(document)
+        .set_as_default(true)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let vid = resp
+                .policy_version()
+                .and_then(|v| v.version_id())
+                .unwrap_or("unknown");
+            tracing::info!(policy_arn = %policy_arn, version = %vid, "updated policy document");
+            Ok(())
+        }
+        Err(e) => {
+            // If we hit the 5-version limit, prune the oldest non-default
+            // version and retry once.
+            let is_limit = e
+                .as_service_error()
+                .map(|se| se.is_limit_exceeded_exception())
+                .unwrap_or(false);
+
+            if !is_limit {
+                return Err(ProvisionerError::Aws(format!(
+                    "iam:CreatePolicyVersion failed: {e}"
+                )));
+            }
+
+            tracing::info!("policy version limit reached, pruning oldest non-default version");
+
+            let versions = client
+                .list_policy_versions()
+                .policy_arn(policy_arn)
+                .send()
+                .await
+                .map_err(|e| {
+                    ProvisionerError::Aws(format!("iam:ListPolicyVersions failed: {e}"))
+                })?;
+
+            // Find oldest non-default version.
+            let oldest = versions
+                .versions()
+                .iter()
+                .filter(|v| !v.is_default_version())
+                .min_by_key(|v| v.create_date().map(|d| d.to_string()));
+
+            if let Some(v) = oldest {
+                let vid = v.version_id().unwrap_or("unknown");
+                client
+                    .delete_policy_version()
+                    .policy_arn(policy_arn)
+                    .version_id(vid)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        ProvisionerError::Aws(format!(
+                            "iam:DeletePolicyVersion failed: {e}"
+                        ))
+                    })?;
+                tracing::info!(version = %vid, "deleted old policy version");
+            }
+
+            // Retry the create.
+            client
+                .create_policy_version()
+                .policy_arn(policy_arn)
+                .policy_document(document)
+                .set_as_default(true)
+                .send()
+                .await
+                .map_err(|e| {
+                    ProvisionerError::Aws(format!(
+                        "iam:CreatePolicyVersion (retry) failed: {e}"
+                    ))
+                })?;
+
+            tracing::info!(policy_arn = %policy_arn, "updated policy document after pruning");
+            Ok(())
         }
     }
 }

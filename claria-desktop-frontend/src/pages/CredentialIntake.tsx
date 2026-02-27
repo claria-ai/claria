@@ -962,6 +962,7 @@ function BootstrapProgress({ result }: { result: BootstrapResult }) {
     validate_new_credentials: "Validate new credentials",
     delete_source_key: "Delete source access key",
     write_config: "Save configuration",
+    accept_model_agreements: "Accept Bedrock model agreements",
   };
 
   function stepIcon(step: BootstrapStep): string {

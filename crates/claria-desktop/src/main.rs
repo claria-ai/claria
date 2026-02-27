@@ -32,6 +32,11 @@ fn main() -> Result<()> {
             commands::preview_plan,
             commands::provision,
             commands::destroy,
+            commands::list_clients,
+            commands::create_client,
+            commands::list_chat_models,
+            commands::chat_message,
+            commands::accept_model_agreement,
         ]);
 
     #[cfg(debug_assertions)]
