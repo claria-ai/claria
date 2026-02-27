@@ -13,3 +13,15 @@ claria-audit = { path = "../claria-audit" }
 claria-search = { path = "../claria-search" }
 claria-instruments = { path = "../claria-instruments" }
 claria-export = { path = "../claria-export" }
+aws-sdk-s3 = "=1.124.0"
+axum = { version = "=0.8.8", features = ["json"] }
+eyre = "=0.6.12"
+lambda_http = "=1.1.0-rc1"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+tokio = { version = "=1.49.0", features = ["macros", "rt-multi-thread"] }
+tower = "=0.5.3"
+tower-http = { version = "=0.6.8", features = ["cors"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.22", features = ["env-filter", "json"] }
+uuid = { version = "=1.21.0", features = ["v4"] }
