@@ -7,3 +7,12 @@ license.workspace = true
 [dependencies]
 claria-core = { path = "../claria-core" }
 claria-storage = { path = "../claria-storage" }
+aws-sdk-s3 = "=1.124.0"
+serde_json = "=1.0.149"
+tantivy = "=0.25.0"
+tar = "=0.4.44"
+tempfile = "=3.26.0"
+thiserror = "=2.0.18"
+tokio = { version = "=1.49.0", features = ["full"] }
+tracing = "=0.1.44"
+zstd = "=0.13.3"
