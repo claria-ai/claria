@@ -1,5 +1,5 @@
 /target
 .env
 bindings/
-frontend/node_modules/
-frontend/dist/
+claria-desktop-frontend/node_modules/
+claria-desktop-frontend/dist/

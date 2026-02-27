@@ -3,7 +3,7 @@
   "productName": "Claria",
   "version": "0.1.0",
   "build": {
-    "frontendDist": "../../frontend/dist"
+    "frontendDist": "../../claria-desktop-frontend/dist"
   },
   "app": {
     "windows": [
