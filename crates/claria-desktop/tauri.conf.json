@@ -1,0 +1,20 @@
+{
+  "identifier": "com.claria.desktop",
+  "productName": "Claria",
+  "version": "0.1.0",
+  "build": {
+    "frontendDist": "../../../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Claria",
+        "width": 1024,
+        "height": 768
+      }
+    ]
+  },
+  "bundle": {
+    "icon": []
+  }
+}
