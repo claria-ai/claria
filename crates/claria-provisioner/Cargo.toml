@@ -10,3 +10,16 @@ claria-storage = { path = "../claria-storage" }
 claria-auth = { path = "../claria-auth" }
 claria-bedrock = { path = "../claria-bedrock" }
 claria-audit = { path = "../claria-audit" }
+aws-config = "=1.8.14"
+aws-sdk-apigatewayv2 = "=1.98.0"
+aws-sdk-bedrock = "=1.133.0"
+aws-sdk-cloudtrail = "=1.104.0"
+aws-sdk-iam = "=1.105.0"
+aws-sdk-lambda = "=1.117.0"
+aws-sdk-s3 = "=1.124.0"
+aws-sdk-cognitoidentityprovider = "=1.110.0"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+thiserror = "=2.0.18"
+tokio = { version = "=1.49.0", features = ["full"] }
+tracing = "=0.1.44"
