@@ -424,7 +424,7 @@ function ScanProperties({
   }
 
   if (resourceType === "bedrock_model_access") {
-    const families = (properties.families as { prefix: string; available: boolean; models: string[] }[]) ?? [];
+    const families = (properties.families as { prefix: string; available: boolean; models: string[]; agreement?: string }[]) ?? [];
     const err = properties.error as string | undefined;
 
     return (
@@ -434,8 +434,16 @@ function ScanProperties({
             <PropertyBadge
               key={f.prefix}
               label={formatModelFamily(f.prefix)}
-              ok={f.available}
-              value={f.available ? `${f.models.length} available` : "not enabled"}
+              ok={f.available && f.agreement === "accepted"}
+              value={
+                !f.available
+                  ? "not enabled"
+                  : f.agreement === "accepted"
+                    ? `${f.models.length} ready`
+                    : f.agreement === "pending"
+                      ? "agreement pending"
+                      : `${f.models.length} available`
+              }
             />
           ))}
         </div>
