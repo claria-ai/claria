@@ -5,6 +5,7 @@ import {
   plan,
   apply,
   destroy,
+  resetProvisionerState,
   type ConfigInfo,
   type PlanEntry,
 } from "../lib/tauri";
@@ -30,6 +31,7 @@ export default function ManageDashboard({
   const [deleting, setDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
+  const [resettingState, setResettingState] = useState(false);
 
   // Resource status state
   const [resourcePhase, setResourcePhase] = useState<ResourcePhase>("idle");
@@ -279,8 +281,37 @@ export default function ManageDashboard({
 
         {/* Resource error */}
         {resourceError && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mt-4">
-            <p className="text-red-800 text-sm">{resourceError}</p>
+          <div className="mt-4">
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <p className="text-red-800 text-sm">{resourceError}</p>
+            </div>
+            {resourceError.includes("incompatible") && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mt-3">
+                <p className="text-amber-800 text-sm">
+                  The provisioner state file is not compatible with this version
+                  of Claria. You can reset it and re-scan — your AWS resources
+                  are not affected.
+                </p>
+                <button
+                  onClick={async () => {
+                    setResettingState(true);
+                    try {
+                      await resetProvisionerState();
+                      setResourceError(null);
+                      handleScan();
+                    } catch (e) {
+                      setResourceError(String(e));
+                    } finally {
+                      setResettingState(false);
+                    }
+                  }}
+                  disabled={resettingState}
+                  className="mt-3 px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors disabled:opacity-50"
+                >
+                  {resettingState ? "Resetting..." : "Reset State & Re-scan"}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

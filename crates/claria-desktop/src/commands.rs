@@ -483,6 +483,25 @@ pub async fn destroy(
     Ok(())
 }
 
+/// Delete the provisioner state file (local + S3) so the next scan starts fresh.
+///
+/// Use this when state is incompatible with the current version of Claria.
+/// AWS resources are not affected — the next scan will re-discover them.
+#[tauri::command]
+#[specta::specta]
+pub async fn reset_provisioner_state(
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let persistence = claria_provisioner::build_persistence(
+        &sdk_config,
+        &cfg.system_name,
+        &cfg.account_id,
+    )
+    .map_err(|e| e.to_string())?;
+    persistence.delete().await.map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Client commands — CRUD backed by S3
 // ---------------------------------------------------------------------------

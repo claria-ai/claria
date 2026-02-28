@@ -162,6 +162,10 @@ export async function destroy(): Promise<void> {
   unwrap(await commands.destroy());
 }
 
+export async function resetProvisionerState(): Promise<void> {
+  unwrap(await commands.resetProvisionerState());
+}
+
 // ---------------------------------------------------------------------------
 // Client wrappers
 // ---------------------------------------------------------------------------

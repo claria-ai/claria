@@ -1,7 +1,7 @@
 import { useState } from "react";
 import StepIndicator from "../components/StepIndicator";
 import PlanView, { hasChanges } from "../components/PlanView";
-import { plan, apply, type PlanEntry } from "../lib/tauri";
+import { plan, apply, resetProvisionerState, type PlanEntry } from "../lib/tauri";
 import type { Page } from "../App";
 
 type Phase =
@@ -20,6 +20,7 @@ export default function ScanProvision({
   const [entries, setEntries] = useState<PlanEntry[] | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [resettingState, setResettingState] = useState(false);
 
   async function handleScan() {
     setPhase("scanning");
@@ -135,9 +136,38 @@ export default function ScanProvision({
 
       {/* Error display */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mt-6">
-          <p className="text-red-800 text-sm font-medium mb-1">Error</p>
-          <p className="text-red-700 text-sm">{error}</p>
+        <div className="mt-6">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-red-800 text-sm font-medium mb-1">Error</p>
+            <p className="text-red-700 text-sm">{error}</p>
+          </div>
+          {error.includes("incompatible") && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mt-3">
+              <p className="text-amber-800 text-sm">
+                The provisioner state file is not compatible with this version
+                of Claria. You can reset it and re-scan — your AWS resources
+                are not affected.
+              </p>
+              <button
+                onClick={async () => {
+                  setResettingState(true);
+                  try {
+                    await resetProvisionerState();
+                    setError(null);
+                    handleScan();
+                  } catch (e) {
+                    setError(String(e));
+                  } finally {
+                    setResettingState(false);
+                  }
+                }}
+                disabled={resettingState}
+                className="mt-3 px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors disabled:opacity-50"
+              >
+                {resettingState ? "Resetting..." : "Reset State & Re-scan"}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

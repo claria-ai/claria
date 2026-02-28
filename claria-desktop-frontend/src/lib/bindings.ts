@@ -164,6 +164,20 @@ async destroy() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Delete the provisioner state file (local + S3) so the next scan starts fresh.
+ * 
+ * Use this when state is incompatible with the current version of Claria.
+ * AWS resources are not affected — the next scan will re-discover them.
+ */
+async resetProvisionerState() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reset_provisioner_state") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List all client records from S3.
  * 
  * Loads each `clients/{id}.json` object, deserializes the Client, and
