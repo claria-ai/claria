@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 
 pub mod account_setup;
+pub mod check_baa;
 pub mod drift;
 pub mod error;
 pub mod persistence;
@@ -32,6 +33,7 @@ pub use crate::account_setup::{
     list_user_access_keys, AccessKeyInfo, AssumeRoleResult, BootstrapResult, BootstrapStep,
     CallerIdentity, CredentialAssessment, CredentialClass, NewCredentials, StepStatus,
 };
+pub use crate::check_baa::{check_baa, BaaStatus};
 pub use crate::drift::build_plan;
 pub use crate::error::ProvisionerError;
 pub use crate::persistence::StatePersistence;

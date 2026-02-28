@@ -222,6 +222,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-artifact"
+version = "1.86.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "358a5852c1c994bb7ee3811639ef4cb03b97488e50fc31fe7d09558eb8b6e686"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http 0.63.5",
+ "aws-smithy-json 0.62.4",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-bedrock"
 version = "1.133.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1143,6 +1167,7 @@ name = "claria-provisioner"
 version = "0.1.0"
 dependencies = [
  "aws-config",
+ "aws-sdk-artifact",
  "aws-sdk-bedrock",
  "aws-sdk-cloudtrail",
  "aws-sdk-iam",

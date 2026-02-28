@@ -9,6 +9,7 @@ claria-core = { path = "../claria-core" }
 claria-storage = { path = "../claria-storage" }
 claria-audit = { path = "../claria-audit" }
 aws-config = "=1.8.14"
+aws-sdk-artifact = "=1.86.0"
 aws-sdk-bedrock = "=1.133.0"
 aws-sdk-cloudtrail = "=1.104.0"
 aws-sdk-iam = "=1.88.0"

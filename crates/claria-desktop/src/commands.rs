@@ -6,7 +6,7 @@ use claria_provisioner::account_setup::{
     AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
     StepStatus,
 };
-use claria_provisioner::{Plan, ScanResult};
+use claria_provisioner::{BaaStatus, Plan, ScanResult};
 
 use crate::state::DesktopState;
 
@@ -32,6 +32,13 @@ pub struct ChatMessage {
 pub enum ChatRole {
     User,
     Assistant,
+}
+
+/// Response from a chat message, including the persisted chat session ID.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ChatResponse {
+    pub chat_id: String,
+    pub content: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +387,22 @@ async fn load_sdk_config(
     let sdk_config =
         claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
     Ok((cfg, sdk_config))
+}
+
+/// Check whether the AWS account has an active BAA (Business Associate
+/// Addendum) via the AWS Artifact API.
+///
+/// Returns a `BaaStatus` indicating whether the BAA is in place, along
+/// with agreement details if found. This is a read-only check.
+#[tauri::command]
+#[specta::specta]
+pub async fn check_baa(
+    state: State<'_, DesktopState>,
+) -> Result<BaaStatus, String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    claria_provisioner::check_baa(&sdk_config)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Scan all managed AWS resources and return their current state.
@@ -1052,6 +1075,11 @@ pub async fn list_chat_models(
 /// fetched from S3 on each call so edits take effect immediately.
 /// Record context (text from the client's files) is loaded from S3
 /// and prepended to the system prompt.
+///
+/// After each successful exchange, the full conversation is persisted
+/// to S3 under `records/{client_id}/chat-history/{chat_id}.json`.
+/// The `chat_id` is generated on the first message and returned so the
+/// frontend can pass it back on subsequent calls.
 #[tauri::command]
 #[specta::specta]
 pub async fn chat_message(
@@ -1059,7 +1087,8 @@ pub async fn chat_message(
     client_id: String,
     model_id: String,
     messages: Vec<ChatMessage>,
-) -> Result<String, String> {
+    chat_id: Option<String>,
+) -> Result<ChatResponse, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
@@ -1086,9 +1115,83 @@ pub async fn chat_message(
         })
         .collect();
 
-    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &full_prompt, &bedrock_messages)
-        .await
-        .map_err(|e| e.to_string())
+    let response_text =
+        claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &full_prompt, &bedrock_messages)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    // Resolve or generate the chat session ID.
+    let chat_uuid: uuid::Uuid = match &chat_id {
+        Some(id) => id.parse().map_err(|e: uuid::Error| e.to_string())?,
+        None => uuid::Uuid::new_v4(),
+    };
+    let client_uuid: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    // Build the full message history including the new assistant response.
+    let now = jiff::Timestamp::now();
+    let mut history_messages: Vec<claria_core::models::chat_history::ChatHistoryMessage> = messages
+        .iter()
+        .map(|m| claria_core::models::chat_history::ChatHistoryMessage {
+            role: match m.role {
+                ChatRole::User => claria_core::models::chat_history::ChatHistoryRole::User,
+                ChatRole::Assistant => {
+                    claria_core::models::chat_history::ChatHistoryRole::Assistant
+                }
+            },
+            content: m.content.clone(),
+            timestamp: now,
+        })
+        .collect();
+    history_messages.push(claria_core::models::chat_history::ChatHistoryMessage {
+        role: claria_core::models::chat_history::ChatHistoryRole::Assistant,
+        content: response_text.clone(),
+        timestamp: now,
+    });
+
+    let history = claria_core::models::chat_history::ChatHistory {
+        id: chat_uuid,
+        client_id: client_uuid,
+        model_id: model_id.clone(),
+        messages: history_messages,
+        created_at: now,
+        updated_at: now,
+    };
+
+    // Best-effort upload — don't fail the chat if persistence fails.
+    let key = claria_core::s3_keys::chat_history(client_uuid, chat_uuid);
+    match serde_json::to_vec_pretty(&history) {
+        Ok(body) => {
+            if let Err(e) =
+                claria_storage::objects::put_object(&s3, &bucket, &key, body, Some("application/json"))
+                    .await
+            {
+                tracing::warn!(
+                    chat_id = %chat_uuid,
+                    client_id = %client_uuid,
+                    error = %e,
+                    "failed to persist chat history"
+                );
+            } else {
+                tracing::info!(
+                    chat_id = %chat_uuid,
+                    client_id = %client_uuid,
+                    "chat history persisted"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                chat_id = %chat_uuid,
+                error = %e,
+                "failed to serialize chat history"
+            );
+        }
+    }
+
+    Ok(ChatResponse {
+        chat_id: chat_uuid.to_string(),
+        content: response_text,
+    })
 }
 
 /// Accept the Marketplace agreement for a Bedrock foundation model.

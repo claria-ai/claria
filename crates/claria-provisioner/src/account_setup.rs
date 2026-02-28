@@ -730,6 +730,14 @@ fn claria_policy_document(system_name: &str, account_id: &str) -> String {
                 ]
             },
             {
+                "Sid": "ClariaArtifact",
+                "Effect": "Allow",
+                "Action": [
+                    "artifact:ListCustomerAgreements"
+                ],
+                "Resource": "*"
+            },
+            {
                 "Sid": "ClariaSTS",
                 "Effect": "Allow",
                 "Action": [

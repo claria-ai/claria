@@ -32,6 +32,7 @@ export default function ClientChat({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
+  const [chatId, setChatId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Model state
@@ -96,10 +97,11 @@ export default function ClientChat({
 
     setSending(true);
     try {
-      const response = await chatMessage(clientId, selectedModelId, updatedMessages);
+      const response = await chatMessage(clientId, selectedModelId, updatedMessages, chatId);
+      setChatId(response.chat_id);
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: response,
+        content: response.content,
       };
       setMessages([...updatedMessages, assistantMessage]);
     } catch (e) {

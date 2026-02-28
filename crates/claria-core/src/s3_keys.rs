@@ -51,6 +51,14 @@ pub fn client_record_file(id: Uuid, filename: &str) -> String {
     format!("records/{id}/{filename}")
 }
 
+pub fn chat_history_prefix(client_id: Uuid) -> String {
+    format!("records/{client_id}/chat-history/")
+}
+
+pub fn chat_history(client_id: Uuid, chat_id: Uuid) -> String {
+    format!("records/{client_id}/chat-history/{chat_id}.json")
+}
+
 pub const SYSTEM_PROMPT: &str = "system-prompt.md";
 
 pub const INDEX: &str = "_index/tantivy.tar.zst";

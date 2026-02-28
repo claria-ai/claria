@@ -12,6 +12,7 @@ export type {
   CallerIdentity,
   ChatMessage,
   ChatModel,
+  ChatResponse,
   ChatRole,
   ClientSummary,
   ConfigInfo,
@@ -214,8 +215,8 @@ export async function listChatModels() {
   return unwrap(await commands.listChatModels());
 }
 
-export async function chatMessage(clientId: string, modelId: string, messages: import("./bindings").ChatMessage[]) {
-  return unwrap(await commands.chatMessage(clientId, modelId, messages));
+export async function chatMessage(clientId: string, modelId: string, messages: import("./bindings").ChatMessage[], chatId?: string | null) {
+  return unwrap(await commands.chatMessage(clientId, modelId, messages, chatId ?? null));
 }
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {

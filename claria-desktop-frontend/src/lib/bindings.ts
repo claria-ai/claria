@@ -283,7 +283,7 @@ async updateTextRecordFile(clientId: string, filename: string, content: string) 
 },
 /**
  * Load text content for all record files belonging to a client.
- *
+ * 
  * For `.txt` files, returns the file content directly. For PDF/DOCX,
  * returns the `.text` sidecar content if available. Files with no
  * readable text are omitted.
@@ -316,10 +316,17 @@ async listChatModels() : Promise<Result<ChatModel[], string>> {
  * The frontend maintains the full conversation history and sends it
  * with each request so the model has context. The system prompt is
  * fetched from S3 on each call so edits take effect immediately.
+ * Record context (text from the client's files) is loaded from S3
+ * and prepended to the system prompt.
+ * 
+ * After each successful exchange, the full conversation is persisted
+ * to S3 under `records/{client_id}/chat-history/{chat_id}.json`.
+ * The `chat_id` is generated on the first message and returned so the
+ * frontend can pass it back on subsequent calls.
  */
-async chatMessage(clientId: string, modelId: string, messages: ChatMessage[]) : Promise<Result<string, string>> {
+async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null) : Promise<Result<ChatResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages }) };
+    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -473,6 +480,10 @@ export type ChatMessage = { role: ChatRole; content: string }
  * Specta type mirroring `claria_bedrock::chat::ChatModel`.
  */
 export type ChatModel = { model_id: string; name: string }
+/**
+ * Response from a chat message, including the persisted chat session ID.
+ */
+export type ChatResponse = { chat_id: string; content: string }
 export type ChatRole = "user" | "assistant"
 export type ClientSummary = { id: string; name: string; created_at: string }
 /**
