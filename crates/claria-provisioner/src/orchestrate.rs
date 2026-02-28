@@ -18,7 +18,7 @@ pub async fn plan(
 ) -> Result<Vec<PlanEntry>, ProvisionerError> {
     let manifest_upgraded = state
         .manifest_version
-        .map_or(true, |v| v < Manifest::VERSION);
+        .is_none_or(|v| v < Manifest::VERSION);
     let known_addrs: HashSet<_> = state.resources.keys().cloned().collect();
     let mut entries = Vec::new();
 
