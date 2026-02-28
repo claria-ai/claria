@@ -125,53 +125,50 @@ async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: stri
 }
 },
 /**
- * Scan all managed AWS resources and return their current state.
+ * Check whether the AWS account has an active BAA (Business Associate
+ * Addendum) via the AWS Artifact API.
  * 
- * This is a read-only operation — no resources are created or modified.
- * The frontend renders the results as a status table before prompting
- * the operator to review a plan.
+ * Returns a `BaaStatus` indicating whether the BAA is in place, along
+ * with agreement details if found. This is a read-only check.
  */
-async scanResources() : Promise<Result<ScanResult[], string>> {
+async checkBaa() : Promise<Result<BaaStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("scan_resources") };
+    return { status: "ok", data: await TAURI_INVOKE("check_baa") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Scan resources, compare against persisted state, and return a four-bucket
- * plan (ok / modify / create / delete) without executing anything.
+ * Scan all resources and return an annotated plan.
  * 
- * The frontend renders the plan for operator review before provisioning.
+ * This is always the first call — both onboarding and dashboard use it.
+ * The plan is a flat `Vec<PlanEntry>`, each carrying the full spec plus
+ * action/cause/drift so the frontend has everything it needs.
  */
-async previewPlan() : Promise<Result<Plan, string>> {
+async plan() : Promise<Result<PlanEntry[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("preview_plan") };
+    return { status: "ok", data: await TAURI_INVOKE("plan") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Execute the full scan → plan → execute pipeline.
+ * Execute all actionable entries in the plan.
  * 
- * Returns the plan that was executed so the frontend can show a summary.
- * State is flushed to local disk + S3 after each resource action.
+ * Returns the updated plan (all entries should now be Ok).
  */
-async provision() : Promise<Result<Plan, string>> {
+async apply() : Promise<Result<PlanEntry[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("provision") };
+    return { status: "ok", data: await TAURI_INVOKE("apply") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Destroy all managed resources and clear provisioner state.
- * 
- * The operator's config is NOT deleted — only the AWS resources and
- * the provisioner state file. The operator can re-provision later.
+ * Destroy all managed resources. Returns nothing on success.
  */
 async destroy() : Promise<Result<null, string>> {
     try {
@@ -426,6 +423,7 @@ last_used_at: string | null;
  * or `None` if never used.
  */
 last_used_service: string | null }
+export type Action = "ok" | "create" | "modify" | "delete" | "precondition_failed"
 /**
  * Temporary credentials obtained by assuming a role in a sub-account.
  * 
@@ -460,6 +458,26 @@ assumed_role_arn: string;
  */
 account_id: string }
 /**
+ * Result of checking whether the AWS account has an active BAA.
+ */
+export type BaaStatus = { 
+/**
+ * Whether an active BAA agreement was found on the account.
+ */
+has_baa: boolean; 
+/**
+ * Name of the agreement, if found.
+ */
+agreement_name: string | null; 
+/**
+ * When the agreement became effective (ISO 8601), if found.
+ */
+effective_start: string | null; 
+/**
+ * State of the agreement (e.g. "active"), if found.
+ */
+state: string | null }
+/**
  * The result of a full bootstrap attempt.
  */
 export type BootstrapResult = { success: boolean; steps: BootstrapStep[]; account_id: string | null; 
@@ -475,6 +493,7 @@ export type BootstrapStep = { name: string; status: StepStatus; detail: string |
  * Identity information returned by STS `GetCallerIdentity`.
  */
 export type CallerIdentity = { account_id: string; arn: string; user_id: string; is_root: boolean }
+export type Cause = "in_sync" | "first_provision" | "drift" | "manifest_changed" | "orphaned"
 export type ChatMessage = { role: ChatRole; content: string }
 /**
  * Specta type mirroring `claria_bedrock::chat::ChatModel`.
@@ -524,25 +543,44 @@ export type CredentialClass =
  */
 "insufficient"
 export type CredentialSource = { type: "inline"; access_key_id: string; secret_access_key: string; session_token?: string | null } | { type: "profile"; profile_name: string } | { type: "default_chain" }
+/**
+ * Structured before/after for a single field that doesn't match desired state.
+ * 
+ * Returned by `ResourceSyncer::diff()`. The frontend renders these directly
+ * as before/after rows.
+ */
+export type FieldDrift = { 
+/**
+ * Machine-readable field name, e.g. "sse_algorithm"
+ */
+field: string; 
+/**
+ * Human-readable label, e.g. "Encryption algorithm"
+ */
+label: string; 
+/**
+ * What we want
+ */
+expected: JsonValue; 
+/**
+ * What AWS has
+ */
+actual: JsonValue }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
+export type Lifecycle = "data" | "managed"
 /**
  * Fresh credentials created during the bootstrap flow.
  */
 export type NewCredentials = { access_key_id: string; secret_access_key: string; iam_user_arn: string }
 /**
- * A provisioning plan with four categorized buckets.
+ * A single entry in the plan — the spec annotated with what happened.
  * 
- * The desktop UI renders these as color-coded lists:
- * - `ok` (green) — resources in good shape, no action needed
- * - `modify` (yellow) — resources that need updating (e.g. missing encryption)
- * - `create` (blue) — resources that don't exist yet
- * - `delete` (red) — stale state entries to clean up
+ * The plan is a flat `Vec<PlanEntry>` — same shape as the manifest array,
+ * annotated with status. The entry embeds the full spec so the frontend
+ * has everything it needs (label, description, severity, desired state)
+ * without a separate lookup.
  */
-export type Plan = { ok: PlanEntry[]; modify: PlanEntry[]; create: PlanEntry[]; delete: PlanEntry[] }
-/**
- * A single entry in a provisioning plan.
- */
-export type PlanEntry = { resource_type: string; resource_id: string; reason: string }
+export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drift: FieldDrift[] }
 /**
  * A record file with its readable text content, for chat context.
  */
@@ -552,13 +590,63 @@ export type RecordContext = { filename: string; text: string }
  */
 export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
 /**
- * Result of scanning a single resource in AWS.
+ * Every resource in the system is declared as a `ResourceSpec`.
+ * 
+ * The spec carries both the desired AWS state and the trust metadata
+ * (label, description, severity, required IAM actions). This is the
+ * single source of truth — the syncer, the plan, and the UI all read
+ * from it.
  */
-export type ScanResult = { resource_type: string; status: ScanStatus; resource_id: string | null; properties: JsonValue | null; error: string | null }
+export type ResourceSpec = { 
 /**
- * The status of a single resource after scanning AWS.
+ * e.g. "s3_bucket", "baa_agreement"
  */
-export type ScanStatus = "found" | "not_found" | "error"
+resource_type: string; 
+/**
+ * e.g. "123456789012-claria-data"
+ */
+resource_name: string; 
+/**
+ * Data (read-only precondition) or Managed (Claria creates/updates/deletes)
+ */
+lifecycle: Lifecycle; 
+/**
+ * The desired AWS state as a JSON value — shape varies per resource type
+ */
+desired: JsonValue; 
+/**
+ * Short label for the UI, e.g. "S3 Bucket Encryption"
+ */
+label: string; 
+/**
+ * Human-readable purpose, e.g. "Server-side encryption — your data is encrypted at rest"
+ */
+description: string; 
+/**
+ * How much attention this entry needs
+ */
+severity: Severity; 
+/**
+ * IAM actions this resource requires (aggregated for policy diff)
+ */
+iam_actions: string[] }
+export type Severity = 
+/**
+ * Data sources — read-only checks
+ */
+"info" | 
+/**
+ * Routine infra (S3 settings, CloudTrail)
+ */
+"normal" | 
+/**
+ * Requires acknowledgment (BAA, model agreements)
+ */
+"elevated" | 
+/**
+ * Data loss risk (bucket deletion during orphan cleanup)
+ */
+"destructive"
 /**
  * Status of an individual bootstrap step.
  */

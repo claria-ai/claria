@@ -6,7 +6,7 @@ use claria_provisioner::account_setup::{
     AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
     StepStatus,
 };
-use claria_provisioner::{BaaStatus, Plan, ScanResult};
+use claria_provisioner::{BaaStatus, PlanEntry};
 
 use crate::state::DesktopState;
 
@@ -405,89 +405,97 @@ pub async fn check_baa(
         .map_err(|e| e.to_string())
 }
 
-/// Scan all managed AWS resources and return their current state.
+/// Scan all resources and return an annotated plan.
 ///
-/// This is a read-only operation — no resources are created or modified.
-/// The frontend renders the results as a status table before prompting
-/// the operator to review a plan.
+/// This is always the first call — both onboarding and dashboard use it.
+/// The plan is a flat `Vec<PlanEntry>`, each carrying the full spec plus
+/// action/cause/drift so the frontend has everything it needs.
 #[tauri::command]
 #[specta::specta]
-pub async fn scan_resources(
+pub async fn plan(
     state: State<'_, DesktopState>,
-) -> Result<Vec<ScanResult>, String> {
+) -> Result<Vec<PlanEntry>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name, &cfg.account_id);
-
-    let results = claria_provisioner::scan(&resources).await;
-    Ok(results)
-}
-
-/// Scan resources, compare against persisted state, and return a four-bucket
-/// plan (ok / modify / create / delete) without executing anything.
-///
-/// The frontend renders the plan for operator review before provisioning.
-#[tauri::command]
-#[specta::specta]
-pub async fn preview_plan(
-    state: State<'_, DesktopState>,
-) -> Result<Plan, String> {
-    let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name, &cfg.account_id);
-    let persistence = claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
-        .map_err(|e| e.to_string())?;
-
+    let manifest = claria_provisioner::build_manifest(
+        &cfg.account_id,
+        &cfg.system_name,
+        &cfg.region,
+    );
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest);
+    let persistence = claria_provisioner::build_persistence(
+        &sdk_config,
+        &cfg.system_name,
+        &cfg.account_id,
+    )
+    .map_err(|e| e.to_string())?;
     let prov_state = persistence.load().await.map_err(|e| e.to_string())?;
-    let scan_results = claria_provisioner::scan(&resources).await;
-    let plan = claria_provisioner::build_plan(&prov_state, &scan_results, &resources);
 
-    Ok(plan)
+    claria_provisioner::plan(&syncers, &prov_state)
+        .await
+        .map_err(|e| e.to_string())
 }
 
-/// Execute the full scan → plan → execute pipeline.
+/// Execute all actionable entries in the plan.
 ///
-/// Returns the plan that was executed so the frontend can show a summary.
-/// State is flushed to local disk + S3 after each resource action.
+/// Returns the updated plan (all entries should now be Ok).
 #[tauri::command]
 #[specta::specta]
-pub async fn provision(
+pub async fn apply(
     state: State<'_, DesktopState>,
-) -> Result<Plan, String> {
+) -> Result<Vec<PlanEntry>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name, &cfg.account_id);
-    let persistence = claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
-        .map_err(|e| e.to_string())?;
+    let manifest = claria_provisioner::build_manifest(
+        &cfg.account_id,
+        &cfg.system_name,
+        &cfg.region,
+    );
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest);
+    let persistence = claria_provisioner::build_persistence(
+        &sdk_config,
+        &cfg.system_name,
+        &cfg.account_id,
+    )
+    .map_err(|e| e.to_string())?;
 
     let mut prov_state = persistence.load().await.map_err(|e| e.to_string())?;
-    let scan_results = claria_provisioner::scan(&resources).await;
-    let plan = claria_provisioner::build_plan(&prov_state, &scan_results, &resources);
+    let entries = claria_provisioner::plan(&syncers, &prov_state)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    if plan.has_changes() {
-        claria_provisioner::execute_plan(&plan, &resources, &mut prov_state, &persistence)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    claria_provisioner::execute(&entries, &syncers, &mut prov_state, &persistence)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    Ok(plan)
+    // Re-plan to show updated state
+    claria_provisioner::plan(&syncers, &prov_state)
+        .await
+        .map_err(|e| e.to_string())
 }
 
-/// Destroy all managed resources and clear provisioner state.
-///
-/// The operator's config is NOT deleted — only the AWS resources and
-/// the provisioner state file. The operator can re-provision later.
+/// Destroy all managed resources. Returns nothing on success.
 #[tauri::command]
 #[specta::specta]
 pub async fn destroy(
     state: State<'_, DesktopState>,
 ) -> Result<(), String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let resources = claria_provisioner::build_resources(&sdk_config, &cfg.system_name, &cfg.account_id);
-    let persistence = claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
-        .map_err(|e| e.to_string())?;
+    let manifest = claria_provisioner::build_manifest(
+        &cfg.account_id,
+        &cfg.system_name,
+        &cfg.region,
+    );
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest);
+    let persistence = claria_provisioner::build_persistence(
+        &sdk_config,
+        &cfg.system_name,
+        &cfg.account_id,
+    )
+    .map_err(|e| e.to_string())?;
 
-    claria_provisioner::destroy(&persistence, &resources)
+    let mut prov_state = persistence.load().await.map_err(|e| e.to_string())?;
+    claria_provisioner::destroy_all(&syncers, &mut prov_state, &persistence)
         .await
         .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
