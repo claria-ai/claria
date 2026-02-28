@@ -37,8 +37,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    refreshConfig().then((exists) => {
-      setPage(exists ? "dashboard" : "start");
+    refreshConfig().then(() => {
+      setPage("start");
     });
   }, [refreshConfig]);
 
