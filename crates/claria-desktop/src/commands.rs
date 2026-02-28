@@ -561,7 +561,7 @@ pub async fn create_client(
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct RecordFile {
     pub filename: String,
-    pub size: i64,
+    pub size: i32,
     pub uploaded_at: Option<String>,
 }
 
@@ -609,7 +609,7 @@ pub async fn list_record_files(
             }
             Some(RecordFile {
                 filename: filename.to_string(),
-                size: obj.size,
+                size: obj.size as i32,
                 uploaded_at: obj.last_modified.clone(),
             })
         })
@@ -642,7 +642,7 @@ pub async fn upload_record_file(
         .ok_or_else(|| "Invalid file path".to_string())?;
 
     let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
-    let file_size = bytes.len() as i64;
+    let file_size = bytes.len() as i32;
 
     // Determine content type from extension.
     let extension = path
