@@ -193,6 +193,10 @@ export async function getRecordFileText(clientId: string, filename: string): Pro
   return unwrap(await commands.getRecordFileText(clientId, filename));
 }
 
+export async function createTextRecordFile(clientId: string, filename: string, content: string): Promise<import("./bindings").RecordFile> {
+  return unwrap(await commands.createTextRecordFile(clientId, filename, content));
+}
+
 // ---------------------------------------------------------------------------
 // Chat wrappers
 // ---------------------------------------------------------------------------

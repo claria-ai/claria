@@ -5,6 +5,7 @@ import {
   uploadRecordFile,
   deleteRecordFile,
   getRecordFileText,
+  createTextRecordFile,
   type RecordFile,
 } from "../lib/tauri";
 import ClientChat from "./ClientChat";
@@ -96,6 +97,10 @@ function RecordTab({ clientId }: { clientId: string }) {
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [previewFilename, setPreviewFilename] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [showCreateText, setShowCreateText] = useState(false);
+  const [createFilename, setCreateFilename] = useState("");
+  const [createContent, setCreateContent] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -176,6 +181,23 @@ function RecordTab({ clientId }: { clientId: string }) {
     }
   }
 
+  async function handleCreateTextFile() {
+    if (!createFilename.trim()) return;
+    setCreating(true);
+    setError(null);
+    try {
+      await createTextRecordFile(clientId, createFilename.trim(), createContent);
+      setShowCreateText(false);
+      setCreateFilename("");
+      setCreateContent("");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCreating(false);
+    }
+  }
+
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-2xl mx-auto p-8">
@@ -194,8 +216,14 @@ function RecordTab({ clientId }: { clientId: string }) {
               : "border-gray-200 bg-white"
           }`}
         >
-          <div className="px-4 py-2 border-b border-gray-100 bg-gray-50 rounded-t-lg">
+          <div className="px-4 py-2 border-b border-gray-100 bg-gray-50 rounded-t-lg flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-700">Files</h3>
+            <button
+              onClick={() => setShowCreateText(true)}
+              className="px-3 py-1 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 transition-colors"
+            >
+              Create Text File
+            </button>
           </div>
 
           {/* Loading */}
@@ -389,6 +417,51 @@ function RecordTab({ clientId }: { clientId: string }) {
                 className="px-4 py-2 text-sm text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create text file modal */}
+      {showCreateText && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Create Text File
+            </h3>
+            <input
+              type="text"
+              placeholder="Filename (e.g. intake-notes)"
+              value={createFilename}
+              onChange={(e) => setCreateFilename(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent mb-3"
+              autoFocus
+            />
+            <textarea
+              placeholder="File content..."
+              value={createContent}
+              onChange={(e) => setCreateContent(e.target.value)}
+              className="flex-1 min-h-[200px] w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent mb-4"
+            />
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  setShowCreateText(false);
+                  setCreateFilename("");
+                  setCreateContent("");
+                }}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+                disabled={creating}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateTextFile}
+                disabled={creating || !createFilename.trim()}
+                className="px-4 py-2 text-sm text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {creating ? "Creating..." : "Create"}
               </button>
             </div>
           </div>

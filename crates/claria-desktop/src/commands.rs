@@ -772,6 +772,48 @@ pub async fn get_record_file_text(
     }
 }
 
+/// Create a plain text file in a client's record.
+///
+/// Writes the given content as a `.txt` file directly to S3. If the filename
+/// doesn't already end in `.txt`, it is appended.
+#[tauri::command]
+#[specta::specta]
+pub async fn create_text_record_file(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+    content: String,
+) -> Result<RecordFile, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    // Ensure the filename ends with .txt.
+    let filename = if filename.ends_with(".txt") {
+        filename
+    } else {
+        format!("{filename}.txt")
+    };
+
+    let bytes = content.into_bytes();
+    let file_size = bytes.len() as i32;
+
+    let key = claria_core::s3_keys::client_record_file(id, &filename);
+    claria_storage::objects::put_object(&s3, &bucket, &key, bytes, Some("text/plain"))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!(client_id = %id, filename, "text record file created");
+
+    Ok(RecordFile {
+        filename,
+        size: file_size,
+        uploaded_at: Some(jiff::Timestamp::now().to_string()),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Chat commands — delegates to claria-bedrock
 // ---------------------------------------------------------------------------

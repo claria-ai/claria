@@ -219,6 +219,9 @@ async listRecordFiles(clientId: string) : Promise<Result<RecordFile[], string>> 
 },
 /**
  * Upload a file to a client's record from a local file path.
+ * 
+ * If the file is a PDF or DOCX, a sidecar `.text` file is generated
+ * via Bedrock document text extraction and uploaded alongside.
  */
 async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<RecordFile, string>> {
     try {
@@ -241,6 +244,8 @@ async deleteRecordFile(clientId: string, filename: string) : Promise<Result<null
 },
 /**
  * Get the extracted text for a record file (from its `.text` sidecar).
+ * 
+ * Returns the sidecar text content, or a message if no extraction exists.
  */
 async getRecordFileText(clientId: string, filename: string) : Promise<Result<string, string>> {
     try {
@@ -251,8 +256,19 @@ async getRecordFileText(clientId: string, filename: string) : Promise<Result<str
 }
 },
 /**
+ * Create a plain text file in a client's record.
+ */
+async createTextRecordFile(clientId: string, filename: string, content: string) : Promise<Result<RecordFile, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_text_record_file", { clientId, filename, content }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List available Anthropic Claude models for chat.
- * 
+ *
  * Queries Bedrock for system-defined inference profiles and returns
  * those matching Anthropic Claude models.
  */

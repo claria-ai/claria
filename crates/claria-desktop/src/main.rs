@@ -38,6 +38,7 @@ fn main() -> Result<()> {
             commands::upload_record_file,
             commands::delete_record_file,
             commands::get_record_file_text,
+            commands::create_text_record_file,
             commands::list_chat_models,
             commands::chat_message,
             commands::accept_model_agreement,
