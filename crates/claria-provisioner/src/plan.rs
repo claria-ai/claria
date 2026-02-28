@@ -1,32 +1,38 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-/// A single entry in a provisioning plan.
+use crate::manifest::{FieldDrift, ResourceSpec};
+
+/// A single entry in the plan — the spec annotated with what happened.
+///
+/// The plan is a flat `Vec<PlanEntry>` — same shape as the manifest array,
+/// annotated with status. The entry embeds the full spec so the frontend
+/// has everything it needs (label, description, severity, desired state)
+/// without a separate lookup.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct PlanEntry {
-    pub resource_type: String,
-    pub resource_id: String,
-    pub reason: String,
+    pub spec: ResourceSpec,
+    pub action: Action,
+    pub cause: Cause,
+    pub drift: Vec<FieldDrift>,
 }
 
-/// A provisioning plan with four categorized buckets.
-///
-/// The desktop UI renders these as color-coded lists:
-/// - `ok` (green) — resources in good shape, no action needed
-/// - `modify` (yellow) — resources that need updating (e.g. missing encryption)
-/// - `create` (blue) — resources that don't exist yet
-/// - `delete` (red) — stale state entries to clean up
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
-pub struct Plan {
-    pub ok: Vec<PlanEntry>,
-    pub modify: Vec<PlanEntry>,
-    pub create: Vec<PlanEntry>,
-    pub delete: Vec<PlanEntry>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    Ok,
+    Create,
+    Modify,
+    Delete,
+    PreconditionFailed,
 }
 
-impl Plan {
-    /// Returns true if the plan requires any changes.
-    pub fn has_changes(&self) -> bool {
-        !self.modify.is_empty() || !self.create.is_empty() || !self.delete.is_empty()
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum Cause {
+    InSync,
+    FirstProvision,
+    Drift,
+    ManifestChanged,
+    Orphaned,
 }

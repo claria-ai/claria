@@ -1,13 +1,14 @@
+use crate::addr::ResourceAddr;
+use crate::drift::OldPlan;
 use crate::error::ProvisionerError;
 use crate::persistence::StatePersistence;
-use crate::plan::Plan;
 use crate::resource::Resource;
 use crate::state::{ProvisionerState, ResourceState, ResourceStatus};
 
 /// Execute a plan: process creates, then modifies, then deletes.
 /// Flushes state to disk + S3 after each resource action.
 pub async fn execute_plan(
-    plan: &Plan,
+    plan: &OldPlan,
     resources: &[Box<dyn Resource>],
     state: &mut ProvisionerState,
     persistence: &StatePersistence,
@@ -21,8 +22,12 @@ pub async fn execute_plan(
             "creating resource"
         );
         let result = resource.create().await?;
+        let addr = ResourceAddr {
+            resource_type: entry.resource_type.clone(),
+            resource_name: result.resource_id.clone(),
+        };
         state.resources.insert(
-            entry.resource_type.clone(),
+            addr,
             ResourceState {
                 resource_type: entry.resource_type.clone(),
                 resource_id: result.resource_id,
@@ -43,21 +48,28 @@ pub async fn execute_plan(
             "updating resource"
         );
         let result = resource.update(&entry.resource_id).await?;
-        if let Some(rs) = state.resources.get_mut(&entry.resource_type) {
+        // Find the matching state entry by resource_type
+        if let Some((_, rs)) = state
+            .resources
+            .iter_mut()
+            .find(|(addr, _)| addr.resource_type == entry.resource_type)
+        {
             rs.status = ResourceStatus::Updated;
             rs.properties = result.properties;
         }
         persistence.flush(state).await?;
     }
 
-    // Process deletes (state cleanup only — the resource is already gone from AWS)
+    // Process deletes (state cleanup only)
     for entry in &plan.delete {
         tracing::info!(
             resource_type = %entry.resource_type,
             resource_id = %entry.resource_id,
             "removing stale state entry"
         );
-        state.resources.remove(&entry.resource_type);
+        state
+            .resources
+            .retain(|addr, _| addr.resource_type != entry.resource_type);
         persistence.flush(state).await?;
     }
 

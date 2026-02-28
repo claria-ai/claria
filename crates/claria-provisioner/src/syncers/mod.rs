@@ -1,0 +1,11 @@
+pub mod baa_agreement;
+pub mod bedrock_model_agreement;
+pub mod cloudtrail_trail;
+pub mod cloudtrail_trail_logging;
+pub mod iam_user;
+pub mod iam_user_policy;
+pub mod s3_bucket;
+pub mod s3_bucket_encryption;
+pub mod s3_bucket_policy;
+pub mod s3_bucket_public_access_block;
+pub mod s3_bucket_versioning;
