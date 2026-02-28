@@ -257,6 +257,9 @@ async getRecordFileText(clientId: string, filename: string) : Promise<Result<str
 },
 /**
  * Create a plain text file in a client's record.
+ * 
+ * Writes the given content as a `.txt` file directly to S3. If the filename
+ * doesn't already end in `.txt`, it is appended.
  */
 async createTextRecordFile(clientId: string, filename: string, content: string) : Promise<Result<RecordFile, string>> {
     try {
@@ -268,7 +271,7 @@ async createTextRecordFile(clientId: string, filename: string, content: string) 
 },
 /**
  * List available Anthropic Claude models for chat.
- *
+ * 
  * Queries Bedrock for system-defined inference profiles and returns
  * those matching Anthropic Claude models.
  */
