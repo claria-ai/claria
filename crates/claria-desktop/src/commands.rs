@@ -576,8 +576,8 @@ pub struct RecordFile {
 
 /// The Bedrock model ID used for document text extraction.
 ///
-/// Uses a Claude Opus inference profile for high-quality extraction.
-const EXTRACTION_MODEL_ID: &str = "us.anthropic.claude-opus-4-20250514-v1:0";
+/// Uses a Claude Sonnet inference profile — good quality at lower cost.
+const EXTRACTION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-20250514-v1:0";
 
 /// List files in a client's record, excluding sidecar `.text` files.
 #[tauri::command]

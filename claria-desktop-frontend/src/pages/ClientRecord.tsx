@@ -142,6 +142,9 @@ function RecordTab({ clientId }: { clientId: string }) {
       })
       .then((fn) => {
         unlisten = fn;
+      })
+      .catch((err) => {
+        console.error("Failed to register drag-drop listener:", err);
       });
 
     return () => {
