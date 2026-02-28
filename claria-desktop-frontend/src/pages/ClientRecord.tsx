@@ -6,6 +6,7 @@ import {
   deleteRecordFile,
   getRecordFileText,
   createTextRecordFile,
+  updateTextRecordFile,
   type RecordFile,
 } from "../lib/tauri";
 import ClientChat from "./ClientChat";
@@ -96,6 +97,9 @@ function RecordTab({ clientId }: { clientId: string }) {
   const [uploading, setUploading] = useState<string[]>([]);
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [previewFilename, setPreviewFilename] = useState<string | null>(null);
+  const [editText, setEditText] = useState<string | null>(null);
+  const [editFilename, setEditFilename] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [showCreateText, setShowCreateText] = useState(false);
   const [createFilename, setCreateFilename] = useState("");
@@ -168,6 +172,32 @@ function RecordTab({ clientId }: { clientId: string }) {
       setPreviewText(text);
     } catch (e) {
       setPreviewText(`Error loading preview: ${String(e)}`);
+    }
+  }
+
+  async function handleEdit(filename: string) {
+    setEditFilename(filename);
+    try {
+      const text = await getRecordFileText(clientId, filename);
+      setEditText(text);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function handleSaveEdit() {
+    if (!editFilename || editText === null) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await updateTextRecordFile(clientId, editFilename, editText);
+      setEditFilename(null);
+      setEditText(null);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -254,31 +284,53 @@ function RecordTab({ clientId }: { clientId: string }) {
                     </p>
                   </div>
                   <div className="flex gap-1">
-                    <button
-                      onClick={() => handlePreview(file.filename)}
-                      title="Preview text"
-                      className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                    >
-                      <svg
-                        className="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
+                    {file.filename.endsWith(".txt") ? (
+                      <button
+                        onClick={() => handleEdit(file.filename)}
+                        title="Edit file"
+                        className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
                       >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                        />
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-                        />
-                      </svg>
-                    </button>
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                          />
+                        </svg>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handlePreview(file.filename)}
+                        title="Preview text"
+                        className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                          />
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                          />
+                        </svg>
+                      </button>
+                    )}
                     <button
                       onClick={() => setDeleteConfirm(file.filename)}
                       title="Delete file"
@@ -388,6 +440,42 @@ function RecordTab({ clientId }: { clientId: string }) {
                 className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit text file modal */}
+      {editText !== null && editFilename && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              {editFilename}
+            </h3>
+            <textarea
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              disabled={saving}
+              className="flex-1 min-h-[300px] w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
+            />
+            <div className="flex justify-end gap-3 mt-4">
+              <button
+                onClick={() => {
+                  setEditText(null);
+                  setEditFilename(null);
+                }}
+                disabled={saving}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={saving}
+                className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                {saving ? "Saving..." : "Save"}
               </button>
             </div>
           </div>

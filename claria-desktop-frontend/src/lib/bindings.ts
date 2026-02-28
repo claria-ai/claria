@@ -243,9 +243,10 @@ async deleteRecordFile(clientId: string, filename: string) : Promise<Result<null
 }
 },
 /**
- * Get the extracted text for a record file (from its `.text` sidecar).
+ * Get the text content for a record file.
  * 
- * Returns the sidecar text content, or a message if no extraction exists.
+ * For plain text files (`.txt`), returns the file content directly.
+ * For other files, returns the `.text` sidecar content if available.
  */
 async getRecordFileText(clientId: string, filename: string) : Promise<Result<string, string>> {
     try {
@@ -264,6 +265,17 @@ async getRecordFileText(clientId: string, filename: string) : Promise<Result<str
 async createTextRecordFile(clientId: string, filename: string, content: string) : Promise<Result<RecordFile, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("create_text_record_file", { clientId, filename, content }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update the content of an existing plain text file in a client's record.
+ */
+async updateTextRecordFile(clientId: string, filename: string, content: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_text_record_file", { clientId, filename, content }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

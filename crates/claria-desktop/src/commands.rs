@@ -357,11 +357,20 @@ pub async fn bootstrap_iam_user(
 
 /// Helper: load the saved config and build an SDK config from it.
 ///
+/// If the in-memory state is empty, attempts to load from disk first.
 /// Returns `(ClariaConfig, SdkConfig)`. Errors if no config is saved yet.
 async fn load_sdk_config(
     state: &State<'_, DesktopState>,
 ) -> Result<(ClariaConfig, aws_config::SdkConfig), String> {
-    let guard = state.config.lock().await;
+    let mut guard = state.config.lock().await;
+
+    // Auto-load from disk if the in-memory state hasn't been populated yet.
+    if guard.is_none()
+        && let Ok(cfg) = config::load_config()
+    {
+        *guard = Some(cfg);
+    }
+
     let cfg = guard
         .as_ref()
         .cloned()
@@ -744,9 +753,10 @@ pub async fn delete_record_file(
     Ok(())
 }
 
-/// Get the extracted text for a record file (from its `.text` sidecar).
+/// Get the text content for a record file.
 ///
-/// Returns the sidecar text content, or a message if no extraction exists.
+/// For plain text files (`.txt`), returns the file content directly.
+/// For other files, returns the `.text` sidecar content if available.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_record_file_text(
@@ -761,6 +771,16 @@ pub async fn get_record_file_text(
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     let key = claria_core::s3_keys::client_record_file(id, &filename);
+
+    // Plain text files: return the file content directly.
+    if filename.ends_with(".txt") {
+        return match claria_storage::objects::get_object(&s3, &bucket, &key).await {
+            Ok(output) => String::from_utf8(output.body).map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+    }
+
+    // Other files: look for the `.text` sidecar.
     let sidecar_key = format!("{key}.text");
 
     match claria_storage::objects::get_object(&s3, &bucket, &sidecar_key).await {
@@ -812,6 +832,31 @@ pub async fn create_text_record_file(
         size: file_size,
         uploaded_at: Some(jiff::Timestamp::now().to_string()),
     })
+}
+
+/// Update the content of an existing plain text file in a client's record.
+#[tauri::command]
+#[specta::specta]
+pub async fn update_text_record_file(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+    content: String,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let key = claria_core::s3_keys::client_record_file(id, &filename);
+    claria_storage::objects::put_object(&s3, &bucket, &key, content.into_bytes(), Some("text/plain"))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!(client_id = %id, filename, "text record file updated");
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

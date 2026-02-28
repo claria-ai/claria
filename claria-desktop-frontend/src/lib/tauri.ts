@@ -197,6 +197,10 @@ export async function createTextRecordFile(clientId: string, filename: string, c
   return unwrap(await commands.createTextRecordFile(clientId, filename, content));
 }
 
+export async function updateTextRecordFile(clientId: string, filename: string, content: string): Promise<void> {
+  unwrap(await commands.updateTextRecordFile(clientId, filename, content));
+}
+
 // ---------------------------------------------------------------------------
 // Chat wrappers
 // ---------------------------------------------------------------------------
