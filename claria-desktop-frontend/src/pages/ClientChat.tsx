@@ -5,8 +5,10 @@ import {
   chatMessage,
   getSystemPrompt,
   listChatModels,
+  listRecordContext,
   type ChatMessage,
   type ChatModel,
+  type RecordContext,
 } from "../lib/tauri";
 import type { Page } from "../App";
 
@@ -16,7 +18,7 @@ function isMarketplaceError(error: string): boolean {
 
 export default function ClientChat({
   navigate,
-  clientId: _clientId,
+  clientId,
   clientName,
   embedded,
 }: {
@@ -42,6 +44,11 @@ export default function ClientChat({
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
   const [showPromptModal, setShowPromptModal] = useState(false);
 
+  // Record context state
+  const [contextFiles, setContextFiles] = useState<RecordContext[]>([]);
+  const [contextLoading, setContextLoading] = useState(true);
+  const [previewContext, setPreviewContext] = useState<RecordContext | null>(null);
+
   const loadModels = useCallback(async () => {
     setModelsLoading(true);
     setModelsError(null);
@@ -63,7 +70,11 @@ export default function ClientChat({
     getSystemPrompt()
       .then(setSystemPrompt)
       .catch(() => {});
-  }, [loadModels]);
+    listRecordContext(clientId)
+      .then(setContextFiles)
+      .catch(() => {})
+      .finally(() => setContextLoading(false));
+  }, [loadModels, clientId]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -85,7 +96,7 @@ export default function ClientChat({
 
     setSending(true);
     try {
-      const response = await chatMessage(selectedModelId, updatedMessages);
+      const response = await chatMessage(clientId, selectedModelId, updatedMessages);
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content: response,
@@ -215,6 +226,22 @@ export default function ClientChat({
         </div>
       )}
 
+      {/* Context pills */}
+      {!contextLoading && contextFiles.length > 0 && (
+        <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white overflow-x-auto">
+          <span className="text-xs text-gray-400 shrink-0">Context:</span>
+          {contextFiles.map((cf) => (
+            <button
+              key={cf.filename}
+              onClick={() => setPreviewContext(cf)}
+              className="shrink-0 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full hover:bg-blue-100 transition-colors"
+            >
+              {cf.filename}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         {messages.length === 0 && !sending && (
@@ -307,6 +334,40 @@ export default function ClientChat({
             <div className="flex justify-end mt-4">
               <button
                 onClick={() => setShowPromptModal(false)}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Context file preview modal */}
+      {previewContext && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {previewContext.filename}
+              </h3>
+              <button
+                onClick={() => setPreviewContext(null)}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+              <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
+                {previewContext.text}
+              </pre>
+            </div>
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={() => setPreviewContext(null)}
                 className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
               >
                 Close

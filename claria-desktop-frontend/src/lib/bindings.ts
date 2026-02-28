@@ -282,6 +282,21 @@ async updateTextRecordFile(clientId: string, filename: string, content: string) 
 }
 },
 /**
+ * Load text content for all record files belonging to a client.
+ *
+ * For `.txt` files, returns the file content directly. For PDF/DOCX,
+ * returns the `.text` sidecar content if available. Files with no
+ * readable text are omitted.
+ */
+async listRecordContext(clientId: string) : Promise<Result<RecordContext[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_record_context", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List available Anthropic Claude models for chat.
  * 
  * Queries Bedrock for system-defined inference profiles and returns
@@ -302,9 +317,9 @@ async listChatModels() : Promise<Result<ChatModel[], string>> {
  * with each request so the model has context. The system prompt is
  * fetched from S3 on each call so edits take effect immediately.
  */
-async chatMessage(modelId: string, messages: ChatMessage[]) : Promise<Result<string, string>> {
+async chatMessage(clientId: string, modelId: string, messages: ChatMessage[]) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message", { modelId, messages }) };
+    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -517,6 +532,10 @@ export type Plan = { ok: PlanEntry[]; modify: PlanEntry[]; create: PlanEntry[]; 
  * A single entry in a provisioning plan.
  */
 export type PlanEntry = { resource_type: string; resource_id: string; reason: string }
+/**
+ * A record file with its readable text content, for chat context.
+ */
+export type RecordContext = { filename: string; text: string }
 /**
  * A file in a client's record (S3 object metadata).
  */

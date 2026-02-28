@@ -21,6 +21,7 @@ export type {
   NewCredentials,
   Plan,
   PlanEntry,
+  RecordContext,
   RecordFile,
   ScanResult,
   ScanStatus,
@@ -201,6 +202,10 @@ export async function updateTextRecordFile(clientId: string, filename: string, c
   unwrap(await commands.updateTextRecordFile(clientId, filename, content));
 }
 
+export async function listRecordContext(clientId: string): Promise<import("./bindings").RecordContext[]> {
+  return unwrap(await commands.listRecordContext(clientId));
+}
+
 // ---------------------------------------------------------------------------
 // Chat wrappers
 // ---------------------------------------------------------------------------
@@ -209,8 +214,8 @@ export async function listChatModels() {
   return unwrap(await commands.listChatModels());
 }
 
-export async function chatMessage(modelId: string, messages: import("./bindings").ChatMessage[]) {
-  return unwrap(await commands.chatMessage(modelId, messages));
+export async function chatMessage(clientId: string, modelId: string, messages: import("./bindings").ChatMessage[]) {
+  return unwrap(await commands.chatMessage(clientId, modelId, messages));
 }
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {

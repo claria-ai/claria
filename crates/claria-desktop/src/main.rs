@@ -40,6 +40,7 @@ fn main() -> Result<()> {
             commands::get_record_file_text,
             commands::create_text_record_file,
             commands::update_text_record_file,
+            commands::list_record_context,
             commands::list_chat_models,
             commands::chat_message,
             commands::accept_model_agreement,

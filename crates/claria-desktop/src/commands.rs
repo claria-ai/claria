@@ -860,6 +860,135 @@ pub async fn update_text_record_file(
 }
 
 // ---------------------------------------------------------------------------
+// Record context — text content for chat context injection
+// ---------------------------------------------------------------------------
+
+/// A record file with its readable text content, for chat context.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct RecordContext {
+    pub filename: String,
+    pub text: String,
+}
+
+/// Load text content for all record files belonging to a client.
+///
+/// For `.txt` files, returns the file content directly. For PDF/DOCX,
+/// returns the `.text` sidecar content if available. Files with no
+/// readable text are omitted.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_record_context(
+    state: State<'_, DesktopState>,
+    client_id: String,
+) -> Result<Vec<RecordContext>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let prefix = claria_core::s3_keys::client_records_prefix(id);
+
+    let keys = claria_storage::objects::list_objects(&s3, &bucket, &prefix)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Collect all keys into a set so we can identify sidecar files.
+    let all_keys: std::collections::HashSet<&str> = keys.iter().map(|k| k.as_str()).collect();
+
+    let mut context_files = Vec::new();
+
+    for key in &keys {
+        // Skip sidecar `.text` files — we read them via their parent.
+        if let Some(base) = key.strip_suffix(".text")
+            && all_keys.contains(base)
+        {
+            continue;
+        }
+
+        let filename = match key.strip_prefix(&prefix) {
+            Some(f) if !f.is_empty() => f,
+            _ => continue,
+        };
+
+        let text = if filename.ends_with(".txt") {
+            // Plain text: read directly.
+            match claria_storage::objects::get_object(&s3, &bucket, key).await {
+                Ok(output) => String::from_utf8(output.body).ok(),
+                Err(_) => None,
+            }
+        } else {
+            // Other files: read the `.text` sidecar.
+            let sidecar_key = format!("{key}.text");
+            match claria_storage::objects::get_object(&s3, &bucket, &sidecar_key).await {
+                Ok(output) => String::from_utf8(output.body).ok(),
+                Err(_) => None,
+            }
+        };
+
+        if let Some(text) = text {
+            context_files.push(RecordContext {
+                filename: filename.to_string(),
+                text,
+            });
+        }
+    }
+
+    Ok(context_files)
+}
+
+/// Helper: load all record context for a client, converting to bedrock types.
+async fn load_record_context(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    client_id: &str,
+) -> Result<Vec<claria_bedrock::context::ContextFile>, String> {
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let prefix = claria_core::s3_keys::client_records_prefix(id);
+
+    let keys = claria_storage::objects::list_objects(s3, bucket, &prefix)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let all_keys: std::collections::HashSet<&str> = keys.iter().map(|k| k.as_str()).collect();
+    let mut files = Vec::new();
+
+    for key in &keys {
+        if let Some(base) = key.strip_suffix(".text")
+            && all_keys.contains(base)
+        {
+            continue;
+        }
+
+        let filename = match key.strip_prefix(&prefix) {
+            Some(f) if !f.is_empty() => f,
+            _ => continue,
+        };
+
+        let text = if filename.ends_with(".txt") {
+            match claria_storage::objects::get_object(s3, bucket, key).await {
+                Ok(output) => String::from_utf8(output.body).ok(),
+                Err(_) => None,
+            }
+        } else {
+            let sidecar_key = format!("{key}.text");
+            match claria_storage::objects::get_object(s3, bucket, &sidecar_key).await {
+                Ok(output) => String::from_utf8(output.body).ok(),
+                Err(_) => None,
+            }
+        };
+
+        if let Some(text) = text {
+            files.push(claria_bedrock::context::ContextFile {
+                filename: filename.to_string(),
+                text,
+            });
+        }
+    }
+
+    Ok(files)
+}
+
+// ---------------------------------------------------------------------------
 // Chat commands — delegates to claria-bedrock
 // ---------------------------------------------------------------------------
 
@@ -921,10 +1050,13 @@ pub async fn list_chat_models(
 /// The frontend maintains the full conversation history and sends it
 /// with each request so the model has context. The system prompt is
 /// fetched from S3 on each call so edits take effect immediately.
+/// Record context (text from the client's files) is loaded from S3
+/// and prepended to the system prompt.
 #[tauri::command]
 #[specta::specta]
 pub async fn chat_message(
     state: State<'_, DesktopState>,
+    client_id: String,
     model_id: String,
     messages: Vec<ChatMessage>,
 ) -> Result<String, String> {
@@ -933,6 +1065,15 @@ pub async fn chat_message(
     let bucket = bucket_name(&cfg);
 
     let system_prompt = load_system_prompt(&s3, &bucket).await?;
+
+    // Load record context and prepend to the system prompt.
+    let context_files = load_record_context(&s3, &bucket, &client_id).await?;
+    let context_block = claria_bedrock::context::build_context_block(&context_files);
+    let full_prompt = if context_block.is_empty() {
+        system_prompt
+    } else {
+        format!("{context_block}\n\n{system_prompt}")
+    };
 
     let bedrock_messages: Vec<claria_bedrock::chat::ChatMessage> = messages
         .iter()
@@ -945,7 +1086,7 @@ pub async fn chat_message(
         })
         .collect();
 
-    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &system_prompt, &bedrock_messages)
+    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &full_prompt, &bedrock_messages)
         .await
         .map_err(|e| e.to_string())
 }
