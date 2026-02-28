@@ -2,25 +2,21 @@ import { useState, useEffect, useCallback } from "react";
 import {
   loadConfig,
   deleteConfig,
-  scanResources,
-  previewPlan,
-  provision,
+  plan,
+  apply,
   destroy,
   type ConfigInfo,
-  type ScanResult,
-  type Plan,
   type PlanEntry,
 } from "../lib/tauri";
+import PlanView, { hasChanges } from "../components/PlanView";
 import type { Page } from "../App";
 
 type ResourcePhase =
   | "idle"
   | "scanning"
-  | "scanned"
-  | "planning"
   | "planned"
-  | "provisioning"
-  | "provisioned"
+  | "applying"
+  | "applied"
   | "destroying"
   | "destroyed";
 
@@ -37,9 +33,7 @@ export default function ManageDashboard({
 
   // Resource status state
   const [resourcePhase, setResourcePhase] = useState<ResourcePhase>("idle");
-  const [scanResults, setScanResults] = useState<ScanResult[]>([]);
-  const [plan, setPlan] = useState<Plan | null>(null);
-  const [executedPlan, setExecutedPlan] = useState<Plan | null>(null);
+  const [entries, setEntries] = useState<PlanEntry[] | null>(null);
   const [resourceError, setResourceError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -51,13 +45,9 @@ export default function ManageDashboard({
   const handleScan = useCallback(async () => {
     setResourcePhase("scanning");
     setResourceError(null);
-    setScanResults([]);
-    setPlan(null);
-    setExecutedPlan(null);
     try {
-      const results = await scanResources();
-      setScanResults(results);
-      setResourcePhase("scanned");
+      setEntries(await plan());
+      setResourcePhase("planned");
     } catch (e) {
       setResourceError(String(e));
       setResourcePhase("idle");
@@ -65,43 +55,21 @@ export default function ManageDashboard({
   }, []);
 
   // Auto-scan on load once config is available.
-  // We track whether the initial scan has fired to avoid re-triggering
-  // on every config reference change.
   const [didInitialScan, setDidInitialScan] = useState(false);
   useEffect(() => {
     if (config && !didInitialScan) {
       setDidInitialScan(true);
-      // Fire-and-forget — the scan callback manages its own state via refs.
       void handleScan();
     }
   }, [config, didInitialScan, handleScan]);
 
-  async function handleCheckDrift() {
-    setResourcePhase("planning");
-    setResourceError(null);
-    setPlan(null);
-    setExecutedPlan(null);
-    try {
-      // Re-scan first so scan results are fresh
-      const results = await scanResources();
-      setScanResults(results);
-      const p = await previewPlan();
-      setPlan(p);
-      setResourcePhase("planned");
-    } catch (e) {
-      setResourceError(String(e));
-      setResourcePhase("scanned");
-    }
-  }
-
-  async function handleReconcile() {
-    setResourcePhase("provisioning");
+  async function handleApply() {
+    setResourcePhase("applying");
     setResourceError(null);
     try {
-      const p = await provision();
-      setExecutedPlan(p);
-      setResourcePhase("provisioned");
-      // Re-scan after provisioning to show updated state
+      setEntries(await apply());
+      setResourcePhase("applied");
+      // Re-scan after a short delay to show updated state
       setTimeout(() => {
         handleScan();
       }, 1000);
@@ -118,12 +86,10 @@ export default function ManageDashboard({
     try {
       await destroy();
       setResourcePhase("destroyed");
-      setScanResults([]);
-      setPlan(null);
-      setExecutedPlan(null);
+      setEntries(null);
     } catch (e) {
       setResourceError(String(e));
-      setResourcePhase("scanned");
+      setResourcePhase("planned");
     }
   }
 
@@ -141,13 +107,8 @@ export default function ManageDashboard({
 
   const isWorking =
     resourcePhase === "scanning" ||
-    resourcePhase === "planning" ||
-    resourcePhase === "provisioning" ||
+    resourcePhase === "applying" ||
     resourcePhase === "destroying";
-
-  const planHasChanges = plan
-    ? plan.create.length > 0 || plan.modify.length > 0 || plan.delete.length > 0
-    : false;
 
   if (error && !config) {
     return (
@@ -240,49 +201,34 @@ export default function ManageDashboard({
         </dl>
       </div>
 
-      {/* Resource Status */}
+      {/* Infrastructure */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h3 className="text-lg font-semibold">Resource Status</h3>
+            <h3 className="text-lg font-semibold">Infrastructure</h3>
             {config.account_id && (
               <p className="text-xs font-mono text-gray-400 mt-0.5">
                 running as arn:aws:iam::{config.account_id}:user/claria-admin
               </p>
             )}
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={handleScan}
-              disabled={isWorking}
-              className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
-            >
-              {resourcePhase === "scanning" ? (
-                <span className="flex items-center gap-1">
-                  <Spinner /> Scanning...
-                </span>
-              ) : (
-                "Re-scan"
-              )}
-            </button>
-            <button
-              onClick={handleCheckDrift}
-              disabled={isWorking}
-              className="px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors disabled:opacity-50"
-            >
-              {resourcePhase === "planning" ? (
-                <span className="flex items-center gap-1">
-                  <Spinner /> Checking...
-                </span>
-              ) : (
-                "Check for Drift"
-              )}
-            </button>
-          </div>
+          <button
+            onClick={handleScan}
+            disabled={isWorking}
+            className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
+          >
+            {resourcePhase === "scanning" ? (
+              <span className="flex items-center gap-1">
+                <Spinner /> Scanning...
+              </span>
+            ) : (
+              "Re-scan"
+            )}
+          </button>
         </div>
 
         {/* Scanning indicator (when no results yet) */}
-        {resourcePhase === "scanning" && scanResults.length === 0 && (
+        {resourcePhase === "scanning" && !entries && (
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
             <div className="flex items-center justify-center gap-2 text-blue-800 text-sm">
               <Spinner />
@@ -291,48 +237,37 @@ export default function ManageDashboard({
           </div>
         )}
 
-        {/* Scan results */}
-        {scanResults.length > 0 && (
-          <div className="divide-y divide-gray-100 border border-gray-100 rounded-lg overflow-hidden">
-            {scanResults.map((result, i) => {
-              const style = STATUS_STYLES[result.status] ?? STATUS_STYLES.error;
-              const label =
-                RESOURCE_LABELS[result.resource_type] ?? result.resource_type;
+        {/* Plan view */}
+        {entries && <PlanView entries={entries} />}
 
-              return (
-                <div key={i} className="px-4 py-3 flex items-start gap-3">
-                  <span className="shrink-0 mt-0.5">{style.icon}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-gray-800">
-                        {label}
-                      </span>
-                      <span
-                        className={`text-xs px-1.5 py-0.5 rounded ${style.color}`}
-                      >
-                        {style.label}
-                      </span>
-                    </div>
-                    {result.resource_id && (
-                      <p className="text-xs font-mono text-gray-500 mt-0.5 truncate">
-                        {result.resource_id}
-                      </p>
-                    )}
-                    {result.error && (
-                      <p className="text-xs text-red-600 mt-0.5">
-                        {result.error}
-                      </p>
-                    )}
-                    {result.status === "found" && result.properties && (
-                      <ScanProperties
-                        properties={result.properties as Record<string, unknown>}
-                        resourceType={result.resource_type}
-                      />
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+        {/* Apply button */}
+        {entries && hasChanges(entries) && resourcePhase === "planned" && (
+          <div className="mt-4 flex items-center gap-3">
+            <button
+              onClick={handleApply}
+              disabled={isWorking}
+              className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
+            >
+              {resourcePhase === "applying" as boolean ? (
+                <span className="flex items-center gap-1">
+                  <Spinner /> Applying...
+                </span>
+              ) : (
+                "Apply Changes"
+              )}
+            </button>
+            <span className="text-xs text-gray-500">
+              Apply changes to bring resources in sync.
+            </span>
+          </div>
+        )}
+
+        {/* Applied result */}
+        {resourcePhase === "applied" && (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mt-4">
+            <p className="text-green-800 text-sm font-medium">
+              Changes applied successfully.
+            </p>
           </div>
         )}
 
@@ -355,72 +290,6 @@ export default function ManageDashboard({
           </div>
         )}
       </div>
-
-      {/* Drift / Plan section */}
-      {plan && (
-        <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
-          <h3 className="text-lg font-semibold mb-4">Drift Detection</h3>
-
-          {planHasChanges ? (
-            <>
-              <PlanSummary plan={plan} />
-              <div className="mt-4 flex items-center gap-3">
-                <button
-                  onClick={handleReconcile}
-                  disabled={isWorking}
-                  className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
-                >
-                  {resourcePhase === "provisioning" ? (
-                    <span className="flex items-center gap-1">
-                      <Spinner /> Reconciling...
-                    </span>
-                  ) : (
-                    "Reconcile"
-                  )}
-                </button>
-                <span className="text-xs text-gray-500">
-                  Apply changes to bring resources in sync.
-                </span>
-              </div>
-            </>
-          ) : (
-            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-              <p className="text-green-800 text-sm font-medium">
-                ✅ All resources are in sync — no drift detected.
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Reconcile result */}
-      {executedPlan && resourcePhase === "provisioned" && (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
-          <p className="text-green-800 text-sm font-medium mb-1">
-            ✅ Reconciliation complete
-          </p>
-          <ul className="text-green-700 text-xs space-y-0.5">
-            {executedPlan.create.length > 0 && (
-              <li>
-                Created {executedPlan.create.length} resource
-                {executedPlan.create.length !== 1 ? "s" : ""}
-              </li>
-            )}
-            {executedPlan.modify.length > 0 && (
-              <li>
-                Updated {executedPlan.modify.length} resource
-                {executedPlan.modify.length !== 1 ? "s" : ""}
-              </li>
-            )}
-            {executedPlan.delete.length > 0 && (
-              <li>
-                Cleaned up {executedPlan.delete.length} stale entr
-                {executedPlan.delete.length !== 1 ? "ies" : "y"}
-              </li>
-            )}
-          </ul>
-        </div>
-      )}
 
       {/* General error */}
       {error && (
@@ -487,265 +356,6 @@ export default function ManageDashboard({
 
 
 // ── Sub-components ──────────────────────────────────────────────────────────
-
-const RESOURCE_LABELS: Record<string, string> = {
-  s3_bucket: "S3 Bucket",
-  cloudtrail_trail: "CloudTrail Trail",
-  bedrock_model_access: "Bedrock Model Access",
-  iam_user: "IAM User",
-};
-
-const STATUS_STYLES: Record<
-  string,
-  { label: string; color: string; icon: string }
-> = {
-  found: {
-    label: "Found",
-    color: "text-green-800 bg-green-50",
-    icon: "✅",
-  },
-  not_found: {
-    label: "Not Found",
-    color: "text-gray-600 bg-gray-50",
-    icon: "⬜",
-  },
-  error: {
-    label: "Error",
-    color: "text-red-800 bg-red-50",
-    icon: "❌",
-  },
-};
-
-function ScanProperties({
-  properties,
-  resourceType,
-}: {
-  properties: Record<string, unknown>;
-  resourceType: string;
-}) {
-  if (resourceType === "s3_bucket") {
-    const versioning = properties.versioning as string | null;
-    const encryption = properties.encryption as string | null;
-    const pab = properties.public_access_block as Record<
-      string,
-      boolean
-    > | null;
-    const allBlocked = pab
-      ? pab.block_public_acls &&
-        pab.ignore_public_acls &&
-        pab.block_public_policy &&
-        pab.restrict_public_buckets
-      : false;
-
-    return (
-      <div className="flex flex-wrap gap-2 mt-1.5">
-        <PropertyBadge
-          label="Versioning"
-          ok={versioning === "Enabled"}
-          value={versioning ?? "disabled"}
-        />
-        <PropertyBadge
-          label="Encryption"
-          ok={!!encryption}
-          value={encryption ?? "none"}
-        />
-        <PropertyBadge
-          label="Public Access Block"
-          ok={allBlocked}
-          value={allBlocked ? "all blocked" : "incomplete"}
-        />
-      </div>
-    );
-  }
-
-  if (resourceType === "cloudtrail_trail") {
-    const isLogging = properties.is_logging as boolean | null;
-    return (
-      <div className="flex flex-wrap gap-2 mt-1.5">
-        <PropertyBadge
-          label="Logging"
-          ok={isLogging === true}
-          value={isLogging ? "active" : "stopped"}
-        />
-      </div>
-    );
-  }
-
-  if (resourceType === "bedrock_model_access") {
-    const models = (properties.available_models as string[]) ?? [];
-    const err = properties.error as string | undefined;
-    if (err) {
-      return <p className="text-xs text-amber-600 mt-1">{err}</p>;
-    }
-    return (
-      <div className="flex flex-wrap gap-2 mt-1.5">
-        <PropertyBadge
-          label="Models"
-          ok={models.length > 0}
-          value={models.length > 0 ? `${models.length} available` : "none"}
-        />
-      </div>
-    );
-  }
-
-  if (resourceType === "iam_user") {
-    const policyAttached = properties.policy_attached as boolean;
-    const policyName = properties.policy_name as string | undefined;
-    const policyDoc = properties.policy_document as Record<string, unknown> | undefined;
-
-    return (
-      <div className="mt-1.5 space-y-2">
-        <div className="flex flex-wrap gap-2">
-          <PropertyBadge
-            label="Policy"
-            ok={policyAttached}
-            value={policyAttached ? (policyName ?? "attached") : "not attached"}
-          />
-        </div>
-        {policyAttached && policyDoc && (
-          <details className="text-xs">
-            <summary className="cursor-pointer text-gray-500 hover:text-gray-700">
-              View policy document
-            </summary>
-            <PolicyDocument document={policyDoc} />
-          </details>
-        )}
-      </div>
-    );
-  }
-
-  return null;
-}
-
-function PropertyBadge({
-  label,
-  ok,
-  value,
-}: {
-  label: string;
-  ok: boolean;
-  value: string;
-}) {
-  return (
-    <span
-      className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${
-        ok ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-      }`}
-    >
-      <span className="font-medium">{label}:</span>
-      <span>{value}</span>
-    </span>
-  );
-}
-
-function PolicyDocument({ document }: { document: Record<string, unknown> }) {
-  const statements = (document.Statement as Array<Record<string, unknown>>) ?? [];
-
-  if (statements.length === 0) {
-    return (
-      <pre className="mt-1 p-2 bg-gray-50 border border-gray-200 rounded text-xs font-mono overflow-x-auto whitespace-pre-wrap">
-        {JSON.stringify(document, null, 2)}
-      </pre>
-    );
-  }
-
-  return (
-    <div className="mt-1 border border-gray-200 rounded overflow-hidden divide-y divide-gray-100">
-      {statements.map((stmt, i) => {
-        const sid = (stmt.Sid as string) ?? `Statement ${i + 1}`;
-        const effect = (stmt.Effect as string) ?? "Unknown";
-        const actions = Array.isArray(stmt.Action) ? stmt.Action as string[] : [stmt.Action as string];
-        const resources = Array.isArray(stmt.Resource) ? stmt.Resource as string[] : [stmt.Resource as string];
-
-        return (
-          <div key={i} className="px-3 py-2 bg-gray-50">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="font-medium text-gray-700">{sid}</span>
-              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                effect === "Allow" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-              }`}>
-                {effect}
-              </span>
-            </div>
-            <div className="text-gray-500 space-y-0.5">
-              <p><span className="text-gray-400">Actions:</span> {actions.join(", ")}</p>
-              <p><span className="text-gray-400">Resources:</span> {resources.join(", ")}</p>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function PlanSummary({ plan }: { plan: Plan }) {
-  const buckets: { key: string; entries: PlanEntry[]; cfg: (typeof BUCKET_CONFIG)[string] }[] = [
-    { key: "create", entries: plan.create, cfg: BUCKET_CONFIG.create },
-    { key: "modify", entries: plan.modify, cfg: BUCKET_CONFIG.modify },
-    { key: "delete", entries: plan.delete, cfg: BUCKET_CONFIG.delete },
-  ].filter((b) => b.entries.length > 0);
-
-  if (buckets.length === 0) return null;
-
-  return (
-    <div className="space-y-2">
-      {buckets.map(({ key, entries, cfg }) => (
-        <div
-          key={key}
-          className={`border ${cfg.borderColor} rounded-lg overflow-hidden`}
-        >
-          <div className={`px-3 py-1.5 ${cfg.color} flex items-center gap-2`}>
-            <span className="text-sm">{cfg.icon}</span>
-            <span className="text-xs font-medium">
-              {cfg.title} ({entries.length})
-            </span>
-          </div>
-          <div className="divide-y divide-gray-100">
-            {entries.map((entry, i) => (
-              <div key={i} className="px-3 py-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-800">
-                    {RESOURCE_LABELS[entry.resource_type] ?? entry.resource_type}
-                  </span>
-                  {entry.resource_id && (
-                    <span className="text-xs font-mono text-gray-400">
-                      {entry.resource_id}
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-gray-500">{entry.reason}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-const BUCKET_CONFIG: Record<
-  string,
-  { title: string; color: string; borderColor: string; icon: string }
-> = {
-  create: {
-    title: "Create",
-    color: "text-blue-800 bg-blue-50",
-    borderColor: "border-blue-200",
-    icon: "🆕",
-  },
-  modify: {
-    title: "Modify",
-    color: "text-amber-800 bg-amber-50",
-    borderColor: "border-amber-200",
-    icon: "🔧",
-  },
-  delete: {
-    title: "Delete",
-    color: "text-red-800 bg-red-50",
-    borderColor: "border-red-200",
-    icon: "🗑️",
-  },
-};
 
 function ConfirmDialog({
   title,

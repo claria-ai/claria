@@ -6,10 +6,12 @@ import { commands } from "./bindings";
 export { commands };
 export type {
   AccessKeyInfo,
+  Action,
   AssumeRoleResult,
   BootstrapResult,
   BootstrapStep,
   CallerIdentity,
+  Cause,
   ChatMessage,
   ChatModel,
   ChatResponse,
@@ -19,13 +21,14 @@ export type {
   CredentialAssessment,
   CredentialClass,
   CredentialSource,
+  FieldDrift,
+  Lifecycle,
   NewCredentials,
-  Plan,
   PlanEntry,
   RecordContext,
   RecordFile,
-  ScanResult,
-  ScanStatus,
+  ResourceSpec,
+  Severity,
   StepStatus,
 } from "./bindings";
 export type { Result } from "./bindings";
@@ -147,16 +150,12 @@ export async function deleteUserAccessKey(
 // Provisioner wrappers
 // ---------------------------------------------------------------------------
 
-export async function scanResources() {
-  return unwrap(await commands.scanResources());
+export async function plan() {
+  return unwrap(await commands.plan());
 }
 
-export async function previewPlan() {
-  return unwrap(await commands.previewPlan());
-}
-
-export async function provision() {
-  return unwrap(await commands.provision());
+export async function apply() {
+  return unwrap(await commands.apply());
 }
 
 export async function destroy(): Promise<void> {
