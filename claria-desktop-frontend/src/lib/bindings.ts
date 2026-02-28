@@ -207,6 +207,50 @@ async createClient(name: string) : Promise<Result<ClientSummary, string>> {
 }
 },
 /**
+ * List files in a client's record, excluding sidecar `.text` files.
+ */
+async listRecordFiles(clientId: string) : Promise<Result<RecordFile[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_record_files", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Upload a file to a client's record from a local file path.
+ */
+async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<RecordFile, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("upload_record_file", { clientId, filePath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a file from a client's record, including its sidecar if present.
+ */
+async deleteRecordFile(clientId: string, filename: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_record_file", { clientId, filename }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the extracted text for a record file (from its `.text` sidecar).
+ */
+async getRecordFileText(clientId: string, filename: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_record_file_text", { clientId, filename }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List available Anthropic Claude models for chat.
  * 
  * Queries Bedrock for system-defined inference profiles and returns
@@ -224,7 +268,8 @@ async listChatModels() : Promise<Result<ChatModel[], string>> {
  * Send a chat message to Bedrock and return the assistant's response.
  * 
  * The frontend maintains the full conversation history and sends it
- * with each request so the model has context.
+ * with each request so the model has context. The system prompt is
+ * fetched from S3 on each call so edits take effect immediately.
  */
 async chatMessage(modelId: string, messages: ChatMessage[]) : Promise<Result<string, string>> {
     try {
@@ -244,6 +289,45 @@ async chatMessage(modelId: string, messages: ChatMessage[]) : Promise<Result<str
 async acceptModelAgreement(modelId: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("accept_model_agreement", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the current system prompt.
+ * 
+ * Returns the custom prompt from S3 if one exists, otherwise returns the
+ * built-in default.
+ */
+async getSystemPrompt() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_system_prompt") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save a custom system prompt to S3.
+ * 
+ * Overwrites any previously saved prompt. The new prompt takes effect on
+ * the next chat message.
+ */
+async saveSystemPrompt(content: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_system_prompt", { content }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the custom system prompt from S3, reverting to the built-in default.
+ */
+async deleteSystemPrompt() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_system_prompt") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -402,6 +486,10 @@ export type Plan = { ok: PlanEntry[]; modify: PlanEntry[]; create: PlanEntry[]; 
  * A single entry in a provisioning plan.
  */
 export type PlanEntry = { resource_type: string; resource_id: string; reason: string }
+/**
+ * A file in a client's record (S3 object metadata).
+ */
+export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
 /**
  * Result of scanning a single resource in AWS.
  */

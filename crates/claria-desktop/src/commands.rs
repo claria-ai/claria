@@ -554,6 +554,225 @@ pub async fn create_client(
 }
 
 // ---------------------------------------------------------------------------
+// Record file commands — files attached to a client record
+// ---------------------------------------------------------------------------
+
+/// A file in a client's record (S3 object metadata).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct RecordFile {
+    pub filename: String,
+    pub size: i64,
+    pub uploaded_at: Option<String>,
+}
+
+/// The Bedrock model ID used for document text extraction.
+///
+/// Uses a Claude Opus inference profile for high-quality extraction.
+const EXTRACTION_MODEL_ID: &str = "us.anthropic.claude-opus-4-20250514-v1:0";
+
+/// List files in a client's record, excluding sidecar `.text` files.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_record_files(
+    state: State<'_, DesktopState>,
+    client_id: String,
+) -> Result<Vec<RecordFile>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let prefix = claria_core::s3_keys::client_records_prefix(id);
+
+    let objects = claria_storage::objects::list_objects_with_metadata(&s3, &bucket, &prefix)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Collect all keys into a set so we can check for base files when filtering sidecars.
+    let all_keys: std::collections::HashSet<&str> =
+        objects.iter().map(|o| o.key.as_str()).collect();
+
+    let files: Vec<RecordFile> = objects
+        .iter()
+        .filter(|obj| {
+            // Hide sidecar files: keys ending in `.text` where the base file exists.
+            if let Some(base) = obj.key.strip_suffix(".text") {
+                return !all_keys.contains(base);
+            }
+            true
+        })
+        .filter_map(|obj| {
+            // Strip the prefix to get just the filename.
+            let filename = obj.key.strip_prefix(&prefix)?;
+            if filename.is_empty() {
+                return None;
+            }
+            Some(RecordFile {
+                filename: filename.to_string(),
+                size: obj.size,
+                uploaded_at: obj.last_modified.clone(),
+            })
+        })
+        .collect();
+
+    Ok(files)
+}
+
+/// Upload a file to a client's record from a local file path.
+///
+/// If the file is a PDF or DOCX, a sidecar `.text` file is generated
+/// via Bedrock document text extraction and uploaded alongside.
+#[tauri::command]
+#[specta::specta]
+pub async fn upload_record_file(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    file_path: String,
+) -> Result<RecordFile, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let path = std::path::Path::new(&file_path);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid file path".to_string())?;
+
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
+    let file_size = bytes.len() as i64;
+
+    // Determine content type from extension.
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let content_type = match extension.as_str() {
+        "pdf" => Some("application/pdf"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "doc" => Some("application/msword"),
+        "txt" => Some("text/plain"),
+        "csv" => Some("text/csv"),
+        "html" | "htm" => Some("text/html"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        _ => None,
+    };
+
+    // Upload the original file.
+    let key = claria_core::s3_keys::client_record_file(id, filename);
+    claria_storage::objects::put_object(&s3, &bucket, &key, bytes.clone(), content_type)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!(client_id = %id, filename, "record file uploaded");
+
+    // Generate sidecar text extraction for supported document types.
+    if let Some(format) = claria_bedrock::extract::document_format_for_extension(&extension) {
+        let sidecar_key = format!("{key}.text");
+        match claria_bedrock::extract::extract_document_text(
+            &sdk_config,
+            EXTRACTION_MODEL_ID,
+            &bytes,
+            filename,
+            format,
+        )
+        .await
+        {
+            Ok(text) => {
+                claria_storage::objects::put_object(
+                    &s3,
+                    &bucket,
+                    &sidecar_key,
+                    text.into_bytes(),
+                    Some("text/plain"),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+
+                tracing::info!(client_id = %id, filename, "sidecar text extraction uploaded");
+            }
+            Err(e) => {
+                // Non-fatal: the original file is already uploaded.
+                tracing::warn!(
+                    client_id = %id,
+                    filename,
+                    error = %e,
+                    "sidecar text extraction failed"
+                );
+            }
+        }
+    }
+
+    Ok(RecordFile {
+        filename: filename.to_string(),
+        size: file_size,
+        uploaded_at: Some(jiff::Timestamp::now().to_string()),
+    })
+}
+
+/// Delete a file from a client's record, including its sidecar if present.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_record_file(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let key = claria_core::s3_keys::client_record_file(id, &filename);
+
+    // Delete the original file.
+    claria_storage::objects::delete_object(&s3, &bucket, &key)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Best-effort delete of the sidecar.
+    let sidecar_key = format!("{key}.text");
+    let _ = claria_storage::objects::delete_object(&s3, &bucket, &sidecar_key).await;
+
+    tracing::info!(client_id = %id, filename, "record file deleted");
+
+    Ok(())
+}
+
+/// Get the extracted text for a record file (from its `.text` sidecar).
+///
+/// Returns the sidecar text content, or a message if no extraction exists.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_record_file_text(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+) -> Result<String, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let key = claria_core::s3_keys::client_record_file(id, &filename);
+    let sidecar_key = format!("{key}.text");
+
+    match claria_storage::objects::get_object(&s3, &bucket, &sidecar_key).await {
+        Ok(output) => String::from_utf8(output.body).map_err(|e| e.to_string()),
+        Err(claria_storage::error::StorageError::NotFound { .. }) => {
+            Ok("No text extraction available for this file.".to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Chat commands — delegates to claria-bedrock
 // ---------------------------------------------------------------------------
 
@@ -564,14 +783,28 @@ pub struct ChatModel {
     pub name: String,
 }
 
-/// System prompt for client intake chat.
-const CHAT_SYSTEM_PROMPT: &str = "\
+/// Default system prompt, used when no custom prompt has been saved to S3.
+const DEFAULT_SYSTEM_PROMPT: &str = "\
 You are a clinical assistant helping a psychologist set up a new client record. \
 Help gather relevant intake information such as the client's presenting concerns, \
 referral source, relevant history, and initial observations. \
 Be professional, empathetic, and concise. Ask clarifying questions when needed. \
 Do not provide diagnoses or treatment recommendations — your role is to help \
 organize and document the intake information.";
+
+/// Load the system prompt from S3, falling back to the hardcoded default.
+async fn load_system_prompt(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+) -> Result<String, String> {
+    match claria_storage::objects::get_object(s3, bucket, claria_core::s3_keys::SYSTEM_PROMPT).await {
+        Ok(output) => String::from_utf8(output.body).map_err(|e| e.to_string()),
+        Err(claria_storage::error::StorageError::NotFound { .. }) => {
+            Ok(DEFAULT_SYSTEM_PROMPT.to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
 
 /// List available Anthropic Claude models for chat.
 ///
@@ -599,7 +832,8 @@ pub async fn list_chat_models(
 /// Send a chat message to Bedrock and return the assistant's response.
 ///
 /// The frontend maintains the full conversation history and sends it
-/// with each request so the model has context.
+/// with each request so the model has context. The system prompt is
+/// fetched from S3 on each call so edits take effect immediately.
 #[tauri::command]
 #[specta::specta]
 pub async fn chat_message(
@@ -607,7 +841,11 @@ pub async fn chat_message(
     model_id: String,
     messages: Vec<ChatMessage>,
 ) -> Result<String, String> {
-    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let system_prompt = load_system_prompt(&s3, &bucket).await?;
 
     let bedrock_messages: Vec<claria_bedrock::chat::ChatMessage> = messages
         .iter()
@@ -620,7 +858,7 @@ pub async fn chat_message(
         })
         .collect();
 
-    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, CHAT_SYSTEM_PROMPT, &bedrock_messages)
+    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &system_prompt, &bedrock_messages)
         .await
         .map_err(|e| e.to_string())
 }
@@ -641,4 +879,68 @@ pub async fn accept_model_agreement(
     claria_bedrock::chat::accept_model_agreement(&sdk_config, &model_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// System prompt commands — editable prompt stored in S3
+// ---------------------------------------------------------------------------
+
+/// Get the current system prompt.
+///
+/// Returns the custom prompt from S3 if one exists, otherwise returns the
+/// built-in default.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_system_prompt(
+    state: State<'_, DesktopState>,
+) -> Result<String, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    load_system_prompt(&s3, &bucket).await
+}
+
+/// Save a custom system prompt to S3.
+///
+/// Overwrites any previously saved prompt. The new prompt takes effect on
+/// the next chat message.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_system_prompt(
+    state: State<'_, DesktopState>,
+    content: String,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        claria_core::s3_keys::SYSTEM_PROMPT,
+        content.into_bytes(),
+        Some("text/markdown"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Delete the custom system prompt from S3, reverting to the built-in default.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_system_prompt(
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    claria_storage::objects::delete_object(&s3, &bucket, claria_core::s3_keys::SYSTEM_PROMPT)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }

@@ -21,6 +21,7 @@ export type {
   NewCredentials,
   Plan,
   PlanEntry,
+  RecordFile,
   ScanResult,
   ScanStatus,
   StepStatus,
@@ -173,6 +174,26 @@ export async function createClient(name: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Record file wrappers
+// ---------------------------------------------------------------------------
+
+export async function listRecordFiles(clientId: string): Promise<import("./bindings").RecordFile[]> {
+  return unwrap(await commands.listRecordFiles(clientId));
+}
+
+export async function uploadRecordFile(clientId: string, filePath: string): Promise<import("./bindings").RecordFile> {
+  return unwrap(await commands.uploadRecordFile(clientId, filePath));
+}
+
+export async function deleteRecordFile(clientId: string, filename: string): Promise<void> {
+  unwrap(await commands.deleteRecordFile(clientId, filename));
+}
+
+export async function getRecordFileText(clientId: string, filename: string): Promise<string> {
+  return unwrap(await commands.getRecordFileText(clientId, filename));
+}
+
+// ---------------------------------------------------------------------------
 // Chat wrappers
 // ---------------------------------------------------------------------------
 
@@ -186,4 +207,20 @@ export async function chatMessage(modelId: string, messages: import("./bindings"
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {
   unwrap(await commands.acceptModelAgreement(modelId));
+}
+
+// ---------------------------------------------------------------------------
+// System prompt wrappers
+// ---------------------------------------------------------------------------
+
+export async function getSystemPrompt(): Promise<string> {
+  return unwrap(await commands.getSystemPrompt());
+}
+
+export async function saveSystemPrompt(content: string): Promise<void> {
+  unwrap(await commands.saveSystemPrompt(content));
+}
+
+export async function deleteSystemPrompt(): Promise<void> {
+  unwrap(await commands.deleteSystemPrompt());
 }

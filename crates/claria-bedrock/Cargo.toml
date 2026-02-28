@@ -8,6 +8,7 @@ license.workspace = true
 aws-config = "=1.8.14"
 aws-sdk-bedrock = "=1.133.0"
 aws-sdk-bedrockruntime = "=1.126.0"
+aws-smithy-types = "=1.4.5"
 claria-core = { path = "../claria-core" }
 jiff = { version = "=0.2.21", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }

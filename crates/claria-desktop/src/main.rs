@@ -34,9 +34,16 @@ fn main() -> Result<()> {
             commands::destroy,
             commands::list_clients,
             commands::create_client,
+            commands::list_record_files,
+            commands::upload_record_file,
+            commands::delete_record_file,
+            commands::get_record_file_text,
             commands::list_chat_models,
             commands::chat_message,
             commands::accept_model_agreement,
+            commands::get_system_prompt,
+            commands::save_system_prompt,
+            commands::delete_system_prompt,
         ]);
 
     #[cfg(debug_assertions)]

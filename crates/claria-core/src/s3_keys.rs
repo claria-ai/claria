@@ -43,6 +43,16 @@ pub fn client(id: Uuid) -> String {
 
 pub const CLIENTS_PREFIX: &str = "clients/";
 
+pub fn client_records_prefix(id: Uuid) -> String {
+    format!("records/{id}/")
+}
+
+pub fn client_record_file(id: Uuid, filename: &str) -> String {
+    format!("records/{id}/{filename}")
+}
+
+pub const SYSTEM_PROMPT: &str = "system-prompt.md";
+
 pub const INDEX: &str = "_index/tantivy.tar.zst";
 
 pub const PROVISIONER_STATE: &str = "_state/provisioner.json";

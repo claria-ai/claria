@@ -3,6 +3,7 @@ import Markdown from "react-markdown";
 import {
   acceptModelAgreement,
   chatMessage,
+  getSystemPrompt,
   listChatModels,
   type ChatMessage,
   type ChatModel,
@@ -17,10 +18,12 @@ export default function ClientChat({
   navigate,
   clientId: _clientId,
   clientName,
+  embedded,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
   clientName: string;
+  embedded?: boolean;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -34,6 +37,10 @@ export default function ClientChat({
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
+
+  // System prompt state
+  const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
+  const [showPromptModal, setShowPromptModal] = useState(false);
 
   const loadModels = useCallback(async () => {
     setModelsLoading(true);
@@ -53,6 +60,9 @@ export default function ClientChat({
 
   useEffect(() => {
     loadModels();
+    getSystemPrompt()
+      .then(setSystemPrompt)
+      .catch(() => {});
   }, [loadModels]);
 
   // Auto-scroll to bottom when messages change
@@ -107,34 +117,81 @@ export default function ClientChat({
   }
 
   return (
-    <div className="flex flex-col h-screen">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
-        <button
-          onClick={() => navigate("clients")}
-          className="text-gray-500 hover:text-gray-700 transition-colors"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
+    <div className={`flex flex-col ${embedded ? "flex-1" : "h-screen"}`}>
+      {/* Header — hidden when embedded in ClientRecord */}
+      {!embedded && (
+        <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
+          <button
+            onClick={() => navigate("clients")}
+            className="text-gray-500 hover:text-gray-700 transition-colors"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 19l-7-7 7-7"
-            />
-          </svg>
-        </button>
-        <div className="flex-1">
-          <h2 className="text-lg font-semibold">{clientName}</h2>
-          <p className="text-xs text-gray-400">Client intake chat</p>
-        </div>
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15 19l-7-7 7-7"
+              />
+            </svg>
+          </button>
+          <div className="flex-1">
+            <h2 className="text-lg font-semibold">{clientName}</h2>
+            <p className="text-xs text-gray-400">Client intake chat</p>
+          </div>
 
-        {/* Model selector */}
-        <div className="flex items-center gap-2">
+          {/* System prompt pill */}
+          {systemPrompt && (
+            <button
+              onClick={() => setShowPromptModal(true)}
+              className="px-2.5 py-1 text-xs font-medium text-gray-500 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+            >
+              System Prompt
+            </button>
+          )}
+
+          {/* Model selector */}
+          <div className="flex items-center gap-2">
+            {modelsLoading ? (
+              <div className="flex items-center gap-1.5 text-gray-400 text-xs">
+                <Spinner />
+                <span>Loading models...</span>
+              </div>
+            ) : modelsError ? (
+              <span className="text-red-500 text-xs">Failed to load models</span>
+            ) : (
+              <select
+                value={selectedModelId ?? ""}
+                onChange={(e) => setSelectedModelId(e.target.value)}
+                className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                {models.map((m) => (
+                  <option key={m.model_id} value={m.model_id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Compact model selector when embedded */}
+      {embedded && (
+        <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-gray-50">
+          {systemPrompt && (
+            <button
+              onClick={() => setShowPromptModal(true)}
+              className="px-2.5 py-1 text-xs font-medium text-gray-500 bg-white border border-gray-200 rounded-full hover:bg-gray-100 transition-colors"
+            >
+              System Prompt
+            </button>
+          )}
+          <div className="flex-1" />
           {modelsLoading ? (
             <div className="flex items-center gap-1.5 text-gray-400 text-xs">
               <Spinner />
@@ -156,7 +213,7 @@ export default function ClientChat({
             </select>
           )}
         </div>
-      </div>
+      )}
 
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
@@ -224,6 +281,40 @@ export default function ClientChat({
           </button>
         </div>
       </div>
+
+      {/* System prompt modal (read-only) */}
+      {showPromptModal && systemPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                System Prompt
+              </h3>
+              <button
+                onClick={() => setShowPromptModal(false)}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+              <div className="prose prose-sm max-w-none">
+                <Markdown>{systemPrompt}</Markdown>
+              </div>
+            </div>
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={() => setShowPromptModal(false)}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

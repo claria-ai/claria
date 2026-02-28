@@ -1,0 +1,449 @@
+import { useState, useEffect, useCallback } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import {
+  listRecordFiles,
+  uploadRecordFile,
+  deleteRecordFile,
+  getRecordFileText,
+  type RecordFile,
+} from "../lib/tauri";
+import ClientChat from "./ClientChat";
+import type { Page } from "../App";
+
+type Tab = "record" | "chat";
+
+export default function ClientRecord({
+  navigate,
+  clientId,
+  clientName,
+}: {
+  navigate: (page: Page) => void;
+  clientId: string;
+  clientName: string;
+}) {
+  const [tab, setTab] = useState<Tab>("record");
+
+  return (
+    <div className="flex flex-col h-screen">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
+        <button
+          onClick={() => navigate("clients")}
+          className="text-gray-500 hover:text-gray-700 transition-colors"
+        >
+          <svg
+            className="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15 19l-7-7 7-7"
+            />
+          </svg>
+        </button>
+        <h2 className="text-lg font-semibold flex-1">{clientName}</h2>
+
+        {/* Tabs */}
+        <div className="flex border border-gray-200 rounded-lg overflow-hidden">
+          <button
+            onClick={() => setTab("record")}
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
+              tab === "record"
+                ? "bg-blue-600 text-white"
+                : "bg-white text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            Record
+          </button>
+          <button
+            onClick={() => setTab("chat")}
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
+              tab === "chat"
+                ? "bg-blue-600 text-white"
+                : "bg-white text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            Chat
+          </button>
+        </div>
+      </div>
+
+      {/* Tab content */}
+      {tab === "record" ? (
+        <RecordTab clientId={clientId} />
+      ) : (
+        <ClientChat
+          navigate={navigate}
+          clientId={clientId}
+          clientName={clientName}
+          embedded
+        />
+      )}
+    </div>
+  );
+}
+
+function RecordTab({ clientId }: { clientId: string }) {
+  const [files, setFiles] = useState<RecordFile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [uploading, setUploading] = useState<string[]>([]);
+  const [previewText, setPreviewText] = useState<string | null>(null);
+  const [previewFilename, setPreviewFilename] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setError(null);
+    try {
+      const result = await listRecordFiles(clientId);
+      setFiles(result);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [clientId]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Tauri drag-and-drop event listener.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (
+          event.payload.type === "enter" ||
+          event.payload.type === "over"
+        ) {
+          setDragging(true);
+        } else if (event.payload.type === "leave") {
+          setDragging(false);
+        } else if (event.payload.type === "drop") {
+          setDragging(false);
+          handleFileDrop(event.payload.paths);
+        }
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+
+    return () => {
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId]);
+
+  async function handleFileDrop(paths: string[]) {
+    for (const path of paths) {
+      const filename = path.split("/").pop() ?? path;
+      setUploading((prev) => [...prev, filename]);
+      try {
+        await uploadRecordFile(clientId, path);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setUploading((prev) => prev.filter((f) => f !== filename));
+      }
+    }
+    await refresh();
+  }
+
+  async function handlePreview(filename: string) {
+    setPreviewFilename(filename);
+    try {
+      const text = await getRecordFileText(clientId, filename);
+      setPreviewText(text);
+    } catch (e) {
+      setPreviewText(`Error loading preview: ${String(e)}`);
+    }
+  }
+
+  async function handleDelete(filename: string) {
+    setDeleteConfirm(null);
+    try {
+      await deleteRecordFile(clientId, filename);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="max-w-2xl mx-auto p-8">
+        {/* Error */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+            <p className="text-red-800 text-sm">{error}</p>
+          </div>
+        )}
+
+        {/* File list / drop zone */}
+        <div
+          className={`border-2 rounded-lg transition-colors ${
+            dragging
+              ? "border-blue-400 bg-blue-50"
+              : "border-gray-200 bg-white"
+          }`}
+        >
+          <div className="px-4 py-2 border-b border-gray-100 bg-gray-50 rounded-t-lg">
+            <h3 className="text-sm font-semibold text-gray-700">Files</h3>
+          </div>
+
+          {/* Loading */}
+          {loading && (
+            <div className="p-8 text-center">
+              <div className="flex items-center justify-center gap-2 text-gray-500 text-sm">
+                <Spinner />
+                <span>Loading files...</span>
+              </div>
+            </div>
+          )}
+
+          {/* File rows */}
+          {!loading && files.length > 0 && (
+            <div className="divide-y divide-gray-100">
+              {files.map((file) => (
+                <div
+                  key={file.filename}
+                  className="px-4 py-3 flex items-center gap-3"
+                >
+                  <FileIcon filename={file.filename} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-900 truncate">
+                      {file.filename}
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      {formatFileSize(file.size)}
+                    </p>
+                  </div>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => handlePreview(file.filename)}
+                      title="Preview text"
+                      className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                        />
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => setDeleteConfirm(file.filename)}
+                      title="Delete file"
+                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Uploading indicator */}
+          {uploading.length > 0 && (
+            <div className="divide-y divide-gray-100 border-t border-gray-100">
+              {uploading.map((filename) => (
+                <div
+                  key={filename}
+                  className="px-4 py-3 flex items-center gap-3"
+                >
+                  <Spinner />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-gray-500 truncate">
+                      Uploading {filename}...
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Drop hint */}
+          {!loading && (
+            <div
+              className={`px-4 py-6 text-center ${
+                files.length === 0 && uploading.length === 0 ? "py-12" : ""
+              }`}
+            >
+              <p
+                className={`text-sm ${
+                  dragging ? "text-blue-600 font-medium" : "text-gray-400"
+                }`}
+              >
+                {dragging
+                  ? "Drop files to upload"
+                  : "Drag files here to add"}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Preview modal */}
+      {previewText !== null && previewFilename && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {previewFilename}
+              </h3>
+              <button
+                onClick={() => {
+                  setPreviewText(null);
+                  setPreviewFilename(null);
+                }}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+              <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
+                {previewText}
+              </pre>
+            </div>
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={() => {
+                  setPreviewText(null);
+                  setPreviewFilename(null);
+                }}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-lg max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              Delete file?
+            </h3>
+            <p className="text-sm text-gray-600 mb-6">
+              Delete <span className="font-medium">{deleteConfirm}</span> and
+              its extracted text? This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDelete(deleteConfirm)}
+                className="px-4 py-2 text-sm text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileIcon({ filename }: { filename: string }) {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  const isPdf = ext === "pdf";
+  const isDoc = ext === "docx" || ext === "doc";
+
+  return (
+    <div
+      className={`w-8 h-8 rounded flex items-center justify-center text-xs font-bold ${
+        isPdf
+          ? "bg-red-100 text-red-600"
+          : isDoc
+            ? "bg-blue-100 text-blue-600"
+            : "bg-gray-100 text-gray-500"
+      }`}
+    >
+      {isPdf ? "PDF" : isDoc ? "DOC" : ext.toUpperCase().slice(0, 3) || "?"}
+    </div>
+  );
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function Spinner() {
+  return (
+    <svg
+      className="animate-spin h-3.5 w-3.5"
+      viewBox="0 0 24 24"
+      fill="none"
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+      />
+    </svg>
+  );
+}

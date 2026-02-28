@@ -8,6 +8,7 @@ import ScanProvision from "./pages/ScanProvision";
 import ManageDashboard from "./pages/ManageDashboard";
 import ClientList from "./pages/ClientList";
 import ClientChat from "./pages/ClientChat";
+import ClientRecord from "./pages/ClientRecord";
 import About from "./pages/About";
 
 export type Page =
@@ -19,6 +20,7 @@ export type Page =
   | "scan"
   | "dashboard"
   | "clients"
+  | "client-record"
   | "client-chat"
   | "about";
 
@@ -75,8 +77,15 @@ export default function App() {
           onOpenClient={(id, name) => {
             setActiveClientId(id);
             setActiveClientName(name);
-            navigate("client-chat");
+            navigate("client-record");
           }}
+        />
+      )}
+      {page === "client-record" && activeClientId && (
+        <ClientRecord
+          navigate={navigate}
+          clientId={activeClientId}
+          clientName={activeClientName ?? "Client"}
         />
       )}
       {page === "client-chat" && activeClientId && (

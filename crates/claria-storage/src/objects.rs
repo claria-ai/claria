@@ -135,6 +135,57 @@ pub async fn delete_object(
     Ok(())
 }
 
+/// Metadata for a single S3 object, returned by [`list_objects_with_metadata`].
+pub struct ObjectMeta {
+    pub key: String,
+    pub size: i64,
+    pub last_modified: Option<String>,
+}
+
+/// List objects under a prefix with size and last-modified metadata.
+pub async fn list_objects_with_metadata(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<Vec<ObjectMeta>, StorageError> {
+    let mut objects = Vec::new();
+    let mut continuation_token: Option<String> = None;
+
+    loop {
+        let mut req = client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(prefix);
+
+        if let Some(token) = &continuation_token {
+            req = req.continuation_token(token);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| StorageError::ListObjects(e.into_service_error().to_string()))?;
+
+        for obj in resp.contents() {
+            if let Some(key) = obj.key() {
+                objects.push(ObjectMeta {
+                    key: key.to_string(),
+                    size: obj.size().unwrap_or(0),
+                    last_modified: obj.last_modified().map(|t| t.to_string()),
+                });
+            }
+        }
+
+        if resp.is_truncated() == Some(true) {
+            continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+
+    Ok(objects)
+}
+
 /// List objects under a prefix. Returns keys.
 pub async fn list_objects(
     client: &Client,
