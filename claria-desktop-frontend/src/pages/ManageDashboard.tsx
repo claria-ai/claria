@@ -248,13 +248,7 @@ export default function ManageDashboard({
               disabled={isWorking}
               className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
             >
-              {resourcePhase === "applying" as boolean ? (
-                <span className="flex items-center gap-1">
-                  <Spinner /> Applying...
-                </span>
-              ) : (
-                "Apply Changes"
-              )}
+              Apply Changes
             </button>
             <span className="text-xs text-gray-500">
               Apply changes to bring resources in sync.

@@ -6,7 +6,7 @@ use claria_provisioner::account_setup::{
     AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
     StepStatus,
 };
-use claria_provisioner::{BaaStatus, PlanEntry};
+use claria_provisioner::PlanEntry;
 
 use crate::state::DesktopState;
 
@@ -387,22 +387,6 @@ async fn load_sdk_config(
     let sdk_config =
         claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
     Ok((cfg, sdk_config))
-}
-
-/// Check whether the AWS account has an active BAA (Business Associate
-/// Addendum) via the AWS Artifact API.
-///
-/// Returns a `BaaStatus` indicating whether the BAA is in place, along
-/// with agreement details if found. This is a read-only check.
-#[tauri::command]
-#[specta::specta]
-pub async fn check_baa(
-    state: State<'_, DesktopState>,
-) -> Result<BaaStatus, String> {
-    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
-    claria_provisioner::check_baa(&sdk_config)
-        .await
-        .map_err(|e| e.to_string())
 }
 
 /// Scan all resources and return an annotated plan.

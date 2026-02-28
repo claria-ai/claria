@@ -125,21 +125,6 @@ async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: stri
 }
 },
 /**
- * Check whether the AWS account has an active BAA (Business Associate
- * Addendum) via the AWS Artifact API.
- * 
- * Returns a `BaaStatus` indicating whether the BAA is in place, along
- * with agreement details if found. This is a read-only check.
- */
-async checkBaa() : Promise<Result<BaaStatus, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("check_baa") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
  * Scan all resources and return an annotated plan.
  * 
  * This is always the first call — both onboarding and dashboard use it.
@@ -457,26 +442,6 @@ assumed_role_arn: string;
  * The account ID of the sub-account we assumed into.
  */
 account_id: string }
-/**
- * Result of checking whether the AWS account has an active BAA.
- */
-export type BaaStatus = { 
-/**
- * Whether an active BAA agreement was found on the account.
- */
-has_baa: boolean; 
-/**
- * Name of the agreement, if found.
- */
-agreement_name: string | null; 
-/**
- * When the agreement became effective (ISO 8601), if found.
- */
-effective_start: string | null; 
-/**
- * State of the agreement (e.g. "active"), if found.
- */
-state: string | null }
 /**
  * The result of a full bootstrap attempt.
  */
