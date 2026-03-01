@@ -106,7 +106,7 @@
 
 ## Releases
 - All releases are done via `cargo release` — never bump versions or create tags manually
-- `cargo release patch` / `minor` / `major` bumps all workspace crates, tags, and pushes
+- `cargo release patch` / `minor` / `major` bumps all workspace crates, tags, and pushes. The CHANGELOG.md should be udpated and land in the release commit.
 - The pushed tag triggers GitHub Actions to build and create a draft GitHub Release
 - Never run `git tag` directly for version tags
 - The claria-ai.github.com repo's index.html should be updated to show the new release as soon as the tag is cut

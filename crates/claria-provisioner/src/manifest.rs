@@ -157,7 +157,7 @@ impl Manifest {
                         "s3:HeadBucket".into(),
                         "s3:CreateBucket".into(),
                         "s3:DeleteBucket".into(),
-                        "s3:ListObjectsV2".into(),
+                        "s3:ListBucket".into(),
                         "s3:DeleteObject".into(),
                     ],
                 },
@@ -183,8 +183,8 @@ impl Manifest {
                     description: "Server-side encryption — your data is encrypted at rest".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "s3:GetBucketEncryption".into(),
-                        "s3:PutBucketEncryption".into(),
+                        "s3:GetEncryptionConfiguration".into(),
+                        "s3:PutEncryptionConfiguration".into(),
                     ],
                 },
                 ResourceSpec {
@@ -201,8 +201,8 @@ impl Manifest {
                     description: "Prevents your data from ever being publicly accessible".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "s3:GetPublicAccessBlock".into(),
-                        "s3:PutPublicAccessBlock".into(),
+                        "s3:GetBucketPublicAccessBlock".into(),
+                        "s3:PutBucketPublicAccessBlock".into(),
                     ],
                 },
                 ResourceSpec {

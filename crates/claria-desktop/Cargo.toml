@@ -31,6 +31,7 @@ uuid = { version = "=1.21.0", features = ["v4"] }
 [package.metadata.release]
 pre-release-replacements = [
   { file = "tauri.conf.json", search = "\"version\": \"[^\"]+\"", replace = "\"version\": \"{{version}}\"" },
+  { file = "../../CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [{{version}}] — {{date}}" },
 ]
 
 [build-dependencies]

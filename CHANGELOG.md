@@ -2,6 +2,20 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Added
+- Audio transcription via Amazon Transcribe — drag-and-drop MP3, WAV, and other audio files to auto-generate text sidecars
+- Client deletion with recursive S3 cleanup of all associated records, files, and chat history
+- About page now reads version from Tauri metadata and links to website and GitHub
+
+### Fixed
+- IAM policy drift falsely reported after every apply — manifest iam_actions now match actual IAM action names
+
+### Changed
+- Simplified start screen layout: centered title, subtle top-right navigation
+- Added CHANGELOG backfilled from v0.1.1
+
 ## [0.4.1] — 2026-02-28
 
 ### Fixed
