@@ -99,7 +99,7 @@ pub struct Manifest {
 
 impl Manifest {
     /// Bump when adding, removing, or changing resource specs.
-    pub const VERSION: u32 = 3;
+    pub const VERSION: u32 = 4;
 
     /// Build the default Claria manifest from runtime config.
     pub fn claria(account_id: &str, system_name: &str, region: &str) -> Self {
@@ -161,7 +161,6 @@ impl Manifest {
                         "s3:ListBucketVersions".into(),
                         "s3:GetObjectVersion".into(),
                         "s3:DeleteObject".into(),
-                        "s3:DeleteObjectVersion".into(),
                     ],
                 },
                 ResourceSpec {

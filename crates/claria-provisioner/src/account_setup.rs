@@ -698,7 +698,6 @@ fn claria_policy_document(system_name: &str, account_id: &str) -> String {
                     "s3:GetObjectVersion",
                     "s3:PutObject",
                     "s3:DeleteObject",
-                    "s3:DeleteObjectVersion",
                     "s3:ListBucket",
                     "s3:ListBucketVersions"
                 ],

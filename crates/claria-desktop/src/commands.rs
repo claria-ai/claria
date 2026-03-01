@@ -1715,7 +1715,10 @@ pub async fn list_deleted_files(
         .collect())
 }
 
-/// Restore a deleted file by removing its delete marker.
+/// Restore a deleted file by re-putting the most recent real version as a new version.
+///
+/// This preserves the full version history (including the delete marker) for
+/// HIPAA audit-trail compliance, instead of removing the delete marker.
 #[tauri::command]
 #[specta::specta]
 pub async fn restore_deleted_file(
@@ -1724,6 +1727,7 @@ pub async fn restore_deleted_file(
     filename: String,
     version_id: String,
 ) -> Result<(), String> {
+    let _ = version_id; // kept for API compatibility; we find the latest real version ourselves
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
@@ -1731,9 +1735,30 @@ pub async fn restore_deleted_file(
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let key = claria_core::s3_keys::client_record_file(id, &filename);
 
-    claria_storage::objects::remove_delete_marker(&s3, &bucket, &key, &version_id)
+    // Find the most recent non-delete-marker version.
+    let versions = claria_storage::objects::list_object_versions(&s3, &bucket, &key)
         .await
         .map_err(|e| e.to_string())?;
+    let real = versions
+        .iter()
+        .find(|v| !v.is_delete_marker)
+        .ok_or_else(|| format!("no restorable version found for {key}"))?;
+
+    // Fetch that version's content and write it back as a new current version.
+    let output =
+        claria_storage::objects::get_object_version(&s3, &bucket, &key, &real.version_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        &key,
+        output.body,
+        output.content_type.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     tracing::info!(client_id = %id, filename, "deleted file restored");
 
@@ -1821,7 +1846,10 @@ pub async fn list_deleted_clients(
     Ok(clients)
 }
 
-/// Restore a deleted client by removing the delete marker on the client JSON.
+/// Restore a deleted client by re-putting the most recent real version as a new version.
+///
+/// This preserves the full version history (including the delete marker) for
+/// HIPAA audit-trail compliance, instead of removing the delete marker.
 #[tauri::command]
 #[specta::specta]
 pub async fn restore_client(
@@ -1829,6 +1857,7 @@ pub async fn restore_client(
     client_id: String,
     version_id: String,
 ) -> Result<(), String> {
+    let _ = version_id; // kept for API compatibility; we find the latest real version ourselves
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
@@ -1836,9 +1865,30 @@ pub async fn restore_client(
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let key = claria_core::s3_keys::client(id);
 
-    claria_storage::objects::remove_delete_marker(&s3, &bucket, &key, &version_id)
+    // Find the most recent non-delete-marker version.
+    let versions = claria_storage::objects::list_object_versions(&s3, &bucket, &key)
         .await
         .map_err(|e| e.to_string())?;
+    let real = versions
+        .iter()
+        .find(|v| !v.is_delete_marker)
+        .ok_or_else(|| format!("no restorable version found for {key}"))?;
+
+    // Fetch that version's content and write it back as a new current version.
+    let output =
+        claria_storage::objects::get_object_version(&s3, &bucket, &key, &real.version_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        &key,
+        output.body,
+        output.content_type.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     tracing::info!(client_id = %id, "deleted client restored");
 

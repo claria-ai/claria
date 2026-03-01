@@ -420,29 +420,6 @@ pub async fn get_object_version(
     })
 }
 
-/// Restore a deleted object by removing its delete marker.
-///
-/// The `delete_marker_version_id` must be the version ID of the delete marker
-/// (the latest version when the object appears deleted). Removing it makes the
-/// previous real version become the current object again.
-pub async fn remove_delete_marker(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    delete_marker_version_id: &str,
-) -> Result<(), StorageError> {
-    client
-        .delete_object()
-        .bucket(bucket)
-        .key(key)
-        .version_id(delete_marker_version_id)
-        .send()
-        .await
-        .map_err(|e| StorageError::DeleteObject(e.into_service_error().to_string()))?;
-
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Presigning
 // ---------------------------------------------------------------------------
