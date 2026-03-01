@@ -2,6 +2,14 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Added
+- Configurable Whisper model tiers — choose between Good English (~293 MB), Good English + Spanish (~967 MB), or Very Good Spanish (~3 GB)
+- Multilingual language detection for Spanish and English (auto-detected from audio)
+- Language badge (EN/ES) shown in the recording UI when using a multilingual model
+- Multiple models can be downloaded and cached on disk, with one active at a time
+
 ## [0.9.0] — 2026-03-01
 
 ### Added
