@@ -34,6 +34,9 @@ export default function ClientChat({
   const [accepting, setAccepting] = useState(false);
   const [chatId, setChatId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [textareaHeight, setTextareaHeight] = useState(80); // ~3 rows
+  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   // Model state
   const [models, setModels] = useState<ChatModel[]>([]);
@@ -81,6 +84,25 @@ export default function ClientChat({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Drag-to-resize textarea
+  useEffect(() => {
+    function onPointerMove(e: PointerEvent) {
+      if (!dragRef.current) return;
+      const delta = dragRef.current.startY - e.clientY;
+      setTextareaHeight(Math.max(48, Math.min(400, dragRef.current.startHeight + delta)));
+    }
+    function onPointerUp() {
+      dragRef.current = null;
+      document.body.style.userSelect = "";
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, []);
 
   const canSend = !sending && !modelsLoading && !!selectedModelId && !!input.trim();
 
@@ -290,21 +312,37 @@ export default function ClientChat({
       </div>
 
       {/* Input bar */}
-      <div className="border-t border-gray-200 bg-white px-6 py-4">
-        <div className="flex gap-3">
-          <input
-            type="text"
+      <div className="border-t border-gray-200 bg-white">
+        {/* Drag handle */}
+        <div
+          className="flex justify-center py-1.5 cursor-row-resize select-none hover:bg-gray-50 transition-colors"
+          onPointerDown={(e) => {
+            dragRef.current = { startY: e.clientY, startHeight: textareaHeight };
+            document.body.style.userSelect = "none";
+          }}
+        >
+          <div className="w-8 h-1 rounded-full bg-gray-300" />
+        </div>
+        <div className="flex gap-3 px-6 pb-4">
+          <textarea
+            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
             placeholder={modelsLoading ? "Loading models..." : "Type a message..."}
             disabled={sending || modelsLoading || !selectedModelId}
+            style={{ height: textareaHeight, resize: "none" }}
             className="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
           />
           <button
             onClick={handleSend}
             disabled={!canSend}
-            className="px-5 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+            className="self-end px-5 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
           >
             Send
           </button>
