@@ -32,6 +32,7 @@
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
 - Never squash
 - Descriptive kebab-case branch names
+- Create a commit after any big task
 
 ## Architecture
 
