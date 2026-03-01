@@ -192,7 +192,7 @@ export default function ClientChat({
           </button>
           <div className="flex-1">
             <h2 className="text-lg font-semibold">{clientName}</h2>
-            <p className="text-xs text-gray-400">Client intake chat</p>
+            <p className="text-xs text-gray-400">Chat</p>
           </div>
 
           {/* System prompt pill */}
@@ -288,8 +288,8 @@ export default function ClientChat({
           <div className="text-center text-gray-400 text-sm mt-8">
             <p className="mb-1">Start the conversation.</p>
             <p className="text-xs">
-              The assistant will help you gather intake information for this
-              client.
+              The chat includes the context files shown above. Chat messages
+              are saved separately and do not modify your client files.
             </p>
           </div>
         )}
