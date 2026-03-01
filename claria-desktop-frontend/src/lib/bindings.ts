@@ -693,7 +693,11 @@ export type NewCredentials = { access_key_id: string; secret_access_key: string;
  * has everything it needs (label, description, severity, desired state)
  * without a separate lookup.
  */
-export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drift: FieldDrift[] }
+export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drift: FieldDrift[]; 
+/**
+ * Live state read from AWS (if the resource exists).
+ */
+actual: JsonValue | null }
 /**
  * A record file with its readable text content, for chat context.
  */

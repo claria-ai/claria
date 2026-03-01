@@ -117,7 +117,7 @@ export default function ManageDashboard({
   if (error && !config) {
     return (
       <div className="max-w-2xl mx-auto p-8">
-        <h2 className="text-2xl font-bold mb-6">Dashboard</h2>
+        <h2 className="text-2xl font-bold mb-6">AWS</h2>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <p className="text-red-800 font-medium text-sm mb-2">
             Failed to load configuration
@@ -168,11 +168,11 @@ export default function ManageDashboard({
 
   return (
     <div className="max-w-2xl mx-auto p-8">
-      <h2 className="text-2xl font-bold mb-6">Dashboard</h2>
+      <h2 className="text-2xl font-bold mb-6">AWS</h2>
 
-      {/* System Configuration */}
+      {/* AWS Details */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
-        <h3 className="text-lg font-semibold mb-4">System Configuration</h3>
+        <h3 className="text-lg font-semibold mb-4">AWS Details</h3>
         <dl className="space-y-3">
           <div className="flex justify-between">
             <dt className="text-sm text-gray-500">Region</dt>
@@ -209,7 +209,7 @@ export default function ManageDashboard({
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h3 className="text-lg font-semibold">Infrastructure</h3>
+            <h3 className="text-lg font-semibold">Service Security And Configuration</h3>
             {config.account_id && (
               <p className="text-xs font-mono text-gray-400 mt-0.5">
                 running as arn:aws:iam::{config.account_id}:user/claria-admin

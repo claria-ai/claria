@@ -34,11 +34,12 @@ pub async fn plan(
                 action: Action::PreconditionFailed,
                 cause: Cause::Drift,
                 drift: vec![],
+                actual: None,
             },
 
             // Data source exists → check it matches
-            (Lifecycle::Data, Some(actual)) => {
-                let drift = syncer.diff(actual);
+            (Lifecycle::Data, Some(actual_val)) => {
+                let drift = syncer.diff(actual_val);
                 PlanEntry {
                     spec: spec.clone(),
                     action: if drift.is_empty() {
@@ -54,6 +55,7 @@ pub async fn plan(
                         Cause::Drift
                     },
                     drift,
+                    actual: Some(actual_val.clone()),
                 }
             }
 
@@ -67,11 +69,12 @@ pub async fn plan(
                     Cause::ManifestChanged
                 },
                 drift: vec![],
+                actual: None,
             },
 
             // Managed resource exists → check for drift
-            (Lifecycle::Managed, Some(actual)) => {
-                let drift = syncer.diff(actual);
+            (Lifecycle::Managed, Some(actual_val)) => {
+                let drift = syncer.diff(actual_val);
                 PlanEntry {
                     spec: spec.clone(),
                     action: if drift.is_empty() {
@@ -87,6 +90,7 @@ pub async fn plan(
                         Cause::Drift
                     },
                     drift,
+                    actual: Some(actual_val.clone()),
                 }
             }
         };
@@ -102,6 +106,7 @@ pub async fn plan(
                 action: Action::Delete,
                 cause: Cause::Orphaned,
                 drift: vec![],
+                actual: None,
             });
         }
     }

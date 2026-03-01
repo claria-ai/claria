@@ -182,8 +182,8 @@ impl Manifest {
                     resource_name: bucket.clone(),
                     lifecycle: Lifecycle::Managed,
                     desired: json!({"sse_algorithm": "AES256"}),
-                    label: "Encryption".into(),
-                    description: "Server-side encryption — your data is encrypted at rest".into(),
+                    label: "S3 Bucket Encryption".into(),
+                    description: "Server-side encryption — all objects in this bucket are encrypted at rest".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
                         "s3:GetEncryptionConfiguration".into(),

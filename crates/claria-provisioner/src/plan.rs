@@ -15,6 +15,8 @@ pub struct PlanEntry {
     pub action: Action,
     pub cause: Cause,
     pub drift: Vec<FieldDrift>,
+    /// Live state read from AWS (if the resource exists).
+    pub actual: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
