@@ -9,3 +9,4 @@ pub mod s3_bucket_encryption;
 pub mod s3_bucket_policy;
 pub mod s3_bucket_public_access_block;
 pub mod s3_bucket_versioning;
+pub mod transcribe_access;

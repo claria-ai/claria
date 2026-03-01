@@ -763,6 +763,16 @@ fn claria_policy_document(system_name: &str, account_id: &str) -> String {
                 "Resource": "*"
             },
             {
+                "Sid": "ClariaTranscribe",
+                "Effect": "Allow",
+                "Action": [
+                    "transcribe:StartTranscriptionJob",
+                    "transcribe:GetTranscriptionJob",
+                    "transcribe:DeleteTranscriptionJob"
+                ],
+                "Resource": "*"
+            },
+            {
                 "Sid": "ClariaSTS",
                 "Effect": "Allow",
                 "Action": [

@@ -128,6 +128,9 @@ pub fn build_syncers(
                         bedrock.clone(),
                     ),
                 ),
+                "transcribe_access" => Box::new(
+                    syncers::transcribe_access::TranscribeAccessSyncer::new(spec.clone()),
+                ),
                 other => panic!("unknown resource type in manifest: {other}"),
             }
         })

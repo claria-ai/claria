@@ -749,6 +749,13 @@ pub async fn upload_record_file(
         "html" | "htm" => Some("text/html"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "png" => Some("image/png"),
+        "mp3" => Some("audio/mpeg"),
+        "mp4" | "m4a" => Some("audio/mp4"),
+        "wav" => Some("audio/wav"),
+        "flac" => Some("audio/flac"),
+        "ogg" => Some("audio/ogg"),
+        "amr" => Some("audio/amr"),
+        "webm" => Some("audio/webm"),
         _ => None,
     };
 
@@ -792,6 +799,35 @@ pub async fn upload_record_file(
                     filename,
                     error = %e,
                     "sidecar text extraction failed"
+                );
+            }
+        }
+    } else if let Some(media_format) =
+        claria_transcribe::media_format_for_extension(&extension)
+    {
+        let sidecar_key = format!("{key}.text");
+        match claria_transcribe::transcribe_audio(&sdk_config, &bucket, &key, media_format).await
+        {
+            Ok(text) => {
+                claria_storage::objects::put_object(
+                    &s3,
+                    &bucket,
+                    &sidecar_key,
+                    text.into_bytes(),
+                    Some("text/plain"),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+
+                tracing::info!(client_id = %id, filename, "sidecar audio transcription uploaded");
+            }
+            Err(e) => {
+                // Non-fatal: the original file is already uploaded.
+                tracing::warn!(
+                    client_id = %id,
+                    filename,
+                    error = %e,
+                    "sidecar audio transcription failed"
                 );
             }
         }

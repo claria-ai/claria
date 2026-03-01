@@ -99,7 +99,7 @@ pub struct Manifest {
 
 impl Manifest {
     /// Bump when adding, removing, or changing resource specs.
-    pub const VERSION: u32 = 1;
+    pub const VERSION: u32 = 2;
 
     /// Build the default Claria manifest from runtime config.
     pub fn claria(account_id: &str, system_name: &str, region: &str) -> Self {
@@ -302,6 +302,20 @@ impl Manifest {
                         "bedrock:GetFoundationModelAvailability".into(),
                         "bedrock:ListFoundationModelAgreementOffers".into(),
                         "bedrock:CreateFoundationModelAgreement".into(),
+                    ],
+                },
+                ResourceSpec {
+                    resource_type: "transcribe_access".into(),
+                    resource_name: "transcribe".into(),
+                    lifecycle: Lifecycle::Data,
+                    desired: json!({"enabled": true}),
+                    label: "Amazon Transcribe".into(),
+                    description: "Audio-to-text transcription for uploaded recordings".into(),
+                    severity: Severity::Info,
+                    iam_actions: vec![
+                        "transcribe:StartTranscriptionJob".into(),
+                        "transcribe:GetTranscriptionJob".into(),
+                        "transcribe:DeleteTranscriptionJob".into(),
                     ],
                 },
             ],

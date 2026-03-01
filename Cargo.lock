@@ -452,6 +452,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-transcribe"
+version = "1.101.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "395e0b70cbc834ecf9bfc7f124d62d1d234b244939ab34684986c10715f69019"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http 0.63.5",
+ "aws-smithy-json 0.62.4",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sigv4"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1121,6 +1145,7 @@ dependencies = [
  "claria-core",
  "claria-provisioner",
  "claria-storage",
+ "claria-transcribe",
  "color-eyre",
  "dirs",
  "eyre",
@@ -1216,6 +1241,21 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "claria-transcribe"
+version = "0.4.1"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "aws-sdk-transcribe",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -515,7 +515,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
               >
                 {dragging
                   ? "Drop files to upload"
-                  : "Drag files here to add"}
+                  : "Drag files here \u2014 PDF, DOCX, audio, or text"}
               </p>
             </div>
           )}
@@ -685,10 +685,15 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   );
 }
 
+const AUDIO_EXTENSIONS = new Set([
+  "mp3", "mp4", "m4a", "wav", "flac", "ogg", "amr", "webm",
+]);
+
 function FileIcon({ filename }: { filename: string }) {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
   const isPdf = ext === "pdf";
   const isDoc = ext === "docx" || ext === "doc";
+  const isAudio = AUDIO_EXTENSIONS.has(ext);
 
   return (
     <div
@@ -697,10 +702,12 @@ function FileIcon({ filename }: { filename: string }) {
           ? "bg-red-100 text-red-600"
           : isDoc
             ? "bg-blue-100 text-blue-600"
-            : "bg-gray-100 text-gray-500"
+            : isAudio
+              ? "bg-purple-100 text-purple-600"
+              : "bg-gray-100 text-gray-500"
       }`}
     >
-      {isPdf ? "PDF" : isDoc ? "DOC" : ext.toUpperCase().slice(0, 3) || "?"}
+      {isPdf ? "PDF" : isDoc ? "DOC" : isAudio ? "AUD" : ext.toUpperCase().slice(0, 3) || "?"}
     </div>
   );
 }

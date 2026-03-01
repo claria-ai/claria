@@ -9,6 +9,7 @@ members = [
     "crates/claria-instruments",
     "crates/claria-export",
     "crates/claria-provisioner",
+    "crates/claria-transcribe",
     "crates/claria-desktop",
 ]
 

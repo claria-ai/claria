@@ -9,6 +9,7 @@ claria-bedrock = { path = "../claria-bedrock" }
 claria-core = { path = "../claria-core" }
 claria-provisioner = { path = "../claria-provisioner" }
 claria-storage = { path = "../claria-storage" }
+claria-transcribe = { path = "../claria-transcribe" }
 aws-config = "=1.8.14"
 aws-sdk-s3 = "=1.124.0"
 aws-sdk-sts = "=1.99.0"
