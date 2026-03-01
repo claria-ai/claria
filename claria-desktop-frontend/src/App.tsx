@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { hasConfig, listChatModels, type ChatModel } from "./lib/tauri";
+import { hasConfig, loadConfig, listChatModels, type ChatModel } from "./lib/tauri";
 import StartScreen from "./pages/StartScreen";
 import AwsAccountGuide from "./pages/AwsAccountGuide";
 import MfaSetupGuide from "./pages/MfaSetupGuide";
@@ -11,6 +11,7 @@ import ClientList from "./pages/ClientList";
 import ClientChat from "./pages/ClientChat";
 import ClientRecord from "./pages/ClientRecord";
 import About from "./pages/About";
+import Preferences from "./pages/Preferences";
 
 export type Page =
   | "loading"
@@ -24,6 +25,7 @@ export type Page =
   | "clients"
   | "client-record"
   | "client-chat"
+  | "preferences"
   | "about";
 
 export default function App() {
@@ -37,9 +39,20 @@ export default function App() {
   const [chatModelsLoading, setChatModelsLoading] = useState(true);
   const [chatModelsError, setChatModelsError] = useState<string | null>(null);
 
+  // Preferred model from config
+  const [preferredModelId, setPreferredModelId] = useState<string | null>(null);
+
   const refreshConfig = useCallback(async () => {
     const exists = await hasConfig().catch(() => false);
     setConfigExists(exists);
+    if (exists) {
+      try {
+        const info = await loadConfig();
+        setPreferredModelId(info.preferred_model_id ?? null);
+      } catch {
+        // Config load failure is non-fatal here
+      }
+    }
     return exists;
   }, []);
 
@@ -70,7 +83,7 @@ export default function App() {
       }
       // Retry loading models if they haven't loaded yet
       if (
-        (target === "clients" || target === "client-record" || target === "client-chat") &&
+        (target === "clients" || target === "client-record" || target === "client-chat" || target === "preferences") &&
         chatModels.length === 0
       ) {
         refreshChatModels();
@@ -117,6 +130,7 @@ export default function App() {
           chatModels={chatModels}
           chatModelsLoading={chatModelsLoading}
           chatModelsError={chatModelsError}
+          preferredModelId={preferredModelId}
         />
       )}
       {page === "client-chat" && activeClientId && (
@@ -127,6 +141,17 @@ export default function App() {
           chatModels={chatModels}
           chatModelsLoading={chatModelsLoading}
           chatModelsError={chatModelsError}
+          preferredModelId={preferredModelId}
+        />
+      )}
+      {page === "preferences" && (
+        <Preferences
+          navigate={navigate}
+          chatModels={chatModels}
+          chatModelsLoading={chatModelsLoading}
+          chatModelsError={chatModelsError}
+          preferredModelId={preferredModelId}
+          onPreferredModelChanged={setPreferredModelId}
         />
       )}
       {page === "about" && <About navigate={navigate} />}

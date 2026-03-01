@@ -105,6 +105,7 @@ pub async fn save_config(
         account_id,
         created_at: jiff::Timestamp::now(),
         credentials,
+        preferred_model_id: None,
     };
 
     config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -124,6 +125,26 @@ pub async fn delete_config(
 
     let mut guard = state.config.lock().await;
     *guard = None;
+
+    Ok(())
+}
+
+/// Set the clinician's preferred chat model.
+///
+/// Loads the current config, updates `preferred_model_id`, and saves. Pass
+/// `None` to clear the preference (fall back to the first available model).
+#[tauri::command]
+#[specta::specta]
+pub async fn set_preferred_model(
+    state: State<'_, DesktopState>,
+    model_id: Option<String>,
+) -> Result<(), String> {
+    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    cfg.preferred_model_id = model_id;
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
 
     Ok(())
 }
@@ -285,6 +306,7 @@ pub async fn bootstrap_iam_user(
                     secret_access_key: new_creds.secret_access_key.clone(),
                     session_token: None,
                 },
+                preferred_model_id: None,
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -1442,6 +1464,98 @@ pub async fn delete_system_prompt(
     claria_storage::objects::delete_object(&s3, &bucket, claria_core::s3_keys::SYSTEM_PROMPT)
         .await
         .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// System prompt version history commands
+// ---------------------------------------------------------------------------
+
+/// List all versions of the system prompt stored in S3.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_system_prompt_versions(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<FileVersion>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let versions = claria_storage::objects::list_object_versions(
+        &s3,
+        &bucket,
+        claria_core::s3_keys::SYSTEM_PROMPT,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(versions
+        .into_iter()
+        .filter(|v| !v.is_delete_marker)
+        .map(|v| FileVersion {
+            version_id: v.version_id,
+            size: v.size as i32,
+            last_modified: v.last_modified,
+            is_latest: v.is_latest,
+        })
+        .collect())
+}
+
+/// Get the text content of a specific version of the system prompt.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_system_prompt_version(
+    state: State<'_, DesktopState>,
+    version_id: String,
+) -> Result<String, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let output = claria_storage::objects::get_object_version(
+        &s3,
+        &bucket,
+        claria_core::s3_keys::SYSTEM_PROMPT,
+        &version_id,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    String::from_utf8(output.body).map_err(|e| e.to_string())
+}
+
+/// Restore a previous version of the system prompt by writing it as the new current version.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_system_prompt_version(
+    state: State<'_, DesktopState>,
+    version_id: String,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let output = claria_storage::objects::get_object_version(
+        &s3,
+        &bucket,
+        claria_core::s3_keys::SYSTEM_PROMPT,
+        &version_id,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        claria_core::s3_keys::SYSTEM_PROMPT,
+        output.body,
+        Some("text/markdown"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(version_id, "system prompt version restored");
 
     Ok(())
 }

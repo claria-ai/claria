@@ -250,6 +250,14 @@ export async function loadChatHistory(clientId: string, chatId: string): Promise
 }
 
 // ---------------------------------------------------------------------------
+// Preferences wrappers
+// ---------------------------------------------------------------------------
+
+export async function setPreferredModel(modelId: string | null): Promise<void> {
+  unwrap(await commands.setPreferredModel(modelId));
+}
+
+// ---------------------------------------------------------------------------
 // System prompt wrappers
 // ---------------------------------------------------------------------------
 
@@ -263,6 +271,22 @@ export async function saveSystemPrompt(content: string): Promise<void> {
 
 export async function deleteSystemPrompt(): Promise<void> {
   unwrap(await commands.deleteSystemPrompt());
+}
+
+// ---------------------------------------------------------------------------
+// System prompt version history wrappers
+// ---------------------------------------------------------------------------
+
+export async function listSystemPromptVersions(): Promise<import("./bindings").FileVersion[]> {
+  return unwrap(await commands.listSystemPromptVersions());
+}
+
+export async function getSystemPromptVersion(versionId: string): Promise<string> {
+  return unwrap(await commands.getSystemPromptVersion(versionId));
+}
+
+export async function restoreSystemPromptVersion(versionId: string): Promise<void> {
+  unwrap(await commands.restoreSystemPromptVersion(versionId));
 }
 
 // ---------------------------------------------------------------------------

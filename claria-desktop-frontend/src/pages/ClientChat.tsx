@@ -32,6 +32,7 @@ export default function ClientChat({
   chatModels,
   chatModelsLoading,
   chatModelsError,
+  preferredModelId,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
@@ -42,6 +43,7 @@ export default function ClientChat({
   chatModels: ChatModel[];
   chatModelsLoading: boolean;
   chatModelsError: string | null;
+  preferredModelId?: string | null;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -69,12 +71,15 @@ export default function ClientChat({
   const [contextLoading, setContextLoading] = useState(true);
   const [previewContext, setPreviewContext] = useState<RecordContext | null>(null);
 
-  // Default to first model once models are loaded
+  // Default to preferred model (or first available) once models are loaded
   useEffect(() => {
     if (models.length > 0 && !selectedModelId) {
-      setSelectedModelId(models[0].model_id);
+      const preferred = preferredModelId && models.some((m) => m.model_id === preferredModelId)
+        ? preferredModelId
+        : models[0].model_id;
+      setSelectedModelId(preferred);
     }
-  }, [models, selectedModelId]);
+  }, [models, selectedModelId, preferredModelId]);
 
   useEffect(() => {
     getSystemPrompt()

@@ -39,6 +39,20 @@ async deleteConfig() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Set the clinician's preferred chat model.
+ * 
+ * Loads the current config, updates `preferred_model_id`, and saves. Pass
+ * `None` to clear the preference (fall back to the first available model).
+ */
+async setPreferredModel(modelId: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_preferred_model", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Assess the provided credentials: validates them via STS and classifies
  * them as root / IAM admin / scoped Claria / insufficient.
  * 
@@ -424,6 +438,39 @@ async deleteSystemPrompt() : Promise<Result<null, string>> {
 }
 },
 /**
+ * List all versions of the system prompt stored in S3.
+ */
+async listSystemPromptVersions() : Promise<Result<FileVersion[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_system_prompt_versions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the text content of a specific version of the system prompt.
+ */
+async getSystemPromptVersion(versionId: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_system_prompt_version", { versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Restore a previous version of the system prompt by writing it as the new current version.
+ */
+async restoreSystemPromptVersion(versionId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restore_system_prompt_version", { versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List all versions of a specific file in a client's record.
  */
 async listFileVersions(clientId: string, filename: string) : Promise<Result<FileVersion[], string>> {
@@ -609,7 +656,7 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null }
 /**
  * The result of `assess_credentials`.
  */

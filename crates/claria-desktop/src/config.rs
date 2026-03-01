@@ -5,7 +5,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClariaConfig {
@@ -20,6 +20,9 @@ pub struct ClariaConfig {
     pub account_id: String,
     pub created_at: jiff::Timestamp,
     pub credentials: CredentialSource,
+    /// The clinician's preferred chat model ID. Added in v2.
+    #[serde(default)]
+    pub preferred_model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -47,6 +50,7 @@ pub struct ConfigInfo {
     pub credential_type: String,
     pub profile_name: Option<String>,
     pub access_key_hint: Option<String>,
+    pub preferred_model_id: Option<String>,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -106,8 +110,22 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v0 → v1 (added account_id)");
     }
 
+    // v1 → v2: add preferred_model_id (null; clinician can set via Preferences)
+    if from_version < 2 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("preferred_model_id")
+            .or_insert(serde_json::Value::Null);
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(2.into()),
+        );
+        tracing::info!("migrated config v1 → v2 (added preferred_model_id)");
+    }
+
     // Future migrations go here:
-    // if from_version < 2 { ... }
+    // if from_version < 3 { ... }
 
     Ok(json)
 }
@@ -178,6 +196,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         credential_type,
         profile_name,
         access_key_hint,
+        preferred_model_id: config.preferred_model_id.clone(),
     }
 }
 

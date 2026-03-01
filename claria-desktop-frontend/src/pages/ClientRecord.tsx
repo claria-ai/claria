@@ -33,6 +33,7 @@ export default function ClientRecord({
   chatModels,
   chatModelsLoading,
   chatModelsError,
+  preferredModelId,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
@@ -40,6 +41,7 @@ export default function ClientRecord({
   chatModels: ChatModel[];
   chatModelsLoading: boolean;
   chatModelsError: string | null;
+  preferredModelId?: string | null;
 }) {
   const [tab, setTab] = useState<Tab>("record");
   const [resumeChat, setResumeChat] = useState<ResumeChat | null>(null);
@@ -116,6 +118,7 @@ export default function ClientRecord({
           chatModels={chatModels}
           chatModelsLoading={chatModelsLoading}
           chatModelsError={chatModelsError}
+          preferredModelId={preferredModelId}
         />
       )}
     </div>

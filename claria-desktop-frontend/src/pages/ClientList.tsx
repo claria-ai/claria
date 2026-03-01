@@ -3,9 +3,6 @@ import {
   listClients,
   createClient,
   deleteClient,
-  getSystemPrompt,
-  saveSystemPrompt,
-  deleteSystemPrompt,
   listDeletedClients,
   restoreClient,
   type ClientSummary,
@@ -38,13 +35,6 @@ export default function ClientList({
   const [deletedClients, setDeletedClients] = useState<DeletedClient[]>([]);
   const [deletedLoading, setDeletedLoading] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
-
-  // System prompt editor state
-  const [showPromptEditor, setShowPromptEditor] = useState(false);
-  const [promptContent, setPromptContent] = useState("");
-  const [promptLoading, setPromptLoading] = useState(false);
-  const [promptSaving, setPromptSaving] = useState(false);
-  const [promptError, setPromptError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -120,47 +110,6 @@ export default function ClientList({
     }
   }
 
-  async function handleOpenPromptEditor() {
-    setShowPromptEditor(true);
-    setPromptLoading(true);
-    setPromptError(null);
-    try {
-      const content = await getSystemPrompt();
-      setPromptContent(content);
-    } catch (e) {
-      setPromptError(String(e));
-    } finally {
-      setPromptLoading(false);
-    }
-  }
-
-  async function handleSavePrompt() {
-    setPromptSaving(true);
-    setPromptError(null);
-    try {
-      await saveSystemPrompt(promptContent);
-      setShowPromptEditor(false);
-    } catch (e) {
-      setPromptError(String(e));
-    } finally {
-      setPromptSaving(false);
-    }
-  }
-
-  async function handleResetPrompt() {
-    setPromptSaving(true);
-    setPromptError(null);
-    try {
-      await deleteSystemPrompt();
-      const content = await getSystemPrompt();
-      setPromptContent(content);
-    } catch (e) {
-      setPromptError(String(e));
-    } finally {
-      setPromptSaving(false);
-    }
-  }
-
   return (
     <div className="max-w-2xl mx-auto p-8">
       {/* Header */}
@@ -189,12 +138,6 @@ export default function ClientList({
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-          </button>
-          <button
-            onClick={handleOpenPromptEditor}
-            className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            System Prompt
           </button>
           <button
             onClick={() => setShowNewForm(true)}
@@ -398,64 +341,6 @@ export default function ClientList({
         </div>
       )}
 
-      {/* System prompt editor modal */}
-      {showPromptEditor && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              System Prompt
-            </h3>
-
-            {promptLoading ? (
-              <div className="flex-1 flex items-center justify-center py-8">
-                <div className="flex items-center gap-2 text-gray-500 text-sm">
-                  <Spinner />
-                  <span>Loading prompt...</span>
-                </div>
-              </div>
-            ) : (
-              <textarea
-                value={promptContent}
-                onChange={(e) => setPromptContent(e.target.value)}
-                disabled={promptSaving}
-                className="flex-1 min-h-[300px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
-              />
-            )}
-
-            {promptError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
-                <p className="text-red-800 text-sm">{promptError}</p>
-              </div>
-            )}
-
-            <div className="flex justify-between mt-4">
-              <button
-                onClick={handleResetPrompt}
-                disabled={promptLoading || promptSaving}
-                className="px-4 py-2 text-sm text-amber-600 border border-amber-300 rounded-lg hover:bg-amber-50 transition-colors disabled:opacity-50"
-              >
-                {promptSaving ? "Resetting..." : "Reset to Default"}
-              </button>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowPromptEditor(false)}
-                  disabled={promptSaving}
-                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSavePrompt}
-                  disabled={promptLoading || promptSaving}
-                  className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-                >
-                  {promptSaving ? "Saving..." : "Save"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
