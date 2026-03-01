@@ -1,7 +1,7 @@
 {
   "identifier": "com.claria.desktop",
   "productName": "Claria",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "build": {
     "frontendDist": "../../claria-desktop-frontend/dist"
   },
