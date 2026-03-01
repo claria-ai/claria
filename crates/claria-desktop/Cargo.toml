@@ -27,5 +27,10 @@ tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.22", features = ["env-filter", "json"] }
 uuid = { version = "=1.21.0", features = ["v4"] }
 
+[package.metadata.release]
+pre-release-replacements = [
+  { file = "tauri.conf.json", search = "\"version\": \"[^\"]+\"", replace = "\"version\": \"{{version}}\"" },
+]
+
 [build-dependencies]
 tauri-build = { version = "=2.5.5", features = [] }

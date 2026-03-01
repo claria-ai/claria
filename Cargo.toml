@@ -21,9 +21,6 @@ shared-version = true
 tag-name = "v{{version}}"
 publish = false
 push = true
-pre-release-replacements = [
-  { file = "crates/claria-desktop/tauri.conf.json", search = "\"version\": \"[^\"]+\"", replace = "\"version\": \"{{version}}\"" },
-]
 
 [profile.release]
 strip = true
