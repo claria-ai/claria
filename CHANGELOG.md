@@ -2,6 +2,17 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Added
+- Record Memo — opt-in local audio transcription using Whisper (candle, pure Rust). Record from the microphone, see words appear live, pause/resume/edit, and save as a `.txt` note. Audio never leaves the device.
+- New `claria-whisper` crate wrapping candle for on-device Whisper inference (CPU, English-only base model)
+- Whisper model management in Preferences — download (~293 MB), view status, or remove the model
+- macOS microphone usage description (`Info.plist`) for app bundle signing
+
+### Fixed
+- Deleted `.txt` memos no longer show phantom sidecar duplicates in the deleted files list
+
 ## [0.8.0] — 2026-03-01
 
 ### Changed
