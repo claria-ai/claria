@@ -125,7 +125,7 @@ export default function ClientChat({
     };
   }, []);
 
-  const canSend = !sending && !modelsLoading && !!selectedModelId && !!input.trim();
+  const canSend = !sending && !modelsLoading && !contextLoading && !!selectedModelId && !!input.trim();
 
   async function handleSend() {
     const text = input.trim();
@@ -272,6 +272,12 @@ export default function ClientChat({
       )}
 
       {/* Context pills */}
+      {contextLoading && (
+        <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white">
+          <Spinner />
+          <span className="text-xs text-gray-400">Building context...</span>
+        </div>
+      )}
       {!contextLoading && contextFiles.length > 0 && (
         <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white overflow-x-auto">
           <span className="text-xs text-gray-400 shrink-0">Context:</span>
@@ -355,8 +361,8 @@ export default function ClientChat({
                 handleSend();
               }
             }}
-            placeholder={modelsLoading ? "Loading models..." : "Type a message..."}
-            disabled={sending || modelsLoading || !selectedModelId}
+            placeholder={contextLoading ? "Building context..." : modelsLoading ? "Loading models..." : "Type a message..."}
+            disabled={sending || modelsLoading || contextLoading || !selectedModelId}
             style={{ height: textareaHeight, resize: "none" }}
             className="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
           />
