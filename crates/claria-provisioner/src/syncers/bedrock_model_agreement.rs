@@ -2,7 +2,7 @@ use aws_sdk_bedrock::types::AgreementStatus;
 use aws_sdk_bedrock::Client;
 use serde_json::json;
 
-use crate::error::ProvisionerError;
+use crate::error::{format_err_chain, ProvisionerError};
 use crate::manifest::{FieldDrift, ResourceSpec};
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
@@ -40,7 +40,7 @@ impl ResourceSyncer for BedrockModelAgreementSyncer {
                 .list_foundation_models()
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::Aws(e.to_string()))?;
+                .map_err(|e| ProvisionerError::Aws(format_err_chain(&e)))?;
 
             // Find a representative model matching this prefix
             let representative = models
@@ -109,7 +109,7 @@ impl ResourceSyncer for BedrockModelAgreementSyncer {
                 .list_foundation_models()
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::Aws(e.to_string()))?;
+                .map_err(|e| ProvisionerError::Aws(format_err_chain(&e)))?;
 
             let matching_ids: Vec<String> = models
                 .model_summaries()

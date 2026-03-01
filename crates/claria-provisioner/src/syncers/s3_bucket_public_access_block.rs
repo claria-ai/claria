@@ -1,7 +1,7 @@
 use aws_sdk_s3::Client;
 use serde_json::json;
 
-use crate::error::ProvisionerError;
+use crate::error::{format_err_chain, ProvisionerError};
 use crate::manifest::{FieldDrift, ResourceSpec};
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
@@ -101,7 +101,7 @@ impl ResourceSyncer for S3BucketPublicAccessBlockSyncer {
                 )
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::CreateFailed(e.to_string()))?;
+                .map_err(|e| ProvisionerError::CreateFailed(format_err_chain(&e)))?;
 
             Ok(json!({
                 "block_public_acls": true,

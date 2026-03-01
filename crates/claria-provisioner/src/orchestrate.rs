@@ -111,8 +111,9 @@ pub async fn plan(
 
 /// Execute all actionable entries in the plan.
 ///
-/// Creates in manifest order (dependencies satisfied by position),
-/// modifies in manifest order, deletes in reverse order (dependents first).
+/// Creates and modifies run in a single pass in manifest order so that
+/// dependencies are satisfied (e.g. bucket policy applied before CloudTrail
+/// trail creation). Deletes run in reverse order (dependents first).
 pub async fn execute(
     entries: &[PlanEntry],
     syncers: &[Box<dyn ResourceSyncer>],
@@ -124,8 +125,11 @@ pub async fn execute(
         .map(|s| (s.spec().addr(), s.as_ref()))
         .collect();
 
-    // Creates — manifest order
-    for entry in entries.iter().filter(|e| e.action == Action::Create) {
+    // Creates and modifies — single pass in manifest order
+    for entry in entries
+        .iter()
+        .filter(|e| e.action == Action::Create || e.action == Action::Modify)
+    {
         let addr = entry.spec.addr();
         let syncer = syncer_map.get(&addr).ok_or_else(|| {
             ProvisionerError::ResourceNotFound {
@@ -134,35 +138,29 @@ pub async fn execute(
             }
         })?;
 
-        tracing::info!(addr = %addr, "creating resource");
-        let result = syncer.create().await?;
-        state.resources.insert(
-            addr,
-            ResourceState {
-                resource_type: entry.spec.resource_type.clone(),
-                resource_id: entry.spec.resource_name.clone(),
-                status: ResourceStatus::Created,
-                properties: result,
-            },
-        );
-        persistence.flush(state).await?;
-    }
-
-    // Modifies — manifest order
-    for entry in entries.iter().filter(|e| e.action == Action::Modify) {
-        let addr = entry.spec.addr();
-        let syncer = syncer_map.get(&addr).ok_or_else(|| {
-            ProvisionerError::ResourceNotFound {
-                resource_type: addr.resource_type.clone(),
-                resource_id: addr.resource_name.clone(),
+        if entry.action == Action::Create {
+            tracing::info!(addr = %addr, "creating resource");
+            let result = syncer.create().await.map_err(|e| {
+                e.with_resource(&entry.spec.label, &entry.spec.resource_name)
+            })?;
+            state.resources.insert(
+                addr,
+                ResourceState {
+                    resource_type: entry.spec.resource_type.clone(),
+                    resource_id: entry.spec.resource_name.clone(),
+                    status: ResourceStatus::Created,
+                    properties: result,
+                },
+            );
+        } else {
+            tracing::info!(addr = %addr, "updating resource");
+            let result = syncer.update().await.map_err(|e| {
+                e.with_resource(&entry.spec.label, &entry.spec.resource_name)
+            })?;
+            if let Some(rs) = state.resources.get_mut(&addr) {
+                rs.status = ResourceStatus::Updated;
+                rs.properties = result;
             }
-        })?;
-
-        tracing::info!(addr = %addr, "updating resource");
-        let result = syncer.update().await?;
-        if let Some(rs) = state.resources.get_mut(&addr) {
-            rs.status = ResourceStatus::Updated;
-            rs.properties = result;
         }
         persistence.flush(state).await?;
     }
@@ -176,7 +174,9 @@ pub async fn execute(
         let addr = entry.spec.addr();
         if let Some(syncer) = syncer_map.get(&addr) {
             tracing::info!(addr = %addr, "destroying resource");
-            syncer.destroy().await?;
+            syncer.destroy().await.map_err(|e| {
+                e.with_resource(&entry.spec.label, &entry.spec.resource_name)
+            })?;
         }
         state.resources.remove(&addr);
         persistence.flush(state).await?;

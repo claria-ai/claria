@@ -35,3 +35,31 @@ pub enum ProvisionerError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
+
+impl ProvisionerError {
+    /// Prepend resource identity to the error message.
+    pub fn with_resource(self, label: &str, name: &str) -> Self {
+        match self {
+            Self::CreateFailed(msg) => Self::CreateFailed(format!("{label} ({name}): {msg}")),
+            Self::UpdateFailed(msg) => Self::UpdateFailed(format!("{label} ({name}): {msg}")),
+            Self::DeleteFailed(msg) => Self::DeleteFailed(format!("{label} ({name}): {msg}")),
+            Self::Aws(msg) => Self::Aws(format!("{label} ({name}): {msg}")),
+            other => other,
+        }
+    }
+}
+
+/// Walk the full error chain and join all causes into one string.
+///
+/// AWS SDK errors often have terse `Display` impls (e.g. "service error")
+/// but useful detail in the source chain.
+pub fn format_err_chain(err: &dyn std::error::Error) -> String {
+    let mut msg = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        msg.push_str(": ");
+        msg.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    msg
+}

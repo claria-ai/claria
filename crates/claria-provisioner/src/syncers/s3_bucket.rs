@@ -1,7 +1,7 @@
 use aws_sdk_s3::Client;
 use serde_json::json;
 
-use crate::error::ProvisionerError;
+use crate::error::{format_err_chain, ProvisionerError};
 use crate::manifest::{FieldDrift, ResourceSpec};
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
@@ -70,7 +70,7 @@ impl ResourceSyncer for S3BucketSyncer {
             builder
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::CreateFailed(e.to_string()))?;
+                .map_err(|e| ProvisionerError::CreateFailed(format_err_chain(&e)))?;
 
             tracing::info!(bucket = %self.bucket_name(), "S3 bucket created");
 
@@ -95,7 +95,7 @@ impl ResourceSyncer for S3BucketSyncer {
                 let resp = list
                     .send()
                     .await
-                    .map_err(|e| ProvisionerError::DeleteFailed(e.to_string()))?;
+                    .map_err(|e| ProvisionerError::DeleteFailed(format_err_chain(&e)))?;
 
                 for obj in resp.contents() {
                     if let Some(key) = obj.key() {
@@ -105,7 +105,7 @@ impl ResourceSyncer for S3BucketSyncer {
                             .key(key)
                             .send()
                             .await
-                            .map_err(|e| ProvisionerError::DeleteFailed(e.to_string()))?;
+                            .map_err(|e| ProvisionerError::DeleteFailed(format_err_chain(&e)))?;
                     }
                 }
 
@@ -121,7 +121,7 @@ impl ResourceSyncer for S3BucketSyncer {
                 .bucket(self.bucket_name())
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::DeleteFailed(e.to_string()))?;
+                .map_err(|e| ProvisionerError::DeleteFailed(format_err_chain(&e)))?;
 
             tracing::info!(bucket = %self.bucket_name(), "S3 bucket deleted");
             Ok(())
