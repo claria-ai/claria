@@ -34,6 +34,10 @@ jobs:
         working-directory: claria-desktop-frontend
         run: npm install
 
+      - name: Build frontend
+        working-directory: claria-desktop-frontend
+        run: npm run build
+
       # --- Rust ---
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
