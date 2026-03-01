@@ -43,15 +43,24 @@ export default function App() {
     return exists;
   }, []);
 
+  const refreshChatModels = useCallback(async () => {
+    setChatModelsLoading(true);
+    setChatModelsError(null);
+    try {
+      setChatModels(await listChatModels());
+    } catch (e) {
+      setChatModelsError(String(e));
+    } finally {
+      setChatModelsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     refreshConfig().then(() => {
       setPage("start");
     });
-    listChatModels()
-      .then(setChatModels)
-      .catch((e) => setChatModelsError(String(e)))
-      .finally(() => setChatModelsLoading(false));
-  }, [refreshConfig]);
+    refreshChatModels();
+  }, [refreshConfig, refreshChatModels]);
 
   const navigate = useCallback(
     (target: Page) => {
@@ -59,9 +68,16 @@ export default function App() {
       if (target === "start" || target === "dashboard") {
         refreshConfig();
       }
+      // Retry loading models if they haven't loaded yet
+      if (
+        (target === "clients" || target === "client-record" || target === "client-chat") &&
+        chatModels.length === 0
+      ) {
+        refreshChatModels();
+      }
       setPage(target);
     },
-    [refreshConfig],
+    [refreshConfig, refreshChatModels, chatModels.length],
   );
 
   if (page === "loading") {
