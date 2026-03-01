@@ -167,6 +167,8 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   // Memo recording state
   const [memoReady, setMemoReady] = useState(false);
   const [memoMultilingual, setMemoMultilingual] = useState(false);
+  const [memoGpu, setMemoGpu] = useState(false);
+  const [memoModelLabel, setMemoModelLabel] = useState("");
   type MemoState = "idle" | "recording" | "paused" | "transcribing" | "review";
   const [memoState, setMemoState] = useState<MemoState>("idle");
   const [memoTranscript, setMemoTranscript] = useState("");
@@ -213,6 +215,8 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
         const active = models.find((m) => m.active);
         setMemoReady(!!active);
         setMemoMultilingual(active ? active.tier !== "base_en" : false);
+        setMemoGpu(active ? active.gpu_accelerated : false);
+        setMemoModelLabel(active ? active.label : "");
       })
       .catch(() => setMemoReady(false));
   }, []);
@@ -762,6 +766,21 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                   <span className="text-sm text-gray-500 font-mono">
                     {formatElapsed(memoElapsed)}
                   </span>
+                  <span className={`px-1.5 py-0.5 text-xs rounded ${
+                    memoGpu
+                      ? "bg-green-100 text-green-700"
+                      : "bg-gray-100 text-gray-500"
+                  }`}>
+                    {memoGpu ? "GPU" : "CPU"}
+                  </span>
+                  {memoModelLabel && (
+                    <span
+                      title={`Model: ${memoModelLabel}${memoGpu ? " (Metal GPU)" : " (CPU)"}`}
+                      className="inline-flex items-center justify-center w-4 h-4 text-xs text-gray-400 border border-gray-300 rounded-full cursor-help hover:text-gray-600 hover:border-gray-400 transition-colors"
+                    >
+                      ?
+                    </span>
+                  )}
                 </div>
                 <div className="flex gap-2">
                   {memoState === "recording" && (

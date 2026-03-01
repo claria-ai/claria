@@ -64,6 +64,7 @@ fn main() -> Result<()> {
             commands::get_whisper_models,
             commands::download_whisper_model,
             commands::delete_whisper_model,
+            commands::delete_whisper_model_dir,
             commands::set_active_whisper_model,
             commands::transcribe_memo,
         ]);

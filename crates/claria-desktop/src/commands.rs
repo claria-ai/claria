@@ -1993,7 +1993,7 @@ const WHISPER_FILES: &[&str] = &["model.safetensors", "config.json", "tokenizer.
 pub enum WhisperModelTier {
     BaseEn,
     Small,
-    Medium,
+    Turbo,
 }
 
 impl WhisperModelTier {
@@ -2001,7 +2001,7 @@ impl WhisperModelTier {
         match self {
             Self::BaseEn => "openai/whisper-base.en",
             Self::Small => "openai/whisper-small",
-            Self::Medium => "openai/whisper-medium",
+            Self::Turbo => "openai/whisper-large-v3-turbo",
         }
     }
 
@@ -2009,7 +2009,7 @@ impl WhisperModelTier {
         match self {
             Self::BaseEn => "whisper-base-en",
             Self::Small => "whisper-small",
-            Self::Medium => "whisper-medium",
+            Self::Turbo => "whisper-large-v3-turbo",
         }
     }
 
@@ -2017,7 +2017,7 @@ impl WhisperModelTier {
         match self {
             Self::BaseEn => "Good English",
             Self::Small => "Good English + Spanish",
-            Self::Medium => "Very Good Spanish",
+            Self::Turbo => "Best Quality",
         }
     }
 
@@ -2025,7 +2025,7 @@ impl WhisperModelTier {
         match self {
             Self::BaseEn => "English-only model. Fastest inference, smallest download.",
             Self::Small => "Multilingual model with good English and Spanish support.",
-            Self::Medium => "Larger multilingual model with very good Spanish accuracy. Slower inference.",
+            Self::Turbo => "Large-v3 Turbo (2024). Best multilingual accuracy with fast inference.",
         }
     }
 
@@ -2033,7 +2033,7 @@ impl WhisperModelTier {
         match self {
             Self::BaseEn => "~293 MB",
             Self::Small => "~967 MB",
-            Self::Medium => "~3 GB",
+            Self::Turbo => "~1.5 GB",
         }
     }
 
@@ -2041,7 +2041,7 @@ impl WhisperModelTier {
         match self {
             Self::BaseEn => "base_en",
             Self::Small => "small",
-            Self::Medium => "medium",
+            Self::Turbo => "turbo",
         }
     }
 
@@ -2049,20 +2049,25 @@ impl WhisperModelTier {
         match tag {
             "base_en" => Some(Self::BaseEn),
             "small" => Some(Self::Small),
-            "medium" => Some(Self::Medium),
+            "turbo" => Some(Self::Turbo),
+            // Legacy: users who had "medium" active before the switch
+            "medium" => Some(Self::Turbo),
             _ => None,
         }
     }
 
     fn all() -> &'static [WhisperModelTier] {
-        &[Self::BaseEn, Self::Small, Self::Medium]
+        &[Self::BaseEn, Self::Small, Self::Turbo]
     }
 }
 
 /// Info about a Whisper model tier (status, size, path, whether active).
+/// Known tiers have `tier: Some(...)`. Orphan directories on disk that don't
+/// match any known tier have `tier: None`.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct WhisperModelInfo {
-    pub tier: WhisperModelTier,
+    pub tier: Option<WhisperModelTier>,
+    pub dir_name: String,
     pub label: String,
     pub description: String,
     pub download_size: String,
@@ -2070,6 +2075,8 @@ pub struct WhisperModelInfo {
     pub model_size_bytes: Option<i32>,
     pub model_path: Option<String>,
     pub active: bool,
+    /// Whether inference will use GPU acceleration (Metal on macOS).
+    pub gpu_accelerated: bool,
 }
 
 /// Result from transcription, including detected language.
@@ -2121,13 +2128,22 @@ fn is_tier_downloaded(tier: &WhisperModelTier) -> bool {
     }
 }
 
-fn tier_size_bytes(tier: &WhisperModelTier) -> Option<i32> {
-    let dir = whisper_model_dir(tier).ok()?;
-    let total: u64 = WHISPER_FILES
-        .iter()
-        .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
-        .map(|m| m.len())
-        .sum();
+/// Recursively sum the size of all files in a directory.
+fn dir_size_bytes(path: &std::path::Path) -> Option<i32> {
+    fn walk(dir: &std::path::Path, total: &mut u64) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, total);
+                } else if let Ok(meta) = path.metadata() {
+                    *total += meta.len();
+                }
+            }
+        }
+    }
+    let mut total = 0u64;
+    walk(path, &mut total);
     if total > 0 { Some(total as i32) } else { None }
 }
 
@@ -2148,6 +2164,13 @@ fn effective_active_tier() -> Option<WhisperModelTier> {
 
 fn build_whisper_models_list() -> Result<Vec<WhisperModelInfo>, String> {
     let active = effective_active_tier();
+    let base_dir = whisper_models_base_dir()?;
+    let gpu = claria_whisper::is_gpu_available();
+
+    // Collect known-tier dir names so we can detect orphans.
+    let known_dir_names: std::collections::HashSet<&str> =
+        WhisperModelTier::all().iter().map(|t| t.dir_name()).collect();
+
     let mut models = Vec::new();
     for tier in WhisperModelTier::all() {
         let downloaded = is_tier_downloaded(tier);
@@ -2156,20 +2179,53 @@ fn build_whisper_models_list() -> Result<Vec<WhisperModelInfo>, String> {
             .as_ref()
             .is_some_and(|a| a.tag() == tier.tag());
         models.push(WhisperModelInfo {
-            tier: tier.clone(),
+            tier: Some(tier.clone()),
+            dir_name: tier.dir_name().to_string(),
             label: tier.label().to_string(),
             description: tier.description().to_string(),
             download_size: tier.download_size().to_string(),
             downloaded,
-            model_size_bytes: if downloaded { tier_size_bytes(tier) } else { None },
+            model_size_bytes: if downloaded { dir_size_bytes(&dir) } else { None },
             model_path: if downloaded {
                 Some(dir.to_string_lossy().to_string())
             } else {
                 None
             },
             active: is_active,
+            gpu_accelerated: gpu,
         });
     }
+
+    // Scan for orphan directories (not matching any known tier).
+    if base_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&base_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if known_dir_names.contains(name_str.as_ref()) {
+                continue;
+            }
+            models.push(WhisperModelInfo {
+                tier: None,
+                dir_name: name_str.to_string(),
+                label: name_str.to_string(),
+                description: "Unknown model \u{2014} not managed by Claria. Safe to remove."
+                    .to_string(),
+                download_size: String::new(),
+                downloaded: true,
+                model_size_bytes: dir_size_bytes(&path),
+                model_path: Some(path.to_string_lossy().to_string()),
+                active: false,
+                gpu_accelerated: gpu,
+            });
+        }
+    }
+
     Ok(models)
 }
 
@@ -2255,6 +2311,41 @@ pub async fn delete_whisper_model(
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| format!("failed to delete model: {e}"))?;
         tracing::info!(tier = tier.tag(), "whisper model deleted");
+    }
+
+    build_whisper_models_list()
+}
+
+/// Delete a model directory by name. Used for orphan directories that don't
+/// match any known tier. Also works for known tiers as a fallback.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_whisper_model_dir(
+    state: State<'_, DesktopState>,
+    dir_name: String,
+) -> Result<Vec<WhisperModelInfo>, String> {
+    // Guard against path traversal.
+    if dir_name.contains('/') || dir_name.contains('\\') || dir_name.contains("..") {
+        return Err("Invalid directory name".to_string());
+    }
+
+    let base = whisper_models_base_dir()?;
+    let dir = base.join(&dir_name);
+
+    // If this directory matches the active tier, clear it.
+    if let Some(active) = effective_active_tier()
+        && active.dir_name() == dir_name
+    {
+        clear_active_tier();
+        if let Ok(mut guard) = state.whisper.lock() {
+            *guard = None;
+        }
+    }
+
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| format!("failed to delete model directory: {e}"))?;
+        tracing::info!(dir_name = %dir_name, "whisper model directory deleted");
     }
 
     build_whisper_models_list()

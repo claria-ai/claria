@@ -335,6 +335,10 @@ export async function deleteWhisperModel(tier: import("./bindings").WhisperModel
   return unwrap(await commands.deleteWhisperModel(tier));
 }
 
+export async function deleteWhisperModelDir(dirName: string): Promise<import("./bindings").WhisperModelInfo[]> {
+  return unwrap(await commands.deleteWhisperModelDir(dirName));
+}
+
 export async function setActiveWhisperModel(tier: import("./bindings").WhisperModelTier): Promise<import("./bindings").WhisperModelInfo[]> {
   return unwrap(await commands.setActiveWhisperModel(tier));
 }

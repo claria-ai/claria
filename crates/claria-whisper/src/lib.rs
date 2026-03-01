@@ -19,8 +19,10 @@ use crate::error::WhisperError;
 
 static MEL_FILTERS: &[u8] = include_bytes!("melfilters.bytes");
 
-/// Language tokens we support for detection (English and Spanish).
-const LANGUAGE_TOKENS: &[(&str, &str)] = &[("en", "<|en|>"), ("es", "<|es|>")];
+/// Regex-like prefix/suffix for language tokens in the Whisper tokenizer.
+/// Multilingual models have tokens like `<|en|>`, `<|es|>`, `<|fr|>`, etc.
+const LANG_TOKEN_PREFIX: &str = "<|";
+const LANG_TOKEN_SUFFIX: &str = "|>";
 
 /// Result of a transcription, including detected language for multilingual models.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +30,32 @@ pub struct TranscribeResult {
     pub text: String,
     /// Detected language code (e.g. "en", "es"). `None` for English-only models.
     pub language: Option<String>,
+}
+
+/// Returns `true` if GPU acceleration is available for inference.
+pub fn is_gpu_available() -> bool {
+    #[cfg(feature = "metal")]
+    {
+        return Device::new_metal(0).is_ok();
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// Pick the best available compute device.
+///
+/// With the `metal` feature enabled, tries Apple Metal GPU first.
+/// Falls back to CPU if Metal is unavailable or the feature is off.
+fn best_device() -> Device {
+    #[cfg(feature = "metal")]
+    {
+        if let Ok(device) = Device::new_metal(0) {
+            info!("using Metal GPU for inference");
+            return device;
+        }
+        info!("Metal unavailable, falling back to CPU");
+    }
+    Device::Cpu
 }
 
 /// A loaded Whisper model ready for transcription.
@@ -39,6 +67,7 @@ pub struct WhisperModel {
     config: Config,
     tokenizer: Tokenizer,
     mel_filters: Vec<f32>,
+    device: Device,
     sot_token: u32,
     eot_token: u32,
     transcribe_token: u32,
@@ -57,7 +86,7 @@ impl WhisperModel {
     /// `model_dir` must contain `model.safetensors`, `config.json`, and
     /// `tokenizer.json` (the HuggingFace layout).
     pub fn load(model_dir: &Path) -> Result<Self, WhisperError> {
-        let device = Device::Cpu;
+        let device = best_device();
 
         // Load config
         let config_path = model_dir.join("config.json");
@@ -94,13 +123,23 @@ impl WhisperModel {
             .iter()
             .find_map(|t| token_id(&tokenizer, t).ok());
 
-        // Detect multilingual capability by checking for language tokens
+        // Detect multilingual capability by discovering all language tokens
+        // in the tokenizer vocabulary. Language tokens look like `<|en|>`, `<|es|>`,
+        // etc. — the code is a 2-3 letter lowercase string between `<|` and `|>`.
         let mut language_tokens = Vec::new();
-        for (code, token_str) in LANGUAGE_TOKENS {
-            if let Some(id) = tokenizer.token_to_id(token_str) {
-                language_tokens.push((code.to_string(), id));
+        for (token_str, id) in tokenizer.get_vocab(false) {
+            if let Some(code) = token_str
+                .strip_prefix(LANG_TOKEN_PREFIX)
+                .and_then(|s| s.strip_suffix(LANG_TOKEN_SUFFIX))
+            {
+                let is_lang_code = (2..=3).contains(&code.len())
+                    && code.chars().all(|c| c.is_ascii_lowercase());
+                if is_lang_code {
+                    language_tokens.push((code.to_string(), id));
+                }
             }
         }
+        language_tokens.sort_by(|(a, _), (b, _)| a.cmp(b));
         let is_multilingual = !language_tokens.is_empty();
         info!(
             is_multilingual,
@@ -128,6 +167,7 @@ impl WhisperModel {
             config,
             tokenizer,
             mel_filters,
+            device,
             sot_token,
             eot_token,
             transcribe_token,
@@ -156,7 +196,7 @@ impl WhisperModel {
             return Ok(None);
         }
 
-        let device = Device::Cpu;
+        let device = &self.device;
 
         // Use at most 30 seconds of audio
         let max_samples = 30 * m::SAMPLE_RATE;
@@ -176,7 +216,7 @@ impl WhisperModel {
                 self.config.num_mel_bins,
                 mel_len / self.config.num_mel_bins,
             ),
-            &device,
+            device,
         )
         .map_err(|e| WhisperError::Transcription(e.to_string()))?;
 
@@ -197,7 +237,7 @@ impl WhisperModel {
             .map_err(|e| WhisperError::Transcription(e.to_string()))?;
 
         // Run decoder with just [SOT] to get language logits
-        let sot = Tensor::new(&[self.sot_token], &device)
+        let sot = Tensor::new(&[self.sot_token], device)
             .and_then(|t| t.unsqueeze(0))
             .map_err(|e| WhisperError::Transcription(e.to_string()))?;
 
@@ -249,7 +289,7 @@ impl WhisperModel {
         pcm_16khz: &[f32],
         language: Option<&str>,
     ) -> Result<TranscribeResult, WhisperError> {
-        let device = Device::Cpu;
+        let device = self.device.clone();
         let duration_secs = pcm_16khz.len() as f64 / 16000.0;
         info!(
             samples = pcm_16khz.len(),

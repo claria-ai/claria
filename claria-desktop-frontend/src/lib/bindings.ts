@@ -587,6 +587,18 @@ async deleteWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelIn
 }
 },
 /**
+ * Delete a model directory by name. Used for orphan directories that don't
+ * match any known tier. Also works for known tiers as a fallback.
+ */
+async deleteWhisperModelDir(dirName: string) : Promise<Result<WhisperModelInfo[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_whisper_model_dir", { dirName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Set the active Whisper model tier. The tier must be downloaded.
  */
 async setActiveWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
@@ -886,12 +898,18 @@ export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
 export type TranscribeMemoResult = { text: string; language: string | null }
 /**
  * Info about a Whisper model tier (status, size, path, whether active).
+ * Known tiers have `tier: Some(...)`. Orphan directories on disk that don't
+ * match any known tier have `tier: None`.
  */
-export type WhisperModelInfo = { tier: WhisperModelTier; label: string; description: string; download_size: string; downloaded: boolean; model_size_bytes: number | null; model_path: string | null; active: boolean }
+export type WhisperModelInfo = { tier: WhisperModelTier | null; dir_name: string; label: string; description: string; download_size: string; downloaded: boolean; model_size_bytes: number | null; model_path: string | null; active: boolean; 
+/**
+ * Whether inference will use GPU acceleration (Metal on macOS).
+ */
+gpu_accelerated: boolean }
 /**
  * Available Whisper model tiers.
  */
-export type WhisperModelTier = "base_en" | "small" | "medium"
+export type WhisperModelTier = "base_en" | "small" | "turbo"
 
 /** tauri-specta globals **/
 

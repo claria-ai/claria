@@ -2,6 +2,19 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Added
+- Metal GPU acceleration for Whisper inference on macOS (Apple Silicon). CPU fallback when Metal is unavailable. Windows remains CPU-only — candle has no DirectX/Vulkan backend; cross-vendor GPU would require replacing the inference engine (e.g. ONNX Runtime with DirectML).
+- GPU/CPU indicator pill and model info tooltip in the recording UI
+- Auto-discover all supported languages from the Whisper tokenizer (~99 languages) instead of hardcoding English and Spanish
+- Orphan model directory detection — Preferences shows unknown model folders on disk with size and a Remove button, so clinicians can clean up leftover downloads without migration logic
+- GitHub release notes now auto-populated from CHANGELOG
+
+### Changed
+- Replaced Medium tier (~3 GB `whisper-medium`) with Turbo tier (~1.5 GB `whisper-large-v3-turbo`) — better accuracy, smaller download, faster inference
+- Existing "medium" config values automatically map to the new Turbo tier
+
 ## [0.10.0] — 2026-03-01
 
 ### Added

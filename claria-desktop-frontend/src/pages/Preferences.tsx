@@ -10,6 +10,7 @@ import {
   getWhisperModels,
   downloadWhisperModel,
   deleteWhisperModel,
+  deleteWhisperModelDir,
   setActiveWhisperModel,
   type ChatModel,
   type FileVersion,
@@ -470,6 +471,7 @@ function MemoTranscriptionSection() {
   const [models, setModels] = useState<WhisperModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyTier, setBusyTier] = useState<WhisperModelTier | null>(null);
+  const [busyDir, setBusyDir] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -512,6 +514,18 @@ function MemoTranscriptionSection() {
     }
   }
 
+  async function handleDeleteDir(dirName: string) {
+    setBusyDir(dirName);
+    setError(null);
+    try {
+      setModels(await deleteWhisperModelDir(dirName));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusyDir(null);
+    }
+  }
+
   async function handleActivate(tier: WhisperModelTier) {
     setError(null);
     try {
@@ -521,6 +535,9 @@ function MemoTranscriptionSection() {
     }
   }
 
+  const isBusy = busyTier !== null || busyDir !== null;
+  const knownModels = models.filter((m) => m.tier !== null);
+  const orphanModels = models.filter((m) => m.tier === null);
   const hasActive = models.some((m) => m.active);
 
   return (
@@ -550,9 +567,9 @@ function MemoTranscriptionSection() {
           </div>
         ) : (
           <div className="space-y-3">
-            {models.map((m) => (
+            {knownModels.map((m) => (
               <div
-                key={m.tier}
+                key={m.dir_name}
                 className={`border rounded-lg p-3 ${
                   m.active
                     ? "border-green-300 bg-green-50/50"
@@ -588,27 +605,29 @@ function MemoTranscriptionSection() {
                   <div className="flex items-center gap-2 shrink-0">
                     {m.downloaded ? (
                       <>
-                        {!m.active && (
+                        {!m.active && m.tier && (
                           <button
-                            onClick={() => handleActivate(m.tier)}
-                            disabled={busyTier !== null}
+                            onClick={() => handleActivate(m.tier!)}
+                            disabled={isBusy}
                             className="px-2.5 py-1 text-xs text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
                           >
                             Activate
                           </button>
                         )}
-                        <button
-                          onClick={() => handleDelete(m.tier)}
-                          disabled={busyTier !== null}
-                          className="px-2.5 py-1 text-xs text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
-                        >
-                          {busyTier === m.tier ? "Removing..." : "Remove"}
-                        </button>
+                        {m.tier && (
+                          <button
+                            onClick={() => handleDelete(m.tier!)}
+                            disabled={isBusy}
+                            className="px-2.5 py-1 text-xs text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+                          >
+                            {busyTier === m.tier ? "Removing..." : "Remove"}
+                          </button>
+                        )}
                       </>
-                    ) : (
+                    ) : m.tier ? (
                       <button
-                        onClick={() => handleDownload(m.tier)}
-                        disabled={busyTier !== null}
+                        onClick={() => handleDownload(m.tier!)}
+                        disabled={isBusy}
                         className="px-2.5 py-1 text-xs text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-1.5"
                       >
                         {busyTier === m.tier ? (
@@ -620,11 +639,51 @@ function MemoTranscriptionSection() {
                           `Download (${m.download_size})`
                         )}
                       </button>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>
             ))}
+
+            {orphanModels.length > 0 && (
+              <>
+                <p className="text-xs text-gray-500 mt-2 pt-2 border-t border-gray-100">
+                  Other models on disk
+                </p>
+                {orphanModels.map((m) => (
+                  <div
+                    key={m.dir_name}
+                    className="border border-amber-200 bg-amber-50/50 rounded-lg p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <span className="font-medium text-sm text-gray-900">
+                          {m.label}
+                        </span>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {m.description}
+                        </p>
+                        <div className="text-xs text-gray-400 mt-1 space-y-0.5">
+                          {m.model_size_bytes != null && (
+                            <p>Size on disk: {formatFileSize(m.model_size_bytes)}</p>
+                          )}
+                          {m.model_path && (
+                            <p className="break-all">Location: {m.model_path}</p>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteDir(m.dir_name)}
+                        disabled={isBusy}
+                        className="px-2.5 py-1 text-xs text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50 shrink-0"
+                      >
+                        {busyDir === m.dir_name ? "Removing..." : "Remove"}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
 
