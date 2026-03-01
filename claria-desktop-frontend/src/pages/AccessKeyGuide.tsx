@@ -1,56 +1,45 @@
 import StepIndicator from "../components/StepIndicator";
 import type { Page } from "../App";
 
-export default function IamSetupGuide({
+export default function AccessKeyGuide({
   navigate,
 }: {
   navigate: (page: Page) => void;
 }) {
   return (
     <div className="max-w-2xl mx-auto p-8">
-      <StepIndicator current={2} />
+      <StepIndicator current={3} />
 
-      <h2 className="text-2xl font-bold mb-6">Step 2: Create IAM Credentials</h2>
+      <h2 className="text-2xl font-bold mb-6">
+        Step 3: Create a Root Access Key
+      </h2>
 
       <div className="space-y-4 text-gray-700">
         <p>
-          Claria needs AWS credentials to provision and manage resources. Create
-          a dedicated IAM user with the right permissions:
+          Claria needs a one-time access key from the root account to set up
+          your infrastructure. It will create a dedicated least-privilege user
+          and then <strong>delete the root access key</strong> automatically.
         </p>
 
         <ol className="list-decimal list-inside space-y-3 pl-2">
           <li>
-            Open the{" "}
+            Sign in to the{" "}
             <span className="font-mono text-sm bg-gray-100 px-1 py-0.5 rounded">
-              IAM console
+              AWS Management Console
             </span>{" "}
-            in your AWS account
+            as the <strong>root user</strong>
           </li>
           <li>
-            Go to <strong>Users</strong> and click{" "}
-            <strong>"Create user"</strong>
+            Click your account name in the top-right corner and select{" "}
+            <strong>Security credentials</strong>
           </li>
           <li>
-            Name it something like{" "}
-            <span className="font-mono text-sm bg-gray-100 px-1 py-0.5 rounded">
-              claria-admin
-            </span>
-          </li>
-          <li>
-            Attach the{" "}
-            <span className="font-mono text-sm bg-gray-100 px-1 py-0.5 rounded">
-              AdministratorAccess
-            </span>{" "}
-            managed policy. (Future versions of Claria will use a scoped-down
-            policy with least privilege.)
-          </li>
-          <li>
-            Go to the user's <strong>Security credentials</strong> tab and click{" "}
+            Scroll to <strong>Access keys</strong> and click{" "}
             <strong>"Create access key"</strong>
           </li>
           <li>
-            Select <strong>"Application running outside AWS"</strong> as the use
-            case
+            Check the acknowledgment box and click{" "}
+            <strong>"Create access key"</strong>
           </li>
         </ol>
 
@@ -60,11 +49,19 @@ export default function IamSetupGuide({
             is only shown once.
           </p>
         </div>
+
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <p className="text-blue-800 text-sm">
+            You will paste these into Claria on the next screen. Claria will use
+            them to create a scoped IAM user with minimal permissions and then
+            delete this root access key from your account.
+          </p>
+        </div>
       </div>
 
       <div className="flex justify-between mt-8">
         <button
-          onClick={() => navigate("guide-aws")}
+          onClick={() => navigate("guide-mfa")}
           className="px-4 py-2 text-gray-600 hover:text-gray-800"
         >
           Back

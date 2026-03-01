@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { hasConfig } from "./lib/tauri";
 import StartScreen from "./pages/StartScreen";
 import AwsAccountGuide from "./pages/AwsAccountGuide";
-import IamSetupGuide from "./pages/IamSetupGuide";
+import MfaSetupGuide from "./pages/MfaSetupGuide";
+import AccessKeyGuide from "./pages/AccessKeyGuide";
 import CredentialIntake from "./pages/CredentialIntake";
 import ScanProvision from "./pages/ScanProvision";
 import ManageDashboard from "./pages/ManageDashboard";
@@ -15,7 +16,8 @@ export type Page =
   | "loading"
   | "start"
   | "guide-aws"
-  | "guide-iam"
+  | "guide-mfa"
+  | "guide-access-key"
   | "credentials"
   | "scan"
   | "dashboard"
@@ -67,7 +69,8 @@ export default function App() {
         <StartScreen navigate={navigate} configExists={configExists} />
       )}
       {page === "guide-aws" && <AwsAccountGuide navigate={navigate} />}
-      {page === "guide-iam" && <IamSetupGuide navigate={navigate} />}
+      {page === "guide-mfa" && <MfaSetupGuide navigate={navigate} />}
+      {page === "guide-access-key" && <AccessKeyGuide navigate={navigate} />}
       {page === "credentials" && <CredentialIntake navigate={navigate} />}
       {page === "scan" && <ScanProvision navigate={navigate} />}
       {page === "dashboard" && <ManageDashboard navigate={navigate} />}

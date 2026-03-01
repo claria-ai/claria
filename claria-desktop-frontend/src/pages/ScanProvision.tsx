@@ -50,9 +50,9 @@ export default function ScanProvision({
 
   return (
     <div className="max-w-2xl mx-auto p-8">
-      <StepIndicator current={4} />
+      <StepIndicator current={5} />
 
-      <h2 className="text-2xl font-bold mb-6">Step 4: Review &amp; Provision</h2>
+      <h2 className="text-2xl font-bold mb-6">Step 5: Review &amp; Provision</h2>
 
       {/* Phase: idle — prompt to start scanning */}
       {phase === "idle" && (

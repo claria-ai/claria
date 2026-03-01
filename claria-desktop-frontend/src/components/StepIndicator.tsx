@@ -1,6 +1,7 @@
 const STEPS = [
   "AWS Account",
-  "IAM Setup",
+  "Root MFA",
+  "Access Key",
   "Credentials",
   "Provision",
 ];

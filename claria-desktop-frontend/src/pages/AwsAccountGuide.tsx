@@ -39,11 +39,8 @@ export default function AwsAccountGuide({
             and create a budget (e.g. $10/month)
           </li>
           <li>
-            <strong>Enable MFA</strong> on the root account. Go to{" "}
-            <span className="font-mono text-sm bg-gray-100 px-1 py-0.5 rounded">
-              IAM &gt; Security credentials
-            </span>{" "}
-            and add a virtual MFA device
+            <strong>Enable MFA</strong> on the root account (covered in the next
+            step)
           </li>
         </ol>
 
@@ -62,7 +59,7 @@ export default function AwsAccountGuide({
           Back
         </button>
         <button
-          onClick={() => navigate("guide-iam")}
+          onClick={() => navigate("guide-mfa")}
           className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
         >
           Next

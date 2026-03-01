@@ -137,10 +137,10 @@ impl Manifest {
                 ResourceSpec {
                     resource_type: "baa_agreement".into(),
                     resource_name: "aws-baa".into(),
-                    lifecycle: Lifecycle::Managed,
+                    lifecycle: Lifecycle::Data,
                     desired: json!({"state": "active"}),
                     label: "BAA Agreement".into(),
-                    description: "Business Associate Agreement — your legal HIPAA contract with AWS"
+                    description: "Business Associate Agreement — must be accepted in the AWS Artifact console"
                         .into(),
                     severity: Severity::Elevated,
                     iam_actions: vec!["artifact:ListCustomerAgreements".into()],
@@ -166,8 +166,8 @@ impl Manifest {
                     resource_name: bucket.clone(),
                     lifecycle: Lifecycle::Managed,
                     desired: json!({"status": "Enabled"}),
-                    label: "Versioning".into(),
-                    description: "Version history — protects against accidental deletion".into(),
+                    label: "S3 Bucket Versioning".into(),
+                    description: "S3 version history — protects against accidental deletion".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
                         "s3:GetBucketVersioning".into(),

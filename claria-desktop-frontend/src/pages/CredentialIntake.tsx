@@ -324,9 +324,9 @@ export default function CredentialIntake({
 
   return (
     <div className="max-w-2xl mx-auto p-8">
-      <StepIndicator current={3} />
+      <StepIndicator current={4} />
 
-      <h2 className="text-2xl font-bold mb-6">Step 3: Configure Credentials</h2>
+      <h2 className="text-2xl font-bold mb-6">Step 4: Configure Credentials</h2>
 
       {/* Mode selector */}
       <div className="flex flex-wrap gap-2 mb-6">
@@ -671,7 +671,7 @@ export default function CredentialIntake({
       {/* ── Actions ───────────────────────────────────────────────────── */}
       <div className="flex justify-between mt-8">
         <button
-          onClick={() => navigate("guide-iam")}
+          onClick={() => navigate("guide-access-key")}
           disabled={isWorking}
           className="px-4 py-2 text-gray-600 hover:text-gray-800 disabled:opacity-50"
         >
