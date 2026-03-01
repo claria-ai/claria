@@ -1,4 +1,3 @@
-use aws_sdk_bedrock::types::AgreementStatus;
 use aws_sdk_bedrock::Client;
 use serde_json::json;
 
@@ -26,6 +25,85 @@ impl BedrockModelAgreementSyncer {
     fn model_prefix(&self) -> &str {
         &self.spec.resource_name
     }
+
+    /// Ensure all matching models have their Marketplace agreements accepted.
+    ///
+    /// This is idempotent: if an agreement already exists, AWS returns a
+    /// `ValidationException` with "Agreement already exists" which we treat
+    /// as success.
+    ///
+    /// We skip `GetFoundationModelAvailability` because its `Available` status
+    /// means "an agreement mechanism exists" — NOT "the agreement hasn't been
+    /// accepted yet". Directly attempting acceptance is the only reliable check.
+    async fn ensure_agreements(&self) -> Result<(), ProvisionerError> {
+        let models = self
+            .client
+            .list_foundation_models()
+            .send()
+            .await
+            .map_err(|e| ProvisionerError::Aws(format_err_chain(&e)))?;
+
+        let matching_ids: Vec<String> = models
+            .model_summaries()
+            .iter()
+            .map(|m| m.model_id().to_string())
+            .filter(|id| id.contains(self.model_prefix()) && !is_context_window_variant(id))
+            .collect();
+
+        let mut failures: Vec<String> = Vec::new();
+
+        for model_id in &matching_ids {
+            let offers = match self
+                .client
+                .list_foundation_model_agreement_offers()
+                .model_id(model_id)
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let msg = format_err_chain(&e);
+                    tracing::warn!(model_id, error = %msg, "failed to list agreement offers");
+                    failures.push(format!("{model_id}: {msg}"));
+                    continue;
+                }
+            };
+
+            if offers.offers().is_empty() {
+                continue;
+            }
+
+            let offer_token = offers.offers()[0].offer_token();
+
+            match self
+                .client
+                .create_foundation_model_agreement()
+                .model_id(model_id)
+                .offer_token(offer_token)
+                .send()
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(model_id, "model agreement accepted");
+                }
+                Err(e) => {
+                    let msg = format_err_chain(&e);
+                    if msg.contains("already exists") {
+                        tracing::debug!(model_id, "model agreement already accepted");
+                    } else {
+                        tracing::warn!(model_id, error = %msg, "failed to accept model agreement");
+                        failures.push(format!("{model_id}: {msg}"));
+                    }
+                }
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(ProvisionerError::Aws(failures.join("; ")))
+        }
+    }
 }
 
 impl ResourceSyncer for BedrockModelAgreementSyncer {
@@ -35,52 +113,10 @@ impl ResourceSyncer for BedrockModelAgreementSyncer {
 
     fn read(&self) -> BoxFuture<'_, Result<Option<serde_json::Value>, ProvisionerError>> {
         Box::pin(async {
-            let models = self
-                .client
-                .list_foundation_models()
-                .send()
-                .await
-                .map_err(|e| ProvisionerError::Aws(format_err_chain(&e)))?;
-
-            // Find a representative model matching this prefix
-            let representative = models
-                .model_summaries()
-                .iter()
-                .map(|m| m.model_id().to_string())
-                .filter(|id| id.contains(self.model_prefix()))
-                .find(|id| !is_context_window_variant(id));
-
-            let Some(model_id) = representative else {
-                return Ok(Some(json!({"agreement": "unavailable"})));
-            };
-
-            // Check agreement status
-            let agreement = match self
-                .client
-                .get_foundation_model_availability()
-                .model_id(&model_id)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    let needs_agreement = resp
-                        .agreement_availability()
-                        .map(|a| *a.status() == AgreementStatus::Available)
-                        .unwrap_or(false);
-
-                    if needs_agreement {
-                        "pending"
-                    } else {
-                        "accepted"
-                    }
-                }
-                Err(_) => "unknown",
-            };
-
-            Ok(Some(json!({
-                "agreement": agreement,
-                "model_id": model_id,
-            })))
+            match self.ensure_agreements().await {
+                Ok(()) => Ok(Some(json!({"agreement": "accepted"}))),
+                Err(_) => Ok(Some(json!({"agreement": "pending"}))),
+            }
         })
     }
 
@@ -104,79 +140,7 @@ impl ResourceSyncer for BedrockModelAgreementSyncer {
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {
         Box::pin(async {
-            let models = self
-                .client
-                .list_foundation_models()
-                .send()
-                .await
-                .map_err(|e| ProvisionerError::Aws(format_err_chain(&e)))?;
-
-            let matching_ids: Vec<String> = models
-                .model_summaries()
-                .iter()
-                .map(|m| m.model_id().to_string())
-                .filter(|id| {
-                    id.contains(self.model_prefix()) && !is_context_window_variant(id)
-                })
-                .collect();
-
-            for model_id in &matching_ids {
-                // Check if agreement is pending
-                let needs_agreement = match self
-                    .client
-                    .get_foundation_model_availability()
-                    .model_id(model_id)
-                    .send()
-                    .await
-                {
-                    Ok(resp) => resp
-                        .agreement_availability()
-                        .map(|a| *a.status() == AgreementStatus::Available)
-                        .unwrap_or(false),
-                    Err(_) => continue,
-                };
-
-                if !needs_agreement {
-                    continue;
-                }
-
-                // List offers and accept the first one
-                let offers = match self
-                    .client
-                    .list_foundation_model_agreement_offers()
-                    .model_id(model_id)
-                    .send()
-                    .await
-                {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        tracing::warn!(model_id, error = %e, "failed to list agreement offers");
-                        continue;
-                    }
-                };
-
-                if offers.offers().is_empty() {
-                    continue;
-                }
-
-                let offer_token = offers.offers()[0].offer_token();
-                tracing::info!(model_id, offer_token, "accepting model agreement");
-
-                match self
-                    .client
-                    .create_foundation_model_agreement()
-                    .model_id(model_id)
-                    .offer_token(offer_token)
-                    .send()
-                    .await
-                {
-                    Ok(_) => tracing::info!(model_id, "model agreement accepted"),
-                    Err(e) => {
-                        tracing::warn!(model_id, error = %e, "failed to accept model agreement")
-                    }
-                }
-            }
-
+            self.ensure_agreements().await?;
             Ok(json!({"agreement": "accepted"}))
         })
     }

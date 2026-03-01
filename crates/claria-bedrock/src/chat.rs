@@ -84,7 +84,7 @@
 use std::collections::HashMap;
 
 use aws_sdk_bedrock::types::{
-    AgreementStatus, FoundationModelLifecycleStatus, InferenceProfileStatus, InferenceProfileType,
+    FoundationModelLifecycleStatus, InferenceProfileStatus, InferenceProfileType,
 };
 use aws_sdk_bedrockruntime::types::{ContentBlock, ConversationRole, Message, SystemContentBlock};
 use serde::{Deserialize, Serialize};
@@ -340,7 +340,7 @@ pub async fn chat_converse(
 /// Accept the Marketplace agreement for a foundation model.
 ///
 /// Lists available offers for the model and accepts the first one.
-/// This is a no-op if the model has no agreement requirement.
+/// Idempotent: if the agreement already exists, this is a no-op.
 pub async fn accept_model_agreement(
     config: &aws_config::SdkConfig,
     model_id: &str,
@@ -357,24 +357,33 @@ pub async fn accept_model_agreement(
 
     let offers = offers_response.offers();
     if offers.is_empty() {
-        return Err(BedrockError::Agreement(format!(
-            "no agreement offers found for model {model_id}"
-        )));
+        // No offers means no agreement mechanism — nothing to do.
+        return Ok(());
     }
 
     let offer_token = offers[0].offer_token();
 
     info!(model_id, offer_token, "accepting model agreement");
 
-    client
+    match client
         .create_foundation_model_agreement()
         .model_id(model_id)
         .offer_token(offer_token)
         .send()
         .await
-        .map_err(|e| BedrockError::Agreement(e.into_service_error().to_string()))?;
-
-    info!(model_id, "model agreement accepted");
+    {
+        Ok(_) => {
+            info!(model_id, "model agreement accepted");
+        }
+        Err(e) => {
+            let msg = e.into_service_error().to_string();
+            if msg.contains("already exists") {
+                info!(model_id, "model agreement already accepted");
+            } else {
+                return Err(BedrockError::Agreement(msg));
+            }
+        }
+    }
 
     Ok(())
 }
@@ -390,17 +399,14 @@ pub struct AgreementSummary {
     pub failed: Vec<(String, String)>,
 }
 
-/// Check and accept Marketplace agreements for all available Claude models.
+/// Ensure Marketplace agreements are accepted for all available Claude models.
 ///
-/// Lists all Claude inference profiles, checks each underlying foundation
-/// model's agreement status, and accepts any that are pending. Returns a
-/// summary of what was done.
+/// Lists all Claude inference profiles, deduplicates to bare foundation model
+/// IDs, and attempts acceptance for each. Already-accepted agreements are
+/// treated as success (idempotent).
 pub async fn accept_all_model_agreements(
     config: &aws_config::SdkConfig,
 ) -> Result<AgreementSummary, BedrockError> {
-    let client = aws_sdk_bedrock::Client::new(config);
-
-    // Discover all Claude inference profiles.
     let models = list_chat_models(config).await?;
 
     let mut summary = AgreementSummary {
@@ -412,8 +418,6 @@ pub async fn accept_all_model_agreements(
     // Deduplicate: inference profiles like `us.anthropic.claude-sonnet-4-...`
     // and `global.anthropic.claude-sonnet-4-...` share the same underlying
     // model. Strip the region prefix to get the bare model ID.
-    // Models without inference profiles already have bare IDs like
-    // `anthropic.claude-opus-4-6-v1`.
     let mut seen_bare_ids = std::collections::HashSet::new();
 
     for model in &models {
@@ -423,30 +427,8 @@ pub async fn accept_all_model_agreements(
             continue;
         }
 
-        // Check agreement status for this foundation model.
-        let availability = client
-            .get_foundation_model_availability()
-            .model_id(bare_id)
-            .send()
-            .await;
-
-        let needs_agreement = match &availability {
-            Ok(resp) => resp
-                .agreement_availability()
-                .map(|a| *a.status() == AgreementStatus::Available)
-                .unwrap_or(false),
-            Err(_) => {
-                // Can't check — skip this model.
-                continue;
-            }
-        };
-
-        if !needs_agreement {
-            summary.already_accepted.push(bare_id.to_string());
-            continue;
-        }
-
-        // Accept the agreement.
+        // Attempt acceptance directly — this is idempotent and handles
+        // already-accepted agreements gracefully.
         match accept_model_agreement(config, bare_id).await {
             Ok(()) => {
                 summary.newly_accepted.push(bare_id.to_string());
@@ -458,8 +440,7 @@ pub async fn accept_all_model_agreements(
     }
 
     info!(
-        already_accepted = summary.already_accepted.len(),
-        newly_accepted = summary.newly_accepted.len(),
+        accepted = summary.newly_accepted.len(),
         failed = summary.failed.len(),
         "model agreement check complete"
     );
