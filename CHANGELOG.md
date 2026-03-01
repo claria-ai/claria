@@ -2,6 +2,17 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Added
+- Version history for record files — browse, view, and compare any two versions with character-level inline diff
+- Deleted record recovery — restore deleted files and clients from S3 versioning
+- "More" toggle on Clients list and Client Record pages to reveal version history and deleted items
+
+### Changed
+- IAM policy updated with `s3:GetObjectVersion`, `s3:ListBucketVersions`, and `s3:DeleteObjectVersion`
+- Manifest version bumped to v3
+
 ## [0.5.0] — 2026-03-01
 
 ### Added
