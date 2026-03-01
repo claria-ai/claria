@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   listRecordFiles,
@@ -13,6 +13,8 @@ import {
   restoreFileVersion,
   listDeletedFiles,
   restoreDeletedFile,
+  getWhisperStatus,
+  transcribeMemo,
   type RecordFile,
   type ChatHistoryDetail,
   type ChatModel,
@@ -161,6 +163,23 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   const [diffLoading, setDiffLoading] = useState(false);
   const [restoringVersion, setRestoringVersion] = useState(false);
 
+  // Memo recording state
+  const [memoReady, setMemoReady] = useState(false);
+  type MemoState = "idle" | "recording" | "paused" | "transcribing" | "review";
+  const [memoState, setMemoState] = useState<MemoState>("idle");
+  const [memoTranscript, setMemoTranscript] = useState("");
+  const [memoElapsed, setMemoElapsed] = useState(0);
+  const [memoFilename, setMemoFilename] = useState("");
+  const [memoSaving, setMemoSaving] = useState(false);
+
+  // Audio capture refs (not state — no re-renders needed)
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const pcmBufferRef = useRef<Float32Array[]>([]);
+  const transcribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const transcribingRef = useRef(false);
+
   const CHAT_HISTORY_PREFIX = "chat-history/";
 
   const chatHistoryFiles = files
@@ -183,6 +202,13 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Check if Whisper model is available.
+  useEffect(() => {
+    getWhisperStatus()
+      .then((s) => setMemoReady(s.available))
+      .catch(() => setMemoReady(false));
+  }, []);
 
   // Tauri drag-and-drop event listener.
   useEffect(() => {
@@ -228,6 +254,223 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       }
     }
     await refresh();
+  }
+
+  // -------------------------------------------------------------------------
+  // Memo recording helpers
+  // -------------------------------------------------------------------------
+
+  function getPcmBuffer(): Float32Array {
+    const chunks = pcmBufferRef.current;
+    const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+    const merged = new Float32Array(totalLen);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return merged;
+  }
+
+  async function resampleTo16kHz(buffer: Float32Array, sourceSampleRate: number): Promise<Float32Array> {
+    if (sourceSampleRate === 16000) return buffer;
+    const duration = buffer.length / sourceSampleRate;
+    const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * 16000), 16000);
+    const audioBuffer = offlineCtx.createBuffer(1, buffer.length, sourceSampleRate);
+    audioBuffer.getChannelData(0).set(buffer);
+    const source = offlineCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offlineCtx.destination);
+    source.start();
+    const rendered = await offlineCtx.startRendering();
+    return rendered.getChannelData(0);
+  }
+
+  function float32ToBase64(samples: Float32Array): string {
+    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+
+  async function runTranscription(force = false) {
+    if (!force && transcribingRef.current) return;
+    // If forced (final pass), wait for any in-flight transcription to finish.
+    if (force) {
+      while (transcribingRef.current) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    transcribingRef.current = true;
+    try {
+      const sampleRate = audioCtxRef.current?.sampleRate ?? 44100;
+      const raw = getPcmBuffer();
+      if (raw.length === 0) return;
+      const pcm16k = await resampleTo16kHz(raw, sampleRate);
+      const base64 = float32ToBase64(pcm16k);
+      const text = await transcribeMemo(base64);
+      setMemoTranscript(text);
+    } catch (e) {
+      console.error("Transcription error:", e);
+      setError(String(e));
+    } finally {
+      transcribingRef.current = false;
+    }
+  }
+
+  function startTranscribeTimer() {
+    if (transcribeTimerRef.current) return;
+    transcribeTimerRef.current = setInterval(() => {
+      runTranscription();
+    }, 4000);
+  }
+
+  function stopTranscribeTimer() {
+    if (transcribeTimerRef.current) {
+      clearInterval(transcribeTimerRef.current);
+      transcribeTimerRef.current = null;
+    }
+  }
+
+  function startElapsedTimer() {
+    if (elapsedTimerRef.current) return;
+    elapsedTimerRef.current = setInterval(() => {
+      setMemoElapsed((prev) => prev + 1);
+    }, 1000);
+  }
+
+  function stopElapsedTimer() {
+    if (elapsedTimerRef.current) {
+      clearInterval(elapsedTimerRef.current);
+      elapsedTimerRef.current = null;
+    }
+  }
+
+  async function handleStartMemo() {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      const ctx = new AudioContext();
+      audioCtxRef.current = ctx;
+      pcmBufferRef.current = [];
+      setMemoTranscript("");
+      setMemoElapsed(0);
+
+      const source = ctx.createMediaStreamSource(stream);
+      // ScriptProcessorNode is deprecated but widely supported and simpler
+      // than AudioWorklet for this use case.
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        pcmBufferRef.current.push(new Float32Array(input));
+      };
+      source.connect(processor);
+      processor.connect(ctx.destination);
+
+      setMemoState("recording");
+      startElapsedTimer();
+      startTranscribeTimer();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function handlePauseMemo() {
+    stopTranscribeTimer();
+    stopElapsedTimer();
+    if (audioCtxRef.current && audioCtxRef.current.state === "running") {
+      await audioCtxRef.current.suspend();
+    }
+    // Run one final transcription pass before allowing edits.
+    await runTranscription(true);
+    setMemoState("paused");
+  }
+
+  async function handleResumeMemo() {
+    if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+      await audioCtxRef.current.resume();
+    }
+    setMemoState("recording");
+    startElapsedTimer();
+    startTranscribeTimer();
+  }
+
+  async function handleDoneMemo() {
+    stopTranscribeTimer();
+    stopElapsedTimer();
+
+    // Stop the media stream.
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+
+    if (audioCtxRef.current) {
+      if (audioCtxRef.current.state !== "closed") {
+        // Resume if suspended so we can run final transcription
+        if (audioCtxRef.current.state === "suspended") {
+          await audioCtxRef.current.resume();
+        }
+      }
+    }
+
+    // Final transcription pass.
+    setMemoState("transcribing");
+    await runTranscription(true);
+
+    // Close AudioContext.
+    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+      await audioCtxRef.current.close();
+    }
+    audioCtxRef.current = null;
+
+    const now = new Date();
+    const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+    setMemoFilename(`memo-${ts}`);
+    setMemoState("review");
+  }
+
+  function handleCancelMemo() {
+    // Clean up any active audio resources.
+    stopTranscribeTimer();
+    stopElapsedTimer();
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+      audioCtxRef.current.close();
+    }
+    audioCtxRef.current = null;
+    pcmBufferRef.current = [];
+    setMemoState("idle");
+    setMemoTranscript("");
+    setMemoElapsed(0);
+  }
+
+  async function handleSaveMemo() {
+    if (!memoFilename.trim()) return;
+    setMemoSaving(true);
+    setError(null);
+    try {
+      await createTextRecordFile(clientId, memoFilename.trim(), memoTranscript);
+      pcmBufferRef.current = [];
+      setMemoState("idle");
+      setMemoTranscript("");
+      setMemoElapsed(0);
+      setMemoFilename("");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setMemoSaving(false);
+    }
+  }
+
+  function formatElapsed(seconds: number): string {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
   }
 
   async function handlePreview(filename: string) {
@@ -462,6 +705,18 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
               </button>
+              {memoReady && memoState === "idle" && (
+                <button
+                  onClick={handleStartMemo}
+                  className="px-3 py-1 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700 transition-colors flex items-center gap-1"
+                >
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+                    <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+                  </svg>
+                  Record Memo
+                </button>
+              )}
               <button
                 onClick={() => setShowCreateText(true)}
                 className="px-3 py-1 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 transition-colors"
@@ -470,6 +725,92 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
               </button>
             </div>
           </div>
+
+          {/* Recording bar */}
+          {(memoState === "recording" || memoState === "paused" || memoState === "transcribing") && (
+            <div className="px-4 py-3 border-b border-gray-100 bg-red-50">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {memoState === "recording" && (
+                    <span className="relative flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
+                    </span>
+                  )}
+                  {memoState === "paused" && (
+                    <span className="inline-flex rounded-full h-3 w-3 bg-yellow-500" />
+                  )}
+                  {memoState === "transcribing" && <Spinner />}
+                  <span className="text-sm font-medium text-gray-700">
+                    {memoState === "recording" && "Recording"}
+                    {memoState === "paused" && "Paused"}
+                    {memoState === "transcribing" && "Transcribing..."}
+                  </span>
+                  <span className="text-sm text-gray-500 font-mono">
+                    {formatElapsed(memoElapsed)}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  {memoState === "recording" && (
+                    <>
+                      <button
+                        onClick={handlePauseMemo}
+                        className="px-3 py-1 text-xs font-medium text-yellow-700 bg-yellow-100 border border-yellow-300 rounded hover:bg-yellow-200 transition-colors"
+                      >
+                        Pause
+                      </button>
+                      <button
+                        onClick={handleDoneMemo}
+                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded hover:bg-gray-200 transition-colors"
+                      >
+                        Done
+                      </button>
+                    </>
+                  )}
+                  {memoState === "paused" && (
+                    <>
+                      <button
+                        onClick={handleResumeMemo}
+                        className="px-3 py-1 text-xs font-medium text-red-700 bg-red-100 border border-red-300 rounded hover:bg-red-200 transition-colors"
+                      >
+                        Resume
+                      </button>
+                      <button
+                        onClick={handleDoneMemo}
+                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded hover:bg-gray-200 transition-colors"
+                      >
+                        Done
+                      </button>
+                    </>
+                  )}
+                  <button
+                    onClick={handleCancelMemo}
+                    className="px-3 py-1 text-xs font-medium text-gray-500 hover:text-gray-700 transition-colors"
+                    disabled={memoState === "transcribing"}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+
+              {/* Live transcript */}
+              {memoTranscript && (
+                <div className="mt-3">
+                  {memoState === "paused" ? (
+                    <textarea
+                      value={memoTranscript}
+                      onChange={(e) => setMemoTranscript(e.target.value)}
+                      className="w-full min-h-[100px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent"
+                    />
+                  ) : (
+                    <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono bg-white border border-gray-200 rounded-lg p-3 max-h-[200px] overflow-y-auto">
+                      {memoTranscript}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Loading */}
           {loading && (
@@ -851,6 +1192,46 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                 className="px-4 py-2 text-sm text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {creating ? "Creating..." : "Create"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Memo review modal */}
+      {memoState === "review" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Review Memo
+            </h3>
+            <input
+              type="text"
+              placeholder="Filename (e.g. session-notes)"
+              value={memoFilename}
+              onChange={(e) => setMemoFilename(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-3"
+              autoFocus
+            />
+            <textarea
+              value={memoTranscript}
+              onChange={(e) => setMemoTranscript(e.target.value)}
+              className="flex-1 min-h-[200px] w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-4"
+            />
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={handleCancelMemo}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+                disabled={memoSaving}
+              >
+                Discard
+              </button>
+              <button
+                onClick={handleSaveMemo}
+                disabled={memoSaving || !memoFilename.trim()}
+                className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {memoSaving ? "Saving..." : "Save"}
               </button>
             </div>
           </div>

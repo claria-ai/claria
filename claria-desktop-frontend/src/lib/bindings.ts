@@ -552,6 +552,54 @@ async restoreClient(clientId: string, versionId: string) : Promise<Result<null, 
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Check whether the Whisper model is downloaded and ready.
+ */
+async getWhisperStatus() : Promise<Result<WhisperStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_whisper_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Download the Whisper model files from Hugging Face.
+ */
+async downloadWhisperModel() : Promise<Result<WhisperStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_whisper_model") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the local Whisper model and clear the in-memory cache.
+ */
+async deleteWhisperModel() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_whisper_model") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transcribe PCM audio using the local Whisper model.
+ * 
+ * Accepts base64-encoded f32 PCM samples at 16 kHz mono. Returns the
+ * transcript text. The model is loaded on first call and cached in memory
+ * for subsequent calls.
+ */
+async transcribeMemo(audioPcmBase64: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("transcribe_memo", { audioPcmBase64 }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -821,6 +869,10 @@ export type Severity =
  * Status of an individual bootstrap step.
  */
 export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
+/**
+ * Status of the local Whisper model.
+ */
+export type WhisperStatus = { available: boolean; model_size_bytes: number | null; model_path: string | null }
 
 /** tauri-specta globals **/
 

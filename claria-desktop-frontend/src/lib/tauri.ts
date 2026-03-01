@@ -316,3 +316,25 @@ export async function listDeletedClients(): Promise<import("./bindings").Deleted
 export async function restoreClient(clientId: string, versionId: string): Promise<void> {
   unwrap(await commands.restoreClient(clientId, versionId));
 }
+
+// ---------------------------------------------------------------------------
+// Whisper model management + local transcription
+// ---------------------------------------------------------------------------
+
+export type { WhisperStatus } from "./bindings";
+
+export async function getWhisperStatus(): Promise<import("./bindings").WhisperStatus> {
+  return unwrap(await commands.getWhisperStatus());
+}
+
+export async function downloadWhisperModel(): Promise<import("./bindings").WhisperStatus> {
+  return unwrap(await commands.downloadWhisperModel());
+}
+
+export async function deleteWhisperModel(): Promise<void> {
+  unwrap(await commands.deleteWhisperModel());
+}
+
+export async function transcribeMemo(audioPcmBase64: string): Promise<string> {
+  return unwrap(await commands.transcribeMemo(audioPcmBase64));
+}

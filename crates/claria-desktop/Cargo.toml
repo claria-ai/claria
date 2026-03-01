@@ -10,9 +10,11 @@ claria-core = { path = "../claria-core" }
 claria-provisioner = { path = "../claria-provisioner" }
 claria-storage = { path = "../claria-storage" }
 claria-transcribe = { path = "../claria-transcribe" }
+claria-whisper = { path = "../claria-whisper" }
 aws-config = "=1.8.14"
 aws-sdk-s3 = "=1.124.0"
 aws-sdk-sts = "=1.99.0"
+base64 = "=0.22.1"
 color-eyre = "=0.6.3"
 dirs = "=6.0.0"
 eyre = "=0.6.12"
@@ -25,6 +27,7 @@ tauri = { version = "=2.10.2", features = [] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 tokio = { version = "=1.49.0", features = ["full"] }
 tracing = "=0.1.44"
+ureq = "=3.0.11"
 tracing-subscriber = { version = "=0.3.22", features = ["env-filter", "json"] }
 uuid = { version = "=1.21.0", features = ["v4"] }
 

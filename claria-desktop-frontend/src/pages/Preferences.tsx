@@ -7,8 +7,12 @@ import {
   listPromptVersions,
   getPromptVersion,
   restorePromptVersion,
+  getWhisperStatus,
+  downloadWhisperModel,
+  deleteWhisperModel,
   type ChatModel,
   type FileVersion,
+  type WhisperStatus,
 } from "../lib/tauri";
 import type { Page } from "../App";
 
@@ -85,6 +89,9 @@ export default function Preferences({
           label="PDF Extraction Prompt"
           description="Instructions used when extracting text from uploaded PDF and DOCX files."
         />
+
+        {/* Memo Transcription section */}
+        <MemoTranscriptionSection />
 
         {/* Preferred Model section */}
         <details className="border border-gray-200 rounded-lg group">
@@ -450,6 +457,133 @@ function PromptEditor({
         </div>
       )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Memo Transcription model management
+// ---------------------------------------------------------------------------
+
+function MemoTranscriptionSection() {
+  const [status, setStatus] = useState<WhisperStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [downloading, setDownloading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setStatus(await getWhisperStatus());
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  async function handleDownload() {
+    setDownloading(true);
+    setError(null);
+    try {
+      setStatus(await downloadWhisperModel());
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteWhisperModel();
+      setStatus({ available: false, model_size_bytes: null, model_path: null });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <details className="border border-gray-200 rounded-lg group">
+      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-gray-900">Memo Transcription</span>
+          {status?.available && (
+            <span className="text-xs text-green-600">Ready</span>
+          )}
+        </div>
+        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
+          &#9656;
+        </span>
+      </summary>
+      <div className="border-t border-gray-100 p-4">
+        <p className="text-xs text-gray-400 mb-3">
+          Record audio memos and transcribe them to text notes using a local AI
+          model. No audio data leaves your computer.
+        </p>
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+            <Spinner />
+            <span>Checking model status...</span>
+          </div>
+        ) : status?.available ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-green-700 text-sm">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              <span>Model ready</span>
+            </div>
+            <div className="text-xs text-gray-400 space-y-1">
+              {status.model_size_bytes != null && (
+                <p>Size: {formatFileSize(status.model_size_bytes)}</p>
+              )}
+              {status.model_path && (
+                <p className="break-all">Location: {status.model_path}</p>
+              )}
+            </div>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="px-3 py-1.5 text-sm text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+            >
+              {deleting ? "Removing..." : "Remove Model"}
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={handleDownload}
+            disabled={downloading}
+            className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+          >
+            {downloading ? (
+              <>
+                <Spinner />
+                <span>Downloading model...</span>
+              </>
+            ) : (
+              "Download Whisper Model (~293 MB)"
+            )}
+          </button>
+        )}
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
+            <p className="text-red-800 text-sm">{error}</p>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 

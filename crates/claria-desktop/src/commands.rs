@@ -915,9 +915,14 @@ pub async fn delete_record_file(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Best-effort delete of the sidecar.
-    let sidecar_key = format!("{key}.text");
-    let _ = claria_storage::objects::delete_object(&s3, &bucket, &sidecar_key).await;
+    // Best-effort delete of the sidecar — but only for file types that
+    // produce one (PDF, DOCX, audio). Plain text files never have a sidecar,
+    // and deleting a non-existent key on a versioned bucket creates a phantom
+    // delete marker.
+    if !filename.ends_with(".txt") {
+        let sidecar_key = format!("{key}.text");
+        let _ = claria_storage::objects::delete_object(&s3, &bucket, &sidecar_key).await;
+    }
 
     tracing::info!(client_id = %id, filename, "record file deleted");
 
@@ -1758,11 +1763,32 @@ pub async fn list_deleted_files(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Collect all deleted keys so we can hide sidecar `.text` files.
+    let entries: Vec<_> = deleted
+        .iter()
+        .filter_map(|d| {
+            let filename = d.key.strip_prefix(&prefix)?;
+            if filename.is_empty() {
+                return None;
+            }
+            Some(filename.to_string())
+        })
+        .collect();
+    let all_deleted: std::collections::HashSet<&str> =
+        entries.iter().map(|s| s.as_str()).collect();
+
     Ok(deleted
         .into_iter()
         .filter_map(|d| {
             let filename = d.key.strip_prefix(&prefix)?.to_string();
             if filename.is_empty() {
+                return None;
+            }
+            // Hide sidecar files: keys ending in `.text` where the base file
+            // also has a delete marker (same logic as list_record_files).
+            if let Some(base) = filename.strip_suffix(".text")
+                && all_deleted.contains(base)
+            {
                 return None;
             }
             Some(DeletedFile {
@@ -1952,4 +1978,187 @@ pub async fn restore_client(
     tracing::info!(client_id = %id, "deleted client restored");
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Whisper model management + local transcription
+// ---------------------------------------------------------------------------
+
+const WHISPER_HF_BASE: &str = "https://huggingface.co/openai/whisper-base.en/resolve/main";
+
+/// Files required for the candle-based Whisper model.
+const WHISPER_FILES: &[&str] = &["model.safetensors", "config.json", "tokenizer.json"];
+
+/// Status of the local Whisper model.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct WhisperStatus {
+    pub available: bool,
+    pub model_size_bytes: Option<i32>,
+    pub model_path: Option<String>,
+}
+
+fn whisper_model_dir() -> Result<std::path::PathBuf, String> {
+    let base = dirs::data_dir().ok_or_else(|| "no data directory found".to_string())?;
+    Ok(base
+        .join("com.claria.desktop")
+        .join("models")
+        .join("whisper-base-en"))
+}
+
+/// Check whether the Whisper model is downloaded and ready.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_whisper_status() -> Result<WhisperStatus, String> {
+    let dir = whisper_model_dir()?;
+    let all_present = WHISPER_FILES.iter().all(|f| dir.join(f).exists());
+    if all_present {
+        let total_size: u64 = WHISPER_FILES
+            .iter()
+            .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
+            .map(|m| m.len())
+            .sum();
+        Ok(WhisperStatus {
+            available: true,
+            model_size_bytes: Some(total_size as i32),
+            model_path: Some(dir.to_string_lossy().to_string()),
+        })
+    } else {
+        Ok(WhisperStatus {
+            available: false,
+            model_size_bytes: None,
+            model_path: None,
+        })
+    }
+}
+
+/// Download the Whisper model files from Hugging Face.
+#[tauri::command]
+#[specta::specta]
+pub async fn download_whisper_model() -> Result<WhisperStatus, String> {
+    let dir = whisper_model_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create models dir: {e}"))?;
+
+    tracing::info!("downloading whisper model files");
+
+    let dir_clone = dir.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        for filename in WHISPER_FILES {
+            let url = format!("{WHISPER_HF_BASE}/{filename}");
+            let dest = dir_clone.join(filename);
+            let tmp = dir_clone.join(format!("{filename}.tmp"));
+
+            tracing::info!(url = %url, file = %filename, "downloading");
+
+            let resp = ureq::get(&url)
+                .call()
+                .map_err(|e| format!("download {filename} failed: {e}"))?;
+
+            let mut reader = resp.into_body().into_reader();
+            let mut file = std::fs::File::create(&tmp)
+                .map_err(|e| format!("create temp file for {filename}: {e}"))?;
+            std::io::copy(&mut reader, &mut file)
+                .map_err(|e| format!("write {filename}: {e}"))?;
+
+            std::fs::rename(&tmp, &dest)
+                .map_err(|e| format!("finalize {filename}: {e}"))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("download task failed: {e}"))??;
+
+    tracing::info!("whisper model download complete");
+
+    get_whisper_status().await
+}
+
+/// Delete the local Whisper model and clear the in-memory cache.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_whisper_model(
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    // Clear cached model.
+    if let Ok(mut guard) = state.whisper.lock() {
+        *guard = None;
+    }
+    let dir = whisper_model_dir()?;
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("failed to delete model: {e}"))?;
+        tracing::info!("whisper model deleted");
+    }
+    Ok(())
+}
+
+/// Transcribe PCM audio using the local Whisper model.
+///
+/// Accepts base64-encoded f32 PCM samples at 16 kHz mono. Returns the
+/// transcript text. The model is loaded on first call and cached in memory
+/// for subsequent calls.
+#[tauri::command]
+#[specta::specta]
+pub async fn transcribe_memo(
+    state: State<'_, DesktopState>,
+    audio_pcm_base64: String,
+) -> Result<String, String> {
+    use base64::Engine;
+
+    let model_dir = whisper_model_dir()?;
+    if !model_dir.join("model.safetensors").exists() {
+        return Err("Whisper model not downloaded. Download it from Preferences.".into());
+    }
+
+    let pcm_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&audio_pcm_base64)
+        .map_err(|e| format!("base64 decode failed: {e}"))?;
+
+    if pcm_bytes.len() % 4 != 0 {
+        return Err("PCM data length is not a multiple of 4 bytes (expected f32 samples)".into());
+    }
+
+    let pcm_samples: Vec<f32> = pcm_bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    let duration_secs = pcm_samples.len() as f64 / 16000.0;
+    tracing::info!(
+        samples = pcm_samples.len(),
+        duration_secs = format!("{duration_secs:.1}"),
+        "transcribe_memo: received audio chunk"
+    );
+
+    let whisper = state.whisper.clone();
+
+    // Run transcription in a blocking task (CPU-intensive).
+    tokio::task::spawn_blocking(move || {
+        let mut guard = whisper
+            .lock()
+            .map_err(|e| format!("whisper lock poisoned: {e}"))?;
+
+        // Load model on first use.
+        if guard.is_none() {
+            tracing::info!("loading whisper model into memory (first use)");
+            let model = claria_whisper::WhisperModel::load(&model_dir)
+                .map_err(|e| e.to_string())?;
+            *guard = Some(model);
+        }
+
+        let start = std::time::Instant::now();
+        let text = guard
+            .as_mut()
+            .expect("model just loaded")
+            .transcribe(&pcm_samples)
+            .map_err(|e| e.to_string())?;
+
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            text_len = text.len(),
+            "transcribe_memo: inference complete"
+        );
+
+        Ok(text)
+    })
+    .await
+    .map_err(|e| format!("transcription task failed: {e}"))?
 }
