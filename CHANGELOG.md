@@ -2,6 +2,25 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Added
+- Preferences page with system prompt editor and chat model selection
+- Chat context loading indicator — spinner and "Building context..." shown while record context is assembled; input disabled until ready
+
+### Fixed
+- HIPAA-compliant restore: restoring deleted files and clients now creates a new S3 version instead of removing the delete marker, preserving the full audit trail
+- Retry loading chat models after onboarding completes
+- Render markdown tables in chat with remark-gfm
+- Clarify chat empty-state text and decouple from file lifecycle
+
+### Changed
+- Renamed dashboard view to "AWS" with back-arrow navigation consistent with other pages
+- Renamed dashboard resource sections and added expandable resource details
+- Removed `s3:DeleteObjectVersion` from IAM policy (no longer needed)
+- Manifest version bumped to v4
+- Rewrote README for clinician audience
+
 ## [0.6.0] — 2026-03-01
 
 ### Added
@@ -10,7 +29,7 @@ All notable changes to Claria are documented here.
 - "More" toggle on Clients list and Client Record pages to reveal version history and deleted items
 
 ### Changed
-- IAM policy updated with `s3:GetObjectVersion`, `s3:ListBucketVersions`, and `s3:DeleteObjectVersion`
+- IAM policy updated with `s3:GetObjectVersion` and `s3:ListBucketVersions`
 - Manifest version bumped to v3
 
 ## [0.5.0] — 2026-03-01
