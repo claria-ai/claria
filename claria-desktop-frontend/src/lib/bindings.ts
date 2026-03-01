@@ -399,72 +399,72 @@ async loadChatHistory(clientId: string, chatId: string) : Promise<Result<ChatHis
 }
 },
 /**
- * Get the current system prompt.
- * 
+ * Get the current content of a named prompt.
+ *
  * Returns the custom prompt from S3 if one exists, otherwise returns the
- * built-in default.
+ * built-in default. Valid prompt names: "system-prompt", "pdf-extraction".
  */
-async getSystemPrompt() : Promise<Result<string, string>> {
+async getPrompt(promptName: string) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_system_prompt") };
+    return { status: "ok", data: await TAURI_INVOKE("get_prompt", { promptName }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Save a custom system prompt to S3.
- * 
- * Overwrites any previously saved prompt. The new prompt takes effect on
- * the next chat message.
+ * Save a named prompt to S3.
+ *
+ * Overwrites any previously saved version. The new content takes effect on
+ * the next operation that uses this prompt.
  */
-async saveSystemPrompt(content: string) : Promise<Result<null, string>> {
+async savePrompt(promptName: string, content: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_system_prompt", { content }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_prompt", { promptName, content }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Delete the custom system prompt from S3, reverting to the built-in default.
+ * Delete a named prompt from S3, reverting to the built-in default.
  */
-async deleteSystemPrompt() : Promise<Result<null, string>> {
+async deletePrompt(promptName: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_system_prompt") };
+    return { status: "ok", data: await TAURI_INVOKE("delete_prompt", { promptName }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * List all versions of the system prompt stored in S3.
+ * List all versions of a named prompt stored in S3.
  */
-async listSystemPromptVersions() : Promise<Result<FileVersion[], string>> {
+async listPromptVersions(promptName: string) : Promise<Result<FileVersion[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("list_system_prompt_versions") };
+    return { status: "ok", data: await TAURI_INVOKE("list_prompt_versions", { promptName }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Get the text content of a specific version of the system prompt.
+ * Get the text content of a specific version of a named prompt.
  */
-async getSystemPromptVersion(versionId: string) : Promise<Result<string, string>> {
+async getPromptVersion(promptName: string, versionId: string) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_system_prompt_version", { versionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_prompt_version", { promptName, versionId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Restore a previous version of the system prompt by writing it as the new current version.
+ * Restore a previous version of a named prompt by writing it as the new current version.
  */
-async restoreSystemPromptVersion(versionId: string) : Promise<Result<null, string>> {
+async restorePromptVersion(promptName: string, versionId: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("restore_system_prompt_version", { versionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("restore_prompt_version", { promptName, versionId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

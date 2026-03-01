@@ -822,12 +822,14 @@ pub async fn upload_record_file(
     // Generate sidecar text extraction for supported document types.
     if let Some(format) = claria_bedrock::extract::document_format_for_extension(&extension) {
         let sidecar_key = format!("{key}.text");
+        let extraction_prompt = load_prompt(&s3, &bucket, "pdf-extraction").await?;
         match claria_bedrock::extract::extract_document_text(
             &sdk_config,
             EXTRACTION_MODEL_ID,
             &bytes,
             filename,
             format,
+            &extraction_prompt,
         )
         .await
         {
@@ -1177,18 +1179,52 @@ Be professional, empathetic, and concise. Ask clarifying questions when needed. 
 Do not provide diagnoses or treatment recommendations — your role is to help \
 organize and document the intake information.";
 
-/// Load the system prompt from S3, falling back to the hardcoded default.
-async fn load_system_prompt(
+/// Resolve a prompt name to its S3 key and hardcoded default text.
+///
+/// Returns `(s3_key, legacy_key, default_text)`. The `legacy_key` is `Some`
+/// only for the system prompt which was previously stored at the bucket root.
+fn resolve_prompt(name: &str) -> Result<(&'static str, Option<&'static str>, &'static str), String> {
+    match name {
+        "system-prompt" => Ok((
+            claria_core::s3_keys::SYSTEM_PROMPT,
+            Some(claria_core::s3_keys::LEGACY_SYSTEM_PROMPT),
+            DEFAULT_SYSTEM_PROMPT,
+        )),
+        "pdf-extraction" => Ok((
+            claria_core::s3_keys::EXTRACTION_PROMPT,
+            None,
+            claria_bedrock::extract::DEFAULT_EXTRACTION_PROMPT,
+        )),
+        _ => Err(format!("unknown prompt name: {name}")),
+    }
+}
+
+/// Load a prompt from S3 by name, falling back to the legacy path and then the
+/// hardcoded default.
+async fn load_prompt(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
+    prompt_name: &str,
 ) -> Result<String, String> {
-    match claria_storage::objects::get_object(s3, bucket, claria_core::s3_keys::SYSTEM_PROMPT).await {
-        Ok(output) => String::from_utf8(output.body).map_err(|e| e.to_string()),
-        Err(claria_storage::error::StorageError::NotFound { .. }) => {
-            Ok(DEFAULT_SYSTEM_PROMPT.to_string())
-        }
-        Err(e) => Err(e.to_string()),
+    let (key, legacy_key, default_text) = resolve_prompt(prompt_name)?;
+
+    // Try the canonical claria-prompts/ key first.
+    match claria_storage::objects::get_object(s3, bucket, key).await {
+        Ok(output) => return String::from_utf8(output.body).map_err(|e| e.to_string()),
+        Err(claria_storage::error::StorageError::NotFound { .. }) => {}
+        Err(e) => return Err(e.to_string()),
     }
+
+    // Fall back to the legacy key if one exists (system-prompt.md at bucket root).
+    if let Some(legacy) = legacy_key {
+        match claria_storage::objects::get_object(s3, bucket, legacy).await {
+            Ok(output) => return String::from_utf8(output.body).map_err(|e| e.to_string()),
+            Err(claria_storage::error::StorageError::NotFound { .. }) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+
+    Ok(default_text.to_string())
 }
 
 /// List available Anthropic Claude models for chat.
@@ -1239,7 +1275,7 @@ pub async fn chat_message(
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    let system_prompt = load_system_prompt(&s3, &bucket).await?;
+    let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;
 
     // Load record context and prepend to the system prompt.
     let context_files = load_record_context(&s3, &bucket, &client_id).await?;
@@ -1405,35 +1441,39 @@ pub async fn accept_model_agreement(
 }
 
 // ---------------------------------------------------------------------------
-// System prompt commands — editable prompt stored in S3
+// Prompt commands — editable prompts stored under claria-prompts/ in S3
 // ---------------------------------------------------------------------------
 
-/// Get the current system prompt.
+/// Get the current content of a named prompt.
 ///
 /// Returns the custom prompt from S3 if one exists, otherwise returns the
-/// built-in default.
+/// built-in default. Valid prompt names: `"system-prompt"`, `"pdf-extraction"`.
 #[tauri::command]
 #[specta::specta]
-pub async fn get_system_prompt(
+pub async fn get_prompt(
     state: State<'_, DesktopState>,
+    prompt_name: String,
 ) -> Result<String, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    load_system_prompt(&s3, &bucket).await
+    load_prompt(&s3, &bucket, &prompt_name).await
 }
 
-/// Save a custom system prompt to S3.
+/// Save a named prompt to S3.
 ///
-/// Overwrites any previously saved prompt. The new prompt takes effect on
-/// the next chat message.
+/// Overwrites any previously saved version. The new content takes effect on
+/// the next operation that uses this prompt.
 #[tauri::command]
 #[specta::specta]
-pub async fn save_system_prompt(
+pub async fn save_prompt(
     state: State<'_, DesktopState>,
+    prompt_name: String,
     content: String,
 ) -> Result<(), String> {
+    let (key, _, _) = resolve_prompt(&prompt_name)?;
+
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
@@ -1441,7 +1481,7 @@ pub async fn save_system_prompt(
     claria_storage::objects::put_object(
         &s3,
         &bucket,
-        claria_core::s3_keys::SYSTEM_PROMPT,
+        key,
         content.into_bytes(),
         Some("text/markdown"),
     )
@@ -1451,17 +1491,20 @@ pub async fn save_system_prompt(
     Ok(())
 }
 
-/// Delete the custom system prompt from S3, reverting to the built-in default.
+/// Delete a named prompt from S3, reverting to the built-in default.
 #[tauri::command]
 #[specta::specta]
-pub async fn delete_system_prompt(
+pub async fn delete_prompt(
     state: State<'_, DesktopState>,
+    prompt_name: String,
 ) -> Result<(), String> {
+    let (key, _, _) = resolve_prompt(&prompt_name)?;
+
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    claria_storage::objects::delete_object(&s3, &bucket, claria_core::s3_keys::SYSTEM_PROMPT)
+    claria_storage::objects::delete_object(&s3, &bucket, key)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1469,26 +1512,25 @@ pub async fn delete_system_prompt(
 }
 
 // ---------------------------------------------------------------------------
-// System prompt version history commands
+// Prompt version history commands
 // ---------------------------------------------------------------------------
 
-/// List all versions of the system prompt stored in S3.
+/// List all versions of a named prompt stored in S3.
 #[tauri::command]
 #[specta::specta]
-pub async fn list_system_prompt_versions(
+pub async fn list_prompt_versions(
     state: State<'_, DesktopState>,
+    prompt_name: String,
 ) -> Result<Vec<FileVersion>, String> {
+    let (key, _, _) = resolve_prompt(&prompt_name)?;
+
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    let versions = claria_storage::objects::list_object_versions(
-        &s3,
-        &bucket,
-        claria_core::s3_keys::SYSTEM_PROMPT,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let versions = claria_storage::objects::list_object_versions(&s3, &bucket, key)
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(versions
         .into_iter()
@@ -1502,60 +1544,50 @@ pub async fn list_system_prompt_versions(
         .collect())
 }
 
-/// Get the text content of a specific version of the system prompt.
+/// Get the text content of a specific version of a named prompt.
 #[tauri::command]
 #[specta::specta]
-pub async fn get_system_prompt_version(
+pub async fn get_prompt_version(
     state: State<'_, DesktopState>,
+    prompt_name: String,
     version_id: String,
 ) -> Result<String, String> {
+    let (key, _, _) = resolve_prompt(&prompt_name)?;
+
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    let output = claria_storage::objects::get_object_version(
-        &s3,
-        &bucket,
-        claria_core::s3_keys::SYSTEM_PROMPT,
-        &version_id,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let output = claria_storage::objects::get_object_version(&s3, &bucket, key, &version_id)
+        .await
+        .map_err(|e| e.to_string())?;
 
     String::from_utf8(output.body).map_err(|e| e.to_string())
 }
 
-/// Restore a previous version of the system prompt by writing it as the new current version.
+/// Restore a previous version of a named prompt by writing it as the new current version.
 #[tauri::command]
 #[specta::specta]
-pub async fn restore_system_prompt_version(
+pub async fn restore_prompt_version(
     state: State<'_, DesktopState>,
+    prompt_name: String,
     version_id: String,
 ) -> Result<(), String> {
+    let (key, _, _) = resolve_prompt(&prompt_name)?;
+
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    let output = claria_storage::objects::get_object_version(
-        &s3,
-        &bucket,
-        claria_core::s3_keys::SYSTEM_PROMPT,
-        &version_id,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let output = claria_storage::objects::get_object_version(&s3, &bucket, key, &version_id)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    claria_storage::objects::put_object(
-        &s3,
-        &bucket,
-        claria_core::s3_keys::SYSTEM_PROMPT,
-        output.body,
-        Some("text/markdown"),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    claria_storage::objects::put_object(&s3, &bucket, key, output.body, Some("text/markdown"))
+        .await
+        .map_err(|e| e.to_string())?;
 
-    tracing::info!(version_id, "system prompt version restored");
+    tracing::info!(prompt_name, version_id, "prompt version restored");
 
     Ok(())
 }

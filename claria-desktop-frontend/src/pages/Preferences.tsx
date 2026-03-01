@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import {
-  getSystemPrompt,
-  saveSystemPrompt,
-  deleteSystemPrompt,
+  getPrompt,
+  savePrompt,
+  deletePrompt,
   setPreferredModel,
-  listSystemPromptVersions,
-  getSystemPromptVersion,
-  restoreSystemPromptVersion,
+  listPromptVersions,
+  getPromptVersion,
+  restorePromptVersion,
   type ChatModel,
   type FileVersion,
 } from "../lib/tauri";
@@ -27,129 +27,19 @@ export default function Preferences({
   preferredModelId: string | null;
   onPreferredModelChanged: (id: string | null) => void;
 }) {
-  // System prompt state
-  const [promptContent, setPromptContent] = useState("");
-  const [promptLoading, setPromptLoading] = useState(true);
-  const [promptSaving, setPromptSaving] = useState(false);
-  const [promptError, setPromptError] = useState<string | null>(null);
-  const [promptDirty, setPromptDirty] = useState(false);
-
-  // System prompt version history state
-  const [showVersions, setShowVersions] = useState(false);
-  const [versions, setVersions] = useState<FileVersion[]>([]);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  const [versionPreview, setVersionPreview] = useState<{
-    versionId: string;
-    text: string;
-  } | null>(null);
-  const [versionPreviewLoading, setVersionPreviewLoading] = useState(false);
-  const [restoringVersion, setRestoringVersion] = useState(false);
-
   // Model preference state
   const [modelSaving, setModelSaving] = useState(false);
-
-  const loadPrompt = useCallback(async () => {
-    setPromptLoading(true);
-    setPromptError(null);
-    try {
-      const content = await getSystemPrompt();
-      setPromptContent(content);
-      setPromptDirty(false);
-    } catch (e) {
-      setPromptError(String(e));
-    } finally {
-      setPromptLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadPrompt();
-  }, [loadPrompt]);
-
-  async function handleSavePrompt() {
-    setPromptSaving(true);
-    setPromptError(null);
-    try {
-      await saveSystemPrompt(promptContent);
-      setPromptDirty(false);
-    } catch (e) {
-      setPromptError(String(e));
-    } finally {
-      setPromptSaving(false);
-    }
-  }
-
-  async function handleResetPrompt() {
-    setPromptSaving(true);
-    setPromptError(null);
-    try {
-      await deleteSystemPrompt();
-      const content = await getSystemPrompt();
-      setPromptContent(content);
-      setPromptDirty(false);
-    } catch (e) {
-      setPromptError(String(e));
-    } finally {
-      setPromptSaving(false);
-    }
-  }
-
-  async function handleOpenVersions() {
-    setShowVersions(true);
-    setVersionsLoading(true);
-    setVersionPreview(null);
-    try {
-      setVersions(await listSystemPromptVersions());
-    } catch (e) {
-      setPromptError(String(e));
-    } finally {
-      setVersionsLoading(false);
-    }
-  }
-
-  function handleCloseVersions() {
-    setShowVersions(false);
-    setVersions([]);
-    setVersionPreview(null);
-  }
-
-  async function handleViewVersion(versionId: string) {
-    if (versionPreview?.versionId === versionId) {
-      setVersionPreview(null);
-      return;
-    }
-    setVersionPreviewLoading(true);
-    try {
-      const text = await getSystemPromptVersion(versionId);
-      setVersionPreview({ versionId, text });
-    } catch (e) {
-      setPromptError(String(e));
-    } finally {
-      setVersionPreviewLoading(false);
-    }
-  }
-
-  async function handleRestoreVersion(versionId: string) {
-    setRestoringVersion(true);
-    try {
-      await restoreSystemPromptVersion(versionId);
-      handleCloseVersions();
-      await loadPrompt();
-    } catch (e) {
-      setPromptError(String(e));
-    } finally {
-      setRestoringVersion(false);
-    }
-  }
+  const [modelError, setModelError] = useState<string | null>(null);
 
   async function handleModelChange(modelId: string) {
     const value = modelId || null;
     setModelSaving(true);
+    setModelError(null);
     try {
       await setPreferredModel(value);
       onPreferredModelChanged(value);
     } catch (e) {
-      setPromptError(String(e));
+      setModelError(String(e));
     } finally {
       setModelSaving(false);
     }
@@ -182,68 +72,19 @@ export default function Preferences({
 
       <div className="space-y-4">
         {/* System Prompt section */}
-        <details className="border border-gray-200 rounded-lg group" open>
-          <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-            <span className="font-medium text-gray-900">System Prompt</span>
-            <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-              &#9656;
-            </span>
-          </summary>
-          <div className="border-t border-gray-100 p-4">
-            {promptLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="flex items-center gap-2 text-gray-500 text-sm">
-                  <Spinner />
-                  <span>Loading prompt...</span>
-                </div>
-              </div>
-            ) : (
-              <>
-                <textarea
-                  value={promptContent}
-                  onChange={(e) => {
-                    setPromptContent(e.target.value);
-                    setPromptDirty(true);
-                  }}
-                  disabled={promptSaving}
-                  className="w-full min-h-[200px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
-                />
+        <PromptEditor
+          promptName="system-prompt"
+          label="System Prompt"
+          description="Instructions given to the AI assistant at the start of every chat session."
+          defaultOpen
+        />
 
-                {promptError && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
-                    <p className="text-red-800 text-sm">{promptError}</p>
-                  </div>
-                )}
-
-                <div className="flex justify-between mt-3">
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleResetPrompt}
-                      disabled={promptLoading || promptSaving}
-                      className="px-3 py-1.5 text-sm text-amber-600 border border-amber-300 rounded-lg hover:bg-amber-50 transition-colors disabled:opacity-50"
-                    >
-                      {promptSaving ? "Resetting..." : "Reset to Default"}
-                    </button>
-                    <button
-                      onClick={handleOpenVersions}
-                      disabled={promptSaving}
-                      className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
-                    >
-                      Version History
-                    </button>
-                  </div>
-                  <button
-                    onClick={handleSavePrompt}
-                    disabled={promptLoading || promptSaving || !promptDirty}
-                    className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-                  >
-                    {promptSaving ? "Saving..." : "Save"}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </details>
+        {/* PDF Extraction Prompt section */}
+        <PromptEditor
+          promptName="pdf-extraction"
+          label="PDF Extraction Prompt"
+          description="Instructions used when extracting text from uploaded PDF and DOCX files."
+        />
 
         {/* Preferred Model section */}
         <details className="border border-gray-200 rounded-lg group">
@@ -286,6 +127,11 @@ export default function Preferences({
                     </option>
                   ))}
                 </select>
+                {modelError && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
+                    <p className="text-red-800 text-sm">{modelError}</p>
+                  </div>
+                )}
                 <p className="text-xs text-gray-400 mt-2">
                   Applies to new chat sessions. Existing chats keep the model
                   they were started with.
@@ -295,6 +141,206 @@ export default function Preferences({
           </div>
         </details>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reusable prompt editor accordion
+// ---------------------------------------------------------------------------
+
+function PromptEditor({
+  promptName,
+  label,
+  description,
+  defaultOpen,
+}: {
+  promptName: string;
+  label: string;
+  description: string;
+  defaultOpen?: boolean;
+}) {
+  const [content, setContent] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+
+  // Version history state
+  const [showVersions, setShowVersions] = useState(false);
+  const [versions, setVersions] = useState<FileVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionPreview, setVersionPreview] = useState<{
+    versionId: string;
+    text: string;
+  } | null>(null);
+  const [versionPreviewLoading, setVersionPreviewLoading] = useState(false);
+  const [restoringVersion, setRestoringVersion] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const text = await getPrompt(promptName);
+      setContent(text);
+      setDirty(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [promptName]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      await savePrompt(promptName, content);
+      setDirty(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleReset() {
+    setSaving(true);
+    setError(null);
+    try {
+      await deletePrompt(promptName);
+      const text = await getPrompt(promptName);
+      setContent(text);
+      setDirty(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleOpenVersions() {
+    setShowVersions(true);
+    setVersionsLoading(true);
+    setVersionPreview(null);
+    try {
+      setVersions(await listPromptVersions(promptName));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setVersionsLoading(false);
+    }
+  }
+
+  function handleCloseVersions() {
+    setShowVersions(false);
+    setVersions([]);
+    setVersionPreview(null);
+  }
+
+  async function handleViewVersion(versionId: string) {
+    if (versionPreview?.versionId === versionId) {
+      setVersionPreview(null);
+      return;
+    }
+    setVersionPreviewLoading(true);
+    try {
+      const text = await getPromptVersion(promptName, versionId);
+      setVersionPreview({ versionId, text });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setVersionPreviewLoading(false);
+    }
+  }
+
+  async function handleRestoreVersion(versionId: string) {
+    setRestoringVersion(true);
+    try {
+      await restorePromptVersion(promptName, versionId);
+      handleCloseVersions();
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRestoringVersion(false);
+    }
+  }
+
+  return (
+    <>
+      <details
+        className="border border-gray-200 rounded-lg group"
+        open={defaultOpen}
+      >
+        <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+          <span className="font-medium text-gray-900">{label}</span>
+          <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
+            &#9656;
+          </span>
+        </summary>
+        <div className="border-t border-gray-100 p-4">
+          {description && (
+            <p className="text-xs text-gray-400 mb-3">{description}</p>
+          )}
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="flex items-center gap-2 text-gray-500 text-sm">
+                <Spinner />
+                <span>Loading prompt...</span>
+              </div>
+            </div>
+          ) : (
+            <>
+              <textarea
+                value={content}
+                onChange={(e) => {
+                  setContent(e.target.value);
+                  setDirty(true);
+                }}
+                disabled={saving}
+                className="w-full min-h-[200px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
+              />
+
+              {error && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
+                  <p className="text-red-800 text-sm">{error}</p>
+                </div>
+              )}
+
+              <div className="flex justify-between mt-3">
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleReset}
+                    disabled={loading || saving}
+                    className="px-3 py-1.5 text-sm text-amber-600 border border-amber-300 rounded-lg hover:bg-amber-50 transition-colors disabled:opacity-50"
+                  >
+                    {saving ? "Resetting..." : "Reset to Default"}
+                  </button>
+                  <button
+                    onClick={handleOpenVersions}
+                    disabled={saving}
+                    className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+                  >
+                    Version History
+                  </button>
+                </div>
+                <button
+                  onClick={handleSave}
+                  disabled={loading || saving || !dirty}
+                  className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  {saving ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </details>
 
       {/* Version history modal */}
       {showVersions && (
@@ -302,7 +348,7 @@ export default function Preferences({
           <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-900">
-                System Prompt Versions
+                {label} Versions
               </h3>
               <button
                 onClick={handleCloseVersions}
@@ -403,9 +449,13 @@ export default function Preferences({
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Shared utilities
+// ---------------------------------------------------------------------------
 
 function formatDate(iso: string): string {
   try {

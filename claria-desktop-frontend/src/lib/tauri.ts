@@ -258,35 +258,31 @@ export async function setPreferredModel(modelId: string | null): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// System prompt wrappers
+// Prompt wrappers — generic CRUD for named prompts under claria-prompts/
 // ---------------------------------------------------------------------------
 
-export async function getSystemPrompt(): Promise<string> {
-  return unwrap(await commands.getSystemPrompt());
+export async function getPrompt(promptName: string): Promise<string> {
+  return unwrap(await commands.getPrompt(promptName));
 }
 
-export async function saveSystemPrompt(content: string): Promise<void> {
-  unwrap(await commands.saveSystemPrompt(content));
+export async function savePrompt(promptName: string, content: string): Promise<void> {
+  unwrap(await commands.savePrompt(promptName, content));
 }
 
-export async function deleteSystemPrompt(): Promise<void> {
-  unwrap(await commands.deleteSystemPrompt());
+export async function deletePrompt(promptName: string): Promise<void> {
+  unwrap(await commands.deletePrompt(promptName));
 }
 
-// ---------------------------------------------------------------------------
-// System prompt version history wrappers
-// ---------------------------------------------------------------------------
-
-export async function listSystemPromptVersions(): Promise<import("./bindings").FileVersion[]> {
-  return unwrap(await commands.listSystemPromptVersions());
+export async function listPromptVersions(promptName: string): Promise<import("./bindings").FileVersion[]> {
+  return unwrap(await commands.listPromptVersions(promptName));
 }
 
-export async function getSystemPromptVersion(versionId: string): Promise<string> {
-  return unwrap(await commands.getSystemPromptVersion(versionId));
+export async function getPromptVersion(promptName: string, versionId: string): Promise<string> {
+  return unwrap(await commands.getPromptVersion(promptName, versionId));
 }
 
-export async function restoreSystemPromptVersion(versionId: string): Promise<void> {
-  unwrap(await commands.restoreSystemPromptVersion(versionId));
+export async function restorePromptVersion(promptName: string, versionId: string): Promise<void> {
+  unwrap(await commands.restorePromptVersion(promptName, versionId));
 }
 
 // ---------------------------------------------------------------------------

@@ -59,7 +59,15 @@ pub fn chat_history(client_id: Uuid, chat_id: Uuid) -> String {
     format!("records/{client_id}/chat-history/{chat_id}.json")
 }
 
-pub const SYSTEM_PROMPT: &str = "system-prompt.md";
+pub const PROMPTS_PREFIX: &str = "claria-prompts/";
+
+pub const SYSTEM_PROMPT: &str = "claria-prompts/system-prompt.md";
+
+pub const EXTRACTION_PROMPT: &str = "claria-prompts/pdf-extraction.md";
+
+/// Legacy key for the system prompt before the `claria-prompts/` migration.
+/// Used as a read fallback so existing buckets keep working.
+pub const LEGACY_SYSTEM_PROMPT: &str = "system-prompt.md";
 
 pub const INDEX: &str = "_index/tantivy.tar.zst";
 

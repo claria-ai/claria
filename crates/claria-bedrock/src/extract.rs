@@ -12,7 +12,9 @@ use tracing::info;
 
 use crate::error::BedrockError;
 
-const EXTRACTION_SYSTEM_PROMPT: &str = "\
+/// Default prompt used for document text extraction when no custom prompt
+/// has been saved to S3.
+pub const DEFAULT_EXTRACTION_PROMPT: &str = "\
 Extract the complete text content from this document. \
 Return only the plain text, preserving paragraph structure. \
 Do not add commentary, headers, or formatting.";
@@ -29,6 +31,7 @@ pub async fn extract_document_text(
     bytes: &[u8],
     filename: &str,
     format: DocumentFormat,
+    system_prompt: &str,
 ) -> Result<String, BedrockError> {
     let client = aws_sdk_bedrockruntime::Client::new(config);
 
@@ -55,9 +58,7 @@ pub async fn extract_document_text(
     let response = client
         .converse()
         .model_id(model_id)
-        .system(SystemContentBlock::Text(
-            EXTRACTION_SYSTEM_PROMPT.to_string(),
-        ))
+        .system(SystemContentBlock::Text(system_prompt.to_string()))
         .messages(message)
         .send()
         .await

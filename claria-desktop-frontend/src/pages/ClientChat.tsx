@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import {
   acceptModelAgreement,
   chatMessage,
-  getSystemPrompt,
+  getPrompt,
   listRecordContext,
   type ChatMessage,
   type ChatModel,
@@ -82,7 +82,7 @@ export default function ClientChat({
   }, [models, selectedModelId, preferredModelId]);
 
   useEffect(() => {
-    getSystemPrompt()
+    getPrompt("system-prompt")
       .then(setSystemPrompt)
       .catch(() => {});
     listRecordContext(clientId)

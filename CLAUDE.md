@@ -33,6 +33,7 @@
 - Never squash
 - Descriptive kebab-case branch names
 - Create a commit after any batch of changes is done
+- Every batch of work should get noted in the CHANGELOG.md under a section `## [Unreleased]`. This section is expected before running `cargo release`
 
 ## Architecture
 
@@ -99,7 +100,8 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `records/{uuid}/{filename}` | Files attached to a client |
 | `records/{uuid}/{filename}.text` | Sidecar with extracted text (hidden in UI when base file exists) |
 | `records/{uuid}/chat-history/{chat_id}.json` | Persisted chat sessions |
-| `system-prompt.md` | Custom system prompt |
+| `claria-prompts/system-prompt.md` | Custom chat system prompt |
+| `claria-prompts/pdf-extraction.md` | Custom PDF/DOCX extraction prompt |
 | `_cloudtrail/` | CloudTrail audit logs |
 | `_state/provisioner.json` | Provisioner state |
 | `_index/tantivy.tar.zst` | Search index backup |
