@@ -1,6 +1,16 @@
 use std::path::Path;
 use std::process::Command;
 
+fn npm() -> Command {
+    if cfg!(windows) {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "npm"]);
+        cmd
+    } else {
+        Command::new("npm")
+    }
+}
+
 fn main() {
     let frontend_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../claria-desktop-frontend");
 
@@ -11,7 +21,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../claria-desktop-frontend/tsconfig.json");
 
     // npm install (skip if node_modules exists and package.json hasn't changed)
-    let status = Command::new("npm")
+    let status = npm()
         .arg("install")
         .current_dir(&frontend_dir)
         .status()
@@ -19,7 +29,7 @@ fn main() {
     assert!(status.success(), "npm install failed");
 
     // npm run build
-    let status = Command::new("npm")
+    let status = npm()
         .args(["run", "build"])
         .current_dir(&frontend_dir)
         .status()
