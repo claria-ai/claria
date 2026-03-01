@@ -15,3 +15,9 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "UNLICENSED"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"
