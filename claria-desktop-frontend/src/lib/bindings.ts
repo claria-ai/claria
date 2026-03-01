@@ -400,9 +400,9 @@ async loadChatHistory(clientId: string, chatId: string) : Promise<Result<ChatHis
 },
 /**
  * Get the current content of a named prompt.
- *
+ * 
  * Returns the custom prompt from S3 if one exists, otherwise returns the
- * built-in default. Valid prompt names: "system-prompt", "pdf-extraction".
+ * built-in default. Valid prompt names: `"system-prompt"`, `"pdf-extraction"`.
  */
 async getPrompt(promptName: string) : Promise<Result<string, string>> {
     try {
@@ -414,7 +414,7 @@ async getPrompt(promptName: string) : Promise<Result<string, string>> {
 },
 /**
  * Save a named prompt to S3.
- *
+ * 
  * Overwrites any previously saved version. The new content takes effect on
  * the next operation that uses this prompt.
  */
