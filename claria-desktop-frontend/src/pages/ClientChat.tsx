@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   acceptModelAgreement,
   chatMessage,
@@ -383,7 +384,7 @@ export default function ClientChat({
             </div>
             <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
               <div className="prose prose-sm max-w-none">
-                <Markdown>{systemPrompt}</Markdown>
+                <Markdown remarkPlugins={[remarkGfm]}>{systemPrompt}</Markdown>
               </div>
             </div>
             <div className="flex justify-end mt-4">
@@ -451,7 +452,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : (
           <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
-            <Markdown>{message.content}</Markdown>
+            <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
           </div>
         )}
       </div>

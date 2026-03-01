@@ -1,6 +1,9 @@
 import type { PlanEntry, Action } from "../lib/tauri";
+import type { JsonValue } from "../lib/bindings";
 import CauseBadge from "./CauseBadge";
 import FieldDriftList from "./FieldDriftList";
+
+type JsonObject = Partial<{ [key: string]: JsonValue }>;
 
 const actionStyles: Record<Action, { icon: string; border: string }> = {
   ok: { icon: "\u2705", border: "border-green-200" },
@@ -70,8 +73,11 @@ export default function PlanEntryCard({ entry }: { entry: PlanEntry }) {
 }
 
 function ResourceDetail({ entry }: { entry: PlanEntry }) {
-  const actual = entry.actual;
-  if (actual == null) return null;
+  const raw = entry.actual;
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    return raw != null ? <GenericDetail actual={raw} /> : null;
+  }
+  const actual = raw as JsonObject;
 
   switch (entry.spec.resource_type) {
     case "iam_user_policy":
@@ -83,9 +89,9 @@ function ResourceDetail({ entry }: { entry: PlanEntry }) {
     case "s3_bucket_encryption":
       return <S3EncryptionDetail actual={actual} />;
     case "s3_bucket_policy":
-      return <JsonPolicyDetail actual={actual} />;
+      return <JsonPolicyDetail actual={raw} />;
     default:
-      return <GenericDetail actual={actual} />;
+      return <GenericDetail actual={raw} />;
   }
 }
 
@@ -106,7 +112,7 @@ function ScrollableJson({ data }: { data: unknown }) {
   );
 }
 
-function IamPolicyDetail({ actual }: { actual: Record<string, unknown> }) {
+function IamPolicyDetail({ actual }: { actual: JsonObject }) {
   const doc = actual.policy_document;
   if (!doc) return <GenericDetail actual={actual} />;
   return (
@@ -123,7 +129,7 @@ function S3BucketDetail({
   actual,
   resourceName,
 }: {
-  actual: Record<string, unknown>;
+  actual: JsonObject;
   resourceName: string;
 }) {
   return (
@@ -134,7 +140,7 @@ function S3BucketDetail({
   );
 }
 
-function S3VersioningDetail({ actual }: { actual: Record<string, unknown> }) {
+function S3VersioningDetail({ actual }: { actual: JsonObject }) {
   return (
     <div className="space-y-2">
       <dl className="space-y-2">
@@ -149,7 +155,7 @@ function S3VersioningDetail({ actual }: { actual: Record<string, unknown> }) {
   );
 }
 
-function S3EncryptionDetail({ actual }: { actual: Record<string, unknown> }) {
+function S3EncryptionDetail({ actual }: { actual: JsonObject }) {
   const algo = String(actual.sse_algorithm ?? "unknown");
   return (
     <div className="space-y-2">
