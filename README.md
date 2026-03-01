@@ -1,53 +1,29 @@
 # Claria
 
-Self-hosted psychological report management platform. Deploys entirely into your own AWS account — your data never leaves infrastructure you control.
+Self-hosted clinical record management for psychologists. Claria deploys entirely into your own AWS account — your client data never leaves infrastructure you control.
 
-A desktop app (Tauri) talks directly to AWS services — no Lambda, no API Gateway, no server to maintain. It walks you through AWS setup, provisions and hardens your S3 bucket, and handles case management, report generation, search, and export all from the desktop.
+## What does Claria do?
 
-## Architecture
+Claria is a desktop app that connects directly to your own AWS cloud storage. There is no middleman server — just your computer and your AWS account.
 
-```
-claria-desktop (Tauri — the whole product)
-  ├─ claria-provisioner        # S3 hardening, CloudTrail, Bedrock access verification
-  ├─ claria-storage            # S3 read/write operations
-  ├─ claria-search             # Local Tantivy full-text index, backed up to S3
-  ├─ claria-instruments        # Clinical assessment instruments (8 built-in)
-  ├─ claria-bedrock            # Bedrock model invocation for report drafting
-  ├─ claria-audit              # S3 audit trail + CloudTrail verification (HIPAA)
-  ├─ claria-export             # Template rendering and DOCX generation
-  ├─ claria-core               # Domain types, S3 key layout, Tantivy schema
-  └─ claria-desktop-frontend   # React + TypeScript + Tailwind UI
-```
+- **Client records** — create and manage client files with drag-and-drop uploads (PDFs, documents, audio)
+- **AI assistant** — chat with Claude about a client's records to help draft reports, summarize notes, or ask clinical questions
+- **Audio transcription** — drop in a session recording and get an automatic text transcript
+- **Version history** — every change to every file is preserved; compare versions side-by-side and restore previous versions or accidentally deleted files
+- **Full-text search** — search across all your records instantly
+- **Guided setup** — Claria walks you through creating your AWS account, setting up security, and getting started
 
-## Status
+## AWS Bedrock
 
-Early development. The workspace compiles and the desktop app boots with a setup wizard, but provisioner and case management are not yet wired up.
+Claria uses **Amazon Bedrock** to give you access to Claude, Anthropic's AI model. Bedrock runs the AI inside your own AWS account, which means your prompts and client data stay within your AWS environment — they are not sent to Anthropic or any third party.
 
-### What's built
+You enable Bedrock through the AWS console (Claria walks you through this), and then Claria handles the rest. There is nothing to install or manage on the AI side — AWS runs the model for you and charges based on usage.
 
-- [x] Cargo workspace with 9 crates
-- [x] `claria-core` — domain types (Patient, Report, ClinicalNote, etc.), Tantivy schema, S3 key layout, ts-rs bindings
-- [x] `claria-instruments` — 8 clinical assessment instruments with scoring logic
-- [x] `claria-storage` — S3 get/put/list/delete operations
-- [x] `claria-search` — Tantivy index create/open/add/search/delete
-- [x] `claria-bedrock` — Claude model invocation via Bedrock
-- [x] `claria-audit` — CloudTrail event helpers (being rewritten for S3 audit trail)
-- [x] `claria-export` — Tera template rendering and DOCX generation
-- [x] `claria-provisioner` — AWS resource lifecycle management (scaffold, being simplified)
-- [x] `claria-desktop` — Tauri app with config persistence, credential handling, STS validation
-- [x] `claria-desktop-frontend` — React wizard flow (AWS guide, IAM guide, credential intake) and dashboard
+## HIPAA
 
-### What's next
+Claria is designed to support HIPAA compliance. Your data is encrypted at rest and in transit, every access is logged via CloudTrail, S3 versioning preserves a complete audit trail, and the IAM user Claria creates follows least-privilege principles.
 
-- [ ] Provisioner: simplify to S3 + CloudTrail + Bedrock (remove Lambda/Gateway/Cognito resources)
-- [ ] Provisioner: S3 bucket security hardening (encryption, versioning, public access block)
-- [ ] Provisioner: scan, plan, execute with local + S3 state persistence
-- [ ] Audit: rewrite for S3-based audit trail + CloudTrail verification
-- [ ] Desktop: wire provisioner commands into the UI
-- [ ] Desktop: case management (assessments, reports, templates)
-- [ ] Desktop: Bedrock-powered report generation
-- [ ] Desktop: local Tantivy search with S3 backup
-- [ ] Export: DOCX/PDF generation from templates
+However, HIPAA compliance is a shared responsibility. Claria provides the technical safeguards, but as a clinician you are responsible for understanding the administrative and physical safeguard requirements that apply to your practice. This includes signing a Business Associate Agreement (BAA) with AWS, maintaining appropriate access controls, and following your own organization's privacy policies. We recommend consulting with a HIPAA compliance specialist to ensure your overall workflow meets the requirements for handling protected health information (PHI).
 
 ## Development
 
