@@ -65,6 +65,6 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Claria ${{ github.ref_name }}"
           releaseBody: "See assets below to download and install."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
