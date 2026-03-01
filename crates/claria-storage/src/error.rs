@@ -26,6 +26,9 @@ pub enum StorageError {
     #[error("S3 ListObjects error: {0}")]
     ListObjects(String),
 
+    #[error("S3 ListObjectVersions error: {0}")]
+    ListObjectVersions(String),
+
     #[error("S3 presign error: {0}")]
     Presign(String),
 

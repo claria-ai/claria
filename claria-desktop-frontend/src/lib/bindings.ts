@@ -422,6 +422,83 @@ async deleteSystemPrompt() : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * List all versions of a specific file in a client's record.
+ */
+async listFileVersions(clientId: string, filename: string) : Promise<Result<FileVersion[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_file_versions", { clientId, filename }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the text content of a specific version of a file.
+ */
+async getFileVersionText(clientId: string, filename: string, versionId: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_file_version_text", { clientId, filename, versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Restore a previous version of a file by copying its content to a new PUT.
+ */
+async restoreFileVersion(clientId: string, filename: string, versionId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restore_file_version", { clientId, filename, versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List deleted files in a client's record (files with a delete marker).
+ */
+async listDeletedFiles(clientId: string) : Promise<Result<DeletedFile[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_deleted_files", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Restore a deleted file by removing its delete marker.
+ */
+async restoreDeletedFile(clientId: string, filename: string, versionId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restore_deleted_file", { clientId, filename, versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List deleted clients (client JSON files with a delete marker).
+ */
+async listDeletedClients() : Promise<Result<DeletedClient[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_deleted_clients") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Restore a deleted client by removing the delete marker on the client JSON.
+ */
+async restoreClient(clientId: string, versionId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restore_client", { clientId, versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -568,6 +645,14 @@ export type CredentialClass =
 "insufficient"
 export type CredentialSource = { type: "inline"; access_key_id: string; secret_access_key: string; session_token?: string | null } | { type: "profile"; profile_name: string } | { type: "default_chain" }
 /**
+ * A client that has been deleted (has a delete marker on the client JSON).
+ */
+export type DeletedClient = { id: string; name: string; deleted_at: string | null; version_id: string }
+/**
+ * A file that has been deleted (has a delete marker as the latest version).
+ */
+export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
+/**
  * Structured before/after for a single field that doesn't match desired state.
  * 
  * Returned by `ResourceSyncer::diff()`. The frontend renders these directly
@@ -590,6 +675,10 @@ expected: JsonValue;
  * What AWS has
  */
 actual: JsonValue }
+/**
+ * A single version of a file in a client's record.
+ */
+export type FileVersion = { version_id: string; size: number; last_modified: string | null; is_latest: boolean }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type Lifecycle = "data" | "managed"
 /**

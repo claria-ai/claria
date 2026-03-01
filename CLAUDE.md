@@ -70,11 +70,16 @@
 **`claria-bedrock` — LLM interactions**
 - Bedrock API calls for report generation and analysis
 
+**`claria-transcribe` — Audio transcription**
+- Wraps Amazon Transcribe API (start job, poll, fetch transcript)
+- Accepts `&SdkConfig` and an S3 URI, returns transcript text
+
 **`claria-audit` — Audit trail**
 - Structured audit event logging
 
 **`claria-core` — Shared types**
 - Domain types shared across multiple crates
+- `s3_keys.rs` is the single source of truth for all S3 object paths
 
 ### Boundary Rules
 - Library crates accept `&aws_config::SdkConfig` — they never build their own SDK configs
@@ -82,6 +87,38 @@
 - Library crates never do I/O to the local filesystem (except `claria-search` for its index)
 - `claria-desktop` is the only crate that reads/writes local config files
 - Crates communicate through well-defined public APIs, not shared mutable state
+
+## S3 Key Layout
+
+All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
+
+| Path pattern | What it holds |
+|---|---|
+| `clients/{uuid}.json` | Client record JSON |
+| `records/{uuid}/{filename}` | Files attached to a client |
+| `records/{uuid}/{filename}.text` | Sidecar with extracted text (hidden in UI when base file exists) |
+| `records/{uuid}/chat-history/{chat_id}.json` | Persisted chat sessions |
+| `system-prompt.md` | Custom system prompt |
+| `_cloudtrail/` | CloudTrail audit logs |
+| `_state/provisioner.json` | Provisioner state |
+| `_index/tantivy.tar.zst` | Search index backup |
+
+### Sidecar Pattern
+Binary uploads (PDF, DOCX, audio) generate a `.text` sidecar file containing extracted text. The file list hides sidecars when the base file exists. New extraction formats (e.g. audio transcription) follow this same pattern: upload the original, generate a `{key}.text` sidecar alongside it.
+
+## Manifest Versioning
+
+`Manifest::VERSION` in `manifest.rs` tracks the resource spec schema. Bump it when adding, removing, or changing resource specs. Unlike config versioning, there is no migration chain — the manifest is always rebuilt from code. But the version number is used to detect when a provisioner state file is stale and needs a full re-scan.
+
+## IAM Action Names
+
+The IAM policy in `account_setup.rs` uses **IAM action names**, which sometimes differ from S3 API operation names. The manifest `iam_actions` fields must match the IAM action names exactly, since `IamUserPolicySyncer.diff()` compares them as literal strings.
+
+Common gotchas:
+- `s3:GetEncryptionConfiguration` (not `s3:GetBucketEncryption`)
+- `s3:PutEncryptionConfiguration` (not `s3:PutBucketEncryption`)
+- `s3:GetBucketPublicAccessBlock` (not `s3:GetPublicAccessBlock`)
+- `s3:ListBucket` (not `s3:ListObjectsV2`)
 
 ## Config Versioning
 
@@ -110,6 +147,19 @@
 - The pushed tag triggers GitHub Actions to build and create a draft GitHub Release
 - Never run `git tag` directly for version tags
 - The claria-ai.github.com repo's index.html should be updated to show the new release as soon as the tag is cut
+
+## Adding a Tauri Command
+
+End-to-end steps for exposing a new backend operation to the frontend:
+
+1. **`commands.rs`**: Add a function with `#[tauri::command]` and `#[specta::specta]`. Follow the existing pattern: get `State<DesktopState>`, call `load_sdk_config()`, do work, return `Result<T, String>`.
+2. **`main.rs`**: Register the command in the `collect_commands![]` macro.
+3. **`lib/tauri.ts`**: Add an `unwrap` wrapper (e.g. `export async function myCommand() { return unwrap(await commands.myCommand()); }`)
+4. **`lib/bindings.ts`**: Auto-regenerated on debug builds — don't edit manually. Export any new types from `tauri.ts`.
+
+## Plans
+
+Design documents and future feature analysis live in `../plans/` (parent repo, outside the Cargo workspace). These are reference material, not executable — they capture architectural decisions, HIPAA analysis, and implementation plans for larger features.
 
 ## Claude Code
 - Run `cargo check` after medium and larger edits

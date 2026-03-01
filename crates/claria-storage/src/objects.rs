@@ -243,6 +243,210 @@ pub async fn list_objects(
     Ok(keys)
 }
 
+// ---------------------------------------------------------------------------
+// Versioning operations
+// ---------------------------------------------------------------------------
+
+/// Metadata for a single version of an S3 object.
+pub struct ObjectVersion {
+    pub version_id: String,
+    pub size: i64,
+    pub last_modified: Option<String>,
+    pub is_latest: bool,
+    pub is_delete_marker: bool,
+}
+
+/// A deleted object identified by its key and the delete-marker version ID.
+pub struct DeletedObject {
+    pub key: String,
+    pub version_id: String,
+    pub last_modified: Option<String>,
+}
+
+/// List all versions of a specific object (identified by exact key).
+pub async fn list_object_versions(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+) -> Result<Vec<ObjectVersion>, StorageError> {
+    let mut versions = Vec::new();
+    let mut key_marker: Option<String> = None;
+    let mut version_id_marker: Option<String> = None;
+
+    loop {
+        let mut req = client
+            .list_object_versions()
+            .bucket(bucket)
+            .prefix(key);
+
+        if let Some(km) = &key_marker {
+            req = req.key_marker(km);
+        }
+        if let Some(vm) = &version_id_marker {
+            req = req.version_id_marker(vm);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| StorageError::ListObjectVersions(e.into_service_error().to_string()))?;
+
+        for v in resp.versions() {
+            // Only include versions for the exact key (prefix match may return more).
+            if v.key() == Some(key) {
+                versions.push(ObjectVersion {
+                    version_id: v.version_id().unwrap_or_default().to_string(),
+                    size: v.size().unwrap_or(0),
+                    last_modified: v.last_modified().map(|t| t.to_string()),
+                    is_latest: v.is_latest().unwrap_or(false),
+                    is_delete_marker: false,
+                });
+            }
+        }
+
+        for dm in resp.delete_markers() {
+            if dm.key() == Some(key) {
+                versions.push(ObjectVersion {
+                    version_id: dm.version_id().unwrap_or_default().to_string(),
+                    size: 0,
+                    last_modified: dm.last_modified().map(|t| t.to_string()),
+                    is_latest: dm.is_latest().unwrap_or(false),
+                    is_delete_marker: true,
+                });
+            }
+        }
+
+        if resp.is_truncated() == Some(true) {
+            key_marker = resp.next_key_marker().map(|s| s.to_string());
+            version_id_marker = resp.next_version_id_marker().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+
+    Ok(versions)
+}
+
+/// List objects under a prefix that have been deleted (have a delete marker as the latest version).
+pub async fn list_deleted_objects(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<Vec<DeletedObject>, StorageError> {
+    let mut deleted = Vec::new();
+    let mut key_marker: Option<String> = None;
+    let mut version_id_marker: Option<String> = None;
+
+    loop {
+        let mut req = client
+            .list_object_versions()
+            .bucket(bucket)
+            .prefix(prefix);
+
+        if let Some(km) = &key_marker {
+            req = req.key_marker(km);
+        }
+        if let Some(vm) = &version_id_marker {
+            req = req.version_id_marker(vm);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| StorageError::ListObjectVersions(e.into_service_error().to_string()))?;
+
+        for dm in resp.delete_markers() {
+            if dm.is_latest().unwrap_or(false)
+                && let Some(key) = dm.key()
+            {
+                deleted.push(DeletedObject {
+                    key: key.to_string(),
+                    version_id: dm.version_id().unwrap_or_default().to_string(),
+                    last_modified: dm.last_modified().map(|t| t.to_string()),
+                });
+            }
+        }
+
+        if resp.is_truncated() == Some(true) {
+            key_marker = resp.next_key_marker().map(|s| s.to_string());
+            version_id_marker = resp.next_version_id_marker().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+
+    Ok(deleted)
+}
+
+/// Get a specific version of an object.
+pub async fn get_object_version(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    version_id: &str,
+) -> Result<GetObjectOutput, StorageError> {
+    let resp = client
+        .get_object()
+        .bucket(bucket)
+        .key(key)
+        .version_id(version_id)
+        .send()
+        .await
+        .map_err(|e| {
+            let err = e.into_service_error();
+            if err.is_no_such_key() {
+                StorageError::NotFound {
+                    key: key.to_string(),
+                }
+            } else {
+                StorageError::GetObject(err.to_string())
+            }
+        })?;
+
+    let etag = resp.e_tag().map(|s| s.to_string());
+    let content_type = resp.content_type().map(|s| s.to_string());
+    let body = resp
+        .body
+        .collect()
+        .await
+        .map_err(|e| StorageError::GetObject(e.to_string()))?
+        .into_bytes()
+        .to_vec();
+
+    Ok(GetObjectOutput {
+        body,
+        etag,
+        content_type,
+    })
+}
+
+/// Restore a deleted object by removing its delete marker.
+///
+/// The `delete_marker_version_id` must be the version ID of the delete marker
+/// (the latest version when the object appears deleted). Removing it makes the
+/// previous real version become the current object again.
+pub async fn remove_delete_marker(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    delete_marker_version_id: &str,
+) -> Result<(), StorageError> {
+    client
+        .delete_object()
+        .bucket(bucket)
+        .key(key)
+        .version_id(delete_marker_version_id)
+        .send()
+        .await
+        .map_err(|e| StorageError::DeleteObject(e.into_service_error().to_string()))?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Presigning
+// ---------------------------------------------------------------------------
+
 /// Generate a presigned GET URL for an object.
 pub async fn presign_get(
     client: &Client,

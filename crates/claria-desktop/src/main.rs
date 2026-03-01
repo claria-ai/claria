@@ -50,6 +50,13 @@ fn main() -> Result<()> {
             commands::get_system_prompt,
             commands::save_system_prompt,
             commands::delete_system_prompt,
+            commands::list_file_versions,
+            commands::get_file_version_text,
+            commands::restore_file_version,
+            commands::list_deleted_files,
+            commands::restore_deleted_file,
+            commands::list_deleted_clients,
+            commands::restore_client,
         ]);
 
     #[cfg(debug_assertions)]

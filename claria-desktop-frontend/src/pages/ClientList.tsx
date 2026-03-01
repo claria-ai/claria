@@ -6,7 +6,10 @@ import {
   getSystemPrompt,
   saveSystemPrompt,
   deleteSystemPrompt,
+  listDeletedClients,
+  restoreClient,
   type ClientSummary,
+  type DeletedClient,
 } from "../lib/tauri";
 import type { Page } from "../App";
 
@@ -29,6 +32,12 @@ export default function ClientList({
   // Delete confirmation state
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // More mode (deleted clients)
+  const [moreMode, setMoreMode] = useState(false);
+  const [deletedClients, setDeletedClients] = useState<DeletedClient[]>([]);
+  const [deletedLoading, setDeletedLoading] = useState(false);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
 
   // System prompt editor state
   const [showPromptEditor, setShowPromptEditor] = useState(false);
@@ -80,6 +89,34 @@ export default function ClientList({
       setError(String(e));
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function handleToggleMore() {
+    const next = !moreMode;
+    setMoreMode(next);
+    if (next) {
+      setDeletedLoading(true);
+      try {
+        setDeletedClients(await listDeletedClients());
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setDeletedLoading(false);
+      }
+    }
+  }
+
+  async function handleRestoreClient(id: string, versionId: string) {
+    setRestoringId(id);
+    try {
+      await restoreClient(id, versionId);
+      setDeletedClients((prev) => prev.filter((c) => c.id !== id));
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRestoringId(null);
     }
   }
 
@@ -140,6 +177,19 @@ export default function ClientList({
           <h2 className="text-2xl font-bold">Clients</h2>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={handleToggleMore}
+            className={`p-2 rounded-lg border transition-colors ${
+              moreMode
+                ? "border-blue-300 bg-blue-50 text-blue-600"
+                : "border-gray-300 text-gray-500 hover:bg-gray-50"
+            }`}
+            title={moreMode ? "Hide version history" : "Show version history"}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </button>
           <button
             onClick={handleOpenPromptEditor}
             className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
@@ -262,6 +312,58 @@ export default function ClientList({
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Deleted clients (More mode) */}
+      {moreMode && !loading && (
+        <div className="mt-6">
+          <h3 className="text-sm font-semibold text-gray-500 mb-3">Deleted Clients</h3>
+          {deletedLoading ? (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+              <div className="flex items-center justify-center gap-2 text-gray-500 text-sm">
+                <Spinner />
+                <span>Loading deleted clients...</span>
+              </div>
+            </div>
+          ) : deletedClients.length === 0 ? (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+              <p className="text-gray-400 text-sm">No deleted clients found.</p>
+            </div>
+          ) : (
+            <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-100 bg-gray-50">
+                    <th className="text-left text-xs font-medium text-gray-500 px-4 py-2">Name</th>
+                    <th className="text-left text-xs font-medium text-gray-500 px-4 py-2">Deleted</th>
+                    <th className="w-24" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {deletedClients.map((dc) => (
+                    <tr key={dc.id} className="opacity-60">
+                      <td className="px-4 py-3 text-sm text-gray-500 line-through">
+                        {dc.name}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-400">
+                        {dc.deleted_at ? formatDate(dc.deleted_at) : "Unknown"}
+                      </td>
+                      <td className="px-2 py-3 text-right">
+                        <button
+                          onClick={() => handleRestoreClient(dc.id, dc.version_id)}
+                          disabled={restoringId === dc.id}
+                          className="px-3 py-1 text-xs text-blue-600 border border-blue-300 rounded hover:bg-blue-50 transition-colors disabled:opacity-50"
+                        >
+                          {restoringId === dc.id ? "Restoring..." : "Restore"}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

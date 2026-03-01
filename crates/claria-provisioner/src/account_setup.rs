@@ -695,9 +695,12 @@ fn claria_policy_document(system_name: &str, account_id: &str) -> String {
                     "s3:GetBucketPolicy",
                     "s3:PutBucketPolicy",
                     "s3:GetObject",
+                    "s3:GetObjectVersion",
                     "s3:PutObject",
                     "s3:DeleteObject",
-                    "s3:ListBucket"
+                    "s3:DeleteObjectVersion",
+                    "s3:ListBucket",
+                    "s3:ListBucketVersions"
                 ],
                 "Resource": [
                     format!("arn:aws:s3:::{account_id}-{system_name}-*"),

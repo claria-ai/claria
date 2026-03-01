@@ -1445,3 +1445,288 @@ pub async fn delete_system_prompt(
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Version history commands — S3 versioning surface
+// ---------------------------------------------------------------------------
+
+/// A single version of a file in a client's record.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct FileVersion {
+    pub version_id: String,
+    pub size: i32,
+    pub last_modified: Option<String>,
+    pub is_latest: bool,
+}
+
+/// A file that has been deleted (has a delete marker as the latest version).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct DeletedFile {
+    pub filename: String,
+    pub deleted_at: Option<String>,
+    pub version_id: String,
+}
+
+/// A client that has been deleted (has a delete marker on the client JSON).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct DeletedClient {
+    pub id: String,
+    pub name: String,
+    pub deleted_at: Option<String>,
+    pub version_id: String,
+}
+
+/// List all versions of a specific file in a client's record.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_file_versions(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+) -> Result<Vec<FileVersion>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let key = claria_core::s3_keys::client_record_file(id, &filename);
+
+    let versions = claria_storage::objects::list_object_versions(&s3, &bucket, &key)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(versions
+        .into_iter()
+        .filter(|v| !v.is_delete_marker)
+        .map(|v| FileVersion {
+            version_id: v.version_id,
+            size: v.size as i32,
+            last_modified: v.last_modified,
+            is_latest: v.is_latest,
+        })
+        .collect())
+}
+
+/// Get the text content of a specific version of a file.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_file_version_text(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+    version_id: String,
+) -> Result<String, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let key = claria_core::s3_keys::client_record_file(id, &filename);
+
+    let output = claria_storage::objects::get_object_version(&s3, &bucket, &key, &version_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    String::from_utf8(output.body).map_err(|e| e.to_string())
+}
+
+/// Restore a previous version of a file by copying its content to a new PUT.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_file_version(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+    version_id: String,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let key = claria_core::s3_keys::client_record_file(id, &filename);
+
+    // Fetch the old version's content.
+    let output = claria_storage::objects::get_object_version(&s3, &bucket, &key, &version_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Write it back as the current version.
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        &key,
+        output.body,
+        output.content_type.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(client_id = %id, filename, version_id, "file version restored");
+
+    Ok(())
+}
+
+/// List deleted files in a client's record (files with a delete marker).
+#[tauri::command]
+#[specta::specta]
+pub async fn list_deleted_files(
+    state: State<'_, DesktopState>,
+    client_id: String,
+) -> Result<Vec<DeletedFile>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let prefix = claria_core::s3_keys::client_records_prefix(id);
+
+    let deleted = claria_storage::objects::list_deleted_objects(&s3, &bucket, &prefix)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(deleted
+        .into_iter()
+        .filter_map(|d| {
+            let filename = d.key.strip_prefix(&prefix)?.to_string();
+            if filename.is_empty() {
+                return None;
+            }
+            Some(DeletedFile {
+                filename,
+                deleted_at: d.last_modified,
+                version_id: d.version_id,
+            })
+        })
+        .collect())
+}
+
+/// Restore a deleted file by removing its delete marker.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_deleted_file(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+    version_id: String,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let key = claria_core::s3_keys::client_record_file(id, &filename);
+
+    claria_storage::objects::remove_delete_marker(&s3, &bucket, &key, &version_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!(client_id = %id, filename, "deleted file restored");
+
+    Ok(())
+}
+
+/// List deleted clients (client JSON files with a delete marker).
+#[tauri::command]
+#[specta::specta]
+pub async fn list_deleted_clients(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<DeletedClient>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let deleted = claria_storage::objects::list_deleted_objects(
+        &s3,
+        &bucket,
+        claria_core::s3_keys::CLIENTS_PREFIX,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut clients = Vec::new();
+    for d in &deleted {
+        // Fetch the most recent real version to get the client name.
+        let versions = claria_storage::objects::list_object_versions(&s3, &bucket, &d.key)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Find the most recent non-delete-marker version.
+        let latest_real = versions.iter().find(|v| !v.is_delete_marker);
+        let name = if let Some(v) = latest_real {
+            if v.version_id.is_empty() {
+                tracing::warn!(key = %d.key, "deleted client has empty version_id (pre-versioning object)");
+                "Unknown".to_string()
+            } else {
+                match claria_storage::objects::get_object_version(
+                    &s3,
+                    &bucket,
+                    &d.key,
+                    &v.version_id,
+                )
+                .await
+                {
+                    Ok(output) => {
+                        match serde_json::from_slice::<claria_core::models::client::Client>(
+                            &output.body,
+                        ) {
+                            Ok(client) => client.name,
+                            Err(e) => {
+                                tracing::warn!(key = %d.key, version_id = %v.version_id, error = %e, "failed to deserialize deleted client JSON");
+                                "Unknown".to_string()
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(key = %d.key, version_id = %v.version_id, error = %e, "failed to fetch deleted client version");
+                        "Unknown".to_string()
+                    }
+                }
+            }
+        } else {
+            tracing::warn!(key = %d.key, version_count = versions.len(), "no non-delete-marker version found for deleted client");
+            "Unknown".to_string()
+        };
+
+        // Extract the UUID from the key (e.g. "clients/abc-123.json" → "abc-123")
+        let id = d
+            .key
+            .strip_prefix(claria_core::s3_keys::CLIENTS_PREFIX)
+            .and_then(|s| s.strip_suffix(".json"))
+            .unwrap_or(&d.key)
+            .to_string();
+
+        clients.push(DeletedClient {
+            id,
+            name,
+            deleted_at: d.last_modified.clone(),
+            version_id: d.version_id.clone(),
+        });
+    }
+
+    Ok(clients)
+}
+
+/// Restore a deleted client by removing the delete marker on the client JSON.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_client(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    version_id: String,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let key = claria_core::s3_keys::client(id);
+
+    claria_storage::objects::remove_delete_marker(&s3, &bucket, &key, &version_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!(client_id = %id, "deleted client restored");
+
+    Ok(())
+}

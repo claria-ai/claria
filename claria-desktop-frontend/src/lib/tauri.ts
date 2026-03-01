@@ -22,7 +22,10 @@ export type {
   CredentialAssessment,
   CredentialClass,
   CredentialSource,
+  DeletedClient,
+  DeletedFile,
   FieldDrift,
+  FileVersion,
   Lifecycle,
   NewCredentials,
   PlanEntry,
@@ -260,4 +263,36 @@ export async function saveSystemPrompt(content: string): Promise<void> {
 
 export async function deleteSystemPrompt(): Promise<void> {
   unwrap(await commands.deleteSystemPrompt());
+}
+
+// ---------------------------------------------------------------------------
+// Version history wrappers
+// ---------------------------------------------------------------------------
+
+export async function listFileVersions(clientId: string, filename: string): Promise<import("./bindings").FileVersion[]> {
+  return unwrap(await commands.listFileVersions(clientId, filename));
+}
+
+export async function getFileVersionText(clientId: string, filename: string, versionId: string): Promise<string> {
+  return unwrap(await commands.getFileVersionText(clientId, filename, versionId));
+}
+
+export async function restoreFileVersion(clientId: string, filename: string, versionId: string): Promise<void> {
+  unwrap(await commands.restoreFileVersion(clientId, filename, versionId));
+}
+
+export async function listDeletedFiles(clientId: string): Promise<import("./bindings").DeletedFile[]> {
+  return unwrap(await commands.listDeletedFiles(clientId));
+}
+
+export async function restoreDeletedFile(clientId: string, filename: string, versionId: string): Promise<void> {
+  unwrap(await commands.restoreDeletedFile(clientId, filename, versionId));
+}
+
+export async function listDeletedClients(): Promise<import("./bindings").DeletedClient[]> {
+  return unwrap(await commands.listDeletedClients());
+}
+
+export async function restoreClient(clientId: string, versionId: string): Promise<void> {
+  unwrap(await commands.restoreClient(clientId, versionId));
 }
