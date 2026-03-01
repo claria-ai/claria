@@ -7,12 +7,14 @@ import {
   listPromptVersions,
   getPromptVersion,
   restorePromptVersion,
-  getWhisperStatus,
+  getWhisperModels,
   downloadWhisperModel,
   deleteWhisperModel,
+  setActiveWhisperModel,
   type ChatModel,
   type FileVersion,
-  type WhisperStatus,
+  type WhisperModelInfo,
+  type WhisperModelTier,
 } from "../lib/tauri";
 import type { Page } from "../App";
 
@@ -465,17 +467,16 @@ function PromptEditor({
 // ---------------------------------------------------------------------------
 
 function MemoTranscriptionSection() {
-  const [status, setStatus] = useState<WhisperStatus | null>(null);
+  const [models, setModels] = useState<WhisperModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [downloading, setDownloading] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [busyTier, setBusyTier] = useState<WhisperModelTier | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setStatus(await getWhisperStatus());
+      setModels(await getWhisperModels());
     } catch (e) {
       setError(String(e));
     } finally {
@@ -487,37 +488,47 @@ function MemoTranscriptionSection() {
     refresh();
   }, [refresh]);
 
-  async function handleDownload() {
-    setDownloading(true);
+  async function handleDownload(tier: WhisperModelTier) {
+    setBusyTier(tier);
     setError(null);
     try {
-      setStatus(await downloadWhisperModel());
+      setModels(await downloadWhisperModel(tier));
     } catch (e) {
       setError(String(e));
     } finally {
-      setDownloading(false);
+      setBusyTier(null);
     }
   }
 
-  async function handleDelete() {
-    setDeleting(true);
+  async function handleDelete(tier: WhisperModelTier) {
+    setBusyTier(tier);
     setError(null);
     try {
-      await deleteWhisperModel();
-      setStatus({ available: false, model_size_bytes: null, model_path: null });
+      setModels(await deleteWhisperModel(tier));
     } catch (e) {
       setError(String(e));
     } finally {
-      setDeleting(false);
+      setBusyTier(null);
     }
   }
+
+  async function handleActivate(tier: WhisperModelTier) {
+    setError(null);
+    try {
+      setModels(await setActiveWhisperModel(tier));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  const hasActive = models.some((m) => m.active);
 
   return (
     <details className="border border-gray-200 rounded-lg group">
       <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
         <div className="flex items-center gap-2">
           <span className="font-medium text-gray-900">Memo Transcription</span>
-          {status?.available && (
+          {hasActive && (
             <span className="text-xs text-green-600">Ready</span>
           )}
         </div>
@@ -528,7 +539,8 @@ function MemoTranscriptionSection() {
       <div className="border-t border-gray-100 p-4">
         <p className="text-xs text-gray-400 mb-3">
           Record audio memos and transcribe them to text notes using a local AI
-          model. No audio data leaves your computer.
+          model. No audio data leaves your computer. Download one or more models
+          below and activate the one you want to use.
         </p>
 
         {loading ? (
@@ -536,45 +548,84 @@ function MemoTranscriptionSection() {
             <Spinner />
             <span>Checking model status...</span>
           </div>
-        ) : status?.available ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-green-700 text-sm">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              <span>Model ready</span>
-            </div>
-            <div className="text-xs text-gray-400 space-y-1">
-              {status.model_size_bytes != null && (
-                <p>Size: {formatFileSize(status.model_size_bytes)}</p>
-              )}
-              {status.model_path && (
-                <p className="break-all">Location: {status.model_path}</p>
-              )}
-            </div>
-            <button
-              onClick={handleDelete}
-              disabled={deleting}
-              className="px-3 py-1.5 text-sm text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
-            >
-              {deleting ? "Removing..." : "Remove Model"}
-            </button>
-          </div>
         ) : (
-          <button
-            onClick={handleDownload}
-            disabled={downloading}
-            className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
-          >
-            {downloading ? (
-              <>
-                <Spinner />
-                <span>Downloading model...</span>
-              </>
-            ) : (
-              "Download Whisper Model (~293 MB)"
-            )}
-          </button>
+          <div className="space-y-3">
+            {models.map((m) => (
+              <div
+                key={m.tier}
+                className={`border rounded-lg p-3 ${
+                  m.active
+                    ? "border-green-300 bg-green-50/50"
+                    : "border-gray-200"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-sm text-gray-900">
+                        {m.label}
+                      </span>
+                      {m.active && (
+                        <span className="px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">
+                          Active
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {m.description}
+                    </p>
+                    {m.downloaded && (
+                      <div className="text-xs text-gray-400 mt-1 space-y-0.5">
+                        {m.model_size_bytes != null && (
+                          <p>Size on disk: {formatFileSize(m.model_size_bytes)}</p>
+                        )}
+                        {m.model_path && (
+                          <p className="break-all">Location: {m.model_path}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {m.downloaded ? (
+                      <>
+                        {!m.active && (
+                          <button
+                            onClick={() => handleActivate(m.tier)}
+                            disabled={busyTier !== null}
+                            className="px-2.5 py-1 text-xs text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
+                          >
+                            Activate
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDelete(m.tier)}
+                          disabled={busyTier !== null}
+                          className="px-2.5 py-1 text-xs text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+                        >
+                          {busyTier === m.tier ? "Removing..." : "Remove"}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => handleDownload(m.tier)}
+                        disabled={busyTier !== null}
+                        className="px-2.5 py-1 text-xs text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        {busyTier === m.tier ? (
+                          <>
+                            <Spinner />
+                            <span>Downloading...</span>
+                          </>
+                        ) : (
+                          `Download (${m.download_size})`
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
 
         {error && (

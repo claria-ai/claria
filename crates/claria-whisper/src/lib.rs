@@ -1,6 +1,7 @@
 //! claria-whisper
 //!
 //! Local audio transcription using candle (pure Rust).
+//! Supports both English-only and multilingual Whisper models.
 
 pub mod error;
 
@@ -10,12 +11,24 @@ use byteorder::{ByteOrder, LittleEndian};
 use candle_core::{Device, IndexOp, Tensor};
 use candle_nn::{ops::softmax, VarBuilder};
 use candle_transformers::models::whisper::{self as m, audio, Config};
+use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer;
 use tracing::info;
 
 use crate::error::WhisperError;
 
 static MEL_FILTERS: &[u8] = include_bytes!("melfilters.bytes");
+
+/// Language tokens we support for detection (English and Spanish).
+const LANGUAGE_TOKENS: &[(&str, &str)] = &[("en", "<|en|>"), ("es", "<|es|>")];
+
+/// Result of a transcription, including detected language for multilingual models.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscribeResult {
+    pub text: String,
+    /// Detected language code (e.g. "en", "es"). `None` for English-only models.
+    pub language: Option<String>,
+}
 
 /// A loaded Whisper model ready for transcription.
 ///
@@ -32,13 +45,17 @@ pub struct WhisperModel {
     no_timestamps_token: u32,
     no_speech_token: Option<u32>,
     suppress_tokens: Tensor,
+    /// Whether this is a multilingual model (has language tokens in tokenizer).
+    is_multilingual: bool,
+    /// Resolved language token IDs: (code, token_id) pairs.
+    language_tokens: Vec<(String, u32)>,
 }
 
 impl WhisperModel {
     /// Load a Whisper model from `model_dir`.
     ///
     /// `model_dir` must contain `model.safetensors`, `config.json`, and
-    /// `tokenizer.json` (the openai/whisper-base.en layout from Hugging Face).
+    /// `tokenizer.json` (the HuggingFace layout).
     pub fn load(model_dir: &Path) -> Result<Self, WhisperError> {
         let device = Device::Cpu;
 
@@ -77,6 +94,20 @@ impl WhisperModel {
             .iter()
             .find_map(|t| token_id(&tokenizer, t).ok());
 
+        // Detect multilingual capability by checking for language tokens
+        let mut language_tokens = Vec::new();
+        for (code, token_str) in LANGUAGE_TOKENS {
+            if let Some(id) = tokenizer.token_to_id(token_str) {
+                language_tokens.push((code.to_string(), id));
+            }
+        }
+        let is_multilingual = !language_tokens.is_empty();
+        info!(
+            is_multilingual,
+            languages = language_tokens.len(),
+            "model language support"
+        );
+
         // Build suppress-tokens mask
         let suppress_tokens: Vec<f32> = (0..config.vocab_size as u32)
             .map(|i| {
@@ -103,25 +134,166 @@ impl WhisperModel {
             no_timestamps_token,
             no_speech_token,
             suppress_tokens,
+            is_multilingual,
+            language_tokens,
         })
     }
 
+    /// Whether this model supports multiple languages.
+    pub fn is_multilingual(&self) -> bool {
+        self.is_multilingual
+    }
+
+    /// Detect the spoken language from the first 30 seconds of audio.
+    ///
+    /// Returns the language code (e.g. "en", "es") with the highest probability.
+    /// Only meaningful for multilingual models; returns `None` for English-only.
+    pub fn detect_language(
+        &mut self,
+        pcm_16khz: &[f32],
+    ) -> Result<Option<String>, WhisperError> {
+        if !self.is_multilingual || self.language_tokens.is_empty() {
+            return Ok(None);
+        }
+
+        let device = Device::Cpu;
+
+        // Use at most 30 seconds of audio
+        let max_samples = 30 * m::SAMPLE_RATE;
+        let samples = if pcm_16khz.len() > max_samples {
+            &pcm_16khz[..max_samples]
+        } else {
+            pcm_16khz
+        };
+
+        // Convert to mel spectrogram
+        let mel = audio::pcm_to_mel(&self.config, samples, &self.mel_filters);
+        let mel_len = mel.len();
+        let mel = Tensor::from_vec(
+            mel,
+            (
+                1,
+                self.config.num_mel_bins,
+                mel_len / self.config.num_mel_bins,
+            ),
+            &device,
+        )
+        .map_err(|e| WhisperError::Transcription(e.to_string()))?;
+
+        // Take first segment
+        let (_, _, content_frames) = mel
+            .dims3()
+            .map_err(|e| WhisperError::Transcription(e.to_string()))?;
+        let segment_size = usize::min(content_frames, m::N_FRAMES);
+        let mel_segment = mel
+            .narrow(2, 0, segment_size)
+            .map_err(|e| WhisperError::Transcription(e.to_string()))?;
+
+        // Encode audio
+        let audio_features = self
+            .model
+            .encoder
+            .forward(&mel_segment, true)
+            .map_err(|e| WhisperError::Transcription(e.to_string()))?;
+
+        // Run decoder with just [SOT] to get language logits
+        let sot = Tensor::new(&[self.sot_token], &device)
+            .and_then(|t| t.unsqueeze(0))
+            .map_err(|e| WhisperError::Transcription(e.to_string()))?;
+
+        let ys = self
+            .model
+            .decoder
+            .forward(&sot, &audio_features, true)
+            .map_err(|e| WhisperError::Transcription(e.to_string()))?;
+
+        let logits = self
+            .model
+            .decoder
+            .final_linear(
+                &ys.i((..1, 0..1))
+                    .map_err(|e| WhisperError::Transcription(e.to_string()))?,
+            )
+            .and_then(|t| t.i(0))
+            .and_then(|t| t.i(0))
+            .map_err(|e| WhisperError::Transcription(e.to_string()))?;
+
+        let probs = softmax(&logits, 0)
+            .and_then(|s| s.to_vec1::<f32>())
+            .map_err(|e| WhisperError::Transcription(e.to_string()))?;
+
+        // Find the language with highest probability
+        let detected = self
+            .language_tokens
+            .iter()
+            .map(|(code, token_id)| {
+                let prob = probs.get(*token_id as usize).copied().unwrap_or(0.0);
+                (code.clone(), prob)
+            })
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(code, prob)| {
+                info!(language = %code, probability = format!("{prob:.3}"), "language detected");
+                code
+            });
+
+        Ok(detected)
+    }
+
     /// Transcribe 16 kHz mono f32 PCM audio.
-    pub fn transcribe(&mut self, pcm_16khz: &[f32]) -> Result<String, WhisperError> {
+    ///
+    /// For multilingual models, pass `language` to force a specific language
+    /// (e.g. `Some("en")` or `Some("es")`). Pass `None` to auto-detect.
+    /// For English-only models, the `language` parameter is ignored.
+    pub fn transcribe(
+        &mut self,
+        pcm_16khz: &[f32],
+        language: Option<&str>,
+    ) -> Result<TranscribeResult, WhisperError> {
         let device = Device::Cpu;
         let duration_secs = pcm_16khz.len() as f64 / 16000.0;
         info!(
             samples = pcm_16khz.len(),
             duration_secs = format!("{duration_secs:.1}"),
+            is_multilingual = self.is_multilingual,
             "transcribing audio"
         );
+
+        // Resolve the language token for multilingual models
+        let (lang_token, detected_language) = if self.is_multilingual {
+            let lang_code = match language {
+                Some(code) => code.to_string(),
+                None => self
+                    .detect_language(pcm_16khz)?
+                    .unwrap_or_else(|| "en".to_string()),
+            };
+
+            let token_id = self
+                .language_tokens
+                .iter()
+                .find(|(c, _)| c == &lang_code)
+                .map(|(_, id)| *id)
+                .ok_or_else(|| {
+                    WhisperError::Transcription(format!(
+                        "unsupported language: {lang_code}"
+                    ))
+                })?;
+
+            info!(language = %lang_code, token_id, "using language token");
+            (Some(token_id), Some(lang_code))
+        } else {
+            (None, None)
+        };
 
         // Convert PCM to mel spectrogram
         let mel = audio::pcm_to_mel(&self.config, pcm_16khz, &self.mel_filters);
         let mel_len = mel.len();
         let mel = Tensor::from_vec(
             mel,
-            (1, self.config.num_mel_bins, mel_len / self.config.num_mel_bins),
+            (
+                1,
+                self.config.num_mel_bins,
+                mel_len / self.config.num_mel_bins,
+            ),
             &device,
         )
         .map_err(|e| WhisperError::Transcription(e.to_string()))?;
@@ -153,13 +325,14 @@ impl WhisperModel {
                 .forward(&mel_segment, true)
                 .map_err(|e| WhisperError::Transcription(e.to_string()))?;
 
-            // Greedy decode (English, no timestamps)
+            // Build decoder prompt
             let sample_len = self.config.max_target_positions / 2;
-            let mut tokens = vec![
-                self.sot_token,
-                self.transcribe_token,
-                self.no_timestamps_token,
-            ];
+            let mut tokens = vec![self.sot_token];
+            if let Some(lt) = lang_token {
+                tokens.push(lt);
+            }
+            tokens.push(self.transcribe_token);
+            tokens.push(self.no_timestamps_token);
 
             for i in 0..sample_len {
                 let tokens_t = Tensor::new(tokens.as_slice(), &device)
@@ -201,7 +374,9 @@ impl WhisperModel {
                     .enumerate()
                     .max_by(|(_, u), (_, v)| u.total_cmp(v))
                     .map(|(i, _)| i as u32)
-                    .ok_or_else(|| WhisperError::Transcription("empty logits".into()))?;
+                    .ok_or_else(|| {
+                        WhisperError::Transcription("empty logits".into())
+                    })?;
 
                 if next_token == self.eot_token
                     || tokens.len() > self.config.max_target_positions
@@ -213,16 +388,19 @@ impl WhisperModel {
 
             // Check for no-speech
             if let Some(nst) = self.no_speech_token {
-                let first_tokens = Tensor::new(
-                    &[
-                        self.sot_token,
-                        self.transcribe_token,
-                        self.no_timestamps_token,
-                    ],
-                    &device,
-                )
-                .and_then(|t| t.unsqueeze(0))
-                .map_err(|e| WhisperError::Transcription(e.to_string()))?;
+                let mut no_speech_prompt = vec![self.sot_token];
+                if let Some(lt) = lang_token {
+                    no_speech_prompt.push(lt);
+                }
+                no_speech_prompt.push(self.transcribe_token);
+                no_speech_prompt.push(self.no_timestamps_token);
+
+                let first_tokens =
+                    Tensor::new(no_speech_prompt.as_slice(), &device)
+                        .and_then(|t| t.unsqueeze(0))
+                        .map_err(|e| {
+                            WhisperError::Transcription(e.to_string())
+                        })?;
 
                 let first_ys = self
                     .model
@@ -236,7 +414,9 @@ impl WhisperModel {
                     .final_linear(
                         &first_ys
                             .i(..1)
-                            .map_err(|e| WhisperError::Transcription(e.to_string()))?,
+                            .map_err(|e| {
+                                WhisperError::Transcription(e.to_string())
+                            })?,
                     )
                     .and_then(|t| t.i(0))
                     .and_then(|t| t.i(0))
@@ -252,9 +432,10 @@ impl WhisperModel {
                 }
             }
 
-            let text = self.tokenizer.decode(&tokens, true).map_err(|e| {
-                WhisperError::Tokenizer(format!("decoding tokens: {e}"))
-            })?;
+            let text =
+                self.tokenizer.decode(&tokens, true).map_err(|e| {
+                    WhisperError::Tokenizer(format!("decoding tokens: {e}"))
+                })?;
 
             info!(
                 segment = segment_idx,
@@ -267,12 +448,22 @@ impl WhisperModel {
         }
 
         let result = full_text.trim().to_string();
-        info!(text_len = result.len(), "transcription complete");
-        Ok(result)
+        info!(
+            text_len = result.len(),
+            language = ?detected_language,
+            "transcription complete"
+        );
+        Ok(TranscribeResult {
+            text: result,
+            language: detected_language,
+        })
     }
 }
 
-fn token_id(tokenizer: &Tokenizer, token: &str) -> Result<u32, WhisperError> {
+fn token_id(
+    tokenizer: &Tokenizer,
+    token: &str,
+) -> Result<u32, WhisperError> {
     tokenizer
         .token_to_id(token)
         .ok_or_else(|| WhisperError::Tokenizer(format!("no token-id for {token}")))

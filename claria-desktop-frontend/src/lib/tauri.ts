@@ -321,20 +321,24 @@ export async function restoreClient(clientId: string, versionId: string): Promis
 // Whisper model management + local transcription
 // ---------------------------------------------------------------------------
 
-export type { WhisperStatus } from "./bindings";
+export type { WhisperModelInfo, WhisperModelTier, TranscribeMemoResult } from "./bindings";
 
-export async function getWhisperStatus(): Promise<import("./bindings").WhisperStatus> {
-  return unwrap(await commands.getWhisperStatus());
+export async function getWhisperModels(): Promise<import("./bindings").WhisperModelInfo[]> {
+  return unwrap(await commands.getWhisperModels());
 }
 
-export async function downloadWhisperModel(): Promise<import("./bindings").WhisperStatus> {
-  return unwrap(await commands.downloadWhisperModel());
+export async function downloadWhisperModel(tier: import("./bindings").WhisperModelTier): Promise<import("./bindings").WhisperModelInfo[]> {
+  return unwrap(await commands.downloadWhisperModel(tier));
 }
 
-export async function deleteWhisperModel(): Promise<void> {
-  unwrap(await commands.deleteWhisperModel());
+export async function deleteWhisperModel(tier: import("./bindings").WhisperModelTier): Promise<import("./bindings").WhisperModelInfo[]> {
+  return unwrap(await commands.deleteWhisperModel(tier));
 }
 
-export async function transcribeMemo(audioPcmBase64: string): Promise<string> {
+export async function setActiveWhisperModel(tier: import("./bindings").WhisperModelTier): Promise<import("./bindings").WhisperModelInfo[]> {
+  return unwrap(await commands.setActiveWhisperModel(tier));
+}
+
+export async function transcribeMemo(audioPcmBase64: string): Promise<import("./bindings").TranscribeMemoResult> {
   return unwrap(await commands.transcribeMemo(audioPcmBase64));
 }

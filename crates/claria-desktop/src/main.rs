@@ -61,9 +61,10 @@ fn main() -> Result<()> {
             commands::restore_deleted_file,
             commands::list_deleted_clients,
             commands::restore_client,
-            commands::get_whisper_status,
+            commands::get_whisper_models,
             commands::download_whisper_model,
             commands::delete_whisper_model,
+            commands::set_active_whisper_model,
             commands::transcribe_memo,
         ]);
 

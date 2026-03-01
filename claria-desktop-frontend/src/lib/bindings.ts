@@ -554,46 +554,57 @@ async restoreClient(clientId: string, versionId: string) : Promise<Result<null, 
 }
 },
 /**
- * Check whether the Whisper model is downloaded and ready.
+ * List all Whisper model tiers with their download/active status.
  */
-async getWhisperStatus() : Promise<Result<WhisperStatus, string>> {
+async getWhisperModels() : Promise<Result<WhisperModelInfo[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_whisper_status") };
+    return { status: "ok", data: await TAURI_INVOKE("get_whisper_models") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Download the Whisper model files from Hugging Face.
+ * Download a specific Whisper model tier from Hugging Face.
  */
-async downloadWhisperModel() : Promise<Result<WhisperStatus, string>> {
+async downloadWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("download_whisper_model") };
+    return { status: "ok", data: await TAURI_INVOKE("download_whisper_model", { tier }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Delete the local Whisper model and clear the in-memory cache.
+ * Delete a specific Whisper model tier and clear the in-memory cache if needed.
  */
-async deleteWhisperModel() : Promise<Result<null, string>> {
+async deleteWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_whisper_model") };
+    return { status: "ok", data: await TAURI_INVOKE("delete_whisper_model", { tier }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Transcribe PCM audio using the local Whisper model.
+ * Set the active Whisper model tier. The tier must be downloaded.
+ */
+async setActiveWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_active_whisper_model", { tier }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transcribe PCM audio using the active Whisper model.
  * 
  * Accepts base64-encoded f32 PCM samples at 16 kHz mono. Returns the
- * transcript text. The model is loaded on first call and cached in memory
- * for subsequent calls.
+ * transcript text and detected language. The model is loaded on first call
+ * and cached in memory for subsequent calls.
  */
-async transcribeMemo(audioPcmBase64: string) : Promise<Result<string, string>> {
+async transcribeMemo(audioPcmBase64: string) : Promise<Result<TranscribeMemoResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("transcribe_memo", { audioPcmBase64 }) };
 } catch (e) {
@@ -870,9 +881,17 @@ export type Severity =
  */
 export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
 /**
- * Status of the local Whisper model.
+ * Result from transcription, including detected language.
  */
-export type WhisperStatus = { available: boolean; model_size_bytes: number | null; model_path: string | null }
+export type TranscribeMemoResult = { text: string; language: string | null }
+/**
+ * Info about a Whisper model tier (status, size, path, whether active).
+ */
+export type WhisperModelInfo = { tier: WhisperModelTier; label: string; description: string; download_size: string; downloaded: boolean; model_size_bytes: number | null; model_path: string | null; active: boolean }
+/**
+ * Available Whisper model tiers.
+ */
+export type WhisperModelTier = "base_en" | "small" | "medium"
 
 /** tauri-specta globals **/
 

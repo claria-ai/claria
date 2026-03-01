@@ -1984,66 +1984,222 @@ pub async fn restore_client(
 // Whisper model management + local transcription
 // ---------------------------------------------------------------------------
 
-const WHISPER_HF_BASE: &str = "https://huggingface.co/openai/whisper-base.en/resolve/main";
-
 /// Files required for the candle-based Whisper model.
 const WHISPER_FILES: &[&str] = &["model.safetensors", "config.json", "tokenizer.json"];
 
-/// Status of the local Whisper model.
+/// Available Whisper model tiers.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct WhisperStatus {
-    pub available: bool,
-    pub model_size_bytes: Option<i32>,
-    pub model_path: Option<String>,
+#[serde(rename_all = "snake_case")]
+pub enum WhisperModelTier {
+    BaseEn,
+    Small,
+    Medium,
 }
 
-fn whisper_model_dir() -> Result<std::path::PathBuf, String> {
-    let base = dirs::data_dir().ok_or_else(|| "no data directory found".to_string())?;
-    Ok(base
-        .join("com.claria.desktop")
-        .join("models")
-        .join("whisper-base-en"))
-}
+impl WhisperModelTier {
+    fn hf_repo(&self) -> &'static str {
+        match self {
+            Self::BaseEn => "openai/whisper-base.en",
+            Self::Small => "openai/whisper-small",
+            Self::Medium => "openai/whisper-medium",
+        }
+    }
 
-/// Check whether the Whisper model is downloaded and ready.
-#[tauri::command]
-#[specta::specta]
-pub async fn get_whisper_status() -> Result<WhisperStatus, String> {
-    let dir = whisper_model_dir()?;
-    let all_present = WHISPER_FILES.iter().all(|f| dir.join(f).exists());
-    if all_present {
-        let total_size: u64 = WHISPER_FILES
-            .iter()
-            .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
-            .map(|m| m.len())
-            .sum();
-        Ok(WhisperStatus {
-            available: true,
-            model_size_bytes: Some(total_size as i32),
-            model_path: Some(dir.to_string_lossy().to_string()),
-        })
-    } else {
-        Ok(WhisperStatus {
-            available: false,
-            model_size_bytes: None,
-            model_path: None,
-        })
+    fn dir_name(&self) -> &'static str {
+        match self {
+            Self::BaseEn => "whisper-base-en",
+            Self::Small => "whisper-small",
+            Self::Medium => "whisper-medium",
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::BaseEn => "Good English",
+            Self::Small => "Good English + Spanish",
+            Self::Medium => "Very Good Spanish",
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::BaseEn => "English-only model. Fastest inference, smallest download.",
+            Self::Small => "Multilingual model with good English and Spanish support.",
+            Self::Medium => "Larger multilingual model with very good Spanish accuracy. Slower inference.",
+        }
+    }
+
+    fn download_size(&self) -> &'static str {
+        match self {
+            Self::BaseEn => "~293 MB",
+            Self::Small => "~967 MB",
+            Self::Medium => "~3 GB",
+        }
+    }
+
+    fn tag(&self) -> &'static str {
+        match self {
+            Self::BaseEn => "base_en",
+            Self::Small => "small",
+            Self::Medium => "medium",
+        }
+    }
+
+    fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "base_en" => Some(Self::BaseEn),
+            "small" => Some(Self::Small),
+            "medium" => Some(Self::Medium),
+            _ => None,
+        }
+    }
+
+    fn all() -> &'static [WhisperModelTier] {
+        &[Self::BaseEn, Self::Small, Self::Medium]
     }
 }
 
-/// Download the Whisper model files from Hugging Face.
+/// Info about a Whisper model tier (status, size, path, whether active).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct WhisperModelInfo {
+    pub tier: WhisperModelTier,
+    pub label: String,
+    pub description: String,
+    pub download_size: String,
+    pub downloaded: bool,
+    pub model_size_bytes: Option<i32>,
+    pub model_path: Option<String>,
+    pub active: bool,
+}
+
+/// Result from transcription, including detected language.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct TranscribeMemoResult {
+    pub text: String,
+    pub language: Option<String>,
+}
+
+fn whisper_models_base_dir() -> Result<std::path::PathBuf, String> {
+    let base = dirs::data_dir().ok_or_else(|| "no data directory found".to_string())?;
+    Ok(base.join("com.claria.desktop").join("models"))
+}
+
+fn whisper_model_dir(tier: &WhisperModelTier) -> Result<std::path::PathBuf, String> {
+    Ok(whisper_models_base_dir()?.join(tier.dir_name()))
+}
+
+fn active_model_file() -> Result<std::path::PathBuf, String> {
+    Ok(whisper_models_base_dir()?.join("active-whisper-model.txt"))
+}
+
+fn read_active_tier() -> Option<WhisperModelTier> {
+    let path = active_model_file().ok()?;
+    let tag = std::fs::read_to_string(path).ok()?;
+    WhisperModelTier::from_tag(tag.trim())
+}
+
+fn write_active_tier(tier: &WhisperModelTier) -> Result<(), String> {
+    let path = active_model_file()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create models dir: {e}"))?;
+    }
+    std::fs::write(&path, tier.tag()).map_err(|e| format!("write active model: {e}"))
+}
+
+fn clear_active_tier() {
+    if let Ok(path) = active_model_file() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn is_tier_downloaded(tier: &WhisperModelTier) -> bool {
+    if let Ok(dir) = whisper_model_dir(tier) {
+        WHISPER_FILES.iter().all(|f| dir.join(f).exists())
+    } else {
+        false
+    }
+}
+
+fn tier_size_bytes(tier: &WhisperModelTier) -> Option<i32> {
+    let dir = whisper_model_dir(tier).ok()?;
+    let total: u64 = WHISPER_FILES
+        .iter()
+        .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
+        .map(|m| m.len())
+        .sum();
+    if total > 0 { Some(total as i32) } else { None }
+}
+
+/// Resolve the effective active tier: explicit selection, or auto-pick the
+/// first downloaded model.
+fn effective_active_tier() -> Option<WhisperModelTier> {
+    if let Some(tier) = read_active_tier()
+        && is_tier_downloaded(&tier)
+    {
+        return Some(tier);
+    }
+    // Fallback: first downloaded tier
+    WhisperModelTier::all()
+        .iter()
+        .find(|t| is_tier_downloaded(t))
+        .cloned()
+}
+
+fn build_whisper_models_list() -> Result<Vec<WhisperModelInfo>, String> {
+    let active = effective_active_tier();
+    let mut models = Vec::new();
+    for tier in WhisperModelTier::all() {
+        let downloaded = is_tier_downloaded(tier);
+        let dir = whisper_model_dir(tier)?;
+        let is_active = active
+            .as_ref()
+            .is_some_and(|a| a.tag() == tier.tag());
+        models.push(WhisperModelInfo {
+            tier: tier.clone(),
+            label: tier.label().to_string(),
+            description: tier.description().to_string(),
+            download_size: tier.download_size().to_string(),
+            downloaded,
+            model_size_bytes: if downloaded { tier_size_bytes(tier) } else { None },
+            model_path: if downloaded {
+                Some(dir.to_string_lossy().to_string())
+            } else {
+                None
+            },
+            active: is_active,
+        });
+    }
+    Ok(models)
+}
+
+/// List all Whisper model tiers with their download/active status.
 #[tauri::command]
 #[specta::specta]
-pub async fn download_whisper_model() -> Result<WhisperStatus, String> {
-    let dir = whisper_model_dir()?;
+pub async fn get_whisper_models() -> Result<Vec<WhisperModelInfo>, String> {
+    build_whisper_models_list()
+}
+
+/// Download a specific Whisper model tier from Hugging Face.
+#[tauri::command]
+#[specta::specta]
+pub async fn download_whisper_model(
+    tier: WhisperModelTier,
+) -> Result<Vec<WhisperModelInfo>, String> {
+    let dir = whisper_model_dir(&tier)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create models dir: {e}"))?;
 
-    tracing::info!("downloading whisper model files");
+    let hf_base = format!(
+        "https://huggingface.co/{}/resolve/main",
+        tier.hf_repo()
+    );
+
+    tracing::info!(tier = tier.tag(), "downloading whisper model files");
 
     let dir_clone = dir.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         for filename in WHISPER_FILES {
-            let url = format!("{WHISPER_HF_BASE}/{filename}");
+            let url = format!("{hf_base}/{filename}");
             let dest = dir_clone.join(filename);
             let tmp = dir_clone.join(format!("{filename}.tmp"));
 
@@ -2067,45 +2223,87 @@ pub async fn download_whisper_model() -> Result<WhisperStatus, String> {
     .await
     .map_err(|e| format!("download task failed: {e}"))??;
 
-    tracing::info!("whisper model download complete");
+    tracing::info!(tier = tier.tag(), "whisper model download complete");
 
-    get_whisper_status().await
+    // Auto-activate if no model is currently active.
+    if effective_active_tier().is_none() {
+        write_active_tier(&tier)?;
+    }
+
+    build_whisper_models_list()
 }
 
-/// Delete the local Whisper model and clear the in-memory cache.
+/// Delete a specific Whisper model tier and clear the in-memory cache if needed.
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_whisper_model(
     state: State<'_, DesktopState>,
-) -> Result<(), String> {
-    // Clear cached model.
+    tier: WhisperModelTier,
+) -> Result<Vec<WhisperModelInfo>, String> {
+    // If deleting the active tier, clear the active selection and cached model.
+    let was_active = effective_active_tier()
+        .as_ref()
+        .is_some_and(|a| a.tag() == tier.tag());
+    if was_active {
+        clear_active_tier();
+        if let Ok(mut guard) = state.whisper.lock() {
+            *guard = None;
+        }
+    }
+
+    let dir = whisper_model_dir(&tier)?;
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("failed to delete model: {e}"))?;
+        tracing::info!(tier = tier.tag(), "whisper model deleted");
+    }
+
+    build_whisper_models_list()
+}
+
+/// Set the active Whisper model tier. The tier must be downloaded.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_active_whisper_model(
+    state: State<'_, DesktopState>,
+    tier: WhisperModelTier,
+) -> Result<Vec<WhisperModelInfo>, String> {
+    if !is_tier_downloaded(&tier) {
+        return Err(format!(
+            "Model '{}' is not downloaded. Download it first.",
+            tier.label()
+        ));
+    }
+
+    write_active_tier(&tier)?;
+
+    // Clear the cached model so the next transcription loads the new one.
     if let Ok(mut guard) = state.whisper.lock() {
         *guard = None;
     }
-    let dir = whisper_model_dir()?;
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("failed to delete model: {e}"))?;
-        tracing::info!("whisper model deleted");
-    }
-    Ok(())
+
+    tracing::info!(tier = tier.tag(), "active whisper model changed");
+
+    build_whisper_models_list()
 }
 
-/// Transcribe PCM audio using the local Whisper model.
+/// Transcribe PCM audio using the active Whisper model.
 ///
 /// Accepts base64-encoded f32 PCM samples at 16 kHz mono. Returns the
-/// transcript text. The model is loaded on first call and cached in memory
-/// for subsequent calls.
+/// transcript text and detected language. The model is loaded on first call
+/// and cached in memory for subsequent calls.
 #[tauri::command]
 #[specta::specta]
 pub async fn transcribe_memo(
     state: State<'_, DesktopState>,
     audio_pcm_base64: String,
-) -> Result<String, String> {
+) -> Result<TranscribeMemoResult, String> {
     use base64::Engine;
 
-    let model_dir = whisper_model_dir()?;
+    let active_tier = effective_active_tier()
+        .ok_or("No Whisper model is active. Download and activate one from Preferences.")?;
+    let model_dir = whisper_model_dir(&active_tier)?;
     if !model_dir.join("model.safetensors").exists() {
-        return Err("Whisper model not downloaded. Download it from Preferences.".into());
+        return Err("Whisper model files missing. Re-download from Preferences.".into());
     }
 
     let pcm_bytes = base64::engine::general_purpose::STANDARD
@@ -2125,6 +2323,7 @@ pub async fn transcribe_memo(
     tracing::info!(
         samples = pcm_samples.len(),
         duration_secs = format!("{duration_secs:.1}"),
+        tier = active_tier.tag(),
         "transcribe_memo: received audio chunk"
     );
 
@@ -2138,26 +2337,30 @@ pub async fn transcribe_memo(
 
         // Load model on first use.
         if guard.is_none() {
-            tracing::info!("loading whisper model into memory (first use)");
+            tracing::info!(tier = active_tier.tag(), "loading whisper model into memory (first use)");
             let model = claria_whisper::WhisperModel::load(&model_dir)
                 .map_err(|e| e.to_string())?;
             *guard = Some(model);
         }
 
         let start = std::time::Instant::now();
-        let text = guard
+        let result = guard
             .as_mut()
             .expect("model just loaded")
-            .transcribe(&pcm_samples)
+            .transcribe(&pcm_samples, None)
             .map_err(|e| e.to_string())?;
 
         tracing::info!(
             elapsed_ms = start.elapsed().as_millis() as u64,
-            text_len = text.len(),
+            text_len = result.text.len(),
+            language = ?result.language,
             "transcribe_memo: inference complete"
         );
 
-        Ok(text)
+        Ok(TranscribeMemoResult {
+            text: result.text,
+            language: result.language,
+        })
     })
     .await
     .map_err(|e| format!("transcription task failed: {e}"))?

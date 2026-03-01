@@ -13,13 +13,14 @@ import {
   restoreFileVersion,
   listDeletedFiles,
   restoreDeletedFile,
-  getWhisperStatus,
+  getWhisperModels,
   transcribeMemo,
   type RecordFile,
   type ChatHistoryDetail,
   type ChatModel,
   type FileVersion,
   type DeletedFile,
+  type WhisperModelInfo,
 } from "../lib/tauri";
 import { diffLines, type DiffLine } from "../lib/diff";
 import ClientChat from "./ClientChat";
@@ -165,12 +166,14 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
 
   // Memo recording state
   const [memoReady, setMemoReady] = useState(false);
+  const [memoMultilingual, setMemoMultilingual] = useState(false);
   type MemoState = "idle" | "recording" | "paused" | "transcribing" | "review";
   const [memoState, setMemoState] = useState<MemoState>("idle");
   const [memoTranscript, setMemoTranscript] = useState("");
   const [memoElapsed, setMemoElapsed] = useState(0);
   const [memoFilename, setMemoFilename] = useState("");
   const [memoSaving, setMemoSaving] = useState(false);
+  const [detectedLanguage, setDetectedLanguage] = useState<string | null>(null);
 
   // Audio capture refs (not state — no re-renders needed)
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -203,10 +206,14 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     refresh();
   }, [refresh]);
 
-  // Check if Whisper model is available.
+  // Check if a Whisper model is active.
   useEffect(() => {
-    getWhisperStatus()
-      .then((s) => setMemoReady(s.available))
+    getWhisperModels()
+      .then((models: WhisperModelInfo[]) => {
+        const active = models.find((m) => m.active);
+        setMemoReady(!!active);
+        setMemoMultilingual(active ? active.tier !== "base_en" : false);
+      })
       .catch(() => setMemoReady(false));
   }, []);
 
@@ -310,8 +317,11 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       if (raw.length === 0) return;
       const pcm16k = await resampleTo16kHz(raw, sampleRate);
       const base64 = float32ToBase64(pcm16k);
-      const text = await transcribeMemo(base64);
-      setMemoTranscript(text);
+      const result = await transcribeMemo(base64);
+      setMemoTranscript(result.text);
+      if (result.language) {
+        setDetectedLanguage(result.language);
+      }
     } catch (e) {
       console.error("Transcription error:", e);
       setError(String(e));
@@ -359,6 +369,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       pcmBufferRef.current = [];
       setMemoTranscript("");
       setMemoElapsed(0);
+      setDetectedLanguage(null);
 
       const source = ctx.createMediaStreamSource(stream);
       // ScriptProcessorNode is deprecated but widely supported and simpler
@@ -446,6 +457,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     setMemoState("idle");
     setMemoTranscript("");
     setMemoElapsed(0);
+    setDetectedLanguage(null);
   }
 
   async function handleSaveMemo() {
@@ -459,6 +471,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       setMemoTranscript("");
       setMemoElapsed(0);
       setMemoFilename("");
+      setDetectedLanguage(null);
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -794,19 +807,29 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
               </div>
 
               {/* Live transcript */}
-              {memoTranscript && (
+              {(memoTranscript || (memoMultilingual && memoState === "recording" && !detectedLanguage)) && (
                 <div className="mt-3">
+                  {detectedLanguage && (
+                    <span className="inline-block px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded mb-1.5">
+                      {detectedLanguage.toUpperCase()}
+                    </span>
+                  )}
+                  {memoMultilingual && memoState === "recording" && !detectedLanguage && !memoTranscript && (
+                    <p className="text-xs text-gray-400 italic py-2">
+                      Detecting language...
+                    </p>
+                  )}
                   {memoState === "paused" ? (
                     <textarea
                       value={memoTranscript}
                       onChange={(e) => setMemoTranscript(e.target.value)}
                       className="w-full min-h-[100px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent"
                     />
-                  ) : (
+                  ) : memoTranscript ? (
                     <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono bg-white border border-gray-200 rounded-lg p-3 max-h-[200px] overflow-y-auto">
                       {memoTranscript}
                     </pre>
-                  )}
+                  ) : null}
                 </div>
               )}
             </div>
