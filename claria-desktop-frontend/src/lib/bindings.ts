@@ -125,6 +125,22 @@ async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: stri
 }
 },
 /**
+ * Update the `ClariaProvisionerAccess` IAM policy using temporary elevated
+ * credentials (root or admin).
+ * 
+ * The dashboard calls this when the manifest changes and requires IAM actions
+ * not in the current policy. The elevated credentials are used once and
+ * discarded — they are never persisted to disk.
+ */
+async escalateIamPolicy(accessKeyId: string, secretAccessKey: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("escalate_iam_policy", { accessKeyId, secretAccessKey }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Scan all resources and return an annotated plan.
  * 
  * This is always the first call — both onboarding and dashboard use it.

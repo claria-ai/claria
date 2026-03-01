@@ -147,6 +147,17 @@ export async function deleteUserAccessKey(
 }
 
 // ---------------------------------------------------------------------------
+// IAM policy escalation
+// ---------------------------------------------------------------------------
+
+export async function escalateIamPolicy(
+  accessKeyId: string,
+  secretAccessKey: string
+): Promise<void> {
+  unwrap(await commands.escalateIamPolicy(accessKeyId, secretAccessKey));
+}
+
+// ---------------------------------------------------------------------------
 // Provisioner wrappers
 // ---------------------------------------------------------------------------
 

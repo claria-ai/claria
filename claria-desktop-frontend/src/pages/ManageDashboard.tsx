@@ -6,6 +6,7 @@ import {
   apply,
   destroy,
   resetProvisionerState,
+  escalateIamPolicy,
   type ConfigInfo,
   type PlanEntry,
 } from "../lib/tauri";
@@ -32,6 +33,7 @@ export default function ManageDashboard({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
   const [resettingState, setResettingState] = useState(false);
+  const [showEscalation, setShowEscalation] = useState(false);
 
   // Resource status state
   const [resourcePhase, setResourcePhase] = useState<ResourcePhase>("idle");
@@ -240,7 +242,12 @@ export default function ManageDashboard({
         )}
 
         {/* Plan view */}
-        {entries && <PlanView entries={entries} />}
+        {entries && (
+          <PlanView
+            entries={entries}
+            onEscalate={() => setShowEscalation(true)}
+          />
+        )}
 
         {/* Apply button */}
         {entries && hasChanges(entries) && resourcePhase === "planned" && (
@@ -375,6 +382,17 @@ export default function ManageDashboard({
           onConfirm={handleDestroy}
         />
       )}
+
+      {/* IAM policy escalation dialog */}
+      {showEscalation && (
+        <EscalationDialog
+          onCancel={() => setShowEscalation(false)}
+          onSuccess={() => {
+            setShowEscalation(false);
+            handleScan();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -418,6 +436,99 @@ function ConfirmDialog({
             {confirmLabel}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function EscalationDialog({
+  onCancel,
+  onSuccess,
+}: {
+  onCancel: () => void;
+  onSuccess: () => void;
+}) {
+  const [accessKeyId, setAccessKeyId] = useState("");
+  const [secretAccessKey, setSecretAccessKey] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await escalateIamPolicy(accessKeyId.trim(), secretAccessKey.trim());
+      onSuccess();
+    } catch (err) {
+      setError(String(err));
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-xl shadow-lg max-w-md w-full mx-4 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-2">
+          Update IAM Policy
+        </h3>
+        <p className="text-sm text-gray-600 mb-4">
+          This Claria update needs additional AWS permissions. Provide your root
+          or admin access key to update the IAM policy. These credentials are
+          used once and never saved.
+        </p>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Access Key ID
+            </label>
+            <input
+              type="text"
+              value={accessKeyId}
+              onChange={(e) => setAccessKeyId(e.target.value)}
+              placeholder="AKIA..."
+              disabled={submitting}
+              className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 disabled:opacity-50"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Secret Access Key
+            </label>
+            <input
+              type="password"
+              value={secretAccessKey}
+              onChange={(e) => setSecretAccessKey(e.target.value)}
+              disabled={submitting}
+              className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 disabled:opacity-50"
+            />
+          </div>
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+              <p className="text-red-800 text-xs">{error}</p>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={submitting}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting || !accessKeyId.trim() || !secretAccessKey.trim()}
+              className="px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors disabled:opacity-50"
+            >
+              {submitting ? "Updating..." : "Update Policy"}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

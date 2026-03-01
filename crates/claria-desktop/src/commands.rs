@@ -359,6 +359,44 @@ pub async fn bootstrap_iam_user(
 }
 
 // ---------------------------------------------------------------------------
+// IAM policy escalation — update policy with elevated credentials
+// ---------------------------------------------------------------------------
+
+/// Update the `ClariaProvisionerAccess` IAM policy using temporary elevated
+/// credentials (root or admin).
+///
+/// The dashboard calls this when the manifest changes and requires IAM actions
+/// not in the current policy. The elevated credentials are used once and
+/// discarded — they are never persisted to disk.
+#[tauri::command]
+#[specta::specta]
+pub async fn escalate_iam_policy(
+    state: State<'_, DesktopState>,
+    access_key_id: String,
+    secret_access_key: String,
+) -> Result<(), String> {
+    let (cfg, _) = load_sdk_config(&state).await?;
+
+    let elevated_config = claria_desktop::aws::build_aws_config(
+        &cfg.region,
+        &CredentialSource::Inline {
+            access_key_id,
+            secret_access_key,
+            session_token: None,
+        },
+    )
+    .await;
+
+    claria_provisioner::update_iam_policy(
+        &elevated_config,
+        &cfg.system_name,
+        &cfg.account_id,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Provisioner commands — scan, plan, provision, destroy
 // ---------------------------------------------------------------------------
 

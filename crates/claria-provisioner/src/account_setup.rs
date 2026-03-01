@@ -570,6 +570,31 @@ pub async fn bootstrap_account(
     result
 }
 
+// ── IAM policy escalation ────────────────────────────────────────────────────
+
+/// Update the `ClariaProvisionerAccess` IAM policy using elevated credentials.
+///
+/// This is called from the dashboard when the manifest has added new resources
+/// that require IAM actions not present in the current policy. The caller
+/// provides temporary elevated credentials (root or admin); this function
+/// creates or updates the policy and then discards them.
+///
+/// Unlike [`bootstrap_account`], this does NOT create users, access keys, or
+/// delete root keys. It only touches the policy document.
+pub async fn update_iam_policy(
+    config: &aws_config::SdkConfig,
+    system_name: &str,
+    account_id: &str,
+) -> Result<(), ProvisionerError> {
+    let iam_client = aws_sdk_iam::Client::new(config);
+    let policy_arn = format!("arn:aws:iam::{account_id}:policy/{IAM_POLICY_NAME}");
+    let document = claria_policy_document(system_name, account_id);
+
+    update_policy_document(&iam_client, &policy_arn, &document).await?;
+    tracing::info!(policy_arn = %policy_arn, "IAM policy updated via escalation");
+    Ok(())
+}
+
 // ── Access key management ────────────────────────────────────────────────────
 
 /// List all access keys for the `claria-admin` IAM user, enriched with

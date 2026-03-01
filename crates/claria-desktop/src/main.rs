@@ -28,6 +28,7 @@ fn main() -> Result<()> {
             commands::list_user_access_keys,
             commands::delete_user_access_key,
             commands::bootstrap_iam_user,
+            commands::escalate_iam_policy,
             commands::plan,
             commands::apply,
             commands::destroy,
