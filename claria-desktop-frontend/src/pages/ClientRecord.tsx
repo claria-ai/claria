@@ -10,6 +10,7 @@ import {
   loadChatHistory,
   type RecordFile,
   type ChatHistoryDetail,
+  type ChatModel,
 } from "../lib/tauri";
 import ClientChat from "./ClientChat";
 import type { Page } from "../App";
@@ -21,10 +22,16 @@ export default function ClientRecord({
   navigate,
   clientId,
   clientName,
+  chatModels,
+  chatModelsLoading,
+  chatModelsError,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
   clientName: string;
+  chatModels: ChatModel[];
+  chatModelsLoading: boolean;
+  chatModelsError: string | null;
 }) {
   const [tab, setTab] = useState<Tab>("record");
   const [resumeChat, setResumeChat] = useState<ResumeChat | null>(null);
@@ -98,6 +105,9 @@ export default function ClientRecord({
           embedded
           resumeChat={resumeChat}
           onResumeChatConsumed={() => setResumeChat(null)}
+          chatModels={chatModels}
+          chatModelsLoading={chatModelsLoading}
+          chatModelsError={chatModelsError}
         />
       )}
     </div>
@@ -125,7 +135,9 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
 
   const CHAT_HISTORY_PREFIX = "chat-history/";
 
-  const chatHistoryFiles = files.filter((f) => f.filename.startsWith(CHAT_HISTORY_PREFIX));
+  const chatHistoryFiles = files
+    .filter((f) => f.filename.startsWith(CHAT_HISTORY_PREFIX))
+    .sort((a, b) => (b.uploaded_at ?? "").localeCompare(a.uploaded_at ?? ""));
   const regularFiles = files.filter((f) => !f.filename.startsWith(CHAT_HISTORY_PREFIX));
 
   const refresh = useCallback(async () => {

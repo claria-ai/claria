@@ -1,10 +1,9 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import Markdown from "react-markdown";
 import {
   acceptModelAgreement,
   chatMessage,
   getSystemPrompt,
-  listChatModels,
   listRecordContext,
   type ChatMessage,
   type ChatModel,
@@ -29,6 +28,9 @@ export default function ClientChat({
   embedded,
   resumeChat,
   onResumeChatConsumed,
+  chatModels,
+  chatModelsLoading,
+  chatModelsError,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
@@ -36,6 +38,9 @@ export default function ClientChat({
   embedded?: boolean;
   resumeChat?: ResumeChat | null;
   onResumeChatConsumed?: () => void;
+  chatModels: ChatModel[];
+  chatModelsLoading: boolean;
+  chatModelsError: string | null;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -48,11 +53,11 @@ export default function ClientChat({
   const [textareaHeight, setTextareaHeight] = useState(80); // ~3 rows
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
-  // Model state
-  const [models, setModels] = useState<ChatModel[]>([]);
+  // Model state — models come from props, only selection is local
+  const models = chatModels;
+  const modelsLoading = chatModelsLoading;
+  const modelsError = chatModelsError;
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
-  const [modelsLoading, setModelsLoading] = useState(true);
-  const [modelsError, setModelsError] = useState<string | null>(null);
 
   // System prompt state
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
@@ -63,24 +68,14 @@ export default function ClientChat({
   const [contextLoading, setContextLoading] = useState(true);
   const [previewContext, setPreviewContext] = useState<RecordContext | null>(null);
 
-  const loadModels = useCallback(async () => {
-    setModelsLoading(true);
-    setModelsError(null);
-    try {
-      const result = await listChatModels();
-      setModels(result);
-      if (result.length > 0 && !selectedModelId) {
-        setSelectedModelId(result[0].model_id);
-      }
-    } catch (e) {
-      setModelsError(String(e));
-    } finally {
-      setModelsLoading(false);
+  // Default to first model once models are loaded
+  useEffect(() => {
+    if (models.length > 0 && !selectedModelId) {
+      setSelectedModelId(models[0].model_id);
     }
-  }, [selectedModelId]);
+  }, [models, selectedModelId]);
 
   useEffect(() => {
-    loadModels();
     getSystemPrompt()
       .then(setSystemPrompt)
       .catch(() => {});
@@ -88,7 +83,7 @@ export default function ClientChat({
       .then(setContextFiles)
       .catch(() => {})
       .finally(() => setContextLoading(false));
-  }, [loadModels, clientId]);
+  }, [clientId]);
 
   // Resume a previous chat session when resumeChat prop is set.
   useEffect(() => {

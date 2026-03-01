@@ -109,6 +109,7 @@
 - `cargo release patch` / `minor` / `major` bumps all workspace crates, tags, and pushes
 - The pushed tag triggers GitHub Actions to build and create a draft GitHub Release
 - Never run `git tag` directly for version tags
+- The claria-ai.github.com repo's index.html should be updated to show the new release as soon as the tag is cut
 
 ## Claude Code
 - Run `cargo check` after medium and larger edits

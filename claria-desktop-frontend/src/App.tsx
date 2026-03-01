@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { hasConfig } from "./lib/tauri";
+import { hasConfig, listChatModels, type ChatModel } from "./lib/tauri";
 import StartScreen from "./pages/StartScreen";
 import AwsAccountGuide from "./pages/AwsAccountGuide";
 import MfaSetupGuide from "./pages/MfaSetupGuide";
@@ -32,6 +32,11 @@ export default function App() {
   const [activeClientId, setActiveClientId] = useState<string | null>(null);
   const [activeClientName, setActiveClientName] = useState<string | null>(null);
 
+  // Chat models loaded once on app startup
+  const [chatModels, setChatModels] = useState<ChatModel[]>([]);
+  const [chatModelsLoading, setChatModelsLoading] = useState(true);
+  const [chatModelsError, setChatModelsError] = useState<string | null>(null);
+
   const refreshConfig = useCallback(async () => {
     const exists = await hasConfig().catch(() => false);
     setConfigExists(exists);
@@ -42,6 +47,10 @@ export default function App() {
     refreshConfig().then(() => {
       setPage("start");
     });
+    listChatModels()
+      .then(setChatModels)
+      .catch((e) => setChatModelsError(String(e)))
+      .finally(() => setChatModelsLoading(false));
   }, [refreshConfig]);
 
   const navigate = useCallback(
@@ -89,6 +98,9 @@ export default function App() {
           navigate={navigate}
           clientId={activeClientId}
           clientName={activeClientName ?? "Client"}
+          chatModels={chatModels}
+          chatModelsLoading={chatModelsLoading}
+          chatModelsError={chatModelsError}
         />
       )}
       {page === "client-chat" && activeClientId && (
@@ -96,6 +108,9 @@ export default function App() {
           navigate={navigate}
           clientId={activeClientId}
           clientName={activeClientName ?? "Client"}
+          chatModels={chatModels}
+          chatModelsLoading={chatModelsLoading}
+          chatModelsError={chatModelsError}
         />
       )}
       {page === "about" && <About navigate={navigate} />}
