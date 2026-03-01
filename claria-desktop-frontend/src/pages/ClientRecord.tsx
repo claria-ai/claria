@@ -7,10 +7,13 @@ import {
   getRecordFileText,
   createTextRecordFile,
   updateTextRecordFile,
+  loadChatHistory,
   type RecordFile,
+  type ChatHistoryDetail,
 } from "../lib/tauri";
 import ClientChat from "./ClientChat";
 import type { Page } from "../App";
+import type { ResumeChat } from "./ClientChat";
 
 type Tab = "record" | "chat";
 
@@ -24,6 +27,16 @@ export default function ClientRecord({
   clientName: string;
 }) {
   const [tab, setTab] = useState<Tab>("record");
+  const [resumeChat, setResumeChat] = useState<ResumeChat | null>(null);
+
+  function handleResumeChat(detail: ChatHistoryDetail) {
+    setResumeChat({
+      chatId: detail.chat_id,
+      modelId: detail.model_id,
+      messages: detail.messages,
+    });
+    setTab("chat");
+  }
 
   return (
     <div className="flex flex-col h-screen">
@@ -76,20 +89,22 @@ export default function ClientRecord({
 
       {/* Tab content */}
       {tab === "record" ? (
-        <RecordTab clientId={clientId} />
+        <RecordTab clientId={clientId} onResumeChat={handleResumeChat} />
       ) : (
         <ClientChat
           navigate={navigate}
           clientId={clientId}
           clientName={clientName}
           embedded
+          resumeChat={resumeChat}
+          onResumeChatConsumed={() => setResumeChat(null)}
         />
       )}
     </div>
   );
 }
 
-function RecordTab({ clientId }: { clientId: string }) {
+function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat: (detail: ChatHistoryDetail) => void }) {
   const [files, setFiles] = useState<RecordFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -105,6 +120,13 @@ function RecordTab({ clientId }: { clientId: string }) {
   const [createFilename, setCreateFilename] = useState("");
   const [createContent, setCreateContent] = useState("");
   const [creating, setCreating] = useState(false);
+  const [chatFolderOpen, setChatFolderOpen] = useState(false);
+  const [resumeLoading, setResumeLoading] = useState<string | null>(null);
+
+  const CHAT_HISTORY_PREFIX = "chat-history/";
+
+  const chatHistoryFiles = files.filter((f) => f.filename.startsWith(CHAT_HISTORY_PREFIX));
+  const regularFiles = files.filter((f) => !f.filename.startsWith(CHAT_HISTORY_PREFIX));
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -214,6 +236,20 @@ function RecordTab({ clientId }: { clientId: string }) {
     }
   }
 
+  async function handleResume(filename: string) {
+    // Extract UUID from "chat-history/{uuid}.json"
+    const chatId = filename.replace(CHAT_HISTORY_PREFIX, "").replace(".json", "");
+    setResumeLoading(filename);
+    try {
+      const detail = await loadChatHistory(clientId, chatId);
+      onResumeChat(detail);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setResumeLoading(null);
+    }
+  }
+
   async function handleCreateTextFile() {
     if (!createFilename.trim()) return;
     setCreating(true);
@@ -269,10 +305,85 @@ function RecordTab({ clientId }: { clientId: string }) {
             </div>
           )}
 
-          {/* File rows */}
-          {!loading && files.length > 0 && (
+          {/* Chat history folder */}
+          {!loading && chatHistoryFiles.length > 0 && (
+            <div className="border-b border-gray-100">
+              <button
+                onClick={() => setChatFolderOpen(!chatFolderOpen)}
+                className="w-full px-4 py-3 flex items-center gap-3 hover:bg-gray-50 transition-colors"
+              >
+                <div className="w-8 h-8 rounded flex items-center justify-center bg-purple-100 text-purple-600">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <p className="text-sm font-medium text-gray-900">Chat History</p>
+                  <p className="text-xs text-gray-400">{chatHistoryFiles.length} conversation{chatHistoryFiles.length !== 1 ? "s" : ""}</p>
+                </div>
+                <svg className={`w-4 h-4 text-gray-400 transition-transform ${chatFolderOpen ? "rotate-90" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+              {chatFolderOpen && (
+                <div className="divide-y divide-gray-100 bg-gray-50/50">
+                  {chatHistoryFiles.map((file) => {
+                    const displayName = file.filename.replace(CHAT_HISTORY_PREFIX, "").replace(".json", "");
+                    const shortId = displayName.length > 8 ? displayName.slice(0, 8) + "..." : displayName;
+                    return (
+                      <div
+                        key={file.filename}
+                        className="px-4 py-3 pl-8 flex items-center gap-3"
+                      >
+                        <div className="w-8 h-8 rounded flex items-center justify-center bg-purple-50 text-purple-500 text-xs font-bold">
+                          AI
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">
+                            {shortId}
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            {formatFileSize(file.size)}
+                          </p>
+                        </div>
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => handleResume(file.filename)}
+                            disabled={resumeLoading === file.filename}
+                            title="Resume conversation"
+                            className="p-1.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded transition-colors disabled:opacity-50"
+                          >
+                            {resumeLoading === file.filename ? (
+                              <Spinner />
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => setDeleteConfirm(file.filename)}
+                            title="Delete chat history"
+                            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Regular file rows */}
+          {!loading && regularFiles.length > 0 && (
             <div className="divide-y divide-gray-100">
-              {files.map((file) => (
+              {regularFiles.map((file) => (
                 <div
                   key={file.filename}
                   className="px-4 py-3 flex items-center gap-3"

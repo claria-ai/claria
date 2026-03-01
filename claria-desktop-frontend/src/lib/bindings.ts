@@ -360,6 +360,20 @@ async acceptModelAgreement(modelId: string) : Promise<Result<null, string>> {
 }
 },
 /**
+ * Load a chat history session from S3.
+ * 
+ * Returns the full conversation with model ID so the frontend can
+ * resume the session in the Chat widget.
+ */
+async loadChatHistory(clientId: string, chatId: string) : Promise<Result<ChatHistoryDetail, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_chat_history", { clientId, chatId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Get the current system prompt.
  * 
  * Returns the custom prompt from S3 if one exists, otherwise returns the
@@ -489,6 +503,10 @@ export type BootstrapStep = { name: string; status: StepStatus; detail: string |
  */
 export type CallerIdentity = { account_id: string; arn: string; user_id: string; is_root: boolean }
 export type Cause = "in_sync" | "first_provision" | "drift" | "manifest_changed" | "orphaned"
+/**
+ * Detail of a persisted chat session, returned when resuming a conversation.
+ */
+export type ChatHistoryDetail = { chat_id: string; model_id: string; messages: ChatMessage[]; created_at: string }
 export type ChatMessage = { role: ChatRole; content: string }
 /**
  * Specta type mirroring `claria_bedrock::chat::ChatModel`.

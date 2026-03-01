@@ -12,6 +12,7 @@ export type {
   BootstrapStep,
   CallerIdentity,
   Cause,
+  ChatHistoryDetail,
   ChatMessage,
   ChatModel,
   ChatResponse,
@@ -235,6 +236,10 @@ export async function chatMessage(clientId: string, modelId: string, messages: i
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {
   unwrap(await commands.acceptModelAgreement(modelId));
+}
+
+export async function loadChatHistory(clientId: string, chatId: string): Promise<import("./bindings").ChatHistoryDetail> {
+  return unwrap(await commands.loadChatHistory(clientId, chatId));
 }
 
 // ---------------------------------------------------------------------------

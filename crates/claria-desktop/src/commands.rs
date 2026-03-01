@@ -41,6 +41,15 @@ pub struct ChatResponse {
     pub content: String,
 }
 
+/// Detail of a persisted chat session, returned when resuming a conversation.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ChatHistoryDetail {
+    pub chat_id: String,
+    pub model_id: String,
+    pub messages: Vec<ChatMessage>,
+    pub created_at: String,
+}
+
 // ---------------------------------------------------------------------------
 // Config commands
 // ---------------------------------------------------------------------------
@@ -1240,6 +1249,52 @@ pub async fn chat_message(
     Ok(ChatResponse {
         chat_id: chat_uuid.to_string(),
         content: response_text,
+    })
+}
+
+/// Load a chat history session from S3.
+///
+/// Returns the full conversation with model ID so the frontend can
+/// resume the session in the Chat widget.
+#[tauri::command]
+#[specta::specta]
+pub async fn load_chat_history(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    chat_id: String,
+) -> Result<ChatHistoryDetail, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let client_uuid: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let chat_uuid: uuid::Uuid = chat_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let key = claria_core::s3_keys::chat_history(client_uuid, chat_uuid);
+    let output = claria_storage::objects::get_object(&s3, &bucket, &key)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let history: claria_core::models::chat_history::ChatHistory =
+        serde_json::from_slice(&output.body).map_err(|e| e.to_string())?;
+
+    let messages = history
+        .messages
+        .into_iter()
+        .map(|m| ChatMessage {
+            role: match m.role {
+                claria_core::models::chat_history::ChatHistoryRole::User => ChatRole::User,
+                claria_core::models::chat_history::ChatHistoryRole::Assistant => ChatRole::Assistant,
+            },
+            content: m.content,
+        })
+        .collect();
+
+    Ok(ChatHistoryDetail {
+        chat_id: history.id.to_string(),
+        model_id: history.model_id,
+        messages,
+        created_at: history.created_at.to_string(),
     })
 }
 

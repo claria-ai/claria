@@ -12,6 +12,12 @@ import {
 } from "../lib/tauri";
 import type { Page } from "../App";
 
+export type ResumeChat = {
+  chatId: string;
+  modelId: string;
+  messages: ChatMessage[];
+};
+
 function isMarketplaceError(error: string): boolean {
   return error.includes("aws-marketplace:") || error.includes("Marketplace");
 }
@@ -21,11 +27,15 @@ export default function ClientChat({
   clientId,
   clientName,
   embedded,
+  resumeChat,
+  onResumeChatConsumed,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
   clientName: string;
   embedded?: boolean;
+  resumeChat?: ResumeChat | null;
+  onResumeChatConsumed?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -79,6 +89,16 @@ export default function ClientChat({
       .catch(() => {})
       .finally(() => setContextLoading(false));
   }, [loadModels, clientId]);
+
+  // Resume a previous chat session when resumeChat prop is set.
+  useEffect(() => {
+    if (!resumeChat) return;
+    setMessages(resumeChat.messages);
+    setChatId(resumeChat.chatId);
+    setSelectedModelId(resumeChat.modelId);
+    setError(null);
+    onResumeChatConsumed?.();
+  }, [resumeChat, onResumeChatConsumed]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
