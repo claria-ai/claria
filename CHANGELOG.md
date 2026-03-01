@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.7.0] — 2026-03-01
 
 ### Added
 - Preferences page with system prompt editor and chat model selection
