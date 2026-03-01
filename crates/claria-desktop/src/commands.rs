@@ -1216,9 +1216,36 @@ async fn load_prompt(
     }
 
     // Fall back to the legacy key if one exists (system-prompt.md at bucket root).
+    // When found, migrate it to the new path and delete the legacy key.
     if let Some(legacy) = legacy_key {
         match claria_storage::objects::get_object(s3, bucket, legacy).await {
-            Ok(output) => return String::from_utf8(output.body).map_err(|e| e.to_string()),
+            Ok(output) => {
+                let text = String::from_utf8(output.body).map_err(|e| e.to_string())?;
+
+                // Copy to the new claria-prompts/ path.
+                if let Err(e) = claria_storage::objects::put_object(
+                    s3,
+                    bucket,
+                    key,
+                    text.as_bytes().to_vec(),
+                    Some("text/markdown"),
+                )
+                .await
+                {
+                    tracing::warn!(legacy, key, error = %e, "failed to migrate legacy prompt");
+                    return Ok(text);
+                }
+
+                // Remove the legacy key.
+                if let Err(e) =
+                    claria_storage::objects::delete_object(s3, bucket, legacy).await
+                {
+                    tracing::warn!(legacy, error = %e, "failed to delete legacy prompt after migration");
+                }
+
+                tracing::info!(legacy, key, "migrated legacy prompt to claria-prompts/");
+                return Ok(text);
+            }
             Err(claria_storage::error::StorageError::NotFound { .. }) => {}
             Err(e) => return Err(e.to_string()),
         }
