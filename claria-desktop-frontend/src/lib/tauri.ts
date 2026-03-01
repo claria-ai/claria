@@ -190,6 +190,10 @@ export async function createClient(name: string) {
   return unwrap(await commands.createClient(name));
 }
 
+export async function deleteClient(clientId: string): Promise<void> {
+  unwrap(await commands.deleteClient(clientId));
+}
+
 // ---------------------------------------------------------------------------
 // Record file wrappers
 // ---------------------------------------------------------------------------

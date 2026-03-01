@@ -643,6 +643,36 @@ pub async fn create_client(
     })
 }
 
+/// Delete a client and all associated data (record files, chat history).
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_client(
+    state: State<'_, DesktopState>,
+    client_id: String,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    // Delete all record files (includes chat history, sidecars, etc.)
+    let records_prefix = claria_core::s3_keys::client_records_prefix(id);
+    let deleted = claria_storage::objects::delete_objects_by_prefix(&s3, &bucket, &records_prefix)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Delete the client JSON itself.
+    let client_key = claria_core::s3_keys::client(id);
+    claria_storage::objects::delete_object(&s3, &bucket, &client_key)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!(client_id = %id, deleted_records = deleted, "client deleted");
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Record file commands — files attached to a client record
 // ---------------------------------------------------------------------------

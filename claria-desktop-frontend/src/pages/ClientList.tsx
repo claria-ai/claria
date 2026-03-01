@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   listClients,
   createClient,
+  deleteClient,
   getSystemPrompt,
   saveSystemPrompt,
   deleteSystemPrompt,
@@ -24,6 +25,10 @@ export default function ClientList({
   const [showNewForm, setShowNewForm] = useState(false);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+
+  // Delete confirmation state
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // System prompt editor state
   const [showPromptEditor, setShowPromptEditor] = useState(false);
@@ -62,6 +67,19 @@ export default function ClientList({
       setError(String(e));
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function handleDelete(clientId: string) {
+    setDeleting(true);
+    try {
+      await deleteClient(clientId);
+      setConfirmDeleteId(null);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -110,7 +128,17 @@ export default function ClientList({
     <div className="max-w-2xl mx-auto p-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold">Clients</h2>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate("start")}
+            className="text-gray-500 hover:text-gray-700 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <h2 className="text-2xl font-bold">Clients</h2>
+        </div>
         <div className="flex gap-2">
           <button
             onClick={handleOpenPromptEditor}
@@ -200,6 +228,7 @@ export default function ClientList({
                 <th className="text-left text-xs font-medium text-gray-500 px-4 py-2">
                   Date Added
                 </th>
+                <th className="w-10" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -215,6 +244,20 @@ export default function ClientList({
                   <td className="px-4 py-3 text-sm text-gray-500">
                     {formatDate(client.created_at)}
                   </td>
+                  <td className="px-2 py-3 text-right">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeleteId(client.id);
+                      }}
+                      className="text-gray-400 hover:text-red-600 transition-colors p-1"
+                      title="Delete client"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -222,15 +265,36 @@ export default function ClientList({
         </div>
       )}
 
-      {/* Footer */}
-      <div className="mt-6">
-        <button
-          onClick={() => navigate("start")}
-          className="px-4 py-2 text-gray-600 hover:text-gray-800"
-        >
-          Home
-        </button>
-      </div>
+      {/* Delete confirmation modal */}
+      {confirmDeleteId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-lg max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              Delete client?
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              This will permanently delete the client and all associated records,
+              files, and chat history. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                disabled={deleting}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDelete(confirmDeleteId)}
+                disabled={deleting}
+                className="px-4 py-2 text-sm text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                {deleting ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* System prompt editor modal */}
       {showPromptEditor && (

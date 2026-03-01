@@ -219,6 +219,17 @@ async createClient(name: string) : Promise<Result<ClientSummary, string>> {
 }
 },
 /**
+ * Delete a client and all associated data (record files, chat history).
+ */
+async deleteClient(clientId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_client", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List files in a client's record, excluding sidecar `.text` files.
  */
 async listRecordFiles(clientId: string) : Promise<Result<RecordFile[], string>> {

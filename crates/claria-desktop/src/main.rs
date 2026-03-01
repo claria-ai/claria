@@ -35,6 +35,7 @@ fn main() -> Result<()> {
             commands::reset_provisioner_state,
             commands::list_clients,
             commands::create_client,
+            commands::delete_client,
             commands::list_record_files,
             commands::upload_record_file,
             commands::delete_record_file,

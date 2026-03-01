@@ -135,6 +135,23 @@ pub async fn delete_object(
     Ok(())
 }
 
+/// Delete all objects under a prefix.
+///
+/// Lists all keys with the given prefix and deletes each one.
+/// Returns the number of objects deleted.
+pub async fn delete_objects_by_prefix(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<usize, StorageError> {
+    let keys = list_objects(client, bucket, prefix).await?;
+    let count = keys.len();
+    for key in &keys {
+        delete_object(client, bucket, key).await?;
+    }
+    Ok(count)
+}
+
 /// Metadata for a single S3 object, returned by [`list_objects_with_metadata`].
 pub struct ObjectMeta {
     pub key: String,
