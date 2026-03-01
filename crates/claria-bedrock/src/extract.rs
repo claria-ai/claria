@@ -16,8 +16,9 @@ use crate::error::BedrockError;
 /// has been saved to S3.
 pub const DEFAULT_EXTRACTION_PROMPT: &str = "\
 Extract the complete text content from this document. \
-Return only the plain text, preserving paragraph structure. \
-Do not add commentary, headers, or formatting.";
+Return plain text, preserving paragraph structure. \
+Do not add commentary, headers, or formatting.\n\n\
+Preserve table structure. Use a markdown format.";
 
 /// Extract plain text from a PDF or DOCX document via Bedrock.
 ///
