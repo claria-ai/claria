@@ -4,12 +4,14 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     strategy:
       fail-fast: false
       matrix:
@@ -46,11 +48,15 @@ jobs:
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./crates/claria-desktop -> ../../target"
 
-      # --- Build & Release ---
+      # --- Cache warm-up (main branch only) ---
+      - name: Build (warm cache)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: cargo build --release -p claria-desktop ${{ matrix.args }}
+
+      # --- Build & Release (tags only) ---
       - name: Build and release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
