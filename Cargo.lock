@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "claria-audit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aws-config",
  "aws-sdk-cloudtrail",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "claria-bedrock"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aws-config",
  "aws-sdk-bedrock",
@@ -1099,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "claria-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jiff",
  "serde",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "claria-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -1140,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "claria-export"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "claria-core",
  "docx-rs",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "claria-instruments"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "claria-core",
  "serde",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "claria-provisioner"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aws-config",
  "aws-sdk-artifact",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "claria-search"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aws-sdk-s3",
  "claria-core",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "claria-storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
