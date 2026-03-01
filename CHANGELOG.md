@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.6.0] — 2026-03-01
 
 ### Added
 - Version history for record files — browse, view, and compare any two versions with character-level inline diff
