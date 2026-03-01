@@ -28,4 +28,4 @@ tracing-subscriber = { version = "=0.3.22", features = ["env-filter", "json"] }
 uuid = { version = "=1.21.0", features = ["v4"] }
 
 [build-dependencies]
-tauri-build = "=2.5.5"
+tauri-build = { version = "=2.5.5", features = [] }

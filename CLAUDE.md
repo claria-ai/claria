@@ -104,6 +104,12 @@
 3. Add `if from_version < N { ... }` block in `migrate()` that sets the new field and stamps `config_version = N`
 4. If the field needs async backfill, add logic in `load_config` command in `commands.rs`
 
+## Releases
+- All releases are done via `cargo release` — never bump versions or create tags manually
+- `cargo release patch` / `minor` / `major` bumps all workspace crates, tags, and pushes
+- The pushed tag triggers GitHub Actions to build and create a draft GitHub Release
+- Never run `git tag` directly for version tags
+
 ## Claude Code
 - Run `cargo check` after medium and larger edits
 - Run `cargo test` before committing
