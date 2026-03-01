@@ -22,7 +22,7 @@ type ResourcePhase =
   | "destroying"
   | "destroyed";
 
-export default function ManageDashboard({
+export default function AwsManage({
   navigate,
 }: {
   navigate: (page: Page) => void;
@@ -117,7 +117,17 @@ export default function ManageDashboard({
   if (error && !config) {
     return (
       <div className="max-w-2xl mx-auto p-8">
-        <h2 className="text-2xl font-bold mb-6">AWS</h2>
+        <div className="flex items-center gap-3 mb-6">
+          <button
+            onClick={() => navigate("start")}
+            className="text-gray-500 hover:text-gray-700 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <h2 className="text-2xl font-bold">AWS</h2>
+        </div>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <p className="text-red-800 font-medium text-sm mb-2">
             Failed to load configuration
@@ -131,12 +141,6 @@ export default function ManageDashboard({
           </p>
         </div>
         <div className="flex gap-3 mt-4">
-          <button
-            onClick={() => navigate("start")}
-            className="px-4 py-2 text-gray-600 hover:text-gray-800"
-          >
-            Back
-          </button>
           <button
             onClick={async () => {
               setDeleting(true);
@@ -168,7 +172,17 @@ export default function ManageDashboard({
 
   return (
     <div className="max-w-2xl mx-auto p-8">
-      <h2 className="text-2xl font-bold mb-6">AWS</h2>
+      <div className="flex items-center gap-3 mb-6">
+        <button
+          onClick={() => navigate("start")}
+          className="text-gray-500 hover:text-gray-700 transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <h2 className="text-2xl font-bold">AWS</h2>
+      </div>
 
       {/* AWS Details */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
@@ -331,14 +345,7 @@ export default function ManageDashboard({
       )}
 
       {/* Actions */}
-      <div className="flex gap-3">
-        <button
-          onClick={() => navigate("start")}
-          className="px-4 py-2 text-gray-600 hover:text-gray-800"
-        >
-          Home
-        </button>
-        <div className="flex-1" />
+      <div className="flex justify-end gap-3">
         <button
           onClick={() => setShowDestroyConfirm(true)}
           disabled={isWorking}

@@ -6,7 +6,7 @@ import MfaSetupGuide from "./pages/MfaSetupGuide";
 import AccessKeyGuide from "./pages/AccessKeyGuide";
 import CredentialIntake from "./pages/CredentialIntake";
 import ScanProvision from "./pages/ScanProvision";
-import ManageDashboard from "./pages/ManageDashboard";
+import AwsManage from "./pages/AwsManage";
 import ClientList from "./pages/ClientList";
 import ClientChat from "./pages/ClientChat";
 import ClientRecord from "./pages/ClientRecord";
@@ -21,7 +21,7 @@ export type Page =
   | "guide-access-key"
   | "credentials"
   | "scan"
-  | "dashboard"
+  | "aws"
   | "clients"
   | "client-record"
   | "client-chat"
@@ -78,7 +78,7 @@ export default function App() {
   const navigate = useCallback(
     (target: Page) => {
       // Refresh config knowledge on transitions that may have changed it
-      if (target === "start" || target === "dashboard") {
+      if (target === "start" || target === "aws") {
         refreshConfig();
       }
       // Retry loading models if they haven't loaded yet
@@ -111,7 +111,7 @@ export default function App() {
       {page === "guide-access-key" && <AccessKeyGuide navigate={navigate} />}
       {page === "credentials" && <CredentialIntake navigate={navigate} />}
       {page === "scan" && <ScanProvision navigate={navigate} />}
-      {page === "dashboard" && <ManageDashboard navigate={navigate} />}
+      {page === "aws" && <AwsManage navigate={navigate} />}
       {page === "clients" && (
         <ClientList
           navigate={navigate}

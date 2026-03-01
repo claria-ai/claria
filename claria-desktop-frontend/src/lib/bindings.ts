@@ -515,7 +515,10 @@ async listDeletedFiles(clientId: string) : Promise<Result<DeletedFile[], string>
 }
 },
 /**
- * Restore a deleted file by removing its delete marker.
+ * Restore a deleted file by re-putting the most recent real version as a new version.
+ * 
+ * This preserves the full version history (including the delete marker) for
+ * HIPAA audit-trail compliance, instead of removing the delete marker.
  */
 async restoreDeletedFile(clientId: string, filename: string, versionId: string) : Promise<Result<null, string>> {
     try {
@@ -537,7 +540,10 @@ async listDeletedClients() : Promise<Result<DeletedClient[], string>> {
 }
 },
 /**
- * Restore a deleted client by removing the delete marker on the client JSON.
+ * Restore a deleted client by re-putting the most recent real version as a new version.
+ * 
+ * This preserves the full version history (including the delete marker) for
+ * HIPAA audit-trail compliance, instead of removing the delete marker.
  */
 async restoreClient(clientId: string, versionId: string) : Promise<Result<null, string>> {
     try {

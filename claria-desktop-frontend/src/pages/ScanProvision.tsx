@@ -192,10 +192,10 @@ export default function ScanProvision({
           {(phase === "done" ||
             (phase === "planned" && !hasChanges(entries))) && (
             <button
-              onClick={() => navigate("dashboard")}
+              onClick={() => navigate("aws")}
               className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
             >
-              Go to Dashboard
+              Go to AWS
             </button>
           )}
         </div>
