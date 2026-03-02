@@ -2,6 +2,18 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Added
+- Check for updates on the About page — shows a banner when a newer release is available on GitHub
+- Playwright screenshot capture suite for automated landing page screenshots (dev tooling)
+
+### Fixed
+- Turbo model crash: added 128-bin mel filters required by whisper-large-v3-turbo (was using 80-bin filters, causing index-out-of-bounds panic)
+- Language detection for turbo model: include added tokens when scanning tokenizer vocabulary
+- Recover from poisoned whisper mutex after a panic instead of permanently failing
+- Model info tooltip now shows the actual model name (e.g. `whisper-large-v3-turbo`)
+
 ## [0.11.0] — 2026-03-01
 
 ### Added
@@ -14,13 +26,6 @@ All notable changes to Claria are documented here.
 ### Changed
 - Replaced Medium tier (~3 GB `whisper-medium`) with Turbo tier (~1.5 GB `whisper-large-v3-turbo`) — better accuracy, smaller download, faster inference
 - Existing "medium" config values automatically map to the new Turbo tier
-- Check for updates on the About page — shows a banner when a newer release is available on GitHub
-
-### Fixed
-- Turbo model crash: added 128-bin mel filters required by whisper-large-v3-turbo (was using 80-bin filters, causing index-out-of-bounds panic)
-- Language detection for turbo model: include added tokens when scanning tokenizer vocabulary
-- Recover from poisoned whisper mutex after a panic instead of permanently failing
-- Model info tooltip now shows the actual model name (e.g. `whisper-large-v3-turbo`)
 
 ## [0.10.0] — 2026-03-01
 
