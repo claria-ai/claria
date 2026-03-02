@@ -138,6 +138,8 @@ impl ResourceSyncer for IamUserPolicySyncer {
             })
             .unwrap_or_default();
 
+        let mut drifts = Vec::new();
+
         let missing: Vec<String> = self
             .required_actions
             .iter()
@@ -145,16 +147,31 @@ impl ResourceSyncer for IamUserPolicySyncer {
             .cloned()
             .collect();
 
-        if missing.is_empty() {
-            vec![]
-        } else {
-            vec![FieldDrift {
-                field: "iam_actions".into(),
-                label: "IAM permissions".into(),
-                expected: json!(self.required_actions.iter().collect::<Vec<_>>()),
-                actual: json!(missing),
-            }]
+        if !missing.is_empty() {
+            drifts.push(FieldDrift {
+                field: "missing_actions".into(),
+                label: "Missing IAM permissions".into(),
+                expected: json!(missing),
+                actual: json!([]),
+            });
         }
+
+        let extra: Vec<String> = current_actions
+            .iter()
+            .filter(|a| !self.required_actions.contains(*a))
+            .cloned()
+            .collect();
+
+        if !extra.is_empty() {
+            drifts.push(FieldDrift {
+                field: "extra_actions".into(),
+                label: "Extra IAM permissions".into(),
+                expected: json!([]),
+                actual: json!(extra),
+            });
+        }
+
+        drifts
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {
