@@ -33,7 +33,7 @@
 - Never squash
 - Descriptive kebab-case branch names
 - Create a commit after any batch of changes is done
-- Every batch of work should get noted in the CHANGELOG.md under a section `## [Unreleased]`. This section is expected before running `cargo release`
+- Every batch of work should get noted in the CHANGELOG.md under a `## [Unreleased]` section header. `cargo release` rewrites this header to `## [version] — date` via `pre-release-replacements` in Cargo.toml
 
 ## Architecture
 
@@ -75,6 +75,11 @@
 **`claria-transcribe` — Audio transcription**
 - Wraps Amazon Transcribe API (start job, poll, fetch transcript)
 - Accepts `&SdkConfig` and an S3 URI, returns transcript text
+
+**`claria-whisper` — Local Whisper inference**
+- Pure-Rust inference via `candle` (candle-core, candle-nn, candle-transformers)
+- Loads HuggingFace-format models (`model.safetensors`, `config.json`, `tokenizer.json`)
+- Metal GPU acceleration via `metal` feature flag; CPU fallback at runtime
 
 **`claria-audit` — Audit trail**
 - Structured audit event logging
@@ -147,7 +152,7 @@ Common gotchas:
 ## Releases
 - All releases are done via `cargo release` — never bump versions or create tags manually
 - `cargo release patch` / `minor` / `major` bumps all workspace crates, tags, and pushes. The CHANGELOG.md should be udpated and land in the release commit.
-- The pushed tag triggers GitHub Actions to build and create a draft GitHub Release
+- The pushed tag triggers GitHub Actions to build and create a GitHub Release (changelog is auto-extracted)
 - Never run `git tag` directly for version tags
 - The claria-ai.github.com repo's index.html should be updated to show the new release as soon as the tag is cut
 
@@ -158,7 +163,7 @@ End-to-end steps for exposing a new backend operation to the frontend:
 1. **`commands.rs`**: Add a function with `#[tauri::command]` and `#[specta::specta]`. Follow the existing pattern: get `State<DesktopState>`, call `load_sdk_config()`, do work, return `Result<T, String>`.
 2. **`main.rs`**: Register the command in the `collect_commands![]` macro.
 3. **`lib/tauri.ts`**: Add an `unwrap` wrapper (e.g. `export async function myCommand() { return unwrap(await commands.myCommand()); }`)
-4. **`lib/bindings.ts`**: Auto-regenerated on debug builds — don't edit manually. Export any new types from `tauri.ts`.
+4. **`lib/bindings.ts`**: Auto-regenerated — don't edit manually. Export any new types from `tauri.ts`. Note: bindings are generated at **runtime** during `main()` behind `#[cfg(debug_assertions)]`, not at build time. You must actually run the binary (`cargo run -p claria-desktop`) to regenerate; `cargo build` alone is not sufficient.
 
 ## Plans
 
