@@ -15,6 +15,7 @@ export default function StartScreen({
         {configExists && (
           <>
             <button
+              data-page="aws"
               onClick={() => navigate("aws")}
               className="p-2 text-gray-400 hover:text-gray-600 transition-colors rounded-lg hover:bg-gray-100"
               title="AWS configuration"
@@ -25,6 +26,7 @@ export default function StartScreen({
               </svg>
             </button>
             <button
+              data-page="preferences"
               onClick={() => navigate("preferences")}
               className="p-2 text-gray-400 hover:text-gray-600 transition-colors rounded-lg hover:bg-gray-100"
               title="Preferences"
@@ -36,6 +38,7 @@ export default function StartScreen({
           </>
         )}
         <button
+          data-page="about"
           onClick={() => navigate("about")}
           className="p-2 text-gray-400 hover:text-gray-600 transition-colors rounded-lg hover:bg-gray-100"
           title="About"
@@ -62,6 +65,7 @@ export default function StartScreen({
 
         {configExists && (
           <button
+            data-page="clients"
             onClick={() => navigate("clients")}
             className="px-6 py-3 rounded-lg font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
           >

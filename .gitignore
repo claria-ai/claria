@@ -3,3 +3,6 @@
 bindings/
 claria-desktop-frontend/node_modules/
 claria-desktop-frontend/dist/
+screenshots/node_modules/
+screenshots/output/*.png
+screenshots/test-results/

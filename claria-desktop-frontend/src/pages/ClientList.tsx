@@ -228,6 +228,7 @@ export default function ClientList({
               {clients.map((client) => (
                 <tr
                   key={client.id}
+                  data-client={client.id}
                   onClick={() => onOpenClient(client.id, client.name)}
                   className="hover:bg-gray-50 cursor-pointer transition-colors"
                 >

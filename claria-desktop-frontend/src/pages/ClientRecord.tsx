@@ -85,6 +85,7 @@ export default function ClientRecord({
         {/* Tabs */}
         <div className="flex border border-gray-200 rounded-lg overflow-hidden">
           <button
+            data-tab="record"
             onClick={() => setTab("record")}
             className={`px-4 py-1.5 text-sm font-medium transition-colors ${
               tab === "record"
@@ -95,6 +96,7 @@ export default function ClientRecord({
             Record
           </button>
           <button
+            data-tab="chat"
             onClick={() => setTab("chat")}
             className={`px-4 py-1.5 text-sm font-medium transition-colors ${
               tab === "chat"

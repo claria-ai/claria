@@ -1,0 +1,12 @@
+{
+  "name": "claria-screenshots",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "capture": "npx playwright test",
+    "build-app": "cd ../claria-desktop-frontend && npm run build && cd ../crates/claria-desktop && cargo build"
+  },
+  "devDependencies": {
+    "@playwright/test": "=1.52.0"
+  }
+}
