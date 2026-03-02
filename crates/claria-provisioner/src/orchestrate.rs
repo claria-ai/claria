@@ -6,7 +6,7 @@ use crate::manifest::{Lifecycle, Manifest, ResourceSpec};
 use crate::persistence::StatePersistence;
 use crate::plan::{Action, Cause, PlanEntry};
 use crate::state::{ProvisionerState, ResourceState, ResourceStatus};
-use crate::syncer::ResourceSyncer;
+use crate::syncer::{compute_drift, ResourceSyncer};
 
 /// Scan all resources and produce an annotated plan.
 ///
@@ -22,8 +22,11 @@ pub async fn plan(
     let known_addrs: HashSet<_> = state.resources.keys().cloned().collect();
     let mut entries = Vec::new();
 
+    let total = syncers.len();
+    tracing::info!(count = total, "starting scan");
+
     // 1. Walk syncers in order — read + diff each resource
-    for syncer in syncers {
+    for syncer in syncers.iter() {
         let spec = syncer.spec();
         let actual = syncer.read().await?;
 
@@ -39,7 +42,7 @@ pub async fn plan(
 
             // Data source exists → check it matches
             (Lifecycle::Data, Some(actual_val)) => {
-                let drift = syncer.diff(actual_val);
+                let drift = compute_drift(&syncer.desired_state(), &syncer.current_state(actual_val));
                 PlanEntry {
                     spec: spec.clone(),
                     action: if drift.is_empty() {
@@ -74,7 +77,7 @@ pub async fn plan(
 
             // Managed resource exists → check for drift
             (Lifecycle::Managed, Some(actual_val)) => {
-                let drift = syncer.diff(actual_val);
+                let drift = compute_drift(&syncer.desired_state(), &syncer.current_state(actual_val));
                 PlanEntry {
                     spec: spec.clone(),
                     action: if drift.is_empty() {
@@ -109,6 +112,29 @@ pub async fn plan(
                 actual: None,
             });
         }
+    }
+
+    let conformant = entries.iter().filter(|e| e.action == Action::Ok).count();
+    let out_of_sync: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.action != Action::Ok)
+        .map(|e| e.spec.label.as_str())
+        .collect();
+
+    if out_of_sync.is_empty() {
+        tracing::info!(
+            count = total,
+            conformant,
+            "scan complete — all resources conformant"
+        );
+    } else {
+        tracing::info!(
+            count = total,
+            conformant,
+            out_of_sync_count = out_of_sync.len(),
+            out_of_sync = out_of_sync.join(", "),
+            "scan complete"
+        );
     }
 
     Ok(entries)

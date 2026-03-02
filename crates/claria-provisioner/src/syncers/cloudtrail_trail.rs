@@ -2,7 +2,7 @@ use aws_sdk_cloudtrail::Client;
 use serde_json::json;
 
 use crate::error::{format_err_chain, ProvisionerError};
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct CloudTrailTrailSyncer {
@@ -55,56 +55,6 @@ impl ResourceSyncer for CloudTrailTrailSyncer {
                 "is_multi_region": is_multi_region,
             })))
         })
-    }
-
-    fn diff(&self, actual: &serde_json::Value) -> Vec<FieldDrift> {
-        let mut drifts = Vec::new();
-
-        let fields = [
-            ("s3_bucket", "S3 bucket"),
-            ("s3_key_prefix", "S3 key prefix"),
-        ];
-
-        for (field, label) in &fields {
-            let expected = self
-                .spec
-                .desired
-                .get(*field)
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let actual_val = actual.get(*field).and_then(|v| v.as_str()).unwrap_or("");
-
-            if expected != actual_val {
-                drifts.push(FieldDrift {
-                    field: field.to_string(),
-                    label: label.to_string(),
-                    expected: json!(expected),
-                    actual: json!(actual_val),
-                });
-            }
-        }
-
-        let expected_multi = self
-            .spec
-            .desired
-            .get("is_multi_region")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let actual_multi = actual
-            .get("is_multi_region")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        if expected_multi != actual_multi {
-            drifts.push(FieldDrift {
-                field: "is_multi_region".into(),
-                label: "Multi-region".into(),
-                expected: json!(expected_multi),
-                actual: json!(actual_multi),
-            });
-        }
-
-        drifts
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

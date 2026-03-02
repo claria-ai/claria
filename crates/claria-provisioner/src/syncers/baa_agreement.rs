@@ -2,7 +2,7 @@ use aws_sdk_artifact::types::CustomerAgreementState;
 use serde_json::json;
 
 use crate::error::ProvisionerError;
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct BaaAgreementSyncer {
@@ -62,22 +62,13 @@ impl ResourceSyncer for BaaAgreementSyncer {
         })
     }
 
-    fn diff(&self, actual: &serde_json::Value) -> Vec<FieldDrift> {
+    fn current_state(&self, actual: &serde_json::Value) -> serde_json::Value {
+        // read() returns {state, agreement_name, effective_start} — only compare state
         let state = actual
             .get("state")
-            .and_then(|s| s.as_str())
-            .unwrap_or("unknown");
-
-        if state == "active" {
-            vec![]
-        } else {
-            vec![FieldDrift {
-                field: "state".into(),
-                label: "Agreement status".into(),
-                expected: json!("active"),
-                actual: json!(state),
-            }]
-        }
+            .cloned()
+            .unwrap_or(json!("unknown"));
+        json!({"state": state})
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

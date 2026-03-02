@@ -2,7 +2,7 @@ use aws_sdk_s3::Client;
 use serde_json::json;
 
 use crate::error::{format_err_chain, ProvisionerError};
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct S3BucketPolicySyncer {
@@ -81,52 +81,8 @@ impl ResourceSyncer for S3BucketPolicySyncer {
         })
     }
 
-    fn diff(&self, actual: &serde_json::Value) -> Vec<FieldDrift> {
-        let desired = self.render_policy_document();
-
-        // Compare statement SIDs as a simple diff
-        let desired_sids: Vec<&str> = desired
-            .get("Statement")
-            .and_then(|s| s.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|s| s.get("Sid").and_then(|v| v.as_str()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let actual_sids: Vec<&str> = actual
-            .get("Statement")
-            .and_then(|s| s.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|s| s.get("Sid").and_then(|v| v.as_str()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if desired_sids == actual_sids && !actual.is_null() {
-            // SIDs match — do a deeper comparison of the full documents
-            if desired == *actual {
-                return vec![];
-            }
-        }
-
-        if actual.is_null() || actual_sids != desired_sids {
-            vec![FieldDrift {
-                field: "statements".into(),
-                label: "Policy statements".into(),
-                expected: json!(desired_sids),
-                actual: json!(actual_sids),
-            }]
-        } else {
-            vec![FieldDrift {
-                field: "statements".into(),
-                label: "Policy statements".into(),
-                expected: desired,
-                actual: actual.clone(),
-            }]
-        }
+    fn desired_state(&self) -> serde_json::Value {
+        self.render_policy_document()
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

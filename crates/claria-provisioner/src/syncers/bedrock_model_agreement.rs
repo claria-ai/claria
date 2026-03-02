@@ -2,7 +2,7 @@ use aws_sdk_bedrock::Client;
 use serde_json::json;
 
 use crate::error::{format_err_chain, ProvisionerError};
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 /// Check whether a model ID is a context-window variant (e.g. `:48k`, `:200k`).
@@ -118,24 +118,6 @@ impl ResourceSyncer for BedrockModelAgreementSyncer {
                 Err(_) => Ok(Some(json!({"agreement": "pending"}))),
             }
         })
-    }
-
-    fn diff(&self, actual: &serde_json::Value) -> Vec<FieldDrift> {
-        let status = actual
-            .get("agreement")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-
-        if status == "accepted" {
-            vec![]
-        } else {
-            vec![FieldDrift {
-                field: "agreement".into(),
-                label: "Model agreement".into(),
-                expected: json!("accepted"),
-                actual: json!(status),
-            }]
-        }
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

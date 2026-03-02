@@ -2,7 +2,7 @@ use aws_sdk_s3::Client;
 use serde_json::json;
 
 use crate::error::{format_err_chain, ProvisionerError};
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct S3BucketVersioningSyncer {
@@ -44,30 +44,6 @@ impl ResourceSyncer for S3BucketVersioningSyncer {
                 Err(_) => Ok(None),
             }
         })
-    }
-
-    fn diff(&self, actual: &serde_json::Value) -> Vec<FieldDrift> {
-        let actual_status = actual
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let desired_status = self
-            .spec
-            .desired
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Enabled");
-
-        if actual_status == desired_status {
-            vec![]
-        } else {
-            vec![FieldDrift {
-                field: "status".into(),
-                label: "Versioning status".into(),
-                expected: json!(desired_status),
-                actual: json!(actual_status),
-            }]
-        }
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

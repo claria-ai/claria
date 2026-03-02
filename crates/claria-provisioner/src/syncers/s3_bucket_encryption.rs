@@ -2,7 +2,7 @@ use aws_sdk_s3::Client;
 use serde_json::json;
 
 use crate::error::{format_err_chain, ProvisionerError};
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct S3BucketEncryptionSyncer {
@@ -45,30 +45,6 @@ impl ResourceSyncer for S3BucketEncryptionSyncer {
                 Err(_) => Ok(Some(json!({"sse_algorithm": null}))),
             }
         })
-    }
-
-    fn diff(&self, actual: &serde_json::Value) -> Vec<FieldDrift> {
-        let actual_algo = actual
-            .get("sse_algorithm")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let desired_algo = self
-            .spec
-            .desired
-            .get("sse_algorithm")
-            .and_then(|v| v.as_str())
-            .unwrap_or("AES256");
-
-        if actual_algo == desired_algo {
-            vec![]
-        } else {
-            vec![FieldDrift {
-                field: "sse_algorithm".into(),
-                label: "Encryption algorithm".into(),
-                expected: json!(desired_algo),
-                actual: json!(actual_algo),
-            }]
-        }
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

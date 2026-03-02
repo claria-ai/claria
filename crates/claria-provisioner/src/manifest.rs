@@ -99,7 +99,7 @@ pub struct Manifest {
 
 impl Manifest {
     /// Bump when adding, removing, or changing resource specs.
-    pub const VERSION: u32 = 4;
+    pub const VERSION: u32 = 5;
 
     /// Build the default Claria manifest from runtime config.
     pub fn claria(account_id: &str, system_name: &str, region: &str) -> Self {
@@ -118,7 +118,10 @@ impl Manifest {
                     label: "IAM User".into(),
                     description: "Dedicated least-privilege user that Claria operates as".into(),
                     severity: Severity::Info,
-                    iam_actions: vec!["iam:GetUser".into()],
+                    iam_actions: vec![
+                        "iam:GetUser".into(),
+                        "sts:GetCallerIdentity".into(),
+                    ],
                 },
                 ResourceSpec {
                     resource_type: "iam_user_policy".into(),
@@ -130,6 +133,7 @@ impl Manifest {
                     severity: Severity::Info,
                     iam_actions: vec![
                         "iam:ListAttachedUserPolicies".into(),
+                        "iam:GetPolicy".into(),
                         "iam:GetPolicyVersion".into(),
                     ],
                 },
@@ -159,7 +163,9 @@ impl Manifest {
                         "s3:DeleteBucket".into(),
                         "s3:ListBucket".into(),
                         "s3:ListBucketVersions".into(),
+                        "s3:GetObject".into(),
                         "s3:GetObjectVersion".into(),
+                        "s3:PutObject".into(),
                         "s3:DeleteObject".into(),
                     ],
                 },
@@ -286,9 +292,14 @@ impl Manifest {
                     severity: Severity::Elevated,
                     iam_actions: vec![
                         "bedrock:ListFoundationModels".into(),
+                        "bedrock:ListInferenceProfiles".into(),
                         "bedrock:GetFoundationModelAvailability".into(),
                         "bedrock:ListFoundationModelAgreementOffers".into(),
                         "bedrock:CreateFoundationModelAgreement".into(),
+                        "bedrock:InvokeModel".into(),
+                        "bedrock:InvokeModelWithResponseStream".into(),
+                        "aws-marketplace:ViewSubscriptions".into(),
+                        "aws-marketplace:Subscribe".into(),
                     ],
                 },
                 ResourceSpec {
@@ -301,9 +312,14 @@ impl Manifest {
                     severity: Severity::Elevated,
                     iam_actions: vec![
                         "bedrock:ListFoundationModels".into(),
+                        "bedrock:ListInferenceProfiles".into(),
                         "bedrock:GetFoundationModelAvailability".into(),
                         "bedrock:ListFoundationModelAgreementOffers".into(),
                         "bedrock:CreateFoundationModelAgreement".into(),
+                        "bedrock:InvokeModel".into(),
+                        "bedrock:InvokeModelWithResponseStream".into(),
+                        "aws-marketplace:ViewSubscriptions".into(),
+                        "aws-marketplace:Subscribe".into(),
                     ],
                 },
                 ResourceSpec {

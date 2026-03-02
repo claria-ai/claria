@@ -2,7 +2,7 @@ use aws_sdk_s3::Client;
 use serde_json::json;
 
 use crate::error::{format_err_chain, ProvisionerError};
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct S3BucketSyncer {
@@ -46,11 +46,6 @@ impl ResourceSyncer for S3BucketSyncer {
                 Err(_) => Ok(None),
             }
         })
-    }
-
-    fn diff(&self, _actual: &serde_json::Value) -> Vec<FieldDrift> {
-        // Binary: bucket exists or not. Region can't change after creation.
-        vec![]
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

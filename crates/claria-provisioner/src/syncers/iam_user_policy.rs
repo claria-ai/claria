@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::account_setup::{IAM_POLICY_NAME, IAM_USER_NAME};
 use crate::error::ProvisionerError;
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct IamUserPolicySyncer {
@@ -127,8 +127,14 @@ impl ResourceSyncer for IamUserPolicySyncer {
         })
     }
 
-    fn diff(&self, actual: &serde_json::Value) -> Vec<FieldDrift> {
-        let current_actions: HashSet<String> = actual
+    fn desired_state(&self) -> serde_json::Value {
+        let mut actions: Vec<&String> = self.required_actions.iter().collect();
+        actions.sort();
+        json!({"actions": actions})
+    }
+
+    fn current_state(&self, actual: &serde_json::Value) -> serde_json::Value {
+        let mut actions: Vec<String> = actual
             .get("current_actions")
             .and_then(|a| a.as_array())
             .map(|arr| {
@@ -137,41 +143,8 @@ impl ResourceSyncer for IamUserPolicySyncer {
                     .collect()
             })
             .unwrap_or_default();
-
-        let mut drifts = Vec::new();
-
-        let missing: Vec<String> = self
-            .required_actions
-            .iter()
-            .filter(|a| !current_actions.contains(*a))
-            .cloned()
-            .collect();
-
-        if !missing.is_empty() {
-            drifts.push(FieldDrift {
-                field: "missing_actions".into(),
-                label: "Missing IAM permissions".into(),
-                expected: json!(missing),
-                actual: json!([]),
-            });
-        }
-
-        let extra: Vec<String> = current_actions
-            .iter()
-            .filter(|a| !self.required_actions.contains(*a))
-            .cloned()
-            .collect();
-
-        if !extra.is_empty() {
-            drifts.push(FieldDrift {
-                field: "extra_actions".into(),
-                label: "Extra IAM permissions".into(),
-                expected: json!([]),
-                actual: json!(extra),
-            });
-        }
-
-        drifts
+        actions.sort();
+        json!({"actions": actions})
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

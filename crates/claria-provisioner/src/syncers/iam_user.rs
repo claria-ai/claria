@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::account_setup::IAM_USER_NAME;
 use crate::error::ProvisionerError;
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct IamUserSyncer {
@@ -54,9 +54,9 @@ impl ResourceSyncer for IamUserSyncer {
         })
     }
 
-    fn diff(&self, _actual: &serde_json::Value) -> Vec<FieldDrift> {
-        // Binary: user exists or not. If read() returned Some, it exists.
-        vec![]
+    fn current_state(&self, _actual: &serde_json::Value) -> serde_json::Value {
+        // read() returns {exists, user_arn} — only compare the exists flag
+        self.spec().desired.clone()
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

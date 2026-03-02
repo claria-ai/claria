@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use crate::error::ProvisionerError;
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct TranscribeAccessSyncer {
@@ -23,10 +23,6 @@ impl ResourceSyncer for TranscribeAccessSyncer {
         // Transcribe is a service — no resource to check. If the IAM policy
         // grants the actions the user can call Transcribe.
         Box::pin(async { Ok(Some(json!({"enabled": true}))) })
-    }
-
-    fn diff(&self, _actual: &serde_json::Value) -> Vec<FieldDrift> {
-        vec![]
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {

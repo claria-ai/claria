@@ -2,7 +2,7 @@ use aws_sdk_s3::Client;
 use serde_json::json;
 
 use crate::error::{format_err_chain, ProvisionerError};
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct S3BucketPublicAccessBlockSyncer {
@@ -51,39 +51,6 @@ impl ResourceSyncer for S3BucketPublicAccessBlockSyncer {
                 }))),
             }
         })
-    }
-
-    fn diff(&self, actual: &serde_json::Value) -> Vec<FieldDrift> {
-        let fields = [
-            ("block_public_acls", "Block public ACLs"),
-            ("ignore_public_acls", "Ignore public ACLs"),
-            ("block_public_policy", "Block public policy"),
-            ("restrict_public_buckets", "Restrict public buckets"),
-        ];
-
-        let mut drifts = Vec::new();
-        for (field, label) in &fields {
-            let expected = self
-                .spec
-                .desired
-                .get(*field)
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let actual_val = actual
-                .get(*field)
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            if expected != actual_val {
-                drifts.push(FieldDrift {
-                    field: field.to_string(),
-                    label: label.to_string(),
-                    expected: json!(expected),
-                    actual: json!(actual_val),
-                });
-            }
-        }
-        drifts
     }
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {
