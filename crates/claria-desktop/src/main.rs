@@ -46,6 +46,7 @@ fn main() -> Result<()> {
             commands::list_record_context,
             commands::list_chat_models,
             commands::chat_message,
+            commands::infra_chat,
             commands::accept_model_agreement,
             commands::load_chat_history,
             commands::get_prompt,

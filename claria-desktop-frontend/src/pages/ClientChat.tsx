@@ -1,8 +1,7 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  acceptModelAgreement,
   chatMessage,
   getPrompt,
   listRecordContext,
@@ -11,16 +10,13 @@ import {
   type RecordContext,
 } from "../lib/tauri";
 import type { Page } from "../App";
+import ChatWidget from "../components/ChatWidget";
 
 export type ResumeChat = {
   chatId: string;
   modelId: string;
   messages: ChatMessage[];
 };
-
-function isMarketplaceError(error: string): boolean {
-  return error.includes("aws-marketplace:") || error.includes("Marketplace");
-}
 
 export default function ClientChat({
   navigate,
@@ -45,22 +41,7 @@ export default function ClientChat({
   chatModelsError: string | null;
   preferredModelId?: string | null;
 }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [accepting, setAccepting] = useState(false);
-  const [chatId, setChatId] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [textareaHeight, setTextareaHeight] = useState(80); // ~3 rows
-  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
-
-  // Model state — models come from props, only selection is local
-  const models = chatModels;
-  const modelsLoading = chatModelsLoading;
-  const modelsError = chatModelsError;
-  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const chatIdRef = useRef<string | null>(null);
 
   // System prompt state
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
@@ -69,17 +50,15 @@ export default function ClientChat({
   // Record context state
   const [contextFiles, setContextFiles] = useState<RecordContext[]>([]);
   const [contextLoading, setContextLoading] = useState(true);
-  const [previewContext, setPreviewContext] = useState<RecordContext | null>(null);
+  const [previewContext, setPreviewContext] = useState<RecordContext | null>(
+    null
+  );
 
-  // Default to preferred model (or first available) once models are loaded
-  useEffect(() => {
-    if (models.length > 0 && !selectedModelId) {
-      const preferred = preferredModelId && models.some((m) => m.model_id === preferredModelId)
-        ? preferredModelId
-        : models[0].model_id;
-      setSelectedModelId(preferred);
-    }
-  }, [models, selectedModelId, preferredModelId]);
+  // Resume chat state to pass to ChatWidget
+  const [initialMessages, setInitialMessages] = useState<
+    ChatMessage[] | undefined
+  >();
+  const [initialModelId, setInitialModelId] = useState<string | undefined>();
 
   useEffect(() => {
     getPrompt("system-prompt")
@@ -94,83 +73,54 @@ export default function ClientChat({
   // Resume a previous chat session when resumeChat prop is set.
   useEffect(() => {
     if (!resumeChat) return;
-    setMessages(resumeChat.messages);
-    setChatId(resumeChat.chatId);
-    setSelectedModelId(resumeChat.modelId);
-    setError(null);
+    setInitialMessages(resumeChat.messages);
+    setInitialModelId(resumeChat.modelId);
+    chatIdRef.current = resumeChat.chatId;
     onResumeChatConsumed?.();
   }, [resumeChat, onResumeChatConsumed]);
 
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  const handleSend = useCallback(
+    async (modelId: string, messages: ChatMessage[]): Promise<string> => {
+      const response = await chatMessage(
+        clientId,
+        modelId,
+        messages,
+        chatIdRef.current
+      );
+      chatIdRef.current = response.chat_id;
+      return response.content;
+    },
+    [clientId]
+  );
 
-  // Drag-to-resize textarea
-  useEffect(() => {
-    function onPointerMove(e: PointerEvent) {
-      if (!dragRef.current) return;
-      const delta = dragRef.current.startY - e.clientY;
-      setTextareaHeight(Math.max(48, Math.min(400, dragRef.current.startHeight + delta)));
-    }
-    function onPointerUp() {
-      dragRef.current = null;
-      document.body.style.userSelect = "";
-    }
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-    return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-  }, []);
-
-  const canSend = !sending && !modelsLoading && !contextLoading && !!selectedModelId && !!input.trim();
-
-  async function handleSend() {
-    const text = input.trim();
-    if (!text || sending || !selectedModelId) return;
-
-    setInput("");
-    setError(null);
-
-    const userMessage: ChatMessage = { role: "user", content: text };
-    const updatedMessages = [...messages, userMessage];
-    setMessages(updatedMessages);
-
-    setSending(true);
-    try {
-      const response = await chatMessage(clientId, selectedModelId, updatedMessages, chatId);
-      setChatId(response.chat_id);
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content: response.content,
-      };
-      setMessages([...updatedMessages, assistantMessage]);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSending(false);
-    }
-  }
-
-  async function handleAcceptAgreement() {
-    if (!selectedModelId || accepting) return;
-
-    // The inference profile ID is like "us.anthropic.claude-sonnet-4-20250514-v1:0"
-    // but the agreement API needs the bare model ID like "anthropic.claude-sonnet-4-20250514-v1:0"
-    const bareModelId = selectedModelId.replace(/^[a-z]+\./, "");
-
-    setAccepting(true);
-    try {
-      await acceptModelAgreement(bareModelId);
-      setError(null);
-    } catch (e) {
-      setError(`Failed to accept agreement: ${String(e)}`);
-    } finally {
-      setAccepting(false);
-    }
-  }
+  const toolbar = (
+    <>
+      {embedded && systemPrompt && (
+        <div className="flex items-center gap-2 px-6 py-1.5 border-b border-gray-100 bg-white">
+          <button
+            onClick={() => setShowPromptModal(true)}
+            className="px-2.5 py-1 text-xs font-medium text-gray-500 bg-white border border-gray-200 rounded-full hover:bg-gray-100 transition-colors"
+          >
+            System Prompt
+          </button>
+        </div>
+      )}
+      {!contextLoading && contextFiles.length > 0 && (
+        <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white overflow-x-auto">
+          <span className="text-xs text-gray-400 shrink-0">Context:</span>
+          {contextFiles.map((cf) => (
+            <button
+              key={cf.filename}
+              onClick={() => setPreviewContext(cf)}
+              className="shrink-0 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full hover:bg-blue-100 transition-colors"
+            >
+              {cf.filename}
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
 
   return (
     <div className={`flex flex-col ${embedded ? "flex-1" : "h-screen"}`}>
@@ -199,8 +149,6 @@ export default function ClientChat({
             <h2 className="text-lg font-semibold">{clientName}</h2>
             <p className="text-xs text-gray-400">Chat</p>
           </div>
-
-          {/* System prompt pill */}
           {systemPrompt && (
             <button
               onClick={() => setShowPromptModal(true)}
@@ -209,172 +157,24 @@ export default function ClientChat({
               System Prompt
             </button>
           )}
-
-          {/* Model selector */}
-          <div className="flex items-center gap-2">
-            {modelsLoading ? (
-              <div className="flex items-center gap-1.5 text-gray-400 text-xs">
-                <Spinner />
-                <span>Loading models...</span>
-              </div>
-            ) : modelsError ? (
-              <span className="text-red-500 text-xs">Failed to load models</span>
-            ) : (
-              <select
-                value={selectedModelId ?? ""}
-                onChange={(e) => setSelectedModelId(e.target.value)}
-                className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                {models.map((m) => (
-                  <option key={m.model_id} value={m.model_id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
         </div>
       )}
 
-      {/* Compact model selector when embedded */}
-      {embedded && (
-        <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-gray-50">
-          {systemPrompt && (
-            <button
-              onClick={() => setShowPromptModal(true)}
-              className="px-2.5 py-1 text-xs font-medium text-gray-500 bg-white border border-gray-200 rounded-full hover:bg-gray-100 transition-colors"
-            >
-              System Prompt
-            </button>
-          )}
-          <div className="flex-1" />
-          {modelsLoading ? (
-            <div className="flex items-center gap-1.5 text-gray-400 text-xs">
-              <Spinner />
-              <span>Loading models...</span>
-            </div>
-          ) : modelsError ? (
-            <span className="text-red-500 text-xs">Failed to load models</span>
-          ) : (
-            <select
-              value={selectedModelId ?? ""}
-              onChange={(e) => setSelectedModelId(e.target.value)}
-              className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {models.map((m) => (
-                <option key={m.model_id} value={m.model_id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-      )}
-
-      {/* Context pills */}
-      {contextLoading && (
-        <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white">
-          <Spinner />
-          <span className="text-xs text-gray-400">Building context...</span>
-        </div>
-      )}
-      {!contextLoading && contextFiles.length > 0 && (
-        <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white overflow-x-auto">
-          <span className="text-xs text-gray-400 shrink-0">Context:</span>
-          {contextFiles.map((cf) => (
-            <button
-              key={cf.filename}
-              onClick={() => setPreviewContext(cf)}
-              className="shrink-0 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full hover:bg-blue-100 transition-colors"
-            >
-              {cf.filename}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {messages.length === 0 && !sending && (
-          <div className="text-center text-gray-400 text-sm mt-8">
-            <p className="mb-1">Start the conversation.</p>
-            <p className="text-xs">
-              The chat includes the context files shown above. Chat messages
-              are saved separately and do not modify your client files.
-            </p>
-          </div>
-        )}
-
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
-        ))}
-
-        {sending && (
-          <div className="flex items-start gap-3">
-            <div className="bg-gray-100 rounded-lg px-4 py-2.5 max-w-[80%]">
-              <div className="flex items-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Thinking...</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error}</p>
-            {isMarketplaceError(error) && selectedModelId && (
-              <button
-                onClick={handleAcceptAgreement}
-                disabled={accepting}
-                className="mt-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-              >
-                {accepting ? "Accepting..." : "Accept Model Agreement"}
-              </button>
-            )}
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input bar */}
-      <div className="border-t border-gray-200 bg-white">
-        {/* Drag handle */}
-        <div
-          className="flex justify-center py-1.5 cursor-row-resize select-none hover:bg-gray-50 transition-colors"
-          onPointerDown={(e) => {
-            dragRef.current = { startY: e.clientY, startHeight: textareaHeight };
-            document.body.style.userSelect = "none";
-          }}
-        >
-          <div className="w-8 h-1 rounded-full bg-gray-300" />
-        </div>
-        <div className="flex gap-3 px-6 pb-4">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder={contextLoading ? "Building context..." : modelsLoading ? "Loading models..." : "Type a message..."}
-            disabled={sending || modelsLoading || contextLoading || !selectedModelId}
-            style={{ height: textareaHeight, resize: "none" }}
-            className="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
-          />
-          <button
-            onClick={handleSend}
-            disabled={!canSend}
-            className="self-end px-5 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-          >
-            Send
-          </button>
-        </div>
-      </div>
+      <ChatWidget
+        chatModels={chatModels}
+        chatModelsLoading={chatModelsLoading}
+        chatModelsError={chatModelsError}
+        preferredModelId={preferredModelId}
+        onSend={handleSend}
+        initialMessages={initialMessages}
+        initialModelId={initialModelId}
+        emptyStateTitle="Start the conversation."
+        emptyStateSubtitle="The chat includes the context files shown above. Chat messages are saved separately and do not modify your client files."
+        extraLoading={contextLoading}
+        extraLoadingText="Building context..."
+        toolbar={toolbar}
+        embedded={embedded}
+      />
 
       {/* System prompt modal (read-only) */}
       {showPromptModal && systemPrompt && (
@@ -388,8 +188,18 @@ export default function ClientChat({
                 onClick={() => setShowPromptModal(false)}
                 className="text-gray-400 hover:text-gray-600 transition-colors"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             </div>
@@ -422,8 +232,18 @@ export default function ClientChat({
                 onClick={() => setPreviewContext(null)}
                 className="text-gray-400 hover:text-gray-600 transition-colors"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             </div>
@@ -444,49 +264,5 @@ export default function ClientChat({
         </div>
       )}
     </div>
-  );
-}
-
-function MessageBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === "user";
-
-  return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`rounded-lg px-4 py-2.5 max-w-[80%] ${
-          isUser
-            ? "bg-blue-600 text-white"
-            : "bg-gray-100 text-gray-800"
-        }`}
-      >
-        {isUser ? (
-          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-        ) : (
-          <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
-            <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Spinner() {
-  return (
-    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
   );
 }

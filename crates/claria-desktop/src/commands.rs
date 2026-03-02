@@ -1408,6 +1408,113 @@ pub async fn chat_message(
     })
 }
 
+/// Chat about infrastructure — no history persistence.
+///
+/// The frontend passes pre-scanned `plan_entries` so we don't re-scan AWS
+/// on every message. We build a rich system prompt explaining Claria's
+/// operating model and the current infrastructure state, then call Bedrock.
+#[tauri::command]
+#[specta::specta]
+pub async fn infra_chat(
+    state: State<'_, DesktopState>,
+    model_id: String,
+    messages: Vec<ChatMessage>,
+    plan_entries: Vec<PlanEntry>,
+) -> Result<String, String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+
+    // Build an XML context block from the plan entries.
+    let mut context = String::from("<infrastructure_context>\n");
+    for entry in &plan_entries {
+        context.push_str(&format!(
+            "<resource label=\"{}\" type=\"{}\" name=\"{}\">\n",
+            entry.spec.label, entry.spec.resource_type, entry.spec.resource_name
+        ));
+        context.push_str(&format!("  <description>{}</description>\n", entry.spec.description));
+        context.push_str(&format!(
+            "  <desired_state>{}</desired_state>\n",
+            serde_json::to_string_pretty(&entry.spec.desired).unwrap_or_default()
+        ));
+        if let Some(actual) = &entry.actual {
+            context.push_str(&format!(
+                "  <actual_state>{}</actual_state>\n",
+                serde_json::to_string_pretty(actual).unwrap_or_default()
+            ));
+        }
+        context.push_str(&format!("  <action>{:?}</action>\n", entry.action));
+        context.push_str(&format!("  <cause>{:?}</cause>\n", entry.cause));
+        if !entry.drift.is_empty() {
+            context.push_str("  <drift>\n");
+            for d in &entry.drift {
+                context.push_str(&format!(
+                    "    <field name=\"{}\" expected=\"{}\" actual=\"{}\" />\n",
+                    d.field,
+                    serde_json::to_string(&d.expected).unwrap_or_default(),
+                    serde_json::to_string(&d.actual).unwrap_or_default()
+                ));
+            }
+            context.push_str("  </drift>\n");
+        }
+        context.push_str("</resource>\n");
+    }
+    context.push_str("</infrastructure_context>");
+
+    let system_prompt = format!(
+        r#"You are Claria's infrastructure assistant. Claria is a desktop application for
+healthcare clinicians that runs entirely in the user's own AWS account — there is
+no middleman, no third-party server, and no data leaves the user's control.
+
+## How Claria works
+- The clinician installs the Claria desktop app on their computer.
+- Claria provisions and manages AWS resources in the clinician's own AWS account.
+- All client records, chat history, and files are stored in a private S3 bucket.
+- The clinician's AWS credentials never leave their machine.
+
+## AWS services used
+- **S3**: Stores all client data — records, files, chat history, and the search index.
+  Configured with versioning, server-side encryption (AES-256), and a bucket policy
+  that blocks public access.
+- **CloudTrail**: Audit logging — every API call to the S3 bucket is recorded.
+- **Bedrock**: AI model access for chat conversations and report generation.
+  Claria uses cross-region inference profiles for model availability.
+- **Transcribe**: Audio transcription for voice memos.
+- **IAM**: A dedicated least-privilege IAM user with a scoped policy that grants
+  only the permissions Claria needs. The policy is managed by Claria and kept in sync.
+
+## HIPAA technical safeguards
+- **Encryption at rest**: S3 server-side encryption (AES-256) for all stored data.
+- **Encryption in transit**: All AWS API calls use TLS.
+- **Access control**: Dedicated IAM user with least-privilege policy.
+- **Audit logging**: CloudTrail records all S3 data events.
+- **Versioning**: S3 versioning protects against accidental deletion.
+- **No public access**: Bucket policy and public access block prevent exposure.
+- **BAA**: AWS Business Associate Agreement covers HIPAA-eligible services.
+
+## Instructions
+Answer questions about the infrastructure using the context below. Be specific —
+reference actual resource names, their current state, and their purpose. If the
+user asks whether something is configured correctly, compare the desired state to
+the actual state and note any drift. Be concise and direct.
+
+{context}"#
+    );
+
+    let bedrock_messages: Vec<claria_bedrock::chat::ChatMessage> = messages
+        .iter()
+        .map(|m| claria_bedrock::chat::ChatMessage {
+            role: match m.role {
+                ChatRole::User => claria_bedrock::chat::ChatRole::User,
+                ChatRole::Assistant => claria_bedrock::chat::ChatRole::Assistant,
+            },
+            content: m.content.clone(),
+        })
+        .collect();
+
+    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &system_prompt, &bedrock_messages)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Load a chat history session from S3.
 ///
 /// Returns the full conversation with model ID so the frontend can

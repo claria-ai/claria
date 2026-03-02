@@ -241,6 +241,14 @@ export async function chatMessage(clientId: string, modelId: string, messages: i
   return unwrap(await commands.chatMessage(clientId, modelId, messages, chatId ?? null));
 }
 
+export async function infraChat(
+  modelId: string,
+  messages: import("./bindings").ChatMessage[],
+  planEntries: import("./bindings").PlanEntry[]
+): Promise<string> {
+  return unwrap(await commands.infraChat(modelId, messages, planEntries));
+}
+
 export async function acceptModelAgreement(modelId: string): Promise<void> {
   unwrap(await commands.acceptModelAgreement(modelId));
 }

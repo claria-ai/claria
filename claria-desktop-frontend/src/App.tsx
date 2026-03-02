@@ -12,6 +12,7 @@ import ClientChat from "./pages/ClientChat";
 import ClientRecord from "./pages/ClientRecord";
 import About from "./pages/About";
 import Preferences from "./pages/Preferences";
+import InfraChat from "./pages/InfraChat";
 
 export type Page =
   | "loading"
@@ -25,6 +26,7 @@ export type Page =
   | "clients"
   | "client-record"
   | "client-chat"
+  | "infra-chat"
   | "preferences"
   | "about";
 
@@ -83,7 +85,7 @@ export default function App() {
       }
       // Retry loading models if they haven't loaded yet
       if (
-        (target === "clients" || target === "client-record" || target === "client-chat" || target === "preferences") &&
+        (target === "clients" || target === "client-record" || target === "client-chat" || target === "infra-chat" || target === "preferences") &&
         chatModels.length === 0
       ) {
         refreshChatModels();
@@ -138,6 +140,15 @@ export default function App() {
           navigate={navigate}
           clientId={activeClientId}
           clientName={activeClientName ?? "Client"}
+          chatModels={chatModels}
+          chatModelsLoading={chatModelsLoading}
+          chatModelsError={chatModelsError}
+          preferredModelId={preferredModelId}
+        />
+      )}
+      {page === "infra-chat" && (
+        <InfraChat
+          navigate={navigate}
           chatModels={chatModels}
           chatModelsLoading={chatModelsLoading}
           chatModelsError={chatModelsError}

@@ -219,6 +219,25 @@ export default function AwsManage({
         </dl>
       </div>
 
+      {/* Infra chat CTA */}
+      <button
+        data-page="infra-chat"
+        onClick={() => navigate("infra-chat")}
+        className="w-full bg-blue-50 border border-blue-200 rounded-lg px-6 py-5 mb-6 text-left hover:bg-blue-100 transition-colors group cursor-pointer"
+      >
+        <div className="flex items-center gap-3">
+          <svg className="w-5 h-5 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+          </svg>
+          <span className="text-sm font-medium text-blue-800">
+            Got questions about your AWS configuration?
+          </span>
+          <svg className="w-4 h-4 text-blue-400 ml-auto shrink-0 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </button>
+
       {/* Infrastructure */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
         <div className="flex items-center justify-between mb-4">

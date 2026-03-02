@@ -370,6 +370,21 @@ async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], ch
 }
 },
 /**
+ * Chat about infrastructure — no history persistence.
+ * 
+ * The frontend passes pre-scanned `plan_entries` so we don't re-scan AWS
+ * on every message. We build a rich system prompt explaining Claria's
+ * operating model and the current infrastructure state, then call Bedrock.
+ */
+async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry[]) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("infra_chat", { modelId, messages, planEntries }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Accept the Marketplace agreement for a Bedrock foundation model.
  * 
  * Called when a model requires an agreement before it can be used.
