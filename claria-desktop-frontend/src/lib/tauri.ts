@@ -321,7 +321,7 @@ export async function restoreClient(clientId: string, versionId: string): Promis
 // Whisper model management + local transcription
 // ---------------------------------------------------------------------------
 
-export type { WhisperModelInfo, WhisperModelTier, TranscribeMemoResult } from "./bindings";
+export type { WhisperModelInfo, WhisperModelTier, TranscribeMemoResult, UpdateCheck } from "./bindings";
 
 export async function getWhisperModels(): Promise<import("./bindings").WhisperModelInfo[]> {
   return unwrap(await commands.getWhisperModels());
@@ -345,4 +345,12 @@ export async function setActiveWhisperModel(tier: import("./bindings").WhisperMo
 
 export async function transcribeMemo(audioPcmBase64: string): Promise<import("./bindings").TranscribeMemoResult> {
   return unwrap(await commands.transcribeMemo(audioPcmBase64));
+}
+
+// ---------------------------------------------------------------------------
+// Update check
+// ---------------------------------------------------------------------------
+
+export async function checkForUpdates(): Promise<import("./bindings").UpdateCheck> {
+  return unwrap(await commands.checkForUpdates());
 }

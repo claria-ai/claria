@@ -67,6 +67,7 @@ fn main() -> Result<()> {
             commands::delete_whisper_model_dir,
             commands::set_active_whisper_model,
             commands::transcribe_memo,
+            commands::check_for_updates,
         ]);
 
     #[cfg(debug_assertions)]

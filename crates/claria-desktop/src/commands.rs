@@ -2456,3 +2456,79 @@ pub async fn transcribe_memo(
     .await
     .map_err(|e| format!("transcription task failed: {e}"))?
 }
+
+// ---------------------------------------------------------------------------
+// Update check
+// ---------------------------------------------------------------------------
+
+/// Result of checking for a newer release on GitHub.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct UpdateCheck {
+    pub current_version: String,
+    pub latest_version: String,
+    pub update_available: bool,
+    pub release_url: String,
+}
+
+/// Check whether a newer release exists on GitHub.
+///
+/// Hits the GitHub releases API and compares `tag_name` against the compiled-in
+/// version. On any failure (network, parse) returns `update_available: false` so
+/// the UI never errors out.
+#[tauri::command]
+#[specta::specta]
+pub async fn check_for_updates() -> Result<UpdateCheck, String> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+
+    let result: Result<UpdateCheck, String> = tokio::task::spawn_blocking({
+        let current = current.clone();
+        move || {
+            let agent = ureq::Agent::new_with_config(
+                ureq::config::Config::builder()
+                    .timeout_global(Some(std::time::Duration::from_secs(5)))
+                    .build(),
+            );
+            let resp = agent
+                .get("https://api.github.com/repos/claria-ai/claria/releases/latest")
+                .header("User-Agent", "claria-desktop")
+                .header("Accept", "application/vnd.github+json")
+                .call()
+                .map_err(|e| format!("{e}"))?;
+
+            let body_str = resp
+                .into_body()
+                .read_to_string()
+                .map_err(|e| e.to_string())?;
+            let body: serde_json::Value =
+                serde_json::from_str(&body_str).map_err(|e| e.to_string())?;
+
+            let tag = body["tag_name"]
+                .as_str()
+                .ok_or("missing tag_name")?;
+            let latest = tag.strip_prefix('v').unwrap_or(tag).to_string();
+            let release_url = body["html_url"]
+                .as_str()
+                .unwrap_or("https://github.com/claria-ai/claria/releases")
+                .to_string();
+
+            let update_available = latest.as_str() > current.as_str();
+
+            Ok(UpdateCheck {
+                current_version: current,
+                latest_version: latest,
+                update_available,
+                release_url,
+            })
+        }
+    })
+    .await
+    .map_err(|e| format!("update check task failed: {e}"))?;
+
+    // On error, return a safe default instead of propagating.
+    Ok(result.unwrap_or(UpdateCheck {
+        current_version: current.clone(),
+        latest_version: current,
+        update_available: false,
+        release_url: "https://github.com/claria-ai/claria/releases".to_string(),
+    }))
+}

@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { checkForUpdates } from "../lib/tauri";
+import type { UpdateCheck } from "../lib/tauri";
 import type { Page } from "../App";
 
 export default function About({
@@ -8,9 +10,11 @@ export default function About({
   navigate: (page: Page) => void;
 }) {
   const [version, setVersion] = useState<string>("");
+  const [update, setUpdate] = useState<UpdateCheck | null>(null);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("unknown"));
+    checkForUpdates().then(setUpdate).catch(() => {});
   }, []);
 
   return (
@@ -48,6 +52,20 @@ export default function About({
             <dd className="text-sm">Rust + AWS SDK</dd>
           </div>
         </dl>
+
+        {update?.update_available && (
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+            Update available:{" "}
+            <a
+              href={update.release_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-semibold underline underline-offset-2 hover:text-blue-600"
+            >
+              v{update.latest_version}
+            </a>
+          </div>
+        )}
 
         <div className="flex gap-4 mt-6 text-sm">
           <a

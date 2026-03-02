@@ -623,6 +623,21 @@ async transcribeMemo(audioPcmBase64: string) : Promise<Result<TranscribeMemoResu
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Check whether a newer release exists on GitHub.
+ * 
+ * Hits the GitHub releases API and compares `tag_name` against the compiled-in
+ * version. On any failure (network, parse) returns `update_available: false` so
+ * the UI never errors out.
+ */
+async checkForUpdates() : Promise<Result<UpdateCheck, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_for_updates") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -896,6 +911,10 @@ export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
  * Result from transcription, including detected language.
  */
 export type TranscribeMemoResult = { text: string; language: string | null }
+/**
+ * Result of checking for a newer release on GitHub.
+ */
+export type UpdateCheck = { current_version: string; latest_version: string; update_available: boolean; release_url: string }
 /**
  * Info about a Whisper model tier (status, size, path, whether active).
  * Known tiers have `tier: Some(...)`. Orphan directories on disk that don't
