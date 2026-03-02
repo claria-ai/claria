@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.12.0] — 2026-03-02
 
 ### Added
 - Check for updates on the About page — shows a banner when a newer release is available on GitHub
