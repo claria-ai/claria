@@ -17,7 +17,8 @@ use tracing::info;
 
 use crate::error::WhisperError;
 
-static MEL_FILTERS: &[u8] = include_bytes!("melfilters.bytes");
+static MEL_FILTERS_80: &[u8] = include_bytes!("melfilters.bytes");
+static MEL_FILTERS_128: &[u8] = include_bytes!("melfilters128.bytes");
 
 /// Regex-like prefix/suffix for language tokens in the Whisper tokenizer.
 /// Multilingual models have tokens like `<|en|>`, `<|es|>`, `<|fr|>`, etc.
@@ -100,9 +101,13 @@ impl WhisperModel {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| WhisperError::Tokenizer(format!("loading tokenizer.json: {e}")))?;
 
-        // Load mel filters (embedded at compile time)
-        let mut mel_filters = vec![0f32; MEL_FILTERS.len() / 4];
-        LittleEndian::read_f32_into(MEL_FILTERS, &mut mel_filters);
+        // Load mel filters (embedded at compile time, selected by num_mel_bins)
+        let mel_bytes = match config.num_mel_bins {
+            128 => MEL_FILTERS_128,
+            _ => MEL_FILTERS_80,
+        };
+        let mut mel_filters = vec![0f32; mel_bytes.len() / 4];
+        LittleEndian::read_f32_into(mel_bytes, &mut mel_filters);
 
         // Load model weights
         let weights_path = model_dir.join("model.safetensors");
@@ -127,7 +132,7 @@ impl WhisperModel {
         // in the tokenizer vocabulary. Language tokens look like `<|en|>`, `<|es|>`,
         // etc. — the code is a 2-3 letter lowercase string between `<|` and `|>`.
         let mut language_tokens = Vec::new();
-        for (token_str, id) in tokenizer.get_vocab(false) {
+        for (token_str, id) in tokenizer.get_vocab(true) {
             if let Some(code) = token_str
                 .strip_prefix(LANG_TOKEN_PREFIX)
                 .and_then(|s| s.strip_suffix(LANG_TOKEN_SUFFIX))

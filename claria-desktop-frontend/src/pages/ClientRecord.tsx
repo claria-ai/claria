@@ -216,7 +216,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
         setMemoReady(!!active);
         setMemoMultilingual(active ? active.tier !== "base_en" : false);
         setMemoGpu(active ? active.gpu_accelerated : false);
-        setMemoModelLabel(active ? active.label : "");
+        setMemoModelLabel(active ? active.dir_name : "");
       })
       .catch(() => setMemoReady(false));
   }, []);

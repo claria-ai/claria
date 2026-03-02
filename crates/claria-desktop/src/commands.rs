@@ -2422,13 +2422,20 @@ pub async fn transcribe_memo(
 
     // Run transcription in a blocking task (CPU-intensive).
     tokio::task::spawn_blocking(move || {
-        let mut guard = whisper
-            .lock()
-            .map_err(|e| format!("whisper lock poisoned: {e}"))?;
+        // Recover from a poisoned lock (previous panic) by clearing the model.
+        let mut guard = match whisper.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::warn!("whisper lock was poisoned, recovering");
+                let mut g = poisoned.into_inner();
+                *g = None;
+                g
+            }
+        };
 
-        // Load model on first use.
+        // Load model on first use (or after recovery from a poisoned lock).
         if guard.is_none() {
-            tracing::info!(tier = active_tier.tag(), "loading whisper model into memory (first use)");
+            tracing::info!(tier = active_tier.tag(), "loading whisper model into memory");
             let model = claria_whisper::WhisperModel::load(&model_dir)
                 .map_err(|e| e.to_string())?;
             *guard = Some(model);
