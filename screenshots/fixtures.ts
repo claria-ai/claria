@@ -195,6 +195,9 @@ The formal assessment (PDF, 2/18/2026) includes WISC-V, BASC-3 parent and teache
     language: "en",
   },
 
+  count_client_context_tokens: 2247,
+  count_infra_context_tokens: 8530,
+
   list_deleted_clients: [],
   list_deleted_files: [],
 };
