@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   plan,
   infraChat,
+  countInfraContextTokens,
   type ChatMessage,
   type ChatModel,
   type PlanEntry,
@@ -91,6 +92,11 @@ export default function InfraChat({
     content: string;
   } | null>(null);
 
+  // Token count state
+  const [contextTokens, setContextTokens] = useState<number | null>(null);
+  const [countingTokens, setCountingTokens] = useState(false);
+  const [tokenCountError, setTokenCountError] = useState<string | null>(null);
+
   useEffect(() => {
     plan()
       .then((entries) => {
@@ -100,6 +106,17 @@ export default function InfraChat({
       .finally(() => setScanning(false));
   }, []);
 
+  // Count context tokens once scan is done and models are loaded.
+  useEffect(() => {
+    if (scanning || chatModels.length === 0 || planEntriesRef.current.length === 0) return;
+    setCountingTokens(true);
+    setTokenCountError(null);
+    countInfraContextTokens(chatModels[0].model_id, planEntriesRef.current)
+      .then(setContextTokens)
+      .catch((e) => setTokenCountError(String(e)))
+      .finally(() => setCountingTokens(false));
+  }, [scanning, chatModels]);
+
   const handleSend = useCallback(
     async (modelId: string, messages: ChatMessage[]): Promise<string> => {
       return infraChat(modelId, messages, planEntriesRef.current);
@@ -108,8 +125,8 @@ export default function InfraChat({
   );
 
   const toolbar = !scanning ? (
-    <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white overflow-x-auto">
-      <span className="text-xs text-gray-400 shrink-0">Context:</span>
+    <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white flex-wrap">
+      <span className="text-xs text-gray-400 shrink-0 inline-flex items-center gap-1">Context <TokenCountBadge counting={countingTokens} tokens={contextTokens} error={tokenCountError} />:</span>
       <button
         onClick={() =>
           setPreviewModal({ title: "System Prompt", content: SYSTEM_PROMPT })
@@ -188,7 +205,7 @@ export default function InfraChat({
       )}
 
       {/* Preview modal */}
-      {previewModal && (
+      {previewModal != null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between mb-4">
@@ -231,5 +248,76 @@ export default function InfraChat({
         </div>
       )}
     </div>
+  );
+}
+
+function TokenCountBadge({
+  counting,
+  tokens,
+  error,
+}: {
+  counting: boolean;
+  tokens: number | null;
+  error?: string | null;
+}) {
+  const label =
+    tokens != null
+      ? tokens >= 1000
+        ? `~${(tokens / 1000).toFixed(1)}k tokens`
+        : `~${tokens} tokens`
+      : null;
+
+  if (counting) {
+    return (
+      <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 text-gray-400">
+        <svg
+          className="animate-spin h-3.5 w-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+        >
+          <circle
+            className="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="4"
+          />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+          />
+        </svg>
+      </span>
+    );
+  }
+
+  if (error) {
+    return (
+      <span
+        className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-50 border border-red-200 text-red-400 text-[10px] font-bold cursor-default group relative"
+        title={error}
+      >
+        !
+        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] font-normal text-white bg-red-700 rounded max-w-xs whitespace-pre-wrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+          {error}
+        </span>
+      </span>
+    );
+  }
+
+  if (label == null) return null;
+
+  return (
+    <span
+      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 border border-gray-200 text-gray-400 text-[10px] font-bold cursor-default group relative"
+      title={label}
+    >
+      ?
+      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] font-normal text-white bg-gray-800 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+        {label}
+      </span>
+    </span>
   );
 }

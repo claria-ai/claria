@@ -74,6 +74,8 @@ fn main() -> Result<()> {
             commands::enable_cost_explorer,
             commands::set_hourly_cost_data,
             commands::open_url,
+            commands::count_client_context_tokens,
+            commands::count_infra_context_tokens,
         ]);
 
     #[cfg(debug_assertions)]

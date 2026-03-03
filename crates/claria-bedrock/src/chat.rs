@@ -86,7 +86,9 @@ use std::collections::HashMap;
 use aws_sdk_bedrock::types::{
     FoundationModelLifecycleStatus, InferenceProfileStatus, InferenceProfileType,
 };
-use aws_sdk_bedrockruntime::types::{ContentBlock, ConversationRole, Message, SystemContentBlock};
+use aws_sdk_bedrockruntime::types::{
+    ContentBlock, ConversationRole, ConverseTokensRequest, Message, SystemContentBlock,
+};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -333,6 +335,57 @@ pub async fn chat_converse(
         .join("");
 
     Ok(response_text)
+}
+
+// ── Token counting ───────────────────────────────────────────────────────────
+
+/// Count the input tokens for a context (system prompt) before the user sends
+/// a message. Uses the free Bedrock `CountTokens` API.
+///
+/// A minimal dummy user message is included because the Converse format
+/// requires at least one message.
+pub async fn count_context_tokens(
+    config: &aws_config::SdkConfig,
+    model_id: &str,
+    system_prompt: &str,
+) -> Result<u32, BedrockError> {
+    let client = aws_sdk_bedrockruntime::Client::new(config);
+
+    // CountTokens requires a bare foundation model ID, not an inference
+    // profile ID (e.g. `anthropic.claude-sonnet-4-6` not
+    // `us.anthropic.claude-sonnet-4-6`).
+    let bare_model_id = strip_scope_prefix(model_id);
+
+    let dummy_message = Message::builder()
+        .role(ConversationRole::User)
+        .content(ContentBlock::Text(".".to_string()))
+        .build()
+        .map_err(|e| BedrockError::Invocation(e.to_string()))?;
+
+    let converse_input = ConverseTokensRequest::builder()
+        .messages(dummy_message)
+        .system(SystemContentBlock::Text(system_prompt.to_string()))
+        .build();
+
+    info!(bare_model_id, "counting context tokens");
+
+    let response = client
+        .count_tokens()
+        .model_id(bare_model_id)
+        .input(
+            aws_sdk_bedrockruntime::types::CountTokensInput::Converse(converse_input),
+        )
+        .send()
+        .await
+        .map_err(|e| {
+            let err = e.into_service_error().to_string();
+            tracing::warn!(bare_model_id, error = %err, "CountTokens failed");
+            BedrockError::Invocation(err)
+        })?;
+
+    let tokens = response.input_tokens() as u32;
+    info!(bare_model_id, tokens, "context token count complete");
+    Ok(tokens)
 }
 
 // ── Model agreement management ───────────────────────────────────────────────

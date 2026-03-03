@@ -361,9 +361,9 @@ async listChatModels() : Promise<Result<ChatModel[], string>> {
  * The `chat_id` is generated on the first message and returned so the
  * frontend can pass it back on subsequent calls.
  */
-async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null) : Promise<Result<ChatResponse, string>> {
+async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null, contextFilenames: string[]) : Promise<Result<ChatResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId }) };
+    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId, contextFilenames }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -689,6 +689,22 @@ async setHourlyCostData(enabled: boolean) : Promise<Result<null, string>> {
 async openUrl(url: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("open_url", { url }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async countClientContextTokens(clientId: string, modelId: string, contextFilenames: string[]) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("count_client_context_tokens", { clientId, modelId, contextFilenames }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async countInfraContextTokens(modelId: string, planEntries: PlanEntry[]) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("count_infra_context_tokens", { modelId, planEntries }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

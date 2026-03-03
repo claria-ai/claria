@@ -729,7 +729,8 @@ fn claria_policy_document(system_name: &str, account_id: &str) -> String {
                     "bedrock:ListFoundationModelAgreementOffers",
                     "bedrock:CreateFoundationModelAgreement",
                     "bedrock:InvokeModel",
-                    "bedrock:InvokeModelWithResponseStream"
+                    "bedrock:InvokeModelWithResponseStream",
+                    "bedrock:CountTokens"
                 ],
                 "Resource": "*"
             },

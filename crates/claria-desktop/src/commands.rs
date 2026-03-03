@@ -1306,6 +1306,7 @@ pub async fn chat_message(
     model_id: String,
     messages: Vec<ChatMessage>,
     chat_id: Option<String>,
+    context_filenames: Vec<String>,
 ) -> Result<ChatResponse, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = aws_sdk_s3::Client::new(&sdk_config);
@@ -1313,8 +1314,18 @@ pub async fn chat_message(
 
     let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;
 
-    // Load record context and prepend to the system prompt.
-    let context_files = load_record_context(&s3, &bucket, &client_id).await?;
+    // Load record context and filter to the frontend's active set.
+    let all_files = load_record_context(&s3, &bucket, &client_id).await?;
+    let context_files: Vec<_> = if context_filenames.is_empty() {
+        all_files
+    } else {
+        let allowed: std::collections::HashSet<&str> =
+            context_filenames.iter().map(|s| s.as_str()).collect();
+        all_files
+            .into_iter()
+            .filter(|f| allowed.contains(f.filename.as_str()))
+            .collect()
+    };
     let context_block = claria_bedrock::context::build_context_block(&context_files);
     let full_prompt = if context_block.is_empty() {
         system_prompt
@@ -1427,9 +1438,28 @@ pub async fn infra_chat(
 ) -> Result<String, String> {
     let (_cfg, sdk_config) = load_sdk_config(&state).await?;
 
-    // Build an XML context block from the plan entries.
+    let system_prompt = build_infra_system_prompt(&plan_entries);
+
+    let bedrock_messages: Vec<claria_bedrock::chat::ChatMessage> = messages
+        .iter()
+        .map(|m| claria_bedrock::chat::ChatMessage {
+            role: match m.role {
+                ChatRole::User => claria_bedrock::chat::ChatRole::User,
+                ChatRole::Assistant => claria_bedrock::chat::ChatRole::Assistant,
+            },
+            content: m.content.clone(),
+        })
+        .collect();
+
+    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &system_prompt, &bedrock_messages)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Build the full system prompt for infrastructure chat from plan entries.
+fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {
     let mut context = String::from("<infrastructure_context>\n");
-    for entry in &plan_entries {
+    for entry in plan_entries {
         context.push_str(&format!(
             "<resource label=\"{}\" type=\"{}\" name=\"{}\">\n",
             entry.spec.label, entry.spec.resource_type, entry.spec.resource_name
@@ -1463,7 +1493,7 @@ pub async fn infra_chat(
     }
     context.push_str("</infrastructure_context>");
 
-    let system_prompt = format!(
+    format!(
         r#"You are Claria's infrastructure assistant. Claria is a desktop application for
 healthcare clinicians that runs entirely in the user's own AWS account — there is
 no middleman, no third-party server, and no data leaves the user's control.
@@ -1501,22 +1531,7 @@ user asks whether something is configured correctly, compare the desired state t
 the actual state and note any drift. Be concise and direct.
 
 {context}"#
-    );
-
-    let bedrock_messages: Vec<claria_bedrock::chat::ChatMessage> = messages
-        .iter()
-        .map(|m| claria_bedrock::chat::ChatMessage {
-            role: match m.role {
-                ChatRole::User => claria_bedrock::chat::ChatRole::User,
-                ChatRole::Assistant => claria_bedrock::chat::ChatRole::Assistant,
-            },
-            content: m.content.clone(),
-        })
-        .collect();
-
-    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &system_prompt, &bedrock_messages)
-        .await
-        .map_err(|e| e.to_string())
+    )
 }
 
 /// Load a chat history session from S3.
@@ -2754,4 +2769,59 @@ pub async fn open_url(url: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Token counting commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+#[specta::specta]
+pub async fn count_client_context_tokens(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    model_id: String,
+    context_filenames: Vec<String>,
+) -> Result<u32, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;
+    let all_files = load_record_context(&s3, &bucket, &client_id).await?;
+    let files: Vec<_> = if context_filenames.is_empty() {
+        all_files
+    } else {
+        let allowed: std::collections::HashSet<&str> =
+            context_filenames.iter().map(|s| s.as_str()).collect();
+        all_files
+            .into_iter()
+            .filter(|f| allowed.contains(f.filename.as_str()))
+            .collect()
+    };
+    let context_block = claria_bedrock::context::build_context_block(&files);
+    let full_prompt = if context_block.is_empty() {
+        system_prompt
+    } else {
+        format!("{context_block}\n\n{system_prompt}")
+    };
+
+    claria_bedrock::chat::count_context_tokens(&sdk_config, &model_id, &full_prompt)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn count_infra_context_tokens(
+    state: State<'_, DesktopState>,
+    model_id: String,
+    plan_entries: Vec<PlanEntry>,
+) -> Result<u32, String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    let system_prompt = build_infra_system_prompt(&plan_entries);
+
+    claria_bedrock::chat::count_context_tokens(&sdk_config, &model_id, &system_prompt)
+        .await
+        .map_err(|e| e.to_string())
 }

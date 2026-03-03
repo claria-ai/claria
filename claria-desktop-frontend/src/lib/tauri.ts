@@ -237,8 +237,8 @@ export async function listChatModels() {
   return unwrap(await commands.listChatModels());
 }
 
-export async function chatMessage(clientId: string, modelId: string, messages: import("./bindings").ChatMessage[], chatId?: string | null) {
-  return unwrap(await commands.chatMessage(clientId, modelId, messages, chatId ?? null));
+export async function chatMessage(clientId: string, modelId: string, messages: import("./bindings").ChatMessage[], chatId?: string | null, contextFilenames?: string[]) {
+  return unwrap(await commands.chatMessage(clientId, modelId, messages, chatId ?? null, contextFilenames ?? []));
 }
 
 export async function infraChat(
@@ -397,4 +397,16 @@ export async function setHourlyCostData(enabled: boolean): Promise<void> {
 export async function openUrl(url: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("open_url", { url });
+}
+
+// ---------------------------------------------------------------------------
+// Token counting
+// ---------------------------------------------------------------------------
+
+export async function countClientContextTokens(clientId: string, modelId: string, contextFilenames: string[]): Promise<number> {
+  return unwrap(await commands.countClientContextTokens(clientId, modelId, contextFilenames));
+}
+
+export async function countInfraContextTokens(modelId: string, planEntries: import("./bindings").PlanEntry[]): Promise<number> {
+  return unwrap(await commands.countInfraContextTokens(modelId, planEntries));
 }
