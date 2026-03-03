@@ -131,6 +131,9 @@ pub fn build_syncers(
                 "transcribe_access" => Box::new(
                     syncers::transcribe_access::TranscribeAccessSyncer::new(spec.clone()),
                 ),
+                "cost_explorer_access" => Box::new(
+                    syncers::cost_explorer_access::CostExplorerAccessSyncer::new(spec.clone()),
+                ),
                 other => panic!("unknown resource type in manifest: {other}"),
             }
         })

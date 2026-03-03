@@ -223,7 +223,7 @@ export default function AwsManage({
       <button
         data-page="infra-chat"
         onClick={() => navigate("infra-chat")}
-        className="w-full bg-blue-50 border border-blue-200 rounded-lg px-6 py-5 mb-6 text-left hover:bg-blue-100 transition-colors group cursor-pointer"
+        className="w-full bg-blue-50 border border-blue-200 rounded-lg px-6 py-5 mb-3 text-left hover:bg-blue-100 transition-colors group cursor-pointer"
       >
         <div className="flex items-center gap-3">
           <svg className="w-5 h-5 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -238,11 +238,30 @@ export default function AwsManage({
         </div>
       </button>
 
+      {/* Cost Explorer CTA */}
+      <button
+        data-page="cost-explorer"
+        onClick={() => navigate("cost-explorer")}
+        className="w-full bg-emerald-50 border border-emerald-200 rounded-lg px-6 py-5 mb-6 text-left hover:bg-emerald-100 transition-colors group cursor-pointer"
+      >
+        <div className="flex items-center gap-3">
+          <svg className="w-5 h-5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span className="text-sm font-medium text-emerald-800">
+            Explore My Costs
+          </span>
+          <svg className="w-4 h-4 text-emerald-400 ml-auto shrink-0 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </button>
+
       {/* Infrastructure */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h3 className="text-lg font-semibold">Service Security And Configuration</h3>
+            <h3 className="text-lg font-semibold">Service Security and Configuration</h3>
             {config.account_id && (
               <p className="text-xs font-mono text-gray-400 mt-0.5">
                 running as arn:aws:iam::{config.account_id}:user/claria-admin

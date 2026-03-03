@@ -12,6 +12,9 @@ import {
   deleteWhisperModel,
   deleteWhisperModelDir,
   setActiveWhisperModel,
+  loadConfig,
+  setHourlyCostData,
+  getCostAndUsage,
   type ChatModel,
   type FileVersion,
   type WhisperModelInfo,
@@ -95,6 +98,9 @@ export default function Preferences({
 
         {/* Memo Transcription section */}
         <MemoTranscriptionSection />
+
+        {/* Cost Explorer section */}
+        <CostExplorerSection />
 
         {/* Preferred Model section */}
         <details className="border border-gray-200 rounded-lg group">
@@ -685,6 +691,133 @@ function MemoTranscriptionSection() {
               </>
             )}
           </div>
+        )}
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
+            <p className="text-red-800 text-sm">{error}</p>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cost Explorer settings
+// ---------------------------------------------------------------------------
+
+function CostExplorerSection() {
+  const [hourlyEnabled, setHourlyEnabled] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [verifying, setVerifying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadConfig()
+      .then((info) => setHourlyEnabled(info.hourly_cost_data))
+      .catch(() => setHourlyEnabled(false))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleToggle() {
+    if (hourlyEnabled) {
+      // Turning off — no verification needed
+      setError(null);
+      try {
+        await setHourlyCostData(false);
+        setHourlyEnabled(false);
+      } catch (e) {
+        setError(String(e));
+      }
+      return;
+    }
+
+    // Turning on — verify with a test hourly request
+    setVerifying(true);
+    setError(null);
+    try {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const today = new Date();
+      const fmt = (d: Date) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+      };
+      await getCostAndUsage(fmt(yesterday), fmt(today), "hourly", false);
+      await setHourlyCostData(true);
+      setHourlyEnabled(true);
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes("AccessDenied") || msg.includes("access denied")) {
+        setError(
+          "Hourly data is not enabled for this account. In the AWS Console, go to " +
+            "Billing → Cost Explorer → Settings and enable \"Hourly and Resource Level Data\"."
+        );
+      } else if (msg.includes("DataUnavailable") || msg.includes("not enabled")) {
+        setError(
+          "Hourly cost data is not available yet. Enable it in the AWS Console under " +
+            "Billing → Cost Explorer → Settings, then wait up to 24 hours for data to appear."
+        );
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  return (
+    <details className="border border-gray-200 rounded-lg group">
+      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-gray-900">Cost Explorer</span>
+          {hourlyEnabled && (
+            <span className="text-xs text-gray-400">Hourly enabled</span>
+          )}
+        </div>
+        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
+          &#9656;
+        </span>
+      </summary>
+      <div className="border-t border-gray-100 p-4">
+        <p className="text-xs text-gray-400 mb-3">
+          AWS Cost Explorer charges $0.01 per API request. Hourly-resolution data
+          requires separate enablement in the AWS Console and incurs additional
+          storage costs on your AWS bill.
+        </p>
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+            <Spinner />
+            <span>Loading...</span>
+          </div>
+        ) : (
+          <label className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              checked={hourlyEnabled ?? false}
+              onChange={handleToggle}
+              disabled={verifying}
+              className="mt-0.5 rounded border-gray-300"
+            />
+            <div className="flex-1">
+              <span className="text-sm text-gray-900">
+                Hourly data resolution
+                {verifying && (
+                  <span className="ml-2 text-xs text-gray-400 inline-flex items-center gap-1">
+                    <Spinner /> Verifying...
+                  </span>
+                )}
+              </span>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Shows hourly cost breakdowns for the last 14 days. Must be enabled in
+                AWS Console under Billing &rarr; Cost Explorer &rarr; Settings first.
+              </p>
+            </div>
+          </label>
         )}
 
         {error && (

@@ -10,6 +10,7 @@ metal = ["claria-whisper/metal"]
 
 [dependencies]
 claria-bedrock = { path = "../claria-bedrock" }
+claria-billing = { path = "../claria-billing" }
 claria-core = { path = "../claria-core" }
 claria-provisioner = { path = "../claria-provisioner" }
 claria-storage = { path = "../claria-storage" }

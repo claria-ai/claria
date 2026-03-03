@@ -69,6 +69,11 @@ fn main() -> Result<()> {
             commands::set_active_whisper_model,
             commands::transcribe_memo,
             commands::check_for_updates,
+            commands::get_cost_and_usage,
+            commands::probe_cost_explorer,
+            commands::enable_cost_explorer,
+            commands::set_hourly_cost_data,
+            commands::open_url,
         ]);
 
     #[cfg(debug_assertions)]

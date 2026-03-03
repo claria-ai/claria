@@ -653,6 +653,46 @@ async checkForUpdates() : Promise<Result<UpdateCheck, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getCostAndUsage(startDate: string, endDate: string, granularity: CostGranularity, groupByService: boolean) : Promise<Result<CostAndUsageResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_cost_and_usage", { startDate, endDate, granularity, groupByService }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async probeCostExplorer() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("probe_cost_explorer") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async enableCostExplorer() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("enable_cost_explorer") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setHourlyCostData(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_hourly_cost_data", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async openUrl(url: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_url", { url }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -763,7 +803,11 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean }
+export type CostAndUsageResult = { periods: CostTimePeriod[] }
+export type CostGranularity = "hourly" | "daily" | "monthly"
+export type CostResultGroup = { key: string; amount: string; unit: string }
+export type CostTimePeriod = { start: string; end: string; groups: CostResultGroup[] }
 /**
  * The result of `assess_credentials`.
  */

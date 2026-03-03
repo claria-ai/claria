@@ -106,6 +106,8 @@ pub async fn save_config(
         created_at: jiff::Timestamp::now(),
         credentials,
         preferred_model_id: None,
+        cost_explorer_enabled: false,
+        hourly_cost_data: false,
     };
 
     config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -307,6 +309,8 @@ pub async fn bootstrap_iam_user(
                     session_token: None,
                 },
                 preferred_model_id: None,
+                cost_explorer_enabled: false,
+                hourly_cost_data: false,
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -2645,4 +2649,109 @@ pub async fn check_for_updates() -> Result<UpdateCheck, String> {
         update_available: false,
         release_url: "https://github.com/claria-ai/claria/releases".to_string(),
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Cost Explorer commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_cost_and_usage(
+    state: State<'_, DesktopState>,
+    start_date: String,
+    end_date: String,
+    granularity: claria_billing::CostGranularity,
+    group_by_service: bool,
+) -> Result<claria_billing::CostAndUsageResult, String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    let query = claria_billing::CostQuery {
+        start_date,
+        end_date,
+        granularity,
+        group_by_service,
+    };
+    claria_billing::get_cost_and_usage(&sdk_config, &query)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn probe_cost_explorer(
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    claria_billing::probe_cost_explorer(&sdk_config)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn enable_cost_explorer(
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    cfg.cost_explorer_enabled = true;
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_hourly_cost_data(
+    state: State<'_, DesktopState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    cfg.hourly_cost_data = enabled;
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shell / URL helpers
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+#[specta::specta]
+pub async fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("URL must start with http:// or https://".into());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }

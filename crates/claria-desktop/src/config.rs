@@ -5,7 +5,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClariaConfig {
@@ -23,6 +23,12 @@ pub struct ClariaConfig {
     /// The clinician's preferred chat model ID. Added in v2.
     #[serde(default)]
     pub preferred_model_id: Option<String>,
+    /// Whether the user has completed Cost Explorer onboarding. Added in v3.
+    #[serde(default)]
+    pub cost_explorer_enabled: bool,
+    /// Whether the user has enabled hourly-resolution cost data. Added in v4.
+    #[serde(default)]
+    pub hourly_cost_data: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -51,6 +57,8 @@ pub struct ConfigInfo {
     pub profile_name: Option<String>,
     pub access_key_hint: Option<String>,
     pub preferred_model_id: Option<String>,
+    pub cost_explorer_enabled: bool,
+    pub hourly_cost_data: bool,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -80,6 +88,12 @@ pub fn load_config() -> eyre::Result<ClariaConfig> {
 
     let migrated = migrate(json, on_disk_version)?;
     let config: ClariaConfig = serde_json::from_value(migrated)?;
+
+    // Persist the migrated config so subsequent loads don't re-run migrations.
+    if on_disk_version < CURRENT_VERSION {
+        save_config(&config)?;
+    }
+
     Ok(config)
 }
 
@@ -124,8 +138,33 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v1 → v2 (added preferred_model_id)");
     }
 
-    // Future migrations go here:
-    // if from_version < 3 { ... }
+    // v2 → v3: add cost_explorer_enabled (false; user enables via onboarding flow)
+    if from_version < 3 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("cost_explorer_enabled")
+            .or_insert(serde_json::Value::Bool(false));
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(3.into()),
+        );
+        tracing::info!("migrated config v2 → v3 (added cost_explorer_enabled)");
+    }
+
+    // v3 → v4: add hourly_cost_data (false; user enables via Preferences)
+    if from_version < 4 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("hourly_cost_data")
+            .or_insert(serde_json::Value::Bool(false));
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(4.into()),
+        );
+        tracing::info!("migrated config v3 → v4 (added hourly_cost_data)");
+    }
 
     Ok(json)
 }
@@ -197,6 +236,8 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         profile_name,
         access_key_hint,
         preferred_model_id: config.preferred_model_id.clone(),
+        cost_explorer_enabled: config.cost_explorer_enabled,
+        hourly_cost_data: config.hourly_cost_data,
     }
 }
 

@@ -11,6 +11,7 @@ members = [
     "crates/claria-provisioner",
     "crates/claria-transcribe",
     "crates/claria-whisper",
+    "crates/claria-billing",
     "crates/claria-desktop",
 ]
 

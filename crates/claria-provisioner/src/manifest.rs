@@ -99,7 +99,7 @@ pub struct Manifest {
 
 impl Manifest {
     /// Bump when adding, removing, or changing resource specs.
-    pub const VERSION: u32 = 5;
+    pub const VERSION: u32 = 6;
 
     /// Build the default Claria manifest from runtime config.
     pub fn claria(account_id: &str, system_name: &str, region: &str) -> Self {
@@ -335,6 +335,16 @@ impl Manifest {
                         "transcribe:GetTranscriptionJob".into(),
                         "transcribe:DeleteTranscriptionJob".into(),
                     ],
+                },
+                ResourceSpec {
+                    resource_type: "cost_explorer_access".into(),
+                    resource_name: "cost-explorer".into(),
+                    lifecycle: Lifecycle::Data,
+                    desired: json!({"enabled": true}),
+                    label: "AWS Cost Explorer".into(),
+                    description: "Read-only access to view your AWS spending".into(),
+                    severity: Severity::Info,
+                    iam_actions: vec!["ce:GetCostAndUsage".into()],
                 },
             ],
         }

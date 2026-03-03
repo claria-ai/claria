@@ -775,6 +775,14 @@ fn claria_policy_document(system_name: &str, account_id: &str) -> String {
                 "Resource": "*"
             },
             {
+                "Sid": "ClariaCostExplorer",
+                "Effect": "Allow",
+                "Action": [
+                    "ce:GetCostAndUsage"
+                ],
+                "Resource": "*"
+            },
+            {
                 "Sid": "ClariaSTS",
                 "Effect": "Allow",
                 "Action": [

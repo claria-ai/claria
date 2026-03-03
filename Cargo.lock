@@ -335,6 +335,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-costexplorer"
+version = "1.111.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f62d783a130e08162a97eb8a93f741e36f74d16f24a890f9b4534b6c6067575"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http 0.63.5",
+ "aws-smithy-json 0.62.4",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-iam"
 version = "1.88.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1275,6 +1299,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "claria-billing"
+version = "0.12.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-costexplorer",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "jiff",
+ "serde",
+ "serde_json",
+ "specta",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "claria-core"
 version = "0.12.0"
 dependencies = [
@@ -1296,6 +1336,7 @@ dependencies = [
  "aws-sdk-sts",
  "base64 0.22.1",
  "claria-bedrock",
+ "claria-billing",
  "claria-core",
  "claria-provisioner",
  "claria-storage",

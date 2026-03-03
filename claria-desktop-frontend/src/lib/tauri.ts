@@ -362,3 +362,39 @@ export async function transcribeMemo(audioPcmBase64: string): Promise<import("./
 export async function checkForUpdates(): Promise<import("./bindings").UpdateCheck> {
   return unwrap(await commands.checkForUpdates());
 }
+
+// ---------------------------------------------------------------------------
+// Cost Explorer
+// ---------------------------------------------------------------------------
+
+export type { CostGranularity, CostAndUsageResult, CostTimePeriod, CostResultGroup } from "./bindings";
+
+export async function getCostAndUsage(
+  startDate: string,
+  endDate: string,
+  granularity: import("./bindings").CostGranularity,
+  groupByService: boolean
+): Promise<import("./bindings").CostAndUsageResult> {
+  return unwrap(await commands.getCostAndUsage(startDate, endDate, granularity, groupByService));
+}
+
+export async function probeCostExplorer(): Promise<void> {
+  unwrap(await commands.probeCostExplorer());
+}
+
+export async function enableCostExplorer(): Promise<void> {
+  unwrap(await commands.enableCostExplorer());
+}
+
+export async function setHourlyCostData(enabled: boolean): Promise<void> {
+  unwrap(await commands.setHourlyCostData(enabled));
+}
+
+// ---------------------------------------------------------------------------
+// Shell / URL helpers
+// ---------------------------------------------------------------------------
+
+export async function openUrl(url: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_url", { url });
+}

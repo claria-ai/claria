@@ -2,6 +2,7 @@ pub mod baa_agreement;
 pub mod bedrock_model_agreement;
 pub mod cloudtrail_trail;
 pub mod cloudtrail_trail_logging;
+pub mod cost_explorer_access;
 pub mod iam_user;
 pub mod iam_user_policy;
 pub mod s3_bucket;
