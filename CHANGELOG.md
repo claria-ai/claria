@@ -2,6 +2,27 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Added
+- Infrastructure chat — ask questions about your AWS resources, security configuration, and drift status using Bedrock with full infrastructure context
+- Cost Explorer — view AWS spending by service with daily/monthly granularity, date presets, and on-demand data refresh ($0.01 per refresh)
+- Context token counting — free Bedrock CountTokens API shows context size next to "Context:" label in both client and infra chat, with spinner while loading and error indicator on failure
+- Removable context pills — click [X] on any context file pill to exclude it from the conversation; token count updates automatically
+- About page links open in system browser (macOS `open`, Windows `cmd /c start`, Linux `xdg-open`)
+- About page resource links: Claria-AI website, open source code, Anthropic system prompts, Claude prompting best practices
+- `bedrock:CountTokens` added to IAM policy and manifest for drift detection
+
+### Changed
+- Context pills wrap instead of scrolling horizontally
+- Chat commands accept `context_filenames` parameter so removed pills are excluded from both token counting and inference
+- Extracted `build_infra_system_prompt()` helper for reuse between infra chat and token counting
+
+### Fixed
+- IAM policy syncer now detects extra actions as drift (not just missing ones)
+- Drift comparison lifted from individual syncers into the framework for consistency
+- Cost Explorer preset stays selected when switching granularity
+
 ## [0.12.0] — 2026-03-02
 
 ### Added

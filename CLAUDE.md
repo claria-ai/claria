@@ -34,7 +34,7 @@
 - Never squash
 - Descriptive kebab-case branch names
 - Create a commit after any batch of changes is done
-- Every batch of work should get noted in the CHANGELOG.md under a `## [Unreleased]` section header. `cargo release` rewrites this header to `## [version] — date` via `pre-release-replacements` in Cargo.toml
+- Every meaningful commit (or grouping of commits with a common theme) should get noted in the CHANGELOG.md under a `## [Unreleased]` section header. `cargo release` rewrites this header to `## [version] — date` via `pre-release-replacements` in Cargo.toml
 
 ## Architecture
 
