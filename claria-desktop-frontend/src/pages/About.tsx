@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { checkForUpdates } from "../lib/tauri";
+import { checkForUpdates, openUrl } from "../lib/tauri";
 import type { UpdateCheck } from "../lib/tauri";
 import type { Page } from "../App";
 
@@ -56,34 +56,40 @@ export default function About({
         {update?.update_available && (
           <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
             Update available:{" "}
-            <a
-              href={update.release_url}
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              onClick={() => openUrl(update.release_url)}
               className="font-semibold underline underline-offset-2 hover:text-blue-600"
             >
               v{update.latest_version}
-            </a>
+            </button>
           </div>
         )}
 
-        <div className="flex gap-4 mt-6 text-sm">
-          <a
-            href="https://claria-ai.github.io"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-600 hover:text-blue-800 underline underline-offset-2"
+        <div className="flex flex-col gap-2 mt-6 text-sm">
+          <button
+            onClick={() => openUrl("https://claria-ai.github.io")}
+            className="text-blue-600 hover:text-blue-800 underline underline-offset-2 text-left"
           >
-            Website
-          </a>
-          <a
-            href="https://github.com/claria-ai/claria"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-600 hover:text-blue-800 underline underline-offset-2"
+            Claria-AI
+          </button>
+          <button
+            onClick={() => openUrl("https://github.com/claria-ai/claria")}
+            className="text-blue-600 hover:text-blue-800 underline underline-offset-2 text-left"
           >
-            GitHub
-          </a>
+            Browse Claria AI's Open Source Code
+          </button>
+          <button
+            onClick={() => openUrl("https://docs.anthropic.com/en/release-notes/system-prompts")}
+            className="text-blue-600 hover:text-blue-800 underline underline-offset-2 text-left"
+          >
+            Anthropic's Claude System Prompts
+          </button>
+          <button
+            onClick={() => openUrl("https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices")}
+            className="text-blue-600 hover:text-blue-800 underline underline-offset-2 text-left"
+          >
+            Claude Prompting Best Practices
+          </button>
         </div>
       </div>
     </div>
