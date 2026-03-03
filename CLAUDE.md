@@ -5,6 +5,7 @@
 - `eyre` in bin crates (`claria-lambda`, `claria-desktop`)
 - `color-eyre` in `claria-desktop` for development
 - No `unwrap()` outside of tests
+- Never just swallow an error, bubble it up untils exposed in the UI
 
 ## Naming
 - Standard Rust: `snake_case` modules/functions, `CamelCase` types, `SCREAMING_SNAKE` constants
