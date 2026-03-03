@@ -33,6 +33,8 @@ export const fixtures: Record<string, unknown> = {
     profile_name: null,
     access_key_hint: "AKIA...GJEV",
     preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+    cost_explorer_enabled: true,
+    hourly_cost_data: false,
   },
 
   list_chat_models: [
@@ -195,9 +197,73 @@ The formal assessment (PDF, 2/18/2026) includes WISC-V, BASC-3 parent and teache
     language: "en",
   },
 
+  infra_chat: `Your data is well protected. Here's a summary of the security configuration for account **185735714230**:
+
+## Encryption
+
+- **At rest:** Your S3 bucket \`185735714230-claria-data\` uses AES-256 server-side encryption. Every object is encrypted before it's written to disk.
+- **In transit:** The bucket policy enforces TLS — any request without \`aws:SecureTransport\` is denied, so data can never travel unencrypted.
+
+## Access Control
+
+- **IAM user:** Claria operates as \`claria-admin\`, a dedicated least-privilege IAM user. The attached policy (\`claria-admin-policy\`) grants only the specific S3, Bedrock, CloudTrail, and Transcribe actions Claria needs — nothing more.
+- **Public access:** All four public-access-block settings are enabled on the bucket (block public ACLs, block public policy, ignore public ACLs, restrict public buckets). There is no way to accidentally expose data.
+
+## Audit Trail
+
+- **CloudTrail** trail \`claria-audit-trail\` is active and logging S3 data events. Every \`GetObject\`, \`PutObject\`, and \`DeleteObject\` call is recorded, giving you a complete audit log for HIPAA compliance.
+
+## Versioning & Recovery
+
+- S3 versioning is **enabled**, so deleted or overwritten files can be recovered from previous versions. Claria's restore flow creates new versions rather than removing delete markers, preserving the full history.
+
+## BAA
+
+- The AWS Business Associate Agreement is in place, covering S3, Bedrock, CloudTrail, and Transcribe under HIPAA.
+
+All 14 resources are currently **in sync** — no drift detected.`,
+
+  get_cost_and_usage: { periods: generateCostData() },
+
   count_client_context_tokens: 2247,
   count_infra_context_tokens: 8530,
 
   list_deleted_clients: [],
   list_deleted_files: [],
 };
+
+/** Generate 30 days of realistic cost data totaling ~$8. */
+function generateCostData() {
+  const periods = [];
+  // Daily costs per service (base + random variance)
+  const services = [
+    { key: "Amazon Bedrock", base: 0.15, variance: 0.12 },
+    { key: "Amazon Simple Storage Service", base: 0.035, variance: 0.01 },
+    { key: "AWS CloudTrail", base: 0.04, variance: 0.015 },
+    { key: "AWS Cost Explorer", base: 0.01, variance: 0.01 },
+  ];
+  // Seed a deterministic pseudo-random sequence
+  let seed = 42;
+  function rand() {
+    seed = (seed * 16807 + 0) % 2147483647;
+    return (seed - 1) / 2147483646;
+  }
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(2026, 2, 3); // March 3
+    d.setDate(d.getDate() - i);
+    const start = d.toISOString().slice(0, 10);
+    const next = new Date(d);
+    next.setDate(next.getDate() + 1);
+    const end = next.toISOString().slice(0, 10);
+    // Weekend days have lower Bedrock usage
+    const dayOfWeek = d.getDay();
+    const weekendFactor = dayOfWeek === 0 || dayOfWeek === 6 ? 0.3 : 1.0;
+    const groups = services.map((s) => {
+      const factor = s.key === "Amazon Bedrock" ? weekendFactor : 1.0;
+      const amount = Math.max(0, (s.base + (rand() - 0.4) * s.variance) * factor);
+      return { key: s.key, amount: amount.toFixed(4), unit: "USD" };
+    });
+    periods.push({ start, end, groups });
+  }
+  return periods;
+}

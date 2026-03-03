@@ -111,3 +111,29 @@ test("aws management", async ({ page }) => {
   await page.click("summary:has-text('Ready')");
   await page.screenshot({ path: "output/aws.png", fullPage: true });
 });
+
+test("infra chat", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-page=aws]");
+  await page.click("[data-page=aws]");
+  await page.waitForSelector("[data-page=infra-chat]");
+  await page.click("[data-page=infra-chat]");
+  const textarea = page.locator("textarea");
+  await expect(textarea).toBeVisible();
+  await textarea.fill("Is my data encrypted and protected?");
+  await page.click("text=Send");
+  // Wait for the assistant response to render
+  await page.waitForSelector("text=well protected");
+  await page.screenshot({ path: "output/infra-chat.png", fullPage: true });
+});
+
+test("cost explorer", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-page=aws]");
+  await page.click("[data-page=aws]");
+  await page.waitForSelector("[data-page=cost-explorer]");
+  await page.click("[data-page=cost-explorer]");
+  // Wait for the chart to render — the "Total:" line appears once data loads
+  await page.waitForSelector("text=Total:");
+  await page.screenshot({ path: "output/cost-explorer.png", fullPage: true });
+});
