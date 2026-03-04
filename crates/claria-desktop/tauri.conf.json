@@ -16,6 +16,7 @@
   },
   "bundle": {
     "active": true,
+    "licenseFile": "../../LICENSE",
     "targets": ["dmg", "nsis", "msi"],
     "icon": [
       "icons/32x32.png",

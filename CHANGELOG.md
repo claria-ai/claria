@@ -2,6 +2,12 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Changed
+- Licensed under GPL-3.0-only (previously proprietary)
+- Added Contributor License Agreement (CLA) for external contributions
+
 ## [0.13.0] — 2026-03-03
 
 ### Added
