@@ -137,3 +137,28 @@ test("cost explorer", async ({ page }) => {
   await page.waitForSelector("text=Total:");
   await page.screenshot({ path: "output/cost-explorer.png", fullPage: true });
 });
+
+// ── File history screenshot ──────────────────────────────────────────
+
+test("file history – diff", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-page=clients]");
+  await page.click("[data-page=clients]");
+  await page.waitForSelector("[data-client]");
+  await page.click("[data-client]:first-child");
+  await page.waitForSelector("[data-tab=record]");
+  await page.waitForSelector("text=intake-parent-interview.txt");
+  // Enable version history mode and open version list
+  await page.click('button[title="Show version history"]');
+  await page.waitForSelector("text=No deleted files found.");
+  await page.locator('button[title="Version history"]').first().click();
+  await page.waitForSelector("text=Version History:");
+  // Select two versions and compare
+  const checkboxes = page.locator('input[type="checkbox"]');
+  await checkboxes.nth(0).check();
+  await checkboxes.nth(1).check();
+  await page.waitForSelector("text=2 versions selected");
+  await page.click('button:has-text("Compare")');
+  await page.waitForSelector("h4:has-text('Diff')");
+  await page.screenshot({ path: "output/history-diff.png", fullPage: true });
+});

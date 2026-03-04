@@ -230,6 +230,25 @@ All 14 resources are currently **in sync** — no drift detected.`,
 
   list_deleted_clients: [],
   list_deleted_files: [],
+
+  list_file_versions: [
+    { version_id: "ver-20260303-1600", size: 3200, last_modified: "2026-03-03T16:00:00Z", is_latest: true },
+    { version_id: "ver-20260301-1030", size: 2800, last_modified: "2026-03-01T10:30:00Z", is_latest: false },
+    { version_id: "ver-20260225-1415", size: 2200, last_modified: "2026-02-25T14:15:00Z", is_latest: false },
+    { version_id: "ver-20260215-1100", size: 1600, last_modified: "2026-02-15T11:00:00Z", is_latest: false },
+  ],
+
+  "get_file_version_text:ver-20260303-1600":
+    "Jane Doe \u2014 Parent Interview, 2/15/2026\nReferral: Dr. Reyes (pediatrician)\nHomework takes 2-3 hours with frequent crying and refusal.\nLoses belongings daily. Difficulty with multi-step instructions.\nIncreased irritability over past six months.\nCollateral: Mr. Torres encouraged formal testing.",
+
+  "get_file_version_text:ver-20260301-1030":
+    "Jane Doe \u2014 Parent Interview, 2/15/2026\nReferral: Dr. Reyes (pediatrician)\nHomework takes 2-3 hours, with frequent crying and refusal.\nLoses belongings daily. Difficulty with multi-step instructions.\nIncreased irritability over past six months.",
+
+  "get_file_version_text:ver-20260225-1415":
+    "Jane Doe \u2014 Parent Interview, 2/15/2026\nHomework takes 2-3 hours, with frequent crying and refusal.\nLoses belongings daily. Difficulty with multi-step instructions.",
+
+  "get_file_version_text:ver-20260215-1100":
+    "Jane Doe \u2014 Parent Interview, 2/15/2026\nHomework takes 2-3 hours, with frequent crying and refusal.",
 };
 
 /** Generate 30 days of realistic cost data totaling ~$8. */
