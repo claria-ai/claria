@@ -4,6 +4,9 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+### Added
+- Claria Console — in-memory ring buffer (10 MB) captures tracing logs; open via Help > Claria Console menu in a separate window with live streaming (500 ms polling), search with Cmd+F, level filters (ERROR/WARN/INFO/DEBUG/TRACE), Copy to clipboard, and native Save As dialog via `rfd`
+
 ### Changed
 - Licensed under GPL-3.0-only (previously proprietary)
 - Added Contributor License Agreement (CLA) for external contributions
