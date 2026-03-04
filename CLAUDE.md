@@ -1,5 +1,9 @@
 # Claria
 
+A desktop app for interacting with AWS S3/Bedrock. Used for HIPAA compliant generative AI.
+
+No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
+
 ## Error Handling
 - `thiserror` in every lib crate — one error enum per crate (e.g., `StorageError`, `SearchError`)
 - `eyre` in bin crates (`claria-lambda`, `claria-desktop`)

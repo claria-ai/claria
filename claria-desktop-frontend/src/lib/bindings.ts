@@ -715,6 +715,14 @@ async getConsoleLogs() : Promise<ConsoleEntry[]> {
 },
 async getConsoleLogsText() : Promise<string> {
     return await TAURI_INVOKE("get_console_logs_text");
+},
+async saveConsoleLogs() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_console_logs") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
