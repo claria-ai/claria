@@ -2,6 +2,20 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Added
+- Chat context now shows ALL record files as context pills, not just those with extracted text — files without sidecars appear dimmed with a refresh button
+- New `extract_record_file` command re-runs Bedrock document extraction or audio transcription on demand from the chat context bar
+- Provisioner streams scan/apply progress to the frontend via `Channel<T>` with concurrent resource scanning (up to 5 at a time)
+- Provisioner plan() test suite with MockSyncer
+- File version history screenshot with diff view (dev tooling)
+
+### Fixed
+- Chat context loading errors are now surfaced in the UI instead of silently swallowed
+- Chat context pills for record files without `.text` sidecars were invisible — now always shown
+- Version history modal and diff panel enlarged for readability
+
 ## [0.14.0] — 2026-03-04
 
 ### Added
