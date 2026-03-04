@@ -1325,7 +1325,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       {/* Version history modal */}
       {versionFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
+          <div className="bg-white rounded-xl shadow-lg max-w-4xl w-full mx-4 p-6 max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-900">
                 Version History: {versionFile}
@@ -1435,7 +1435,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                 {diffResult && (
                   <div className="mt-4">
                     <h4 className="text-sm font-semibold text-gray-700 mb-2">Diff</h4>
-                    <div className="border border-gray-200 rounded-lg overflow-auto max-h-[7.5rem]">
+                    <div className="border border-gray-200 rounded-lg overflow-auto max-h-[20rem]">
                       <pre className="text-xs font-mono p-3 whitespace-pre w-max min-w-full">
                         {diffResult.map((line, i) => (
                           <div
