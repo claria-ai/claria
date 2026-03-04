@@ -156,21 +156,52 @@ export async function deleteUserAccessKey(
 
 export async function escalateIamPolicy(
   accessKeyId: string,
-  secretAccessKey: string
+  secretAccessKey: string,
+  onProgress?: (p: ProvisionerProgress) => void
 ): Promise<void> {
-  unwrap(await commands.escalateIamPolicy(accessKeyId, secretAccessKey));
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ProvisionerProgress>();
+  if (onProgress) {
+    channel.onmessage = onProgress;
+  }
+  await invoke("escalate_iam_policy", { accessKeyId, secretAccessKey, onProgress: channel });
 }
+
+// ---------------------------------------------------------------------------
+// Provisioner progress types
+// ---------------------------------------------------------------------------
+
+export type ProvisionerProgress =
+  | { kind: "scan_started"; label: string; index: number; total: number }
+  | { kind: "scan_completed"; label: string; index: number; total: number }
+  | { kind: "apply_started"; label: string; action: string; index: number; total: number }
+  | { kind: "apply_completed"; label: string; action: string; index: number; total: number }
+  | { kind: "escalation_step"; label: string; status: string };
 
 // ---------------------------------------------------------------------------
 // Provisioner wrappers
 // ---------------------------------------------------------------------------
 
-export async function plan() {
-  return unwrap(await commands.plan());
+export async function plan(
+  onProgress?: (p: ProvisionerProgress) => void
+) {
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ProvisionerProgress>();
+  if (onProgress) {
+    channel.onmessage = onProgress;
+  }
+  return await invoke<import("./bindings").PlanEntry[]>("plan", { onProgress: channel });
 }
 
-export async function apply() {
-  return unwrap(await commands.apply());
+export async function apply(
+  onProgress?: (p: ProvisionerProgress) => void
+) {
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ProvisionerProgress>();
+  if (onProgress) {
+    channel.onmessage = onProgress;
+  }
+  return await invoke<import("./bindings").PlanEntry[]>("apply", { onProgress: channel });
 }
 
 export async function destroy(): Promise<void> {

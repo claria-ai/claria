@@ -1,15 +1,54 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use tokio::sync::Semaphore;
 
 use claria_desktop::config::{self, ClariaConfig, ConfigInfo, CredentialSource};
 use claria_provisioner::account_setup::{
     AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
     StepStatus,
 };
-use claria_provisioner::PlanEntry;
+use claria_provisioner::{Action, Manifest, PlanEntry};
 
 use crate::console::{ConsoleBuffer, ConsoleEntry};
 use crate::state::DesktopState;
+
+// ---------------------------------------------------------------------------
+// Provisioner progress — streamed to the frontend via Channel<T>
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ProvisionerProgress {
+    ScanStarted {
+        label: String,
+        index: usize,
+        total: usize,
+    },
+    ScanCompleted {
+        label: String,
+        index: usize,
+        total: usize,
+    },
+    ApplyStarted {
+        label: String,
+        action: String,
+        index: usize,
+        total: usize,
+    },
+    ApplyCompleted {
+        label: String,
+        action: String,
+        index: usize,
+        total: usize,
+    },
+    EscalationStep {
+        label: String,
+        status: String,
+    },
+}
 
 // ---------------------------------------------------------------------------
 // Client + Chat types
@@ -410,8 +449,14 @@ pub async fn escalate_iam_policy(
     state: State<'_, DesktopState>,
     access_key_id: String,
     secret_access_key: String,
+    on_progress: tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<(), String> {
     let (cfg, _) = load_sdk_config(&state).await?;
+
+    let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+        label: "Building elevated permission client".into(),
+        status: "in_progress".into(),
+    });
 
     let elevated_config = claria_desktop::aws::build_aws_config(
         &cfg.region,
@@ -423,13 +468,29 @@ pub async fn escalate_iam_policy(
     )
     .await;
 
+    let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+        label: "Building elevated permission client".into(),
+        status: "done".into(),
+    });
+    let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+        label: "Updating IAM policy document".into(),
+        status: "in_progress".into(),
+    });
+
     claria_provisioner::update_iam_policy(
         &elevated_config,
         &cfg.system_name,
         &cfg.account_id,
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+        label: "Updating IAM policy document".into(),
+        status: "done".into(),
+    });
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -463,15 +524,185 @@ async fn load_sdk_config(
     Ok((cfg, sdk_config))
 }
 
+/// Helper: scan all resources concurrently (up to 5 at a time), streaming
+/// progress events via the channel. Returns plan entries in manifest order.
+async fn scan_with_progress(
+    syncers: &[Box<dyn claria_provisioner::ResourceSyncer>],
+    prov_state: &claria_provisioner::ProvisionerState,
+    on_progress: &tauri::ipc::Channel<ProvisionerProgress>,
+) -> Result<Vec<PlanEntry>, String> {
+    let manifest_upgraded = prov_state
+        .manifest_version
+        .is_none_or(|v| v < Manifest::VERSION);
+    let known_addrs: HashSet<_> = prov_state.resources.keys().cloned().collect();
+    let total = syncers.len();
+
+    tracing::info!(count = total, "starting scan");
+
+    // Use a semaphore to limit concurrency to 5 while running all futures
+    // via join_all. This avoids lifetime issues with buffer_unordered.
+    let semaphore = Arc::new(Semaphore::new(5));
+    let futures: Vec<_> = syncers
+        .iter()
+        .enumerate()
+        .map(|(i, syncer)| {
+            let sem = Arc::clone(&semaphore);
+            async move {
+                let _permit = sem.acquire().await.expect("semaphore closed");
+                let label = syncer.spec().label.clone();
+                let _ = on_progress.send(ProvisionerProgress::ScanStarted {
+                    label: label.clone(),
+                    index: i,
+                    total,
+                });
+                let actual = syncer.read().await;
+                let _ = on_progress.send(ProvisionerProgress::ScanCompleted {
+                    label,
+                    index: i,
+                    total,
+                });
+                (i, syncer, actual)
+            }
+        })
+        .collect();
+
+    let mut results = futures::future::join_all(futures).await;
+
+    // Sort by original index for deterministic output.
+    results.sort_by_key(|(i, _, _)| *i);
+
+    let mut entries = Vec::with_capacity(results.len());
+    for (_i, syncer, actual_result) in results {
+        let actual = actual_result.map_err(|e| e.to_string())?;
+        entries.push(claria_provisioner::build_plan_entry(
+            syncer.as_ref(),
+            actual,
+            manifest_upgraded,
+            &known_addrs,
+        ));
+    }
+
+    entries.extend(claria_provisioner::find_orphans(syncers, prov_state));
+    claria_provisioner::log_scan_summary(&entries);
+
+    Ok(entries)
+}
+
+/// Helper: execute all actionable entries with progress events.
+async fn execute_with_progress(
+    entries: &[PlanEntry],
+    syncers: &[Box<dyn claria_provisioner::ResourceSyncer>],
+    prov_state: &mut claria_provisioner::ProvisionerState,
+    persistence: &claria_provisioner::StatePersistence,
+    on_progress: &tauri::ipc::Channel<ProvisionerProgress>,
+) -> Result<(), String> {
+    let actionable: Vec<_> = entries
+        .iter()
+        .filter(|e| e.action == Action::Create || e.action == Action::Modify)
+        .collect();
+    let action_total = actionable.len();
+
+    let syncer_map: std::collections::HashMap<_, _> = syncers
+        .iter()
+        .map(|s| (s.spec().addr(), s.as_ref()))
+        .collect();
+
+    for (step_idx, entry) in actionable.iter().enumerate() {
+        let addr = entry.spec.addr();
+        let syncer = syncer_map.get(&addr).ok_or_else(|| {
+            format!(
+                "no syncer for {} {}",
+                addr.resource_type, addr.resource_name
+            )
+        })?;
+
+        let action_str = if entry.action == Action::Create {
+            "create"
+        } else {
+            "modify"
+        };
+        let _ = on_progress.send(ProvisionerProgress::ApplyStarted {
+            label: entry.spec.label.clone(),
+            action: action_str.into(),
+            index: step_idx,
+            total: action_total,
+        });
+
+        if entry.action == Action::Create {
+            tracing::info!(addr = %addr, "creating resource");
+            let result = syncer.create().await.map_err(|e| {
+                e.with_resource(&entry.spec.label, &entry.spec.resource_name)
+                    .to_string()
+            })?;
+            prov_state.resources.insert(
+                addr.clone(),
+                claria_provisioner::state::ResourceState {
+                    resource_type: entry.spec.resource_type.clone(),
+                    resource_id: entry.spec.resource_name.clone(),
+                    status: claria_provisioner::state::ResourceStatus::Created,
+                    properties: result,
+                },
+            );
+        } else {
+            tracing::info!(addr = %addr, "updating resource");
+            let result = syncer.update().await.map_err(|e| {
+                e.with_resource(&entry.spec.label, &entry.spec.resource_name)
+                    .to_string()
+            })?;
+            if let Some(rs) = prov_state.resources.get_mut(&addr) {
+                rs.status = claria_provisioner::state::ResourceStatus::Updated;
+                rs.properties = result;
+            }
+        }
+        persistence
+            .flush(prov_state)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let _ = on_progress.send(ProvisionerProgress::ApplyCompleted {
+            label: entry.spec.label.clone(),
+            action: action_str.into(),
+            index: step_idx,
+            total: action_total,
+        });
+    }
+
+    // Deletes — reverse order.
+    for entry in entries.iter().filter(|e| e.action == Action::Delete).rev() {
+        let addr = entry.spec.addr();
+        if let Some(syncer) = syncer_map.get(&addr) {
+            tracing::info!(addr = %addr, "destroying resource");
+            syncer.destroy().await.map_err(|e| {
+                e.with_resource(&entry.spec.label, &entry.spec.resource_name)
+                    .to_string()
+            })?;
+        }
+        prov_state.resources.remove(&addr);
+        persistence
+            .flush(prov_state)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Stamp manifest version.
+    prov_state.manifest_version = Some(Manifest::VERSION);
+    persistence
+        .flush(prov_state)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Scan all resources and return an annotated plan.
 ///
-/// This is always the first call — both onboarding and dashboard use it.
-/// The plan is a flat `Vec<PlanEntry>`, each carrying the full spec plus
-/// action/cause/drift so the frontend has everything it needs.
+/// Streams `ProvisionerProgress` events via the channel as each resource
+/// is scanned. Scans up to 5 resources concurrently for speed.
 #[tauri::command]
 #[specta::specta]
 pub async fn plan(
     state: State<'_, DesktopState>,
+    on_progress: tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<Vec<PlanEntry>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let manifest = claria_provisioner::build_manifest(
@@ -488,18 +719,19 @@ pub async fn plan(
     .map_err(|e| e.to_string())?;
     let prov_state = persistence.load().await.map_err(|e| e.to_string())?;
 
-    claria_provisioner::plan(&syncers, &prov_state)
-        .await
-        .map_err(|e| e.to_string())
+    scan_with_progress(&syncers, &prov_state, &on_progress).await
 }
 
 /// Execute all actionable entries in the plan.
 ///
 /// Returns the updated plan (all entries should now be Ok).
+/// Streams `ProvisionerProgress` events via the channel as each resource
+/// is created/modified/deleted.
 #[tauri::command]
 #[specta::specta]
 pub async fn apply(
     state: State<'_, DesktopState>,
+    on_progress: tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<Vec<PlanEntry>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let manifest = claria_provisioner::build_manifest(
@@ -516,18 +748,17 @@ pub async fn apply(
     .map_err(|e| e.to_string())?;
 
     let mut prov_state = persistence.load().await.map_err(|e| e.to_string())?;
-    let entries = claria_provisioner::plan(&syncers, &prov_state)
-        .await
-        .map_err(|e| e.to_string())?;
 
-    claria_provisioner::execute(&entries, &syncers, &mut prov_state, &persistence)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Scan first (with progress).
+    let entries =
+        scan_with_progress(&syncers, &prov_state, &on_progress).await?;
 
-    // Re-plan to show updated state
-    claria_provisioner::plan(&syncers, &prov_state)
-        .await
-        .map_err(|e| e.to_string())
+    // Execute (with progress).
+    execute_with_progress(&entries, &syncers, &mut prov_state, &persistence, &on_progress)
+        .await?;
+
+    // Re-scan to show updated state (with progress).
+    scan_with_progress(&syncers, &prov_state, &on_progress).await
 }
 
 /// Destroy all managed resources. Returns nothing on success.

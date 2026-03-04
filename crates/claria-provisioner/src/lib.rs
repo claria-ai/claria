@@ -36,7 +36,9 @@ pub use crate::account_setup::{
 pub use crate::addr::ResourceAddr;
 pub use crate::error::ProvisionerError;
 pub use crate::manifest::{FieldDrift, Lifecycle, Manifest, ResourceSpec, Severity};
-pub use crate::orchestrate::{destroy_all, execute, plan};
+pub use crate::orchestrate::{
+    build_plan_entry, destroy_all, execute, find_orphans, log_scan_summary, plan,
+};
 pub use crate::persistence::StatePersistence;
 pub use crate::plan::{Action, Cause, PlanEntry};
 pub use crate::state::ProvisionerState;

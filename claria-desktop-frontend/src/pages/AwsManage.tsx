@@ -9,8 +9,11 @@ import {
   escalateIamPolicy,
   type ConfigInfo,
   type PlanEntry,
+  type ProvisionerProgress,
 } from "../lib/tauri";
 import PlanView, { hasChanges } from "../components/PlanView";
+import ScanProgress, { type ScanItem } from "../components/ScanProgress";
+import ApplyProgress, { type ApplyItem } from "../components/ApplyProgress";
 import type { Page } from "../App";
 
 type ResourcePhase =
@@ -40,6 +43,10 @@ export default function AwsManage({
   const [entries, setEntries] = useState<PlanEntry[] | null>(null);
   const [resourceError, setResourceError] = useState<string | null>(null);
 
+  // Progress tracking
+  const [scanItems, setScanItems] = useState<ScanItem[]>([]);
+  const [applyItems, setApplyItems] = useState<ApplyItem[]>([]);
+
   useEffect(() => {
     loadConfig()
       .then(setConfig)
@@ -49,8 +56,25 @@ export default function AwsManage({
   const handleScan = useCallback(async () => {
     setResourcePhase("scanning");
     setResourceError(null);
+    setScanItems([]);
+    setApplyItems([]);
     try {
-      setEntries(await plan());
+      const result = await plan((p: ProvisionerProgress) => {
+        if (p.kind === "scan_started") {
+          setScanItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, status: "scanning" };
+            return next;
+          });
+        } else if (p.kind === "scan_completed") {
+          setScanItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, status: "done" };
+            return next;
+          });
+        }
+      });
+      setEntries(result);
       setResourcePhase("planned");
     } catch (e) {
       setResourceError(String(e));
@@ -70,8 +94,36 @@ export default function AwsManage({
   async function handleApply() {
     setResourcePhase("applying");
     setResourceError(null);
+    setApplyItems([]);
     try {
-      setEntries(await apply());
+      const result = await apply((p: ProvisionerProgress) => {
+        if (p.kind === "scan_started") {
+          setScanItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, status: "scanning" };
+            return next;
+          });
+        } else if (p.kind === "scan_completed") {
+          setScanItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, status: "done" };
+            return next;
+          });
+        } else if (p.kind === "apply_started") {
+          setApplyItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, action: p.action, status: "in_progress" };
+            return next;
+          });
+        } else if (p.kind === "apply_completed") {
+          setApplyItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, action: p.action, status: "done" };
+            return next;
+          });
+        }
+      });
+      setEntries(result);
       setResourcePhase("applied");
       // Re-scan after a short delay to show updated state
       setTimeout(() => {
@@ -285,12 +337,12 @@ export default function AwsManage({
 
         {/* Scanning indicator (when no results yet) */}
         {resourcePhase === "scanning" && !entries && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
-            <div className="flex items-center justify-center gap-2 text-blue-800 text-sm">
-              <Spinner />
-              <span>Scanning AWS resources...</span>
-            </div>
-          </div>
+          <ScanProgress items={scanItems} />
+        )}
+
+        {/* Apply progress */}
+        {resourcePhase === "applying" && applyItems.length > 0 && (
+          <ApplyProgress items={applyItems} />
         )}
 
         {/* Plan view */}
@@ -486,6 +538,11 @@ function ConfirmDialog({
   );
 }
 
+interface EscalationStep {
+  label: string;
+  status: "pending" | "in_progress" | "done";
+}
+
 function EscalationDialog({
   onCancel,
   onSuccess,
@@ -497,13 +554,33 @@ function EscalationDialog({
   const [secretAccessKey, setSecretAccessKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [steps, setSteps] = useState<EscalationStep[]>([]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
+    setSteps([]);
     try {
-      await escalateIamPolicy(accessKeyId.trim(), secretAccessKey.trim());
+      await escalateIamPolicy(
+        accessKeyId.trim(),
+        secretAccessKey.trim(),
+        (p: ProvisionerProgress) => {
+          if (p.kind === "escalation_step") {
+            setSteps((prev) => {
+              // Mark any previous "in_progress" steps as done
+              const next = prev.map((s) =>
+                s.status === "in_progress" ? { ...s, status: "done" as const } : s
+              );
+              if (p.status === "done") {
+                return next;
+              }
+              next.push({ label: p.label, status: "in_progress" });
+              return next;
+            });
+          }
+        }
+      );
       onSuccess();
     } catch (err) {
       setError(String(err));
@@ -523,57 +600,95 @@ function EscalationDialog({
           used once and never saved.
         </p>
 
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">
-              Access Key ID
-            </label>
-            <input
-              type="text"
-              value={accessKeyId}
-              onChange={(e) => setAccessKeyId(e.target.value)}
-              placeholder="AKIA..."
-              disabled={submitting}
-              className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 disabled:opacity-50"
-            />
+        {submitting && steps.length > 0 ? (
+          <div className="space-y-2 mb-4">
+            {steps.map((step, i) => (
+              <div
+                key={i}
+                className={`flex items-center gap-2 text-sm ${
+                  step.status === "in_progress"
+                    ? "text-amber-700"
+                    : "text-gray-500"
+                }`}
+              >
+                {step.status === "in_progress" ? (
+                  <Spinner />
+                ) : (
+                  <svg
+                    className="h-3.5 w-3.5 shrink-0 text-green-500"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                )}
+                <span>{step.label}</span>
+              </div>
+            ))}
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">
-              Secret Access Key
-            </label>
-            <input
-              type="password"
-              value={secretAccessKey}
-              onChange={(e) => setSecretAccessKey(e.target.value)}
-              disabled={submitting}
-              className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 disabled:opacity-50"
-            />
-          </div>
-
-          {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-              <p className="text-red-800 text-xs">{error}</p>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Access Key ID
+              </label>
+              <input
+                type="text"
+                value={accessKeyId}
+                onChange={(e) => setAccessKeyId(e.target.value)}
+                placeholder="AKIA..."
+                disabled={submitting}
+                className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 disabled:opacity-50"
+              />
             </div>
-          )}
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Secret Access Key
+              </label>
+              <input
+                type="password"
+                value={secretAccessKey}
+                onChange={(e) => setSecretAccessKey(e.target.value)}
+                disabled={submitting}
+                className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 disabled:opacity-50"
+              />
+            </div>
 
-          <div className="flex justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onCancel}
-              disabled={submitting}
-              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting || !accessKeyId.trim() || !secretAccessKey.trim()}
-              className="px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors disabled:opacity-50"
-            >
-              {submitting ? "Updating..." : "Update Policy"}
-            </button>
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-red-800 text-xs">{error}</p>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={submitting}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting || !accessKeyId.trim() || !secretAccessKey.trim()}
+                className="px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors disabled:opacity-50"
+              >
+                {submitting ? "Updating..." : "Update Policy"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {error && submitting && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
+            <p className="text-red-800 text-xs">{error}</p>
           </div>
-        </form>
+        )}
       </div>
     </div>
   );

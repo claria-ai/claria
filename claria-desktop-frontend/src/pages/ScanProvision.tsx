@@ -1,7 +1,9 @@
 import { useState } from "react";
 import StepIndicator from "../components/StepIndicator";
 import PlanView, { hasChanges } from "../components/PlanView";
-import { plan, apply, resetProvisionerState, type PlanEntry } from "../lib/tauri";
+import { plan, apply, resetProvisionerState, type PlanEntry, type ProvisionerProgress } from "../lib/tauri";
+import ScanProgress, { type ScanItem } from "../components/ScanProgress";
+import ApplyProgress, { type ApplyItem } from "../components/ApplyProgress";
 import type { Page } from "../App";
 
 type Phase =
@@ -21,12 +23,31 @@ export default function ScanProvision({
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [resettingState, setResettingState] = useState(false);
+  const [scanItems, setScanItems] = useState<ScanItem[]>([]);
+  const [applyItems, setApplyItems] = useState<ApplyItem[]>([]);
 
   async function handleScan() {
     setPhase("scanning");
     setError(null);
+    setScanItems([]);
+    setApplyItems([]);
     try {
-      setEntries(await plan());
+      const result = await plan((p: ProvisionerProgress) => {
+        if (p.kind === "scan_started") {
+          setScanItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, status: "scanning" };
+            return next;
+          });
+        } else if (p.kind === "scan_completed") {
+          setScanItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, status: "done" };
+            return next;
+          });
+        }
+      });
+      setEntries(result);
       setPhase("planned");
     } catch (e) {
       setError(String(e));
@@ -37,8 +58,36 @@ export default function ScanProvision({
   async function handleApply() {
     setPhase("applying");
     setError(null);
+    setApplyItems([]);
     try {
-      setEntries(await apply());
+      const result = await apply((p: ProvisionerProgress) => {
+        if (p.kind === "scan_started") {
+          setScanItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, status: "scanning" };
+            return next;
+          });
+        } else if (p.kind === "scan_completed") {
+          setScanItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, status: "done" };
+            return next;
+          });
+        } else if (p.kind === "apply_started") {
+          setApplyItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, action: p.action, status: "in_progress" };
+            return next;
+          });
+        } else if (p.kind === "apply_completed") {
+          setApplyItems((prev) => {
+            const next = [...prev];
+            next[p.index] = { label: p.label, action: p.action, status: "done" };
+            return next;
+          });
+        }
+      });
+      setEntries(result);
       setPhase("done");
     } catch (e) {
       setError(String(e));
@@ -76,12 +125,7 @@ export default function ScanProvision({
 
       {/* Phase: scanning */}
       {phase === "scanning" && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
-          <div className="flex items-center justify-center gap-2 text-blue-800">
-            <Spinner />
-            <span>Scanning AWS resources...</span>
-          </div>
-        </div>
+        <ScanProgress items={scanItems} />
       )}
 
       {/* Plan view */}
@@ -113,15 +157,9 @@ export default function ScanProvision({
       )}
 
       {/* Phase: applying */}
-      {phase === "applying" && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mt-6 text-center">
-          <div className="flex items-center justify-center gap-2 text-blue-800">
-            <Spinner />
-            <span>Applying changes...</span>
-          </div>
-          <p className="text-blue-600 text-xs mt-2">
-            State is saved after each step. If interrupted, re-run to resume.
-          </p>
+      {phase === "applying" && applyItems.length > 0 && (
+        <div className="mt-6">
+          <ApplyProgress items={applyItems} />
         </div>
       )}
 
@@ -204,26 +242,3 @@ export default function ScanProvision({
   );
 }
 
-function Spinner() {
-  return (
-    <svg
-      className="animate-spin h-4 w-4"
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
-}
