@@ -431,3 +431,8 @@ export async function getConsoleLogsText(): Promise<string> {
   const { invoke } = await import("@tauri-apps/api/core");
   return await invoke("get_console_logs_text");
 }
+
+export async function saveConsoleLogs(): Promise<boolean> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await invoke("save_console_logs");
+}

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
-import { getConsoleLogs, getConsoleLogsText } from "../lib/tauri";
+import { getConsoleLogs, getConsoleLogsText, saveConsoleLogs } from "../lib/tauri";
 import type { ConsoleEntry } from "../lib/tauri";
 
 const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
@@ -143,17 +143,7 @@ export default function Console() {
 
   const handleSave = async () => {
     try {
-      const text = await getConsoleLogsText();
-      const date = new Date().toISOString().slice(0, 10);
-      const blob = new Blob([text], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `claria-console-${date}.log`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      await saveConsoleLogs();
     } catch {
       // Save may fail
     }

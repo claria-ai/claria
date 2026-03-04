@@ -23,6 +23,7 @@ base64 = "=0.22.1"
 color-eyre = "=0.6.3"
 dirs = "=6.0.0"
 eyre = "=0.6.12"
+rfd = "=0.17.1"
 jiff = { version = "=0.2.21", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"

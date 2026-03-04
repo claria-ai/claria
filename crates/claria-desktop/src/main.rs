@@ -88,6 +88,7 @@ fn main() -> Result<()> {
             commands::count_infra_context_tokens,
             commands::get_console_logs,
             commands::get_console_logs_text,
+            commands::save_console_logs,
         ]);
 
     #[cfg(debug_assertions)]
