@@ -54,6 +54,7 @@ fn main() -> Result<()> {
             commands::create_text_record_file,
             commands::update_text_record_file,
             commands::list_record_context,
+            commands::extract_record_file,
             commands::list_chat_models,
             commands::chat_message,
             commands::infra_chat,

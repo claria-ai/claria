@@ -24,25 +24,25 @@ use crate::state::DesktopState;
 pub enum ProvisionerProgress {
     ScanStarted {
         label: String,
-        index: usize,
-        total: usize,
+        index: u32,
+        total: u32,
     },
     ScanCompleted {
         label: String,
-        index: usize,
-        total: usize,
+        index: u32,
+        total: u32,
     },
     ApplyStarted {
         label: String,
         action: String,
-        index: usize,
-        total: usize,
+        index: u32,
+        total: u32,
     },
     ApplyCompleted {
         label: String,
         action: String,
-        index: usize,
-        total: usize,
+        index: u32,
+        total: u32,
     },
     EscalationStep {
         label: String,
@@ -535,7 +535,7 @@ async fn scan_with_progress(
         .manifest_version
         .is_none_or(|v| v < Manifest::VERSION);
     let known_addrs: HashSet<_> = prov_state.resources.keys().cloned().collect();
-    let total = syncers.len();
+    let total = syncers.len() as u32;
 
     tracing::info!(count = total, "starting scan");
 
@@ -552,13 +552,13 @@ async fn scan_with_progress(
                 let label = syncer.spec().label.clone();
                 let _ = on_progress.send(ProvisionerProgress::ScanStarted {
                     label: label.clone(),
-                    index: i,
+                    index: i as u32,
                     total,
                 });
                 let actual = syncer.read().await;
                 let _ = on_progress.send(ProvisionerProgress::ScanCompleted {
                     label,
-                    index: i,
+                    index: i as u32,
                     total,
                 });
                 (i, syncer, actual)
@@ -600,7 +600,7 @@ async fn execute_with_progress(
         .iter()
         .filter(|e| e.action == Action::Create || e.action == Action::Modify)
         .collect();
-    let action_total = actionable.len();
+    let action_total = actionable.len() as u32;
 
     let syncer_map: std::collections::HashMap<_, _> = syncers
         .iter()
@@ -624,7 +624,7 @@ async fn execute_with_progress(
         let _ = on_progress.send(ProvisionerProgress::ApplyStarted {
             label: entry.spec.label.clone(),
             action: action_str.into(),
-            index: step_idx,
+            index: step_idx as u32,
             total: action_total,
         });
 
@@ -662,7 +662,7 @@ async fn execute_with_progress(
         let _ = on_progress.send(ProvisionerProgress::ApplyCompleted {
             label: entry.spec.label.clone(),
             action: action_str.into(),
-            index: step_idx,
+            index: step_idx as u32,
             total: action_total,
         });
     }
@@ -1322,6 +1322,11 @@ pub async fn list_record_context(
             _ => continue,
         };
 
+        // Skip chat-history entries — they're not user-facing context files.
+        if filename.starts_with("chat-history/") {
+            continue;
+        }
+
         let text = if filename.ends_with(".txt") {
             // Plain text: read directly.
             match claria_storage::objects::get_object(&s3, &bucket, key).await {
@@ -1337,15 +1342,106 @@ pub async fn list_record_context(
             }
         };
 
-        if let Some(text) = text {
-            context_files.push(RecordContext {
-                filename: filename.to_string(),
-                text,
-            });
-        }
+        // Include all files — those without extracted text get an empty string
+        // so the frontend can show them as context pills and offer re-extraction.
+        context_files.push(RecordContext {
+            filename: filename.to_string(),
+            text: text.unwrap_or_default(),
+        });
     }
 
     Ok(context_files)
+}
+
+/// Re-run text extraction for a single record file.
+///
+/// Downloads the original file from S3, runs Bedrock document extraction
+/// (or audio transcription for audio files), uploads the `.text` sidecar,
+/// and returns the updated `RecordContext` with the extracted text.
+#[tauri::command]
+#[specta::specta]
+pub async fn extract_record_file(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+) -> Result<RecordContext, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let key = claria_core::s3_keys::client_record_file(id, &filename);
+
+    let extension = std::path::Path::new(&filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let sidecar_key = format!("{key}.text");
+
+    let text = if let Some(format) =
+        claria_bedrock::extract::document_format_for_extension(&extension)
+    {
+        // Document extraction (PDF, DOCX).
+        let output = claria_storage::objects::get_object(&s3, &bucket, &key)
+            .await
+            .map_err(|e| e.to_string())?;
+        let extraction_prompt = load_prompt(&s3, &bucket, "pdf-extraction").await?;
+        let text = claria_bedrock::extract::extract_document_text(
+            &sdk_config,
+            EXTRACTION_MODEL_ID,
+            &output.body,
+            &filename,
+            format,
+            &extraction_prompt,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        claria_storage::objects::put_object(
+            &s3,
+            &bucket,
+            &sidecar_key,
+            text.clone().into_bytes(),
+            Some("text/plain"),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        text
+    } else if let Some(media_format) =
+        claria_transcribe::media_format_for_extension(&extension)
+    {
+        // Audio transcription.
+        let text =
+            claria_transcribe::transcribe_audio(&sdk_config, &bucket, &key, media_format)
+                .await
+                .map_err(|e| e.to_string())?;
+
+        claria_storage::objects::put_object(
+            &s3,
+            &bucket,
+            &sidecar_key,
+            text.clone().into_bytes(),
+            Some("text/plain"),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        text
+    } else {
+        return Err(format!(
+            "unsupported file type for extraction: {filename}"
+        ));
+    };
+
+    tracing::info!(client_id = %id, filename, "re-extracted text for record file");
+
+    Ok(RecordContext {
+        filename,
+        text,
+    })
 }
 
 /// Helper: load all record context for a client, converting to bedrock types.
