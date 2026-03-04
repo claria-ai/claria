@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import {
   chatMessage,
   countClientContextTokens,
+  extractRecordFile,
   getPrompt,
   listRecordContext,
   type ChatMessage,
@@ -51,9 +52,11 @@ export default function ClientChat({
   // Record context state
   const [contextFiles, setContextFiles] = useState<RecordContext[]>([]);
   const [contextLoading, setContextLoading] = useState(true);
+  const [contextError, setContextError] = useState<string | null>(null);
   const [previewContext, setPreviewContext] = useState<RecordContext | null>(
     null
   );
+  const [extractingFile, setExtractingFile] = useState<string | null>(null);
 
   // Token count state
   const [contextTokens, setContextTokens] = useState<number | null>(null);
@@ -72,17 +75,23 @@ export default function ClientChat({
       .catch(() => {});
     listRecordContext(clientId)
       .then(setContextFiles)
-      .catch(() => {})
+      .catch((e) => setContextError(String(e)))
       .finally(() => setContextLoading(false));
   }, [clientId]);
 
   // Count context tokens once context is loaded and models are available.
+  // Only count files that have extracted text.
   useEffect(() => {
     if (contextLoading || chatModels.length === 0) return;
+    const withText = contextFiles.filter((f) => f.text.length > 0);
+    if (withText.length === 0) {
+      setContextTokens(null);
+      return;
+    }
     setCountingTokens(true);
     setContextTokens(null);
     setTokenCountError(null);
-    const filenames = contextFiles.map((f) => f.filename);
+    const filenames = withText.map((f) => f.filename);
     countClientContextTokens(clientId, chatModels[0].model_id, filenames)
       .then(setContextTokens)
       .catch((e) => setTokenCountError(String(e)))
@@ -91,6 +100,21 @@ export default function ClientChat({
 
   function handleRemoveContext(filename: string) {
     setContextFiles((prev) => prev.filter((f) => f.filename !== filename));
+  }
+
+  async function handleExtract(filename: string) {
+    setExtractingFile(filename);
+    try {
+      const updated = await extractRecordFile(clientId, filename);
+      setContextFiles((prev) =>
+        prev.map((f) => (f.filename === filename ? updated : f))
+      );
+    } catch (e) {
+      // Show error briefly — the pill stays dimmed so the user can retry.
+      alert(`Extraction failed: ${String(e)}`);
+    } finally {
+      setExtractingFile(null);
+    }
   }
 
   // Resume a previous chat session when resumeChat prop is set.
@@ -107,7 +131,9 @@ export default function ClientChat({
 
   const handleSend = useCallback(
     async (modelId: string, messages: ChatMessage[]): Promise<string> => {
-      const filenames = contextFilesRef.current.map((f) => f.filename);
+      const filenames = contextFilesRef.current
+        .filter((f) => f.text.length > 0)
+        .map((f) => f.filename);
       const response = await chatMessage(
         clientId,
         modelId,
@@ -133,31 +159,64 @@ export default function ClientChat({
           </button>
         </div>
       )}
+      {!contextLoading && contextError && (
+        <div className="flex items-center gap-2 px-6 py-2 border-b border-red-100 bg-red-50">
+          <span className="text-xs text-red-600">Failed to load context: {contextError}</span>
+        </div>
+      )}
       {!contextLoading && contextFiles.length > 0 && (
         <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white flex-wrap">
           <span className="text-xs text-gray-400 shrink-0 inline-flex items-center gap-1">Context <TokenCountBadge counting={countingTokens} tokens={contextTokens} error={tokenCountError} />:</span>
-          {contextFiles.map((cf) => (
-            <span
-              key={cf.filename}
-              className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full"
-            >
-              <button
-                onClick={() => setPreviewContext(cf)}
-                className="hover:text-blue-900 transition-colors"
+          {contextFiles.map((cf) => {
+            const hasText = cf.text.length > 0;
+            const isExtracting = extractingFile === cf.filename;
+            return (
+              <span
+                key={cf.filename}
+                className={`shrink-0 inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full ${
+                  hasText
+                    ? "text-blue-700 bg-blue-50 border border-blue-200"
+                    : "text-gray-400 bg-gray-50 border border-gray-200"
+                }`}
               >
-                {cf.filename}
-              </button>
-              <button
-                onClick={() => handleRemoveContext(cf.filename)}
-                className="text-blue-400 hover:text-blue-700 transition-colors ml-0.5"
-                title="Remove from context"
-              >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </span>
-          ))}
+                <button
+                  onClick={() => hasText ? setPreviewContext(cf) : undefined}
+                  className={hasText ? "hover:text-blue-900 transition-colors" : "cursor-default"}
+                  title={hasText ? undefined : "No extracted text"}
+                >
+                  {cf.filename}
+                </button>
+                {!hasText && (
+                  <button
+                    onClick={() => handleExtract(cf.filename)}
+                    disabled={isExtracting}
+                    className="text-gray-400 hover:text-gray-600 transition-colors ml-0.5"
+                    title="Extract text"
+                  >
+                    {isExtracting ? (
+                      <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    ) : (
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={() => handleRemoveContext(cf.filename)}
+                  className={`${hasText ? "text-blue-400 hover:text-blue-700" : "text-gray-300 hover:text-gray-500"} transition-colors ml-0.5`}
+                  title="Remove from context"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
     </>

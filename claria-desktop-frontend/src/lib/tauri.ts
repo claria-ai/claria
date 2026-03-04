@@ -260,6 +260,10 @@ export async function listRecordContext(clientId: string): Promise<import("./bin
   return unwrap(await commands.listRecordContext(clientId));
 }
 
+export async function extractRecordFile(clientId: string, filename: string): Promise<import("./bindings").RecordContext> {
+  return unwrap(await commands.extractRecordFile(clientId, filename));
+}
+
 // ---------------------------------------------------------------------------
 // Chat wrappers
 // ---------------------------------------------------------------------------

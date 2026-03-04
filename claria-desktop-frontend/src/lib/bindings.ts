@@ -146,9 +146,9 @@ async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: stri
  * not in the current policy. The elevated credentials are used once and
  * discarded — they are never persisted to disk.
  */
-async escalateIamPolicy(accessKeyId: string, secretAccessKey: string) : Promise<Result<null, string>> {
+async escalateIamPolicy(accessKeyId: string, secretAccessKey: string, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("escalate_iam_policy", { accessKeyId, secretAccessKey }) };
+    return { status: "ok", data: await TAURI_INVOKE("escalate_iam_policy", { accessKeyId, secretAccessKey, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -157,13 +157,12 @@ async escalateIamPolicy(accessKeyId: string, secretAccessKey: string) : Promise<
 /**
  * Scan all resources and return an annotated plan.
  * 
- * This is always the first call — both onboarding and dashboard use it.
- * The plan is a flat `Vec<PlanEntry>`, each carrying the full spec plus
- * action/cause/drift so the frontend has everything it needs.
+ * Streams `ProvisionerProgress` events via the channel as each resource
+ * is scanned. Scans up to 5 resources concurrently for speed.
  */
-async plan() : Promise<Result<PlanEntry[], string>> {
+async plan(onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<PlanEntry[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("plan") };
+    return { status: "ok", data: await TAURI_INVOKE("plan", { onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -173,10 +172,12 @@ async plan() : Promise<Result<PlanEntry[], string>> {
  * Execute all actionable entries in the plan.
  * 
  * Returns the updated plan (all entries should now be Ok).
+ * Streams `ProvisionerProgress` events via the channel as each resource
+ * is created/modified/deleted.
  */
-async apply() : Promise<Result<PlanEntry[], string>> {
+async apply(onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<PlanEntry[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("apply") };
+    return { status: "ok", data: await TAURI_INVOKE("apply", { onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -328,6 +329,21 @@ async updateTextRecordFile(clientId: string, filename: string, content: string) 
 async listRecordContext(clientId: string) : Promise<Result<RecordContext[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_record_context", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Re-run text extraction for a single record file.
+ * 
+ * Downloads the original file from S3, runs Bedrock document extraction
+ * (or audio transcription for audio files), uploads the `.text` sidecar,
+ * and returns the updated `RecordContext` with the extracted text.
+ */
+async extractRecordFile(clientId: string, filename: string) : Promise<Result<RecordContext, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("extract_record_file", { clientId, filename }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -930,6 +946,7 @@ export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drif
  * Live state read from AWS (if the resource exists).
  */
 actual: JsonValue | null }
+export type ProvisionerProgress = { kind: "scan_started"; label: string; index: number; total: number } | { kind: "scan_completed"; label: string; index: number; total: number } | { kind: "apply_started"; label: string; action: string; index: number; total: number } | { kind: "apply_completed"; label: string; action: string; index: number; total: number } | { kind: "escalation_step"; label: string; status: string }
 /**
  * A record file with its readable text content, for chat context.
  */
@@ -1000,6 +1017,7 @@ export type Severity =
  * Status of an individual bootstrap step.
  */
 export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
+export type TAURI_CHANNEL<TSend> = null
 /**
  * Result from transcription, including detected language.
  */
