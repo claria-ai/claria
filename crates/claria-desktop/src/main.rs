@@ -1,19 +1,29 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eyre::Result;
+use tauri::menu::{Menu, MenuItem, Submenu};
+use tauri::webview::WebviewWindowBuilder;
+use tauri::Manager;
 use tauri_specta::{collect_commands, Builder};
+use tracing_subscriber::prelude::*;
 
 mod commands;
+mod console;
 mod state;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+    let console_buffer = console::ConsoleBuffer::new();
+    let console_layer = console::ConsoleLayer::new(console_buffer.clone());
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(console_layer)
         .init();
 
     let builder = Builder::<tauri::Wry>::new()
@@ -76,6 +86,8 @@ fn main() -> Result<()> {
             commands::open_url,
             commands::count_client_context_tokens,
             commands::count_infra_context_tokens,
+            commands::get_console_logs,
+            commands::get_console_logs_text,
         ]);
 
     #[cfg(debug_assertions)]
@@ -96,9 +108,37 @@ fn main() -> Result<()> {
 
     tauri::Builder::default()
         .manage(state::DesktopState::default())
+        .manage(console_buffer)
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+
+            // Build native Help menu with "Claria Console" item.
+            let console_item =
+                MenuItem::with_id(app, "console", "Claria Console", true, None::<&str>)?;
+            let help_menu =
+                Submenu::with_items(app, "Help", true, &[&console_item])?;
+            let menu = Menu::with_items(app, &[&help_menu])?;
+            app.set_menu(menu)?;
+
+            app.on_menu_event(move |app, event| {
+                if event.id() == "console" {
+                    // Focus existing console window or create a new one.
+                    if let Some(win) = app.get_webview_window("console") {
+                        let _ = win.set_focus();
+                    } else {
+                        let _ = WebviewWindowBuilder::new(
+                            app,
+                            "console",
+                            tauri::WebviewUrl::App("index.html#console".into()),
+                        )
+                        .title("Claria Console")
+                        .inner_size(900.0, 600.0)
+                        .build();
+                    }
+                }
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

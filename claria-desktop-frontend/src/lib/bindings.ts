@@ -709,6 +709,12 @@ async countInfraContextTokens(modelId: string, planEntries: PlanEntry[]) : Promi
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getConsoleLogs() : Promise<ConsoleEntry[]> {
+    return await TAURI_INVOKE("get_console_logs");
+},
+async getConsoleLogsText() : Promise<string> {
+    return await TAURI_INVOKE("get_console_logs_text");
 }
 }
 
@@ -820,6 +826,10 @@ export type ClientSummary = { id: string; name: string; created_at: string }
  * Redacted config info safe to send to the frontend.
  */
 export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean }
+/**
+ * A single log entry captured by the console ring buffer.
+ */
+export type ConsoleEntry = { timestamp: string; level: string; target: string; message: string }
 export type CostAndUsageResult = { periods: CostTimePeriod[] }
 export type CostGranularity = "hourly" | "daily" | "monthly"
 export type CostResultGroup = { key: string; amount: string; unit: string }

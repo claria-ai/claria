@@ -410,3 +410,24 @@ export async function countClientContextTokens(clientId: string, modelId: string
 export async function countInfraContextTokens(modelId: string, planEntries: import("./bindings").PlanEntry[]): Promise<number> {
   return unwrap(await commands.countInfraContextTokens(modelId, planEntries));
 }
+
+// ---------------------------------------------------------------------------
+// Console
+// ---------------------------------------------------------------------------
+
+export interface ConsoleEntry {
+  timestamp: string;
+  level: string;
+  target: string;
+  message: string;
+}
+
+export async function getConsoleLogs(): Promise<ConsoleEntry[]> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await invoke("get_console_logs");
+}
+
+export async function getConsoleLogsText(): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await invoke("get_console_logs_text");
+}

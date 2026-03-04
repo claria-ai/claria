@@ -8,6 +8,7 @@ use claria_provisioner::account_setup::{
 };
 use claria_provisioner::PlanEntry;
 
+use crate::console::{ConsoleBuffer, ConsoleEntry};
 use crate::state::DesktopState;
 
 // ---------------------------------------------------------------------------
@@ -2824,4 +2825,20 @@ pub async fn count_infra_context_tokens(
     claria_bedrock::chat::count_context_tokens(&sdk_config, &model_id, &system_prompt)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Console log commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_console_logs(console: State<'_, ConsoleBuffer>) -> Vec<ConsoleEntry> {
+    console.entries()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_console_logs_text(console: State<'_, ConsoleBuffer>) -> String {
+    console.to_text()
 }
