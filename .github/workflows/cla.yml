@@ -30,7 +30,7 @@ jobs:
           path-to-signatures: "signatures/cla.json"
           path-to-document: "https://github.com/${{ github.repository }}/blob/main/CONTRIBUTING.md#contributor-license-agreement"
           branch: "main"
-          allowlist: xrl
+          allowlist: xrl,claude-code[bot],noreply@anthropic.com
           custom-notsigned-prcomment: |
             Thank you for your contribution! Before we can merge this, you need to agree to our [Contributor License Agreement](https://github.com/${{ github.repository }}/blob/main/CONTRIBUTING.md#contributor-license-agreement).
 
