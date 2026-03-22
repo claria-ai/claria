@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend (lint + build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: claria-desktop-frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: claria-desktop-frontend
+        run: npm install
+
+      - name: Lint
+        working-directory: claria-desktop-frontend
+        run: npm run lint
+
+      - name: Build
+        working-directory: claria-desktop-frontend
+        run: npm run build
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Clippy (all crates except claria-desktop)
+        run: cargo clippy --workspace --exclude claria-desktop -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Test (all crates except claria-desktop)
+        run: cargo test --workspace --exclude claria-desktop
+
+  tauri-build:
+    name: Tauri build
+    needs: [frontend, clippy, test]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: claria-desktop-frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: claria-desktop-frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: claria-desktop-frontend
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Clippy claria-desktop
+        run: cargo clippy -p claria-desktop -- -D warnings
+
+      - name: Test claria-desktop
+        run: cargo test -p claria-desktop
+
+      - name: Build Tauri app
+        run: cargo build --release -p claria-desktop

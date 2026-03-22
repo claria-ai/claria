@@ -27,14 +27,57 @@ However, HIPAA compliance is a shared responsibility. Claria provides the techni
 
 ## Development
 
-Requires Rust (2024 edition), Node.js, and npm.
+### Prerequisites
+
+Install Rust via [rustup](https://rustup.rs/) and Node.js via [nvm](https://github.com/nvm-sh/nvm) or Homebrew:
 
 ```sh
-# Check everything compiles
-cargo check
+# Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Build and launch the desktop app (auto-builds the frontend)
-cargo run -p claria-desktop
+# Node.js (pick one)
+brew install node        # macOS — Homebrew
+nvm install --lts        # any OS — nvm
+```
+
+**Tauri system dependencies** — Tauri needs native libraries for the webview and window chrome. See the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/) for your OS.
+
+```sh
+# macOS
+xcode-select --install   # Xcode Command Line Tools (if not already installed)
+
+# Ubuntu / Debian
+sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+### Running locally
+
+Install the Tauri CLI, then use it to launch the app in dev mode:
+
+```sh
+cargo install tauri-cli --locked
+cargo tauri dev
+```
+
+`cargo tauri dev` does three things:
+1. Starts the Vite dev server on `http://localhost:1420` (hot-reload for JS/CSS/HTML changes)
+2. Builds the Rust backend
+3. Opens the desktop window pointing at the dev server
+
+For a production build:
+
+```sh
+cargo tauri build
+```
+
+### Checks
+
+Run these before committing:
+
+```sh
+cargo clippy -- -D warnings   # lint (warnings are errors)
+cargo test                     # all workspace tests
+cd claria-desktop-frontend && npm run lint  # frontend lint
 ```
 
 ## License
