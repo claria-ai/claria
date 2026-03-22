@@ -109,12 +109,21 @@ export default function InfraChat({
   // Count context tokens once scan is done and models are loaded.
   useEffect(() => {
     if (scanning || chatModels.length === 0 || planEntriesRef.current.length === 0) return;
-    setCountingTokens(true);
-    setTokenCountError(null);
-    countInfraContextTokens(chatModels[0].model_id, planEntriesRef.current)
-      .then(setContextTokens)
-      .catch((e) => setTokenCountError(String(e)))
-      .finally(() => setCountingTokens(false));
+    let cancelled = false;
+    const run = async () => {
+      setCountingTokens(true);
+      setTokenCountError(null);
+      try {
+        const tokens = await countInfraContextTokens(chatModels[0].model_id, planEntriesRef.current);
+        if (!cancelled) setContextTokens(tokens);
+      } catch (e) {
+        if (!cancelled) setTokenCountError(String(e));
+      } finally {
+        if (!cancelled) setCountingTokens(false);
+      }
+    };
+    run();
+    return () => { cancelled = true; };
   }, [scanning, chatModels]);
 
   const handleSend = useCallback(

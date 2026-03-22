@@ -11,7 +11,8 @@ import {
   type PlanEntry,
   type ProvisionerProgress,
 } from "../lib/tauri";
-import PlanView, { hasChanges } from "../components/PlanView";
+import PlanView from "../components/PlanView";
+import { hasChanges } from "../lib/plan";
 import ScanProgress, { type ScanItem } from "../components/ScanProgress";
 import ApplyProgress, { type ApplyItem } from "../components/ApplyProgress";
 import type { Page } from "../App";

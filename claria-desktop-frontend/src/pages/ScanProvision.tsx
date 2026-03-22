@@ -1,6 +1,7 @@
 import { useState } from "react";
 import StepIndicator from "../components/StepIndicator";
-import PlanView, { hasChanges } from "../components/PlanView";
+import PlanView from "../components/PlanView";
+import { hasChanges } from "../lib/plan";
 import { plan, apply, resetProvisionerState, type PlanEntry, type ProvisionerProgress } from "../lib/tauri";
 import ScanProgress, { type ScanItem } from "../components/ScanProgress";
 import ApplyProgress, { type ApplyItem } from "../components/ApplyProgress";
