@@ -10,6 +10,7 @@ export default defineConfig({
     deviceScaleFactor: 2,
     // Trace on first retry for debugging failures.
     trace: "on-first-retry",
+    video: "retain-on-failure",
   },
   webServer: {
     command: "npm run dev",
