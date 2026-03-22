@@ -29,9 +29,9 @@ pub mod syncers;
 
 pub use crate::account_setup::{
     assess_credentials, assume_role, bootstrap_account, build_role_arn, create_access_key,
-    delete_user_access_key, list_user_access_keys, update_iam_policy, validate_new_credentials,
-    AccessKeyInfo, AssumeRoleResult, BootstrapResult, BootstrapStep, CallerIdentity,
-    CredentialAssessment, CredentialClass, NewCredentials, StepStatus,
+    delete_user_access_key, get_caller_identity, list_user_access_keys, update_iam_policy,
+    validate_new_credentials, AccessKeyInfo, AssumeRoleResult, BootstrapResult, BootstrapStep,
+    CallerIdentity, CredentialAssessment, CredentialClass, NewCredentials, StepStatus,
 };
 pub use crate::addr::ResourceAddr;
 pub use crate::error::ProvisionerError;

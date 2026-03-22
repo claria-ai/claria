@@ -179,7 +179,57 @@ export type ProvisionerProgress =
   | { kind: "escalation_step"; label: string; status: string };
 
 // ---------------------------------------------------------------------------
-// Provisioner wrappers
+// Unified provision wrappers
+// ---------------------------------------------------------------------------
+
+export interface ProvisionScanResult {
+  entries: import("./bindings").PlanEntry[];
+  needs_escalation: boolean;
+  account_id: string;
+}
+
+export async function provisionScan(
+  region: string,
+  systemName: string,
+  credentials: import("./bindings").CredentialSource,
+  onProgress?: (p: ProvisionerProgress) => void
+): Promise<ProvisionScanResult> {
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ProvisionerProgress>();
+  if (onProgress) {
+    channel.onmessage = onProgress;
+  }
+  return await invoke("provision_scan", {
+    region,
+    systemName,
+    credentials,
+    onProgress: channel,
+  });
+}
+
+export async function provisionApply(
+  region: string,
+  systemName: string,
+  credentials: import("./bindings").CredentialSource,
+  elevatedCredentials: import("./bindings").CredentialSource | null,
+  onProgress?: (p: ProvisionerProgress) => void
+): Promise<import("./bindings").PlanEntry[]> {
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ProvisionerProgress>();
+  if (onProgress) {
+    channel.onmessage = onProgress;
+  }
+  return await invoke("provision_apply", {
+    region,
+    systemName,
+    credentials,
+    elevatedCredentials,
+    onProgress: channel,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Provisioner wrappers (legacy — used by AwsManage, kept for backwards compat)
 // ---------------------------------------------------------------------------
 
 export async function plan(

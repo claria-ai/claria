@@ -799,7 +799,7 @@ pub(crate) fn claria_policy_document(system_name: &str, account_id: &str) -> Str
 // ── STS helpers ──────────────────────────────────────────────────────────────
 
 /// Call STS `GetCallerIdentity` and return structured identity info.
-pub(crate) async fn get_caller_identity(
+pub async fn get_caller_identity(
     config: &aws_config::SdkConfig,
 ) -> Result<CallerIdentity, ProvisionerError> {
     let sts = aws_sdk_sts::Client::new(config);

@@ -67,7 +67,7 @@ export default function AccessKeyGuide({
           Back
         </button>
         <button
-          onClick={() => navigate("credentials")}
+          onClick={() => navigate("provision")}
           className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
         >
           Next
