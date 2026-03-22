@@ -4,6 +4,10 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+### Added
+- Automated demo video recording system (`demos/`) — three Playwright-scripted scenarios (bootstrap, cloud sync, record + chat) with Tauri IPC mocking and WebM→MP4 conversion script
+- "See it in action" page template (`demos/site/demos.html`) for claria-ai.github.io
+
 ### Changed
 - **Unified terraform-style reconciliation flow** — bootstrap and resource provisioning are now a single reconciliation loop instead of separate phases. IAM user/policy creation, credential handoff, and S3/CloudTrail/Bedrock provisioning happen in one pass with lazy privilege escalation
 - IAM User and IAM Policy resources changed from read-only (Data) to managed (Managed+Elevated) — they can now be created, updated, and destroyed through the standard syncer interface
