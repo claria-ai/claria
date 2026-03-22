@@ -36,6 +36,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   // Should NOT show "Client Files" (no config yet)
   await expect(page.locator("text=Client Files")).not.toBeVisible();
 
+  await page.waitForTimeout(5000);
   await createBtn.click();
 
   // ── 2. Guide: AWS Account (Step 1) ───────────────────────────────────
@@ -43,6 +44,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await expect(page.locator("text=Step 1")).toBeVisible();
 
   // Click Next
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Next')");
 
   // ── 3. Guide: MFA Setup (Step 2) ────────────────────────────────────
@@ -50,6 +52,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await expect(page.locator("text=Highly recommended")).toBeVisible();
 
   // Click "Done — Next"
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Done — Next')");
 
   // ── 4. Guide: Access Key (Step 3) ───────────────────────────────────
@@ -57,6 +60,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await expect(page.locator("text=Copy both")).toBeVisible();
 
   // Click Next
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Next')");
 
   // ── 5. Credential Intake (Step 4) ───────────────────────────────────
@@ -73,6 +77,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await secretKeyInput.fill("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
 
   // Click "Check Credentials"
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Check Credentials')");
 
   // Wait for assessment result — should show Root Account
@@ -84,6 +89,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await expect(page.locator("text=dedicated IAM user")).toBeVisible();
 
   // Click "Set Up Secure User" to start bootstrap
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Set Up Secure User')");
 
   // Wait for bootstrap to complete — all steps should show ✅
@@ -95,6 +101,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await expect(page.locator("text=Create access key")).toBeVisible();
 
   // Click "Continue to Provisioning"
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Continue to Provisioning')");
 
   // ── 6. Scan & Provision (Step 5) ────────────────────────────────────
@@ -102,6 +109,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await expect(page.locator("text=read-only operation")).toBeVisible();
 
   // Click "Start Scan"
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Start Scan')");
 
   // Wait for scan to complete and plan to appear
@@ -113,6 +121,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await expect(page.getByText("CloudTrail Trail", { exact: true })).toBeVisible();
 
   // Click "Apply Changes"
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Apply Changes')");
 
   // Wait for provisioning to complete
@@ -127,6 +136,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   // We need to get to the start screen to see "Client Files".
 
   // After provisioning completes, "Go to AWS" is visible. Click it.
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Go to AWS')");
 
   // ── 7. AWS Management page ─────────────────────────────────────────
@@ -135,6 +145,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
 
   // Navigate back to start using the back button (left arrow)
   // The AwsManage page has a back button that goes to "start"
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Back')", { timeout: 5_000 }).catch(async () => {
     // AwsManage uses a chevron SVG button for back, find it
     await page.locator("svg").first().click();
@@ -151,6 +162,7 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await expect(page.locator("text=Create New System")).not.toBeVisible();
 
   // Click "Client Files"
+  await page.waitForTimeout(5000);
   await clientFilesBtn.click();
 
   // ── 8. Client list (empty) ──────────────────────────────────────────
@@ -158,12 +170,14 @@ test("fresh account onboarding → bootstrap → provision → records", async (
   await expect(page.locator("text=No client records yet")).toBeVisible();
 
   // Create a new client
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('New Client')");
   await page.waitForSelector("text=Create New Client");
 
   const nameInput = page.locator('input[placeholder="Client name"]');
   await nameInput.fill("Jane Doe");
 
+  await page.waitForTimeout(5000);
   await page.click("button:has-text('Create')");
 
   // ── 9. Client record view ──────────────────────────────────────────
@@ -175,4 +189,5 @@ test("fresh account onboarding → bootstrap → provision → records", async (
 
   // The record tab should be visible and active
   await expect(page.locator("[data-tab=record]")).toBeVisible();
+  await page.waitForTimeout(5000);
 });
