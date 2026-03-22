@@ -826,7 +826,7 @@ pub async fn list_clients(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<ClientSummary>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let keys = claria_storage::objects::list_objects(&s3, &bucket, claria_core::s3_keys::CLIENTS_PREFIX)
@@ -873,7 +873,7 @@ pub async fn create_client(
     name: String,
 ) -> Result<ClientSummary, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id = uuid::Uuid::new_v4();
@@ -909,7 +909,7 @@ pub async fn delete_client(
     client_id: String,
 ) -> Result<(), String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -956,7 +956,7 @@ pub async fn list_record_files(
     client_id: String,
 ) -> Result<Vec<RecordFile>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -1008,7 +1008,7 @@ pub async fn upload_record_file(
     file_path: String,
 ) -> Result<RecordFile, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -1139,7 +1139,7 @@ pub async fn delete_record_file(
     filename: String,
 ) -> Result<(), String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -1177,7 +1177,7 @@ pub async fn get_record_file_text(
     filename: String,
 ) -> Result<String, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -1217,7 +1217,7 @@ pub async fn create_text_record_file(
     content: String,
 ) -> Result<RecordFile, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -1256,7 +1256,7 @@ pub async fn update_text_record_file(
     content: String,
 ) -> Result<(), String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -1294,7 +1294,7 @@ pub async fn list_record_context(
     client_id: String,
 ) -> Result<Vec<RecordContext>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -1366,7 +1366,7 @@ pub async fn extract_record_file(
     filename: String,
 ) -> Result<RecordContext, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -1637,7 +1637,7 @@ pub async fn chat_message(
     context_filenames: Vec<String>,
 ) -> Result<ChatResponse, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;
@@ -1874,7 +1874,7 @@ pub async fn load_chat_history(
     chat_id: String,
 ) -> Result<ChatHistoryDetail, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let client_uuid: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -1941,7 +1941,7 @@ pub async fn get_prompt(
     prompt_name: String,
 ) -> Result<String, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     load_prompt(&s3, &bucket, &prompt_name).await
@@ -1961,7 +1961,7 @@ pub async fn save_prompt(
     let (key, _, _) = resolve_prompt(&prompt_name)?;
 
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     claria_storage::objects::put_object(
@@ -1987,7 +1987,7 @@ pub async fn delete_prompt(
     let (key, _, _) = resolve_prompt(&prompt_name)?;
 
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     claria_storage::objects::delete_object(&s3, &bucket, key)
@@ -2011,7 +2011,7 @@ pub async fn list_prompt_versions(
     let (key, _, _) = resolve_prompt(&prompt_name)?;
 
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let versions = claria_storage::objects::list_object_versions(&s3, &bucket, key)
@@ -2041,7 +2041,7 @@ pub async fn get_prompt_version(
     let (key, _, _) = resolve_prompt(&prompt_name)?;
 
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let output = claria_storage::objects::get_object_version(&s3, &bucket, key, &version_id)
@@ -2062,7 +2062,7 @@ pub async fn restore_prompt_version(
     let (key, _, _) = resolve_prompt(&prompt_name)?;
 
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let output = claria_storage::objects::get_object_version(&s3, &bucket, key, &version_id)
@@ -2117,7 +2117,7 @@ pub async fn list_file_versions(
     filename: String,
 ) -> Result<Vec<FileVersion>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -2149,7 +2149,7 @@ pub async fn get_file_version_text(
     version_id: String,
 ) -> Result<String, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -2172,7 +2172,7 @@ pub async fn restore_file_version(
     version_id: String,
 ) -> Result<(), String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -2207,7 +2207,7 @@ pub async fn list_deleted_files(
     client_id: String,
 ) -> Result<Vec<DeletedFile>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -2268,7 +2268,7 @@ pub async fn restore_deleted_file(
 ) -> Result<(), String> {
     let _ = version_id; // kept for API compatibility; we find the latest real version ourselves
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -2311,7 +2311,7 @@ pub async fn list_deleted_clients(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<DeletedClient>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let deleted = claria_storage::objects::list_deleted_objects(
@@ -2398,7 +2398,7 @@ pub async fn restore_client(
 ) -> Result<(), String> {
     let _ = version_id; // kept for API compatibility; we find the latest real version ourselves
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
@@ -3112,7 +3112,7 @@ pub async fn count_client_context_tokens(
     context_filenames: Vec<String>,
 ) -> Result<u32, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;

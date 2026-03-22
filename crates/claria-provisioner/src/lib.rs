@@ -63,7 +63,7 @@ pub fn build_syncers(
         .flat_map(|s| s.iam_actions.iter().cloned())
         .collect();
 
-    let s3 = aws_sdk_s3::Client::new(config);
+    let s3 = claria_storage::client::from_config(config);
     let iam = aws_sdk_iam::Client::new(config);
     let cloudtrail = aws_sdk_cloudtrail::Client::new(config);
     let bedrock = aws_sdk_bedrock::Client::new(config);
@@ -148,7 +148,7 @@ pub fn build_persistence(
     system_name: &str,
     account_id: &str,
 ) -> Result<StatePersistence, ProvisionerError> {
-    let s3_client = aws_sdk_s3::Client::new(config);
+    let s3_client = claria_storage::client::from_config(config);
     let bucket = format!("{account_id}-{system_name}-data");
     let s3_key = "_state/provisioner.json".to_string();
 
