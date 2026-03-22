@@ -27,14 +27,43 @@ However, HIPAA compliance is a shared responsibility. Claria provides the techni
 
 ## Development
 
-Requires Rust (2024 edition), Node.js, and npm.
+### Prerequisites
+
+- **Rust** — stable toolchain, 2024 edition. Install via [rustup](https://rustup.rs/).
+- **Node.js** — any current LTS version. Install via [nvm](https://github.com/nvm-sh/nvm) or your package manager.
+- **Tauri system dependencies** — Tauri needs native libraries for the webview and window chrome. See the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/) for your OS. On Ubuntu/Debian this is roughly:
+  ```sh
+  sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+  ```
+
+### Running locally
+
+Install the Tauri CLI, then use it to launch the app in dev mode:
 
 ```sh
-# Check everything compiles
-cargo check
+cargo install tauri-cli --locked
+cargo tauri dev
+```
 
-# Build and launch the desktop app (auto-builds the frontend)
-cargo run -p claria-desktop
+`cargo tauri dev` does three things:
+1. Starts the Vite dev server on `http://localhost:1420` (hot-reload for JS/CSS/HTML changes)
+2. Builds the Rust backend
+3. Opens the desktop window pointing at the dev server
+
+For a production build:
+
+```sh
+cargo tauri build
+```
+
+### Checks
+
+Run these before committing:
+
+```sh
+cargo clippy -- -D warnings   # lint (warnings are errors)
+cargo test                     # all workspace tests
+cd claria-desktop-frontend && npm run lint  # frontend lint
 ```
 
 ## License
