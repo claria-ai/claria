@@ -1,12 +1,7 @@
-mod params;
-mod router;
-mod scenarios;
-mod services;
-mod state;
-mod xml;
-
 use clap::Parser;
 use tracing::info;
+
+use claria_mock_aws::{router, scenarios, state};
 
 #[derive(Parser)]
 #[command(name = "claria-mock-aws")]
