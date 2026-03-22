@@ -19,7 +19,7 @@ cargo tauri dev  ──→  claria-mock-aws (axum, :9000)
     └── claria-billing ────┤  Cost Explorer
 ```
 
-Single HTTP server, single port. AWS SDK clients all get `endpoint_url("http://localhost:9000")`.
+Single HTTP server, single port. Set `AWS_ENDPOINT_URL=http://localhost:9000` and the AWS SDK picks it up automatically from the environment — no code changes to `build_aws_config` needed.
 
 ## Service Routing
 
@@ -90,7 +90,7 @@ Preset scenarios:
 - `fully-provisioned` — all 14 resources in sync, sample clients/files in S3
 - `drifted` — versioning disabled, encryption missing (tests drift detection)
 
-## Phase 1: Crate Skeleton + S3 Core + Endpoint Plumbing
+## Phase 1: Crate Skeleton + S3 Core + S3 Path-Style Fix
 
 ### 1a. Create `claria-mock-aws` crate
 
@@ -133,36 +133,15 @@ S3 versioning behavior:
 - Version IDs are UUIDs
 - ListObjectVersions returns all versions + delete markers sorted by key then timestamp
 
-### 1c. Endpoint URL support in `build_aws_config`
+### 1c. Endpoint URL — zero code changes
 
-Modify `crates/claria-desktop/src/aws.rs`:
+`aws-config = 1.8.14` natively reads `AWS_ENDPOINT_URL` from the environment. Setting `AWS_ENDPOINT_URL=http://localhost:9000` routes all service clients to the mock. No changes to `build_aws_config` needed.
 
-```rust
-pub async fn build_aws_config(
-    region: &str,
-    creds: &CredentialSource,
-    endpoint_url: Option<&str>,
-) -> aws_config::SdkConfig {
-    let mut builder = aws_config::defaults(BehaviorVersion::latest())
-        .region(Region::new(region.to_string()));
+### 1d. S3 `force_path_style` fix
 
-    if let Some(url) = endpoint_url {
-        builder = builder.endpoint_url(url);
-    }
+S3 needs `force_path_style(true)` when using custom endpoints, otherwise the SDK sends requests to `http://{bucket}.localhost:9000` which won't resolve. The `SdkConfig` doesn't have a global path-style toggle — it's S3-client-specific.
 
-    // ... credential setup unchanged ...
-
-    builder.load().await
-}
-```
-
-The endpoint_url is read from `CLARIA_AWS_ENDPOINT` env var in `load_sdk_config()` in `commands.rs`. When set, all AWS clients point at the mock.
-
-S3 needs `force_path_style(true)` when using custom endpoints. This is set per-client in each crate that builds an S3 client, conditioned on whether the endpoint URL is non-default. The `SdkConfig` doesn't have a global path-style toggle — it's an S3-specific client config. Two options:
-
-**Option A:** Each crate that builds `aws_sdk_s3::Client::new(config)` checks `config.endpoint_url()` and if set, uses `Client::from_conf(config_builder.force_path_style(true).build())` instead. This is ~4 call sites (storage, provisioner, transcribe, desktop).
-
-**Option B:** Add a wrapper in `claria-core`:
+Add a helper in `claria-core`:
 ```rust
 pub fn s3_client(config: &SdkConfig) -> aws_sdk_s3::Client {
     let mut builder = aws_sdk_s3::config::Builder::from(config);
@@ -173,7 +152,7 @@ pub fn s3_client(config: &SdkConfig) -> aws_sdk_s3::Client {
 }
 ```
 
-**Recommend Option B** — single call site, consistent behavior.
+Replace `aws_sdk_s3::Client::new(config)` calls across ~4 crates (storage, provisioner, transcribe, desktop) with `claria_core::s3_client(config)`.
 
 ## Phase 2: STS + IAM
 
@@ -299,7 +278,7 @@ export default defineConfig({
       timeout: 60_000,
     },
     {
-      command: "CLARIA_AWS_ENDPOINT=http://localhost:9000 cargo tauri dev",
+      command: "AWS_ENDPOINT_URL=http://localhost:9000 cargo tauri dev",
       url: "http://localhost:1420",
       reuseExistingServer: true,
       timeout: 120_000,
@@ -340,7 +319,7 @@ test("onboarding flow", async ({ page, request }) => {
 |------|------|------------|
 | 1 | Crate skeleton + axum router + state + reset endpoint | — |
 | 2 | S3 core (CRUD, list, head) | 1 |
-| 3 | `s3_client()` helper in claria-core + endpoint_url in aws.rs | 1 |
+| 3 | `s3_client()` helper in claria-core (force_path_style) | 1 |
 | 4 | STS (GetCallerIdentity, AssumeRole) | 1 |
 | 5 | S3 bucket operations (versioning, encryption, public access, policy) | 2 |
 | 6 | IAM (users, policies, access keys) | 1 |
