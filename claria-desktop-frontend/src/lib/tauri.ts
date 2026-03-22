@@ -12,6 +12,7 @@ export type {
   BootstrapStep,
   CallerIdentity,
   Cause,
+  CredentialScope,
   ChatHistoryDetail,
   ChatMessage,
   ChatModel,

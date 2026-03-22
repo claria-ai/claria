@@ -10,7 +10,7 @@ use claria_provisioner::account_setup::{
     AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
     StepStatus,
 };
-use claria_provisioner::{Action, CredentialScope, Manifest, PlanEntry};
+use claria_provisioner::{Action, CredentialScope, PlanEntry};
 
 use crate::console::{ConsoleBuffer, ConsoleEntry};
 use crate::state::DesktopState;
@@ -531,10 +531,6 @@ async fn scan_with_progress(
     prov_state: &claria_provisioner::ProvisionerState,
     on_progress: &tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<Vec<PlanEntry>, String> {
-    let manifest_upgraded = prov_state
-        .manifest_version
-        .is_none_or(|v| v < Manifest::VERSION);
-    let known_addrs: HashSet<_> = prov_state.resources.keys().cloned().collect();
     let total = syncers.len() as u32;
 
     tracing::info!(count = total, "starting scan");
@@ -577,8 +573,6 @@ async fn scan_with_progress(
         entries.push(claria_provisioner::build_plan_entry(
             syncer.as_ref(),
             actual,
-            manifest_upgraded,
-            &known_addrs,
         ));
     }
 
@@ -683,13 +677,6 @@ async fn execute_with_progress(
             .await
             .map_err(|e| e.to_string())?;
     }
-
-    // Stamp manifest version.
-    prov_state.manifest_version = Some(Manifest::VERSION);
-    persistence
-        .flush(prov_state)
-        .await
-        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -862,12 +849,10 @@ pub async fn provision_scan(
         &identity.account_id,
     ) {
         Ok(p) => p.load().await.unwrap_or_else(|_| {
-            claria_provisioner::ProvisionerState {
-                resources: Default::default(),
-                manifest_version: None,
-                region: region.clone(),
-                bucket: format!("{}-{system_name}-data", identity.account_id),
-            }
+            claria_provisioner::ProvisionerState::new(
+                region.clone(),
+                format!("{}-{system_name}-data", identity.account_id),
+            )
         }),
         Err(_) => claria_provisioner::ProvisionerState {
             resources: Default::default(),

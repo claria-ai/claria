@@ -2,9 +2,8 @@ import type { Cause } from "../lib/tauri";
 
 const labels: Record<Cause, string> = {
   in_sync: "",
-  first_provision: "First-time setup",
+  missing: "Not yet provisioned",
   drift: "Configuration drift detected",
-  manifest_changed: "New in this Claria update",
   orphaned: "No longer managed — will be removed",
 };
 

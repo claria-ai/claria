@@ -10,16 +10,22 @@ pub struct ProvisionerState {
     /// Map of resource address -> resource state.
     pub resources: HashMap<ResourceAddr, ResourceState>,
 
-    /// Manifest version at time of last successful execute.
-    /// None on first run or migrated state.
-    #[serde(default)]
-    pub manifest_version: Option<u32>,
-
     /// The AWS region this stack is deployed in.
     pub region: String,
 
     /// S3 bucket name.
     pub bucket: String,
+
+}
+
+impl ProvisionerState {
+    pub fn new(region: String, bucket: String) -> Self {
+        Self {
+            resources: HashMap::new(),
+            region,
+            bucket,
+        }
+    }
 }
 
 /// State for a single managed resource.
@@ -44,14 +50,16 @@ pub enum ResourceStatus {
 /// Migrate v1 state (keyed by resource_type string) to v2 (keyed by ResourceAddr).
 ///
 /// Old format: `{"resources": {"s3_bucket": {resource_id: "123-claria-data", ...}}}`
-/// New format: `{"resources": {"s3_bucket.123-claria-data": {...}}, "manifest_version": null}`
+/// New format: `{"resources": {"s3_bucket.123-claria-data": {...}}}`
 pub fn migrate_state_v1_to_v2(old: serde_json::Value) -> serde_json::Value {
     let Some(obj) = old.as_object() else {
         return old;
     };
 
-    // If the state already has manifest_version, it's already v2 or later
-    if obj.contains_key("manifest_version") {
+    // If the state already has compound keys (contain '.'), it's already v2
+    if let Some(serde_json::Value::Object(resources)) = obj.get("resources")
+        && resources.keys().any(|k| k.contains('.'))
+    {
         return old;
     }
 
@@ -80,6 +88,5 @@ pub fn migrate_state_v1_to_v2(old: serde_json::Value) -> serde_json::Value {
         );
     }
 
-    // manifest_version defaults to None via #[serde(default)]
     serde_json::Value::Object(new)
 }

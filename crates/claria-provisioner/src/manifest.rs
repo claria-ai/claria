@@ -105,9 +105,12 @@ pub struct FieldDrift {
     pub actual: Value,
 }
 
-/// The full manifest: version + all resource specs.
+/// The full manifest: all resource specs for a Claria deployment.
+///
+/// No version tracking — the reconciler uses structural comparison.
+/// Either a resource with name X and properties Y exists, or it doesn't
+/// and gets queued for reconciliation.
 pub struct Manifest {
-    pub version: u32,
     pub specs: Vec<ResourceSpec>,
     /// Account ID — used by syncers that need to construct ARNs.
     pub account_id: String,
@@ -116,16 +119,12 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Bump when adding, removing, or changing resource specs.
-    pub const VERSION: u32 = 7;
-
     /// Build the default Claria manifest from runtime config.
     pub fn claria(account_id: &str, system_name: &str, region: &str) -> Self {
         let bucket = format!("{account_id}-{system_name}-data");
         let trail = format!("{system_name}-trail");
 
         Manifest {
-            version: Self::VERSION,
             account_id: account_id.to_string(),
             system_name: system_name.to_string(),
             specs: vec![

@@ -33,8 +33,7 @@ pub enum Action {
 #[serde(rename_all = "snake_case")]
 pub enum Cause {
     InSync,
-    FirstProvision,
+    Missing,
     Drift,
-    ManifestChanged,
     Orphaned,
 }

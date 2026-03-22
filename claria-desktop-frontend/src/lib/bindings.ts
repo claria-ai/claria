@@ -830,7 +830,7 @@ export type BootstrapStep = { name: string; status: StepStatus; detail: string |
  * Identity information returned by STS `GetCallerIdentity`.
  */
 export type CallerIdentity = { account_id: string; arn: string; user_id: string; is_root: boolean }
-export type Cause = "in_sync" | "first_provision" | "drift" | "manifest_changed" | "orphaned"
+export type Cause = "in_sync" | "missing" | "drift" | "orphaned"
 /**
  * Detail of a persisted chat session, returned when resuming a conversation.
  */
@@ -928,6 +928,7 @@ actual: JsonValue }
  */
 export type FileVersion = { version_id: string; size: number; last_modified: string | null; is_latest: boolean }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
+export type CredentialScope = "elevated" | "regular"
 export type Lifecycle = "data" | "managed"
 /**
  * Fresh credentials created during the bootstrap flow.
@@ -975,11 +976,15 @@ resource_name: string;
 /**
  * Data (read-only precondition) or Managed (Claria creates/updates/deletes)
  */
-lifecycle: Lifecycle; 
+lifecycle: Lifecycle;
 /**
  * The desired AWS state as a JSON value — shape varies per resource type
  */
-desired: JsonValue; 
+desired: JsonValue;
+/**
+ * Which credential scope this resource belongs to
+ */
+credential_scope: CredentialScope;
 /**
  * Short label for the UI, e.g. "S3 Bucket Encryption"
  */
