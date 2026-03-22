@@ -59,8 +59,8 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
-      - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+      - name: Clippy (all crates except claria-desktop)
+        run: cargo clippy --workspace --exclude claria-desktop -- -D warnings
 
   test:
     name: Test
@@ -80,8 +80,8 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
-      - name: Test
-        run: cargo test --workspace
+      - name: Test (all crates except claria-desktop)
+        run: cargo test --workspace --exclude claria-desktop
 
   tauri-build:
     name: Tauri build
@@ -116,6 +116,12 @@ jobs:
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+
+      - name: Clippy claria-desktop
+        run: cargo clippy -p claria-desktop -- -D warnings
+
+      - name: Test claria-desktop
+        run: cargo test -p claria-desktop
 
       - name: Build Tauri app
         run: cargo build --release -p claria-desktop
