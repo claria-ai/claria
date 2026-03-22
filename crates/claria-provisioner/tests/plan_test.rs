@@ -311,9 +311,12 @@ async fn plan_fresh_account() {
 
     // manifest_version is None → manifest_upgraded = true → managed creates
     // get ManifestChanged (not FirstProvision, because no prior version exists).
+    // manifest_version is None → manifest_upgraded = true → managed creates
+    // get ManifestChanged (not FirstProvision, because no prior version exists).
+    // IAM user/policy are now Managed+Elevated, so missing policy → Create.
     assert_plan(&result, &[
         e("iam_user.claria-admin",                             Action::Ok,                 Cause::InSync),
-        e("iam_user_policy.claria-admin-policy",               Action::PreconditionFailed, Cause::Drift),
+        e("iam_user_policy.claria-admin-policy",               Action::Create,             Cause::ManifestChanged),
         e("baa_agreement.aws-baa",                             Action::PreconditionFailed, Cause::Drift),
         e(&format!("s3_bucket.{BUCKET}"),                      Action::Create,             Cause::ManifestChanged),
         e(&format!("s3_bucket_versioning.{BUCKET}"),           Action::Create,             Cause::ManifestChanged),
@@ -439,7 +442,8 @@ async fn plan_policy_escalation() {
     for entry in &result {
         let addr = entry.spec.addr().to_string();
         if addr == policy_addr {
-            assert_eq!(entry.action, Action::PreconditionFailed);
+            // Managed+Elevated: policy exists but is missing actions → Modify
+            assert_eq!(entry.action, Action::Modify);
             assert_eq!(entry.cause, Cause::ManifestChanged);
         } else {
             assert_eq!(

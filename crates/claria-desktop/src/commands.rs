@@ -710,7 +710,7 @@ pub async fn plan(
         &cfg.system_name,
         &cfg.region,
     );
-    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest);
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
     let persistence = claria_provisioner::build_persistence(
         &sdk_config,
         &cfg.system_name,
@@ -739,7 +739,7 @@ pub async fn apply(
         &cfg.system_name,
         &cfg.region,
     );
-    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest);
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
     let persistence = claria_provisioner::build_persistence(
         &sdk_config,
         &cfg.system_name,
@@ -773,7 +773,7 @@ pub async fn destroy(
         &cfg.system_name,
         &cfg.region,
     );
-    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest);
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
     let persistence = claria_provisioner::build_persistence(
         &sdk_config,
         &cfg.system_name,

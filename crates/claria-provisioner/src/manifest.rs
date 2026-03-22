@@ -21,6 +21,9 @@ pub struct ResourceSpec {
     /// The desired AWS state as a JSON value — shape varies per resource type
     pub desired: Value,
 
+    /// Which credential scope this resource belongs to
+    pub credential_scope: CredentialScope,
+
     // ── Trust metadata ──
     /// Short label for the UI, e.g. "S3 Bucket Encryption"
     pub label: String,
@@ -47,6 +50,7 @@ impl ResourceSpec {
             resource_name: addr.resource_name.clone(),
             lifecycle: Lifecycle::Managed,
             desired: Value::Null,
+            credential_scope: CredentialScope::Regular,
             label: format!("{} (orphaned)", addr.resource_type),
             description: "Resource is no longer managed by Claria and will be removed".into(),
             severity: Severity::Destructive,
@@ -60,6 +64,16 @@ impl ResourceSpec {
 pub enum Lifecycle {
     Data,
     Managed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialScope {
+    /// Requires elevated credentials (root/admin) to create or modify.
+    /// Can be read with regular (claria-admin) credentials for drift detection.
+    Elevated,
+    /// Uses the regular claria-admin credentials.
+    Regular,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -95,11 +109,15 @@ pub struct FieldDrift {
 pub struct Manifest {
     pub version: u32,
     pub specs: Vec<ResourceSpec>,
+    /// Account ID — used by syncers that need to construct ARNs.
+    pub account_id: String,
+    /// System name — used by syncers that need to generate policy documents.
+    pub system_name: String,
 }
 
 impl Manifest {
     /// Bump when adding, removing, or changing resource specs.
-    pub const VERSION: u32 = 6;
+    pub const VERSION: u32 = 7;
 
     /// Build the default Claria manifest from runtime config.
     pub fn claria(account_id: &str, system_name: &str, region: &str) -> Self {
@@ -108,16 +126,19 @@ impl Manifest {
 
         Manifest {
             version: Self::VERSION,
+            account_id: account_id.to_string(),
+            system_name: system_name.to_string(),
             specs: vec![
-                // ── data sources (read-only preconditions) ────────────────
+                // ── elevated resources (require admin/root to create) ────
                 ResourceSpec {
                     resource_type: "iam_user".into(),
                     resource_name: "claria-admin".into(),
-                    lifecycle: Lifecycle::Data,
+                    lifecycle: Lifecycle::Managed,
                     desired: json!({"exists": true}),
+                    credential_scope: CredentialScope::Elevated,
                     label: "IAM User".into(),
                     description: "Dedicated least-privilege user that Claria operates as".into(),
-                    severity: Severity::Info,
+                    severity: Severity::Normal,
                     iam_actions: vec![
                         "iam:GetUser".into(),
                         "sts:GetCallerIdentity".into(),
@@ -126,23 +147,25 @@ impl Manifest {
                 ResourceSpec {
                     resource_type: "iam_user_policy".into(),
                     resource_name: "claria-admin-policy".into(),
-                    lifecycle: Lifecycle::Data,
+                    lifecycle: Lifecycle::Managed,
                     desired: json!(null), // dynamically set — see IamUserPolicySyncer
+                    credential_scope: CredentialScope::Elevated,
                     label: "IAM Policy".into(),
                     description: "Permissions scoped to only what Claria needs".into(),
-                    severity: Severity::Info,
+                    severity: Severity::Normal,
                     iam_actions: vec![
                         "iam:ListAttachedUserPolicies".into(),
                         "iam:GetPolicy".into(),
                         "iam:GetPolicyVersion".into(),
                     ],
                 },
-                // ── managed resources ─────────────────────────────────────
+                // ── regular resources ─────────────────────────────────────
                 ResourceSpec {
                     resource_type: "baa_agreement".into(),
                     resource_name: "aws-baa".into(),
                     lifecycle: Lifecycle::Data,
                     desired: json!({"state": "active"}),
+                    credential_scope: CredentialScope::Regular,
                     label: "BAA Agreement".into(),
                     description: "Business Associate Agreement — must be accepted in the AWS Artifact console"
                         .into(),
@@ -154,6 +177,7 @@ impl Manifest {
                     resource_name: bucket.clone(),
                     lifecycle: Lifecycle::Managed,
                     desired: json!({"region": region}),
+                    credential_scope: CredentialScope::Regular,
                     label: "S3 Bucket".into(),
                     description: "Encrypted storage for your client records and documents".into(),
                     severity: Severity::Normal,
@@ -174,6 +198,7 @@ impl Manifest {
                     resource_name: bucket.clone(),
                     lifecycle: Lifecycle::Managed,
                     desired: json!({"status": "Enabled"}),
+                    credential_scope: CredentialScope::Regular,
                     label: "S3 Bucket Versioning".into(),
                     description: "S3 version history — protects against accidental deletion".into(),
                     severity: Severity::Normal,
@@ -187,6 +212,7 @@ impl Manifest {
                     resource_name: bucket.clone(),
                     lifecycle: Lifecycle::Managed,
                     desired: json!({"sse_algorithm": "AES256"}),
+                    credential_scope: CredentialScope::Regular,
                     label: "S3 Bucket Encryption".into(),
                     description: "Server-side encryption — all objects in this bucket are encrypted at rest".into(),
                     severity: Severity::Normal,
@@ -205,6 +231,7 @@ impl Manifest {
                         "block_public_policy": true,
                         "restrict_public_buckets": true,
                     }),
+                    credential_scope: CredentialScope::Regular,
                     label: "Public Access Block".into(),
                     description: "Prevents your data from ever being publicly accessible".into(),
                     severity: Severity::Normal,
@@ -240,6 +267,7 @@ impl Manifest {
                             },
                         ]
                     }),
+                    credential_scope: CredentialScope::Regular,
                     label: "Bucket Policy".into(),
                     description: "Access policy — controls which AWS services can reach your data"
                         .into(),
@@ -258,6 +286,7 @@ impl Manifest {
                         "s3_key_prefix": "_cloudtrail",
                         "is_multi_region": false,
                     }),
+                    credential_scope: CredentialScope::Regular,
                     label: "CloudTrail Trail".into(),
                     description: "Audit trail — records all account activity (HIPAA requirement)"
                         .into(),
@@ -273,6 +302,7 @@ impl Manifest {
                     resource_name: trail.clone(),
                     lifecycle: Lifecycle::Managed,
                     desired: json!({"enabled": true}),
+                    credential_scope: CredentialScope::Regular,
                     label: "Trail Logging".into(),
                     description: "Audit logging status — must be active for compliance".into(),
                     severity: Severity::Normal,
@@ -287,6 +317,7 @@ impl Manifest {
                     resource_name: "anthropic.claude-sonnet-4".into(),
                     lifecycle: Lifecycle::Managed,
                     desired: json!({"agreement": "accepted"}),
+                    credential_scope: CredentialScope::Regular,
                     label: "Claude Sonnet 4 Access".into(),
                     description: "AI model access for report generation".into(),
                     severity: Severity::Elevated,
@@ -308,6 +339,7 @@ impl Manifest {
                     resource_name: "anthropic.claude-opus-4".into(),
                     lifecycle: Lifecycle::Managed,
                     desired: json!({"agreement": "accepted"}),
+                    credential_scope: CredentialScope::Regular,
                     label: "Claude Opus 4 Access".into(),
                     description: "AI model access for complex analysis".into(),
                     severity: Severity::Elevated,
@@ -329,6 +361,7 @@ impl Manifest {
                     resource_name: "transcribe".into(),
                     lifecycle: Lifecycle::Data,
                     desired: json!({"enabled": true}),
+                    credential_scope: CredentialScope::Regular,
                     label: "Amazon Transcribe".into(),
                     description: "Audio-to-text transcription for uploaded recordings".into(),
                     severity: Severity::Info,
@@ -343,6 +376,7 @@ impl Manifest {
                     resource_name: "cost-explorer".into(),
                     lifecycle: Lifecycle::Data,
                     desired: json!({"enabled": true}),
+                    credential_scope: CredentialScope::Regular,
                     label: "AWS Cost Explorer".into(),
                     description: "Read-only access to view your AWS spending".into(),
                     severity: Severity::Info,

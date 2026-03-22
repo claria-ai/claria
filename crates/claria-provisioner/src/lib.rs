@@ -28,14 +28,16 @@ pub mod syncer;
 pub mod syncers;
 
 pub use crate::account_setup::{
-    assess_credentials, assume_role, bootstrap_account, build_role_arn, delete_user_access_key,
-    list_user_access_keys, update_iam_policy, AccessKeyInfo, AssumeRoleResult, BootstrapResult,
-    BootstrapStep, CallerIdentity, CredentialAssessment, CredentialClass, NewCredentials,
-    StepStatus,
+    assess_credentials, assume_role, bootstrap_account, build_role_arn, create_access_key,
+    delete_user_access_key, list_user_access_keys, update_iam_policy, validate_new_credentials,
+    AccessKeyInfo, AssumeRoleResult, BootstrapResult, BootstrapStep, CallerIdentity,
+    CredentialAssessment, CredentialClass, NewCredentials, StepStatus,
 };
 pub use crate::addr::ResourceAddr;
 pub use crate::error::ProvisionerError;
-pub use crate::manifest::{FieldDrift, Lifecycle, Manifest, ResourceSpec, Severity};
+pub use crate::manifest::{
+    CredentialScope, FieldDrift, Lifecycle, Manifest, ResourceSpec, Severity,
+};
 pub use crate::orchestrate::{
     build_plan_entry, destroy_all, execute, find_orphans, log_scan_summary, plan,
 };
@@ -51,11 +53,14 @@ pub fn build_manifest(account_id: &str, system_name: &str, region: &str) -> Mani
 
 /// Construct all [`ResourceSyncer`] impls from an SDK config and manifest.
 ///
-/// The returned vec is ordered: data sources first, then managed resources in
-/// dependency order. AWS clients are shared across syncers that use the same service.
+/// The returned vec is ordered: elevated resources first, then regular resources
+/// in dependency order. AWS clients are shared across syncers that use the same service.
+///
+/// `scope_filter` narrows to only one credential scope (or `None` for all).
 pub fn build_syncers(
     config: &aws_config::SdkConfig,
     manifest: &Manifest,
+    scope_filter: Option<CredentialScope>,
 ) -> Vec<Box<dyn ResourceSyncer>> {
     let required_actions: HashSet<String> = manifest
         .specs
@@ -71,6 +76,7 @@ pub fn build_syncers(
     manifest
         .specs
         .iter()
+        .filter(|spec| scope_filter.is_none_or(|scope| spec.credential_scope == scope))
         .map(|spec| -> Box<dyn ResourceSyncer> {
             match spec.resource_type.as_str() {
                 "iam_user" => Box::new(syncers::iam_user::IamUserSyncer::new(
@@ -81,6 +87,8 @@ pub fn build_syncers(
                     spec.clone(),
                     iam.clone(),
                     required_actions.clone(),
+                    manifest.system_name.clone(),
+                    manifest.account_id.clone(),
                 )),
                 "baa_agreement" => Box::new(syncers::baa_agreement::BaaAgreementSyncer::new(
                     spec.clone(),
