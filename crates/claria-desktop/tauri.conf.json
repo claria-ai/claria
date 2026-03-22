@@ -3,6 +3,9 @@
   "productName": "Claria",
   "version": "0.15.0",
   "build": {
+    "beforeBuildCommand": "npm --prefix ../../claria-desktop-frontend install && npm --prefix ../../claria-desktop-frontend run build",
+    "beforeDevCommand": "npm --prefix ../../claria-desktop-frontend run dev",
+    "devUrl": "http://localhost:1420",
     "frontendDist": "../../claria-desktop-frontend/dist"
   },
   "app": {
