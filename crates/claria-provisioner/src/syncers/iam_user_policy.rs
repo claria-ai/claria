@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use aws_sdk_iam::Client;
 use serde_json::json;
 
-use crate::account_setup::{IAM_POLICY_NAME, IAM_USER_NAME};
+use crate::account_setup::{
+    self, claria_policy_document, IAM_POLICY_NAME, IAM_USER_NAME,
+};
 use crate::error::ProvisionerError;
 use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
@@ -12,15 +14,33 @@ pub struct IamUserPolicySyncer {
     spec: ResourceSpec,
     client: Client,
     required_actions: HashSet<String>,
+    /// system_name and account_id are needed to generate the policy document.
+    system_name: String,
+    account_id: String,
 }
 
 impl IamUserPolicySyncer {
-    pub fn new(spec: ResourceSpec, client: Client, required_actions: HashSet<String>) -> Self {
+    pub fn new(
+        spec: ResourceSpec,
+        client: Client,
+        required_actions: HashSet<String>,
+        system_name: String,
+        account_id: String,
+    ) -> Self {
         Self {
             spec,
             client,
             required_actions,
+            system_name,
+            account_id,
         }
+    }
+
+    fn policy_arn(&self) -> String {
+        format!(
+            "arn:aws:iam::{}:policy/{IAM_POLICY_NAME}",
+            self.account_id
+        )
     }
 }
 
@@ -32,17 +52,32 @@ impl ResourceSyncer for IamUserPolicySyncer {
     fn read(&self) -> BoxFuture<'_, Result<Option<serde_json::Value>, ProvisionerError>> {
         Box::pin(async {
             // List attached policies for claria-admin
-            let resp = self
+            let resp = match self
                 .client
                 .list_attached_user_policies()
                 .user_name(IAM_USER_NAME)
                 .send()
                 .await
-                .map_err(|e| {
-                    ProvisionerError::Aws(format!(
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    // Access denied or user doesn't exist → can't read
+                    let is_no_entity = e
+                        .as_service_error()
+                        .map(|se| se.is_no_such_entity_exception())
+                        .unwrap_or(false);
+                    let is_access_denied = e
+                        .as_service_error()
+                        .map(|se| se.meta().code() == Some("AccessDenied"))
+                        .unwrap_or(false);
+                    if is_no_entity || is_access_denied {
+                        return Ok(None);
+                    }
+                    return Err(ProvisionerError::Aws(format!(
                         "iam:ListAttachedUserPolicies failed: {e}"
-                    ))
-                })?;
+                    )));
+                }
+            };
 
             let claria_policy = resp
                 .attached_policies()
@@ -149,25 +184,81 @@ impl ResourceSyncer for IamUserPolicySyncer {
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {
         Box::pin(async {
-            Err(ProvisionerError::Aws(
-                "IAM policy is a read-only precondition (lifecycle: Data)".into(),
-            ))
+            // Create the policy and attach it to the user.
+            let policy_arn = account_setup::create_policy(
+                &self.client,
+                &self.system_name,
+                &Some(self.account_id.clone()),
+            )
+            .await?;
+
+            account_setup::attach_policy(&self.client, &policy_arn).await?;
+
+            Ok(json!({"policy_attached": true}))
         })
     }
 
     fn update(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {
         Box::pin(async {
-            Err(ProvisionerError::Aws(
-                "IAM policy is a read-only precondition (lifecycle: Data)".into(),
-            ))
+            // Update the policy document to add/remove actions.
+            let document =
+                claria_policy_document(&self.system_name, &self.account_id);
+            account_setup::update_policy_document(
+                &self.client,
+                &self.policy_arn(),
+                &document,
+            )
+            .await?;
+
+            Ok(json!({"policy_attached": true}))
         })
     }
 
     fn destroy(&self) -> BoxFuture<'_, Result<(), ProvisionerError>> {
         Box::pin(async {
-            Err(ProvisionerError::Aws(
-                "IAM policy is a read-only precondition (lifecycle: Data)".into(),
-            ))
+            let policy_arn = self.policy_arn();
+
+            // Detach from user first.
+            let _ = self
+                .client
+                .detach_user_policy()
+                .user_name(IAM_USER_NAME)
+                .policy_arn(&policy_arn)
+                .send()
+                .await;
+
+            // Delete all non-default versions before deleting the policy.
+            if let Ok(versions) = self
+                .client
+                .list_policy_versions()
+                .policy_arn(&policy_arn)
+                .send()
+                .await
+            {
+                for v in versions.versions().iter().filter(|v| !v.is_default_version()) {
+                    if let Some(vid) = v.version_id() {
+                        let _ = self
+                            .client
+                            .delete_policy_version()
+                            .policy_arn(&policy_arn)
+                            .version_id(vid)
+                            .send()
+                            .await;
+                    }
+                }
+            }
+
+            self.client
+                .delete_policy()
+                .policy_arn(&policy_arn)
+                .send()
+                .await
+                .map_err(|e| {
+                    ProvisionerError::Aws(format!("iam:DeletePolicy failed: {e}"))
+                })?;
+
+            tracing::info!(policy_arn = %policy_arn, "deleted IAM policy");
+            Ok(())
         })
     }
 }

@@ -10,7 +10,7 @@ use claria_provisioner::account_setup::{
     AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
     StepStatus,
 };
-use claria_provisioner::{Action, Manifest, PlanEntry};
+use claria_provisioner::{Action, CredentialScope, PlanEntry};
 
 use crate::console::{ConsoleBuffer, ConsoleEntry};
 use crate::state::DesktopState;
@@ -531,10 +531,6 @@ async fn scan_with_progress(
     prov_state: &claria_provisioner::ProvisionerState,
     on_progress: &tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<Vec<PlanEntry>, String> {
-    let manifest_upgraded = prov_state
-        .manifest_version
-        .is_none_or(|v| v < Manifest::VERSION);
-    let known_addrs: HashSet<_> = prov_state.resources.keys().cloned().collect();
     let total = syncers.len() as u32;
 
     tracing::info!(count = total, "starting scan");
@@ -577,8 +573,6 @@ async fn scan_with_progress(
         entries.push(claria_provisioner::build_plan_entry(
             syncer.as_ref(),
             actual,
-            manifest_upgraded,
-            &known_addrs,
         ));
     }
 
@@ -684,13 +678,6 @@ async fn execute_with_progress(
             .map_err(|e| e.to_string())?;
     }
 
-    // Stamp manifest version.
-    prov_state.manifest_version = Some(Manifest::VERSION);
-    persistence
-        .flush(prov_state)
-        .await
-        .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
@@ -710,7 +697,7 @@ pub async fn plan(
         &cfg.system_name,
         &cfg.region,
     );
-    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest);
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
     let persistence = claria_provisioner::build_persistence(
         &sdk_config,
         &cfg.system_name,
@@ -739,7 +726,7 @@ pub async fn apply(
         &cfg.system_name,
         &cfg.region,
     );
-    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest);
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
     let persistence = claria_provisioner::build_persistence(
         &sdk_config,
         &cfg.system_name,
@@ -773,7 +760,7 @@ pub async fn destroy(
         &cfg.system_name,
         &cfg.region,
     );
-    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest);
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
     let persistence = claria_provisioner::build_persistence(
         &sdk_config,
         &cfg.system_name,
@@ -805,6 +792,308 @@ pub async fn reset_provisioner_state(
     )
     .map_err(|e| e.to_string())?;
     persistence.delete().await.map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Unified provision — single reconciliation flow with lazy escalation
+// ---------------------------------------------------------------------------
+
+/// Result of a provision scan. Contains everything the frontend needs to
+/// render the plan and decide whether escalation is required.
+#[derive(Clone, Serialize, Deserialize, specta::Type)]
+pub struct ProvisionScanResult {
+    /// The full plan across all resources.
+    pub entries: Vec<PlanEntry>,
+    /// True if any `Elevated`-scope resource needs Create or Modify,
+    /// meaning the user must provide admin/root credentials.
+    pub needs_escalation: bool,
+    /// The account ID (resolved via STS from the provided credentials).
+    pub account_id: String,
+}
+
+/// Scan all resources using the provided credentials.
+///
+/// This is the entry point for both first-run and day-2 flows. On first run
+/// the frontend passes the user's initial credentials; on day-2 the frontend
+/// passes the saved scoped credentials (or calls `plan()` instead).
+///
+/// Returns a `ProvisionScanResult` that tells the frontend whether elevated
+/// credentials are needed before applying.
+#[tauri::command]
+#[specta::specta]
+pub async fn provision_scan(
+    region: String,
+    system_name: String,
+    credentials: CredentialSource,
+    on_progress: tauri::ipc::Channel<ProvisionerProgress>,
+) -> Result<ProvisionScanResult, String> {
+    let sdk_config =
+        claria_desktop::aws::build_aws_config(&region, &credentials).await;
+
+    // Resolve account ID via STS.
+    let identity = claria_provisioner::account_setup::get_caller_identity(&sdk_config)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let manifest = claria_provisioner::build_manifest(
+        &identity.account_id,
+        &system_name,
+        &region,
+    );
+    let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
+
+    // Try to load state; fall back to empty state if persistence isn't set up yet.
+    let prov_state = match claria_provisioner::build_persistence(
+        &sdk_config,
+        &system_name,
+        &identity.account_id,
+    ) {
+        Ok(p) => p.load().await.unwrap_or_else(|_| {
+            claria_provisioner::ProvisionerState::new(
+                region.clone(),
+                format!("{}-{system_name}-data", identity.account_id),
+            )
+        }),
+        Err(_) => claria_provisioner::ProvisionerState {
+            resources: Default::default(),
+            manifest_version: None,
+            region: region.clone(),
+            bucket: format!("{}-{system_name}-data", identity.account_id),
+        },
+    };
+
+    let entries = scan_with_progress(&syncers, &prov_state, &on_progress).await?;
+
+    let needs_escalation = entries.iter().any(|e| {
+        e.spec.credential_scope == CredentialScope::Elevated
+            && (e.action == Action::Create || e.action == Action::Modify)
+    });
+
+    Ok(ProvisionScanResult {
+        entries,
+        needs_escalation,
+        account_id: identity.account_id,
+    })
+}
+
+/// Apply all changes in one unified reconciliation.
+///
+/// Two-phase execution:
+/// 1. If elevated resources need changes and `elevated_credentials` is provided,
+///    execute elevated resources first (IAM user, policy).
+/// 2. After elevated execution, create an access key for the claria-admin user
+///    if no config exists yet (credential handoff from admin → scoped creds).
+/// 3. Execute regular resources with the scoped credentials.
+/// 4. Re-scan and return the updated plan.
+#[tauri::command]
+#[specta::specta]
+pub async fn provision_apply(
+    state: State<'_, DesktopState>,
+    region: String,
+    system_name: String,
+    credentials: CredentialSource,
+    elevated_credentials: Option<CredentialSource>,
+    on_progress: tauri::ipc::Channel<ProvisionerProgress>,
+) -> Result<Vec<PlanEntry>, String> {
+    let sdk_config =
+        claria_desktop::aws::build_aws_config(&region, &credentials).await;
+
+    let identity = claria_provisioner::account_setup::get_caller_identity(&sdk_config)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let manifest = claria_provisioner::build_manifest(
+        &identity.account_id,
+        &system_name,
+        &region,
+    );
+
+    // We need persistence that can work even before the S3 bucket exists.
+    // For local-only state during bootstrap, build persistence with the
+    // elevated config (which can at least do local writes).
+    let persistence = claria_provisioner::build_persistence(
+        &sdk_config,
+        &system_name,
+        &identity.account_id,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut prov_state = persistence.load().await.unwrap_or_else(|_| {
+        claria_provisioner::ProvisionerState {
+            resources: Default::default(),
+            manifest_version: None,
+            region: region.clone(),
+            bucket: format!("{}-{system_name}-data", identity.account_id),
+        }
+    });
+
+    // ── Phase 1: Elevated resources ──────────────────────────────────────
+    // If we have elevated credentials, build elevated syncers and execute.
+
+    if let Some(ref elevated_creds) = elevated_credentials {
+        let elevated_config =
+            claria_desktop::aws::build_aws_config(&region, elevated_creds).await;
+
+        let elevated_syncers = claria_provisioner::build_syncers(
+            &elevated_config,
+            &manifest,
+            Some(CredentialScope::Elevated),
+        );
+
+        // Scan elevated resources.
+        let elevated_entries = scan_with_progress(
+            &elevated_syncers,
+            &prov_state,
+            &on_progress,
+        )
+        .await?;
+
+        let has_elevated_work = elevated_entries
+            .iter()
+            .any(|e| e.action == Action::Create || e.action == Action::Modify);
+
+        if has_elevated_work {
+            execute_with_progress(
+                &elevated_entries,
+                &elevated_syncers,
+                &mut prov_state,
+                &persistence,
+                &on_progress,
+            )
+            .await?;
+        }
+    }
+
+    // ── Credential handoff ───────────────────────────────────────────────
+    // If no config exists yet, the IAM user was just created. Create an
+    // access key so we can switch to scoped credentials.
+
+    let regular_config = if !config::has_config() {
+        // We need elevated creds for CreateAccessKey.
+        let elevated_creds = elevated_credentials
+            .as_ref()
+            .ok_or("Elevated credentials required to create access key for new IAM user")?;
+        let elevated_config =
+            claria_desktop::aws::build_aws_config(&region, elevated_creds).await;
+
+        let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+            label: "Creating access key for claria-admin".into(),
+            status: "in_progress".into(),
+        });
+
+        let iam_client = aws_sdk_iam::Client::new(&elevated_config);
+        let (key_id, secret) = claria_provisioner::create_access_key(&iam_client)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+            label: "Creating access key for claria-admin".into(),
+            status: "done".into(),
+        });
+
+        // Validate new credentials (IAM is eventually consistent).
+        let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+            label: "Validating new credentials".into(),
+            status: "in_progress".into(),
+        });
+
+        claria_provisioner::validate_new_credentials(&key_id, &secret, &elevated_config)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+            label: "Validating new credentials".into(),
+            status: "done".into(),
+        });
+
+        // Save config with new scoped credentials.
+        let cfg = ClariaConfig {
+            config_version: 0,
+            region: region.clone(),
+            system_name: system_name.clone(),
+            account_id: identity.account_id.clone(),
+            created_at: jiff::Timestamp::now(),
+            credentials: CredentialSource::Inline {
+                access_key_id: key_id.clone(),
+                secret_access_key: secret.clone(),
+                session_token: None,
+            },
+            preferred_model_id: None,
+            cost_explorer_enabled: false,
+            hourly_cost_data: false,
+        };
+
+        config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+        let mut guard = state.config.lock().await;
+        *guard = Some(cfg);
+        drop(guard);
+
+        // Build SDK config from new scoped credentials.
+        claria_desktop::aws::build_aws_config(
+            &region,
+            &CredentialSource::Inline {
+                access_key_id: key_id,
+                secret_access_key: secret,
+                session_token: None,
+            },
+        )
+        .await
+    } else {
+        // Config already exists — use the credentials that were passed in
+        // (which should be the saved scoped credentials).
+        sdk_config
+    };
+
+    // ── Phase 2: Regular resources ───────────────────────────────────────
+
+    let regular_syncers = claria_provisioner::build_syncers(
+        &regular_config,
+        &manifest,
+        Some(CredentialScope::Regular),
+    );
+
+    let regular_entries = scan_with_progress(
+        &regular_syncers,
+        &prov_state,
+        &on_progress,
+    )
+    .await?;
+
+    let has_regular_work = regular_entries
+        .iter()
+        .any(|e| e.action == Action::Create || e.action == Action::Modify || e.action == Action::Delete);
+
+    if has_regular_work {
+        // Rebuild persistence with regular config (S3 bucket should exist now
+        // or be about to be created).
+        let regular_persistence = claria_provisioner::build_persistence(
+            &regular_config,
+            &system_name,
+            &identity.account_id,
+        )
+        .map_err(|e| e.to_string())?;
+
+        execute_with_progress(
+            &regular_entries,
+            &regular_syncers,
+            &mut prov_state,
+            &regular_persistence,
+            &on_progress,
+        )
+        .await?;
+    }
+
+    // ── Final re-scan ────────────────────────────────────────────────────
+    // Build all syncers with regular config for the final scan.
+
+    let all_syncers = claria_provisioner::build_syncers(
+        &regular_config,
+        &manifest,
+        None,
+    );
+
+    scan_with_progress(&all_syncers, &prov_state, &on_progress).await
 }
 
 // ---------------------------------------------------------------------------

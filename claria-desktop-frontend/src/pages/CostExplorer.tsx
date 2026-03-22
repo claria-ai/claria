@@ -220,7 +220,7 @@ export default function CostExplorer({
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <button
-          onClick={() => navigate("aws")}
+          onClick={() => navigate("provision")}
           className="text-gray-500 hover:text-gray-700 transition-colors"
         >
           <svg

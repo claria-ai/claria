@@ -201,12 +201,9 @@ fn fully_provisioned_state(manifest: &Manifest) -> ProvisionerState {
             },
         );
     }
-    ProvisionerState {
-        resources,
-        manifest_version: Some(Manifest::VERSION),
-        region: REGION.into(),
-        bucket: BUCKET.into(),
-    }
+    let mut state = ProvisionerState::new(REGION.into(), BUCKET.into());
+    state.resources = resources;
+    state
 }
 
 fn all_in_sync_reads(manifest: &Manifest) -> Vec<(String, Option<Value>)> {
@@ -287,12 +284,7 @@ fn e(addr: &str, action: Action, cause: Cause) -> (String, Action, Cause) {
 #[tokio::test]
 async fn plan_fresh_account() {
     let m = manifest();
-    let state = ProvisionerState {
-        resources: HashMap::new(),
-        manifest_version: None,
-        region: REGION.into(),
-        bucket: BUCKET.into(),
-    };
+    let state = ProvisionerState::new(REGION.into(), BUCKET.into());
 
     let syncers = mock_syncers(&m, &[
         ("iam_user.claria-admin", Some(json!({
@@ -309,21 +301,21 @@ async fn plan_fresh_account() {
 
     let result = orchestrate::plan(&syncers, &state).await.unwrap();
 
-    // manifest_version is None → manifest_upgraded = true → managed creates
-    // get ManifestChanged (not FirstProvision, because no prior version exists).
+    // Structural comparison: missing resources → Create/Missing,
+    // drifted resources → Modify/Drift, in-sync → Ok/InSync.
     assert_plan(&result, &[
         e("iam_user.claria-admin",                             Action::Ok,                 Cause::InSync),
-        e("iam_user_policy.claria-admin-policy",               Action::PreconditionFailed, Cause::Drift),
-        e("baa_agreement.aws-baa",                             Action::PreconditionFailed, Cause::Drift),
-        e(&format!("s3_bucket.{BUCKET}"),                      Action::Create,             Cause::ManifestChanged),
-        e(&format!("s3_bucket_versioning.{BUCKET}"),           Action::Create,             Cause::ManifestChanged),
-        e(&format!("s3_bucket_encryption.{BUCKET}"),           Action::Create,             Cause::ManifestChanged),
-        e(&format!("s3_bucket_public_access_block.{BUCKET}"),  Action::Create,             Cause::ManifestChanged),
-        e(&format!("s3_bucket_policy.{BUCKET}"),               Action::Create,             Cause::ManifestChanged),
-        e(&format!("cloudtrail_trail.{TRAIL}"),                Action::Create,             Cause::ManifestChanged),
-        e(&format!("cloudtrail_trail_logging.{TRAIL}"),        Action::Create,             Cause::ManifestChanged),
-        e("bedrock_model_agreement.anthropic.claude-sonnet-4", Action::Modify,             Cause::ManifestChanged),
-        e("bedrock_model_agreement.anthropic.claude-opus-4",   Action::Modify,             Cause::ManifestChanged),
+        e("iam_user_policy.claria-admin-policy",               Action::Create,             Cause::Missing),
+        e("baa_agreement.aws-baa",                             Action::PreconditionFailed, Cause::Missing),
+        e(&format!("s3_bucket.{BUCKET}"),                      Action::Create,             Cause::Missing),
+        e(&format!("s3_bucket_versioning.{BUCKET}"),           Action::Create,             Cause::Missing),
+        e(&format!("s3_bucket_encryption.{BUCKET}"),           Action::Create,             Cause::Missing),
+        e(&format!("s3_bucket_public_access_block.{BUCKET}"),  Action::Create,             Cause::Missing),
+        e(&format!("s3_bucket_policy.{BUCKET}"),               Action::Create,             Cause::Missing),
+        e(&format!("cloudtrail_trail.{TRAIL}"),                Action::Create,             Cause::Missing),
+        e(&format!("cloudtrail_trail_logging.{TRAIL}"),        Action::Create,             Cause::Missing),
+        e("bedrock_model_agreement.anthropic.claude-sonnet-4", Action::Modify,             Cause::Drift),
+        e("bedrock_model_agreement.anthropic.claude-opus-4",   Action::Modify,             Cause::Drift),
         e("transcribe_access.transcribe",                      Action::Ok,                 Cause::InSync),
         e("cost_explorer_access.cost-explorer",                Action::Ok,                 Cause::InSync),
     ]);
@@ -403,15 +395,14 @@ async fn plan_versioning_drifted() {
     }
 }
 
-/// Claria upgrade added new resources — IAM policy needs new actions.
+/// IAM policy is missing an action — structural drift triggers Modify.
 ///
-/// State has `manifest_version = VERSION - 1`, simulating a Claria upgrade.
-/// The IAM policy is missing `ce:GetCostAndUsage` from the latest manifest.
+/// The policy is missing `ce:GetCostAndUsage` from the current manifest.
+/// No version tracking needed — the structural diff detects the gap.
 #[tokio::test]
 async fn plan_policy_escalation() {
     let m = manifest();
-    let mut state = fully_provisioned_state(&m);
-    state.manifest_version = Some(Manifest::VERSION - 1);
+    let state = fully_provisioned_state(&m);
 
     let mut reads = all_in_sync_reads(&m);
 
@@ -439,8 +430,8 @@ async fn plan_policy_escalation() {
     for entry in &result {
         let addr = entry.spec.addr().to_string();
         if addr == policy_addr {
-            assert_eq!(entry.action, Action::PreconditionFailed);
-            assert_eq!(entry.cause, Cause::ManifestChanged);
+            assert_eq!(entry.action, Action::Modify);
+            assert_eq!(entry.cause, Cause::Drift);
         } else {
             assert_eq!(
                 entry.action,

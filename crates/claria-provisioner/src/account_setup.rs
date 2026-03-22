@@ -675,7 +675,7 @@ pub async fn delete_user_access_key(
 /// S3 actions are scoped to buckets matching `{system_name}-*`.
 /// IAM read actions are scoped to the `claria-admin` user and
 /// `ClariaProvisionerAccess` policy so the dashboard can verify its own setup.
-fn claria_policy_document(system_name: &str, account_id: &str) -> String {
+pub(crate) fn claria_policy_document(system_name: &str, account_id: &str) -> String {
     serde_json::json!({
         "Version": "2012-10-17",
         "Statement": [
@@ -799,7 +799,7 @@ fn claria_policy_document(system_name: &str, account_id: &str) -> String {
 // ── STS helpers ──────────────────────────────────────────────────────────────
 
 /// Call STS `GetCallerIdentity` and return structured identity info.
-async fn get_caller_identity(
+pub async fn get_caller_identity(
     config: &aws_config::SdkConfig,
 ) -> Result<CallerIdentity, ProvisionerError> {
     let sts = aws_sdk_sts::Client::new(config);
@@ -851,7 +851,7 @@ async fn probe_bedrock(config: &aws_config::SdkConfig) -> bool {
 /// Create the Claria minimal IAM policy. Returns the policy ARN.
 ///
 /// Idempotent: if the policy already exists, returns the existing ARN.
-async fn create_policy(
+pub(crate) async fn create_policy(
     client: &aws_sdk_iam::Client,
     system_name: &str,
     account_id: &Option<String>,
@@ -909,7 +909,7 @@ async fn create_policy(
 ///
 /// AWS allows up to 5 policy versions. If the limit is reached, we delete
 /// the oldest non-default version before creating the new one.
-async fn update_policy_document(
+pub(crate) async fn update_policy_document(
     client: &aws_sdk_iam::Client,
     policy_arn: &str,
     document: &str,
@@ -1001,7 +1001,7 @@ async fn update_policy_document(
 /// Create the `claria-admin` IAM user. Returns the user ARN.
 ///
 /// Idempotent: if the user already exists, returns the existing ARN.
-async fn create_user(
+pub(crate) async fn create_user(
     client: &aws_sdk_iam::Client,
 ) -> Result<String, ProvisionerError> {
     match client
@@ -1057,7 +1057,7 @@ async fn create_user(
 /// Attach a managed policy to the Claria IAM user.
 ///
 /// Idempotent: attaching an already-attached policy is a no-op in IAM.
-async fn attach_policy(
+pub(crate) async fn attach_policy(
     client: &aws_sdk_iam::Client,
     policy_arn: &str,
 ) -> Result<(), ProvisionerError> {
@@ -1082,7 +1082,7 @@ async fn attach_policy(
 /// Create an access key pair for the Claria IAM user.
 ///
 /// Returns `(access_key_id, secret_access_key)`.
-async fn create_access_key(
+pub async fn create_access_key(
     client: &aws_sdk_iam::Client,
 ) -> Result<(String, String), ProvisionerError> {
     let resp = client
@@ -1131,7 +1131,7 @@ async fn delete_access_key(
 /// Build a temporary SDK config from the new IAM user's credentials and
 /// verify they work. Retries up to 10 times with a 2-second backoff
 /// because IAM credential propagation is eventually consistent.
-async fn validate_new_credentials(
+pub async fn validate_new_credentials(
     access_key_id: &str,
     secret_access_key: &str,
     source_config: &aws_config::SdkConfig,

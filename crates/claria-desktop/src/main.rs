@@ -40,6 +40,8 @@ fn main() -> Result<()> {
             commands::delete_user_access_key,
             commands::bootstrap_iam_user,
             commands::escalate_iam_policy,
+            commands::provision_scan,
+            commands::provision_apply,
             commands::plan,
             commands::apply,
             commands::destroy,

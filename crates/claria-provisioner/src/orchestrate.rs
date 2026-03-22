@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::addr::ResourceAddr;
 use crate::error::ProvisionerError;
-use crate::manifest::{Lifecycle, Manifest, ResourceSpec};
+use crate::manifest::{Lifecycle, ResourceSpec};
 use crate::persistence::StatePersistence;
 use crate::plan::{Action, Cause, PlanEntry};
 use crate::state::{ProvisionerState, ResourceState, ResourceStatus};
@@ -10,14 +10,12 @@ use crate::syncer::{compute_drift, ResourceSyncer};
 
 /// Build a single plan entry from a syncer and its read result.
 ///
-/// This is the core logic for classifying a resource scan result into an
-/// action + cause. Extracted so callers can drive the scan loop themselves
-/// (e.g. to emit progress events between reads).
+/// Pure structural comparison: desired state vs actual state. No version
+/// tracking — either the resource exists with the right properties, or it
+/// needs reconciliation.
 pub fn build_plan_entry(
     syncer: &dyn ResourceSyncer,
     actual: Option<serde_json::Value>,
-    manifest_upgraded: bool,
-    known_addrs: &HashSet<ResourceAddr>,
 ) -> PlanEntry {
     let spec = syncer.spec();
     match (spec.lifecycle, &actual) {
@@ -25,7 +23,7 @@ pub fn build_plan_entry(
         (Lifecycle::Data, None) => PlanEntry {
             spec: spec.clone(),
             action: Action::PreconditionFailed,
-            cause: Cause::Drift,
+            cause: Cause::Missing,
             drift: vec![],
             actual: None,
         },
@@ -43,8 +41,6 @@ pub fn build_plan_entry(
                 },
                 cause: if drift.is_empty() {
                     Cause::InSync
-                } else if manifest_upgraded {
-                    Cause::ManifestChanged
                 } else {
                     Cause::Drift
                 },
@@ -57,11 +53,7 @@ pub fn build_plan_entry(
         (Lifecycle::Managed, None) => PlanEntry {
             spec: spec.clone(),
             action: Action::Create,
-            cause: if !manifest_upgraded || known_addrs.contains(&spec.addr()) {
-                Cause::FirstProvision
-            } else {
-                Cause::ManifestChanged
-            },
+            cause: Cause::Missing,
             drift: vec![],
             actual: None,
         },
@@ -79,8 +71,6 @@ pub fn build_plan_entry(
                 },
                 cause: if drift.is_empty() {
                     Cause::InSync
-                } else if manifest_upgraded {
-                    Cause::ManifestChanged
                 } else {
                     Cause::Drift
                 },
@@ -146,17 +136,13 @@ pub async fn plan(
     syncers: &[Box<dyn ResourceSyncer>],
     state: &ProvisionerState,
 ) -> Result<Vec<PlanEntry>, ProvisionerError> {
-    let manifest_upgraded = state
-        .manifest_version
-        .is_none_or(|v| v < Manifest::VERSION);
-    let known_addrs: HashSet<_> = state.resources.keys().cloned().collect();
     let mut entries = Vec::new();
 
     tracing::info!(count = syncers.len(), "starting scan");
 
     for syncer in syncers.iter() {
         let actual = syncer.read().await?;
-        entries.push(build_plan_entry(syncer.as_ref(), actual, manifest_upgraded, &known_addrs));
+        entries.push(build_plan_entry(syncer.as_ref(), actual));
     }
 
     entries.extend(find_orphans(syncers, state));
@@ -238,8 +224,6 @@ pub async fn execute(
         persistence.flush(state).await?;
     }
 
-    // Stamp manifest version
-    state.manifest_version = Some(Manifest::VERSION);
     persistence.flush(state).await?;
 
     Ok(())
@@ -266,7 +250,6 @@ pub async fn destroy_all(
     }
 
     state.resources.clear();
-    state.manifest_version = None;
     persistence.flush(state).await?;
 
     Ok(())

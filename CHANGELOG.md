@@ -4,6 +4,13 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+### Changed
+- **Unified terraform-style reconciliation flow** — bootstrap and resource provisioning are now a single reconciliation loop instead of separate phases. IAM user/policy creation, credential handoff, and S3/CloudTrail/Bedrock provisioning happen in one pass with lazy privilege escalation
+- IAM User and IAM Policy resources changed from read-only (Data) to managed (Managed+Elevated) — they can now be created, updated, and destroyed through the standard syncer interface
+- New `CredentialScope` enum (Elevated/Regular) on `ResourceSpec` enables two-provider execution: admin credentials for IAM resources, scoped credentials for everything else
+- Single unified Provision page replaces CredentialIntake, ScanProvision, and AwsManage pages
+- Manifest version bumped to 7
+
 ### Fixed
 - Replaced custom `build.rs` JS build with Tauri's built-in `beforeBuildCommand`/`beforeDevCommand`, enabling Vite dev server hot-reload during development
 

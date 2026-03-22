@@ -24,12 +24,11 @@ export default function PlanView({
       !needsAttention.includes(e)
   );
 
-  // Detect IAM escalation: iam_user_policy precondition failed + manifest changed
+  // Detect IAM escalation: elevated-scope resource needs Create or Modify.
   const escalation = entries.find(
     (e) =>
-      e.spec.resource_type === "iam_user_policy" &&
-      e.action === "precondition_failed" &&
-      e.cause === "manifest_changed"
+      e.spec.credential_scope === "elevated" &&
+      (e.action === "create" || e.action === "modify")
   );
 
   const changesCount =

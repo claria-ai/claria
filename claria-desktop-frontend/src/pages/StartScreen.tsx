@@ -15,8 +15,8 @@ export default function StartScreen({
         {configExists && (
           <>
             <button
-              data-page="aws"
-              onClick={() => navigate("aws")}
+              data-page="provision"
+              onClick={() => navigate("provision")}
               className="p-2 text-gray-400 hover:text-gray-600 transition-colors rounded-lg hover:bg-gray-100"
               title="AWS configuration"
             >

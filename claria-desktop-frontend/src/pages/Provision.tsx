@@ -1,0 +1,817 @@
+import { useState, useEffect, useCallback } from "react";
+import {
+  hasConfig,
+  loadConfig,
+  deleteConfig,
+  assessCredentials,
+  assumeRole,
+  listAwsProfiles,
+  provisionScan,
+  provisionApply,
+  destroy,
+  resetProvisionerState,
+  plan,
+  apply,
+  type CredentialSource,
+  type CredentialAssessment,
+  type AssumeRoleResult,
+  type PlanEntry,
+  type ProvisionerProgress,
+  type ConfigInfo,
+  type ProvisionScanResult,
+} from "../lib/tauri";
+import PlanView from "../components/PlanView";
+import { hasChanges } from "../lib/plan";
+import ScanProgress, { type ScanItem } from "../components/ScanProgress";
+import ApplyProgress, { type ApplyItem } from "../components/ApplyProgress";
+import type { Page } from "../App";
+
+const AWS_REGIONS = [
+  "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+  "eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1", "eu-north-1",
+  "ap-southeast-1", "ap-southeast-2", "ap-northeast-1", "ap-northeast-2",
+  "ap-south-1", "ca-central-1", "sa-east-1",
+];
+
+const DEFAULT_ROLE_NAME = "OrganizationAccountAccessRole";
+
+type CredMode = "inline" | "sub_account" | "profile" | "default_chain";
+
+type Phase =
+  | "loading"         // Checking if config exists
+  | "input"           // Credential entry (first run)
+  | "scanning"        // Scanning all resources
+  | "planned"         // Plan ready, show results
+  | "escalation"      // Need elevated creds, show inline form
+  | "applying"        // Executing changes
+  | "done"            // Apply succeeded, showing final state
+  | "error";          // Something failed
+
+export default function Provision({
+  navigate,
+}: {
+  navigate: (page: Page) => void;
+}) {
+  // ── Config state ─────────────────────────────────────────────────────
+  const [configExists, setConfigExists] = useState<boolean | null>(null);
+  const [config, setConfig] = useState<ConfigInfo | null>(null);
+
+  // ── Credential input (first run) ─────────────────────────────────────
+  const [credMode, setCredMode] = useState<CredMode>("inline");
+  const [region, setRegion] = useState("us-east-1");
+  const [systemName, setSystemName] = useState("claria");
+  const [accessKeyId, setAccessKeyId] = useState("");
+  const [secretAccessKey, setSecretAccessKey] = useState("");
+  const [showSecret, setShowSecret] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [profiles, setProfiles] = useState<string[]>([]);
+
+  // Sub-account fields
+  const [subAccountId, setSubAccountId] = useState("");
+  const [roleName, setRoleName] = useState(DEFAULT_ROLE_NAME);
+  const [assumeRoleResult, setAssumeRoleResult] = useState<AssumeRoleResult | null>(null);
+
+  // ── Escalation (inline elevated creds) ───────────────────────────────
+  const [escAccessKeyId, setEscAccessKeyId] = useState("");
+  const [escSecretAccessKey, setEscSecretAccessKey] = useState("");
+  const [showEscSecret, setShowEscSecret] = useState(false);
+
+  // ── Reconciliation state ─────────────────────────────────────────────
+  const [phase, setPhase] = useState<Phase>("loading");
+  const [entries, setEntries] = useState<PlanEntry[] | null>(null);
+  const [scanResult, setScanResult] = useState<ProvisionScanResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [scanItems, setScanItems] = useState<ScanItem[]>([]);
+  const [applyItems, setApplyItems] = useState<ApplyItem[]>([]);
+  const [resettingState, setResettingState] = useState(false);
+
+  // ── Management state ─────────────────────────────────────────────────
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  // Build credentials from form state.
+  const buildCredentials = useCallback((): CredentialSource => {
+    if (assumeRoleResult) {
+      return {
+        Inline: {
+          access_key_id: assumeRoleResult.access_key_id,
+          secret_access_key: assumeRoleResult.secret_access_key,
+          session_token: assumeRoleResult.session_token,
+        },
+      };
+    }
+    switch (credMode) {
+      case "inline":
+        return { Inline: { access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null } };
+      case "profile":
+        return { Profile: { profile_name: profileName } };
+      case "default_chain":
+        return "DefaultChain";
+      case "sub_account":
+        return { Inline: { access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null } };
+    }
+  }, [credMode, accessKeyId, secretAccessKey, profileName, assumeRoleResult]);
+
+  const progressHandler = useCallback((p: ProvisionerProgress) => {
+    if (p.kind === "scan_started") {
+      setScanItems((prev) => {
+        const next = [...prev];
+        next[p.index] = { label: p.label, status: "scanning" };
+        return next;
+      });
+    } else if (p.kind === "scan_completed") {
+      setScanItems((prev) => {
+        const next = [...prev];
+        next[p.index] = { label: p.label, status: "done" };
+        return next;
+      });
+    } else if (p.kind === "apply_started") {
+      setApplyItems((prev) => {
+        const next = [...prev];
+        next[p.index] = { label: p.label, action: p.action, status: "in_progress" };
+        return next;
+      });
+    } else if (p.kind === "apply_completed") {
+      setApplyItems((prev) => {
+        const next = [...prev];
+        next[p.index] = { label: p.label, action: p.action, status: "done" };
+        return next;
+      });
+    }
+  }, []);
+
+  // ── Initialization ───────────────────────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      const exists = await hasConfig().catch(() => false);
+      setConfigExists(exists);
+      if (exists) {
+        try {
+          const info = await loadConfig();
+          setConfig(info);
+          // Day-2: auto-scan using saved credentials.
+          setPhase("scanning");
+          setScanItems([]);
+          const result = await plan(progressHandler);
+          setEntries(result);
+          setPhase("planned");
+        } catch (e) {
+          setError(String(e));
+          setPhase("error");
+        }
+      } else {
+        setPhase("input");
+        listAwsProfiles().then(setProfiles).catch(() => {});
+      }
+    })();
+  }, [progressHandler]);
+
+  // ── First-run: scan with provided creds ──────────────────────────────
+  async function handleInitialScan() {
+    setPhase("scanning");
+    setError(null);
+    setScanItems([]);
+
+    // If sub-account mode and not yet assumed role, do that first.
+    if (credMode === "sub_account" && !assumeRoleResult) {
+      try {
+        const creds: CredentialSource = {
+          Inline: { access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null },
+        };
+        const result = await assumeRole(region, creds, subAccountId, roleName);
+        setAssumeRoleResult(result);
+        // Now scan with assumed-role creds.
+        const assumedCreds: CredentialSource = {
+          Inline: {
+            access_key_id: result.access_key_id,
+            secret_access_key: result.secret_access_key,
+            session_token: result.session_token,
+          },
+        };
+        const scanRes = await provisionScan(region, systemName, assumedCreds, progressHandler);
+        setScanResult(scanRes);
+        setEntries(scanRes.entries);
+        setPhase("planned");
+      } catch (e) {
+        setError(String(e));
+        setPhase("error");
+      }
+      return;
+    }
+
+    try {
+      const creds = buildCredentials();
+      const scanRes = await provisionScan(region, systemName, creds, progressHandler);
+      setScanResult(scanRes);
+      setEntries(scanRes.entries);
+      setPhase("planned");
+    } catch (e) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }
+
+  // ── Apply changes ────────────────────────────────────────────────────
+  async function handleApply() {
+    if (configExists) {
+      // Day-2 flow: use existing plan/apply commands.
+      setPhase("applying");
+      setApplyItems([]);
+      setScanItems([]);
+      try {
+        const result = await apply(progressHandler);
+        setEntries(result);
+        setPhase("done");
+      } catch (e) {
+        setError(String(e));
+        setPhase("error");
+      }
+      return;
+    }
+
+    // First-run flow: use unified provision_apply.
+    setPhase("applying");
+    setApplyItems([]);
+    setScanItems([]);
+
+    try {
+      const creds = buildCredentials();
+
+      // Determine if we need to pass elevated credentials.
+      // On first run with root/admin creds, these ARE the elevated creds.
+      const assessment = await assessCredentials(region, creds);
+      const isElevated =
+        assessment.credential_class === "root" ||
+        assessment.credential_class === "iam_admin";
+
+      const result = await provisionApply(
+        region,
+        systemName,
+        creds,
+        isElevated ? creds : null,
+        progressHandler,
+      );
+      setEntries(result);
+      setConfigExists(true);
+      setPhase("done");
+    } catch (e) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }
+
+  // ── Escalation apply (day-2 with elevated creds) ─────────────────────
+  async function handleEscalationApply() {
+    setPhase("applying");
+    setApplyItems([]);
+    setScanItems([]);
+
+    try {
+      const cfg = config!;
+      // Load the saved scoped creds from config for regular resources.
+      const savedCreds = await loadConfig();
+      // The escalation creds are from the inline form.
+      const elevatedCreds: CredentialSource = {
+        Inline: {
+          access_key_id: escAccessKeyId,
+          secret_access_key: escSecretAccessKey,
+          session_token: null,
+        },
+      };
+
+      // Use provision_apply for two-phase execution.
+      const result = await provisionApply(
+        savedCreds.region,
+        savedCreds.system_name,
+        // Regular creds — rebuild from config.
+        // Note: we re-use the plan/apply path since config exists.
+        elevatedCreds, // credentials param (we use elevated for scanning)
+        elevatedCreds, // elevated_credentials param
+        progressHandler,
+      );
+      setEntries(result);
+      setPhase("done");
+    } catch (e) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }
+
+  // ── Day-2 re-scan ────────────────────────────────────────────────────
+  async function handleRescan() {
+    setPhase("scanning");
+    setError(null);
+    setScanItems([]);
+    setApplyItems([]);
+    try {
+      const result = await plan(progressHandler);
+      setEntries(result);
+      setPhase("planned");
+    } catch (e) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }
+
+  // ── Destroy all resources ────────────────────────────────────────────
+  async function handleDestroy() {
+    setShowDestroyConfirm(false);
+    setPhase("applying");
+    try {
+      await destroy();
+      handleRescan();
+    } catch (e) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }
+
+  // ── Delete system ────────────────────────────────────────────────────
+  async function handleDeleteSystem() {
+    setShowDeleteConfirm(false);
+    setDeleting(true);
+    try {
+      await deleteConfig();
+      navigate("start");
+    } catch (e) {
+      setError(String(e));
+      setDeleting(false);
+    }
+  }
+
+  // ── Reset provisioner state ──────────────────────────────────────────
+  async function handleResetState() {
+    setResettingState(true);
+    try {
+      await resetProvisionerState();
+      handleRescan();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setResettingState(false);
+    }
+  }
+
+  // Check if plan needs escalation
+  const needsEscalation = entries?.some(
+    (e) =>
+      e.spec.credential_scope === "elevated" &&
+      (e.action === "create" || e.action === "modify")
+  ) ?? false;
+
+  // ── Render ───────────────────────────────────────────────────────────
+
+  if (phase === "loading") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-gray-500">Loading...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen p-6 max-w-2xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-xl font-bold">AWS Infrastructure</h2>
+        <div className="flex items-center gap-3">
+          {configExists && entries && (
+            <button
+              onClick={() => navigate("infra-chat")}
+              className="text-sm text-blue-500 hover:text-blue-700"
+            >
+              Ask AI
+            </button>
+          )}
+          <button
+            onClick={() => navigate("start")}
+            className="text-sm text-gray-500 hover:text-gray-700"
+          >
+            Back
+          </button>
+        </div>
+      </div>
+
+      {/* Config info bar (day-2) */}
+      {config && (
+        <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm text-gray-600">
+          <span className="font-medium">{config.system_name}</span>
+          <span className="mx-2 text-gray-300">|</span>
+          {config.region}
+          <span className="mx-2 text-gray-300">|</span>
+          {config.account_id}
+        </div>
+      )}
+
+      {/* ── Phase: Credential input (first run) ────────────────────── */}
+      {phase === "input" && (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Enter your AWS credentials to set up Claria. We'll create a
+            least-privilege IAM user and provision all required resources.
+          </p>
+
+          {/* Region + system name */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">
+                Region
+              </label>
+              <select
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg text-sm"
+              >
+                {AWS_REGIONS.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">
+                System name
+              </label>
+              <input
+                type="text"
+                value={systemName}
+                onChange={(e) => setSystemName(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg text-sm"
+                placeholder="claria"
+              />
+            </div>
+          </div>
+
+          {/* Credential mode tabs */}
+          <div className="flex gap-1 p-1 bg-gray-100 rounded-lg">
+            {([
+              ["inline", "Access Key"],
+              ["sub_account", "Sub-Account"],
+              ["profile", "AWS Profile"],
+              ["default_chain", "Default"],
+            ] as [CredMode, string][]).map(([mode, label]) => (
+              <button
+                key={mode}
+                onClick={() => { setCredMode(mode); setAssumeRoleResult(null); }}
+                className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  credMode === mode
+                    ? "bg-white shadow-sm text-gray-900"
+                    : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Credential fields */}
+          {(credMode === "inline" || credMode === "sub_account") && (
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={accessKeyId}
+                onChange={(e) => setAccessKeyId(e.target.value)}
+                placeholder="Access Key ID"
+                className="w-full px-3 py-2 border rounded-lg text-sm font-mono"
+              />
+              <div className="relative">
+                <input
+                  type={showSecret ? "text" : "password"}
+                  value={secretAccessKey}
+                  onChange={(e) => setSecretAccessKey(e.target.value)}
+                  placeholder="Secret Access Key"
+                  className="w-full px-3 py-2 border rounded-lg text-sm font-mono pr-16"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowSecret(!showSecret)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600"
+                >
+                  {showSecret ? "Hide" : "Show"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {credMode === "sub_account" && (
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={subAccountId}
+                onChange={(e) => setSubAccountId(e.target.value)}
+                placeholder="Sub-Account ID (12 digits)"
+                className="w-full px-3 py-2 border rounded-lg text-sm font-mono"
+              />
+              <input
+                type="text"
+                value={roleName}
+                onChange={(e) => setRoleName(e.target.value)}
+                placeholder="Role name"
+                className="w-full px-3 py-2 border rounded-lg text-sm font-mono"
+              />
+            </div>
+          )}
+
+          {credMode === "profile" && (
+            <select
+              value={profileName}
+              onChange={(e) => setProfileName(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg text-sm"
+            >
+              <option value="">Select a profile...</option>
+              {profiles.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          )}
+
+          {credMode === "default_chain" && (
+            <p className="text-xs text-gray-500">
+              Uses the default AWS credential chain (environment variables,
+              config files, instance profile, etc.)
+            </p>
+          )}
+
+          <button
+            onClick={handleInitialScan}
+            disabled={
+              (credMode === "inline" && (!accessKeyId || !secretAccessKey)) ||
+              (credMode === "sub_account" && (!accessKeyId || !secretAccessKey || !subAccountId)) ||
+              (credMode === "profile" && !profileName)
+            }
+            className="w-full py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Scan Resources
+          </button>
+        </div>
+      )}
+
+      {/* ── Phase: Scanning ────────────────────────────────────────── */}
+      {phase === "scanning" && (
+        <ScanProgress items={scanItems} />
+      )}
+
+      {/* ── Phase: Plan ready ──────────────────────────────────────── */}
+      {phase === "planned" && entries && (
+        <div className="space-y-4">
+          <PlanView
+            entries={entries}
+            onEscalate={needsEscalation && configExists ? () => setPhase("escalation") : undefined}
+          />
+
+          {hasChanges(entries) && (
+            <div className="flex gap-2">
+              {needsEscalation && !configExists ? (
+                <button
+                  onClick={handleApply}
+                  className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+                >
+                  Bootstrap & Apply
+                </button>
+              ) : needsEscalation && configExists ? (
+                <button
+                  onClick={() => setPhase("escalation")}
+                  className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors"
+                >
+                  Provide Admin Credentials
+                </button>
+              ) : (
+                <button
+                  onClick={handleApply}
+                  className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+                >
+                  Apply Changes
+                </button>
+              )}
+            </div>
+          )}
+
+          {!hasChanges(entries) && configExists && (
+            <p className="text-sm text-green-600 text-center py-2">
+              All resources are in sync.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ── Phase: Escalation ──────────────────────────────────────── */}
+      {phase === "escalation" && (
+        <div className="space-y-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+            <p className="text-sm font-medium text-amber-800 mb-1">
+              Admin credentials required
+            </p>
+            <p className="text-xs text-amber-700">
+              The IAM policy needs to be updated. Enter root or IAM admin
+              credentials — they'll be used once and discarded.
+            </p>
+          </div>
+
+          <input
+            type="text"
+            value={escAccessKeyId}
+            onChange={(e) => setEscAccessKeyId(e.target.value)}
+            placeholder="Admin Access Key ID"
+            className="w-full px-3 py-2 border rounded-lg text-sm font-mono"
+          />
+          <div className="relative">
+            <input
+              type={showEscSecret ? "text" : "password"}
+              value={escSecretAccessKey}
+              onChange={(e) => setEscSecretAccessKey(e.target.value)}
+              placeholder="Admin Secret Access Key"
+              className="w-full px-3 py-2 border rounded-lg text-sm font-mono pr-16"
+            />
+            <button
+              type="button"
+              onClick={() => setShowEscSecret(!showEscSecret)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600"
+            >
+              {showEscSecret ? "Hide" : "Show"}
+            </button>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => setPhase("planned")}
+              className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleEscalationApply}
+              disabled={!escAccessKeyId || !escSecretAccessKey}
+              className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors disabled:opacity-50"
+            >
+              Apply with Elevated Credentials
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Phase: Applying ────────────────────────────────────────── */}
+      {phase === "applying" && (
+        <div className="space-y-4">
+          {scanItems.length > 0 && <ScanProgress items={scanItems} />}
+          {applyItems.length > 0 && <ApplyProgress items={applyItems} />}
+          {scanItems.length === 0 && applyItems.length === 0 && (
+            <div className="flex items-center justify-center py-8">
+              <svg className="animate-spin h-6 w-6 text-blue-500" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Phase: Done ────────────────────────────────────────────── */}
+      {phase === "done" && entries && (
+        <div className="space-y-4">
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+            <p className="text-sm font-medium text-green-800">
+              All resources provisioned successfully.
+            </p>
+          </div>
+
+          <PlanView entries={entries} />
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleRescan}
+              className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+            >
+              Re-scan
+            </button>
+            <button
+              onClick={() => navigate("start")}
+              className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+            >
+              Continue to Claria
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Phase: Error ───────────────────────────────────────────── */}
+      {phase === "error" && (
+        <div className="space-y-4">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-sm font-medium text-red-800 mb-1">Error</p>
+            <p className="text-xs text-red-700 font-mono whitespace-pre-wrap">
+              {error}
+            </p>
+          </div>
+
+          <div className="flex gap-2">
+            {configExists ? (
+              <button
+                onClick={handleRescan}
+                className="flex-1 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
+              >
+                Retry Scan
+              </button>
+            ) : (
+              <button
+                onClick={() => { setPhase("input"); setError(null); }}
+                className="flex-1 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
+              >
+                Back to Credentials
+              </button>
+            )}
+            <button
+              onClick={handleResetState}
+              disabled={resettingState}
+              className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {resettingState ? "Resetting..." : "Reset State"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Management actions (day-2) ──────────────────────────────── */}
+      {configExists && (phase === "planned" || phase === "done") && (
+        <div className="mt-8 pt-6 border-t border-gray-200">
+          <details>
+            <summary className="text-xs font-semibold text-gray-400 uppercase tracking-wide cursor-pointer hover:text-gray-600">
+              Advanced
+            </summary>
+            <div className="mt-3 space-y-2">
+              <button
+                onClick={handleResetState}
+                disabled={resettingState}
+                className="w-full py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {resettingState ? "Resetting..." : "Reset Provisioner State"}
+              </button>
+
+              <button
+                onClick={() => setShowDestroyConfirm(true)}
+                className="w-full py-2 border border-red-200 rounded-lg text-sm text-red-600 hover:bg-red-50"
+              >
+                Destroy All Resources
+              </button>
+
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                className="w-full py-2 border border-red-200 rounded-lg text-sm text-red-600 hover:bg-red-50"
+              >
+                Delete System Configuration
+              </button>
+            </div>
+          </details>
+
+          {/* Destroy confirm dialog */}
+          {showDestroyConfirm && (
+            <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-4">
+              <p className="text-sm text-red-800 mb-3">
+                This will delete all AWS resources (S3 bucket, CloudTrail, etc.).
+                Your data will be permanently lost.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowDestroyConfirm(false)}
+                  className="flex-1 py-2 border rounded-lg text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDestroy}
+                  className="flex-1 py-2 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700"
+                >
+                  Destroy
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Delete config confirm dialog */}
+          {showDeleteConfirm && (
+            <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-4">
+              <p className="text-sm text-red-800 mb-3">
+                This will delete the local configuration. AWS resources will
+                remain intact.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowDeleteConfirm(false)}
+                  className="flex-1 py-2 border rounded-lg text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteSystem}
+                  disabled={deleting}
+                  className="flex-1 py-2 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700 disabled:opacity-50"
+                >
+                  {deleting ? "Deleting..." : "Delete Config"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
