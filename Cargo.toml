@@ -13,6 +13,7 @@ members = [
     "crates/claria-whisper",
     "crates/claria-billing",
     "crates/claria-desktop",
+    "crates/claria-mock-aws",
 ]
 
 [workspace.package]

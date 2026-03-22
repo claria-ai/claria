@@ -1,7 +1,7 @@
 use axum::{http::StatusCode, response::{IntoResponse, Response}};
 use uuid::Uuid;
 
-use crate::{state::SharedState, xml};
+use crate::{params, state::SharedState, xml};
 
 /// Dispatch STS actions from form-encoded POST body.
 pub async fn dispatch(action: &str, _params: &str, state: SharedState) -> Response {
@@ -86,17 +86,6 @@ async fn assume_role(params: &str, state: SharedState) -> Response {
     (StatusCode::OK, [("content-type", "text/xml")], body).into_response()
 }
 
-fn extract_form_param(params: &str, key: &str) -> Option<String> {
-    for pair in params.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            if k == key {
-                return Some(
-                    percent_encoding::percent_decode_str(v)
-                        .decode_utf8_lossy()
-                        .to_string(),
-                );
-            }
-        }
-    }
-    None
+fn extract_form_param(p: &str, key: &str) -> Option<String> {
+    params::extract(p, key)
 }

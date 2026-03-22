@@ -1,6 +1,5 @@
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
@@ -8,6 +7,7 @@ use bytes::Bytes;
 use uuid::Uuid;
 
 use crate::{
+    params,
     state::{BucketState, ObjectVersion, PublicAccessBlock, SharedState, VersioningStatus},
     xml,
 };
@@ -609,18 +609,7 @@ fn extract_xml_bool(xml: &str, tag: &str) -> bool {
 }
 
 fn extract_query_param(query: &str, key: &str) -> Option<String> {
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            if k == key {
-                return Some(
-                    percent_encoding::percent_decode_str(v)
-                        .decode_utf8_lossy()
-                        .to_string(),
-                );
-            }
-        }
-    }
-    None
+    params::extract(query, key)
 }
 
 /// Simple non-cryptographic hash for ETags.

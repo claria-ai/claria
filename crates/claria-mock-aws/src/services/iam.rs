@@ -5,6 +5,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::{
+    params,
     state::{AccessKeyRecord, IamPolicy, IamPolicyVersion, IamUser, SharedState},
     xml,
 };
@@ -39,19 +40,8 @@ pub async fn dispatch(action: &str, params: &str, state: SharedState) -> Respons
     }
 }
 
-fn param(params: &str, key: &str) -> Option<String> {
-    for pair in params.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            if k == key {
-                return Some(
-                    percent_encoding::percent_decode_str(v)
-                        .decode_utf8_lossy()
-                        .to_string(),
-                );
-            }
-        }
-    }
-    None
+fn param(p: &str, key: &str) -> Option<String> {
+    params::extract(p, key)
 }
 
 fn xml_response(body: String) -> Response {

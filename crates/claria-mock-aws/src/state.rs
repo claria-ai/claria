@@ -55,6 +55,7 @@ pub struct MockState {
 // ── S3 types ──
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct BucketState {
     pub region: String,
     pub versioning: VersioningStatus,
@@ -100,6 +101,7 @@ pub struct IamUser {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct IamPolicy {
     pub arn: String,
     pub policy_name: String,
@@ -117,6 +119,7 @@ pub struct IamPolicyVersion {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AccessKeyRecord {
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -189,6 +192,7 @@ pub struct InferenceProfileModel {
 // ── Transcribe types ──
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TranscriptionJob {
     pub job_name: String,
     pub status: String,

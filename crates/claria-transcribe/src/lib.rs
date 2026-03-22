@@ -24,7 +24,7 @@ pub async fn transcribe_audio(
     media_format: MediaFormat,
 ) -> Result<String, TranscribeError> {
     let transcribe = aws_sdk_transcribe::Client::new(config);
-    let s3 = aws_sdk_s3::Client::new(config);
+    let s3 = claria_storage::client::from_config(config);
 
     let job_name = format!("claria-{}", Uuid::new_v4());
     let s3_uri = format!("s3://{bucket}/{audio_key}");

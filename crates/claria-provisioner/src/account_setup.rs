@@ -828,7 +828,7 @@ async fn get_caller_identity(
 /// empty) means S3 permissions are present. An access-denied error means
 /// they're not.
 async fn probe_s3(config: &aws_config::SdkConfig) -> bool {
-    let client = aws_sdk_s3::Client::new(config);
+    let client = claria_storage::client::from_config(config);
     client
         .list_buckets()
         .send()

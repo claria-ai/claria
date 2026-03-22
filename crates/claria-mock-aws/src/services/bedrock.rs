@@ -104,7 +104,7 @@ async fn get_model_availability(path: &str, state: SharedState) -> Response {
     }))
 }
 
-async fn list_agreement_offers(path: &str, state: SharedState) -> Response {
+async fn list_agreement_offers(path: &str, _state: SharedState) -> Response {
     // Path: /foundation-models/{model_id}/agreement-offers
     let model_id = path
         .strip_prefix("/foundation-models/")

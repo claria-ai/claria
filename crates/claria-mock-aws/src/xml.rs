@@ -1,4 +1,4 @@
-/// Helpers for building AWS-style XML response bodies.
+//! Helpers for building AWS-style XML response bodies.
 
 /// Wrap a body in an XML declaration.
 pub fn xml_doc(body: &str) -> String {
@@ -8,11 +8,6 @@ pub fn xml_doc(body: &str) -> String {
 /// Simple XML element: `<Tag>value</Tag>`.
 pub fn el(tag: &str, value: &str) -> String {
     format!("<{tag}>{value}</{tag}>")
-}
-
-/// Self-closing element: `<Tag/>`.
-pub fn empty(tag: &str) -> String {
-    format!("<{tag}/>")
 }
 
 /// Wrap children in a parent tag with an xmlns attribute.
