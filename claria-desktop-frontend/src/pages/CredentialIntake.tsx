@@ -286,7 +286,7 @@ export default function CredentialIntake({
   }
 
   function handleContinue() {
-    navigate("scan");
+    navigate("provision");
   }
 
   // ── Computed state ─────────────────────────────────────────────────────

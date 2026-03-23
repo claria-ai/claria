@@ -94,22 +94,21 @@ export default function Provision({
   const buildCredentials = useCallback((): CredentialSource => {
     if (assumeRoleResult) {
       return {
-        Inline: {
-          access_key_id: assumeRoleResult.access_key_id,
-          secret_access_key: assumeRoleResult.secret_access_key,
-          session_token: assumeRoleResult.session_token,
-        },
+        type: "inline",
+        access_key_id: assumeRoleResult.access_key_id,
+        secret_access_key: assumeRoleResult.secret_access_key,
+        session_token: assumeRoleResult.session_token,
       };
     }
     switch (credMode) {
       case "inline":
-        return { Inline: { access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null } };
+        return { type: "inline", access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null };
       case "profile":
-        return { Profile: { profile_name: profileName } };
+        return { type: "profile", profile_name: profileName };
       case "default_chain":
-        return "DefaultChain";
+        return { type: "default_chain" };
       case "sub_account":
-        return { Inline: { access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null } };
+        return { type: "inline", access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null };
     }
   }, [credMode, accessKeyId, secretAccessKey, profileName, assumeRoleResult]);
 
@@ -177,17 +176,16 @@ export default function Provision({
     if (credMode === "sub_account" && !assumeRoleResult) {
       try {
         const creds: CredentialSource = {
-          Inline: { access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null },
+          type: "inline", access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null,
         };
         const result = await assumeRole(region, creds, subAccountId, roleName);
         setAssumeRoleResult(result);
         // Now scan with assumed-role creds.
         const assumedCreds: CredentialSource = {
-          Inline: {
-            access_key_id: result.access_key_id,
-            secret_access_key: result.secret_access_key,
-            session_token: result.session_token,
-          },
+          type: "inline",
+          access_key_id: result.access_key_id,
+          secret_access_key: result.secret_access_key,
+          session_token: result.session_token,
         };
         const scanRes = await provisionScan(region, systemName, assumedCreds, progressHandler);
         setScanResult(scanRes);
@@ -272,11 +270,10 @@ export default function Provision({
       const savedCreds = await loadConfig();
       // The escalation creds are from the inline form.
       const elevatedCreds: CredentialSource = {
-        Inline: {
-          access_key_id: escAccessKeyId,
-          secret_access_key: escSecretAccessKey,
-          session_token: null,
-        },
+        type: "inline",
+        access_key_id: escAccessKeyId,
+        secret_access_key: escSecretAccessKey,
+        session_token: null,
       };
 
       // Use provision_apply for two-phase execution.
