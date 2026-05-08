@@ -75,10 +75,18 @@ fn lookup_rejects_substring_collision_on_sonnet() {
     );
 }
 
-/// Cache fields are zero in Phase 1 — Phase 2 fills them in.
+/// Phase 2: cache prices are non-zero on caching-supported families.
 #[test]
-fn cache_fields_are_zero_in_phase_1() {
-    let p = lookup("us.anthropic.claude-sonnet-4-20250514-v1:0").unwrap();
-    assert_eq!(p.cache_read_per_million, 0.0);
-    assert_eq!(p.cache_write_per_million, 0.0);
+fn cache_prices_match_phase_2_table() {
+    let sonnet = lookup("us.anthropic.claude-sonnet-4-20250514-v1:0").unwrap();
+    assert!((sonnet.cache_read_per_million - 0.30).abs() < f64::EPSILON);
+    assert!((sonnet.cache_write_per_million - 3.75).abs() < f64::EPSILON);
+
+    let opus = lookup("us.anthropic.claude-opus-4-20250514-v1:0").unwrap();
+    assert!((opus.cache_read_per_million - 1.50).abs() < f64::EPSILON);
+    assert!((opus.cache_write_per_million - 18.75).abs() < f64::EPSILON);
+
+    let haiku = lookup("us.anthropic.claude-3-5-haiku-20241022-v1:0").unwrap();
+    assert!((haiku.cache_read_per_million - 0.08).abs() < f64::EPSILON);
+    assert!((haiku.cache_write_per_million - 1.00).abs() < f64::EPSILON);
 }

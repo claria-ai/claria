@@ -169,6 +169,7 @@ pub async fn save_config(
         preferred_model_id: None,
         cost_explorer_enabled: false,
         hourly_cost_data: false,
+        prompt_caching_enabled: true,
     };
 
     config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -372,6 +373,7 @@ pub async fn bootstrap_iam_user(
                 preferred_model_id: None,
                 cost_explorer_enabled: false,
                 hourly_cost_data: false,
+                prompt_caching_enabled: true,
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -1040,6 +1042,7 @@ pub async fn provision_apply(
             preferred_model_id: None,
             cost_explorer_enabled: false,
             hourly_cost_data: false,
+            prompt_caching_enabled: true,
         };
 
         config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -2016,10 +2019,17 @@ pub async fn chat_message(
         })
         .collect();
 
-    let (response_text, usage) =
-        claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &full_prompt, &bedrock_messages)
-            .await
-            .map_err(|e| e.to_string())?;
+    let cache_strategy = build_cache_strategy(&cfg, &model_id);
+
+    let (response_text, usage) = claria_bedrock::chat::chat_converse(
+        &sdk_config,
+        &model_id,
+        &full_prompt,
+        &bedrock_messages,
+        cache_strategy,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Resolve or generate the chat session ID.
     let chat_uuid: uuid::Uuid = match &chat_id {
@@ -2146,11 +2156,14 @@ pub async fn infra_chat(
         })
         .collect();
 
+    let cache_strategy = build_cache_strategy(&cfg, &model_id);
+
     let (content, usage) = claria_bedrock::chat::chat_converse(
         &sdk_config,
         &model_id,
         &system_prompt,
         &bedrock_messages,
+        cache_strategy,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -2178,6 +2191,37 @@ pub async fn infra_chat(
 }
 
 /// Build the full system prompt for infrastructure chat from plan entries.
+/// Derive a [`claria_bedrock::chat::CacheStrategy`] from config + the
+/// inference profile we're about to invoke.
+///
+/// Caching is honoured for Claude Sonnet 4 and Opus 4 (5-min TTL — Sonnet
+/// 4.5 / Opus 4.5 with 1h TTL is a future Phase). Haiku 3.5 also supports
+/// it. Models we don't recognise default to no cache.
+fn build_cache_strategy(
+    cfg: &ClariaConfig,
+    model_id: &str,
+) -> claria_bedrock::chat::CacheStrategy {
+    if !cfg.prompt_caching_enabled {
+        return claria_bedrock::chat::CacheStrategy::disabled();
+    }
+    let mut strategy = claria_bedrock::chat::CacheStrategy::enabled();
+    strategy.model_supports_caching = model_supports_prompt_caching(model_id);
+    strategy
+}
+
+/// True if the model_id (inference profile or bare foundation id) is a
+/// Claude family known to honour Bedrock prompt-caching `cachePoint`
+/// blocks at the time of writing.
+fn model_supports_prompt_caching(model_id: &str) -> bool {
+    let lower = model_id.to_lowercase();
+    // Claude 4 (Opus / Sonnet) and 3.5+ Haiku honour prompt caching with
+    // 5-min TTL on Bedrock as of 2026-05-08.
+    lower.contains("claude-opus-4")
+        || lower.contains("claude-sonnet-4")
+        || lower.contains("claude-3-5-haiku")
+        || lower.contains("claude-haiku")
+}
+
 fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {
     let mut context = String::from("<infrastructure_context>\n");
     for entry in plan_entries {

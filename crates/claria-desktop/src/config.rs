@@ -5,7 +5,11 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 4;
+const CURRENT_VERSION: u32 = 5;
+
+fn default_prompt_caching_enabled() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClariaConfig {
@@ -29,6 +33,11 @@ pub struct ClariaConfig {
     /// Whether the user has enabled hourly-resolution cost data. Added in v4.
     #[serde(default)]
     pub hourly_cost_data: bool,
+    /// Whether Bedrock prompt caching is enabled for chat. Added in v5.
+    /// Default `true` — caching is a pure cost win on supported models and
+    /// silently no-ops on models that don't honour it.
+    #[serde(default = "default_prompt_caching_enabled")]
+    pub prompt_caching_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -59,6 +68,7 @@ pub struct ConfigInfo {
     pub preferred_model_id: Option<String>,
     pub cost_explorer_enabled: bool,
     pub hourly_cost_data: bool,
+    pub prompt_caching_enabled: bool,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -166,6 +176,21 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v3 → v4 (added hourly_cost_data)");
     }
 
+    // v4 → v5: add prompt_caching_enabled (default true; user can toggle
+    // via Preferences once that surface lands).
+    if from_version < 5 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("prompt_caching_enabled")
+            .or_insert(serde_json::Value::Bool(true));
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(5.into()),
+        );
+        tracing::info!("migrated config v4 → v5 (added prompt_caching_enabled)");
+    }
+
     Ok(json)
 }
 
@@ -238,6 +263,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         preferred_model_id: config.preferred_model_id.clone(),
         cost_explorer_enabled: config.cost_explorer_enabled,
         hourly_cost_data: config.hourly_cost_data,
+        prompt_caching_enabled: config.prompt_caching_enabled,
     }
 }
 

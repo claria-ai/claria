@@ -18,7 +18,8 @@ use claria_core::models::cost::ModelPricing;
 /// silently shift when prices are updated.
 ///
 /// Phase 1 (capture only, cache fields zero) → version 1.
-pub const PRICING_VERSION: u32 = 1;
+/// Phase 2 (prompt caching active) → version 2 with non-zero cache prices.
+pub const PRICING_VERSION: u32 = 2;
 
 /// Resolve pricing for a Bedrock model_id.
 ///
@@ -34,28 +35,31 @@ pub fn lookup(model_id: &str) -> Option<ModelPricing> {
 
     // Match the family stem with an explicit dash boundary so a future
     // `claude-opus-4-1` does not match `claude-opus-4`.
+    // Claude Opus 4 — 5-min TTL cache (1.25× input write, 0.10× input read).
     if family_matches(stem, "claude-opus-4") {
         return Some(ModelPricing {
             input_per_million: 15.0,
             output_per_million: 75.0,
-            cache_read_per_million: 0.0,
-            cache_write_per_million: 0.0,
+            cache_read_per_million: 1.50,
+            cache_write_per_million: 18.75,
         });
     }
+    // Claude Sonnet 4 — 5-min TTL cache.
     if family_matches(stem, "claude-sonnet-4") {
         return Some(ModelPricing {
             input_per_million: 3.0,
             output_per_million: 15.0,
-            cache_read_per_million: 0.0,
-            cache_write_per_million: 0.0,
+            cache_read_per_million: 0.30,
+            cache_write_per_million: 3.75,
         });
     }
+    // Claude 3.5 Haiku — 5-min TTL cache.
     if family_matches(stem, "claude-haiku") || family_matches(stem, "claude-3-5-haiku") {
         return Some(ModelPricing {
             input_per_million: 0.80,
             output_per_million: 4.0,
-            cache_read_per_million: 0.0,
-            cache_write_per_million: 0.0,
+            cache_read_per_million: 0.08,
+            cache_write_per_million: 1.00,
         });
     }
 
