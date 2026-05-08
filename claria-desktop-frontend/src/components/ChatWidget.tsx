@@ -5,11 +5,27 @@ import {
   acceptModelAgreement,
   type ChatMessage,
   type ChatModel,
+  type TurnUsage,
 } from "../lib/tauri";
+import {
+  EMPTY_SESSION_USAGE,
+  accumulateUsage,
+  type SessionUsage,
+} from "../lib/cost";
+import TurnCostBadge from "./TurnCostBadge";
+import SessionTotalBanner, { type SpendCaps } from "./SessionTotalBanner";
 
 function isMarketplaceError(error: string): boolean {
   return error.includes("aws-marketplace:") || error.includes("Marketplace");
 }
+
+const DEFAULT_CAPS: SpendCaps = { softUsd: 1.0, hardUsd: 5.0 };
+
+/**
+ * `handleSend` contract: components return either a plain string (legacy)
+ * or `{ content, usage }`. The widget normalises both.
+ */
+export type SendResult = string | { content: string; usage: TurnUsage | null };
 
 export default function ChatWidget({
   chatModels,
@@ -19,6 +35,7 @@ export default function ChatWidget({
   onSend,
   initialMessages,
   initialModelId,
+  initialUsageByIndex,
   emptyStateTitle = "Start the conversation.",
   emptyStateSubtitle,
   placeholder,
@@ -26,14 +43,19 @@ export default function ChatWidget({
   extraLoadingText = "Loading...",
   toolbar,
   embedded = false,
+  caps = DEFAULT_CAPS,
 }: {
   chatModels: ChatModel[];
   chatModelsLoading: boolean;
   chatModelsError: string | null;
   preferredModelId?: string | null;
-  onSend: (modelId: string, messages: ChatMessage[]) => Promise<string>;
+  onSend: (modelId: string, messages: ChatMessage[]) => Promise<SendResult>;
   initialMessages?: ChatMessage[];
   initialModelId?: string;
+  /// Per-message usage aligned with `initialMessages` — used when
+  /// resuming a chat from history so old assistant turns can render
+  /// their cost badges.
+  initialUsageByIndex?: Array<TurnUsage | null>;
   emptyStateTitle?: string;
   emptyStateSubtitle?: string;
   placeholder?: string;
@@ -41,8 +63,13 @@ export default function ChatWidget({
   extraLoadingText?: string;
   toolbar?: ReactNode;
   embedded?: boolean;
+  caps?: SpendCaps;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
+  const [usageByIndex, setUsageByIndex] = useState<Array<TurnUsage | null>>(
+    initialUsageByIndex ?? []
+  );
+  const [session, setSession] = useState<SessionUsage>(EMPTY_SESSION_USAGE);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +99,21 @@ export default function ChatWidget({
   useEffect(() => {
     if (initialMessages) setMessages(initialMessages);
     if (initialModelId) setSelectedModelId(initialModelId);
-  }, [initialMessages, initialModelId]);
+    if (initialUsageByIndex) {
+      setUsageByIndex(initialUsageByIndex);
+      // Roll up resumed usage so the session banner reflects historical
+      // spend on the chat being resumed.
+      const resumed = initialUsageByIndex.reduce<SessionUsage>(
+        (acc, u) => accumulateUsage(acc, u),
+        EMPTY_SESSION_USAGE
+      );
+      setSession(resumed);
+    } else if (initialMessages) {
+      // Reset session when initialMessages change without per-index usage.
+      setUsageByIndex([]);
+      setSession(EMPTY_SESSION_USAGE);
+    }
+  }, [initialMessages, initialModelId, initialUsageByIndex]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -117,15 +158,21 @@ export default function ChatWidget({
     const userMessage: ChatMessage = { role: "user", content: text };
     const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
+    // Pad usageByIndex for the new user message so indices align.
+    setUsageByIndex((prev) => [...prev, null]);
 
     setSending(true);
     try {
-      const responseText = await onSend(selectedModelId, updatedMessages);
+      const result = await onSend(selectedModelId, updatedMessages);
+      const content = typeof result === "string" ? result : result.content;
+      const usage = typeof result === "string" ? null : result.usage;
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: responseText,
+        content,
       };
       setMessages([...updatedMessages, assistantMessage]);
+      setUsageByIndex((prev) => [...prev, usage]);
+      setSession((prev) => accumulateUsage(prev, usage));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -184,6 +231,9 @@ export default function ChatWidget({
         )}
       </div>
 
+      {/* Persistent session-cost banner — fuel-gauge style. */}
+      <SessionTotalBanner session={session} caps={caps} />
+
       {/* Optional toolbar slot (context pills, etc.) */}
       {toolbar}
 
@@ -207,7 +257,7 @@ export default function ChatWidget({
         )}
 
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+          <MessageBubble key={i} message={msg} usage={usageByIndex[i]} />
         ))}
 
         {sending && (
@@ -288,23 +338,32 @@ export default function ChatWidget({
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  usage,
+}: {
+  message: ChatMessage;
+  usage?: TurnUsage | null;
+}) {
   const isUser = message.role === "user";
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`rounded-lg px-4 py-2.5 max-w-[80%] ${
-          isUser ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-800"
-        }`}
-      >
-        {isUser ? (
-          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-        ) : (
-          <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
-            <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
-          </div>
-        )}
+      <div className={`max-w-[80%] flex flex-col ${isUser ? "items-end" : "items-start"}`}>
+        <div
+          className={`rounded-lg px-4 py-2.5 ${
+            isUser ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-800"
+          }`}
+        >
+          {isUser ? (
+            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+          ) : (
+            <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
+              <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
+            </div>
+          )}
+        </div>
+        {!isUser && <TurnCostBadge usage={usage} />}
       </div>
     </div>
   );

@@ -72,6 +72,9 @@ export default function ClientChat({
     ChatMessage[] | undefined
   >();
   const [initialModelId, setInitialModelId] = useState<string | undefined>();
+  const [initialUsageByIndex, setInitialUsageByIndex] = useState<
+    Array<import("../lib/tauri").TurnUsage | null> | undefined
+  >();
 
   useEffect(() => {
     getPrompt("system-prompt")
@@ -126,6 +129,7 @@ export default function ClientChat({
     if (!resumeChat) return;
     setInitialMessages(resumeChat.messages);
     setInitialModelId(resumeChat.modelId);
+    setInitialUsageByIndex(resumeChat.usageByIndex);
     chatIdRef.current = resumeChat.chatId;
     onResumeChatConsumed?.();
   }, [resumeChat, onResumeChatConsumed]);
@@ -134,7 +138,7 @@ export default function ClientChat({
   contextFilesRef.current = contextFiles;
 
   const handleSend = useCallback(
-    async (modelId: string, messages: ChatMessage[]): Promise<string> => {
+    async (modelId: string, messages: ChatMessage[]) => {
       const filenames = contextFilesRef.current
         .filter((f) => f.text.length > 0)
         .map((f) => f.filename);
@@ -146,7 +150,7 @@ export default function ClientChat({
         filenames
       );
       chatIdRef.current = response.chat_id;
-      return response.content;
+      return { content: response.content, usage: response.usage };
     },
     [clientId]
   );
@@ -272,6 +276,7 @@ export default function ClientChat({
         onSend={handleSend}
         initialMessages={initialMessages}
         initialModelId={initialModelId}
+        initialUsageByIndex={initialUsageByIndex}
         emptyStateTitle="Start the conversation."
         emptyStateSubtitle="The chat includes the context files shown above. Chat messages are saved separately and do not modify your client files."
         extraLoading={contextLoading}
