@@ -4,6 +4,8 @@ import {
   savePrompt,
   deletePrompt,
   setPreferredModel,
+  setSpendCaps,
+  setPromptCachingEnabled,
   listPromptVersions,
   getPromptVersion,
   restorePromptVersion,
@@ -98,6 +100,9 @@ export default function Preferences({
 
         {/* Memo Transcription section */}
         <MemoTranscriptionSection />
+
+        {/* Chat spend limits section */}
+        <ChatSpendLimitsSection />
 
         {/* Cost Explorer section */}
         <CostExplorerSection />
@@ -698,6 +703,149 @@ function MemoTranscriptionSection() {
             <p className="text-red-800 text-sm">{error}</p>
           </div>
         )}
+      </div>
+    </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Chat spend limits
+// ---------------------------------------------------------------------------
+
+function ChatSpendLimitsSection() {
+  const [softCap, setSoftCap] = useState<number>(1.0);
+  const [hardCap, setHardCap] = useState<number>(5.0);
+  const [cachingEnabled, setCachingEnabled] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    loadConfig()
+      .then((info) => {
+        setSoftCap(info.session_soft_cap_usd);
+        setHardCap(info.session_hard_cap_usd);
+        setCachingEnabled(info.prompt_caching_enabled);
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleSave() {
+    if (!Number.isFinite(softCap) || !Number.isFinite(hardCap)) {
+      setError("Cap values must be valid numbers.");
+      return;
+    }
+    if (hardCap < softCap) {
+      setError("Hard cap must be >= soft cap.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await setSpendCaps(softCap, hardCap);
+      await setPromptCachingEnabled(cachingEnabled);
+      setSavedAt(Date.now());
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <details className="border border-gray-200 rounded-lg group">
+      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-gray-900">Chat spend limits</span>
+          <span className="text-xs text-gray-400">
+            soft ${softCap.toFixed(2)} / hard ${hardCap.toFixed(2)}
+          </span>
+        </div>
+        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
+          &#9656;
+        </span>
+      </summary>
+      <div className="border-t border-gray-100 p-4">
+        <p className="text-xs text-gray-400 mb-3">
+          Claria estimates costs locally from your chat usage. These limits apply
+          to a single chat session and reset when you start a new chat.
+        </p>
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+            <Spinner />
+            <span>Loading...</span>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <label className="flex items-center gap-3">
+              <span className="text-sm text-gray-700 w-32">Soft warning at</span>
+              <span className="text-sm text-gray-500">$</span>
+              <input
+                type="number"
+                step="0.10"
+                min="0"
+                value={softCap}
+                onChange={(e) => setSoftCap(parseFloat(e.target.value))}
+                disabled={saving}
+                className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded disabled:bg-gray-50"
+              />
+            </label>
+            <p className="text-xs text-gray-400 pl-32">
+              Yellow banner; you can dismiss and keep chatting.
+            </p>
+
+            <label className="flex items-center gap-3">
+              <span className="text-sm text-gray-700 w-32">Hard stop at</span>
+              <span className="text-sm text-gray-500">$</span>
+              <input
+                type="number"
+                step="0.10"
+                min="0"
+                value={hardCap}
+                onChange={(e) => setHardCap(parseFloat(e.target.value))}
+                disabled={saving}
+                className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded disabled:bg-gray-50"
+              />
+            </label>
+            <p className="text-xs text-gray-400 pl-32">
+              Sending is blocked until you raise the cap or start a new session.
+            </p>
+
+            <label className="flex items-center gap-2 pt-2">
+              <input
+                type="checkbox"
+                checked={cachingEnabled}
+                onChange={(e) => setCachingEnabled(e.target.checked)}
+                disabled={saving}
+              />
+              <span className="text-sm text-gray-700">
+                Enable Bedrock prompt caching (saves ~75% on repeated context)
+              </span>
+            </label>
+          </div>
+        )}
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
+            <p className="text-red-800 text-sm">{error}</p>
+          </div>
+        )}
+
+        <div className="flex justify-end mt-3 items-center gap-3">
+          {savedAt && Date.now() - savedAt < 3000 && (
+            <span className="text-xs text-emerald-600">Saved.</span>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={loading || saving}
+            className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
       </div>
     </details>
   );

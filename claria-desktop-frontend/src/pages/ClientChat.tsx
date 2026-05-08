@@ -7,12 +7,16 @@ import {
   extractRecordFile,
   getPrompt,
   listRecordContext,
+  loadConfig,
   type ChatMessage,
   type ChatModel,
   type RecordContext,
 } from "../lib/tauri";
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
+import type { SpendCaps } from "../components/SessionTotalBanner";
+
+const DEFAULT_CAPS: SpendCaps = { softUsd: 1.0, hardUsd: 5.0 };
 
 export type ResumeChat = {
   chatId: string;
@@ -76,6 +80,9 @@ export default function ClientChat({
     Array<import("../lib/tauri").TurnUsage | null> | undefined
   >();
 
+  // Spend caps loaded from config (Phase 3b).
+  const [caps, setCaps] = useState<SpendCaps>(DEFAULT_CAPS);
+
   useEffect(() => {
     getPrompt("system-prompt")
       .then(setSystemPrompt)
@@ -84,6 +91,14 @@ export default function ClientChat({
       .then(setContextFiles)
       .catch((e) => setContextError(String(e)))
       .finally(() => setContextLoading(false));
+    loadConfig()
+      .then((info) =>
+        setCaps({
+          softUsd: info.session_soft_cap_usd,
+          hardUsd: info.session_hard_cap_usd,
+        })
+      )
+      .catch(() => {});
   }, [clientId]);
 
   // Count context tokens once context is loaded and models are available.
@@ -283,6 +298,11 @@ export default function ClientChat({
         extraLoadingText="Building context..."
         toolbar={toolbar}
         embedded={embedded}
+        caps={caps}
+        onOpenPreferences={() => navigate("preferences")}
+        onStartFreshSession={() => {
+          chatIdRef.current = null;
+        }}
       />
 
       {/* System prompt modal (read-only) */}

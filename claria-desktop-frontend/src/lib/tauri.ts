@@ -481,6 +481,18 @@ export async function setHourlyCostData(enabled: boolean): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Spend caps + prompt caching
+// ---------------------------------------------------------------------------
+
+export async function setSpendCaps(softCapUsd: number, hardCapUsd: number): Promise<void> {
+  unwrap(await commands.setSpendCaps(softCapUsd, hardCapUsd));
+}
+
+export async function setPromptCachingEnabled(enabled: boolean): Promise<void> {
+  unwrap(await commands.setPromptCachingEnabled(enabled));
+}
+
+// ---------------------------------------------------------------------------
 // Shell / URL helpers
 // ---------------------------------------------------------------------------
 

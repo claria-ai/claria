@@ -3,12 +3,16 @@ import {
   plan,
   infraChat,
   countInfraContextTokens,
+  loadConfig,
   type ChatMessage,
   type ChatModel,
   type PlanEntry,
 } from "../lib/tauri";
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
+import type { SpendCaps } from "../components/SessionTotalBanner";
+
+const DEFAULT_CAPS: SpendCaps = { softUsd: 1.0, hardUsd: 5.0 };
 
 const SYSTEM_PROMPT = `You are Claria's infrastructure assistant. Claria is a desktop application for
 healthcare clinicians that runs entirely in the user's own AWS account — there is
@@ -97,6 +101,9 @@ export default function InfraChat({
   const [countingTokens, setCountingTokens] = useState(false);
   const [tokenCountError, setTokenCountError] = useState<string | null>(null);
 
+  // Spend caps loaded from config (Phase 3b).
+  const [caps, setCaps] = useState<SpendCaps>(DEFAULT_CAPS);
+
   useEffect(() => {
     plan()
       .then((entries) => {
@@ -104,6 +111,14 @@ export default function InfraChat({
       })
       .catch((e) => setScanError(String(e)))
       .finally(() => setScanning(false));
+    loadConfig()
+      .then((info) =>
+        setCaps({
+          softUsd: info.session_soft_cap_usd,
+          hardUsd: info.session_hard_cap_usd,
+        })
+      )
+      .catch(() => {});
   }, []);
 
   // Count context tokens once scan is done and models are loaded.
@@ -211,6 +226,8 @@ export default function InfraChat({
           extraLoading={scanning}
           extraLoadingText="Scanning infrastructure..."
           toolbar={toolbar}
+          caps={caps}
+          onOpenPreferences={() => navigate("preferences")}
         />
       )}
 
