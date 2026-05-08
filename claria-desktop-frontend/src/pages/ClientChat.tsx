@@ -18,6 +18,10 @@ export type ResumeChat = {
   chatId: string;
   modelId: string;
   messages: ChatMessage[];
+  /// Per-turn token usage aligned with `messages` by index. `null` for
+  /// user turns and for legacy assistant turns whose history pre-dates
+  /// per-turn usage tracking.
+  usageByIndex?: Array<import("../lib/tauri").TurnUsage | null>;
 };
 
 export default function ClientChat({

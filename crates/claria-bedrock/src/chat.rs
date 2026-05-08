@@ -92,7 +92,9 @@ use aws_sdk_bedrockruntime::types::{
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::error::BedrockError;
+use claria_core::models::turn_usage::TurnUsage;
+
+use crate::{error::BedrockError, tokens};
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -280,16 +282,21 @@ fn strip_scope_prefix(id: &str) -> &str {
 
 // ── Chat conversation ────────────────────────────────────────────────────────
 
-/// Send a multi-turn conversation to Bedrock and return the assistant's reply.
+/// Send a multi-turn conversation to Bedrock and return the assistant's
+/// reply along with per-turn token usage.
 ///
 /// The caller provides the full message history and a system prompt.
 /// This is the shared implementation used by the desktop chat command.
+///
+/// Returns a `(String, TurnUsage)` tuple. If the Bedrock response carries
+/// no `usage` block (shouldn't happen on Converse, but the SDK type is
+/// `Option`), the returned `TurnUsage` has zero token counts and zero cost.
 pub async fn chat_converse(
     config: &aws_config::SdkConfig,
     model_id: &str,
     system_prompt: &str,
     messages: &[ChatMessage],
-) -> Result<String, BedrockError> {
+) -> Result<(String, TurnUsage), BedrockError> {
     let client = aws_sdk_bedrockruntime::Client::new(config);
 
     let mut converse_messages: Vec<Message> = Vec::new();
@@ -334,7 +341,12 @@ pub async fn chat_converse(
         .collect::<Vec<_>>()
         .join("");
 
-    Ok(response_text)
+    let usage = match response.usage() {
+        Some(u) => tokens::extract_turn_usage(u, model_id),
+        None => tokens::empty_turn_usage(model_id),
+    };
+
+    Ok((response_text, usage))
 }
 
 // ── Token counting ───────────────────────────────────────────────────────────

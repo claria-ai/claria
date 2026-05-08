@@ -9,6 +9,7 @@ default = []
 metal = ["claria-whisper/metal"]
 
 [dependencies]
+claria-audit = { path = "../claria-audit" }
 claria-bedrock = { path = "../claria-bedrock" }
 claria-billing = { path = "../claria-billing" }
 claria-core = { path = "../claria-core" }
@@ -17,6 +18,7 @@ claria-storage = { path = "../claria-storage" }
 claria-transcribe = { path = "../claria-transcribe" }
 claria-whisper = { path = "../claria-whisper" }
 aws-config = "=1.8.14"
+aws-sdk-iam = "=1.88.0"
 aws-sdk-s3 = "=1.124.0"
 aws-sdk-sts = "=1.99.0"
 base64 = "=0.22.1"

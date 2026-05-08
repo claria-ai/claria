@@ -14,6 +14,7 @@ export type {
   Cause,
   CredentialScope,
   ChatHistoryDetail,
+  ChatHistoryDetailMessage,
   ChatMessage,
   ChatModel,
   ChatResponse,
@@ -27,7 +28,9 @@ export type {
   DeletedFile,
   FieldDrift,
   FileVersion,
+  InfraChatResponse,
   Lifecycle,
+  ModelPricing,
   NewCredentials,
   PlanEntry,
   RecordContext,
@@ -35,6 +38,7 @@ export type {
   ResourceSpec,
   Severity,
   StepStatus,
+  TurnUsage,
 } from "./bindings";
 export type { Result } from "./bindings";
 
@@ -331,7 +335,7 @@ export async function infraChat(
   modelId: string,
   messages: import("./bindings").ChatMessage[],
   planEntries: import("./bindings").PlanEntry[]
-): Promise<string> {
+): Promise<import("./bindings").InfraChatResponse> {
   return unwrap(await commands.infraChat(modelId, messages, planEntries));
 }
 

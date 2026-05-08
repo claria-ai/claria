@@ -128,7 +128,8 @@ export default function InfraChat({
 
   const handleSend = useCallback(
     async (modelId: string, messages: ChatMessage[]): Promise<string> => {
-      return infraChat(modelId, messages, planEntriesRef.current);
+      const response = await infraChat(modelId, messages, planEntriesRef.current);
+      return response.content;
     },
     []
   );

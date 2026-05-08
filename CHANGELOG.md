@@ -4,6 +4,9 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Per-turn token-usage capture and persistence** — every assistant chat turn now records a `TurnUsage` block (model_id, input/output/cache tokens, computed `cost_usd`, `pricing_version`) onto the assistant `ChatHistoryMessage` in S3. Cost is reconstructable from chat-history JSON alone — no Bedrock or Cost Explorer round-trip required. New `claria-billing::pricing` table with exact-prefix model lookup (kills the `id.contains("claude-opus-4")` substring trap). Audit events emitted per chat / infra-chat / extraction turn with token counts in `details`. Cache fields are present but zero until prompt caching ships.
+
 ### Changed
 - **Unified terraform-style reconciliation flow** — bootstrap and resource provisioning are now a single reconciliation loop instead of separate phases. IAM user/policy creation, credential handoff, and S3/CloudTrail/Bedrock provisioning happen in one pass with lazy privilege escalation
 - IAM User and IAM Policy resources changed from read-only (Data) to managed (Managed+Elevated) — they can now be created, updated, and destroyed through the standard syncer interface

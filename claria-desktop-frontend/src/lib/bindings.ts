@@ -155,6 +155,43 @@ async escalateIamPolicy(accessKeyId: string, secretAccessKey: string, onProgress
 }
 },
 /**
+ * Scan all resources using the provided credentials.
+ * 
+ * This is the entry point for both first-run and day-2 flows. On first run
+ * the frontend passes the user's initial credentials; on day-2 the frontend
+ * passes the saved scoped credentials (or calls `plan()` instead).
+ * 
+ * Returns a `ProvisionScanResult` that tells the frontend whether elevated
+ * credentials are needed before applying.
+ */
+async provisionScan(region: string, systemName: string, credentials: CredentialSource, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionScanResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("provision_scan", { region, systemName, credentials, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply all changes in one unified reconciliation.
+ * 
+ * Two-phase execution:
+ * 1. If elevated resources need changes and `elevated_credentials` is provided,
+ * execute elevated resources first (IAM user, policy).
+ * 2. After elevated execution, create an access key for the claria-admin user
+ * if no config exists yet (credential handoff from admin → scoped creds).
+ * 3. Execute regular resources with the scoped credentials.
+ * 4. Re-scan and return the updated plan.
+ */
+async provisionApply(region: string, systemName: string, credentials: CredentialSource, elevatedCredentials: CredentialSource | null, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<PlanEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("provision_apply", { region, systemName, credentials, elevatedCredentials, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Scan all resources and return an annotated plan.
  * 
  * Streams `ProvisionerProgress` events via the channel as each resource
@@ -392,7 +429,7 @@ async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], ch
  * on every message. We build a rich system prompt explaining Claria's
  * operating model and the current infrastructure state, then call Bedrock.
  */
-async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry[]) : Promise<Result<string, string>> {
+async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry[]) : Promise<Result<InfraChatResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("infra_chat", { modelId, messages, planEntries }) };
 } catch (e) {
@@ -834,16 +871,28 @@ export type Cause = "in_sync" | "missing" | "drift" | "orphaned"
 /**
  * Detail of a persisted chat session, returned when resuming a conversation.
  */
-export type ChatHistoryDetail = { chat_id: string; model_id: string; messages: ChatMessage[]; created_at: string }
+export type ChatHistoryDetail = { chat_id: string; model_id: string; messages: ChatHistoryDetailMessage[]; created_at: string }
+/**
+ * A single message in persisted chat history, including optional token
+ * usage on assistant turns.
+ */
+export type ChatHistoryDetailMessage = { role: ChatRole; content: string; 
+/**
+ * `Some` on assistant turns whose Converse response carried a usage
+ * block. `None` on user turns and on assistant turns from history
+ * written before per-turn usage tracking landed.
+ */
+usage: TurnUsage | null }
 export type ChatMessage = { role: ChatRole; content: string }
 /**
  * Specta type mirroring `claria_bedrock::chat::ChatModel`.
  */
 export type ChatModel = { model_id: string; name: string }
 /**
- * Response from a chat message, including the persisted chat session ID.
+ * Response from a chat message, including the persisted chat session ID
+ * and per-turn token usage.
  */
-export type ChatResponse = { chat_id: string; content: string }
+export type ChatResponse = { chat_id: string; content: string; usage: TurnUsage }
 export type ChatRole = "user" | "assistant"
 export type ClientSummary = { id: string; name: string; created_at: string }
 /**
@@ -891,6 +940,16 @@ export type CredentialClass =
  * IAM permissions required to self-bootstrap.
  */
 "insufficient"
+export type CredentialScope = 
+/**
+ * Requires elevated credentials (root/admin) to create or modify.
+ * Can be read with regular (claria-admin) credentials for drift detection.
+ */
+"elevated" | 
+/**
+ * Uses the regular claria-admin credentials.
+ */
+"regular"
 export type CredentialSource = { type: "inline"; access_key_id: string; secret_access_key: string; session_token?: string | null } | { type: "profile"; profile_name: string } | { type: "default_chain" }
 /**
  * A client that has been deleted (has a delete marker on the client JSON).
@@ -927,8 +986,12 @@ actual: JsonValue }
  * A single version of a file in a client's record.
  */
 export type FileVersion = { version_id: string; size: number; last_modified: string | null; is_latest: boolean }
+/**
+ * Response from an infrastructure chat turn. Infra chat does not persist
+ * history, but we still return token usage so the UI can display cost.
+ */
+export type InfraChatResponse = { content: string; usage: TurnUsage }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
-export type CredentialScope = "elevated" | "regular"
 export type Lifecycle = "data" | "managed"
 /**
  * Fresh credentials created during the bootstrap flow.
@@ -947,6 +1010,24 @@ export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drif
  * Live state read from AWS (if the resource exists).
  */
 actual: JsonValue | null }
+/**
+ * Result of a provision scan. Contains everything the frontend needs to
+ * render the plan and decide whether escalation is required.
+ */
+export type ProvisionScanResult = { 
+/**
+ * The full plan across all resources.
+ */
+entries: PlanEntry[]; 
+/**
+ * True if any `Elevated`-scope resource needs Create or Modify,
+ * meaning the user must provide admin/root credentials.
+ */
+needs_escalation: boolean; 
+/**
+ * The account ID (resolved via STS from the provided credentials).
+ */
+account_id: string }
 export type ProvisionerProgress = { kind: "scan_started"; label: string; index: number; total: number } | { kind: "scan_completed"; label: string; index: number; total: number } | { kind: "apply_started"; label: string; action: string; index: number; total: number } | { kind: "apply_completed"; label: string; action: string; index: number; total: number } | { kind: "escalation_step"; label: string; status: string }
 /**
  * A record file with its readable text content, for chat context.
@@ -976,15 +1057,15 @@ resource_name: string;
 /**
  * Data (read-only precondition) or Managed (Claria creates/updates/deletes)
  */
-lifecycle: Lifecycle;
+lifecycle: Lifecycle; 
 /**
  * The desired AWS state as a JSON value — shape varies per resource type
  */
-desired: JsonValue;
+desired: JsonValue; 
 /**
  * Which credential scope this resource belongs to
  */
-credential_scope: CredentialScope;
+credential_scope: CredentialScope; 
 /**
  * Short label for the UI, e.g. "S3 Bucket Encryption"
  */
@@ -1027,6 +1108,54 @@ export type TAURI_CHANNEL<TSend> = null
  * Result from transcription, including detected language.
  */
 export type TranscribeMemoResult = { text: string; language: string | null }
+/**
+ * Per-turn token usage captured from a Bedrock Converse response.
+ * 
+ * Cache fields are populated by the prompt-caching layer; until then they
+ * are `0`, which the UI must treat as "no caching active", not "missing
+ * data". `String` field means this type cannot be `Copy`.
+ */
+export type TurnUsage = { 
+/**
+ * Inference profile ID actually invoked (e.g.
+ * `us.anthropic.claude-sonnet-4-20250514-v1:0`). Stored per-turn — not
+ * inherited from `ChatHistory.model_id` — because the user can switch
+ * models mid-session and we want each turn priced against the model
+ * that produced it.
+ */
+model_id: string; 
+/**
+ * Non-cached input tokens billed at full rate.
+ */
+input_tokens: number; 
+/**
+ * Output tokens billed at output rate.
+ */
+output_tokens: number; 
+/**
+ * Cache-hit input tokens (Anthropic-on-Bedrock cache read). Mirrors the
+ * AWS SDK `TokenUsage::cache_read_input_tokens`. `0` when prompt
+ * caching is not active.
+ */
+cache_read_input_tokens: number; 
+/**
+ * Cache-write input tokens — the first turn that creates the cache
+ * entry. Mirrors the AWS SDK `TokenUsage::cache_write_input_tokens`.
+ * `0` when prompt caching is not active.
+ */
+cache_write_input_tokens: number; 
+/**
+ * USD cost computed at the moment of the call against `pricing_version`.
+ * Frozen — never recomputed on read. UI may recompute live for
+ * "what-if" estimates but must keep this value as the audit-of-record.
+ */
+cost_usd: number; 
+/**
+ * Version of the pricing table used to compute `cost_usd`. Bumped each
+ * time `claria-billing::pricing` is edited. `0` means "unknown /
+ * pre-versioning".
+ */
+pricing_version: number }
 /**
  * Result of checking for a newer release on GitHub.
  */

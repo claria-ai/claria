@@ -53,7 +53,11 @@ export default function ClientRecord({
     setResumeChat({
       chatId: detail.chat_id,
       modelId: detail.model_id,
-      messages: detail.messages,
+      messages: detail.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+      usageByIndex: detail.messages.map((m) => m.usage),
     });
     setTab("chat");
   }

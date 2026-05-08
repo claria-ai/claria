@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -74,11 +73,33 @@ pub enum ChatRole {
     Assistant,
 }
 
-/// Response from a chat message, including the persisted chat session ID.
+/// Response from a chat message, including the persisted chat session ID
+/// and per-turn token usage.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ChatResponse {
     pub chat_id: String,
     pub content: String,
+    pub usage: claria_core::models::turn_usage::TurnUsage,
+}
+
+/// Response from an infrastructure chat turn. Infra chat does not persist
+/// history, but we still return token usage so the UI can display cost.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct InfraChatResponse {
+    pub content: String,
+    pub usage: claria_core::models::turn_usage::TurnUsage,
+}
+
+/// A single message in persisted chat history, including optional token
+/// usage on assistant turns.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ChatHistoryDetailMessage {
+    pub role: ChatRole,
+    pub content: String,
+    /// `Some` on assistant turns whose Converse response carried a usage
+    /// block. `None` on user turns and on assistant turns from history
+    /// written before per-turn usage tracking landed.
+    pub usage: Option<claria_core::models::turn_usage::TurnUsage>,
 }
 
 /// Detail of a persisted chat session, returned when resuming a conversation.
@@ -86,7 +107,7 @@ pub struct ChatResponse {
 pub struct ChatHistoryDetail {
     pub chat_id: String,
     pub model_id: String,
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vec<ChatHistoryDetailMessage>,
     pub created_at: String,
 }
 
@@ -856,7 +877,6 @@ pub async fn provision_scan(
         }),
         Err(_) => claria_provisioner::ProvisionerState {
             resources: Default::default(),
-            manifest_version: None,
             region: region.clone(),
             bucket: format!("{}-{system_name}-data", identity.account_id),
         },
@@ -921,7 +941,6 @@ pub async fn provision_apply(
     let mut prov_state = persistence.load().await.unwrap_or_else(|_| {
         claria_provisioner::ProvisionerState {
             resources: Default::default(),
-            manifest_version: None,
             region: region.clone(),
             bucket: format!("{}-{system_name}-data", identity.account_id),
         }
@@ -1358,7 +1377,7 @@ pub async fn upload_record_file(
         )
         .await
         {
-            Ok(text) => {
+            Ok((text, usage)) => {
                 claria_storage::objects::put_object(
                     &s3,
                     &bucket,
@@ -1368,6 +1387,24 @@ pub async fn upload_record_file(
                 )
                 .await
                 .map_err(|e| e.to_string())?;
+
+                claria_audit::events::AuditEvent::new(
+                    "extract_document_text",
+                    "record_file",
+                    filename,
+                    cfg.account_id.clone(),
+                )
+                .with_details(serde_json::json!({
+                    "client_id": id.to_string(),
+                    "model_id": usage.model_id,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_input_tokens": usage.cache_read_input_tokens,
+                    "cache_write_input_tokens": usage.cache_write_input_tokens,
+                    "cost_usd": usage.cost_usd,
+                    "pricing_version": usage.pricing_version,
+                }))
+                .emit();
 
                 tracing::info!(client_id = %id, filename, "sidecar text extraction uploaded");
             }
@@ -1677,7 +1714,7 @@ pub async fn extract_record_file(
             .await
             .map_err(|e| e.to_string())?;
         let extraction_prompt = load_prompt(&s3, &bucket, "pdf-extraction").await?;
-        let text = claria_bedrock::extract::extract_document_text(
+        let (text, usage) = claria_bedrock::extract::extract_document_text(
             &sdk_config,
             EXTRACTION_MODEL_ID,
             &output.body,
@@ -1697,6 +1734,24 @@ pub async fn extract_record_file(
         )
         .await
         .map_err(|e| e.to_string())?;
+
+        claria_audit::events::AuditEvent::new(
+            "extract_document_text",
+            "record_file",
+            &filename,
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({
+            "client_id": id.to_string(),
+            "model_id": usage.model_id,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+            "cache_write_input_tokens": usage.cache_write_input_tokens,
+            "cost_usd": usage.cost_usd,
+            "pricing_version": usage.pricing_version,
+        }))
+        .emit();
 
         text
     } else if let Some(media_format) =
@@ -1961,7 +2016,7 @@ pub async fn chat_message(
         })
         .collect();
 
-    let response_text =
+    let (response_text, usage) =
         claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &full_prompt, &bedrock_messages)
             .await
             .map_err(|e| e.to_string())?;
@@ -1972,6 +2027,26 @@ pub async fn chat_message(
         None => uuid::Uuid::new_v4(),
     };
     let client_uuid: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    // Emit a per-turn audit event with token usage in details. UUIDs only;
+    // never the message content.
+    claria_audit::events::AuditEvent::new(
+        "chat_message",
+        "client",
+        client_uuid.to_string(),
+        cfg.account_id.clone(),
+    )
+    .with_details(serde_json::json!({
+        "chat_id": chat_uuid.to_string(),
+        "model_id": usage.model_id,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_input_tokens": usage.cache_read_input_tokens,
+        "cache_write_input_tokens": usage.cache_write_input_tokens,
+        "cost_usd": usage.cost_usd,
+        "pricing_version": usage.pricing_version,
+    }))
+    .emit();
 
     // Build the full message history including the new assistant response.
     let now = jiff::Timestamp::now();
@@ -1986,12 +2061,14 @@ pub async fn chat_message(
             },
             content: m.content.clone(),
             timestamp: now,
+            usage: None,
         })
         .collect();
     history_messages.push(claria_core::models::chat_history::ChatHistoryMessage {
         role: claria_core::models::chat_history::ChatHistoryRole::Assistant,
         content: response_text.clone(),
         timestamp: now,
+        usage: Some(usage.clone()),
     });
 
     let history = claria_core::models::chat_history::ChatHistory {
@@ -2037,6 +2114,7 @@ pub async fn chat_message(
     Ok(ChatResponse {
         chat_id: chat_uuid.to_string(),
         content: response_text,
+        usage,
     })
 }
 
@@ -2052,8 +2130,8 @@ pub async fn infra_chat(
     model_id: String,
     messages: Vec<ChatMessage>,
     plan_entries: Vec<PlanEntry>,
-) -> Result<String, String> {
-    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+) -> Result<InfraChatResponse, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
 
     let system_prompt = build_infra_system_prompt(&plan_entries);
 
@@ -2068,9 +2146,35 @@ pub async fn infra_chat(
         })
         .collect();
 
-    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &system_prompt, &bedrock_messages)
-        .await
-        .map_err(|e| e.to_string())
+    let (content, usage) = claria_bedrock::chat::chat_converse(
+        &sdk_config,
+        &model_id,
+        &system_prompt,
+        &bedrock_messages,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Audit the infra-chat turn against the AWS account_id (no per-client
+    // resource here).
+    claria_audit::events::AuditEvent::new(
+        "infra_chat",
+        "infrastructure",
+        "infra",
+        cfg.account_id.clone(),
+    )
+    .with_details(serde_json::json!({
+        "model_id": usage.model_id,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_input_tokens": usage.cache_read_input_tokens,
+        "cache_write_input_tokens": usage.cache_write_input_tokens,
+        "cost_usd": usage.cost_usd,
+        "pricing_version": usage.pricing_version,
+    }))
+    .emit();
+
+    Ok(InfraChatResponse { content, usage })
 }
 
 /// Build the full system prompt for infrastructure chat from plan entries.
@@ -2180,12 +2284,13 @@ pub async fn load_chat_history(
     let messages = history
         .messages
         .into_iter()
-        .map(|m| ChatMessage {
+        .map(|m| ChatHistoryDetailMessage {
             role: match m.role {
                 claria_core::models::chat_history::ChatHistoryRole::User => ChatRole::User,
                 claria_core::models::chat_history::ChatHistoryRole::Assistant => ChatRole::Assistant,
             },
             content: m.content,
+            usage: m.usage,
         })
         .collect();
 
