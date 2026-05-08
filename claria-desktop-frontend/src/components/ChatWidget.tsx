@@ -10,10 +10,14 @@ import {
 import {
   EMPTY_SESSION_USAGE,
   accumulateUsage,
+  estimateTurnCost,
+  formatCost,
   type SessionUsage,
 } from "../lib/cost";
+import { lookupModelPricing, type ModelPricing } from "../lib/tauri";
 import TurnCostBadge from "./TurnCostBadge";
 import SessionTotalBanner, { type SpendCaps } from "./SessionTotalBanner";
+import LastTurnFooter from "./LastTurnFooter";
 
 function isMarketplaceError(error: string): boolean {
   return error.includes("aws-marketplace:") || error.includes("Marketplace");
@@ -36,12 +40,14 @@ export default function ChatWidget({
   initialMessages,
   initialModelId,
   initialUsageByIndex,
+  contextTokens,
   emptyStateTitle = "Start the conversation.",
   emptyStateSubtitle,
   placeholder,
   extraLoading = false,
   extraLoadingText = "Loading...",
   toolbar,
+  historyHeader,
   embedded = false,
   caps = DEFAULT_CAPS,
   onOpenPreferences,
@@ -58,12 +64,18 @@ export default function ChatWidget({
   /// resuming a chat from history so old assistant turns can render
   /// their cost badges.
   initialUsageByIndex?: Array<TurnUsage | null>;
+  /// Optional context-token count used for pre-flight cost estimation.
+  /// When omitted, the pre-flight chip is hidden.
+  contextTokens?: number | null;
   emptyStateTitle?: string;
   emptyStateSubtitle?: string;
   placeholder?: string;
   extraLoading?: boolean;
   extraLoadingText?: string;
   toolbar?: ReactNode;
+  /// Optional content rendered between the session banner and the
+  /// toolbar — typically a chat-history summary header on resume.
+  historyHeader?: ReactNode;
   embedded?: boolean;
   caps?: SpendCaps;
   /// Optional callback used by the soft- and hard-cap UIs. When omitted,
@@ -89,6 +101,10 @@ export default function ChatWidget({
   const hardCapHit = session.totalUsd >= caps.hardUsd && caps.hardUsd > 0;
   const softCapHit =
     session.totalUsd >= caps.softUsd && caps.softUsd > 0 && !hardCapHit;
+
+  // Per-model pricing for pre-flight estimates. Looked up once per
+  // selected model and cached.
+  const [pricing, setPricing] = useState<ModelPricing | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [textareaHeight, setTextareaHeight] = useState(80);
@@ -109,6 +125,25 @@ export default function ChatWidget({
       setSelectedModelId(preferred);
     }
   }, [chatModels, selectedModelId, preferredModelId]);
+
+  // Resolve pricing for the selected model. `null` when unknown.
+  useEffect(() => {
+    if (!selectedModelId) {
+      setPricing(null);
+      return;
+    }
+    let cancelled = false;
+    lookupModelPricing(selectedModelId)
+      .then((p) => {
+        if (!cancelled) setPricing(p);
+      })
+      .catch(() => {
+        if (!cancelled) setPricing(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedModelId]);
 
   // Apply initial messages/model when they change (resume chat)
   useEffect(() => {
@@ -259,6 +294,9 @@ export default function ChatWidget({
       {/* Persistent session-cost banner — fuel-gauge style. */}
       <SessionTotalBanner session={session} caps={caps} />
 
+      {/* Optional resumed-chat history header. */}
+      {historyHeader}
+
       {/* Optional toolbar slot (context pills, etc.) */}
       {toolbar}
 
@@ -291,6 +329,18 @@ export default function ChatWidget({
               <div className="flex items-center gap-2 text-gray-500 text-sm">
                 <Spinner />
                 <span>Thinking...</span>
+                {(() => {
+                  const est = estimateTurnCost(
+                    pricing,
+                    contextTokens ?? 0,
+                    input.length
+                  );
+                  return est != null && est > 0 ? (
+                    <span className="text-[10px] text-gray-400">
+                      (~{formatCost(est)} for this turn)
+                    </span>
+                  ) : null;
+                })()}
               </div>
             </div>
           </div>
@@ -313,6 +363,16 @@ export default function ChatWidget({
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Last-turn footer — quiet ambient line above the composer. */}
+      <LastTurnFooter
+        usage={
+          messages.length > 0 && messages[messages.length - 1].role === "assistant"
+            ? usageByIndex[messages.length - 1]
+            : undefined
+        }
+        sessionTotalUsd={session.totalUsd}
+      />
 
       {/* Soft-cap warning — advisory, dismissable for the session. */}
       {softCapHit && !softCapAcknowledged && (

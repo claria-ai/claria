@@ -148,6 +148,36 @@ interface ModelPricingLike {
 }
 
 // ---------------------------------------------------------------------------
+// Pre-flight estimate
+// ---------------------------------------------------------------------------
+
+/**
+ * Approximate "what will this turn cost?" before sending. The result is
+ * deliberately a tilde-prefixed number in the UI — we know the user
+ * message length but not the model's response length, so we project a
+ * reasonable response size and surface the total.
+ *
+ * Returns `null` if pricing is unknown — the caller hides the estimate.
+ */
+export function estimateTurnCost(
+  pricing: import("./tauri").ModelPricing | null,
+  contextTokens: number,
+  pendingMessageChars: number,
+  /// Project an assistant response length in tokens. ~200 is a
+  /// reasonable conversational default; clamp to the caller's setting.
+  projectedOutputTokens: number = 200
+): number | null {
+  if (!pricing) return null;
+  const userTokens = Math.ceil(pendingMessageChars / 4);
+  const inputTokens = (contextTokens > 0 ? contextTokens : 0) + userTokens;
+  const m = 1_000_000;
+  return (
+    (inputTokens / m) * pricing.input_per_million +
+    (projectedOutputTokens / m) * pricing.output_per_million
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Relative time (used in chat history headers)
 // ---------------------------------------------------------------------------
 

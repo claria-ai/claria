@@ -492,6 +492,17 @@ export async function setPromptCachingEnabled(enabled: boolean): Promise<void> {
   unwrap(await commands.setPromptCachingEnabled(enabled));
 }
 
+/**
+ * Look up Bedrock pricing for a model_id (inference profile or bare
+ * foundation id). Returns `null` for unknown models so callers can hide
+ * the pre-flight estimate rather than render `$NaN`.
+ */
+export async function lookupModelPricing(
+  modelId: string
+): Promise<import("./bindings").ModelPricing | null> {
+  return unwrap(await commands.lookupModelPricing(modelId));
+}
+
 // ---------------------------------------------------------------------------
 // Shell / URL helpers
 // ---------------------------------------------------------------------------

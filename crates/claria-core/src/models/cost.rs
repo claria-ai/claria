@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use ts_rs::TS;
 
 use super::token_count::TokenCount;
@@ -9,7 +10,7 @@ use super::token_count::TokenCount;
 /// - `cache_read_per_million` — typically ~10% of `input_per_million`.
 /// - `cache_write_per_million` — typically ~125% of `input_per_million`
 ///   for the 5-minute TTL tier.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, Type)]
 #[ts(export)]
 pub struct ModelPricing {
     pub input_per_million: f64,

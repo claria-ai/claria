@@ -3555,6 +3555,17 @@ pub async fn set_prompt_caching_enabled(
     Ok(())
 }
 
+/// Look up `ModelPricing` for a Bedrock model_id. Returns `None` for
+/// unknown models so the UI can hide pre-flight estimates rather than
+/// show `$NaN`.
+#[tauri::command]
+#[specta::specta]
+pub async fn lookup_model_pricing(
+    model_id: String,
+) -> Result<Option<claria_core::models::cost::ModelPricing>, String> {
+    Ok(claria_billing::pricing::lookup(&model_id))
+}
+
 // ---------------------------------------------------------------------------
 // Shell / URL helpers
 // ---------------------------------------------------------------------------

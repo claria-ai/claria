@@ -14,6 +14,8 @@ import {
 } from "../lib/tauri";
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
+import ChatHistoryHeader from "../components/ChatHistoryHeader";
+import { summarizeHistory } from "../lib/cost";
 import type { SpendCaps } from "../components/SessionTotalBanner";
 
 const DEFAULT_CAPS: SpendCaps = { softUsd: 1.0, hardUsd: 5.0 };
@@ -26,6 +28,9 @@ export type ResumeChat = {
   /// user turns and for legacy assistant turns whose history pre-dates
   /// per-turn usage tracking.
   usageByIndex?: Array<import("../lib/tauri").TurnUsage | null>;
+  /// ISO-8601 timestamp of the chat's last activity (for the resume
+  /// header — "Last activity: yesterday 4:12pm" etc).
+  lastActivityIso?: string | null;
 };
 
 export default function ClientChat({
@@ -79,6 +84,7 @@ export default function ClientChat({
   const [initialUsageByIndex, setInitialUsageByIndex] = useState<
     Array<import("../lib/tauri").TurnUsage | null> | undefined
   >();
+  const [lastActivityIso, setLastActivityIso] = useState<string | null>(null);
 
   // Spend caps loaded from config (Phase 3b).
   const [caps, setCaps] = useState<SpendCaps>(DEFAULT_CAPS);
@@ -145,9 +151,29 @@ export default function ClientChat({
     setInitialMessages(resumeChat.messages);
     setInitialModelId(resumeChat.modelId);
     setInitialUsageByIndex(resumeChat.usageByIndex);
+    setLastActivityIso(resumeChat.lastActivityIso ?? null);
     chatIdRef.current = resumeChat.chatId;
     onResumeChatConsumed?.();
   }, [resumeChat, onResumeChatConsumed]);
+
+  // Memo'd summary of resumed history for the chat header.
+  const historyHeader = initialMessages
+    ? (() => {
+        const summary = summarizeHistory(
+          initialMessages.map((m, i) => ({
+            role: m.role,
+            usage: initialUsageByIndex?.[i] ?? null,
+          })),
+          lastActivityIso
+        );
+        return (
+          <ChatHistoryHeader
+            summary={summary}
+            onSeeAccountSpend={() => navigate("cost-explorer")}
+          />
+        );
+      })()
+    : undefined;
 
   const contextFilesRef = useRef(contextFiles);
   contextFilesRef.current = contextFiles;
@@ -292,11 +318,13 @@ export default function ClientChat({
         initialMessages={initialMessages}
         initialModelId={initialModelId}
         initialUsageByIndex={initialUsageByIndex}
+        contextTokens={contextTokens}
         emptyStateTitle="Start the conversation."
         emptyStateSubtitle="The chat includes the context files shown above. Chat messages are saved separately and do not modify your client files."
         extraLoading={contextLoading}
         extraLoadingText="Building context..."
         toolbar={toolbar}
+        historyHeader={historyHeader}
         embedded={embedded}
         caps={caps}
         onOpenPreferences={() => navigate("preferences")}

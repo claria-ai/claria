@@ -764,6 +764,19 @@ async setPromptCachingEnabled(enabled: boolean) : Promise<Result<null, string>> 
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Look up `ModelPricing` for a Bedrock model_id. Returns `None` for
+ * unknown models so the UI can hide pre-flight estimates rather than
+ * show `$NaN`.
+ */
+async lookupModelPricing(modelId: string) : Promise<Result<ModelPricing | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("lookup_model_pricing", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async openUrl(url: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("open_url", { url }) };
@@ -1018,6 +1031,15 @@ export type FileVersion = { version_id: string; size: number; last_modified: str
 export type InfraChatResponse = { content: string; usage: TurnUsage }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type Lifecycle = "data" | "managed"
+/**
+ * Pricing per million tokens for a Bedrock model.
+ * 
+ * Cache fields cover Anthropic-on-Bedrock prompt caching:
+ * - `cache_read_per_million` — typically ~10% of `input_per_million`.
+ * - `cache_write_per_million` — typically ~125% of `input_per_million`
+ * for the 5-minute TTL tier.
+ */
+export type ModelPricing = { input_per_million: number; output_per_million: number; cache_read_per_million: number; cache_write_per_million: number }
 /**
  * Fresh credentials created during the bootstrap flow.
  */

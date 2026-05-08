@@ -17,7 +17,8 @@ import type { Page } from "../App";
 
 const SERVICE_TOOLTIPS: Record<string, string> = {
   "Amazon Bedrock":
-    "AI model usage — powers the chat assistant and report generation",
+    "AI model usage — powers the chat assistant and report generation. " +
+    "For per-chat detail, see the cost banner inside each chat session.",
   "Amazon Simple Storage Service":
     "File storage — your client records, documents, and backups",
   "AWS CloudTrail":

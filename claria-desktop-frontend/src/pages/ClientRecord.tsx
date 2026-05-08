@@ -58,6 +58,7 @@ export default function ClientRecord({
         content: m.content,
       })),
       usageByIndex: detail.messages.map((m) => m.usage),
+      lastActivityIso: detail.created_at,
     });
     setTab("chat");
   }
