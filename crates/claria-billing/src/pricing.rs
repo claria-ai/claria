@@ -19,23 +19,49 @@ use claria_core::models::cost::ModelPricing;
 ///
 /// Phase 1 (capture only, cache fields zero) → version 1.
 /// Phase 2 (prompt caching active) → version 2 with non-zero cache prices.
-pub const PRICING_VERSION: u32 = 2;
+/// Phase 3 (Claude 4.5+ generation added) → version 3.
+pub const PRICING_VERSION: u32 = 3;
 
 /// Resolve pricing for a Bedrock model_id.
 ///
 /// Strips an inference-profile scope prefix (`us.`, `eu.`, `global.`) and
 /// matches the bare foundation-model family. The family stem is anchored
-/// with a dash boundary so `claude-opus-4` does not falsely match
-/// `claude-opus-4-1`.
+/// with a dash boundary so `claude-opus-4` does not falsely match a
+/// future minor bump like `claude-opus-4-1`.
+///
+/// Note: the dash-boundary heuristic in `family_matches` distinguishes a
+/// date stamp (4+ leading digits) from a minor version bump (1-2 digits).
+/// That means each minor generation (4.5, 4.6, 4.7) needs its own entry
+/// here — the `claude-opus-4` family stem will NOT silently match
+/// `claude-opus-4-5`. A structured-parser refactor that captures
+/// `{family, major, minor}` once is tracked separately; the table is the
+/// minimum needed today.
 pub fn lookup(model_id: &str) -> Option<ModelPricing> {
     let bare = strip_scope_prefix(model_id);
     // Drop the provider prefix (e.g. `anthropic.`) so we match against the
     // family stem.
     let stem = bare.strip_prefix("anthropic.").unwrap_or(bare);
 
-    // Match the family stem with an explicit dash boundary so a future
-    // `claude-opus-4-1` does not match `claude-opus-4`.
-    // Claude Opus 4 — 5-min TTL cache (1.25× input write, 0.10× input read).
+    // Match newer minor versions first. Order is not strictly required
+    // (family_matches's dash boundary makes families disjoint) but more-
+    // specific-first is easier to read and survives future heuristic
+    // changes.
+
+    // Claude Opus 4.5+ — 3× cheaper than Opus 4 (input $5 vs $15).
+    // Covers Opus 4.5, 4.6, 4.7.
+    if family_matches(stem, "claude-opus-4-5")
+        || family_matches(stem, "claude-opus-4-6")
+        || family_matches(stem, "claude-opus-4-7")
+    {
+        return Some(ModelPricing {
+            input_per_million: 5.0,
+            output_per_million: 25.0,
+            cache_read_per_million: 0.50,
+            cache_write_per_million: 6.25,
+        });
+    }
+    // Claude Opus 4 — original generation (deprecated on direct API,
+    // still resolvable for legacy chat-history cost reconstruction).
     if family_matches(stem, "claude-opus-4") {
         return Some(ModelPricing {
             input_per_million: 15.0,
@@ -44,7 +70,20 @@ pub fn lookup(model_id: &str) -> Option<ModelPricing> {
             cache_write_per_million: 18.75,
         });
     }
-    // Claude Sonnet 4 — 5-min TTL cache.
+    // Claude Sonnet 4.5+ — same headline rate as Sonnet 4 (input $3).
+    // Covers Sonnet 4.5, 4.6.
+    if family_matches(stem, "claude-sonnet-4-5")
+        || family_matches(stem, "claude-sonnet-4-6")
+    {
+        return Some(ModelPricing {
+            input_per_million: 3.0,
+            output_per_million: 15.0,
+            cache_read_per_million: 0.30,
+            cache_write_per_million: 3.75,
+        });
+    }
+    // Claude Sonnet 4 — original generation (deprecated on direct API,
+    // still resolvable for legacy chat-history cost reconstruction).
     if family_matches(stem, "claude-sonnet-4") {
         return Some(ModelPricing {
             input_per_million: 3.0,
@@ -53,7 +92,17 @@ pub fn lookup(model_id: &str) -> Option<ModelPricing> {
             cache_write_per_million: 3.75,
         });
     }
-    // Claude 3.5 Haiku — 5-min TTL cache.
+    // Claude Haiku 4.5 — Bedrock pricing per Anthropic's published rates.
+    if family_matches(stem, "claude-haiku-4-5") {
+        return Some(ModelPricing {
+            input_per_million: 1.0,
+            output_per_million: 5.0,
+            cache_read_per_million: 0.10,
+            cache_write_per_million: 1.25,
+        });
+    }
+    // Claude 3.5 Haiku — retired on direct API but still available on
+    // Bedrock and Vertex AI.
     if family_matches(stem, "claude-haiku") || family_matches(stem, "claude-3-5-haiku") {
         return Some(ModelPricing {
             input_per_million: 0.80,
