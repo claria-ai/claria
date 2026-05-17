@@ -25,6 +25,8 @@ All notable changes to Claria are documented here.
 - Frontend `npm update` — refreshed within existing semver ranges: `react`/`react-dom` to 19.2.6, `tailwindcss` + `@tailwindcss/vite` to 4.3.0, `typescript-eslint` to 8.59.3, `vite` to 7.3.3, `eslint-plugin-react-refresh` to 0.4.26, `@types/node` to 24.12.4, plus assorted transitives. `eslint-plugin-react-hooks` pinned at `~7.0.1` (7.1.x introduces a strict `react-hooks/set-state-in-effect` rule that flags ~14 existing call sites — to be addressed in a follow-up)
 - `uuid` 1.21.0 → 1.23.1 (default RNG switched to rand 0.10; `Version::Max` and `get_version` semantics tightened — audited, no call sites affected)
 - `ureq` 3.0.11 → 3.3.0 (stable webpki-roots, `NO_PROXY` support, chunked-transfer/DNS-via-proxy fixes). MSRV raised to 1.85; current toolchain (1.94) is well above
+- `candle-core`/`candle-nn`/`candle-transformers` 0.9.2 → 0.10.2 — Metal backend improvements (inter-encoder sync, concurrent dispatching, `StorageModePrivate` for intermediates, u64 seed-buffer size fix), NaN fixes for GGML quantized models, new `upsample_bilinear2d`. `DType` is now `#[non_exhaustive]` but Claria has no `match` arms on it
+- `tokenizers` 0.22.2 → 0.23.1 — 96% faster added-vocabulary deserialization, 16% BPE batch-encoding improvement. `add_tokens` now normalizes content at insertion; Claria only reads `tokenizer.json` so the round-trip difference does not apply
 
 ## [0.15.0] — 2026-03-04
 
