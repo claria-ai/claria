@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claria — See it in action</title>
+  <style>
+    :root {
+      --text: #1a1a2e;
+      --muted: #6b7280;
+      --bg: #ffffff;
+      --surface: #f9fafb;
+      --border: #e5e7eb;
+      --accent: #2563eb;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.6;
+    }
+    header {
+      text-align: center;
+      padding: 3rem 1rem 2rem;
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+    header p {
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    header nav {
+      margin-top: 1rem;
+    }
+    header nav a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.9rem;
+    }
+    header nav a:hover {
+      text-decoration: underline;
+    }
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem 1rem 4rem;
+    }
+    .demo {
+      margin-bottom: 3rem;
+    }
+    .demo h2 {
+      font-size: 1.3rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+    .demo p {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin-bottom: 1rem;
+    }
+    .demo video {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+    }
+    footer {
+      text-align: center;
+      padding: 2rem 1rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>See Claria in Action</h1>
+    <p>
+      Watch how Claria sets up a HIPAA-compliant AWS environment, manages cloud
+      resources, and uses AI to assist with clinical documentation.
+    </p>
+    <nav><a href="index.html">&larr; Back to home</a></nav>
+  </header>
+
+  <main>
+    <section class="demo">
+      <h2>1. Bootstrapping a Fresh AWS Account</h2>
+      <p>
+        Starting from scratch: Claria guides you through creating a secure AWS
+        environment with dedicated IAM credentials, encrypted S3 storage,
+        CloudTrail audit logging, and Bedrock AI model access — all in under
+        two minutes.
+      </p>
+      <video
+        controls
+        playsinline
+        muted
+        preload="metadata"
+        src="videos/01-bootstrap.mp4"
+      >
+        Your browser does not support the video tag.
+      </video>
+    </section>
+
+    <section class="demo">
+      <h2>2. Synchronizing Cloud Resources</h2>
+      <p>
+        When Claria updates its security policies — like requiring KMS
+        encryption or MFA Delete — it detects which resources need changes and
+        applies them with a single click.
+      </p>
+      <video
+        controls
+        playsinline
+        muted
+        preload="metadata"
+        src="videos/02-sync.mp4"
+      >
+        Your browser does not support the video tag.
+      </video>
+    </section>
+
+    <section class="demo">
+      <h2>3. Creating a Record and Chatting with AI</h2>
+      <p>
+        Create a client record, add intake notes, then use Claude to analyze
+        the case — identifying key concerns and recommending an assessment
+        battery, all within a HIPAA-compliant environment.
+      </p>
+      <video
+        controls
+        playsinline
+        muted
+        preload="metadata"
+        src="videos/03-record-chat.mp4"
+      >
+        Your browser does not support the video tag.
+      </video>
+    </section>
+  </main>
+
+  <footer>
+    <p>
+      <a href="https://github.com/claria-ai/claria">Claria</a> — HIPAA-compliant
+      generative AI for clinical practice.
+    </p>
+  </footer>
+</body>
+</html>

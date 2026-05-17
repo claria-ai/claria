@@ -1,0 +1,16 @@
+{
+  "name": "claria-demos",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "record": "npx playwright test",
+    "record:bootstrap": "npx playwright test scenarios/01-bootstrap.spec.ts",
+    "record:sync": "npx playwright test scenarios/02-sync.spec.ts",
+    "record:chat": "npx playwright test scenarios/03-record-chat.spec.ts",
+    "collect": "bash -c 'cp output/test-results/01-bootstrap-*/video.webm output/01-bootstrap.webm && cp output/test-results/02-sync-*/video.webm output/02-sync.webm && cp output/test-results/03-record-chat-*/video.webm output/03-record-chat.webm && echo \"Collected to output/\"'",
+    "convert": "bash convert.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "=1.52.0"
+  }
+}

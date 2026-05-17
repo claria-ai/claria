@@ -213,7 +213,7 @@ export default function ScanProvision({
       {/* Navigation */}
       <div className="flex justify-between mt-8">
         <button
-          onClick={() => navigate("credentials")}
+          onClick={() => navigate("provision")}
           disabled={isWorking}
           className="px-4 py-2 text-gray-600 hover:text-gray-800 disabled:opacity-50"
         >
@@ -231,7 +231,7 @@ export default function ScanProvision({
           {(phase === "done" ||
             (phase === "planned" && !hasChanges(entries))) && (
             <button
-              onClick={() => navigate("aws")}
+              onClick={() => navigate("clients")}
               className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
             >
               Go to AWS
