@@ -15,6 +15,9 @@ All notable changes to Claria are documented here.
 - Replaced custom `build.rs` JS build with Tauri's built-in `beforeBuildCommand`/`beforeDevCommand`, enabling Vite dev server hot-reload during development
 - `claria-desktop` build was broken on `main` — `commands.rs` referenced the removed `manifest_version` field on `ProvisionerState` and used `aws_sdk_iam` without declaring it as a dependency. `claria_provisioner::create_access_key` now takes `&SdkConfig` instead of `&aws_sdk_iam::Client`, matching the library-crate boundary rule
 
+### Dependencies
+- Routine patch bumps: `tracing-subscriber` 0.3.22→0.3.23, `color-eyre` 0.6.3→0.6.5, `tempfile` 3.26.0→3.27.0 (`TempPath::from_path` correctness fix), `tar` 0.4.44→0.4.45, `docx-rs` 0.4.19→0.4.20, `rfd` 0.17.1→0.17.2, `futures` 0.3.31→0.3.32 (drops `pin-utils`/`num_cpus` transitive deps)
+
 ## [0.15.0] — 2026-03-04
 
 ### Added
