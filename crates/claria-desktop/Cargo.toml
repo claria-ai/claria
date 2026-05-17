@@ -34,7 +34,7 @@ tauri = { version = "=2.11.2", features = [] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 tokio = { version = "=1.52.3", features = ["full"] }
 tracing = "=0.1.44"
-ureq = "=3.0.11"
+ureq = "=3.3.0"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "=1.23.1", features = ["v4"] }
 

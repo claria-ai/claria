@@ -24,6 +24,7 @@ All notable changes to Claria are documented here.
 - Tauri 2.10.2 → 2.11.2 (`tauri` crate, `tauri-build` 2.5.5→2.6.2, `@tauri-apps/api` ^2.10.1→^2.11.0). Regenerates `crates/claria-desktop/gen/schemas/*.json`
 - Frontend `npm update` — refreshed within existing semver ranges: `react`/`react-dom` to 19.2.6, `tailwindcss` + `@tailwindcss/vite` to 4.3.0, `typescript-eslint` to 8.59.3, `vite` to 7.3.3, `eslint-plugin-react-refresh` to 0.4.26, `@types/node` to 24.12.4, plus assorted transitives. `eslint-plugin-react-hooks` pinned at `~7.0.1` (7.1.x introduces a strict `react-hooks/set-state-in-effect` rule that flags ~14 existing call sites — to be addressed in a follow-up)
 - `uuid` 1.21.0 → 1.23.1 (default RNG switched to rand 0.10; `Version::Max` and `get_version` semantics tightened — audited, no call sites affected)
+- `ureq` 3.0.11 → 3.3.0 (stable webpki-roots, `NO_PROXY` support, chunked-transfer/DNS-via-proxy fixes). MSRV raised to 1.85; current toolchain (1.94) is well above
 
 ## [0.15.0] — 2026-03-04
 
