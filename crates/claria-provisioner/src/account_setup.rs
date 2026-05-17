@@ -465,7 +465,7 @@ pub async fn bootstrap_account(
         return result;
     }
 
-    let (new_key_id, new_secret) = match create_access_key(&iam_client).await {
+    let (new_key_id, new_secret) = match create_access_key(config).await {
         Ok(keys) => {
             set_step_status(
                 &mut steps,
@@ -1083,8 +1083,9 @@ pub(crate) async fn attach_policy(
 ///
 /// Returns `(access_key_id, secret_access_key)`.
 pub async fn create_access_key(
-    client: &aws_sdk_iam::Client,
+    sdk_config: &aws_config::SdkConfig,
 ) -> Result<(String, String), ProvisionerError> {
+    let client = aws_sdk_iam::Client::new(sdk_config);
     let resp = client
         .create_access_key()
         .user_name(IAM_USER_NAME)

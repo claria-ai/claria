@@ -21,6 +21,21 @@ All notable changes to Claria are documented here.
 
 ### Fixed
 - Replaced custom `build.rs` JS build with Tauri's built-in `beforeBuildCommand`/`beforeDevCommand`, enabling Vite dev server hot-reload during development
+- `claria-desktop` build was broken on `main` — `commands.rs` referenced the removed `manifest_version` field on `ProvisionerState` and used `aws_sdk_iam` without declaring it as a dependency. `claria_provisioner::create_access_key` now takes `&SdkConfig` instead of `&aws_sdk_iam::Client`, matching the library-crate boundary rule
+
+### Dependencies
+- Routine patch bumps: `tracing-subscriber` 0.3.22→0.3.23, `color-eyre` 0.6.3→0.6.5, `tempfile` 3.26.0→3.27.0 (`TempPath::from_path` correctness fix), `tar` 0.4.44→0.4.45, `docx-rs` 0.4.19→0.4.20, `rfd` 0.17.1→0.17.2, `futures` 0.3.31→0.3.32 (drops `pin-utils`/`num_cpus` transitive deps)
+- `tokio` 1.49.0 → 1.52.3 (mpsc and RwLock soundness fixes)
+- `jiff` 0.2.21 → 0.2.24 (IANA timezone database update to `2026a`; signed-duration conversion panic fix)
+- AWS SDK family lockstep bump: `aws-config` 1.8.14→1.8.16 (identity-cache memory leak fix when overriding credentials), `aws-sdk-s3` 1.124.0→1.132.0, `aws-sdk-bedrock` 1.133.0→1.141.0 (model lifecycle fields, Guardrails policy generation), `aws-sdk-bedrockruntime` 1.126.0→1.130.0, `aws-sdk-cloudtrail` 1.104.0→1.107.0, `aws-sdk-iam` 1.88.0→1.108.1, `aws-sdk-sts` 1.99.0→1.103.0, `aws-sdk-transcribe` 1.101.0→1.104.0, `aws-sdk-costexplorer` 1.111.0→1.114.0, `aws-sdk-artifact` 1.86.0→1.89.0, `aws-smithy-types` 1.4.5→1.4.7 (hardware-accelerated SHA-2), `aws-smithy-runtime-api` 1.11.5→1.12.0
+- `bytes` 1.10.1→1.11.1 in `claria-mock-aws` (transitive requirement from the new `aws-config`)
+- Tauri 2.10.2 → 2.11.2 (`tauri` crate, `tauri-build` 2.5.5→2.6.2, `@tauri-apps/api` ^2.10.1→^2.11.0). Regenerates `crates/claria-desktop/gen/schemas/*.json`
+- Frontend `npm update` — refreshed within existing semver ranges: `react`/`react-dom` to 19.2.6, `tailwindcss` + `@tailwindcss/vite` to 4.3.0, `typescript-eslint` to 8.59.3, `vite` to 7.3.3, `eslint-plugin-react-refresh` to 0.4.26, `@types/node` to 24.12.4, plus assorted transitives. `eslint-plugin-react-hooks` pinned at `~7.0.1` (7.1.x introduces a strict `react-hooks/set-state-in-effect` rule that flags ~14 existing call sites — to be addressed in a follow-up)
+- `uuid` 1.21.0 → 1.23.1 (default RNG switched to rand 0.10; `Version::Max` and `get_version` semantics tightened — audited, no call sites affected)
+- `ureq` 3.0.11 → 3.3.0 (stable webpki-roots, `NO_PROXY` support, chunked-transfer/DNS-via-proxy fixes). MSRV raised to 1.85; current toolchain (1.94) is well above
+- `candle-core`/`candle-nn`/`candle-transformers` 0.9.2 → 0.10.2 — Metal backend improvements (inter-encoder sync, concurrent dispatching, `StorageModePrivate` for intermediates, u64 seed-buffer size fix), NaN fixes for GGML quantized models, new `upsample_bilinear2d`. `DType` is now `#[non_exhaustive]` but Claria has no `match` arms on it
+- `tokenizers` 0.22.2 → 0.23.1 — 96% faster added-vocabulary deserialization, 16% BPE batch-encoding improvement. `add_tokens` now normalizes content at insertion; Claria only reads `tokenizer.json` so the round-trip difference does not apply
+- `tantivy` 0.25.0 → 0.26.1 — `TopDocs::with_limit(n)` is now a builder and no longer implements `Collector` directly; call sites in `claria-search/src/query.rs` updated to chain `.order_by_score()` to preserve the score-ordered behavior. Brings lazy scorers, faster intersections, HyperLogLog++, and a quadratic-time nested-aggregations fix. **Heads-up:** the on-disk index format compatibility between 0.25 and 0.26 is not explicitly guaranteed in the changelog. Users may need to rebuild their local Tantivy index; the cached `_index/tantivy.tar.zst` in S3 will be regenerated on next index refresh
 
 ## [0.15.0] — 2026-03-04
 

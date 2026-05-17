@@ -1002,8 +1002,7 @@ pub async fn provision_apply(
             status: "in_progress".into(),
         });
 
-        let iam_client = aws_sdk_iam::Client::new(&elevated_config);
-        let (key_id, secret) = claria_provisioner::create_access_key(&iam_client)
+        let (key_id, secret) = claria_provisioner::create_access_key(&elevated_config)
             .await
             .map_err(|e| e.to_string())?;
 
