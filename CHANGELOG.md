@@ -17,6 +17,8 @@ All notable changes to Claria are documented here.
 
 ### Dependencies
 - Routine patch bumps: `tracing-subscriber` 0.3.22→0.3.23, `color-eyre` 0.6.3→0.6.5, `tempfile` 3.26.0→3.27.0 (`TempPath::from_path` correctness fix), `tar` 0.4.44→0.4.45, `docx-rs` 0.4.19→0.4.20, `rfd` 0.17.1→0.17.2, `futures` 0.3.31→0.3.32 (drops `pin-utils`/`num_cpus` transitive deps)
+- `tokio` 1.49.0 → 1.52.3 (mpsc and RwLock soundness fixes)
+- `jiff` 0.2.21 → 0.2.24 (IANA timezone database update to `2026a`; signed-duration conversion panic fix)
 
 ## [0.15.0] — 2026-03-04
 

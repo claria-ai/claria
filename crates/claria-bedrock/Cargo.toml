@@ -10,10 +10,10 @@ aws-sdk-bedrock = "=1.133.0"
 aws-sdk-bedrockruntime = "=1.126.0"
 aws-smithy-types = "=1.4.5"
 claria-core = { path = "../claria-core" }
-jiff = { version = "=0.2.21", features = ["serde"] }
+jiff = { version = "=0.2.24", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 thiserror = "=2.0.18"
-tokio = { version = "=1.49.0", features = ["full"] }
+tokio = { version = "=1.52.3", features = ["full"] }
 tracing = "=0.1.44"
 uuid = { version = "=1.21.0", features = ["v4"] }

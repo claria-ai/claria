@@ -13,6 +13,6 @@ tantivy = "=0.25.0"
 tar = "=0.4.45"
 tempfile = "=3.27.0"
 thiserror = "=2.0.18"
-tokio = { version = "=1.49.0", features = ["full"] }
+tokio = { version = "=1.52.3", features = ["full"] }
 tracing = "=0.1.44"
 zstd = "=0.13.3"
