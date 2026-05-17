@@ -27,6 +27,7 @@ All notable changes to Claria are documented here.
 - `ureq` 3.0.11 → 3.3.0 (stable webpki-roots, `NO_PROXY` support, chunked-transfer/DNS-via-proxy fixes). MSRV raised to 1.85; current toolchain (1.94) is well above
 - `candle-core`/`candle-nn`/`candle-transformers` 0.9.2 → 0.10.2 — Metal backend improvements (inter-encoder sync, concurrent dispatching, `StorageModePrivate` for intermediates, u64 seed-buffer size fix), NaN fixes for GGML quantized models, new `upsample_bilinear2d`. `DType` is now `#[non_exhaustive]` but Claria has no `match` arms on it
 - `tokenizers` 0.22.2 → 0.23.1 — 96% faster added-vocabulary deserialization, 16% BPE batch-encoding improvement. `add_tokens` now normalizes content at insertion; Claria only reads `tokenizer.json` so the round-trip difference does not apply
+- `tantivy` 0.25.0 → 0.26.1 — `TopDocs::with_limit(n)` is now a builder and no longer implements `Collector` directly; call sites in `claria-search/src/query.rs` updated to chain `.order_by_score()` to preserve the score-ordered behavior. Brings lazy scorers, faster intersections, HyperLogLog++, and a quadratic-time nested-aggregations fix. **Heads-up:** the on-disk index format compatibility between 0.25 and 0.26 is not explicitly guaranteed in the changelog. Users may need to rebuild their local Tantivy index; the cached `_index/tantivy.tar.zst` in S3 will be regenerated on next index refresh
 
 ## [0.15.0] — 2026-03-04
 
