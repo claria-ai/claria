@@ -22,6 +22,7 @@ All notable changes to Claria are documented here.
 - AWS SDK family lockstep bump: `aws-config` 1.8.14→1.8.16 (identity-cache memory leak fix when overriding credentials), `aws-sdk-s3` 1.124.0→1.132.0, `aws-sdk-bedrock` 1.133.0→1.141.0 (model lifecycle fields, Guardrails policy generation), `aws-sdk-bedrockruntime` 1.126.0→1.130.0, `aws-sdk-cloudtrail` 1.104.0→1.107.0, `aws-sdk-iam` 1.88.0→1.108.1, `aws-sdk-sts` 1.99.0→1.103.0, `aws-sdk-transcribe` 1.101.0→1.104.0, `aws-sdk-costexplorer` 1.111.0→1.114.0, `aws-sdk-artifact` 1.86.0→1.89.0, `aws-smithy-types` 1.4.5→1.4.7 (hardware-accelerated SHA-2), `aws-smithy-runtime-api` 1.11.5→1.12.0
 - `bytes` 1.10.1→1.11.1 in `claria-mock-aws` (transitive requirement from the new `aws-config`)
 - Tauri 2.10.2 → 2.11.2 (`tauri` crate, `tauri-build` 2.5.5→2.6.2, `@tauri-apps/api` ^2.10.1→^2.11.0). Regenerates `crates/claria-desktop/gen/schemas/*.json`
+- Frontend `npm update` — refreshed within existing semver ranges: `react`/`react-dom` to 19.2.6, `tailwindcss` + `@tailwindcss/vite` to 4.3.0, `typescript-eslint` to 8.59.3, `vite` to 7.3.3, `eslint-plugin-react-refresh` to 0.4.26, `@types/node` to 24.12.4, plus assorted transitives. `eslint-plugin-react-hooks` pinned at `~7.0.1` (7.1.x introduces a strict `react-hooks/set-state-in-effect` rule that flags ~14 existing call sites — to be addressed in a follow-up)
 
 ## [0.15.0] — 2026-03-04
 
