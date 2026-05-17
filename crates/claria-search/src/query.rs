@@ -34,7 +34,7 @@ pub fn search(
         .parse_query(query_text)
         .map_err(|e| SearchError::QueryParse(e.to_string()))?;
 
-    let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))?;
+    let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).order_by_score())?;
 
     let id_field = get_field(&schema, field::ID);
     let doc_type_field = get_field(&schema, field::DOC_TYPE);
@@ -93,7 +93,7 @@ pub fn find_by_type(
         IndexRecordOption::Basic,
     );
 
-    let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))?;
+    let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).order_by_score())?;
 
     let id_field = get_field(&schema, field::ID);
     let title_field = get_field(&schema, field::TITLE);
@@ -143,7 +143,7 @@ pub fn find_by_id(index: &Index, id: &str) -> Result<Option<tantivy::TantivyDocu
         IndexRecordOption::Basic,
     );
 
-    let top_docs = searcher.search(&query, &TopDocs::with_limit(1))?;
+    let top_docs = searcher.search(&query, &TopDocs::with_limit(1).order_by_score())?;
 
     if let Some((_score, doc_address)) = top_docs.first() {
         let doc = searcher.doc::<tantivy::TantivyDocument>(*doc_address)?;

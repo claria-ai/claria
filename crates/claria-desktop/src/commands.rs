@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -856,7 +855,6 @@ pub async fn provision_scan(
         }),
         Err(_) => claria_provisioner::ProvisionerState {
             resources: Default::default(),
-            manifest_version: None,
             region: region.clone(),
             bucket: format!("{}-{system_name}-data", identity.account_id),
         },
@@ -921,7 +919,6 @@ pub async fn provision_apply(
     let mut prov_state = persistence.load().await.unwrap_or_else(|_| {
         claria_provisioner::ProvisionerState {
             resources: Default::default(),
-            manifest_version: None,
             region: region.clone(),
             bucket: format!("{}-{system_name}-data", identity.account_id),
         }
@@ -981,8 +978,7 @@ pub async fn provision_apply(
             status: "in_progress".into(),
         });
 
-        let iam_client = aws_sdk_iam::Client::new(&elevated_config);
-        let (key_id, secret) = claria_provisioner::create_access_key(&iam_client)
+        let (key_id, secret) = claria_provisioner::create_access_key(&elevated_config)
             .await
             .map_err(|e| e.to_string())?;
 
