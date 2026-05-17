@@ -5,10 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-aws-config = "=1.8.14"
-aws-sdk-bedrock = "=1.133.0"
-aws-sdk-bedrockruntime = "=1.126.0"
-aws-smithy-types = "=1.4.5"
+aws-config = "=1.8.16"
+aws-sdk-bedrock = "=1.141.0"
+aws-sdk-bedrockruntime = "=1.130.0"
+aws-smithy-types = "=1.4.7"
 claria-core = { path = "../claria-core" }
 jiff = { version = "=0.2.24", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }
