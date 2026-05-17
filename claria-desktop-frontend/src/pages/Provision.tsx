@@ -13,7 +13,7 @@ import {
   plan,
   apply,
   type CredentialSource,
-  type CredentialAssessment,
+
   type AssumeRoleResult,
   type PlanEntry,
   type ProvisionerProgress,
@@ -79,7 +79,7 @@ export default function Provision({
   // ── Reconciliation state ─────────────────────────────────────────────
   const [phase, setPhase] = useState<Phase>("loading");
   const [entries, setEntries] = useState<PlanEntry[] | null>(null);
-  const [scanResult, setScanResult] = useState<ProvisionScanResult | null>(null);
+  const [, setScanResult] = useState<ProvisionScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scanItems, setScanItems] = useState<ScanItem[]>([]);
   const [applyItems, setApplyItems] = useState<ApplyItem[]>([]);
@@ -268,7 +268,6 @@ export default function Provision({
     setScanItems([]);
 
     try {
-      const cfg = config!;
       // Load the saved scoped creds from config for regular resources.
       const savedCreds = await loadConfig();
       // The escalation creds are from the inline form.

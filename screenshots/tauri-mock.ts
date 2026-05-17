@@ -15,6 +15,14 @@ export function buildInitScript(): string {
         currentWindow: { label: "main" },
         currentWebview: { label: "main" },
       },
+      // Channels use transformCallback to register message handlers.
+      // We just assign an incrementing id — the callback is never invoked.
+      _cbCounter: 0,
+      transformCallback: function(cb, once) {
+        var id = ++window.__TAURI_INTERNALS__._cbCounter;
+        window["_" + id] = cb;
+        return id;
+      },
       invoke: async function(cmd, args) {
         const fixtures = ${fixturesJson};
         if (cmd === "plugin:app|version") {
