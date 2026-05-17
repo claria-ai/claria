@@ -5,18 +5,10 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 6;
+const CURRENT_VERSION: u32 = 5;
 
 fn default_prompt_caching_enabled() -> bool {
     true
-}
-
-fn default_session_soft_cap_usd() -> f64 {
-    1.0
-}
-
-fn default_session_hard_cap_usd() -> f64 {
-    5.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,16 +38,6 @@ pub struct ClariaConfig {
     /// silently no-ops on models that don't honour it.
     #[serde(default = "default_prompt_caching_enabled")]
     pub prompt_caching_enabled: bool,
-    /// Per-session soft spend cap in USD. Above this, the chat shows an
-    /// advisory yellow banner; sending is still allowed. Default $1.00.
-    /// Added in v6.
-    #[serde(default = "default_session_soft_cap_usd")]
-    pub session_soft_cap_usd: f64,
-    /// Per-session hard spend cap in USD. Above this, the composer
-    /// refuses to send and the user must raise the cap or start a new
-    /// session. Default $5.00. Added in v6.
-    #[serde(default = "default_session_hard_cap_usd")]
-    pub session_hard_cap_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -87,8 +69,6 @@ pub struct ConfigInfo {
     pub cost_explorer_enabled: bool,
     pub hourly_cost_data: bool,
     pub prompt_caching_enabled: bool,
-    pub session_soft_cap_usd: f64,
-    pub session_hard_cap_usd: f64,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -211,31 +191,6 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v4 → v5 (added prompt_caching_enabled)");
     }
 
-    // v5 → v6: add session_soft_cap_usd ($1.00) and session_hard_cap_usd
-    // ($5.00). Default values picked to fire only on unusual sessions.
-    if from_version < 6 {
-        let obj = json
-            .as_object_mut()
-            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
-        obj.entry("session_soft_cap_usd").or_insert(
-            serde_json::Number::from_f64(1.0)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
-        );
-        obj.entry("session_hard_cap_usd").or_insert(
-            serde_json::Number::from_f64(5.0)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
-        );
-        obj.insert(
-            "config_version".to_string(),
-            serde_json::Value::Number(6.into()),
-        );
-        tracing::info!(
-            "migrated config v5 → v6 (added session_soft_cap_usd + session_hard_cap_usd)"
-        );
-    }
-
     Ok(json)
 }
 
@@ -309,8 +264,6 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         cost_explorer_enabled: config.cost_explorer_enabled,
         hourly_cost_data: config.hourly_cost_data,
         prompt_caching_enabled: config.prompt_caching_enabled,
-        session_soft_cap_usd: config.session_soft_cap_usd,
-        session_hard_cap_usd: config.session_hard_cap_usd,
     }
 }
 

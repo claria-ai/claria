@@ -16,14 +16,12 @@ import {
 } from "../lib/cost";
 import { lookupModelPricing, type ModelPricing } from "../lib/tauri";
 import TurnCostBadge from "./TurnCostBadge";
-import SessionTotalBanner, { type SpendCaps } from "./SessionTotalBanner";
+import SessionTotalBanner from "./SessionTotalBanner";
 import LastTurnFooter from "./LastTurnFooter";
 
 function isMarketplaceError(error: string): boolean {
   return error.includes("aws-marketplace:") || error.includes("Marketplace");
 }
-
-const DEFAULT_CAPS: SpendCaps = { softUsd: 1.0, hardUsd: 5.0 };
 
 /**
  * `handleSend` contract: components return either a plain string (legacy)
@@ -49,9 +47,6 @@ export default function ChatWidget({
   toolbar,
   historyHeader,
   embedded = false,
-  caps = DEFAULT_CAPS,
-  onOpenPreferences,
-  onStartFreshSession,
 }: {
   chatModels: ChatModel[];
   chatModelsLoading: boolean;
@@ -77,34 +72,21 @@ export default function ChatWidget({
   /// toolbar — typically a chat-history summary header on resume.
   historyHeader?: ReactNode;
   embedded?: boolean;
-  caps?: SpendCaps;
-  /// Optional callback used by the soft- and hard-cap UIs. When omitted,
-  /// the buttons are hidden so embedded widgets without a preferences
-  /// route don't show dead controls.
-  onOpenPreferences?: () => void;
-  /// Optional callback for "Start a fresh session" — clears the chat
-  /// and resets the session counter. The default just clears the
-  /// in-widget messages.
-  onStartFreshSession?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
   const [usageByIndex, setUsageByIndex] = useState<Array<TurnUsage | null>>(
     initialUsageByIndex ?? []
   );
   const [session, setSession] = useState<SessionUsage>(EMPTY_SESSION_USAGE);
-  const [softCapAcknowledged, setSoftCapAcknowledged] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
 
-  const hardCapHit = session.totalUsd >= caps.hardUsd && caps.hardUsd > 0;
-  const softCapHit =
-    session.totalUsd >= caps.softUsd && caps.softUsd > 0 && !hardCapHit;
-
   // Per-model pricing for pre-flight estimates. Looked up once per
   // selected model and cached.
   const [pricing, setPricing] = useState<ModelPricing | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [textareaHeight, setTextareaHeight] = useState(80);
@@ -196,8 +178,7 @@ export default function ChatWidget({
     !chatModelsLoading &&
     !extraLoading &&
     !!selectedModelId &&
-    !!input.trim() &&
-    !hardCapHit;
+    !!input.trim();
 
   async function handleSend() {
     const text = input.trim();
@@ -229,15 +210,6 @@ export default function ChatWidget({
     } finally {
       setSending(false);
     }
-  }
-
-  function handleStartFresh() {
-    setMessages([]);
-    setUsageByIndex([]);
-    setSession(EMPTY_SESSION_USAGE);
-    setSoftCapAcknowledged(false);
-    setError(null);
-    onStartFreshSession?.();
   }
 
   async function handleAcceptAgreement() {
@@ -292,7 +264,7 @@ export default function ChatWidget({
       </div>
 
       {/* Persistent session-cost banner — fuel-gauge style. */}
-      <SessionTotalBanner session={session} caps={caps} />
+      <SessionTotalBanner session={session} />
 
       {/* Optional resumed-chat history header. */}
       {historyHeader}
@@ -374,154 +346,50 @@ export default function ChatWidget({
         sessionTotalUsd={session.totalUsd}
       />
 
-      {/* Soft-cap warning — advisory, dismissable for the session. */}
-      {softCapHit && !softCapAcknowledged && (
-        <SoftCapBanner
-          sessionUsd={session.totalUsd}
-          softCapUsd={caps.softUsd}
-          hardCapUsd={caps.hardUsd}
-          onContinue={() => setSoftCapAcknowledged(true)}
-          onAdjust={onOpenPreferences}
-        />
-      )}
-
-      {/* Input bar — replaced by hard-cap lockout when over the limit. */}
-      {hardCapHit ? (
-        <HardCapLockout
-          sessionUsd={session.totalUsd}
-          hardCapUsd={caps.hardUsd}
-          turnCount={session.turnCount}
-          onAdjust={onOpenPreferences}
-          onStartFresh={handleStartFresh}
-        />
-      ) : (
-        <div className="border-t border-gray-200 bg-white">
-          {/* Drag handle */}
-          <div
-            className="flex justify-center py-1.5 cursor-row-resize select-none hover:bg-gray-50 transition-colors"
-            onPointerDown={(e) => {
-              dragRef.current = {
-                startY: e.clientY,
-                startHeight: textareaHeight,
-              };
-              document.body.style.userSelect = "none";
-            }}
-          >
-            <div className="w-8 h-1 rounded-full bg-gray-300" />
-          </div>
-          <div className="flex gap-3 px-6 pb-4">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              placeholder={resolvedPlaceholder}
-              disabled={
-                sending ||
-                chatModelsLoading ||
-                extraLoading ||
-                !selectedModelId
-              }
-              style={{ height: textareaHeight, resize: "none" }}
-              className="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
-            />
-            <button
-              onClick={handleSend}
-              disabled={!canSend}
-              className="self-end px-5 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-            >
-              Send
-            </button>
-          </div>
+      {/* Input bar */}
+      <div className="border-t border-gray-200 bg-white">
+        {/* Drag handle */}
+        <div
+          className="flex justify-center py-1.5 cursor-row-resize select-none hover:bg-gray-50 transition-colors"
+          onPointerDown={(e) => {
+            dragRef.current = {
+              startY: e.clientY,
+              startHeight: textareaHeight,
+            };
+            document.body.style.userSelect = "none";
+          }}
+        >
+          <div className="w-8 h-1 rounded-full bg-gray-300" />
         </div>
-      )}
-    </div>
-  );
-}
-
-import { formatCost } from "../lib/cost";
-
-function SoftCapBanner({
-  sessionUsd,
-  softCapUsd,
-  hardCapUsd,
-  onContinue,
-  onAdjust,
-}: {
-  sessionUsd: number;
-  softCapUsd: number;
-  hardCapUsd: number;
-  onContinue: () => void;
-  onAdjust?: () => void;
-}) {
-  return (
-    <div className="border-t border-amber-200 bg-amber-50 px-6 py-3 text-xs text-amber-900 flex flex-wrap items-center gap-3">
-      <span>
-        You&apos;ve spent {formatCost(sessionUsd)} in this chat session. That&apos;s past
-        your soft warning of {formatCost(softCapUsd)}. You can keep going — Claria
-        will block sending at {formatCost(hardCapUsd)}.
-      </span>
-      <div className="flex gap-2 ml-auto">
-        <button
-          onClick={onContinue}
-          className="px-3 py-1 text-xs rounded bg-amber-600 text-white hover:bg-amber-700"
-        >
-          Continue
-        </button>
-        {onAdjust && (
+        <div className="flex gap-3 px-6 pb-4">
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            placeholder={resolvedPlaceholder}
+            disabled={
+              sending ||
+              chatModelsLoading ||
+              extraLoading ||
+              !selectedModelId
+            }
+            style={{ height: textareaHeight, resize: "none" }}
+            className="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
+          />
           <button
-            onClick={onAdjust}
-            className="px-3 py-1 text-xs rounded border border-amber-300 text-amber-800 hover:bg-amber-100"
+            onClick={handleSend}
+            disabled={!canSend}
+            className="self-end px-5 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
           >
-            Adjust limits
+            Send
           </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function HardCapLockout({
-  sessionUsd,
-  hardCapUsd,
-  turnCount,
-  onAdjust,
-  onStartFresh,
-}: {
-  sessionUsd: number;
-  hardCapUsd: number;
-  turnCount: number;
-  onAdjust?: () => void;
-  onStartFresh: () => void;
-}) {
-  return (
-    <div className="border-t border-red-200 bg-red-50 px-6 py-4 text-sm text-red-900 flex flex-col gap-2">
-      <p className="font-medium">Session cap of {formatCost(hardCapUsd)} reached.</p>
-      <p className="text-xs">
-        To protect against runaway charges, Claria has paused this session. You&apos;ve
-        sent {turnCount} message{turnCount === 1 ? "" : "s"} costing{" "}
-        {formatCost(sessionUsd)} so far.
-      </p>
-      <div className="flex gap-2 mt-1">
-        {onAdjust && (
-          <button
-            onClick={onAdjust}
-            className="px-3 py-1.5 text-xs rounded bg-red-600 text-white hover:bg-red-700"
-          >
-            Raise the cap in Preferences
-          </button>
-        )}
-        <button
-          onClick={onStartFresh}
-          className="px-3 py-1.5 text-xs rounded border border-red-300 text-red-800 hover:bg-red-100"
-        >
-          Start a fresh session
-        </button>
+        </div>
       </div>
     </div>
   );

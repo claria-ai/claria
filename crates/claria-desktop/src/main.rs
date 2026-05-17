@@ -86,8 +86,6 @@ fn main() -> Result<()> {
             commands::probe_cost_explorer,
             commands::enable_cost_explorer,
             commands::set_hourly_cost_data,
-            commands::set_spend_caps,
-            commands::set_prompt_caching_enabled,
             commands::lookup_model_pricing,
             commands::open_url,
             commands::count_client_context_tokens,

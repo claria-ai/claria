@@ -481,16 +481,8 @@ export async function setHourlyCostData(enabled: boolean): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Spend caps + prompt caching
+// Pricing lookup
 // ---------------------------------------------------------------------------
-
-export async function setSpendCaps(softCapUsd: number, hardCapUsd: number): Promise<void> {
-  unwrap(await commands.setSpendCaps(softCapUsd, hardCapUsd));
-}
-
-export async function setPromptCachingEnabled(enabled: boolean): Promise<void> {
-  unwrap(await commands.setPromptCachingEnabled(enabled));
-}
 
 /**
  * Look up Bedrock pricing for a model_id (inference profile or bare

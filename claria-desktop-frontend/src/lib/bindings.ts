@@ -740,31 +740,6 @@ async setHourlyCostData(enabled: boolean) : Promise<Result<null, string>> {
 }
 },
 /**
- * Update the per-session spend caps. Both values are clamped to >= 0.
- * 
- * `hard_cap_usd` must be >= `soft_cap_usd`; otherwise this returns an
- * error and the on-disk config is unchanged.
- */
-async setSpendCaps(softCapUsd: number, hardCapUsd: number) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("set_spend_caps", { softCapUsd, hardCapUsd }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Toggle the prompt-caching flag. Takes effect on the next chat turn.
- */
-async setPromptCachingEnabled(enabled: boolean) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("set_prompt_caching_enabled", { enabled }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
  * Look up `ModelPricing` for a Bedrock model_id. Returns `None` for
  * unknown models so the UI can hide pre-flight estimates rather than
  * show `$NaN`.
@@ -936,7 +911,7 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; session_soft_cap_usd: number; session_hard_cap_usd: number }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean }
 /**
  * A single log entry captured by the console ring buffer.
  */

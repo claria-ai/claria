@@ -170,8 +170,6 @@ pub async fn save_config(
         cost_explorer_enabled: false,
         hourly_cost_data: false,
         prompt_caching_enabled: true,
-        session_soft_cap_usd: 1.0,
-        session_hard_cap_usd: 5.0,
     };
 
     config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -376,8 +374,6 @@ pub async fn bootstrap_iam_user(
                 cost_explorer_enabled: false,
                 hourly_cost_data: false,
                 prompt_caching_enabled: true,
-                session_soft_cap_usd: 1.0,
-                session_hard_cap_usd: 5.0,
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -1047,8 +1043,6 @@ pub async fn provision_apply(
             cost_explorer_enabled: false,
             hourly_cost_data: false,
             prompt_caching_enabled: true,
-            session_soft_cap_usd: 1.0,
-            session_hard_cap_usd: 5.0,
         };
 
         config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -3497,56 +3491,6 @@ pub async fn set_hourly_cost_data(
 ) -> Result<(), String> {
     let mut cfg = config::load_config().map_err(|e| e.to_string())?;
     cfg.hourly_cost_data = enabled;
-    config::save_config(&cfg).map_err(|e| e.to_string())?;
-
-    let mut guard = state.config.lock().await;
-    *guard = Some(cfg);
-
-    Ok(())
-}
-
-/// Update the per-session spend caps. Both values are clamped to >= 0.
-///
-/// `hard_cap_usd` must be >= `soft_cap_usd`; otherwise this returns an
-/// error and the on-disk config is unchanged.
-#[tauri::command]
-#[specta::specta]
-pub async fn set_spend_caps(
-    state: State<'_, DesktopState>,
-    soft_cap_usd: f64,
-    hard_cap_usd: f64,
-) -> Result<(), String> {
-    if !soft_cap_usd.is_finite() || !hard_cap_usd.is_finite() {
-        return Err("Cap values must be finite numbers".into());
-    }
-    let soft = soft_cap_usd.max(0.0);
-    let hard = hard_cap_usd.max(0.0);
-    if hard < soft {
-        return Err(format!(
-            "Hard cap (${hard}) must be >= soft cap (${soft})"
-        ));
-    }
-
-    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
-    cfg.session_soft_cap_usd = soft;
-    cfg.session_hard_cap_usd = hard;
-    config::save_config(&cfg).map_err(|e| e.to_string())?;
-
-    let mut guard = state.config.lock().await;
-    *guard = Some(cfg);
-
-    Ok(())
-}
-
-/// Toggle the prompt-caching flag. Takes effect on the next chat turn.
-#[tauri::command]
-#[specta::specta]
-pub async fn set_prompt_caching_enabled(
-    state: State<'_, DesktopState>,
-    enabled: bool,
-) -> Result<(), String> {
-    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
-    cfg.prompt_caching_enabled = enabled;
     config::save_config(&cfg).map_err(|e| e.to_string())?;
 
     let mut guard = state.config.lock().await;
