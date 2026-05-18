@@ -20,6 +20,7 @@ All notable changes to Claria are documented here.
 - Manifest version bumped to 7
 
 ### Fixed
+- Drift card for array-valued fields (e.g. IAM policy `Actions`) now renders a single unified list with `+ added` / `- removed` / unchanged rows instead of striking out the entire expected array. Localized to `FieldDriftList.tsx`; falls back to the old two-block layout for scalar or object-shaped drift
 - Replaced custom `build.rs` JS build with Tauri's built-in `beforeBuildCommand`/`beforeDevCommand`, enabling Vite dev server hot-reload during development
 - `claria-desktop` build was broken on `main` — `commands.rs` referenced the removed `manifest_version` field on `ProvisionerState` and used `aws_sdk_iam` without declaring it as a dependency. `claria_provisioner::create_access_key` now takes `&SdkConfig` instead of `&aws_sdk_iam::Client`, matching the library-crate boundary rule
 - `cargo run -p claria-desktop` now reinstalls and rebuilds the frontend when `claria-desktop-frontend/package-lock.json` is newer than `dist/index.html`. Plain `cargo run` previously skipped `tauri.conf.json`'s `beforeBuildCommand`, leaving the bundled `@tauri-apps/api` JS at a stale version after a Tauri bump and crashing the WebView on launch (`web content process terminated`). Set `CLARIA_SKIP_FRONTEND_BUILD=1` or `CI=true` to opt out
