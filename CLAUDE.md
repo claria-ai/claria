@@ -170,6 +170,23 @@ End-to-end steps for exposing a new backend operation to the frontend:
 3. **`lib/tauri.ts`**: Add an `unwrap` wrapper (e.g. `export async function myCommand() { return unwrap(await commands.myCommand()); }`)
 4. **`lib/bindings.ts`**: Auto-regenerated — don't edit manually. Export any new types from `tauri.ts`. Note: bindings are generated at **runtime** during `main()` behind `#[cfg(debug_assertions)]`, not at build time. You must actually run the binary (`cargo run -p claria-desktop`) to regenerate; `cargo build` alone is not sufficient.
 
+## Running Locally
+
+The Tauri frontend (`claria-desktop-frontend/`) is bundled JS that the Rust binary serves to the WebView. The two halves must agree on the `@tauri-apps/api` version — a mismatch terminates the WebView on startup with only `tauri_runtime_wry: web content process terminated` in the logs.
+
+Two ways to run the app:
+
+- **`cargo tauri dev` / `cargo tauri build`** — preferred. The Tauri CLI honors `beforeBuildCommand` in `tauri.conf.json` and reinstalls + rebuilds the frontend automatically.
+- **`cargo run -p claria-desktop`** — also fine. The `claria-desktop` build script re-runs `npm install && npm run build` whenever `claria-desktop-frontend/package-lock.json` is newer than `dist/index.html`. Set `CLARIA_SKIP_FRONTEND_BUILD=1` to opt out (CI does this).
+
+If you ever see the WebView die on startup, the first thing to check is the installed JS API version:
+
+```bash
+grep '"version"' claria-desktop-frontend/node_modules/@tauri-apps/api/package.json
+```
+
+It must match the `tauri = "=X.Y.Z"` pin in `crates/claria-desktop/Cargo.toml`. Tauri's Rust crate and JS package are released in lockstep and must be bumped together.
+
 ## Plans
 
 Design documents and future feature analysis live in `../plans/` (parent repo, outside the Cargo workspace). These are reference material, not executable — they capture architectural decisions, HIPAA analysis, and implementation plans for larger features.

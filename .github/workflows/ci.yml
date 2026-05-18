@@ -125,3 +125,34 @@ jobs:
 
       - name: Build Tauri app
         run: cargo build --release -p claria-desktop
+
+      - name: Install xvfb
+        run: sudo apt-get install -y xvfb
+
+      - name: Smoke test (WebView loads without crashing)
+        env:
+          RUST_LOG: debug
+          # Don't loop back into the build script — frontend was built above.
+          CLARIA_SKIP_FRONTEND_BUILD: '1'
+        run: |
+          set -u
+          mkdir -p $HOME/.config/claria
+          xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' \
+            ./target/release/claria-desktop > smoke.log 2>&1 &
+          PID=$!
+          # Give the WebView time to initialize and crash if it's going to.
+          sleep 15
+          STATUS=0
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo '::error::claria-desktop exited before the smoke window elapsed'
+            STATUS=1
+          fi
+          if grep -q 'web content process terminated' smoke.log; then
+            echo '::error::WebView crashed on launch — likely a Tauri Rust/JS API version mismatch. See https://github.com/claria-ai/claria/blob/main/CLAUDE.md#running-locally'
+            STATUS=1
+          fi
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+          echo '--- smoke.log ---'
+          cat smoke.log
+          exit $STATUS
