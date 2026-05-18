@@ -23,10 +23,21 @@ export default function TranscribeWizard({
   clientId,
   onClose,
   onUploaded,
+  droppedFilePath,
+  isDragging,
 }: {
   clientId: string;
   onClose: () => void;
   onUploaded: () => void;
+  /**
+   * Set by the parent when the user drops a file on the modal. Tauri's
+   * drag-drop fires at the webview level (not DOM), so the parent owns the
+   * listener and forwards the path here. When this changes to a non-null
+   * value, the wizard adopts it as the chosen file.
+   */
+  droppedFilePath?: string | null;
+  /** True while a drag-over is happening on the window. Used to highlight the file slot. */
+  isDragging?: boolean;
 }) {
   const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
   const [loadingPrefs, setLoadingPrefs] = useState(true);
@@ -44,6 +55,18 @@ export default function TranscribeWizard({
 
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // Adopt a file dropped on the modal by the parent. We compare to the
+  // current filePath so adopting the same path twice (e.g. parent resends
+  // it after a state change) doesn't clobber a more recently picked file.
+  useEffect(() => {
+    if (droppedFilePath != null && droppedFilePath !== filePath) {
+      setFilePath(droppedFilePath);
+      setUploadError(null);
+    }
+    // We deliberately don't depend on `filePath` — only react to incoming drops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [droppedFilePath]);
 
   // Pull the latest synced prefs on mount so the wizard's pre-filled values
   // match what the user expects.
@@ -158,14 +181,22 @@ export default function TranscribeWizard({
             </div>
           ) : (
             <>
-              {/* File picker */}
+              {/* File picker / drop target */}
               <div>
                 <label className="text-sm font-medium text-gray-700 block mb-1.5">
                   Audio file
                 </label>
                 {filename ? (
-                  <div className="flex items-center justify-between gap-3 px-3 py-2 border border-gray-300 rounded-lg bg-gray-50">
-                    <span className="text-sm text-gray-900 truncate">{filename}</span>
+                  <div
+                    className={`flex items-center justify-between gap-3 px-3 py-2 border rounded-lg transition-colors ${
+                      isDragging
+                        ? "border-blue-400 bg-blue-50"
+                        : "border-gray-300 bg-gray-50"
+                    }`}
+                  >
+                    <span className="text-sm text-gray-900 truncate">
+                      {isDragging ? "Drop to replace this file" : filename}
+                    </span>
                     <button
                       onClick={handlePickFile}
                       disabled={uploading}
@@ -177,13 +208,18 @@ export default function TranscribeWizard({
                 ) : (
                   <button
                     onClick={handlePickFile}
-                    className="w-full px-3 py-2 text-sm text-blue-600 border border-dashed border-blue-300 rounded-lg hover:bg-blue-50 transition-colors"
+                    className={`w-full px-3 py-2 text-sm text-blue-600 border border-dashed rounded-lg transition-colors ${
+                      isDragging
+                        ? "border-blue-500 bg-blue-50"
+                        : "border-blue-300 hover:bg-blue-50"
+                    }`}
                   >
-                    Choose a file…
+                    {isDragging ? "Drop file to use it" : "Choose a file…"}
                   </button>
                 )}
                 <p className="text-xs text-gray-500 mt-1">
                   Supports MP3, M4A, WAV, FLAC, OGG, AMR, WebM. Max 4 hours / 2 GB.
+                  You can drag a file onto this dialog or click to choose.
                 </p>
               </div>
 

@@ -160,12 +160,14 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
 
   // Transcription wizard state + cached prefs (used by the drag-zone tooltip).
   const [showTranscribeWizard, setShowTranscribeWizard] = useState(false);
+  const [wizardDroppedFile, setWizardDroppedFile] = useState<string | null>(null);
   const [transcriptionPrefs, setTranscriptionPrefs] =
     useState<TranscriptionPreferences | null>(null);
   // Tauri's drag-drop fires at the webview level, not DOM level, so it doesn't
   // respect modal stacking. We mirror `showTranscribeWizard` into a ref so the
   // listener closure can read the *current* value without re-registering on
-  // every open/close.
+  // every open/close — and when the wizard is open, drops route into the
+  // wizard instead of starting a legacy upload.
   const wizardOpenRef = useRef(false);
   useEffect(() => {
     wizardOpenRef.current = showTranscribeWizard;
@@ -285,10 +287,6 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
 
     getCurrentWebview()
       .onDragDropEvent((event) => {
-        if (wizardOpenRef.current) {
-          // Modal is open. Suppress both visual feedback and uploads.
-          return;
-        }
         if (
           event.payload.type === "enter" ||
           event.payload.type === "over"
@@ -298,6 +296,14 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
           setDragging(false);
         } else if (event.payload.type === "drop") {
           setDragging(false);
+          if (wizardOpenRef.current) {
+            // Route the drop into the open wizard — it adopts the path as
+            // the chosen file. We forward the first path only; the wizard
+            // is single-file.
+            const first = event.payload.paths[0];
+            if (first) setWizardDroppedFile(first);
+            return;
+          }
           handleFileDrop(event.payload.paths);
         }
       })
@@ -1295,7 +1301,12 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       {showTranscribeWizard && (
         <TranscribeWizard
           clientId={clientId}
-          onClose={() => setShowTranscribeWizard(false)}
+          droppedFilePath={wizardDroppedFile}
+          isDragging={dragging}
+          onClose={() => {
+            setShowTranscribeWizard(false);
+            setWizardDroppedFile(null);
+          }}
           onUploaded={() => {
             void refresh();
           }}
