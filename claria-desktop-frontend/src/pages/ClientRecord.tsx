@@ -662,7 +662,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     setSelectedVersions(new Set());
     setDiffResult(null);
     try {
-      setVersions(await listFileVersions(clientId, filename));
+      setVersions(await listFileVersions(clientId, versionKeyFor(filename)));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -685,7 +685,11 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     }
     setVersionPreviewLoading(true);
     try {
-      const text = await getFileVersionText(clientId, versionFile!, versionId);
+      const text = await getFileVersionText(
+        clientId,
+        versionKeyFor(versionFile!),
+        versionId
+      );
       setVersionPreview({ versionId, text });
     } catch (e) {
       setVersionPreview({ versionId, text: `Error: ${String(e)}` });
@@ -718,9 +722,10 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     setDiffResult(null);
     try {
       const [v1, v2] = [...selectedVersions];
+      const key = versionKeyFor(versionFile);
       const [text1, text2] = await Promise.all([
-        getFileVersionText(clientId, versionFile, v1),
-        getFileVersionText(clientId, versionFile, v2),
+        getFileVersionText(clientId, key, v1),
+        getFileVersionText(clientId, key, v2),
       ]);
       // Order by version position: v1 is older, v2 is newer
       const idx1 = versions.findIndex((v) => v.version_id === v1);
@@ -738,7 +743,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     if (!versionFile) return;
     setRestoringVersion(true);
     try {
-      await restoreFileVersion(clientId, versionFile, versionId);
+      await restoreFileVersion(clientId, versionKeyFor(versionFile), versionId);
       handleCloseVersions();
       await refresh();
     } catch (e) {
@@ -1444,7 +1449,9 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
           <div className="bg-white rounded-xl shadow-lg max-w-4xl w-full mx-4 p-6 max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-900">
-                Version History: {versionFile}
+                {isAudioSidecar(versionFile)
+                  ? `Transcript History: ${versionFile}`
+                  : `Version History: ${versionFile}`}
               </h3>
               <button
                 onClick={handleCloseVersions}
@@ -1619,6 +1626,16 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
 function isAudioSidecar(filename: string): boolean {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
   return AUDIO_EXTENSIONS.has(ext);
+}
+
+/**
+ * Map an audio filename to the S3 key that the version-history commands
+ * should operate on. For audio files this is the `.text` sidecar — the
+ * raw audio file's history isn't useful (it's a single immutable
+ * upload). For everything else it's the file itself.
+ */
+function versionKeyFor(filename: string): string {
+  return isAudioSidecar(filename) ? `${filename}.text` : filename;
 }
 
 function transcribeSummary(prefs: TranscriptionPreferences): string {
