@@ -27,13 +27,56 @@ test("preferences page", async ({ page }) => {
   await page.waitForSelector("[data-page=preferences]");
   await page.click("[data-page=preferences]");
   await page.waitForSelector("text=Preferences");
-  // Expand all collapsed sections
+  // Wait for the new Transcription section (rendered open by default) — its
+  // presence confirms the cross-machine sync banner is also rendered above it.
+  await page.waitForSelector("text=Default language");
+  // Expand all the other collapsed sections so the full preferences surface
+  // is visible in the screenshot.
   await page.click("summary:has-text('PDF Extraction Prompt')");
   await page.click("summary:has-text('Memo Transcription')");
   await page.waitForSelector("text=Best Quality");
   await page.click("summary:has-text('Preferred Model')");
   await page.waitForSelector("text=Claude Opus 4.6");
   await page.screenshot({ path: "output/preferences.png", fullPage: true });
+});
+
+test("transcribe wizard", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-page=clients]");
+  await page.click("[data-page=clients]");
+  await page.waitForSelector("[data-client]");
+  await page.click("[data-client]:first-child");
+  await page.waitForSelector("[data-tab=record]");
+  // Open the wizard via its dedicated button.
+  await page.click("button:has-text('Upload Audio File')");
+  await page.waitForSelector("text=Upload audio file");
+  // The mocked `pick_audio_file` returns a path; clicking the picker button
+  // populates the wizard's filePath state with that value.
+  await page.click("button:has-text('Choose a file')");
+  await page.waitForSelector("text=visit-2026-03-15.m4a");
+  // Select Mixed (interpreter session) — the headline use case for the wizard.
+  await page.click("text=Mixed (interpreter session)");
+  // Enable translation so the screenshot shows the toggle in its "on" state.
+  await page.click("text=Translate non-English segments to English");
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: "output/transcribe-wizard.png", fullPage: false });
+});
+
+test("transcript editor", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-page=clients]");
+  await page.click("[data-page=clients]");
+  await page.waitForSelector("[data-client]");
+  await page.click("[data-client]:first-child");
+  await page.waitForSelector("[data-tab=record]");
+  await page.waitForSelector("text=session-2026-03-15.m4a");
+  // The audio file is the last row in the seeded fixture (after .txt/.pdf),
+  // so its preview-button is the last on the page.
+  await page.locator('button[title="Preview text"]').last().click();
+  // The Speakers pane only renders when the body has diarization headers.
+  await page.waitForSelector("text=Speakers");
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: "output/transcript-editor.png", fullPage: false });
 });
 
 test("client list", async ({ page }) => {

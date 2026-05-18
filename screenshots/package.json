@@ -7,6 +7,6 @@
     "build-app": "cd ../claria-desktop-frontend && npm run build && cd ../crates/claria-desktop && cargo build"
   },
   "devDependencies": {
-    "@playwright/test": "=1.52.0"
+    "@playwright/test": "^1.60.0"
   }
 }
