@@ -191,6 +191,15 @@ It must match the `tauri = "=X.Y.Z"` pin in `crates/claria-desktop/Cargo.toml`. 
 
 Design documents and future feature analysis live in `../plans/` (parent repo, outside the Cargo workspace). These are reference material, not executable — they capture architectural decisions, HIPAA analysis, and implementation plans for larger features.
 
+## Screenshots & Demos
+
+Marketing screenshots and videos are generated in this repo, not the docs site:
+
+- `screenshots/` — Playwright suite that renders the React frontend against the Vite dev server with `window.__TAURI_INTERNALS__` mocked (fixtures in `fixtures.ts` keyed by Tauri command name). `npm run capture` writes PNGs to `screenshots/output/`; copy them to `../claria-ai.github.io/img/`. Full how-to in `screenshots/README.md`.
+- `demos/` — same Playwright + mock pattern, but records video for three end-to-end scenarios (bootstrap, sync, record-chat). `npm run record` writes WebM to `demos/output/`. See `demos/README.md`.
+
+If `playwright test --list` produces no output and never returns, your Node is newer than the pinned Playwright supports — bump `@playwright/test` and re-run `npm install`. Both subdirs pin a supported Node range via `engines` + `engines-strict` so `npm install` refuses the wrong version going forward.
+
 ## Claude Code
 - Run `cargo check` after medium and larger edits
 - Run `cargo test` before committing

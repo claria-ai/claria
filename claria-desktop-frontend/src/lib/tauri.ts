@@ -37,7 +37,11 @@ export type {
   RecordFile,
   ResourceSpec,
   Severity,
+  SpeakerMode,
   StepStatus,
+  TranscribeOptionsOverrides,
+  TranscriptionLanguage,
+  TranscriptionPreferences,
   TurnUsage,
 } from "./bindings";
 export type { Result } from "./bindings";
@@ -70,6 +74,70 @@ export async function hasConfig(): Promise<boolean> {
 
 export async function loadConfig() {
   return unwrap(await commands.loadConfig());
+}
+
+/**
+ * Save the synced subset of preferences to both the local config file and
+ * `_state/preferences.json` in S3. Throws on S3 write failure with the
+ * "saved locally but cloud sync failed" prefix so callers can show a
+ * partial-save state.
+ */
+export async function savePreferences(
+  preferredModelId: string | null,
+  costExplorerEnabled: boolean,
+  hourlyCostData: boolean,
+  promptCachingEnabled: boolean,
+  transcription: import("./bindings").TranscriptionPreferences
+) {
+  return unwrap(
+    await commands.savePreferences(
+      preferredModelId,
+      costExplorerEnabled,
+      hourlyCostData,
+      promptCachingEnabled,
+      transcription
+    )
+  );
+}
+
+/**
+ * Re-fetch synced preferences from S3 and overlay onto the in-memory config.
+ * Used by the Preferences page on entry so the editing machine sees the
+ * latest cloud state without an app restart.
+ */
+export async function fetchCloudPreferences() {
+  return unwrap(await commands.fetchCloudPreferences());
+}
+
+/**
+ * Upload an audio file via the wizard path with per-file option overrides.
+ * `overrides=null` means "use the user's saved preferences as-is".
+ */
+export async function uploadRecordFileWithOptions(
+  clientId: string,
+  filePath: string,
+  overrides: import("./bindings").TranscribeOptionsOverrides | null
+) {
+  return unwrap(
+    await commands.uploadRecordFileWithOptions(clientId, filePath, overrides)
+  );
+}
+
+/** Persist user edits to a transcript's `.text` sidecar (S3 versioning preserves v1). */
+export async function saveTranscriptEdits(
+  clientId: string,
+  filename: string,
+  body: string
+): Promise<void> {
+  unwrap(await commands.saveTranscriptEdits(clientId, filename, body));
+}
+
+/**
+ * Open a native file picker scoped to supported audio formats. Returns the
+ * absolute path, or `null` if the user cancelled.
+ */
+export async function pickAudioFile(): Promise<string | null> {
+  return unwrap(await commands.pickAudioFile());
 }
 
 export async function saveConfig(

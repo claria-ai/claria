@@ -62,3 +62,20 @@ All mock data lives in `fixtures.ts`. The fixture keys match Tauri IPC command n
 2. Add `data-*` attributes to React components if Playwright needs stable selectors
 3. Add a new `test(...)` block in `capture.spec.ts`
 4. Run `npm run capture` to verify
+
+## Troubleshooting
+
+**`npm run capture` hangs with no output.** Playwright `--list` and `test` both produce zero stdout/stderr and never exit. Cause: your Node is newer than the pinned `@playwright/test` supports. Fix:
+
+```bash
+node --version                                # check what's actually running
+npm install @playwright/test@latest --save-dev
+```
+
+The `engines: { node }` field in `package.json` + `engines-strict=true` in `.npmrc` should refuse the wrong Node at install time, but a corrupt Homebrew symlink can sneak through — `/opt/homebrew/opt/node@22` resolving to a newer version is a real failure mode seen in this repo. If `node --version` disagrees with what you expect, fix the symlink:
+
+```bash
+brew unlink node@22 && brew link --force node@22
+```
+
+The diagnostic for the silent hang is `DEBUG=pw:* npx playwright test --list` — if you see only `pw:channel` browser-type events and nothing else, you've hit the compatibility wall.

@@ -771,7 +771,10 @@ pub(crate) fn claria_policy_document(system_name: &str, account_id: &str) -> Str
                 "Action": [
                     "transcribe:StartTranscriptionJob",
                     "transcribe:GetTranscriptionJob",
-                    "transcribe:DeleteTranscriptionJob"
+                    "transcribe:DeleteTranscriptionJob",
+                    "transcribe:StartMedicalTranscriptionJob",
+                    "transcribe:GetMedicalTranscriptionJob",
+                    "transcribe:DeleteMedicalTranscriptionJob"
                 ],
                 "Resource": "*"
             },

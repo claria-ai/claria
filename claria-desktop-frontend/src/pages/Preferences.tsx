@@ -15,8 +15,13 @@ import {
   loadConfig,
   setHourlyCostData,
   getCostAndUsage,
+  savePreferences,
+  fetchCloudPreferences,
   type ChatModel,
+  type ConfigInfo,
   type FileVersion,
+  type TranscriptionLanguage,
+  type TranscriptionPreferences,
   type WhisperModelInfo,
   type WhisperModelTier,
 } from "../lib/tauri";
@@ -80,7 +85,21 @@ export default function Preferences({
         <h2 className="text-2xl font-bold">Preferences</h2>
       </div>
 
+      {/* Cross-machine sync notice — these settings live in S3 and follow the
+         clinician across computers. Other running copies of Claria won't see
+         changes until restart. */}
+      <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
+        <p className="text-sm text-blue-900">
+          Preferences are stored in your S3 bucket so they sync across
+          computers. If you have Claria open on another machine, restart it to
+          pick up changes you save here.
+        </p>
+      </div>
+
       <div className="space-y-4">
+        {/* Transcription preferences section */}
+        <TranscriptionSection />
+
         {/* System Prompt section */}
         <PromptEditor
           promptName="system-prompt"
@@ -853,6 +872,288 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ---------------------------------------------------------------------------
+// Transcription section: language / speaker count / engine / translation
+// ---------------------------------------------------------------------------
+
+/**
+ * Transcription defaults applied to drag-and-drop audio uploads. The wizard
+ * uses these as starting values too, but lets the user override per file.
+ *
+ * Cross-machine sync: on mount we call `fetchCloudPreferences` to pull the
+ * latest values from S3 (so the editing machine sees its own recent changes
+ * without an app restart). Saves go to both local config and S3 via
+ * `savePreferences`. We stash the full synced subset so saving only one
+ * field doesn't clobber the others.
+ */
+function TranscriptionSection() {
+  // The full set of synced fields, fetched on mount.
+  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Editable copy of the transcription section only.
+  const [draft, setDraft] = useState<TranscriptionPreferences | null>(null);
+  const dirty =
+    snapshot != null &&
+    draft != null &&
+    JSON.stringify(snapshot.transcription) !== JSON.stringify(draft);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const info = await fetchCloudPreferences();
+      setSnapshot(info);
+      setDraft(info.transcription);
+    } catch (e) {
+      // Fall back to whatever's in local config — fetchCloudPreferences
+      // requires a configured SDK; without one we still want to render.
+      try {
+        const info = await loadConfig();
+        setSnapshot(info);
+        setDraft(info.transcription);
+      } catch (e2) {
+        setError(String(e2 ?? e));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function handleSave() {
+    if (!snapshot || !draft) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await savePreferences(
+        snapshot.preferred_model_id,
+        snapshot.cost_explorer_enabled,
+        snapshot.hourly_cost_data,
+        snapshot.prompt_caching_enabled,
+        draft
+      );
+      setSnapshot(updated);
+      setDraft(updated.transcription);
+      setSavedAt(Date.now());
+    } catch (e) {
+      // Backend bubbles "saved locally but cloud sync failed: ..." so the
+      // partial state is visible to the user.
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleLanguageChange(value: TranscriptionLanguage) {
+    if (!draft) return;
+    setDraft({ ...draft, default_language: value });
+  }
+
+  function handleSpeakerCountChange(value: number) {
+    if (!draft) return;
+    setDraft({ ...draft, default_speaker_count: value });
+  }
+
+  function handleMedicalToggle(value: boolean) {
+    if (!draft) return;
+    setDraft({ ...draft, use_medical_for_english: value });
+  }
+
+  function handleTranslateToggle(value: boolean) {
+    if (!draft) return;
+    setDraft({ ...draft, translate_to_english: value });
+  }
+
+  return (
+    <details className="border border-gray-200 rounded-lg group" open>
+      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-gray-900">Transcription</span>
+          {draft && (
+            <span className="text-xs text-gray-400">
+              {labelForLanguage(draft.default_language ?? "english")} ·{" "}
+              {draft.default_speaker_count ?? 2}{" "}
+              {(draft.default_speaker_count ?? 2) === 1 ? "speaker" : "speakers"}
+              {draft.use_medical_for_english ? " · Medical" : ""}
+              {draft.translate_to_english ? " · translate" : ""}
+            </span>
+          )}
+        </div>
+        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
+          &#9656;
+        </span>
+      </summary>
+      <div className="border-t border-gray-100 p-4 space-y-4">
+        {loading ? (
+          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+            <Spinner />
+            <span>Loading transcription preferences...</span>
+          </div>
+        ) : !draft ? (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+            <p className="text-red-800 text-sm">{error ?? "Could not load preferences."}</p>
+          </div>
+        ) : (
+          <>
+            <p className="text-xs text-gray-500">
+              Applied to audio files dropped onto a client record. The "Upload
+              audio file…" wizard uses these as starting values and lets you
+              override per file.
+            </p>
+
+            {/* Language */}
+            <fieldset>
+              <legend className="text-sm font-medium text-gray-700 mb-2">
+                Default language
+              </legend>
+              <div className="space-y-1.5">
+                {(["english", "spanish", "mixed"] as TranscriptionLanguage[]).map(
+                  (lang) => (
+                    <label
+                      key={lang}
+                      className="flex items-start gap-2.5 cursor-pointer"
+                    >
+                      <input
+                        type="radio"
+                        name="default-language"
+                        checked={draft.default_language === lang}
+                        onChange={() => handleLanguageChange(lang)}
+                        className="mt-0.5"
+                      />
+                      <div>
+                        <span className="text-sm text-gray-900">
+                          {labelForLanguage(lang)}
+                        </span>
+                        <p className="text-xs text-gray-500">
+                          {descriptionForLanguage(lang)}
+                        </p>
+                      </div>
+                    </label>
+                  )
+                )}
+              </div>
+            </fieldset>
+
+            {/* Speakers */}
+            <div>
+              <label className="text-sm font-medium text-gray-700 block mb-1.5">
+                Default speakers
+              </label>
+              <select
+                value={draft.default_speaker_count}
+                onChange={(e) => handleSpeakerCountChange(Number(e.target.value))}
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value={1}>1 — single speaker (no diarization)</option>
+                <option value={2}>2 — typical clinician + patient</option>
+                <option value={3}>3 — small group</option>
+                <option value={4}>4 — family or panel</option>
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Picking "1" turns diarization off and produces a single text
+                block (cheaper, faster).
+              </p>
+            </div>
+
+            {/* Medical toggle */}
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={draft.use_medical_for_english}
+                onChange={(e) => handleMedicalToggle(e.target.checked)}
+                className="mt-0.5"
+              />
+              <div>
+                <span className="text-sm text-gray-900">
+                  Use Transcribe Medical for English sessions
+                </span>
+                <p className="text-xs text-gray-500">
+                  $0.075/min vs Standard $0.024/min — better recognition of
+                  clinical vocabulary, drug names, and PHI tagging. Spanish and
+                  Mixed sessions always use Standard.
+                </p>
+              </div>
+            </label>
+
+            {/* Translation toggle */}
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={draft.translate_to_english}
+                onChange={(e) => handleTranslateToggle(e.target.checked)}
+                className="mt-0.5"
+              />
+              <div>
+                <span className="text-sm text-gray-900">
+                  Translate non-English segments to English
+                </span>
+                <p className="text-xs text-gray-500">
+                  When a segment's detected language isn't English, render an
+                  English translation alongside the original using your
+                  preferred chat model. Adds a few cents per session.
+                </p>
+              </div>
+            </label>
+
+            {/* Action row */}
+            <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
+              <button
+                onClick={handleSave}
+                disabled={!dirty || saving}
+                className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+              >
+                {saving ? (
+                  <>
+                    <Spinner />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  "Save"
+                )}
+              </button>
+              {savedAt != null && !dirty && (
+                <span className="text-xs text-green-700">Saved.</span>
+              )}
+              {error && (
+                <span className="text-xs text-red-700">{error}</span>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function labelForLanguage(lang: TranscriptionLanguage): string {
+  switch (lang) {
+    case "english":
+      return "English";
+    case "spanish":
+      return "Spanish";
+    case "mixed":
+      return "Mixed (interpreter)";
+  }
+}
+
+function descriptionForLanguage(lang: TranscriptionLanguage): string {
+  switch (lang) {
+    case "english":
+      return "All English audio. Most common.";
+    case "spanish":
+      return "All Spanish audio. Always Standard engine.";
+    case "mixed":
+      return "English and Spanish interleaved. Standard engine, no PHI tagging.";
+  }
 }
 
 function Spinner() {

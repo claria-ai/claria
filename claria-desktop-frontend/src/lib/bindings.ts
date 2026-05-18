@@ -39,6 +39,78 @@ async deleteConfig() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Save the clinician's preferences (synced subset) to both the local config
+ * file and `_state/preferences.json` in S3. Bubbles S3-write failures so the
+ * frontend can show a partial-save warning.
+ */
+async savePreferences(preferredModelId: string | null, costExplorerEnabled: boolean, hourlyCostData: boolean, promptCachingEnabled: boolean, transcription: TranscriptionPreferences) : Promise<Result<ConfigInfo, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_preferences", { preferredModelId, costExplorerEnabled, hourlyCostData, promptCachingEnabled, transcription }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Re-fetch synced preferences from S3 and overlay onto the in-memory config.
+ * Used by the Preferences page on entry so users on the editing machine see
+ * the latest cloud state without an app restart.
+ */
+async fetchCloudPreferences() : Promise<Result<ConfigInfo, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("fetch_cloud_preferences") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Upload an audio file and transcribe with the wizard's per-file options.
+ * 
+ * Mirrors `upload_record_file` but skips the legacy single-language path —
+ * always goes through the new structured transcribe + optional Bedrock
+ * translation. The `.text` sidecar contains the rendered headered body.
+ */
+async uploadRecordFileWithOptions(clientId: string, filePath: string, overrides: TranscribeOptionsOverrides | null) : Promise<Result<RecordFile, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("upload_record_file_with_options", { clientId, filePath, overrides }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save edits to the transcript sidecar. S3 versioning preserves every prior
+ * body, including the Transcribe-generated v1 — clinicians restore any past
+ * version (or the original) via the standard `list_file_versions` /
+ * `restore_file_version` flow, which the frontend routes to the `.text`
+ * sidecar for audio files.
+ */
+async saveTranscriptEdits(clientId: string, filename: string, body: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_transcript_edits", { clientId, filename, body }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Open a native file picker scoped to supported audio formats. Returns the
+ * absolute path the user chose, or `None` if they cancelled.
+ * 
+ * Used by the transcription wizard so we can keep a real file picker on the
+ * wizard surface (avoiding the geometry-sensitive drag-target controls flagged
+ * in [feedback-ui-low-dexterity]).
+ */
+async pickAudioFile() : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pick_audio_file") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Set the clinician's preferred chat model.
  * 
  * Loads the current config, updates `preferred_model_id`, and saves. Pass
@@ -911,7 +983,7 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences }
 /**
  * A single log entry captured by the console ring buffer.
  */
@@ -1121,6 +1193,7 @@ export type Severity =
  * Data loss risk (bucket deletion during orphan cleanup)
  */
 "destructive"
+export type SpeakerMode = "none" | "diarize" | "channels"
 /**
  * Status of an individual bootstrap step.
  */
@@ -1130,6 +1203,39 @@ export type TAURI_CHANNEL<TSend> = null
  * Result from transcription, including detected language.
  */
 export type TranscribeMemoResult = { text: string; language: string | null }
+/**
+ * Per-file overrides for the wizard flow. Each field is optional so the
+ * frontend only sends what the user actually changed; everything else falls
+ * back to the saved preferences. Uses the `TranscriptionLanguage` type from
+ * our config crate (specta-typed) rather than the library's `LanguageMode` —
+ * the wrapper keeps the TS binding inside the desktop crate's surface.
+ */
+export type TranscribeOptionsOverrides = { language?: TranscriptionLanguage | null; speaker_mode?: SpeakerMode | null; speaker_count?: number | null; use_medical_for_english?: boolean | null; 
+/**
+ * When set, overrides `prefs.translate_to_english` for this single file.
+ */
+translate_to_english?: boolean | null }
+export type TranscriptionLanguage = "english" | "spanish" | "mixed"
+/**
+ * Per-clinician defaults for the transcription pipeline.
+ * 
+ * These flow into both the drag-and-drop fast path (used as-is) and the wizard
+ * (pre-filled, user may override per-file). They sync across the clinician's
+ * machines via the [`SyncedPreferences`] mechanism.
+ */
+export type TranscriptionPreferences = { default_language?: TranscriptionLanguage; default_speaker_count?: number; 
+/**
+ * When true, English-only sessions route to Transcribe Medical (3x cost,
+ * clinical-vocabulary tuning, PHI tagging). Spanish and Mixed sessions
+ * always use Standard.
+ */
+use_medical_for_english?: boolean; 
+/**
+ * When true, segments whose detected language is not English get an
+ * English translation rendered alongside the original via Bedrock.
+ * Default off — the primary user is bilingual; future users may want it.
+ */
+translate_to_english?: boolean }
 /**
  * Per-turn token usage captured from a Bedrock Converse response.
  * 

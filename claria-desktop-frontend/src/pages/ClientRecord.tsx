@@ -15,13 +15,17 @@ import {
   restoreDeletedFile,
   getWhisperModels,
   transcribeMemo,
+  loadConfig,
   type RecordFile,
   type ChatHistoryDetail,
   type ChatModel,
   type FileVersion,
   type DeletedFile,
+  type TranscriptionPreferences,
   type WhisperModelInfo,
 } from "../lib/tauri";
+import TranscribeWizard from "../components/TranscribeWizard";
+import TranscriptEditor from "../components/TranscriptEditor";
 import { diffLines, type DiffLine } from "../lib/diff";
 import ClientChat from "./ClientChat";
 import type { Page } from "../App";
@@ -154,6 +158,21 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   const [chatFolderOpen, setChatFolderOpen] = useState(false);
   const [resumeLoading, setResumeLoading] = useState<string | null>(null);
 
+  // Transcription wizard state + cached prefs (used by the drag-zone tooltip).
+  const [showTranscribeWizard, setShowTranscribeWizard] = useState(false);
+  const [wizardDroppedFile, setWizardDroppedFile] = useState<string | null>(null);
+  const [transcriptionPrefs, setTranscriptionPrefs] =
+    useState<TranscriptionPreferences | null>(null);
+  // Tauri's drag-drop fires at the webview level, not DOM level, so it doesn't
+  // respect modal stacking. We mirror `showTranscribeWizard` into a ref so the
+  // listener closure can read the *current* value without re-registering on
+  // every open/close — and when the wizard is open, drops route into the
+  // wizard instead of starting a legacy upload.
+  const wizardOpenRef = useRef(false);
+  useEffect(() => {
+    wizardOpenRef.current = showTranscribeWizard;
+  }, [showTranscribeWizard]);
+
   // More mode state
   const [moreMode, setMoreMode] = useState(false);
   const [deletedFiles, setDeletedFiles] = useState<DeletedFile[]>([]);
@@ -228,9 +247,43 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       .catch(() => setMemoReady(false));
   }, []);
 
+  // Load transcription preferences once for the drag-zone tooltip. Cheap;
+  // no need to re-run on tab switches.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await loadConfig();
+        if (!cancelled) setTranscriptionPrefs(info.transcription);
+      } catch {
+        // Silent — the tooltip just won't show prefs in that case.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Tauri drag-and-drop event listener.
+  //
+  // Two subtleties:
+  //
+  // 1. **StrictMode race.** `onDragDropEvent` returns a Promise that resolves
+  //    to the unlisten function. In React 18 StrictMode, effects mount → clean
+  //    up → mount again. The first cleanup runs before the Promise resolves,
+  //    so the original `unlisten?.()` was a no-op and both mounts ended up
+  //    with live listeners — the bug the user observed as "two uploads at
+  //    once". `cancelled` flag drains the second listener if cleanup runs
+  //    before registration completes.
+  //
+  // 2. **Wizard modal stacking.** Tauri's drag-drop is webview-level, not
+  //    DOM-level — dropping on the wizard modal still fires this handler and
+  //    would upload via the legacy fast path, bypassing the wizard's options.
+  //    Bail out via `wizardOpenRef` when the modal is open; the user has the
+  //    "Choose a file…" picker inside the wizard.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
 
     getCurrentWebview()
       .onDragDropEvent((event) => {
@@ -243,17 +296,30 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
           setDragging(false);
         } else if (event.payload.type === "drop") {
           setDragging(false);
+          if (wizardOpenRef.current) {
+            // Route the drop into the open wizard — it adopts the path as
+            // the chosen file. We forward the first path only; the wizard
+            // is single-file.
+            const first = event.payload.paths[0];
+            if (first) setWizardDroppedFile(first);
+            return;
+          }
           handleFileDrop(event.payload.paths);
         }
       })
       .then((fn) => {
-        unlisten = fn;
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
       })
       .catch((err) => {
         console.error("Failed to register drag-drop listener:", err);
       });
 
     return () => {
+      cancelled = true;
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -596,7 +662,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     setSelectedVersions(new Set());
     setDiffResult(null);
     try {
-      setVersions(await listFileVersions(clientId, filename));
+      setVersions(await listFileVersions(clientId, versionKeyFor(filename)));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -619,7 +685,11 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     }
     setVersionPreviewLoading(true);
     try {
-      const text = await getFileVersionText(clientId, versionFile!, versionId);
+      const text = await getFileVersionText(
+        clientId,
+        versionKeyFor(versionFile!),
+        versionId
+      );
       setVersionPreview({ versionId, text });
     } catch (e) {
       setVersionPreview({ versionId, text: `Error: ${String(e)}` });
@@ -652,9 +722,10 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     setDiffResult(null);
     try {
       const [v1, v2] = [...selectedVersions];
+      const key = versionKeyFor(versionFile);
       const [text1, text2] = await Promise.all([
-        getFileVersionText(clientId, versionFile, v1),
-        getFileVersionText(clientId, versionFile, v2),
+        getFileVersionText(clientId, key, v1),
+        getFileVersionText(clientId, key, v2),
       ]);
       // Order by version position: v1 is older, v2 is newer
       const idx1 = versions.findIndex((v) => v.version_id === v1);
@@ -672,7 +743,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     if (!versionFile) return;
     setRestoringVersion(true);
     try {
-      await restoreFileVersion(clientId, versionFile, versionId);
+      await restoreFileVersion(clientId, versionKeyFor(versionFile), versionId);
       handleCloseVersions();
       await refresh();
     } catch (e) {
@@ -741,6 +812,13 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                   Record Memo
                 </button>
               )}
+              <button
+                onClick={() => setShowTranscribeWizard(true)}
+                className="px-3 py-1 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
+                title="Pick an audio file and configure transcription per-file"
+              >
+                Upload Audio File…
+              </button>
               <button
                 onClick={() => setShowCreateText(true)}
                 className="px-3 py-1 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 transition-colors"
@@ -1072,6 +1150,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
               className={`px-4 py-6 text-center ${
                 files.length === 0 && uploading.length === 0 ? "py-12" : ""
               }`}
+              title={transcribeTooltip(transcriptionPrefs)}
             >
               <p
                 className={`text-sm ${
@@ -1082,60 +1161,81 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                   ? "Drop files to upload"
                   : "Drag files here \u2014 PDF, DOCX, audio, or text"}
               </p>
+              {!dragging && transcriptionPrefs && (
+                <p className="text-xs text-gray-400 mt-1">
+                  {transcribeSummary(transcriptionPrefs)}
+                </p>
+              )}
             </div>
           )}
         </div>
       </div>
 
-      {/* Preview modal */}
-      {previewText !== null && previewFilename && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                {previewFilename}
-              </h3>
-              <button
-                onClick={() => {
-                  setPreviewText(null);
-                  setPreviewFilename(null);
-                }}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+      {/* Preview / segment editor.
+          Audio sidecars get the structured TranscriptEditor (header parser,
+          per-segment rows, speaker rename, save / restore-to-original via S3
+          versioning). PDF/DOCX sidecars are plain text — render read-only. */}
+      {previewText !== null &&
+        previewFilename &&
+        (isAudioSidecar(previewFilename) ? (
+          <TranscriptEditor
+            clientId={clientId}
+            filename={previewFilename}
+            initialBody={previewText}
+            onClose={() => {
+              setPreviewText(null);
+              setPreviewFilename(null);
+            }}
+            onSaved={(newBody) => setPreviewText(newBody)}
+          />
+        ) : (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {previewFilename}
+                </h3>
+                <button
+                  onClick={() => {
+                    setPreviewText(null);
+                    setPreviewFilename(null);
+                  }}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-              <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-                {previewText}
-              </pre>
-            </div>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => {
-                  setPreviewText(null);
-                  setPreviewFilename(null);
-                }}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              >
-                Close
-              </button>
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+                <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
+                  {previewText}
+                </pre>
+              </div>
+              <div className="flex justify-end mt-4">
+                <button
+                  onClick={() => {
+                    setPreviewText(null);
+                    setPreviewFilename(null);
+                  }}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        ))}
 
       {/* Edit text file modal */}
       {editText !== null && editFilename && (
@@ -1182,7 +1282,8 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
             </h3>
             <p className="text-sm text-gray-600 mb-6">
               Delete <span className="font-medium">{deleteConfirm}</span> and
-              its extracted text? This cannot be undone.
+              its extracted text? You can restore this file again later if
+              necessary.
             </p>
             <div className="flex justify-end gap-3">
               <button
@@ -1200,6 +1301,22 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
             </div>
           </div>
         </div>
+      )}
+
+      {/* Transcription wizard */}
+      {showTranscribeWizard && (
+        <TranscribeWizard
+          clientId={clientId}
+          droppedFilePath={wizardDroppedFile}
+          isDragging={dragging}
+          onClose={() => {
+            setShowTranscribeWizard(false);
+            setWizardDroppedFile(null);
+          }}
+          onUploaded={() => {
+            void refresh();
+          }}
+        />
       )}
 
       {/* Create text file modal */}
@@ -1333,7 +1450,9 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
           <div className="bg-white rounded-xl shadow-lg max-w-4xl w-full mx-4 p-6 max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-900">
-                Version History: {versionFile}
+                {isAudioSidecar(versionFile)
+                  ? `Transcript History: ${versionFile}`
+                  : `Version History: ${versionFile}`}
               </h3>
               <button
                 onClick={handleCloseVersions}
@@ -1494,6 +1613,57 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       )}
     </div>
   );
+}
+
+/**
+ * True when the filename is a supported audio file (e.g. `session.m4a`).
+ *
+ * The preview modal is opened with the *audio* filename, not the sidecar
+ * name — `getRecordFileText` handles the sidecar lookup internally, and
+ * `save_transcript_edits` / `restore_original_transcript` also expect the
+ * audio filename and append `.text` themselves. So the structured editor
+ * gate is on the audio extension, not on a `.text` suffix.
+ */
+function isAudioSidecar(filename: string): boolean {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  return AUDIO_EXTENSIONS.has(ext);
+}
+
+/**
+ * Map an audio filename to the S3 key that the version-history commands
+ * should operate on. For audio files this is the `.text` sidecar — the
+ * raw audio file's history isn't useful (it's a single immutable
+ * upload). For everything else it's the file itself.
+ */
+function versionKeyFor(filename: string): string {
+  return isAudioSidecar(filename) ? `${filename}.text` : filename;
+}
+
+function transcribeSummary(prefs: TranscriptionPreferences): string {
+  const lang =
+    prefs.default_language === "english"
+      ? "English"
+      : prefs.default_language === "spanish"
+      ? "Spanish"
+      : "Mixed (en+es)";
+  const engine =
+    prefs.default_language === "english" && prefs.use_medical_for_english
+      ? "Medical"
+      : "Standard";
+  const speakers = `${prefs.default_speaker_count} speaker${
+    (prefs.default_speaker_count ?? 0) === 1 ? "" : "s"
+  }`;
+  const translate = prefs.translate_to_english ? ", translate" : "";
+  return `Audio uses: ${engine} · ${lang} · ${speakers}${translate}.`;
+}
+
+function transcribeTooltip(prefs: TranscriptionPreferences | null): string {
+  if (!prefs) return "Drag files here to upload";
+  // Rough ETA — Transcribe is typically ~5–10x real-time. Use 1 min processing
+  // per 6 min of audio as the heuristic shown to users.
+  return `${transcribeSummary(
+    prefs
+  )}\nDuration estimate: ~1 minute of processing per 6 minutes of audio.`;
 }
 
 const AUDIO_EXTENSIONS = new Set([

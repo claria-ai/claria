@@ -53,6 +53,10 @@ export function buildInitScript(): string {
           const key = cmd + ":" + args.versionId;
           if (key in fixtures) return fixtures[key];
         }
+        if (cmd === "get_record_file_text" && args?.filename) {
+          const key = cmd + ":" + args.filename;
+          if (key in fixtures) return fixtures[key];
+        }
         if (cmd in fixtures) {
           return fixtures[cmd];
         }

@@ -72,3 +72,5 @@ pub const LEGACY_SYSTEM_PROMPT: &str = "system-prompt.md";
 pub const INDEX: &str = "_index/tantivy.tar.zst";
 
 pub const PROVISIONER_STATE: &str = "_state/provisioner.json";
+
+pub const PREFERENCES: &str = "_state/preferences.json";

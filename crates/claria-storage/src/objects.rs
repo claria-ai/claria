@@ -378,6 +378,26 @@ pub async fn list_deleted_objects(
     Ok(deleted)
 }
 
+/// Get the first (oldest, non-delete-marker) version of an object.
+///
+/// Useful when the caller wants the "original" of a versioned object — e.g.
+/// restoring a Transcribe-generated transcript after a user has edited it.
+pub async fn get_first_version(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+) -> Result<GetObjectOutput, StorageError> {
+    let mut versions = list_object_versions(client, bucket, key).await?;
+    versions.retain(|v| !v.is_delete_marker);
+    versions.sort_by(|a, b| a.last_modified.cmp(&b.last_modified));
+
+    let first = versions.first().ok_or_else(|| StorageError::NotFound {
+        key: key.to_string(),
+    })?;
+
+    get_object_version(client, bucket, key, &first.version_id).await
+}
+
 /// Get a specific version of an object.
 pub async fn get_object_version(
     client: &Client,

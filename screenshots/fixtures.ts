@@ -35,7 +35,46 @@ export const fixtures: Record<string, unknown> = {
     preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
     cost_explorer_enabled: true,
     hourly_cost_data: false,
+    prompt_caching_enabled: true,
+    transcription: {
+      default_language: "english",
+      default_speaker_count: 2,
+      use_medical_for_english: false,
+      translate_to_english: false,
+    },
   },
+
+  // `fetch_cloud_preferences` returns the same shape as `load_config` —
+  // the in-S3 synced preferences mirror the synced subset of the local config.
+  fetch_cloud_preferences: {
+    region: "us-east-1",
+    system_name: "claria",
+    account_id: "185735714230",
+    created_at: "2026-03-01T17:30:02.048518Z",
+    credential_type: "inline",
+    profile_name: null,
+    access_key_hint: "AKIA...GJEV",
+    preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+    cost_explorer_enabled: true,
+    hourly_cost_data: false,
+    prompt_caching_enabled: true,
+    transcription: {
+      default_language: "english",
+      default_speaker_count: 2,
+      use_medical_for_english: false,
+      translate_to_english: false,
+    },
+  },
+
+  save_preferences: null,
+  save_transcript_edits: null,
+  upload_record_file_with_options: {
+    filename: "session-2026-03-15.m4a",
+    size: 4_823_521,
+    last_modified: new Date().toISOString(),
+    is_text: false,
+  },
+  pick_audio_file: "/Users/clinician/Documents/visit-2026-03-15.m4a",
 
   list_chat_models: [
     {
@@ -89,7 +128,34 @@ export const fixtures: Record<string, unknown> = {
       last_modified: "2026-02-18T09:30:00Z",
       is_text: false,
     },
+    {
+      filename: "session-2026-03-15.m4a",
+      size: 4_823_521,
+      last_modified: "2026-03-15T14:22:00Z",
+      is_text: false,
+    },
   ],
+
+  // Sample headered transcript body for the transcript-editor screenshot.
+  // Routed by filename via `cmd:filename` (see tauri-mock.ts).
+  "get_record_file_text:session-2026-03-15.m4a": [
+    "[Clinician 00:00– 00:04]",
+    "How are you feeling today?",
+    "",
+    "[Patient 00:04– 00:09]",
+    "I've been having headaches for about a week.",
+    "",
+    "[Clinician 00:09– 00:12 es-US]",
+    "¿En qué parte de la cabeza?",
+    "> What part of your head?",
+    "",
+    "[Patient 00:12– 00:17 es-US]",
+    "Sobre todo aquí, en las sienes. A veces también detrás de los ojos.",
+    "> Mostly here, at the temples. Sometimes also behind the eyes.",
+    "",
+    "[Clinician 00:17– 00:22]",
+    "Have you noticed anything that makes them worse — screens, lack of sleep, stress?",
+  ].join("\n").replace(/– /g, "–"),
 
   list_record_context: [
     {
