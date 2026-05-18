@@ -1846,8 +1846,11 @@ pub fn pick_audio_file() -> Result<Option<String>, String> {
     Ok(path.and_then(|p| p.to_str().map(|s| s.to_string())))
 }
 
-/// Save edits to the transcript sidecar. S3 versioning preserves the original
-/// at v1 — see [`restore_original_transcript`].
+/// Save edits to the transcript sidecar. S3 versioning preserves every prior
+/// body, including the Transcribe-generated v1 — clinicians restore any past
+/// version (or the original) via the standard `list_file_versions` /
+/// `restore_file_version` flow, which the frontend routes to the `.text`
+/// sidecar for audio files.
 #[tauri::command]
 #[specta::specta]
 pub async fn save_transcript_edits(
@@ -1886,53 +1889,6 @@ pub async fn save_transcript_edits(
     .emit();
 
     Ok(())
-}
-
-/// Restore the original (v1) transcript body — the unedited text Transcribe
-/// produced. Fetches v1 from S3 versioning and PUTs it as the new latest.
-#[tauri::command]
-#[specta::specta]
-pub async fn restore_original_transcript(
-    state: State<'_, DesktopState>,
-    client_id: String,
-    filename: String,
-) -> Result<String, String> {
-    let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let s3 = claria_storage::client::from_config(&sdk_config);
-    let bucket = bucket_name(&cfg);
-
-    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let sidecar_key = format!(
-        "{}.text",
-        claria_core::s3_keys::client_record_file(id, &filename)
-    );
-
-    let original = claria_storage::objects::get_first_version(&s3, &bucket, &sidecar_key)
-        .await
-        .map_err(|e| e.to_string())?;
-    let body =
-        String::from_utf8(original.body).map_err(|e| format!("transcript v1 is not UTF-8: {e}"))?;
-
-    claria_storage::objects::put_object(
-        &s3,
-        &bucket,
-        &sidecar_key,
-        body.clone().into_bytes(),
-        Some("text/plain"),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    claria_audit::events::AuditEvent::new(
-        "restore_original_transcript",
-        "transcript",
-        &filename,
-        cfg.account_id.clone(),
-    )
-    .with_details(serde_json::json!({ "client_id": id.to_string() }))
-    .emit();
-
-    Ok(body)
 }
 
 /// Delete a file from a client's record, including its sidecar if present.

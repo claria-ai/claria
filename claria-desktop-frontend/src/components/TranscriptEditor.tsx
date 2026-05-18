@@ -1,19 +1,27 @@
 import { useMemo, useState } from "react";
-import { restoreOriginalTranscript, saveTranscriptEdits } from "../lib/tauri";
+import { saveTranscriptEdits } from "../lib/tauri";
 
 /**
  * Per-segment transcript editor.
  *
  * Parses the `.text` sidecar body into segments (label, time range, text,
  * optional translation), exposes them as editable rows, and writes back the
- * rendered body on save. S3 object versioning preserves the original at v1 —
- * the "Reset to original" button fetches v1 via the dedicated Tauri command.
+ * rendered body on save. S3 object versioning preserves every prior body
+ * (including the original Transcribe output as v1). Restore is handled by
+ * the standard Version History modal (time icon on the file row), which
+ * for audio files targets the `.text` sidecar — every revision is listed
+ * and individually restorable.
  *
  * Mirrors the Rust parser/renderer in
  * `crates/claria-transcribe/src/lib.rs::{parse_transcript_body,
  * format_transcript_body}`. Hand-edited speaker labels propagate via
  * label-string identity (rename "Speaker 1" → "Clinician" and every
  * `[Speaker 1 ...]` header in the body flips).
+ *
+ * Restoring the original Transcribe output is handled by the standard
+ * Version History modal (time icon on the file row), which is wired to
+ * the `.text` sidecar for audio files — every transcript revision is
+ * listed there, including v1.
  *
  * Legacy header-less bodies (PDF/DOCX sidecars, older audio transcripts)
  * parse as a single un-diarized segment so this editor remains usable on any
@@ -38,7 +46,6 @@ export default function TranscriptEditor({
     initial.labelByKey
   );
   const [saving, setSaving] = useState(false);
-  const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function handleSegmentTextChange(idx: number, text: string) {
@@ -80,28 +87,6 @@ export default function TranscriptEditor({
     }
   }
 
-  async function handleRestore() {
-    if (
-      !window.confirm(
-        "Restore the original transcript? Any edits you've made will be lost."
-      )
-    )
-      return;
-    setRestoring(true);
-    setError(null);
-    try {
-      const body = await restoreOriginalTranscript(clientId, filename);
-      const parsed = parseBody(body);
-      setSegments(parsed.segments);
-      setLabelByKey(parsed.labelByKey);
-      onSaved(body);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRestoring(false);
-    }
-  }
-
   // Distinct speaker keys in stable order (first-seen).
   const speakerKeys: string[] = [];
   for (const seg of segments) {
@@ -121,7 +106,7 @@ export default function TranscriptEditor({
           <h3 className="font-semibold text-gray-900">{filename}</h3>
           <button
             onClick={onClose}
-            disabled={saving || restoring}
+            disabled={saving}
             className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
             aria-label="Close"
           >
@@ -193,31 +178,21 @@ export default function TranscriptEditor({
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-between">
+        <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
           <button
-            onClick={handleRestore}
-            disabled={saving || restoring}
-            className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
-            title="Restore the original Transcribe-generated body. All your edits will be replaced."
+            onClick={onClose}
+            disabled={saving}
+            className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
           >
-            {restoring ? "Restoring..." : "Reset to original"}
+            Cancel
           </button>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onClose}
-              disabled={saving || restoring}
-              className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saving || restoring}
-              className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-            >
-              {saving ? "Saving..." : "Save"}
-            </button>
-          </div>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
         </div>
       </div>
     </div>

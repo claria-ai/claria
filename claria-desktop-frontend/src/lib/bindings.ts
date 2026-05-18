@@ -80,24 +80,15 @@ async uploadRecordFileWithOptions(clientId: string, filePath: string, overrides:
 }
 },
 /**
- * Save edits to the transcript sidecar. S3 versioning preserves the original
- * at v1 — see [`restore_original_transcript`].
+ * Save edits to the transcript sidecar. S3 versioning preserves every prior
+ * body, including the Transcribe-generated v1 — clinicians restore any past
+ * version (or the original) via the standard `list_file_versions` /
+ * `restore_file_version` flow, which the frontend routes to the `.text`
+ * sidecar for audio files.
  */
 async saveTranscriptEdits(clientId: string, filename: string, body: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_transcript_edits", { clientId, filename, body }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Restore the original (v1) transcript body — the unedited text Transcribe
- * produced. Fetches v1 from S3 versioning and PUTs it as the new latest.
- */
-async restoreOriginalTranscript(clientId: string, filename: string) : Promise<Result<string, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("restore_original_transcript", { clientId, filename }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

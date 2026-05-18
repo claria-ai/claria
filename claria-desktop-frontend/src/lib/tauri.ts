@@ -133,17 +133,6 @@ export async function saveTranscriptEdits(
 }
 
 /**
- * Restore the original (v1) transcript body via S3 versioning. Returns the
- * restored body so the editor can re-render in place.
- */
-export async function restoreOriginalTranscript(
-  clientId: string,
-  filename: string
-): Promise<string> {
-  return unwrap(await commands.restoreOriginalTranscript(clientId, filename));
-}
-
-/**
  * Open a native file picker scoped to supported audio formats. Returns the
  * absolute path, or `null` if the user cancelled.
  */
