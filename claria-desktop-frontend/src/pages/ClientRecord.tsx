@@ -1607,11 +1607,17 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   );
 }
 
-/** Sidecar name (e.g. "session.m4a.text") whose base file is a supported audio format. */
+/**
+ * True when the filename is a supported audio file (e.g. `session.m4a`).
+ *
+ * The preview modal is opened with the *audio* filename, not the sidecar
+ * name — `getRecordFileText` handles the sidecar lookup internally, and
+ * `save_transcript_edits` / `restore_original_transcript` also expect the
+ * audio filename and append `.text` themselves. So the structured editor
+ * gate is on the audio extension, not on a `.text` suffix.
+ */
 function isAudioSidecar(filename: string): boolean {
-  if (!filename.endsWith(".text")) return false;
-  const base = filename.slice(0, -".text".length);
-  const ext = base.split(".").pop()?.toLowerCase() ?? "";
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
   return AUDIO_EXTENSIONS.has(ext);
 }
 
