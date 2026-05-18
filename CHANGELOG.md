@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.16.0] — 2026-05-18
 
 ### Added
 - **Multi-lingual + Medical transcription API** — `claria-transcribe` now accepts `TranscribeOptions { language, speakers, engine }` and returns a structured `TranscriptResult` (segments with speaker/timestamp/language/translation, speaker list). Supports Spanish (`es-US`), code-switching English/Spanish via `IdentifyMultipleLanguages`, Transcribe Medical (English-only, PHI tagging via `ContentIdentificationType=PHI`), speaker diarization (1/2/3-4 speakers), and channel identification for stereo audio. Engine is auto-routed: Medical falls back to Standard for non-English languages. `TranscriptSegment` carries whole-second timestamps (`start_seconds`/`end_seconds: u32`) — no false sub-second precision. New `format_transcript_body`/`parse_transcript_body` render and parse a `[Speaker mm:ss\u{2013}mm:ss lang]`-headered plain-text format so the existing `.text` sidecar carries structure through user edits; translations render as `> `-prefixed blockquote lines beneath the original; legacy header-less sidecars degrade to a single un-diarized segment. Legacy `transcribe_audio` retained as a thin wrapper during the transition window.
