@@ -177,6 +177,7 @@ pub struct ConfigInfo {
     pub cost_explorer_enabled: bool,
     pub hourly_cost_data: bool,
     pub prompt_caching_enabled: bool,
+    pub transcription: TranscriptionPreferences,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -408,6 +409,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         cost_explorer_enabled: config.cost_explorer_enabled,
         hourly_cost_data: config.hourly_cost_data,
         prompt_caching_enabled: config.prompt_caching_enabled,
+        transcription: config.transcription.clone(),
     }
 }
 

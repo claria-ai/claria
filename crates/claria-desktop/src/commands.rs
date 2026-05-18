@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::Semaphore;
 
-use claria_desktop::config::{self, ClariaConfig, ConfigInfo, CredentialSource};
+use claria_desktop::config::{
+    self, ClariaConfig, ConfigInfo, CredentialSource, SyncedPreferences, TranscriptionPreferences,
+};
 use claria_provisioner::account_setup::{
     AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
     StepStatus,
@@ -142,11 +144,129 @@ pub async fn load_config(
         }
     }
 
+    // Overlay synced preferences from S3 if any are stored there. First-launch
+    // and any read failure (missing key, S3 unreachable) are non-fatal — the
+    // local config remains authoritative.
+    if !cfg.account_id.is_empty() {
+        let sdk_config =
+            claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
+        match read_cloud_preferences(&sdk_config, &cfg).await {
+            Ok(Some(synced)) => {
+                synced.apply_to_config(&mut cfg);
+                tracing::info!("applied synced preferences from S3");
+            }
+            Ok(None) => {
+                tracing::info!(
+                    "no synced preferences in S3 yet (first machine or fresh provisioner)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read cloud preferences; using local values");
+            }
+        }
+    }
+
     let info = config::config_info(&cfg);
 
     let mut guard = state.config.lock().await;
     *guard = Some(cfg);
 
+    Ok(info)
+}
+
+/// Read `_state/preferences.json` from S3. Returns `Ok(None)` when the object
+/// doesn't exist (first launch, fresh provisioner); errors only on transport
+/// failure or malformed JSON.
+async fn read_cloud_preferences(
+    sdk_config: &aws_config::SdkConfig,
+    cfg: &ClariaConfig,
+) -> Result<Option<SyncedPreferences>, String> {
+    let s3 = claria_storage::client::from_config(sdk_config);
+    let bucket = bucket_name(cfg);
+    match claria_storage::objects::get_object(&s3, &bucket, claria_core::s3_keys::PREFERENCES).await
+    {
+        Ok(output) => {
+            let synced: SyncedPreferences =
+                serde_json::from_slice(&output.body).map_err(|e| e.to_string())?;
+            Ok(Some(synced))
+        }
+        Err(claria_storage::error::StorageError::NotFound { .. }) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Write `_state/preferences.json` to S3.
+async fn write_cloud_preferences(
+    sdk_config: &aws_config::SdkConfig,
+    cfg: &ClariaConfig,
+    synced: &SyncedPreferences,
+) -> Result<(), String> {
+    let s3 = claria_storage::client::from_config(sdk_config);
+    let bucket = bucket_name(cfg);
+    let body = serde_json::to_vec_pretty(synced).map_err(|e| e.to_string())?;
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        claria_core::s3_keys::PREFERENCES,
+        body,
+        Some("application/json"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Save the clinician's preferences (synced subset) to both the local config
+/// file and `_state/preferences.json` in S3. Bubbles S3-write failures so the
+/// frontend can show a partial-save warning.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_preferences(
+    state: State<'_, DesktopState>,
+    preferred_model_id: Option<String>,
+    cost_explorer_enabled: bool,
+    hourly_cost_data: bool,
+    prompt_caching_enabled: bool,
+    transcription: TranscriptionPreferences,
+) -> Result<ConfigInfo, String> {
+    let (mut cfg, sdk_config) = load_sdk_config(&state).await?;
+
+    cfg.preferred_model_id = preferred_model_id;
+    cfg.cost_explorer_enabled = cost_explorer_enabled;
+    cfg.hourly_cost_data = hourly_cost_data;
+    cfg.prompt_caching_enabled = prompt_caching_enabled;
+    cfg.transcription = transcription;
+
+    // Persist locally first so we don't lose the user's edit if S3 is down.
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    let synced = SyncedPreferences::from_config(&cfg);
+    write_cloud_preferences(&sdk_config, &cfg, &synced)
+        .await
+        .map_err(|e| format!("preferences saved locally but cloud sync failed: {e}"))?;
+
+    let info = config::config_info(&cfg);
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
+    Ok(info)
+}
+
+/// Re-fetch synced preferences from S3 and overlay onto the in-memory config.
+/// Used by the Preferences page on entry so users on the editing machine see
+/// the latest cloud state without an app restart.
+#[tauri::command]
+#[specta::specta]
+pub async fn fetch_cloud_preferences(
+    state: State<'_, DesktopState>,
+) -> Result<ConfigInfo, String> {
+    let (mut cfg, sdk_config) = load_sdk_config(&state).await?;
+    if let Some(synced) = read_cloud_preferences(&sdk_config, &cfg).await? {
+        synced.apply_to_config(&mut cfg);
+        config::save_config(&cfg).map_err(|e| e.to_string())?;
+    }
+    let info = config::config_info(&cfg);
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
     Ok(info)
 }
 
@@ -1427,14 +1547,28 @@ pub async fn upload_record_file(
         claria_transcribe::media_format_for_extension(&extension)
     {
         let sidecar_key = format!("{key}.text");
-        match claria_transcribe::transcribe_audio(&sdk_config, &bucket, &key, media_format).await
+        // Drag-drop uses saved preferences as-is. The wizard's separate
+        // command (`upload_record_file_with_options`) is the override path.
+        let options = build_transcribe_options(&cfg.transcription, None);
+        let translate = cfg.transcription.translate_to_english;
+
+        match claria_transcribe::transcribe_audio_with_options(
+            &sdk_config,
+            &bucket,
+            &key,
+            media_format,
+            &options,
+        )
+        .await
         {
-            Ok(text) => {
+            Ok(mut result) => {
+                maybe_translate(&sdk_config, &cfg, &mut result, translate).await;
+                let body = claria_transcribe::format_transcript_body(&result);
                 claria_storage::objects::put_object(
                     &s3,
                     &bucket,
                     &sidecar_key,
-                    text.into_bytes(),
+                    body.into_bytes(),
                     Some("text/plain"),
                 )
                 .await
@@ -1459,6 +1593,321 @@ pub async fn upload_record_file(
         size: file_size,
         uploaded_at: Some(jiff::Timestamp::now().to_string()),
     })
+}
+
+/// Map per-clinician `TranscriptionPreferences` + per-file overrides into the
+/// `TranscribeOptions` shape the library crate expects.
+fn build_transcribe_options(
+    prefs: &TranscriptionPreferences,
+    overrides: Option<TranscribeOptionsOverrides>,
+) -> claria_transcribe::TranscribeOptions {
+    let lang_pref = overrides
+        .as_ref()
+        .and_then(|o| o.language)
+        .unwrap_or(prefs.default_language);
+    let language = match lang_pref {
+        config::TranscriptionLanguage::English => claria_transcribe::LanguageMode::English,
+        config::TranscriptionLanguage::Spanish => claria_transcribe::LanguageMode::Spanish,
+        config::TranscriptionLanguage::Mixed => claria_transcribe::LanguageMode::Mixed,
+    };
+
+    let speaker_count = overrides
+        .as_ref()
+        .and_then(|o| o.speaker_count)
+        .unwrap_or(prefs.default_speaker_count);
+
+    let speakers = match overrides.as_ref().and_then(|o| o.speaker_mode) {
+        Some(SpeakerMode::None) => claria_transcribe::SpeakerHandling::None,
+        Some(SpeakerMode::Channels) => claria_transcribe::SpeakerHandling::Channels,
+        Some(SpeakerMode::Diarize) | None => match speaker_count {
+            0 | 1 => claria_transcribe::SpeakerHandling::None,
+            n => claria_transcribe::SpeakerHandling::Diarize { max: n },
+        },
+    };
+
+    let use_medical = overrides
+        .as_ref()
+        .and_then(|o| o.use_medical_for_english)
+        .unwrap_or(prefs.use_medical_for_english);
+    let engine = if use_medical {
+        claria_transcribe::TranscriptionEngine::Medical
+    } else {
+        claria_transcribe::TranscriptionEngine::Standard
+    };
+
+    claria_transcribe::TranscribeOptions {
+        language,
+        speakers,
+        engine,
+    }
+}
+
+/// Per-file overrides for the wizard flow. Each field is optional so the
+/// frontend only sends what the user actually changed; everything else falls
+/// back to the saved preferences. Uses the `TranscriptionLanguage` type from
+/// our config crate (specta-typed) rather than the library's `LanguageMode` —
+/// the wrapper keeps the TS binding inside the desktop crate's surface.
+#[derive(Debug, Clone, Deserialize, specta::Type)]
+pub struct TranscribeOptionsOverrides {
+    #[serde(default)]
+    pub language: Option<config::TranscriptionLanguage>,
+    #[serde(default)]
+    pub speaker_mode: Option<SpeakerMode>,
+    #[serde(default)]
+    pub speaker_count: Option<u8>,
+    #[serde(default)]
+    pub use_medical_for_english: Option<bool>,
+    /// When set, overrides `prefs.translate_to_english` for this single file.
+    #[serde(default)]
+    pub translate_to_english: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeakerMode {
+    None,
+    Diarize,
+    Channels,
+}
+
+/// Translate non-English segments in-place if translation is enabled.
+async fn maybe_translate(
+    sdk_config: &aws_config::SdkConfig,
+    cfg: &ClariaConfig,
+    result: &mut claria_transcribe::TranscriptResult,
+    translate: bool,
+) {
+    if !translate {
+        return;
+    }
+    let Some(model_id) = cfg.preferred_model_id.as_deref() else {
+        tracing::warn!("translation requested but no preferred_model_id set; skipping");
+        return;
+    };
+
+    let requests: Vec<claria_bedrock::translate::TranslationRequest> = result
+        .segments
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, seg)| {
+            let lang = seg.language_code.as_deref()?;
+            if lang == "en-US" || lang.starts_with("en-") || seg.text.trim().is_empty() {
+                return None;
+            }
+            Some(claria_bedrock::translate::TranslationRequest {
+                index: idx,
+                language_code: lang.to_string(),
+                source_text: seg.text.clone(),
+            })
+        })
+        .collect();
+
+    if requests.is_empty() {
+        return;
+    }
+
+    match claria_bedrock::translate::translate_segments(sdk_config, model_id, &requests).await {
+        Ok((outputs, usage)) => {
+            for output in &outputs {
+                if let Some(seg) = result.segments.get_mut(output.index) {
+                    seg.translation = Some(output.translation.clone());
+                }
+            }
+            claria_audit::events::AuditEvent::new(
+                "translate_transcript",
+                "transcript",
+                "",
+                cfg.account_id.clone(),
+            )
+            .with_details(serde_json::json!({
+                "segment_count": outputs.len(),
+                "model_id": usage.model_id,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cost_usd": usage.cost_usd,
+                "pricing_version": usage.pricing_version,
+            }))
+            .emit();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "translation failed; sidecar will be written without translations");
+        }
+    }
+}
+
+/// Upload an audio file and transcribe with the wizard's per-file options.
+///
+/// Mirrors `upload_record_file` but skips the legacy single-language path —
+/// always goes through the new structured transcribe + optional Bedrock
+/// translation. The `.text` sidecar contains the rendered headered body.
+#[tauri::command]
+#[specta::specta]
+pub async fn upload_record_file_with_options(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    file_path: String,
+    overrides: Option<TranscribeOptionsOverrides>,
+) -> Result<RecordFile, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let path = std::path::Path::new(&file_path);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid file path".to_string())?;
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let media_format = claria_transcribe::media_format_for_extension(&extension)
+        .ok_or_else(|| format!("Unsupported audio format: .{extension}"))?;
+
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
+    let file_size = bytes.len() as i32;
+
+    let content_type = match extension.as_str() {
+        "mp3" => Some("audio/mpeg"),
+        "mp4" | "m4a" => Some("audio/mp4"),
+        "wav" => Some("audio/wav"),
+        "flac" => Some("audio/flac"),
+        "ogg" => Some("audio/ogg"),
+        "amr" => Some("audio/amr"),
+        "webm" => Some("audio/webm"),
+        _ => None,
+    };
+
+    let key = claria_core::s3_keys::client_record_file(id, filename);
+    claria_storage::objects::put_object(&s3, &bucket, &key, bytes, content_type)
+        .await
+        .map_err(|e| e.to_string())?;
+    tracing::info!(client_id = %id, filename, "record file uploaded (wizard path)");
+
+    let translate = overrides
+        .as_ref()
+        .and_then(|o| o.translate_to_english)
+        .unwrap_or(cfg.transcription.translate_to_english);
+    let options = build_transcribe_options(&cfg.transcription, overrides);
+
+    let sidecar_key = format!("{key}.text");
+    let mut result =
+        claria_transcribe::transcribe_audio_with_options(&sdk_config, &bucket, &key, media_format, &options)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    maybe_translate(&sdk_config, &cfg, &mut result, translate).await;
+
+    let body = claria_transcribe::format_transcript_body(&result);
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        &sidecar_key,
+        body.into_bytes(),
+        Some("text/plain"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(client_id = %id, filename, "wizard transcription complete");
+
+    Ok(RecordFile {
+        filename: filename.to_string(),
+        size: file_size,
+        uploaded_at: Some(jiff::Timestamp::now().to_string()),
+    })
+}
+
+/// Save edits to the transcript sidecar. S3 versioning preserves the original
+/// at v1 — see [`restore_original_transcript`].
+#[tauri::command]
+#[specta::specta]
+pub async fn save_transcript_edits(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+    body: String,
+) -> Result<(), String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let sidecar_key = format!(
+        "{}.text",
+        claria_core::s3_keys::client_record_file(id, &filename)
+    );
+
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        &sidecar_key,
+        body.into_bytes(),
+        Some("text/plain"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    claria_audit::events::AuditEvent::new(
+        "save_transcript_edits",
+        "transcript",
+        &filename,
+        cfg.account_id.clone(),
+    )
+    .with_details(serde_json::json!({ "client_id": id.to_string() }))
+    .emit();
+
+    Ok(())
+}
+
+/// Restore the original (v1) transcript body — the unedited text Transcribe
+/// produced. Fetches v1 from S3 versioning and PUTs it as the new latest.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_original_transcript(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    filename: String,
+) -> Result<String, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let sidecar_key = format!(
+        "{}.text",
+        claria_core::s3_keys::client_record_file(id, &filename)
+    );
+
+    let original = claria_storage::objects::get_first_version(&s3, &bucket, &sidecar_key)
+        .await
+        .map_err(|e| e.to_string())?;
+    let body =
+        String::from_utf8(original.body).map_err(|e| format!("transcript v1 is not UTF-8: {e}"))?;
+
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        &sidecar_key,
+        body.clone().into_bytes(),
+        Some("text/plain"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    claria_audit::events::AuditEvent::new(
+        "restore_original_transcript",
+        "transcript",
+        &filename,
+        cfg.account_id.clone(),
+    )
+    .with_details(serde_json::json!({ "client_id": id.to_string() }))
+    .emit();
+
+    Ok(body)
 }
 
 /// Delete a file from a client's record, including its sidecar if present.
@@ -1762,11 +2211,25 @@ pub async fn extract_record_file(
     } else if let Some(media_format) =
         claria_transcribe::media_format_for_extension(&extension)
     {
-        // Audio transcription.
-        let text =
-            claria_transcribe::transcribe_audio(&sdk_config, &bucket, &key, media_format)
-                .await
-                .map_err(|e| e.to_string())?;
+        // Audio transcription using saved preferences (re-extract path).
+        let options = build_transcribe_options(&cfg.transcription, None);
+        let mut result = claria_transcribe::transcribe_audio_with_options(
+            &sdk_config,
+            &bucket,
+            &key,
+            media_format,
+            &options,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        maybe_translate(
+            &sdk_config,
+            &cfg,
+            &mut result,
+            cfg.transcription.translate_to_english,
+        )
+        .await;
+        let text = claria_transcribe::format_transcript_body(&result);
 
         claria_storage::objects::put_object(
             &s3,
