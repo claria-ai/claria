@@ -162,6 +162,14 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   const [showTranscribeWizard, setShowTranscribeWizard] = useState(false);
   const [transcriptionPrefs, setTranscriptionPrefs] =
     useState<TranscriptionPreferences | null>(null);
+  // Tauri's drag-drop fires at the webview level, not DOM level, so it doesn't
+  // respect modal stacking. We mirror `showTranscribeWizard` into a ref so the
+  // listener closure can read the *current* value without re-registering on
+  // every open/close.
+  const wizardOpenRef = useRef(false);
+  useEffect(() => {
+    wizardOpenRef.current = showTranscribeWizard;
+  }, [showTranscribeWizard]);
 
   // More mode state
   const [moreMode, setMoreMode] = useState(false);
@@ -255,11 +263,32 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   }, []);
 
   // Tauri drag-and-drop event listener.
+  //
+  // Two subtleties:
+  //
+  // 1. **StrictMode race.** `onDragDropEvent` returns a Promise that resolves
+  //    to the unlisten function. In React 18 StrictMode, effects mount → clean
+  //    up → mount again. The first cleanup runs before the Promise resolves,
+  //    so the original `unlisten?.()` was a no-op and both mounts ended up
+  //    with live listeners — the bug the user observed as "two uploads at
+  //    once". `cancelled` flag drains the second listener if cleanup runs
+  //    before registration completes.
+  //
+  // 2. **Wizard modal stacking.** Tauri's drag-drop is webview-level, not
+  //    DOM-level — dropping on the wizard modal still fires this handler and
+  //    would upload via the legacy fast path, bypassing the wizard's options.
+  //    Bail out via `wizardOpenRef` when the modal is open; the user has the
+  //    "Choose a file…" picker inside the wizard.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
 
     getCurrentWebview()
       .onDragDropEvent((event) => {
+        if (wizardOpenRef.current) {
+          // Modal is open. Suppress both visual feedback and uploads.
+          return;
+        }
         if (
           event.payload.type === "enter" ||
           event.payload.type === "over"
@@ -273,13 +302,18 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
         }
       })
       .then((fn) => {
-        unlisten = fn;
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
       })
       .catch((err) => {
         console.error("Failed to register drag-drop listener:", err);
       });
 
     return () => {
+      cancelled = true;
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
