@@ -8,9 +8,10 @@ use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, DocumentBlock, DocumentFormat, DocumentSource, Message,
     SystemContentBlock,
 };
+use claria_core::models::turn_usage::TurnUsage;
 use tracing::info;
 
-use crate::error::BedrockError;
+use crate::{error::BedrockError, tokens};
 
 /// Default prompt used for document text extraction when no custom prompt
 /// has been saved to S3.
@@ -33,7 +34,7 @@ pub async fn extract_document_text(
     filename: &str,
     format: DocumentFormat,
     system_prompt: &str,
-) -> Result<String, BedrockError> {
+) -> Result<(String, TurnUsage), BedrockError> {
     let client = aws_sdk_bedrockruntime::Client::new(config);
 
     let doc_name = sanitize_document_name(filename);
@@ -90,7 +91,12 @@ pub async fn extract_document_text(
         "document text extraction complete"
     );
 
-    Ok(text)
+    let usage = match response.usage() {
+        Some(u) => tokens::extract_turn_usage(u, model_id),
+        None => tokens::empty_turn_usage(model_id),
+    };
+
+    Ok((text, usage))
 }
 
 /// Sanitize a filename for use as a Bedrock `DocumentBlock` name.

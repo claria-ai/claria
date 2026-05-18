@@ -98,7 +98,7 @@ async fn invoke_converse(
     system_prompt: &str,
     user_message: &str,
 ) -> Result<(String, TokenUsage), BedrockError> {
-    let pricing = tokens::get_pricing(model_id);
+    let pricing = claria_billing::pricing::lookup(model_id);
 
     let response = client
         .converse()
@@ -138,7 +138,7 @@ async fn invoke_converse(
     let usage = response
         .usage()
         .map(|u| {
-            let token_count = tokens::extract_token_usage(u);
+            let token_count = tokens::extract_token_count(u);
             if let Some(p) = &pricing {
                 tokens::calculate_cost(token_count, p)
             } else {

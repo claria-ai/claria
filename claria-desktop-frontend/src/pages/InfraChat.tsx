@@ -127,8 +127,9 @@ export default function InfraChat({
   }, [scanning, chatModels]);
 
   const handleSend = useCallback(
-    async (modelId: string, messages: ChatMessage[]): Promise<string> => {
-      return infraChat(modelId, messages, planEntriesRef.current);
+    async (modelId: string, messages: ChatMessage[]) => {
+      const response = await infraChat(modelId, messages, planEntriesRef.current);
+      return { content: response.content, usage: response.usage };
     },
     []
   );
@@ -205,6 +206,7 @@ export default function InfraChat({
           chatModelsError={chatModelsError}
           preferredModelId={preferredModelId}
           onSend={handleSend}
+          contextTokens={contextTokens}
           emptyStateTitle="Ask about your infrastructure."
           emptyStateSubtitle="Ask questions about your AWS resources, security configuration, and how Claria manages your environment."
           extraLoading={scanning}

@@ -86,6 +86,7 @@ fn main() -> Result<()> {
             commands::probe_cost_explorer,
             commands::enable_cost_explorer,
             commands::set_hourly_cost_data,
+            commands::lookup_model_pricing,
             commands::open_url,
             commands::count_client_context_tokens,
             commands::count_infra_context_tokens,
@@ -98,8 +99,13 @@ fn main() -> Result<()> {
     {
         let bindings_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../claria-desktop-frontend/src/lib/bindings.ts");
+        // `TurnUsage.input_tokens: u64` (and similar) round-trip cleanly as
+        // JS `number` for token counts and pricing values we expect — bump
+        // `bigint` to `Number` so specta accepts u64 fields.
+        let ts_config = specta_typescript::Typescript::default()
+            .bigint(specta_typescript::BigIntExportBehavior::Number);
         builder
-            .export(specta_typescript::Typescript::default(), &bindings_path)
+            .export(ts_config, &bindings_path)
             .expect("failed to export typescript bindings");
 
         // Prepend // @ts-nocheck so the generated file passes strict TypeScript

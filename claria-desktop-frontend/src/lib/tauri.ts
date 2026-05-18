@@ -14,6 +14,7 @@ export type {
   Cause,
   CredentialScope,
   ChatHistoryDetail,
+  ChatHistoryDetailMessage,
   ChatMessage,
   ChatModel,
   ChatResponse,
@@ -27,7 +28,9 @@ export type {
   DeletedFile,
   FieldDrift,
   FileVersion,
+  InfraChatResponse,
   Lifecycle,
+  ModelPricing,
   NewCredentials,
   PlanEntry,
   RecordContext,
@@ -35,6 +38,7 @@ export type {
   ResourceSpec,
   Severity,
   StepStatus,
+  TurnUsage,
 } from "./bindings";
 export type { Result } from "./bindings";
 
@@ -331,7 +335,7 @@ export async function infraChat(
   modelId: string,
   messages: import("./bindings").ChatMessage[],
   planEntries: import("./bindings").PlanEntry[]
-): Promise<string> {
+): Promise<import("./bindings").InfraChatResponse> {
   return unwrap(await commands.infraChat(modelId, messages, planEntries));
 }
 
@@ -474,6 +478,21 @@ export async function enableCostExplorer(): Promise<void> {
 
 export async function setHourlyCostData(enabled: boolean): Promise<void> {
   unwrap(await commands.setHourlyCostData(enabled));
+}
+
+// ---------------------------------------------------------------------------
+// Pricing lookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Look up Bedrock pricing for a model_id (inference profile or bare
+ * foundation id). Returns `null` for unknown models so callers can hide
+ * the pre-flight estimate rather than render `$NaN`.
+ */
+export async function lookupModelPricing(
+  modelId: string
+): Promise<import("./bindings").ModelPricing | null> {
+  return unwrap(await commands.lookupModelPricing(modelId));
 }
 
 // ---------------------------------------------------------------------------

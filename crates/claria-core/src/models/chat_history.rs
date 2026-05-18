@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::models::turn_usage::TurnUsage;
+
 /// A persisted chat session between a user and a Bedrock model.
 ///
 /// Uploaded to S3 after every call/response pair so the conversation
@@ -21,6 +23,12 @@ pub struct ChatHistoryMessage {
     pub role: ChatHistoryRole,
     pub content: String,
     pub timestamp: jiff::Timestamp,
+    /// `Some` on assistant turns whose Converse response carried a usage
+    /// block. `None` on user turns and on assistant turns from history
+    /// written before this schema landed. Never synthesised — `None` means
+    /// "unknown".
+    #[serde(default)]
+    pub usage: Option<TurnUsage>,
 }
 
 /// Role of a chat history message.

@@ -73,11 +73,33 @@ pub enum ChatRole {
     Assistant,
 }
 
-/// Response from a chat message, including the persisted chat session ID.
+/// Response from a chat message, including the persisted chat session ID
+/// and per-turn token usage.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ChatResponse {
     pub chat_id: String,
     pub content: String,
+    pub usage: claria_core::models::turn_usage::TurnUsage,
+}
+
+/// Response from an infrastructure chat turn. Infra chat does not persist
+/// history, but we still return token usage so the UI can display cost.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct InfraChatResponse {
+    pub content: String,
+    pub usage: claria_core::models::turn_usage::TurnUsage,
+}
+
+/// A single message in persisted chat history, including optional token
+/// usage on assistant turns.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ChatHistoryDetailMessage {
+    pub role: ChatRole,
+    pub content: String,
+    /// `Some` on assistant turns whose Converse response carried a usage
+    /// block. `None` on user turns and on assistant turns from history
+    /// written before per-turn usage tracking landed.
+    pub usage: Option<claria_core::models::turn_usage::TurnUsage>,
 }
 
 /// Detail of a persisted chat session, returned when resuming a conversation.
@@ -85,7 +107,7 @@ pub struct ChatResponse {
 pub struct ChatHistoryDetail {
     pub chat_id: String,
     pub model_id: String,
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vec<ChatHistoryDetailMessage>,
     pub created_at: String,
 }
 
@@ -147,6 +169,7 @@ pub async fn save_config(
         preferred_model_id: None,
         cost_explorer_enabled: false,
         hourly_cost_data: false,
+        prompt_caching_enabled: true,
     };
 
     config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -350,6 +373,7 @@ pub async fn bootstrap_iam_user(
                 preferred_model_id: None,
                 cost_explorer_enabled: false,
                 hourly_cost_data: false,
+                prompt_caching_enabled: true,
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -1017,6 +1041,7 @@ pub async fn provision_apply(
             preferred_model_id: None,
             cost_explorer_enabled: false,
             hourly_cost_data: false,
+            prompt_caching_enabled: true,
         };
 
         config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -1354,7 +1379,7 @@ pub async fn upload_record_file(
         )
         .await
         {
-            Ok(text) => {
+            Ok((text, usage)) => {
                 claria_storage::objects::put_object(
                     &s3,
                     &bucket,
@@ -1364,6 +1389,24 @@ pub async fn upload_record_file(
                 )
                 .await
                 .map_err(|e| e.to_string())?;
+
+                claria_audit::events::AuditEvent::new(
+                    "extract_document_text",
+                    "record_file",
+                    filename,
+                    cfg.account_id.clone(),
+                )
+                .with_details(serde_json::json!({
+                    "client_id": id.to_string(),
+                    "model_id": usage.model_id,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_input_tokens": usage.cache_read_input_tokens,
+                    "cache_write_input_tokens": usage.cache_write_input_tokens,
+                    "cost_usd": usage.cost_usd,
+                    "pricing_version": usage.pricing_version,
+                }))
+                .emit();
 
                 tracing::info!(client_id = %id, filename, "sidecar text extraction uploaded");
             }
@@ -1673,7 +1716,7 @@ pub async fn extract_record_file(
             .await
             .map_err(|e| e.to_string())?;
         let extraction_prompt = load_prompt(&s3, &bucket, "pdf-extraction").await?;
-        let text = claria_bedrock::extract::extract_document_text(
+        let (text, usage) = claria_bedrock::extract::extract_document_text(
             &sdk_config,
             EXTRACTION_MODEL_ID,
             &output.body,
@@ -1693,6 +1736,24 @@ pub async fn extract_record_file(
         )
         .await
         .map_err(|e| e.to_string())?;
+
+        claria_audit::events::AuditEvent::new(
+            "extract_document_text",
+            "record_file",
+            &filename,
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({
+            "client_id": id.to_string(),
+            "model_id": usage.model_id,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+            "cache_write_input_tokens": usage.cache_write_input_tokens,
+            "cost_usd": usage.cost_usd,
+            "pricing_version": usage.pricing_version,
+        }))
+        .emit();
 
         text
     } else if let Some(media_format) =
@@ -1957,10 +2018,17 @@ pub async fn chat_message(
         })
         .collect();
 
-    let response_text =
-        claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &full_prompt, &bedrock_messages)
-            .await
-            .map_err(|e| e.to_string())?;
+    let cache_strategy = build_cache_strategy(&cfg, &model_id);
+
+    let (response_text, usage) = claria_bedrock::chat::chat_converse(
+        &sdk_config,
+        &model_id,
+        &full_prompt,
+        &bedrock_messages,
+        cache_strategy,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Resolve or generate the chat session ID.
     let chat_uuid: uuid::Uuid = match &chat_id {
@@ -1968,6 +2036,26 @@ pub async fn chat_message(
         None => uuid::Uuid::new_v4(),
     };
     let client_uuid: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    // Emit a per-turn audit event with token usage in details. UUIDs only;
+    // never the message content.
+    claria_audit::events::AuditEvent::new(
+        "chat_message",
+        "client",
+        client_uuid.to_string(),
+        cfg.account_id.clone(),
+    )
+    .with_details(serde_json::json!({
+        "chat_id": chat_uuid.to_string(),
+        "model_id": usage.model_id,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_input_tokens": usage.cache_read_input_tokens,
+        "cache_write_input_tokens": usage.cache_write_input_tokens,
+        "cost_usd": usage.cost_usd,
+        "pricing_version": usage.pricing_version,
+    }))
+    .emit();
 
     // Build the full message history including the new assistant response.
     let now = jiff::Timestamp::now();
@@ -1982,12 +2070,14 @@ pub async fn chat_message(
             },
             content: m.content.clone(),
             timestamp: now,
+            usage: None,
         })
         .collect();
     history_messages.push(claria_core::models::chat_history::ChatHistoryMessage {
         role: claria_core::models::chat_history::ChatHistoryRole::Assistant,
         content: response_text.clone(),
         timestamp: now,
+        usage: Some(usage.clone()),
     });
 
     let history = claria_core::models::chat_history::ChatHistory {
@@ -2033,6 +2123,7 @@ pub async fn chat_message(
     Ok(ChatResponse {
         chat_id: chat_uuid.to_string(),
         content: response_text,
+        usage,
     })
 }
 
@@ -2048,8 +2139,8 @@ pub async fn infra_chat(
     model_id: String,
     messages: Vec<ChatMessage>,
     plan_entries: Vec<PlanEntry>,
-) -> Result<String, String> {
-    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+) -> Result<InfraChatResponse, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
 
     let system_prompt = build_infra_system_prompt(&plan_entries);
 
@@ -2064,12 +2155,72 @@ pub async fn infra_chat(
         })
         .collect();
 
-    claria_bedrock::chat::chat_converse(&sdk_config, &model_id, &system_prompt, &bedrock_messages)
-        .await
-        .map_err(|e| e.to_string())
+    let cache_strategy = build_cache_strategy(&cfg, &model_id);
+
+    let (content, usage) = claria_bedrock::chat::chat_converse(
+        &sdk_config,
+        &model_id,
+        &system_prompt,
+        &bedrock_messages,
+        cache_strategy,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Audit the infra-chat turn against the AWS account_id (no per-client
+    // resource here).
+    claria_audit::events::AuditEvent::new(
+        "infra_chat",
+        "infrastructure",
+        "infra",
+        cfg.account_id.clone(),
+    )
+    .with_details(serde_json::json!({
+        "model_id": usage.model_id,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_input_tokens": usage.cache_read_input_tokens,
+        "cache_write_input_tokens": usage.cache_write_input_tokens,
+        "cost_usd": usage.cost_usd,
+        "pricing_version": usage.pricing_version,
+    }))
+    .emit();
+
+    Ok(InfraChatResponse { content, usage })
 }
 
 /// Build the full system prompt for infrastructure chat from plan entries.
+/// Derive a [`claria_bedrock::chat::CacheStrategy`] from config + the
+/// inference profile we're about to invoke.
+///
+/// Caching is honoured for Claude Sonnet 4 and Opus 4 (5-min TTL — Sonnet
+/// 4.5 / Opus 4.5 with 1h TTL is a future Phase). Haiku 3.5 also supports
+/// it. Models we don't recognise default to no cache.
+fn build_cache_strategy(
+    cfg: &ClariaConfig,
+    model_id: &str,
+) -> claria_bedrock::chat::CacheStrategy {
+    if !cfg.prompt_caching_enabled {
+        return claria_bedrock::chat::CacheStrategy::disabled();
+    }
+    let mut strategy = claria_bedrock::chat::CacheStrategy::enabled();
+    strategy.model_supports_caching = model_supports_prompt_caching(model_id);
+    strategy
+}
+
+/// True if the model_id (inference profile or bare foundation id) is a
+/// Claude family known to honour Bedrock prompt-caching `cachePoint`
+/// blocks at the time of writing.
+fn model_supports_prompt_caching(model_id: &str) -> bool {
+    let lower = model_id.to_lowercase();
+    // Claude 4 (Opus / Sonnet) and 3.5+ Haiku honour prompt caching with
+    // 5-min TTL on Bedrock as of 2026-05-08.
+    lower.contains("claude-opus-4")
+        || lower.contains("claude-sonnet-4")
+        || lower.contains("claude-3-5-haiku")
+        || lower.contains("claude-haiku")
+}
+
 fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {
     let mut context = String::from("<infrastructure_context>\n");
     for entry in plan_entries {
@@ -2176,12 +2327,13 @@ pub async fn load_chat_history(
     let messages = history
         .messages
         .into_iter()
-        .map(|m| ChatMessage {
+        .map(|m| ChatHistoryDetailMessage {
             role: match m.role {
                 claria_core::models::chat_history::ChatHistoryRole::User => ChatRole::User,
                 claria_core::models::chat_history::ChatHistoryRole::Assistant => ChatRole::Assistant,
             },
             content: m.content,
+            usage: m.usage,
         })
         .collect();
 
@@ -3344,6 +3496,17 @@ pub async fn set_hourly_cost_data(
     *guard = Some(cfg);
 
     Ok(())
+}
+
+/// Look up `ModelPricing` for a Bedrock model_id. Returns `None` for
+/// unknown models so the UI can hide pre-flight estimates rather than
+/// show `$NaN`.
+#[tauri::command]
+#[specta::specta]
+pub async fn lookup_model_pricing(
+    model_id: String,
+) -> Result<Option<claria_core::models::cost::ModelPricing>, String> {
+    Ok(claria_billing::pricing::lookup(&model_id))
 }
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ aws-config = "=1.8.16"
 aws-sdk-bedrock = "=1.141.0"
 aws-sdk-bedrockruntime = "=1.130.0"
 aws-smithy-types = "=1.4.7"
+claria-billing = { path = "../claria-billing" }
 claria-core = { path = "../claria-core" }
 jiff = { version = "=0.2.24", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }
