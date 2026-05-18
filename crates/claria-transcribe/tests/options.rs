@@ -6,7 +6,6 @@ fn default_options_are_english_standard_two_speakers() {
     assert_eq!(opts.language, LanguageMode::English);
     assert_eq!(opts.engine, TranscriptionEngine::Standard);
     assert!(matches!(opts.speakers, SpeakerHandling::Diarize { max: 2 }));
-    assert!(opts.custom_vocabulary.is_none());
 }
 
 #[test]
@@ -15,7 +14,6 @@ fn options_serialize_snake_case() {
         language: LanguageMode::Mixed,
         speakers: SpeakerHandling::Diarize { max: 3 },
         engine: TranscriptionEngine::Medical,
-        custom_vocabulary: Some("my-vocab".into()),
     };
     let json = serde_json::to_string(&opts).unwrap();
     assert!(json.contains("\"language\":\"mixed\""));
@@ -30,7 +28,6 @@ fn options_round_trip_through_json() {
         language: LanguageMode::Spanish,
         speakers: SpeakerHandling::Channels,
         engine: TranscriptionEngine::Standard,
-        custom_vocabulary: None,
     };
     let json = serde_json::to_string(&opts).unwrap();
     let back: TranscribeOptions = serde_json::from_str(&json).unwrap();

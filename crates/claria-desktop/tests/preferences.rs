@@ -21,7 +21,7 @@ fn sample_config() -> ClariaConfig {
             default_language: TranscriptionLanguage::Mixed,
             default_speaker_count: 3,
             use_medical_for_english: true,
-            custom_vocabulary_name: Some("clinic-vocab".into()),
+            translate_to_english: true,
         },
     }
 }
@@ -118,5 +118,4 @@ fn legacy_v5_config_migrates_to_v6_with_default_transcription() {
     );
     assert_eq!(cfg.transcription.default_speaker_count, 2);
     assert!(!cfg.transcription.use_medical_for_english);
-    assert!(cfg.transcription.custom_vocabulary_name.is_none());
 }

@@ -9,17 +9,19 @@ fn diarized_sample() -> TranscriptResult {
                 id: "seg_0001".into(),
                 speaker_id: Some("spk_0".into()),
                 language_code: None,
-                start_ms: 0,
-                end_ms: 4_200,
+                start_seconds: 0,
+                end_seconds: 4,
                 text: "How are you feeling today?".into(),
+                translation: None,
             },
             TranscriptSegment {
                 id: "seg_0002".into(),
                 speaker_id: Some("spk_1".into()),
                 language_code: None,
-                start_ms: 4_200,
-                end_ms: 9_000,
+                start_seconds: 4,
+                end_seconds: 9,
                 text: "I've been having headaches for about a week.".into(),
+                translation: None,
             },
         ],
         speakers: vec![
@@ -51,9 +53,10 @@ fn renders_multilang_with_language_tag() {
             id: "seg_0001".into(),
             speaker_id: Some("spk_0".into()),
             language_code: Some("es-US".into()),
-            start_ms: 9_000,
-            end_ms: 12_500,
+            start_seconds: 9,
+            end_seconds: 12,
             text: "¿En qué parte de la cabeza?".into(),
+            translation: None,
         }],
         speakers: vec![Speaker {
             id: "spk_0".into(),
@@ -77,8 +80,8 @@ fn round_trips_diarized_body() {
         parsed.segments[1].text,
         "I've been having headaches for about a week."
     );
-    assert_eq!(parsed.segments[0].start_ms, 0);
-    assert_eq!(parsed.segments[0].end_ms, 4_000); // mm:ss truncates ms
+    assert_eq!(parsed.segments[0].start_seconds, 0);
+    assert_eq!(parsed.segments[0].end_seconds, 4);
     assert_eq!(parsed.speakers[0].label, "Clinician");
     assert_eq!(parsed.speakers[1].label, "Patient");
 }
@@ -118,8 +121,8 @@ fn ascii_hyphen_in_header_is_tolerated() {
     let body = "[Clinician 00:00-00:04]\nHello.";
     let parsed = parse_transcript_body(body);
     assert_eq!(parsed.segments.len(), 1);
-    assert_eq!(parsed.segments[0].start_ms, 0);
-    assert_eq!(parsed.segments[0].end_ms, 4_000);
+    assert_eq!(parsed.segments[0].start_seconds, 0);
+    assert_eq!(parsed.segments[0].end_seconds, 4);
     assert_eq!(parsed.segments[0].text, "Hello.");
 }
 
@@ -146,15 +149,87 @@ fn empty_body_produces_no_segments() {
 }
 
 #[test]
+fn renders_translation_as_blockquote() {
+    let result = TranscriptResult {
+        segments: vec![TranscriptSegment {
+            id: "seg_0001".into(),
+            speaker_id: Some("spk_0".into()),
+            language_code: Some("es-US".into()),
+            start_seconds: 9,
+            end_seconds: 12,
+            text: "¿En qué parte de la cabeza?".into(),
+            translation: Some("In what part of the head?".into()),
+        }],
+        speakers: vec![Speaker {
+            id: "spk_0".into(),
+            label: "Clinician".into(),
+        }],
+    };
+    let body = format_transcript_body(&result);
+    assert!(body.contains("¿En qué parte de la cabeza?"));
+    assert!(body.contains("> In what part of the head?"));
+}
+
+#[test]
+fn round_trips_translation_through_body() {
+    let original = TranscriptResult {
+        segments: vec![TranscriptSegment {
+            id: "seg_0001".into(),
+            speaker_id: Some("spk_0".into()),
+            language_code: Some("es-US".into()),
+            start_seconds: 0,
+            end_seconds: 5,
+            text: "Hola, ¿cómo está?".into(),
+            translation: Some("Hello, how are you?".into()),
+        }],
+        speakers: vec![Speaker {
+            id: "spk_0".into(),
+            label: "Clinician".into(),
+        }],
+    };
+    let body = format_transcript_body(&original);
+    let parsed = parse_transcript_body(&body);
+
+    assert_eq!(parsed.segments.len(), 1);
+    assert_eq!(parsed.segments[0].text, "Hola, ¿cómo está?");
+    assert_eq!(
+        parsed.segments[0].translation.as_deref(),
+        Some("Hello, how are you?")
+    );
+}
+
+#[test]
+fn multi_line_translation_round_trips() {
+    let body = "\
+[Patient 00:00\u{2013}00:08 es-US]
+Me duele mucho la cabeza.
+También tengo náuseas.
+> My head hurts a lot.
+> I also have nausea.
+";
+    let parsed = parse_transcript_body(body);
+    assert_eq!(parsed.segments.len(), 1);
+    assert_eq!(
+        parsed.segments[0].text,
+        "Me duele mucho la cabeza.\nTambién tengo náuseas."
+    );
+    assert_eq!(
+        parsed.segments[0].translation.as_deref(),
+        Some("My head hurts a lot.\nI also have nausea.")
+    );
+}
+
+#[test]
 fn no_diarization_no_language_renders_without_headers() {
     let result = TranscriptResult {
         segments: vec![TranscriptSegment {
             id: "seg_0001".into(),
             speaker_id: None,
             language_code: None,
-            start_ms: 0,
-            end_ms: 5_000,
+            start_seconds: 0,
+            end_seconds: 5,
             text: "Patient was seen today.".into(),
+            translation: None,
         }],
         speakers: vec![],
     };

@@ -23,9 +23,8 @@ pub use aws_sdk_transcribe::types::MediaFormat;
 pub use error::TranscribeError;
 
 use aws_sdk_transcribe::types::{
-    LanguageCode, LanguageIdSettings, Media, MedicalContentIdentificationType,
-    MedicalTranscriptionSetting, Settings, Specialty, TranscriptionJobStatus,
-    Type as MedicalType,
+    LanguageCode, Media, MedicalContentIdentificationType, MedicalTranscriptionSetting, Settings,
+    Specialty, TranscriptionJobStatus, Type as MedicalType,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -43,8 +42,15 @@ pub struct TranscribeOptions {
     pub language: LanguageMode,
     pub speakers: SpeakerHandling,
     pub engine: TranscriptionEngine,
-    #[serde(default)]
-    pub custom_vocabulary: Option<String>,
+    // TODO(vocab): custom vocabularies are a separate AWS resource type per
+    // (engine, language) — Standard en-US, Standard es-US, and Medical en-US
+    // are three different resources via CreateVocabulary / CreateMedicalVocabulary,
+    // and a single string can't validly serve all three. Claria does not yet
+    // manage vocabularies (no create / list / validate flow) so plumbing the
+    // name through here without that infrastructure silently fails for Mixed
+    // jobs and is brittle for Medical. Re-add as a typed shape
+    // (standard_english / standard_spanish / medical_english) plus a
+    // "Manage vocabularies" UI when there's user demand.
 }
 
 impl Default for TranscribeOptions {
@@ -53,7 +59,6 @@ impl Default for TranscribeOptions {
             language: LanguageMode::English,
             speakers: SpeakerHandling::Diarize { max: 2 },
             engine: TranscriptionEngine::Standard,
-            custom_vocabulary: None,
         }
     }
 }
@@ -108,9 +113,14 @@ pub struct TranscriptSegment {
     pub speaker_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language_code: Option<String>,
-    pub start_ms: u64,
-    pub end_ms: u64,
+    pub start_seconds: u32,
+    pub end_seconds: u32,
     pub text: String,
+    /// English translation of `text`, populated when the user has translation
+    /// enabled and `language_code` is not `en-US`. Rendered in the body as
+    /// `> `-prefixed lines beneath the original.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -271,22 +281,15 @@ async fn start_standard_job(
     req = match options.language {
         LanguageMode::English => req.language_code(LanguageCode::EnUs),
         LanguageMode::Spanish => req.language_code(LanguageCode::EsUs),
-        LanguageMode::Mixed => {
-            let mut r = req
-                .identify_multiple_languages(true)
-                .language_options(LanguageCode::EnUs)
-                .language_options(LanguageCode::EsUs);
-            if let Some(vocab) = options.custom_vocabulary.as_deref() {
-                let settings = LanguageIdSettings::builder()
-                    .vocabulary_name(vocab)
-                    .build();
-                let mut m = HashMap::new();
-                m.insert(LanguageCode::EnUs, settings.clone());
-                m.insert(LanguageCode::EsUs, settings);
-                r = r.set_language_id_settings(Some(m));
-            }
-            r
-        }
+        LanguageMode::Mixed => req
+            .identify_multiple_languages(true)
+            .language_options(LanguageCode::EnUs)
+            .language_options(LanguageCode::EsUs),
+        // TODO(vocab): when re-introducing vocabularies, Mixed mode needs
+        // per-language vocab names via LanguageIdSettings (one entry per
+        // language code, each pointing at a vocabulary registered for that
+        // language). A single shared vocab is silently wrong — AWS will
+        // either skip or fail whichever language doesn't match.
     };
 
     if let Some(settings) = build_standard_settings(options) {
@@ -318,12 +321,8 @@ fn build_standard_settings(options: &TranscribeOptions) -> Option<Settings> {
         }
     }
 
-    if !matches!(options.language, LanguageMode::Mixed)
-        && let Some(vocab) = options.custom_vocabulary.as_deref()
-    {
-        builder = builder.vocabulary_name(vocab);
-        touched = true;
-    }
+    // TODO(vocab): Settings::vocabulary_name goes here for the non-Mixed case
+    // once Claria has a vocabulary-management surface.
 
     if touched { Some(builder.build()) } else { None }
 }
@@ -423,10 +422,10 @@ fn build_medical_settings(options: &TranscribeOptions) -> Option<MedicalTranscri
         }
     }
 
-    if let Some(vocab) = options.custom_vocabulary.as_deref() {
-        builder = builder.vocabulary_name(vocab);
-        touched = true;
-    }
+    // TODO(vocab): MedicalTranscriptionSetting::vocabulary_name goes here once
+    // Claria has a medical-vocabulary management surface. Note Medical vocabs
+    // are a separate AWS resource type (CreateMedicalVocabulary), distinct
+    // from standard vocabs — the namespaces don't overlap.
 
     if touched { Some(builder.build()) } else { None }
 }
@@ -503,9 +502,10 @@ fn parse_transcribe_json(json: &str) -> Result<TranscriptResult, TranscribeError
             id: "seg_0001".into(),
             speaker_id: None,
             language_code: None,
-            start_ms: 0,
-            end_ms: 0,
+            start_seconds: 0,
+            end_seconds: 0,
             text,
+            translation: None,
         }]
     };
 
@@ -544,12 +544,12 @@ fn segments_by_speaker(
             .get("speaker_label")
             .and_then(|s| s.as_str())
             .map(|s| s.to_string());
-        let start_ms = parse_time_to_ms(turn.get("start_time"));
-        let end_ms = parse_time_to_ms(turn.get("end_time"));
+        let start_seconds = parse_time_to_seconds(turn.get("start_time"));
+        let end_seconds = parse_time_to_seconds(turn.get("end_time"));
 
         let turn_items: Vec<&serde_json::Value> = items
             .iter()
-            .filter(|it| item_falls_within(it, start_ms, end_ms))
+            .filter(|it| item_falls_within(it, start_seconds, end_seconds))
             .collect();
 
         if turn_items.is_empty() {
@@ -557,8 +557,8 @@ fn segments_by_speaker(
         }
 
         let mut current_lang: Option<String> = None;
-        let mut current_start: u64 = start_ms;
-        let mut current_end: u64 = start_ms;
+        let mut current_start: u32 = start_seconds;
+        let mut current_end: u32 = start_seconds;
         let mut buffer = String::new();
 
         for it in turn_items {
@@ -576,19 +576,20 @@ fn segments_by_speaker(
                     id: seg_id(&mut counter),
                     speaker_id: speaker_id.clone(),
                     language_code: current_lang.clone(),
-                    start_ms: current_start,
-                    end_ms: current_end,
+                    start_seconds: current_start,
+                    end_seconds: current_end,
                     text: buffer.trim().to_string(),
+                    translation: None,
                 });
                 buffer.clear();
-                current_start = parse_time_to_ms(it.get("start_time"));
+                current_start = parse_time_to_seconds(it.get("start_time"));
             }
 
             if !is_punct {
                 if current_lang.is_none() || lang_changed {
                     current_lang = lang.clone();
                 }
-                current_end = parse_time_to_ms(it.get("end_time"));
+                current_end = parse_time_to_seconds(it.get("end_time"));
                 if !buffer.is_empty() {
                     buffer.push(' ');
                 }
@@ -603,9 +604,10 @@ fn segments_by_speaker(
                 id: seg_id(&mut counter),
                 speaker_id: speaker_id.clone(),
                 language_code: current_lang.clone(),
-                start_ms: current_start,
-                end_ms,
+                start_seconds: current_start,
+                end_seconds,
                 text: buffer.trim().to_string(),
+                translation: None,
             });
         }
     }
@@ -618,8 +620,8 @@ fn segments_by_language(items: &[serde_json::Value]) -> Vec<TranscriptSegment> {
     let mut counter = 1usize;
 
     let mut current_lang: Option<String> = None;
-    let mut current_start: u64 = 0;
-    let mut current_end: u64 = 0;
+    let mut current_start: u32 = 0;
+    let mut current_end: u32 = 0;
     let mut started = false;
     let mut buffer = String::new();
 
@@ -638,9 +640,10 @@ fn segments_by_language(items: &[serde_json::Value]) -> Vec<TranscriptSegment> {
                 id: seg_id(&mut counter),
                 speaker_id: None,
                 language_code: current_lang.clone(),
-                start_ms: current_start,
-                end_ms: current_end,
+                start_seconds: current_start,
+                end_seconds: current_end,
                 text: buffer.trim().to_string(),
+                translation: None,
             });
             buffer.clear();
             started = false;
@@ -648,14 +651,14 @@ fn segments_by_language(items: &[serde_json::Value]) -> Vec<TranscriptSegment> {
 
         if !is_punct {
             if !started {
-                current_start = parse_time_to_ms(it.get("start_time"));
+                current_start = parse_time_to_seconds(it.get("start_time"));
                 current_lang = lang.clone();
                 started = true;
             }
             if lang_changed {
                 current_lang = lang.clone();
             }
-            current_end = parse_time_to_ms(it.get("end_time"));
+            current_end = parse_time_to_seconds(it.get("end_time"));
             if !buffer.is_empty() {
                 buffer.push(' ');
             }
@@ -670,9 +673,10 @@ fn segments_by_language(items: &[serde_json::Value]) -> Vec<TranscriptSegment> {
             id: seg_id(&mut counter),
             speaker_id: None,
             language_code: current_lang,
-            start_ms: current_start,
-            end_ms: current_end,
+            start_seconds: current_start,
+            end_seconds: current_end,
             text: buffer.trim().to_string(),
+            translation: None,
         });
     }
 
@@ -685,18 +689,18 @@ fn seg_id(counter: &mut usize) -> String {
     s
 }
 
-fn parse_time_to_ms(value: Option<&serde_json::Value>) -> u64 {
+fn parse_time_to_seconds(value: Option<&serde_json::Value>) -> u32 {
     let s = value.and_then(|v| v.as_str()).unwrap_or("0");
     let f: f64 = s.parse().unwrap_or(0.0);
-    (f * 1000.0).round() as u64
+    f.floor() as u32
 }
 
-fn item_falls_within(item: &serde_json::Value, start_ms: u64, end_ms: u64) -> bool {
+fn item_falls_within(item: &serde_json::Value, start_seconds: u32, end_seconds: u32) -> bool {
     let Some(item_start) = item.get("start_time") else {
         return false;
     };
-    let s = parse_time_to_ms(Some(item_start));
-    s >= start_ms && s < end_ms.max(start_ms + 1)
+    let s = parse_time_to_seconds(Some(item_start));
+    s >= start_seconds && s < end_seconds.max(start_seconds + 1)
 }
 
 fn item_content(item: &serde_json::Value) -> String {
@@ -752,8 +756,8 @@ pub fn format_transcript_body(result: &TranscriptResult) -> String {
             .as_deref()
             .and_then(|id| speakers.get(id).copied())
             .unwrap_or("Speaker");
-        let start = format_mm_ss(seg.start_ms);
-        let end = format_mm_ss(seg.end_ms);
+        let start = format_mm_ss(seg.start_seconds);
+        let end = format_mm_ss(seg.end_seconds);
         match &seg.language_code {
             Some(lang) => {
                 let _ = writeln!(out, "[{label} {start}\u{2013}{end} {lang}]");
@@ -763,14 +767,19 @@ pub fn format_transcript_body(result: &TranscriptResult) -> String {
             }
         }
         out.push_str(seg.text.trim());
-        out.push_str("\n\n");
+        out.push('\n');
+        if let Some(translation) = &seg.translation {
+            for line in translation.trim().lines() {
+                let _ = writeln!(out, "> {line}");
+            }
+        }
+        out.push('\n');
     }
 
     out.trim_end().to_string()
 }
 
-fn format_mm_ss(ms: u64) -> String {
-    let total_seconds = ms / 1000;
+fn format_mm_ss(total_seconds: u32) -> String {
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
     format!("{minutes:02}:{seconds:02}")
@@ -800,14 +809,28 @@ pub fn parse_transcript_body(body: &str) -> TranscriptResult {
             continue;
         }
 
-        if let Some((label, start_ms, end_ms, lang)) = parse_header(line) {
+        if let Some((label, start_seconds, end_seconds, lang)) = parse_header(line) {
             i += 1;
             let mut text_lines: Vec<&str> = Vec::new();
+            let mut translation_lines: Vec<String> = Vec::new();
             while i < lines.len() && parse_header(lines[i].trim()).is_none() {
-                text_lines.push(lines[i]);
+                let raw = lines[i];
+                let trimmed = raw.trim_start();
+                if let Some(rest) = trimmed.strip_prefix("> ") {
+                    translation_lines.push(rest.to_string());
+                } else if trimmed == ">" {
+                    translation_lines.push(String::new());
+                } else {
+                    text_lines.push(raw);
+                }
                 i += 1;
             }
             let text = text_lines.join("\n").trim().to_string();
+            let translation = if translation_lines.is_empty() {
+                None
+            } else {
+                Some(translation_lines.join("\n").trim().to_string())
+            };
 
             let speaker_id = if label.is_empty() {
                 None
@@ -819,9 +842,10 @@ pub fn parse_transcript_body(body: &str) -> TranscriptResult {
                 id: seg_id(&mut counter),
                 speaker_id,
                 language_code: lang,
-                start_ms,
-                end_ms,
+                start_seconds,
+                end_seconds,
                 text,
+                translation,
             });
         } else {
             let mut text_lines: Vec<&str> = Vec::new();
@@ -835,9 +859,10 @@ pub fn parse_transcript_body(body: &str) -> TranscriptResult {
                     id: seg_id(&mut counter),
                     speaker_id: None,
                     language_code: None,
-                    start_ms: 0,
-                    end_ms: 0,
+                    start_seconds: 0,
+                    end_seconds: 0,
                     text,
+                    translation: None,
                 });
             }
         }
@@ -862,7 +887,7 @@ fn intern_speaker_label(table: &mut Vec<(String, String)>, label: &str) -> Strin
 
 /// Parse a header of the form `[Label mm:ss\u{2013}mm:ss[ lang]]`.
 /// Accepts en-dash, em-dash, or ASCII hyphen between the times.
-fn parse_header(line: &str) -> Option<(String, u64, u64, Option<String>)> {
+fn parse_header(line: &str) -> Option<(String, u32, u32, Option<String>)> {
     let line = line.trim();
     let inner = line.strip_prefix('[')?.strip_suffix(']')?;
 
@@ -879,8 +904,8 @@ fn parse_header(line: &str) -> Option<(String, u64, u64, Option<String>)> {
 
     Some((
         label_part.trim().to_string(),
-        mm_ss_to_ms(start_str)?,
-        mm_ss_to_ms(end_str)?,
+        mm_ss_to_seconds(start_str)?,
+        mm_ss_to_seconds(end_str)?,
         lang_opt,
     ))
 }
@@ -932,11 +957,11 @@ fn split_first_mm_ss(s: &str) -> Option<(&str, &str)> {
     Some((&s[..combined_len], &s[combined_len..]))
 }
 
-fn mm_ss_to_ms(s: &str) -> Option<u64> {
+fn mm_ss_to_seconds(s: &str) -> Option<u32> {
     let (mins, rest) = s.split_once(':')?;
-    let mins: u64 = mins.parse().ok()?;
-    let secs: u64 = rest.parse().ok()?;
-    Some((mins * 60 + secs) * 1000)
+    let mins: u32 = mins.parse().ok()?;
+    let secs: u32 = rest.parse().ok()?;
+    Some(mins * 60 + secs)
 }
 
 /// Map a file extension to an Amazon Transcribe `MediaFormat`.

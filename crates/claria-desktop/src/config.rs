@@ -5,7 +5,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 6;
+const CURRENT_VERSION: u32 = 7;
 
 /// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
 /// because the synced subset lives in S3 and may be read by other machines'
@@ -65,8 +65,17 @@ pub struct TranscriptionPreferences {
     /// always use Standard.
     #[serde(default)]
     pub use_medical_for_english: bool,
+    /// When true, segments whose detected language is not English get an
+    /// English translation rendered alongside the original via Bedrock.
+    /// Default off — the primary user is bilingual; future users may want it.
     #[serde(default)]
-    pub custom_vocabulary_name: Option<String>,
+    pub translate_to_english: bool,
+    // TODO(vocab): re-add `custom_vocabulary_name: Option<String>` when Claria
+    // gains a vocabulary-management surface. AWS treats Standard en-US,
+    // Standard es-US, and Medical en-US vocabularies as three separate
+    // resource types, so the shape will need to be a typed struct
+    // (e.g. CustomVocabulary { standard_en, standard_es, medical_en }) rather
+    // than a single string.
 }
 
 impl Default for TranscriptionPreferences {
@@ -75,7 +84,7 @@ impl Default for TranscriptionPreferences {
             default_language: TranscriptionLanguage::English,
             default_speaker_count: 2,
             use_medical_for_english: false,
-            custom_vocabulary_name: None,
+            translate_to_english: false,
         }
     }
 }
@@ -291,7 +300,7 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
     }
 
     // v5 → v6: add transcription preferences (defaults: English, 2 speakers,
-    // Standard engine, no custom vocab).
+    // Standard engine).
     if from_version < 6 {
         let obj = json
             .as_object_mut()
@@ -300,13 +309,30 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
             "default_language": "english",
             "default_speaker_count": 2,
             "use_medical_for_english": false,
-            "custom_vocabulary_name": null,
         }));
         obj.insert(
             "config_version".to_string(),
             serde_json::Value::Number(6.into()),
         );
         tracing::info!("migrated config v5 → v6 (added transcription preferences)");
+    }
+
+    // v6 → v7: add `translate_to_english` to transcription preferences
+    // (default false; primary user is bilingual).
+    if from_version < 7 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        if let Some(serde_json::Value::Object(transcription)) = obj.get_mut("transcription") {
+            transcription
+                .entry("translate_to_english")
+                .or_insert(serde_json::Value::Bool(false));
+        }
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(7.into()),
+        );
+        tracing::info!("migrated config v6 → v7 (added translate_to_english)");
     }
 
     Ok(json)
