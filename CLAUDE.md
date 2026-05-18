@@ -195,3 +195,4 @@ Design documents and future feature analysis live in `../plans/` (parent repo, o
 - Run `cargo check` after medium and larger edits
 - Run `cargo test` before committing
 - Run `cargo clippy -- -D warnings` before committing
+- For any non-trivial task (multi-file edits, new features, refactors), start by calling `EnterWorktree` so work happens on an isolated branch in `.claude/worktrees/`. Trivial single-line fixes and read-only questions don't need a worktree.
