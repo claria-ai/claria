@@ -11,6 +11,9 @@
     "convert": "bash convert.sh"
   },
   "devDependencies": {
-    "@playwright/test": "=1.52.0"
+    "@playwright/test": "^1.60.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
