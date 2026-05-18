@@ -170,6 +170,7 @@ pub async fn save_config(
         cost_explorer_enabled: false,
         hourly_cost_data: false,
         prompt_caching_enabled: true,
+        transcription: Default::default(),
     };
 
     config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -374,6 +375,7 @@ pub async fn bootstrap_iam_user(
                 cost_explorer_enabled: false,
                 hourly_cost_data: false,
                 prompt_caching_enabled: true,
+                transcription: Default::default(),
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -1042,6 +1044,7 @@ pub async fn provision_apply(
             cost_explorer_enabled: false,
             hourly_cost_data: false,
             prompt_caching_enabled: true,
+            transcription: Default::default(),
         };
 
         config::save_config(&cfg).map_err(|e| e.to_string())?;

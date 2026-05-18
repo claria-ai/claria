@@ -5,7 +5,12 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 5;
+const CURRENT_VERSION: u32 = 6;
+
+/// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
+/// because the synced subset lives in S3 and may be read by other machines'
+/// builds.
+pub const PREFERENCES_VERSION: u32 = 1;
 
 fn default_prompt_caching_enabled() -> bool {
     true
@@ -38,6 +43,100 @@ pub struct ClariaConfig {
     /// silently no-ops on models that don't honour it.
     #[serde(default = "default_prompt_caching_enabled")]
     pub prompt_caching_enabled: bool,
+    /// Transcription defaults applied to drag-and-drop audio uploads and the
+    /// wizard's pre-filled values. Added in v6.
+    #[serde(default)]
+    pub transcription: TranscriptionPreferences,
+}
+
+/// Per-clinician defaults for the transcription pipeline.
+///
+/// These flow into both the drag-and-drop fast path (used as-is) and the wizard
+/// (pre-filled, user may override per-file). They sync across the clinician's
+/// machines via the [`SyncedPreferences`] mechanism.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+pub struct TranscriptionPreferences {
+    #[serde(default = "default_language")]
+    pub default_language: TranscriptionLanguage,
+    #[serde(default = "default_speaker_count")]
+    pub default_speaker_count: u8,
+    /// When true, English-only sessions route to Transcribe Medical (3x cost,
+    /// clinical-vocabulary tuning, PHI tagging). Spanish and Mixed sessions
+    /// always use Standard.
+    #[serde(default)]
+    pub use_medical_for_english: bool,
+    #[serde(default)]
+    pub custom_vocabulary_name: Option<String>,
+}
+
+impl Default for TranscriptionPreferences {
+    fn default() -> Self {
+        Self {
+            default_language: TranscriptionLanguage::English,
+            default_speaker_count: 2,
+            use_medical_for_english: false,
+            custom_vocabulary_name: None,
+        }
+    }
+}
+
+fn default_language() -> TranscriptionLanguage {
+    TranscriptionLanguage::English
+}
+
+fn default_speaker_count() -> u8 {
+    2
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionLanguage {
+    English,
+    Spanish,
+    Mixed,
+}
+
+/// The subset of [`ClariaConfig`] that follows a clinician across machines via
+/// `_state/preferences.json` in S3. Machine-local fields (region, credentials,
+/// account_id, system_name, created_at, config_version) are deliberately
+/// excluded — they're deployment-identity and security-sensitive.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+pub struct SyncedPreferences {
+    pub preferences_version: u32,
+    #[serde(default)]
+    pub preferred_model_id: Option<String>,
+    #[serde(default)]
+    pub cost_explorer_enabled: bool,
+    #[serde(default)]
+    pub hourly_cost_data: bool,
+    #[serde(default = "default_prompt_caching_enabled")]
+    pub prompt_caching_enabled: bool,
+    #[serde(default)]
+    pub transcription: TranscriptionPreferences,
+}
+
+impl SyncedPreferences {
+    /// Extract the syncable subset from a full local config.
+    pub fn from_config(config: &ClariaConfig) -> Self {
+        Self {
+            preferences_version: PREFERENCES_VERSION,
+            preferred_model_id: config.preferred_model_id.clone(),
+            cost_explorer_enabled: config.cost_explorer_enabled,
+            hourly_cost_data: config.hourly_cost_data,
+            prompt_caching_enabled: config.prompt_caching_enabled,
+            transcription: config.transcription.clone(),
+        }
+    }
+
+    /// Overlay synced fields onto an in-memory config. Machine-local fields are
+    /// left untouched.
+    pub fn apply_to_config(&self, config: &mut ClariaConfig) {
+        config.preferred_model_id = self.preferred_model_id.clone();
+        config.cost_explorer_enabled = self.cost_explorer_enabled;
+        config.hourly_cost_data = self.hourly_cost_data;
+        config.prompt_caching_enabled = self.prompt_caching_enabled;
+        config.transcription = self.transcription.clone();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -189,6 +288,25 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
             serde_json::Value::Number(5.into()),
         );
         tracing::info!("migrated config v4 → v5 (added prompt_caching_enabled)");
+    }
+
+    // v5 → v6: add transcription preferences (defaults: English, 2 speakers,
+    // Standard engine, no custom vocab).
+    if from_version < 6 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("transcription").or_insert(serde_json::json!({
+            "default_language": "english",
+            "default_speaker_count": 2,
+            "use_medical_for_english": false,
+            "custom_vocabulary_name": null,
+        }));
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(6.into()),
+        );
+        tracing::info!("migrated config v5 → v6 (added transcription preferences)");
     }
 
     Ok(json)

@@ -10,4 +10,17 @@ pub enum TranscribeError {
 
     #[error("failed to parse transcript: {0}")]
     Parse(String),
+
+    #[error(
+        "Transcribe Medical only supports English (en-US); requested language {0} is unsupported"
+    )]
+    MedicalUnsupportedLanguage(String),
+
+    #[error(
+        "Transcribe Medical is not available in region {0}; provision a supported region or use Standard"
+    )]
+    MedicalUnsupportedRegion(String),
+
+    #[error("incompatible options: {0}")]
+    IncompatibleOptions(String),
 }
