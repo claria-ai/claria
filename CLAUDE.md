@@ -39,6 +39,7 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Descriptive kebab-case branch names
 - Create a commit after any batch of changes is done
 - Every meaningful commit (or grouping of commits with a common theme) should get noted in the CHANGELOG.md under a `## [Unreleased]` section header. `cargo release` rewrites this header to `## [version] — date` via `pre-release-replacements` in Cargo.toml
+- CHANGELOG entries are **headline-style**: one bullet = one fact, in plain prose. Trust the reader to consult the diff for the why and the how. Don't use bolded lead-ins, don't name structs/files/commands inline, don't justify the choice or document rejected alternatives, don't hedge. If a bullet runs more than two lines it's probably two bullets, or it's saying too much.
 
 ## Architecture
 
