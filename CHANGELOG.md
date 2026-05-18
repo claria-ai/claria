@@ -2,6 +2,11 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Release workflow couldn't find the frontend — `beforeBuildCommand` and `beforeDevCommand` were using `../../claria-desktop-frontend`, but Tauri 2 runs those commands from the parent of the tauri project directory (i.e. `crates/`, not `crates/claria-desktop/`), so the relative path was one level too deep. Reduced to `../claria-desktop-frontend`. `frontendDist` stays at `../../claria-desktop-frontend/dist` because that path is resolved relative to `tauri.conf.json` itself
+
 ## [0.16.0] — 2026-05-18
 
 ### Added
