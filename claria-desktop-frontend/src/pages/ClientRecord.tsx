@@ -1282,7 +1282,8 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
             </h3>
             <p className="text-sm text-gray-600 mb-6">
               Delete <span className="font-medium">{deleteConfirm}</span> and
-              its extracted text? This cannot be undone.
+              its extracted text? You can restore this file again later if
+              necessary.
             </p>
             <div className="flex justify-end gap-3">
               <button
