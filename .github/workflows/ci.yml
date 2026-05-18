@@ -47,9 +47,25 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+        uses: awalsh128/cache-apt-pkgs-action@v1.4.3
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev mold clang
+          version: 1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: claria-desktop-frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: claria-desktop-frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: claria-desktop-frontend
+        run: npm run build
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -59,8 +75,19 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
-      - name: Clippy (all crates except claria-desktop)
-        run: cargo clippy --workspace --exclude claria-desktop -- -D warnings
+      - name: Configure mold linker
+        run: |
+          mkdir -p .cargo
+          {
+            echo '[target.x86_64-unknown-linux-gnu]'
+            echo 'linker = "clang"'
+            echo 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]'
+          } >> .cargo/config.toml
+
+      - name: Clippy (workspace)
+        env:
+          CLARIA_SKIP_FRONTEND_BUILD: '1'
+        run: cargo clippy --workspace -- -D warnings
 
   test:
     name: Test
@@ -70,31 +97,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-
-      - name: Test (all crates except claria-desktop)
-        run: cargo test --workspace --exclude claria-desktop
-
-  tauri-build:
-    name: Tauri build
-    needs: [frontend, clippy, test]
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+        uses: awalsh128/cache-apt-pkgs-action@v1.4.3
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev mold clang
+          version: 1.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -117,22 +123,72 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
-      - name: Clippy claria-desktop
-        run: cargo clippy -p claria-desktop -- -D warnings
+      - name: Configure mold linker
+        run: |
+          mkdir -p .cargo
+          {
+            echo '[target.x86_64-unknown-linux-gnu]'
+            echo 'linker = "clang"'
+            echo 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]'
+          } >> .cargo/config.toml
 
-      - name: Test claria-desktop
-        run: cargo test -p claria-desktop
+      - name: Test (workspace)
+        env:
+          CLARIA_SKIP_FRONTEND_BUILD: '1'
+        run: cargo test --workspace
+
+  tauri-build:
+    name: Tauri build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        uses: awalsh128/cache-apt-pkgs-action@v1.4.3
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev mold clang xvfb
+          version: 1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: claria-desktop-frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: claria-desktop-frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: claria-desktop-frontend
+        run: npm run build
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Configure mold linker
+        run: |
+          mkdir -p .cargo
+          {
+            echo '[target.x86_64-unknown-linux-gnu]'
+            echo 'linker = "clang"'
+            echo 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]'
+          } >> .cargo/config.toml
 
       - name: Build Tauri app
+        env:
+          CLARIA_SKIP_FRONTEND_BUILD: '1'
         run: cargo build --release -p claria-desktop
 
-      - name: Install xvfb
-        run: sudo apt-get install -y xvfb
-
       - name: Smoke test (WebView loads without crashing)
+        if: github.event.pull_request.draft != true
         env:
           RUST_LOG: debug
-          # Don't loop back into the build script — frontend was built above.
           CLARIA_SKIP_FRONTEND_BUILD: '1'
         run: |
           set -u
