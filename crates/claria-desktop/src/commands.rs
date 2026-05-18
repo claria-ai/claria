@@ -1381,6 +1381,15 @@ pub struct RecordFile {
 /// Uses a Claude Sonnet inference profile — good quality at lower cost.
 const EXTRACTION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-20250514-v1:0";
 
+/// The Bedrock model ID used for per-segment transcript translation.
+///
+/// Pinned to Claude Sonnet 4.6: handles specialized vocabulary (drug names,
+/// anatomy, dosage phrases) more reliably than Haiku, at a cost rounding-error
+/// compared to the Transcribe spend per session. Same rationale as
+/// [`EXTRACTION_MODEL_ID`] — internal operations get pinned to a sensible model
+/// rather than exposing yet another preference knob.
+const TRANSLATION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-6";
+
 /// List files in a client's record, excluding sidecar `.text` files.
 #[tauri::command]
 #[specta::specta]
@@ -1680,10 +1689,7 @@ async fn maybe_translate(
     if !translate {
         return;
     }
-    let Some(model_id) = cfg.preferred_model_id.as_deref() else {
-        tracing::warn!("translation requested but no preferred_model_id set; skipping");
-        return;
-    };
+    let model_id = TRANSLATION_MODEL_ID;
 
     let requests: Vec<claria_bedrock::translate::TranslationRequest> = result
         .segments
