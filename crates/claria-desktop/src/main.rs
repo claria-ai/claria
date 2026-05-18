@@ -37,6 +37,7 @@ fn main() -> Result<()> {
             commands::upload_record_file_with_options,
             commands::save_transcript_edits,
             commands::restore_original_transcript,
+            commands::pick_audio_file,
             commands::set_preferred_model,
             commands::assess_credentials,
             commands::assume_role,

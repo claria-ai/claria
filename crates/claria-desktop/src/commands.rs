@@ -1821,6 +1821,25 @@ pub async fn upload_record_file_with_options(
     })
 }
 
+/// Open a native file picker scoped to supported audio formats. Returns the
+/// absolute path the user chose, or `None` if they cancelled.
+///
+/// Used by the transcription wizard so we can keep a real file picker on the
+/// wizard surface (avoiding the geometry-sensitive drag-target controls flagged
+/// in [feedback-ui-low-dexterity]).
+#[tauri::command]
+#[specta::specta]
+pub fn pick_audio_file() -> Result<Option<String>, String> {
+    let path = rfd::FileDialog::new()
+        .set_title("Choose an audio file to transcribe")
+        .add_filter(
+            "Audio",
+            &["mp3", "m4a", "mp4", "wav", "flac", "ogg", "amr", "webm"],
+        )
+        .pick_file();
+    Ok(path.and_then(|p| p.to_str().map(|s| s.to_string())))
+}
+
 /// Save edits to the transcript sidecar. S3 versioning preserves the original
 /// at v1 — see [`restore_original_transcript`].
 #[tauri::command]

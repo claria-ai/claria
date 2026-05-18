@@ -368,6 +368,9 @@ impl Manifest {
                         "transcribe:StartTranscriptionJob".into(),
                         "transcribe:GetTranscriptionJob".into(),
                         "transcribe:DeleteTranscriptionJob".into(),
+                        "transcribe:StartMedicalTranscriptionJob".into(),
+                        "transcribe:GetMedicalTranscriptionJob".into(),
+                        "transcribe:DeleteMedicalTranscriptionJob".into(),
                     ],
                 },
                 ResourceSpec {

@@ -15,13 +15,17 @@ import {
   restoreDeletedFile,
   getWhisperModels,
   transcribeMemo,
+  loadConfig,
   type RecordFile,
   type ChatHistoryDetail,
   type ChatModel,
   type FileVersion,
   type DeletedFile,
+  type TranscriptionPreferences,
   type WhisperModelInfo,
 } from "../lib/tauri";
+import TranscribeWizard from "../components/TranscribeWizard";
+import TranscriptEditor from "../components/TranscriptEditor";
 import { diffLines, type DiffLine } from "../lib/diff";
 import ClientChat from "./ClientChat";
 import type { Page } from "../App";
@@ -154,6 +158,11 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   const [chatFolderOpen, setChatFolderOpen] = useState(false);
   const [resumeLoading, setResumeLoading] = useState<string | null>(null);
 
+  // Transcription wizard state + cached prefs (used by the drag-zone tooltip).
+  const [showTranscribeWizard, setShowTranscribeWizard] = useState(false);
+  const [transcriptionPrefs, setTranscriptionPrefs] =
+    useState<TranscriptionPreferences | null>(null);
+
   // More mode state
   const [moreMode, setMoreMode] = useState(false);
   const [deletedFiles, setDeletedFiles] = useState<DeletedFile[]>([]);
@@ -226,6 +235,23 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
         setMemoModelLabel(active ? active.dir_name : "");
       })
       .catch(() => setMemoReady(false));
+  }, []);
+
+  // Load transcription preferences once for the drag-zone tooltip. Cheap;
+  // no need to re-run on tab switches.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await loadConfig();
+        if (!cancelled) setTranscriptionPrefs(info.transcription);
+      } catch {
+        // Silent — the tooltip just won't show prefs in that case.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Tauri drag-and-drop event listener.
@@ -742,6 +768,13 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                 </button>
               )}
               <button
+                onClick={() => setShowTranscribeWizard(true)}
+                className="px-3 py-1 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
+                title="Pick an audio file and configure transcription per-file"
+              >
+                Upload Audio File…
+              </button>
+              <button
                 onClick={() => setShowCreateText(true)}
                 className="px-3 py-1 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 transition-colors"
               >
@@ -1072,6 +1105,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
               className={`px-4 py-6 text-center ${
                 files.length === 0 && uploading.length === 0 ? "py-12" : ""
               }`}
+              title={transcribeTooltip(transcriptionPrefs)}
             >
               <p
                 className={`text-sm ${
@@ -1082,60 +1116,81 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                   ? "Drop files to upload"
                   : "Drag files here \u2014 PDF, DOCX, audio, or text"}
               </p>
+              {!dragging && transcriptionPrefs && (
+                <p className="text-xs text-gray-400 mt-1">
+                  {transcribeSummary(transcriptionPrefs)}
+                </p>
+              )}
             </div>
           )}
         </div>
       </div>
 
-      {/* Preview modal */}
-      {previewText !== null && previewFilename && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                {previewFilename}
-              </h3>
-              <button
-                onClick={() => {
-                  setPreviewText(null);
-                  setPreviewFilename(null);
-                }}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+      {/* Preview / segment editor.
+          Audio sidecars get the structured TranscriptEditor (header parser,
+          per-segment rows, speaker rename, save / restore-to-original via S3
+          versioning). PDF/DOCX sidecars are plain text — render read-only. */}
+      {previewText !== null &&
+        previewFilename &&
+        (isAudioSidecar(previewFilename) ? (
+          <TranscriptEditor
+            clientId={clientId}
+            filename={previewFilename}
+            initialBody={previewText}
+            onClose={() => {
+              setPreviewText(null);
+              setPreviewFilename(null);
+            }}
+            onSaved={(newBody) => setPreviewText(newBody)}
+          />
+        ) : (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {previewFilename}
+                </h3>
+                <button
+                  onClick={() => {
+                    setPreviewText(null);
+                    setPreviewFilename(null);
+                  }}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-              <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-                {previewText}
-              </pre>
-            </div>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => {
-                  setPreviewText(null);
-                  setPreviewFilename(null);
-                }}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              >
-                Close
-              </button>
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+                <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
+                  {previewText}
+                </pre>
+              </div>
+              <div className="flex justify-end mt-4">
+                <button
+                  onClick={() => {
+                    setPreviewText(null);
+                    setPreviewFilename(null);
+                  }}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        ))}
 
       {/* Edit text file modal */}
       {editText !== null && editFilename && (
@@ -1200,6 +1255,17 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
             </div>
           </div>
         </div>
+      )}
+
+      {/* Transcription wizard */}
+      {showTranscribeWizard && (
+        <TranscribeWizard
+          clientId={clientId}
+          onClose={() => setShowTranscribeWizard(false)}
+          onUploaded={() => {
+            void refresh();
+          }}
+        />
       )}
 
       {/* Create text file modal */}
@@ -1494,6 +1560,41 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       )}
     </div>
   );
+}
+
+/** Sidecar name (e.g. "session.m4a.text") whose base file is a supported audio format. */
+function isAudioSidecar(filename: string): boolean {
+  if (!filename.endsWith(".text")) return false;
+  const base = filename.slice(0, -".text".length);
+  const ext = base.split(".").pop()?.toLowerCase() ?? "";
+  return AUDIO_EXTENSIONS.has(ext);
+}
+
+function transcribeSummary(prefs: TranscriptionPreferences): string {
+  const lang =
+    prefs.default_language === "english"
+      ? "English"
+      : prefs.default_language === "spanish"
+      ? "Spanish"
+      : "Mixed (en+es)";
+  const engine =
+    prefs.default_language === "english" && prefs.use_medical_for_english
+      ? "Medical"
+      : "Standard";
+  const speakers = `${prefs.default_speaker_count} speaker${
+    (prefs.default_speaker_count ?? 0) === 1 ? "" : "s"
+  }`;
+  const translate = prefs.translate_to_english ? ", translate" : "";
+  return `Audio uses: ${engine} · ${lang} · ${speakers}${translate}.`;
+}
+
+function transcribeTooltip(prefs: TranscriptionPreferences | null): string {
+  if (!prefs) return "Drag files here to upload";
+  // Rough ETA — Transcribe is typically ~5–10x real-time. Use 1 min processing
+  // per 6 min of audio as the heuristic shown to users.
+  return `${transcribeSummary(
+    prefs
+  )}\nDuration estimate: ~1 minute of processing per 6 minutes of audio.`;
 }
 
 const AUDIO_EXTENSIONS = new Set([
