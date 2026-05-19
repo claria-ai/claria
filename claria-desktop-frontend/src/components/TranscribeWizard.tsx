@@ -172,6 +172,17 @@ export default function TranscribeWizard({
           </button>
         </div>
 
+        <div className="px-5 pt-4">
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+            <p className="text-sm text-blue-900">
+              <span className="font-medium">Tip:</span> AWS recommends at least
+              30&nbsp;seconds of speech for reliable language identification.
+              Short clips often get tagged with a single speaker and language
+              even with Mixed mode enabled.
+            </p>
+          </div>
+        </div>
+
         <div className="px-5 py-4 space-y-5">
           {loadingPrefs ? (
             <p className="text-sm text-gray-500">Loading your defaults...</p>
