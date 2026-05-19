@@ -470,7 +470,7 @@ async fn poll_medical_job(
 
 /// Parse Amazon Transcribe's output JSON (works for both standard and medical
 /// responses) into a structured [`TranscriptResult`].
-fn parse_transcribe_json(json: &str) -> Result<TranscriptResult, TranscribeError> {
+pub fn parse_transcribe_json(json: &str) -> Result<TranscriptResult, TranscribeError> {
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|e| TranscribeError::Parse(e.to_string()))?;
 
@@ -483,7 +483,7 @@ fn parse_transcribe_json(json: &str) -> Result<TranscriptResult, TranscribeError
 
     let speakers = extract_speakers(speaker_labels);
 
-    let segments = if let (Some(items), Some(labels)) =
+    let mut segments = if let (Some(items), Some(labels)) =
         (items, speaker_labels.and_then(|s| s.get("segments")))
     {
         segments_by_speaker(items, labels)
@@ -508,6 +508,15 @@ fn parse_transcribe_json(json: &str) -> Result<TranscriptResult, TranscribeError
             translation: None,
         }]
     };
+
+    // AWS returns speaker_labels.segments grouped by speaker, not in time
+    // order. Sort here so downstream (body render, UI, edit save/load) sees a
+    // chronological transcript. Reassign IDs post-sort so seg_0001 is always
+    // the first thing said.
+    segments.sort_by_key(|s| (s.start_seconds, s.end_seconds));
+    for (i, seg) in segments.iter_mut().enumerate() {
+        seg.id = format!("seg_{:04}", i + 1);
+    }
 
     Ok(TranscriptResult { segments, speakers })
 }

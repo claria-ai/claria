@@ -467,7 +467,7 @@ async fn head_object(bucket: &str, key: &str, query: &str, state: SharedState) -
                 .header("etag", format!("\"{}\"", ver.etag))
                 .header("content-type", &ver.content_type)
                 .header("content-length", ver.body.len().to_string())
-                .header("last-modified", &ver.last_modified);
+                .header("last-modified", http_date(&ver.last_modified));
             if !ver.version_id.is_empty() {
                 builder = builder.header("x-amz-version-id", &ver.version_id);
             }
@@ -491,7 +491,7 @@ async fn get_object(bucket: &str, key: &str, query: &str, state: SharedState) ->
                 .status(StatusCode::OK)
                 .header("etag", format!("\"{}\"", ver.etag))
                 .header("content-type", &ver.content_type)
-                .header("last-modified", &ver.last_modified);
+                .header("last-modified", http_date(&ver.last_modified));
             if !ver.version_id.is_empty() {
                 builder = builder.header("x-amz-version-id", &ver.version_id);
             }
@@ -610,6 +610,22 @@ fn extract_xml_bool(xml: &str, tag: &str) -> bool {
 
 fn extract_query_param(query: &str, key: &str) -> Option<String> {
     params::extract(query, key)
+}
+
+/// Convert an ISO 8601 timestamp (jiff's default `Timestamp` Display, which is
+/// what state stores) into RFC 7231 HTTP-date format. The AWS SDK strictly
+/// parses `Last-Modified` as HTTP-date and rejects ISO 8601, so headers must
+/// use this — XML payloads keep the ISO form. Falls back to the input string
+/// if parsing fails so we never produce an empty header.
+fn http_date(iso: &str) -> String {
+    iso.parse::<jiff::Timestamp>()
+        .ok()
+        .map(|ts| {
+            ts.to_zoned(jiff::tz::TimeZone::UTC)
+                .strftime("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string()
+        })
+        .unwrap_or_else(|| iso.to_string())
 }
 
 /// Simple non-cryptographic hash for ETags.
