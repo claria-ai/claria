@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.16.2] — 2026-05-19
 
 ### Added
 - **TranscribeWizard advisory banner** — persistent blue tip at the top of the upload-audio modal: *"AWS recommends at least 30 seconds of speech for reliable language identification. Short clips often get tagged with a single speaker and language even with Mixed mode enabled."* Wording is grounded in AWS's own [batch language identification docs](https://docs.aws.amazon.com/transcribe/latest/dg/lang-id-batch.html) ("For best results, ensure that your media file contains at least 30 seconds of speech"). Added after a user-reported "everything came back as English on a bilingual recording" turned out to be a ~19-second clip where `IdentifyMultipleLanguages` had given up — not a claria bug. Reuses the same `bg-blue-50 / border-blue-200 / rounded-lg / p-3` shape as the Preferences-page sync banner.
