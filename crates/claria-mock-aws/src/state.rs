@@ -44,6 +44,17 @@ pub struct MockState {
 
     // Transcribe
     pub transcription_jobs: HashMap<String, TranscriptionJob>,
+    /// Every StartTranscriptionJob / StartMedicalTranscriptionJob body the mock
+    /// has received, in arrival order. Tests inspect this to assert on the
+    /// exact request shape (e.g. `IdentifyMultipleLanguages`, `LanguageOptions`,
+    /// `Settings`) the SDK produced.
+    pub transcribe_requests: Vec<RecordedTranscribeRequest>,
+    /// Pre-loaded transcript JSON to write to S3 as the next job's result.
+    /// When set, the mock pops from the head of this queue on each
+    /// StartTranscriptionJob call instead of using the hardcoded English stub.
+    /// Tests use this as a "cassette" — a recorded AWS Transcribe response
+    /// for the input audio file.
+    pub transcribe_response_cassette: Vec<serde_json::Value>,
 
     // Cost Explorer
     pub cost_data: Vec<CostPeriod>,
@@ -190,6 +201,13 @@ pub struct InferenceProfileModel {
 }
 
 // ── Transcribe types ──
+
+#[derive(Debug, Clone)]
+pub struct RecordedTranscribeRequest {
+    /// `"StartTranscriptionJob"` or `"StartMedicalTranscriptionJob"`.
+    pub operation: String,
+    pub body: serde_json::Value,
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

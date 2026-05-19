@@ -5,7 +5,7 @@ use axum::{
 use bytes::Bytes;
 use serde_json::{json, Value};
 
-use crate::state::{ObjectVersion, SharedState, TranscriptionJob};
+use crate::state::{ObjectVersion, RecordedTranscribeRequest, SharedState, TranscriptionJob};
 
 /// Dispatch Transcribe JSON-protocol requests.
 pub async fn dispatch(target_suffix: &str, body: Value, state: SharedState) -> Response {
@@ -53,15 +53,26 @@ async fn start_job(body: Value, state: SharedState) -> Response {
 
     let mut st = state.write().await;
 
-    // Write the mock transcript result to S3 state immediately
-    let transcript_json = json!({
-        "results": {
-            "transcripts": [{
-                "transcript": "This is a mock transcription of the audio file. \
-                    The patient discussed their symptoms and treatment progress."
-            }]
-        }
+    st.transcribe_requests.push(RecordedTranscribeRequest {
+        operation: "StartTranscriptionJob".to_string(),
+        body: body.clone(),
     });
+
+    // If the test pre-loaded a cassette response, serve that. Otherwise fall
+    // back to the legacy hardcoded English stub for back-compat with tests
+    // that don't care about transcript content.
+    let transcript_json = if st.transcribe_response_cassette.is_empty() {
+        json!({
+            "results": {
+                "transcripts": [{
+                    "transcript": "This is a mock transcription of the audio file. \
+                        The patient discussed their symptoms and treatment progress."
+                }]
+            }
+        })
+    } else {
+        st.transcribe_response_cassette.remove(0)
+    };
 
     let transcript_bytes = Bytes::from(transcript_json.to_string());
     let now = jiff::Timestamp::now().to_string();

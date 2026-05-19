@@ -1,6 +1,6 @@
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -15,6 +15,12 @@ use crate::{
     state::SharedState,
 };
 
+/// Cap on request body size for the mock S3 PutObject path. Real S3 single-PUT
+/// caps at 5 GB; we just need to be comfortably bigger than any audio fixture
+/// or transcript JSON a test might upload. 64 MB is generous and keeps a clear
+/// boundary against runaway requests.
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 pub fn build_router(state: SharedState) -> Router {
     Router::new()
         // Mock control endpoints
@@ -23,6 +29,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/mock/scenario/{name}", post(load_scenario))
         // Catch-all for AWS service requests
         .fallback(dispatch_aws)
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 
