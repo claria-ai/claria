@@ -91,15 +91,21 @@ impl WhisperModel {
 
         // Load config
         let config_path = model_dir.join("config.json");
-        let config_str = std::fs::read_to_string(&config_path)
-            .map_err(|e| WhisperError::ModelLoad(format!("reading config.json: {e}")))?;
-        let config: Config = serde_json::from_str(&config_str)
-            .map_err(|e| WhisperError::ModelLoad(format!("parsing config.json: {e}")))?;
+        let config_str = std::fs::read_to_string(&config_path).map_err(|e| {
+            tracing::error!(path = %config_path.display(), error = %e, "failed to read whisper config.json");
+            WhisperError::ModelLoad(format!("reading config.json: {e}"))
+        })?;
+        let config: Config = serde_json::from_str(&config_str).map_err(|e| {
+            tracing::error!(path = %config_path.display(), error = %e, "failed to parse whisper config.json");
+            WhisperError::ModelLoad(format!("parsing config.json: {e}"))
+        })?;
 
         // Load tokenizer
         let tokenizer_path = model_dir.join("tokenizer.json");
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| WhisperError::Tokenizer(format!("loading tokenizer.json: {e}")))?;
+        let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
+            tracing::error!(path = %tokenizer_path.display(), error = %e, "failed to load whisper tokenizer.json");
+            WhisperError::Tokenizer(format!("loading tokenizer.json: {e}"))
+        })?;
 
         // Load mel filters (embedded at compile time, selected by num_mel_bins)
         let mel_bytes = match config.num_mel_bins {
@@ -113,11 +119,17 @@ impl WhisperModel {
         let weights_path = model_dir.join("model.safetensors");
         info!(path = %weights_path.display(), "loading whisper model");
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weights_path], m::DTYPE, &device)
-                .map_err(|e| WhisperError::ModelLoad(e.to_string()))?
+            VarBuilder::from_mmaped_safetensors(&[&weights_path], m::DTYPE, &device).map_err(
+                |e| {
+                    tracing::error!(path = %weights_path.display(), error = %e, "failed to mmap whisper model weights");
+                    WhisperError::ModelLoad(e.to_string())
+                },
+            )?
         };
-        let model = m::model::Whisper::load(&vb, config.clone())
-            .map_err(|e| WhisperError::ModelLoad(e.to_string()))?;
+        let model = m::model::Whisper::load(&vb, config.clone()).map_err(|e| {
+            tracing::error!(path = %weights_path.display(), error = %e, "failed to load whisper model");
+            WhisperError::ModelLoad(e.to_string())
+        })?;
 
         // Resolve special tokens
         let sot_token = token_id(&tokenizer, m::SOT_TOKEN)?;

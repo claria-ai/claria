@@ -194,7 +194,10 @@ pub async fn assume_role(
         .role_session_name(session)
         .send()
         .await
-        .map_err(|e| ProvisionerError::Aws(format!("STS AssumeRole failed: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(role_arn = %role_arn, session = %session, error = %e, "STS AssumeRole failed");
+            ProvisionerError::Aws(format!("STS AssumeRole failed: {e}"))
+        })?;
 
     let creds = resp.credentials().ok_or_else(|| {
         ProvisionerError::Aws("AssumeRole returned no credentials".into())
@@ -810,7 +813,10 @@ pub async fn get_caller_identity(
         .get_caller_identity()
         .send()
         .await
-        .map_err(|e| ProvisionerError::Aws(format!("STS GetCallerIdentity failed: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "STS GetCallerIdentity failed — credentials may be invalid");
+            ProvisionerError::Aws(format!("STS GetCallerIdentity failed: {e}"))
+        })?;
 
     let arn = resp.arn().unwrap_or_default().to_string();
     let is_root = arn.ends_with(":root");

@@ -46,8 +46,15 @@ pub async fn download_index(
 
     info!("index extracted to {:?}, etag={}", dest_dir, etag);
 
-    let index = Index::open_in_dir(dest_dir)
-        .map_err(|e| SearchError::IndexCorrupted(e.to_string()))?;
+    let index = Index::open_in_dir(dest_dir).map_err(|e| {
+        tracing::error!(
+            bucket,
+            key = s3_keys::INDEX,
+            error = %e,
+            "downloaded index failed to open — data may be corrupted"
+        );
+        SearchError::IndexCorrupted(e.to_string())
+    })?;
 
     Ok(LoadedIndex {
         index,

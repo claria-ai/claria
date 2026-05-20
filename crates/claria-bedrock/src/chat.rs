@@ -196,7 +196,11 @@ async fn fetch_active_foundation_models(
         .by_provider("anthropic")
         .send()
         .await
-        .map_err(|e| BedrockError::Invocation(e.into_service_error().to_string()))?;
+        .map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::warn!(error = %msg, "ListFoundationModels failed");
+            BedrockError::Invocation(msg)
+        })?;
 
     let models: Vec<(String, String)> = response
         .model_summaries()
@@ -240,7 +244,11 @@ async fn fetch_us_inference_profiles(
         .max_results(100)
         .send()
         .await
-        .map_err(|e| BedrockError::Invocation(e.into_service_error().to_string()))?;
+        .map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::warn!(error = %msg, "ListInferenceProfiles failed");
+            BedrockError::Invocation(msg)
+        })?;
 
     let mut map = HashMap::new();
 
@@ -398,7 +406,11 @@ pub async fn chat_converse(
         .set_messages(Some(converse_messages))
         .send()
         .await
-        .map_err(|e| BedrockError::Invocation(e.into_service_error().to_string()))?;
+        .map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::error!(model_id, error = %msg, "Bedrock Converse call failed");
+            BedrockError::Invocation(msg)
+        })?;
 
     let output_message = response
         .output()
@@ -542,6 +554,7 @@ pub async fn accept_model_agreement(
             if msg.contains("already exists") {
                 info!(model_id, "model agreement already accepted");
             } else {
+                tracing::warn!(model_id, error = %msg, "failed to accept model agreement");
                 return Err(BedrockError::Agreement(msg));
             }
         }

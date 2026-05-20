@@ -35,7 +35,17 @@ impl ResourceSyncer for CloudTrailTrailSyncer {
                 .await
             {
                 Ok(resp) => resp,
-                Err(_) => return Ok(None),
+                // TODO: differentiate NotFound (legitimately absent) from
+                // AccessDenied/Throttling (masked failure). For now log
+                // everything before swallowing.
+                Err(e) => {
+                    tracing::warn!(
+                        trail = %self.trail_name(),
+                        error = %e,
+                        "get_trail failed during read — treating as absent"
+                    );
+                    return Ok(None);
+                }
             };
 
             let trail = resp.trail();

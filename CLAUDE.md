@@ -120,10 +120,6 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 ### Sidecar Pattern
 Binary uploads (PDF, DOCX, audio) generate a `.text` sidecar file containing extracted text. The file list hides sidecars when the base file exists. New extraction formats (e.g. audio transcription) follow this same pattern: upload the original, generate a `{key}.text` sidecar alongside it.
 
-## Manifest Versioning
-
-`Manifest::VERSION` in `manifest.rs` tracks the resource spec schema. Bump it when adding, removing, or changing resource specs. Unlike config versioning, there is no migration chain — the manifest is always rebuilt from code. But the version number is used to detect when a provisioner state file is stale and needs a full re-scan.
-
 ## IAM Action Names
 
 The IAM policy in `account_setup.rs` uses **IAM action names**, which sometimes differ from S3 API operation names. The manifest `iam_actions` fields must match the IAM action names exactly, since `IamUserPolicySyncer.diff()` compares them as literal strings.
