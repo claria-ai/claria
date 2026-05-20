@@ -22,10 +22,6 @@
 //!
 //! ## Model discovery strategy
 //!
-//! Not all active foundation models have inference profiles yet. AWS adds
-//! inference profiles over time — newly launched models may only appear in
-//! `ListFoundationModels` initially. We use a **hybrid approach**:
-//!
 //! 1. Call `ListFoundationModels(provider="anthropic")` to get all Claude
 //!    models with `ACTIVE` lifecycle status. Skip context-window variants
 //!    (suffixed with `:48k`, `:200k`, etc.) — only the base model ID.
@@ -34,37 +30,54 @@
 //!    from the API. If none was returned, construct `us.{model_id}` — the
 //!    Converse API requires an inference profile ID (bare model IDs fail
 //!    with "on-demand throughput isn't supported").
+//! 4. Smoke-test each candidate via [`crate::availability::probe_many`]
+//!    (free CountTokens call) and drop the ones the runtime rejects.
 //!
-//! This ensures newly launched models appear immediately, while still
-//! preferring inference profiles for established models.
+//! Step 4 exists because steps 1-3 alone are not sufficient — see below.
 //!
-//! ## Legacy model filtering
+//! ## The catalog APIs lie about invokability
 //!
-//! AWS marks superseded models as `LEGACY` in the foundation model registry,
-//! but continues to list their inference profiles as `ACTIVE`. Since we
-//! start from the foundation model registry filtered to `ACTIVE`, legacy
-//! models are excluded automatically. Models that have inference profiles
-//! but are absent from `ListFoundationModels` entirely (e.g. Claude 3 Opus)
-//! are also excluded since we start from the foundation model list.
+//! AWS publishes "preview" foundation models (e.g. `anthropic.claude-opus-4-7`)
+//! that appear healthy in every catalog API yet fail at the runtime:
 //!
-//! ## Marketplace agreements
+//! - `ListFoundationModels` returns them with `ACTIVE` lifecycle.
+//! - `GetFoundationModelAvailability` reports all four signals positive
+//!   (`agreement_availability=AVAILABLE`, `entitlement_availability=AVAILABLE`,
+//!   `authorization_status=AUTHORIZED`, `region_availability=AVAILABLE`).
+//! - `ListInferenceProfiles` does NOT include a `us.` profile for them,
+//!   but the constructed `us.{model_id}` ID resolves via `GetInferenceProfile`
+//!   with `status=Active`.
 //!
-//! Before a model can be invoked, its Marketplace agreement must be accepted.
-//! New models (like Claude Sonnet 4 at launch) require this even if earlier
-//! Claude models were already accepted. The relevant APIs are:
+//! Then `Converse` rejects them with
+//! `AccessDeniedException: <model> is not available for this account` and
+//! `CountTokens` rejects them with
+//! `ValidationException: The provided model doesn't support counting tokens`.
 //!
-//! - `GetFoundationModelAvailability(model_id)` — returns
-//!   `agreement_availability.status`:
-//!   - `Available` → agreement exists but hasn't been accepted yet
-//!   - `NotAvailable` → already accepted, or no agreement required
+//! Empirically, the runtime is the only honest signal. Don't trust the
+//! catalog APIs to gate invocation — use `crate::availability::probe_many`.
 //!
-//! - `ListFoundationModelAgreementOffers(model_id)` → returns offer tokens
-//! - `CreateFoundationModelAgreement(model_id, offer_token)` → accepts it
+//! Note that `agreement_availability` in particular is informational, not
+//! a gate: every modern Claude model reports `AVAILABLE` on this field
+//! while remaining fully invokable. It describes whether a provisioned-
+//! throughput purchase offer exists, not whether on-demand invocation works.
 //!
-//! We run this during onboarding (`accept_all_model_agreements`) so users
-//! don't have to manually accept each model in the AWS console. The
-//! operation is idempotent — re-accepting an already-accepted model is a
-//! no-op.
+//! ## Marketplace agreement acceptance
+//!
+//! Some models require accepting a marketplace agreement before invocation.
+//! Auto-accept is performed by the provisioner (`BedrockModelAgreementSyncer`),
+//! not by this crate. The APIs involved:
+//!
+//! - `ListFoundationModelAgreementOffers(model_id)` — returns the offers
+//!   *available to accept*. An empty list does NOT mean "already accepted" —
+//!   it can equally mean "no marketplace agreement applies to this model."
+//!   There is no API to list accepted agreements.
+//! - `CreateFoundationModelAgreement(model_id, offer_token)` — accepts an
+//!   offer. Idempotent in spirit: re-accepting returns
+//!   `ValidationException: ... already exists`, which the provisioner treats
+//!   as success.
+//!
+//! The provisioner runs acceptance on Apply, then re-probes with CountTokens
+//! to verify the model is now actually invokable.
 //!
 //! ## Required IAM permissions
 //!
@@ -74,11 +87,13 @@
 //! ```text
 //! bedrock:ListFoundationModels
 //! bedrock:ListInferenceProfiles
-//! bedrock:GetFoundationModelAvailability
+//! bedrock:GetInferenceProfile
+//! bedrock:GetFoundationModelAvailability  # diagnostic only, kept for the Console
 //! bedrock:ListFoundationModelAgreementOffers
 //! bedrock:CreateFoundationModelAgreement
 //! bedrock:InvokeModel
 //! bedrock:InvokeModelWithResponseStream
+//! bedrock:CountTokens                     # required by the invokability probe
 //! ```
 
 use std::collections::HashMap;
@@ -177,29 +192,25 @@ pub async fn list_chat_models(
         })
         .collect();
 
-    // Step 4: Smoke-test each candidate via CountTokens. This is the only
-    // reliable signal that a model is actually invokable for this account
-    // — the Bedrock catalog APIs (ListFoundationModels, GetFoundationModel-
-    // Availability, ListInferenceProfiles, GetInferenceProfile) report
-    // healthy state for models that Converse then rejects with
-    // AccessDeniedException or ValidationException. CountTokens is free
-    // (no token billing) and uses the same runtime auth path, so it gives
-    // us the truth without a charge.
+    // Step 4: Smoke-test each candidate. The catalog APIs lie about
+    // invokability for half-published preview entries — only the runtime
+    // tells the truth. See `crate::availability` for the why and the
+    // shared probe helper used here and in the provisioner.
+    //
+    // TODO: cache the probe results across calls. Today this round of
+    // ~150 ms runs every time `list_chat_models()` is invoked; the
+    // frontend calls it 1-2× per session.
     let runtime = aws_sdk_bedrockruntime::Client::new(config);
-    let probes = candidates.into_iter().map(|model| {
-        let runtime = runtime.clone();
-        async move {
-            let probe_id = strip_scope_prefix(&model.model_id);
-            let ok = probe_count_tokens(&runtime, probe_id).await;
-            (model, ok)
-        }
-    });
-    let results: Vec<(ChatModel, bool)> = futures::future::join_all(probes).await;
+    let bare_ids: Vec<String> = candidates
+        .iter()
+        .map(|m| strip_scope_prefix(&m.model_id).to_string())
+        .collect();
+    let probes = crate::availability::probe_many(&runtime, &bare_ids).await;
 
-    let mut models: Vec<ChatModel> = Vec::with_capacity(results.len());
+    let mut models: Vec<ChatModel> = Vec::with_capacity(candidates.len());
     let mut filtered: Vec<String> = Vec::new();
-    for (model, ok) in results {
-        if ok {
+    for (model, probe) in candidates.into_iter().zip(probes.into_iter()) {
+        if probe.is_invokable() {
             models.push(model);
         } else {
             filtered.push(model.model_id);
@@ -217,41 +228,6 @@ pub async fn list_chat_models(
     info!(count = models.len(), filtered_count = filtered.len(), "discovered chat models");
 
     Ok(models)
-}
-
-/// Smoke-test a model via the CountTokens runtime API. Returns true if the
-/// model accepted the call (it's invokable), false on any error.
-async fn probe_count_tokens(
-    runtime: &aws_sdk_bedrockruntime::Client,
-    bare_model_id: &str,
-) -> bool {
-    let message = match Message::builder()
-        .role(ConversationRole::User)
-        .content(ContentBlock::Text(".".into()))
-        .build()
-    {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(bare_model_id, error = %e, "CountTokens probe: dummy message build failed");
-            return false;
-        }
-    };
-    let req = ConverseTokensRequest::builder().messages(message).build();
-    let input = aws_sdk_bedrockruntime::types::CountTokensInput::Converse(req);
-    match runtime
-        .count_tokens()
-        .model_id(bare_model_id)
-        .input(input)
-        .send()
-        .await
-    {
-        Ok(_) => true,
-        Err(e) => {
-            let msg = e.into_service_error().to_string();
-            tracing::info!(bare_model_id, error = %msg, "CountTokens probe rejected — model not invokable");
-            false
-        }
-    }
 }
 
 /// Fetch active Anthropic Claude foundation models, returning (model_id, name).

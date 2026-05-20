@@ -71,7 +71,6 @@ pub fn build_syncers(
     let s3 = claria_storage::client::from_config(config);
     let iam = aws_sdk_iam::Client::new(config);
     let cloudtrail = aws_sdk_cloudtrail::Client::new(config);
-    let bedrock = aws_sdk_bedrock::Client::new(config);
 
     manifest
         .specs
@@ -135,7 +134,7 @@ pub fn build_syncers(
                 "bedrock_model_agreement" => Box::new(
                     syncers::bedrock_model_agreement::BedrockModelAgreementSyncer::new(
                         spec.clone(),
-                        bedrock.clone(),
+                        config,
                     ),
                 ),
                 "transcribe_access" => Box::new(

@@ -2,6 +2,7 @@
 //!
 //! Bedrock model invocation and structured output parsing.
 
+pub mod availability;
 pub mod chat;
 pub mod client;
 pub mod context;

@@ -5,12 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+claria-bedrock = { path = "../claria-bedrock" }
 claria-core = { path = "../claria-core" }
 claria-storage = { path = "../claria-storage" }
 claria-audit = { path = "../claria-audit" }
 aws-config = "=1.8.16"
 aws-sdk-artifact = "=1.89.0"
 aws-sdk-bedrock = "=1.141.0"
+aws-sdk-bedrockruntime = "=1.130.0"
 aws-sdk-cloudtrail = "=1.107.0"
 aws-sdk-iam = "=1.108.1"
 aws-sdk-s3 = "=1.132.0"

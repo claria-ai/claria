@@ -149,6 +149,14 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 ### Sidecar Pattern
 Binary uploads (PDF, DOCX, audio) generate a `.text` sidecar file containing extracted text. The file list hides sidecars when the base file exists. New extraction formats (e.g. audio transcription) follow this same pattern: upload the original, generate a `{key}.text` sidecar alongside it.
 
+## Bedrock model availability
+
+The Bedrock catalog APIs (`ListFoundationModels`, `GetFoundationModelAvailability`, `ListInferenceProfiles`, `GetInferenceProfile`, `ListFoundationModelAgreementOffers`) **lie about invokability** for half-published preview entries: they happily report healthy state for models the runtime then rejects with `AccessDeniedException` or `ValidationException`. `agreement_availability` in particular is informational, not a gate — every modern Claude model reports `AVAILABLE` while remaining fully invokable.
+
+The only honest signal is to ask the runtime. `claria_bedrock::availability::probe_invokable` calls `CountTokens` (free, no token billing, same auth path as `Converse`); if it accepts a model, real invocation will too. Both the chat dropdown (`list_chat_models`) and the provisioner (`BedrockModelAgreementSyncer`) use this probe. When adding new code that needs to decide whether a Claude model is usable, use this helper — do not branch on the catalog enums.
+
+There is no API to list *accepted* marketplace agreements. `ListFoundationModelAgreementOffers` returns only what's *available to accept*. To detect already-accepted, attempt `CreateFoundationModelAgreement` and catch `ValidationException: ... already exists` as success.
+
 ## IAM Action Names
 
 The IAM policy in `account_setup.rs` uses **IAM action names**, which sometimes differ from S3 API operation names. The manifest `iam_actions` fields must match the IAM action names exactly, since `IamUserPolicySyncer.diff()` compares them as literal strings.

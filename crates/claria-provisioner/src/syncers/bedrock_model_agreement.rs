@@ -1,7 +1,7 @@
-use aws_sdk_bedrock::Client;
-use aws_sdk_bedrock::types::{
-    AuthorizationStatus, EntitlementAvailability, RegionAvailability,
-};
+use aws_config::SdkConfig;
+use aws_sdk_bedrock::Client as BedrockClient;
+use aws_sdk_bedrockruntime::Client as RuntimeClient;
+use claria_bedrock::availability::{self, InvocabilityProbe};
 use serde_json::{json, Value};
 
 use crate::error::{format_err_chain, ProvisionerError};
@@ -17,12 +17,17 @@ fn is_context_window_variant(model_id: &str) -> bool {
 
 pub struct BedrockModelAgreementSyncer {
     spec: ResourceSpec,
-    client: Client,
+    bedrock: BedrockClient,
+    runtime: RuntimeClient,
 }
 
 impl BedrockModelAgreementSyncer {
-    pub fn new(spec: ResourceSpec, client: Client) -> Self {
-        Self { spec, client }
+    pub fn new(spec: ResourceSpec, config: &SdkConfig) -> Self {
+        Self {
+            spec,
+            bedrock: BedrockClient::new(config),
+            runtime: RuntimeClient::new(config),
+        }
     }
 
     fn model_prefix(&self) -> &str {
@@ -32,7 +37,7 @@ impl BedrockModelAgreementSyncer {
     /// Enumerate foundation models matching this spec's prefix.
     async fn matching_model_ids(&self) -> Result<Vec<String>, ProvisionerError> {
         let models = self
-            .client
+            .bedrock
             .list_foundation_models()
             .send()
             .await
@@ -50,77 +55,26 @@ impl BedrockModelAgreementSyncer {
             .collect())
     }
 
-    /// Classify each matching model's invocation availability for this
-    /// account and region.
+    /// Classify each matching model as invokable or blocked using the shared
+    /// CountTokens probe.
     ///
-    /// `GetFoundationModelAvailability` returns four signals. A model is
-    /// only invokable if *all four* are positive:
-    ///
-    /// - `region_availability == Available` — the model exists in our region
-    /// - `authorization_status == Authorized` — the account has access (this
-    ///   is the gate the Bedrock "Model access" console page toggles)
-    /// - `entitlement_availability == Available` — entitlement is granted
-    /// - `agreement_availability.status` is either absent or `NotAvailable`
-    ///   (the latter means "already accepted or none required")
-    ///
-    /// Earlier versions checked only `entitlement_availability`, which let
-    /// authorization-gated models (e.g. opus-4-7 before account approval)
-    /// false-positive as in-sync.
+    /// The Bedrock catalog APIs (`GetFoundationModelAvailability`,
+    /// `ListInferenceProfiles`, `GetInferenceProfile`) don't reliably
+    /// distinguish invokable models from half-published preview entries —
+    /// they happily report healthy state for models the runtime then
+    /// rejects. The CountTokens probe is the only honest signal. See
+    /// `claria_bedrock::availability` for the why.
     async fn classify_models(&self) -> Result<ModelAvailability, ProvisionerError> {
         let ids = self.matching_model_ids().await?;
+        let probes = availability::probe_many(&self.runtime, &ids).await;
+
         let mut invokable: Vec<String> = Vec::new();
         let mut blocked: Vec<BlockedModel> = Vec::new();
-
-        for model_id in ids {
-            match self
-                .client
-                .get_foundation_model_availability()
-                .model_id(&model_id)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    let agreement_status = resp
-                        .agreement_availability()
-                        .map(|a| a.status().as_str().to_string())
-                        .unwrap_or_else(|| "absent".into());
-                    tracing::info!(
-                        model_id,
-                        agreement = %agreement_status,
-                        entitlement = resp.entitlement_availability().as_str(),
-                        authorization = resp.authorization_status().as_str(),
-                        region = resp.region_availability().as_str(),
-                        "GetFoundationModelAvailability"
-                    );
-
-                    if is_invokable(
-                        resp.entitlement_availability(),
-                        resp.authorization_status(),
-                        resp.region_availability(),
-                    ) {
-                        invokable.push(model_id);
-                    } else {
-                        let reason = describe_block(
-                            resp.entitlement_availability(),
-                            resp.authorization_status(),
-                            resp.region_availability(),
-                        );
-                        blocked.push(BlockedModel { model_id, reason });
-                    }
-                }
-                Err(e) => {
-                    // Don't fail the whole sync on one model — record the
-                    // probe failure so it shows in the UI.
-                    let msg = format_err_chain(&e);
-                    tracing::warn!(
-                        model_id,
-                        error = %msg,
-                        "GetFoundationModelAvailability failed"
-                    );
-                    blocked.push(BlockedModel {
-                        model_id,
-                        reason: format!("availability probe failed: {msg}"),
-                    });
+        for (model_id, probe) in ids.into_iter().zip(probes.into_iter()) {
+            match probe {
+                InvocabilityProbe::Invokable => invokable.push(model_id),
+                InvocabilityProbe::Rejected(reason) => {
+                    blocked.push(BlockedModel { model_id, reason })
                 }
             }
         }
@@ -136,7 +90,7 @@ impl BedrockModelAgreementSyncer {
 
         for model_id in &ids {
             let offers = match self
-                .client
+                .bedrock
                 .list_foundation_model_agreement_offers()
                 .model_id(model_id)
                 .send()
@@ -151,6 +105,12 @@ impl BedrockModelAgreementSyncer {
                 }
             };
 
+            // Empty offers can mean (a) the agreement was already accepted on
+            // a prior run, or (b) no marketplace agreement applies to this
+            // model. AWS doesn't expose a "list accepted agreements" API, so
+            // we can't tell which. Either way there's nothing for us to do
+            // here — the CountTokens probe in classify_models is the
+            // authoritative signal for invokability.
             if offers.offers().is_empty() {
                 continue;
             }
@@ -158,7 +118,7 @@ impl BedrockModelAgreementSyncer {
             let offer_token = offers.offers()[0].offer_token();
 
             match self
-                .client
+                .bedrock
                 .create_foundation_model_agreement()
                 .model_id(model_id)
                 .offer_token(offer_token)
@@ -194,8 +154,7 @@ struct BlockedModel {
     reason: String,
 }
 
-/// Result of classifying matching models against the account's entitlement
-/// state.
+/// Result of classifying matching models against the account's runtime state.
 struct ModelAvailability {
     invokable: Vec<String>,
     blocked: Vec<BlockedModel>,
@@ -218,54 +177,6 @@ impl ModelAvailability {
                 .collect::<Vec<_>>(),
         })
     }
-}
-
-/// Return true only when every gate that actually blocks on-demand
-/// invocation is in a positive state.
-///
-/// `agreement_availability` is intentionally NOT a gate here. Empirically
-/// it stays at `AVAILABLE` for invokable on-demand models — it describes
-/// whether a provisioned-throughput purchase offer exists, not whether
-/// the account can call the model. Treating it as a gate flagged every
-/// modern Claude model as blocked even when invocation worked fine.
-fn is_invokable(
-    entitlement: &EntitlementAvailability,
-    authorization: &AuthorizationStatus,
-    region: &RegionAvailability,
-) -> bool {
-    matches!(entitlement, EntitlementAvailability::Available)
-        && matches!(authorization, AuthorizationStatus::Authorized)
-        && matches!(region, RegionAvailability::Available)
-}
-
-/// Compose a human-readable reason a model isn't invokable.
-fn describe_block(
-    entitlement: &EntitlementAvailability,
-    authorization: &AuthorizationStatus,
-    region: &RegionAvailability,
-) -> String {
-    if matches!(region, RegionAvailability::NotAvailable) {
-        return "model not available in this region — pick a region where AWS lists it".into();
-    }
-
-    // Authorization is the per-account toggle on the Bedrock "Model access"
-    // console page. New / preview / sales-gated models often sit here.
-    if matches!(authorization, AuthorizationStatus::NotAuthorized) {
-        return "account not authorized — request access on the Bedrock \"Model access\" \
-                console page (may require AWS Sales engagement for preview models)"
-            .into();
-    }
-
-    if matches!(entitlement, EntitlementAvailability::NotAvailable) {
-        return "no entitlement — open the Bedrock \"Model access\" console page".into();
-    }
-
-    format!(
-        "blocked: entitlement={} authorization={} region={}",
-        entitlement.as_str(),
-        authorization.as_str(),
-        region.as_str(),
-    )
 }
 
 impl ResourceSyncer for BedrockModelAgreementSyncer {
@@ -297,7 +208,7 @@ impl ResourceSyncer for BedrockModelAgreementSyncer {
             // only mutation we can do without user intervention.
             self.accept_agreements().await?;
 
-            // Re-classify. If any model is still blocked, surface the reasons
+            // Re-probe. If any model is still blocked, surface the reasons
             // so the UI explains what the user must do manually.
             let availability = self.classify_models().await?;
             if !availability.blocked.is_empty() {
