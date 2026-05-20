@@ -236,6 +236,17 @@ async fn fetch_active_foundation_models(
             is_claude && is_active && !is_variant
         })
         .map(|m| {
+            let inference_types: Vec<&str> = m
+                .inference_types_supported()
+                .iter()
+                .map(|t| t.as_str())
+                .collect();
+            tracing::info!(
+                model_id = m.model_id(),
+                model_arn = m.model_arn(),
+                inference_types = ?inference_types,
+                "active Claude foundation model"
+            );
             let name = m
                 .model_name()
                 .unwrap_or(m.model_id())
