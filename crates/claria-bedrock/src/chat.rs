@@ -168,6 +168,33 @@ pub async fn list_chat_models(
         "list_chat_models: comparing foundation models to us. inference profiles"
     );
 
+    // Diagnostic: probe GetInferenceProfile on the constructed us. ID for
+    // each foundation model. If Get returns Ok, AWS has the profile even
+    // though it didn't appear in List (eventual consistency / undocumented
+    // visibility filter). If Get returns NotFound, the profile genuinely
+    // doesn't exist — explains the AccessDeniedException on Converse.
+    for (model_id, _) in &active_models {
+        let probe_id = format!("us.{model_id}");
+        match client
+            .get_inference_profile()
+            .inference_profile_identifier(&probe_id)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                tracing::info!(
+                    profile_id = %probe_id,
+                    status = ?resp.status(),
+                    "GetInferenceProfile OK"
+                );
+            }
+            Err(e) => {
+                let msg = e.into_service_error().to_string();
+                tracing::info!(profile_id = %probe_id, error = %msg, "GetInferenceProfile failed");
+            }
+        }
+    }
+
     let mut models: Vec<ChatModel> = active_models
         .into_iter()
         .map(|(model_id, model_name)| {
@@ -177,12 +204,6 @@ pub async fn list_chat_models(
                     name: profile_name.clone(),
                 }
             } else {
-                tracing::warn!(
-                    foundation_model_id = %model_id,
-                    constructed_profile_id = %format!("us.{model_id}"),
-                    "no us. inference profile returned by AWS — constructing one; \
-                     invocation may fail if AWS hasn't published this profile yet"
-                );
                 ChatModel {
                     model_id: format!("us.{model_id}"),
                     name: model_name,

@@ -324,6 +324,7 @@ impl Manifest {
                     iam_actions: vec![
                         "bedrock:ListFoundationModels".into(),
                         "bedrock:ListInferenceProfiles".into(),
+                        "bedrock:GetInferenceProfile".into(),
                         "bedrock:GetFoundationModelAvailability".into(),
                         "bedrock:ListFoundationModelAgreementOffers".into(),
                         "bedrock:CreateFoundationModelAgreement".into(),

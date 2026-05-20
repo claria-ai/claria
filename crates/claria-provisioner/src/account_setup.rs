@@ -728,6 +728,7 @@ pub(crate) fn claria_policy_document(system_name: &str, account_id: &str) -> Str
                 "Action": [
                     "bedrock:ListFoundationModels",
                     "bedrock:ListInferenceProfiles",
+                    "bedrock:GetInferenceProfile",
                     "bedrock:GetFoundationModelAvailability",
                     "bedrock:ListFoundationModelAgreementOffers",
                     "bedrock:CreateFoundationModelAgreement",
