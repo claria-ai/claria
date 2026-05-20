@@ -4,9 +4,12 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
-- Bedrock model-access check also evaluates authorization and region availability, not just entitlement
-- Per-model availability fields are logged at info level so the Console shows exactly which gate is blocking each model
+- Chat dropdown filters out Claude foundation models that AWS lists but the runtime won't invoke — a free CountTokens smoke test runs in parallel during discovery and hides any model the runtime rejects
+- Bedrock catalog APIs (GetFoundationModelAvailability, ListInferenceProfiles, GetInferenceProfile) all report healthy state for non-invokable preview entries like opus-4-7; the runtime is the only honest signal
+- Bedrock model-access provisioner check also evaluates authorization and region availability, not just entitlement
+- Per-model GetFoundationModelAvailability fields are logged at info level so the Console shows exactly what AWS reports
 - Bedrock agreement_availability is no longer treated as an invocation gate — it describes provisioned-throughput offers, not on-demand access, and treating it as a block falsely flagged every modern Claude model
+- bedrock:GetInferenceProfile added to the scoped IAM policy
 
 ## [0.16.3] — 2026-05-20
 

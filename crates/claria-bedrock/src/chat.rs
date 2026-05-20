@@ -160,91 +160,10 @@ pub async fn list_chat_models(
     // If the API didn't return one, construct it: the Converse API requires an
     // inference profile ID (bare model IDs fail with "on-demand throughput
     // isn't supported"). The profile ID format is `us.{foundation_model_id}`.
-    info!(
-        foundation_models = active_models.len(),
-        us_profiles = us_profiles.len(),
-        foundation_model_ids = ?active_models.iter().map(|(id, _)| id).collect::<Vec<_>>(),
-        us_profile_ids = ?us_profiles.keys().collect::<Vec<_>>(),
-        "list_chat_models: comparing foundation models to us. inference profiles"
-    );
-
-    // Diagnostic: probe GetInferenceProfile on the constructed us. ID for
-    // each foundation model. If Get returns Ok, AWS has the profile even
-    // though it didn't appear in List (eventual consistency / undocumented
-    // visibility filter). If Get returns NotFound, the profile genuinely
-    // doesn't exist — explains the AccessDeniedException on Converse.
-    for (model_id, _) in &active_models {
-        let probe_id = format!("us.{model_id}");
-        match client
-            .get_inference_profile()
-            .inference_profile_identifier(&probe_id)
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                tracing::info!(
-                    profile_id = %probe_id,
-                    status = ?resp.status(),
-                    "GetInferenceProfile OK"
-                );
-            }
-            Err(e) => {
-                let msg = e.into_service_error().to_string();
-                tracing::info!(profile_id = %probe_id, error = %msg, "GetInferenceProfile failed");
-            }
-        }
-    }
-
-    // Diagnostic: smoke-test each model with a minimal CountTokens call.
-    // CountTokens is free (no token billing) and uses the bedrockruntime
-    // auth path. If it succeeds for haiku-4-5 (known invokable) but fails
-    // for opus-4-7 (known not invokable), it's our reliable filter.
-    let runtime = aws_sdk_bedrockruntime::Client::new(config);
-    for (model_id, _) in &active_models {
-        let dummy = aws_sdk_bedrockruntime::types::Message::builder()
-            .role(aws_sdk_bedrockruntime::types::ConversationRole::User)
-            .content(aws_sdk_bedrockruntime::types::ContentBlock::Text(".".into()))
-            .build();
-        let req = match dummy {
-            Ok(m) => aws_sdk_bedrockruntime::types::ConverseTokensRequest::builder()
-                .messages(m)
-                .build(),
-            Err(e) => {
-                tracing::warn!(model_id, error = %e, "CountTokens probe: failed to build dummy message");
-                continue;
-            }
-        };
-        let probe_input =
-            aws_sdk_bedrockruntime::types::CountTokensInput::Converse(req);
-        match runtime
-            .count_tokens()
-            .model_id(model_id)
-            .input(probe_input)
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                tracing::info!(
-                    bare_model_id = %model_id,
-                    tokens = resp.input_tokens(),
-                    "CountTokens probe OK"
-                );
-            }
-            Err(e) => {
-                let msg = e.into_service_error().to_string();
-                tracing::info!(
-                    bare_model_id = %model_id,
-                    error = %msg,
-                    "CountTokens probe failed"
-                );
-            }
-        }
-    }
-
-    let mut models: Vec<ChatModel> = active_models
-        .into_iter()
+    let candidates: Vec<ChatModel> = active_models
+        .iter()
         .map(|(model_id, model_name)| {
-            if let Some((profile_id, profile_name)) = us_profiles.get(&model_id) {
+            if let Some((profile_id, profile_name)) = us_profiles.get(model_id) {
                 ChatModel {
                     model_id: profile_id.clone(),
                     name: profile_name.clone(),
@@ -252,17 +171,87 @@ pub async fn list_chat_models(
             } else {
                 ChatModel {
                     model_id: format!("us.{model_id}"),
-                    name: model_name,
+                    name: model_name.clone(),
                 }
             }
         })
         .collect();
 
+    // Step 4: Smoke-test each candidate via CountTokens. This is the only
+    // reliable signal that a model is actually invokable for this account
+    // — the Bedrock catalog APIs (ListFoundationModels, GetFoundationModel-
+    // Availability, ListInferenceProfiles, GetInferenceProfile) report
+    // healthy state for models that Converse then rejects with
+    // AccessDeniedException or ValidationException. CountTokens is free
+    // (no token billing) and uses the same runtime auth path, so it gives
+    // us the truth without a charge.
+    let runtime = aws_sdk_bedrockruntime::Client::new(config);
+    let probes = candidates.into_iter().map(|model| {
+        let runtime = runtime.clone();
+        async move {
+            let probe_id = strip_scope_prefix(&model.model_id);
+            let ok = probe_count_tokens(&runtime, probe_id).await;
+            (model, ok)
+        }
+    });
+    let results: Vec<(ChatModel, bool)> = futures::future::join_all(probes).await;
+
+    let mut models: Vec<ChatModel> = Vec::with_capacity(results.len());
+    let mut filtered: Vec<String> = Vec::new();
+    for (model, ok) in results {
+        if ok {
+            models.push(model);
+        } else {
+            filtered.push(model.model_id);
+        }
+    }
+    if !filtered.is_empty() {
+        tracing::warn!(
+            filtered = ?filtered,
+            "models hidden from the chat dropdown: CountTokens probe failed (catalog entry present, runtime not invokable)"
+        );
+    }
+
     models.sort_by(|a, b| a.name.cmp(&b.name));
 
-    info!(count = models.len(), "discovered chat models");
+    info!(count = models.len(), filtered_count = filtered.len(), "discovered chat models");
 
     Ok(models)
+}
+
+/// Smoke-test a model via the CountTokens runtime API. Returns true if the
+/// model accepted the call (it's invokable), false on any error.
+async fn probe_count_tokens(
+    runtime: &aws_sdk_bedrockruntime::Client,
+    bare_model_id: &str,
+) -> bool {
+    let message = match Message::builder()
+        .role(ConversationRole::User)
+        .content(ContentBlock::Text(".".into()))
+        .build()
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(bare_model_id, error = %e, "CountTokens probe: dummy message build failed");
+            return false;
+        }
+    };
+    let req = ConverseTokensRequest::builder().messages(message).build();
+    let input = aws_sdk_bedrockruntime::types::CountTokensInput::Converse(req);
+    match runtime
+        .count_tokens()
+        .model_id(bare_model_id)
+        .input(input)
+        .send()
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            let msg = e.into_service_error().to_string();
+            tracing::info!(bare_model_id, error = %msg, "CountTokens probe rejected — model not invokable");
+            false
+        }
+    }
 }
 
 /// Fetch active Anthropic Claude foundation models, returning (model_id, name).
@@ -303,17 +292,6 @@ async fn fetch_active_foundation_models(
             is_claude && is_active && !is_variant
         })
         .map(|m| {
-            let inference_types: Vec<&str> = m
-                .inference_types_supported()
-                .iter()
-                .map(|t| t.as_str())
-                .collect();
-            tracing::info!(
-                model_id = m.model_id(),
-                model_arn = m.model_arn(),
-                inference_types = ?inference_types,
-                "active Claude foundation model"
-            );
             let name = m
                 .model_name()
                 .unwrap_or(m.model_id())

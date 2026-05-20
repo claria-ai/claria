@@ -1427,6 +1427,7 @@ dependencies = [
  "aws-smithy-types",
  "claria-billing",
  "claria-core",
+ "futures",
  "jiff",
  "serde",
  "serde_json",
