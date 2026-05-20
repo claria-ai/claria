@@ -293,8 +293,7 @@ async fn plan_fresh_account() {
         }))),
         ("iam_user_policy.claria-admin-policy", None),
         ("baa_agreement.aws-baa", None),
-        ("bedrock_model_agreement.anthropic.claude-sonnet-4", Some(json!({"agreement": "pending"}))),
-        ("bedrock_model_agreement.anthropic.claude-opus-4", Some(json!({"agreement": "pending"}))),
+        ("bedrock_model_agreement.anthropic.claude", Some(json!({"agreement": "pending"}))),
         ("transcribe_access.transcribe", Some(json!({"enabled": true}))),
         ("cost_explorer_access.cost-explorer", Some(json!({"enabled": true}))),
     ]);
@@ -314,8 +313,7 @@ async fn plan_fresh_account() {
         e(&format!("s3_bucket_policy.{BUCKET}"),               Action::Create,             Cause::Missing),
         e(&format!("cloudtrail_trail.{TRAIL}"),                Action::Create,             Cause::Missing),
         e(&format!("cloudtrail_trail_logging.{TRAIL}"),        Action::Create,             Cause::Missing),
-        e("bedrock_model_agreement.anthropic.claude-sonnet-4", Action::Modify,             Cause::Drift),
-        e("bedrock_model_agreement.anthropic.claude-opus-4",   Action::Modify,             Cause::Drift),
+        e("bedrock_model_agreement.anthropic.claude",          Action::Modify,             Cause::Drift),
         e("transcribe_access.transcribe",                      Action::Ok,                 Cause::InSync),
         e("cost_explorer_access.cost-explorer",                Action::Ok,                 Cause::InSync),
     ]);
