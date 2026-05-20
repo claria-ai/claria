@@ -209,7 +209,7 @@ pub async fn list_chat_models(
 
     let mut models: Vec<ChatModel> = Vec::with_capacity(candidates.len());
     let mut filtered: Vec<String> = Vec::new();
-    for (model, probe) in candidates.into_iter().zip(probes.into_iter()) {
+    for (model, probe) in candidates.into_iter().zip(probes) {
         if probe.is_invokable() {
             models.push(model);
         } else {

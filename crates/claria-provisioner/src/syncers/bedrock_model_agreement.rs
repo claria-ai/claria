@@ -70,7 +70,7 @@ impl BedrockModelAgreementSyncer {
 
         let mut invokable: Vec<String> = Vec::new();
         let mut blocked: Vec<BlockedModel> = Vec::new();
-        for (model_id, probe) in ids.into_iter().zip(probes.into_iter()) {
+        for (model_id, probe) in ids.into_iter().zip(probes) {
             match probe {
                 InvocabilityProbe::Invokable => invokable.push(model_id),
                 InvocabilityProbe::Rejected(reason) => {
