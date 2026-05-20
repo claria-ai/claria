@@ -195,6 +195,52 @@ pub async fn list_chat_models(
         }
     }
 
+    // Diagnostic: smoke-test each model with a minimal CountTokens call.
+    // CountTokens is free (no token billing) and uses the bedrockruntime
+    // auth path. If it succeeds for haiku-4-5 (known invokable) but fails
+    // for opus-4-7 (known not invokable), it's our reliable filter.
+    let runtime = aws_sdk_bedrockruntime::Client::new(config);
+    for (model_id, _) in &active_models {
+        let dummy = aws_sdk_bedrockruntime::types::Message::builder()
+            .role(aws_sdk_bedrockruntime::types::ConversationRole::User)
+            .content(aws_sdk_bedrockruntime::types::ContentBlock::Text(".".into()))
+            .build();
+        let req = match dummy {
+            Ok(m) => aws_sdk_bedrockruntime::types::ConverseTokensRequest::builder()
+                .messages(m)
+                .build(),
+            Err(e) => {
+                tracing::warn!(model_id, error = %e, "CountTokens probe: failed to build dummy message");
+                continue;
+            }
+        };
+        let probe_input =
+            aws_sdk_bedrockruntime::types::CountTokensInput::Converse(req);
+        match runtime
+            .count_tokens()
+            .model_id(model_id)
+            .input(probe_input)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                tracing::info!(
+                    bare_model_id = %model_id,
+                    tokens = resp.input_tokens(),
+                    "CountTokens probe OK"
+                );
+            }
+            Err(e) => {
+                let msg = e.into_service_error().to_string();
+                tracing::info!(
+                    bare_model_id = %model_id,
+                    error = %msg,
+                    "CountTokens probe failed"
+                );
+            }
+        }
+    }
+
     let mut models: Vec<ChatModel> = active_models
         .into_iter()
         .map(|(model_id, model_name)| {
