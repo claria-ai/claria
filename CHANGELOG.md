@@ -2,6 +2,11 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Bedrock model-access check evaluates all four AWS availability gates (authorization, entitlement, region, agreement) instead of just one — opus-4-7 and other authorization-gated models now correctly report out-of-sync
+- Per-model availability fields are logged at info level so the Console shows exactly which gate is blocking each model
+
 ## [0.16.3] — 2026-05-20
 
 - AWS SDK and IO errors are emitted as tracing events at their origin so the in-app Console surfaces them, not just the red banner

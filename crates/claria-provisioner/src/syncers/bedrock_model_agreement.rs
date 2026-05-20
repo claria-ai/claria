@@ -1,5 +1,7 @@
 use aws_sdk_bedrock::Client;
-use aws_sdk_bedrock::types::{AgreementAvailability, EntitlementAvailability};
+use aws_sdk_bedrock::types::{
+    AgreementAvailability, AuthorizationStatus, EntitlementAvailability, RegionAvailability,
+};
 use serde_json::{json, Value};
 
 use crate::error::{format_err_chain, ProvisionerError};
@@ -48,11 +50,22 @@ impl BedrockModelAgreementSyncer {
             .collect())
     }
 
-    /// Classify each matching model's invocation availability for this account
-    /// and region. Uses `GetFoundationModelAvailability` rather than relying
-    /// on "no pending marketplace offers" — an empty offer list does not
-    /// imply the agreement was ever accepted (it could mean the model has
-    /// no marketplace mechanism at all and access is gated elsewhere).
+    /// Classify each matching model's invocation availability for this
+    /// account and region.
+    ///
+    /// `GetFoundationModelAvailability` returns four signals. A model is
+    /// only invokable if *all four* are positive:
+    ///
+    /// - `region_availability == Available` — the model exists in our region
+    /// - `authorization_status == Authorized` — the account has access (this
+    ///   is the gate the Bedrock "Model access" console page toggles)
+    /// - `entitlement_availability == Available` — entitlement is granted
+    /// - `agreement_availability.status` is either absent or `NotAvailable`
+    ///   (the latter means "already accepted or none required")
+    ///
+    /// Earlier versions checked only `entitlement_availability`, which let
+    /// authorization-gated models (e.g. opus-4-7 before account approval)
+    /// false-positive as in-sync.
     async fn classify_models(&self) -> Result<ModelAvailability, ProvisionerError> {
         let ids = self.matching_model_ids().await?;
         let mut invokable: Vec<String> = Vec::new();
@@ -67,13 +80,32 @@ impl BedrockModelAgreementSyncer {
                 .await
             {
                 Ok(resp) => {
-                    if matches!(resp.entitlement_availability(), EntitlementAvailability::Available)
-                    {
+                    let agreement_status = resp
+                        .agreement_availability()
+                        .map(|a| a.status().as_str().to_string())
+                        .unwrap_or_else(|| "absent".into());
+                    tracing::info!(
+                        model_id,
+                        agreement = %agreement_status,
+                        entitlement = resp.entitlement_availability().as_str(),
+                        authorization = resp.authorization_status().as_str(),
+                        region = resp.region_availability().as_str(),
+                        "GetFoundationModelAvailability"
+                    );
+
+                    if is_invokable(
+                        resp.agreement_availability(),
+                        resp.entitlement_availability(),
+                        resp.authorization_status(),
+                        resp.region_availability(),
+                    ) {
                         invokable.push(model_id);
                     } else {
                         let reason = describe_block(
                             resp.agreement_availability(),
                             resp.entitlement_availability(),
+                            resp.authorization_status(),
+                            resp.region_availability(),
                         );
                         blocked.push(BlockedModel { model_id, reason });
                     }
@@ -190,48 +222,82 @@ impl ModelAvailability {
     }
 }
 
-/// Compose a human-readable reason a model isn't invokable, from the two
-/// availability fields the Bedrock API returns.
-///
-/// `AVAILABLE` / `PENDING` agreement statuses describe a marketplace flow
-/// Claria can accept automatically on Apply (see `accept_agreements`). Only
-/// `NOT_AVAILABLE` and absent-agreement cases need the user to open the AWS
-/// console themselves.
+/// Return true only when every gate the Bedrock API reports is in a
+/// positive state. Any single negative blocks invocation.
+fn is_invokable(
+    agreement: Option<&AgreementAvailability>,
+    entitlement: &EntitlementAvailability,
+    authorization: &AuthorizationStatus,
+    region: &RegionAvailability,
+) -> bool {
+    let entitlement_ok = matches!(entitlement, EntitlementAvailability::Available);
+    let authorization_ok = matches!(authorization, AuthorizationStatus::Authorized);
+    let region_ok = matches!(region, RegionAvailability::Available);
+    // Agreement is "ok" when absent (no marketplace mechanism) or when its
+    // status is NOT_AVAILABLE (the API's confusing way of saying "already
+    // accepted or none required"). AVAILABLE means "an offer exists that
+    // still needs to be accepted" — invocation is gated.
+    let agreement_ok = agreement
+        .map(|a| a.status().as_str() == "NOT_AVAILABLE")
+        .unwrap_or(true);
+    entitlement_ok && authorization_ok && region_ok && agreement_ok
+}
+
+/// Compose a human-readable reason a model isn't invokable. Picks the
+/// most specific reason from the four gates; the AWS-console action depends
+/// on which gate is the blocker.
 fn describe_block(
     agreement: Option<&AgreementAvailability>,
     entitlement: &EntitlementAvailability,
+    authorization: &AuthorizationStatus,
+    region: &RegionAvailability,
 ) -> String {
+    // Region first: nothing we can do if the model isn't here.
+    if matches!(region, RegionAvailability::NotAvailable) {
+        return "model not available in this region — pick a region where AWS lists it".into();
+    }
+
+    // Marketplace gates Claria can act on (Apply accepts automatically).
     let agreement_status = agreement
         .map(|a| a.status().as_str())
         .unwrap_or("absent");
     match agreement_status {
         "AVAILABLE" => {
-            "marketplace agreement available — click Apply to accept automatically".into()
+            return "marketplace agreement available — click Apply to accept automatically".into();
         }
         "PENDING" => {
-            "marketplace agreement acceptance is in progress — re-scan in a moment".into()
+            return "marketplace agreement acceptance is in progress — re-scan in a moment".into();
         }
-        "ERROR" => format!(
-            "marketplace agreement errored: {}",
-            agreement
-                .and_then(|a| a.error_message())
-                .unwrap_or("no detail from AWS")
-        ),
-        // NOT_AVAILABLE or absent: no marketplace flow for this model, so
-        // Claria can't accept anything on the user's behalf. Access must be
-        // requested via the Bedrock "Model access" console page.
-        _ => match entitlement {
-            EntitlementAvailability::NotAvailable => {
-                "no marketplace agreement available — request access on the Bedrock \"Model access\" console page"
-                    .into()
-            }
-            _ => format!(
-                "entitlement {} / agreement {}",
-                entitlement.as_str(),
-                agreement_status
-            ),
-        },
+        "ERROR" => {
+            return format!(
+                "marketplace agreement errored: {}",
+                agreement
+                    .and_then(|a| a.error_message())
+                    .unwrap_or("no detail from AWS")
+            );
+        }
+        _ => {}
     }
+
+    // Authorization is the per-account toggle on the Bedrock "Model access"
+    // console page. New / preview / sales-gated models often sit here.
+    if matches!(authorization, AuthorizationStatus::NotAuthorized) {
+        return "account not authorized — request access on the Bedrock \"Model access\" \
+                console page (may require AWS Sales engagement for preview models)"
+            .into();
+    }
+
+    if matches!(entitlement, EntitlementAvailability::NotAvailable) {
+        return "no entitlement — open the Bedrock \"Model access\" console page".into();
+    }
+
+    format!(
+        "blocked: entitlement={} authorization={} region={} agreement={}",
+        entitlement.as_str(),
+        authorization.as_str(),
+        region.as_str(),
+        agreement_status,
+    )
 }
 
 impl ResourceSyncer for BedrockModelAgreementSyncer {
