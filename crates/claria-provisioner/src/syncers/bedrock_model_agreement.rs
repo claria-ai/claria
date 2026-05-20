@@ -192,21 +192,37 @@ impl ModelAvailability {
 
 /// Compose a human-readable reason a model isn't invokable, from the two
 /// availability fields the Bedrock API returns.
+///
+/// `AVAILABLE` / `PENDING` agreement statuses describe a marketplace flow
+/// Claria can accept automatically on Apply (see `accept_agreements`). Only
+/// `NOT_AVAILABLE` and absent-agreement cases need the user to open the AWS
+/// console themselves.
 fn describe_block(
     agreement: Option<&AgreementAvailability>,
     entitlement: &EntitlementAvailability,
 ) -> String {
     let agreement_status = agreement
         .map(|a| a.status().as_str())
-        .unwrap_or("unknown");
+        .unwrap_or("absent");
     match agreement_status {
-        "PENDING" | "ERROR" => {
-            "marketplace agreement is pending — re-run sync or accept in the Bedrock console"
-                .into()
+        "AVAILABLE" => {
+            "marketplace agreement available — click Apply to accept automatically".into()
         }
+        "PENDING" => {
+            "marketplace agreement acceptance is in progress — re-scan in a moment".into()
+        }
+        "ERROR" => format!(
+            "marketplace agreement errored: {}",
+            agreement
+                .and_then(|a| a.error_message())
+                .unwrap_or("no detail from AWS")
+        ),
+        // NOT_AVAILABLE or absent: no marketplace flow for this model, so
+        // Claria can't accept anything on the user's behalf. Access must be
+        // requested via the Bedrock "Model access" console page.
         _ => match entitlement {
             EntitlementAvailability::NotAvailable => {
-                "not entitled in this region — enable the model on the Bedrock \"Model access\" page"
+                "no marketplace agreement available — request access on the Bedrock \"Model access\" console page"
                     .into()
             }
             _ => format!(
