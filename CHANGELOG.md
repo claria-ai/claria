@@ -5,6 +5,7 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - AWS SDK and IO errors are emitted as tracing events at their origin so the in-app Console surfaces them, not just the red banner
+- Bedrock model-access provisioner verifies invocation entitlement instead of inferring it from the absence of marketplace offers — newly released Claude models no longer false-positive as "in sync"
 
 ## [0.16.2] — 2026-05-19
 
