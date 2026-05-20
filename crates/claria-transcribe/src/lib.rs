@@ -228,10 +228,18 @@ pub async fn transcribe_audio_with_options(
 
     let transcript_json = claria_storage::objects::get_object(&s3, bucket, &output_key)
         .await
-        .map_err(|e| TranscribeError::Api(format!("failed to read transcript from S3: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(
+                job_name, bucket, output_key = %output_key, error = %e,
+                "failed to read transcript result from S3"
+            );
+            TranscribeError::Api(format!("failed to read transcript from S3: {e}"))
+        })?;
 
-    let body_str = String::from_utf8(transcript_json.body)
-        .map_err(|e| TranscribeError::Parse(e.to_string()))?;
+    let body_str = String::from_utf8(transcript_json.body).map_err(|e| {
+        tracing::error!(job_name, error = %e, "transcript result from S3 is not valid UTF-8");
+        TranscribeError::Parse(e.to_string())
+    })?;
 
     let result = parse_transcribe_json(&body_str)?;
 
@@ -349,6 +357,7 @@ async fn poll_standard_job(
             Some(TranscriptionJobStatus::Completed) => return Ok(()),
             Some(TranscriptionJobStatus::Failed) => {
                 let reason = job.failure_reason().unwrap_or("unknown").to_string();
+                tracing::error!(job_name, reason = %reason, "transcription job failed");
                 let _ = transcribe
                     .delete_transcription_job()
                     .transcription_job_name(job_name)
@@ -452,6 +461,7 @@ async fn poll_medical_job(
             Some(TranscriptionJobStatus::Completed) => return Ok(()),
             Some(TranscriptionJobStatus::Failed) => {
                 let reason = job.failure_reason().unwrap_or("unknown").to_string();
+                tracing::error!(job_name, reason = %reason, "medical transcription job failed");
                 let _ = transcribe
                     .delete_medical_transcription_job()
                     .medical_transcription_job_name(job_name)
@@ -471,8 +481,10 @@ async fn poll_medical_job(
 /// Parse Amazon Transcribe's output JSON (works for both standard and medical
 /// responses) into a structured [`TranscriptResult`].
 pub fn parse_transcribe_json(json: &str) -> Result<TranscriptResult, TranscribeError> {
-    let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| TranscribeError::Parse(e.to_string()))?;
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+        tracing::error!(error = %e, "failed to parse Transcribe output JSON");
+        TranscribeError::Parse(e.to_string())
+    })?;
 
     let results = value
         .get("results")

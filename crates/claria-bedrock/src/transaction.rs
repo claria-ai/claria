@@ -39,9 +39,15 @@ pub async fn generate_report(
     let (response_text, usage) = invoke_converse(client, model_id, system_prompt, user_message).await?;
 
     let answer: SchematizedAnswer = serde_json::from_str(&response_text)
-        .map_err(|e| BedrockError::SchemaViolation(format!(
-            "failed to parse SchematizedAnswer: {e}. Response: {response_text}"
-        )))?;
+        .map_err(|e| {
+            tracing::error!(
+                model_id, transaction_id = %transaction_id, error = %e,
+                "failed to parse SchematizedAnswer"
+            );
+            BedrockError::SchemaViolation(format!(
+                "failed to parse SchematizedAnswer: {e}. Response: {response_text}"
+            ))
+        })?;
 
     info!(transaction_id = %transaction_id, "report generation complete");
 
@@ -71,9 +77,15 @@ pub async fn anonymize_document(
     let (response_text, usage) = invoke_converse(client, model_id, system_prompt, document_text).await?;
 
     let mut result: AnonymizationResult = serde_json::from_str(&response_text)
-        .map_err(|e| BedrockError::SchemaViolation(format!(
-            "failed to parse AnonymizationResult: {e}. Response: {response_text}"
-        )))?;
+        .map_err(|e| {
+            tracing::error!(
+                model_id, transaction_id = %transaction_id, error = %e,
+                "failed to parse AnonymizationResult"
+            );
+            BedrockError::SchemaViolation(format!(
+                "failed to parse AnonymizationResult: {e}. Response: {response_text}"
+            ))
+        })?;
 
     // Ensure the transaction ID in the result matches
     result.transaction_id = transaction_id;
@@ -113,7 +125,11 @@ async fn invoke_converse(
         )
         .send()
         .await
-        .map_err(|e| BedrockError::Invocation(e.into_service_error().to_string()))?;
+        .map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::error!(model_id, error = %msg, "Bedrock Converse call failed");
+            BedrockError::Invocation(msg)
+        })?;
 
     // Extract response text
     let output_message = response

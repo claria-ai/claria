@@ -38,7 +38,15 @@ impl ResourceSyncer for CloudTrailTrailLoggingSyncer {
                     let is_logging = status.is_logging().unwrap_or(false);
                     Ok(Some(json!({"enabled": is_logging})))
                 }
-                Err(_) => Ok(None),
+                // TODO: differentiate NotFound from real failures (AccessDenied, Throttling).
+                Err(e) => {
+                    tracing::warn!(
+                        trail = %self.trail_name(),
+                        error = %e,
+                        "get_trail_status failed during read — treating as absent"
+                    );
+                    Ok(None)
+                }
             }
         })
     }

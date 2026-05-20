@@ -11,7 +11,10 @@ pub async fn load_state<T: DeserializeOwned>(
     key: &str,
 ) -> Result<(T, String), StorageError> {
     let output = objects::get_object(client, bucket, key).await?;
-    let value: T = serde_json::from_slice(&output.body)?;
+    let value: T = serde_json::from_slice(&output.body).map_err(|e| {
+        tracing::error!(bucket, key, error = %e, "failed to deserialize state from S3");
+        StorageError::from(e)
+    })?;
     let etag = output.etag.unwrap_or_default();
     Ok((value, etag))
 }

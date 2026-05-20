@@ -41,7 +41,15 @@ impl ResourceSyncer for S3BucketVersioningSyncer {
                         .unwrap_or_default();
                     Ok(Some(json!({"status": status})))
                 }
-                Err(_) => Ok(None),
+                // TODO: differentiate NotFound from real failures (AccessDenied, Throttling).
+                Err(e) => {
+                    tracing::warn!(
+                        bucket = %self.bucket_name(),
+                        error = %e,
+                        "get_bucket_versioning failed during read — treating as absent"
+                    );
+                    Ok(None)
+                }
             }
         })
     }

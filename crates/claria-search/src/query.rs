@@ -30,9 +30,10 @@ pub fn search(
     let body_field = get_field(&schema, field::BODY);
 
     let query_parser = QueryParser::for_index(index, vec![title_field, body_field]);
-    let query = query_parser
-        .parse_query(query_text)
-        .map_err(|e| SearchError::QueryParse(e.to_string()))?;
+    let query = query_parser.parse_query(query_text).map_err(|e| {
+        tracing::warn!(query = %query_text, error = %e, "failed to parse search query");
+        SearchError::QueryParse(e.to_string())
+    })?;
 
     let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).order_by_score())?;
 

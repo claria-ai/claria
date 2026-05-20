@@ -31,7 +31,9 @@ pub async fn get_object(
                     key: key.to_string(),
                 }
             } else {
-                StorageError::GetObject(err.to_string())
+                let msg = err.to_string();
+                tracing::error!(bucket, key, error = %msg, "S3 GetObject failed");
+                StorageError::GetObject(msg)
             }
         })?;
 
@@ -41,7 +43,10 @@ pub async fn get_object(
         .body
         .collect()
         .await
-        .map_err(|e| StorageError::GetObject(e.to_string()))?
+        .map_err(|e| {
+            tracing::error!(bucket, key, error = %e, "S3 GetObject body stream failed");
+            StorageError::GetObject(e.to_string())
+        })?
         .into_bytes()
         .to_vec();
 
@@ -73,7 +78,11 @@ pub async fn put_object(
     let resp = req
         .send()
         .await
-        .map_err(|e| StorageError::PutObject(e.into_service_error().to_string()))?;
+        .map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::error!(bucket, key, error = %msg, "S3 PutObject failed");
+            StorageError::PutObject(msg)
+        })?;
 
     Ok(resp.e_tag().unwrap_or_default().to_string())
 }
@@ -111,7 +120,9 @@ pub async fn put_object_if_match(
                 key: key.to_string(),
             }
         } else {
-            StorageError::PutObject(err.to_string())
+            let msg = err.to_string();
+            tracing::error!(bucket, key, error = %msg, "S3 PutObject (if-match) failed");
+            StorageError::PutObject(msg)
         }
     })?;
 
@@ -130,7 +141,11 @@ pub async fn delete_object(
         .key(key)
         .send()
         .await
-        .map_err(|e| StorageError::DeleteObject(e.into_service_error().to_string()))?;
+        .map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::error!(bucket, key, error = %msg, "S3 DeleteObject failed");
+            StorageError::DeleteObject(msg)
+        })?;
 
     Ok(())
 }
@@ -181,7 +196,11 @@ pub async fn list_objects_with_metadata(
         let resp = req
             .send()
             .await
-            .map_err(|e| StorageError::ListObjects(e.into_service_error().to_string()))?;
+            .map_err(|e| {
+                let msg = e.into_service_error().to_string();
+                tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
+                StorageError::ListObjects(msg)
+            })?;
 
         for obj in resp.contents() {
             if let Some(key) = obj.key() {
@@ -225,7 +244,11 @@ pub async fn list_objects(
         let resp = req
             .send()
             .await
-            .map_err(|e| StorageError::ListObjects(e.into_service_error().to_string()))?;
+            .map_err(|e| {
+                let msg = e.into_service_error().to_string();
+                tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
+                StorageError::ListObjects(msg)
+            })?;
 
         for obj in resp.contents() {
             if let Some(key) = obj.key() {
@@ -289,7 +312,11 @@ pub async fn list_object_versions(
         let resp = req
             .send()
             .await
-            .map_err(|e| StorageError::ListObjectVersions(e.into_service_error().to_string()))?;
+            .map_err(|e| {
+                let msg = e.into_service_error().to_string();
+                tracing::error!(bucket, key, error = %msg, "S3 ListObjectVersions failed");
+                StorageError::ListObjectVersions(msg)
+            })?;
 
         for v in resp.versions() {
             // Only include versions for the exact key (prefix match may return more).
@@ -353,7 +380,11 @@ pub async fn list_deleted_objects(
         let resp = req
             .send()
             .await
-            .map_err(|e| StorageError::ListObjectVersions(e.into_service_error().to_string()))?;
+            .map_err(|e| {
+                let msg = e.into_service_error().to_string();
+                tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectVersions failed");
+                StorageError::ListObjectVersions(msg)
+            })?;
 
         for dm in resp.delete_markers() {
             if dm.is_latest().unwrap_or(false)
@@ -419,7 +450,9 @@ pub async fn get_object_version(
                     key: key.to_string(),
                 }
             } else {
-                StorageError::GetObject(err.to_string())
+                let msg = err.to_string();
+                tracing::error!(bucket, key, version_id, error = %msg, "S3 GetObject (versioned) failed");
+                StorageError::GetObject(msg)
             }
         })?;
 
@@ -429,7 +462,10 @@ pub async fn get_object_version(
         .body
         .collect()
         .await
-        .map_err(|e| StorageError::GetObject(e.to_string()))?
+        .map_err(|e| {
+            tracing::error!(bucket, key, version_id, error = %e, "S3 GetObject (versioned) body stream failed");
+            StorageError::GetObject(e.to_string())
+        })?
         .into_bytes()
         .to_vec();
 
@@ -462,7 +498,10 @@ pub async fn presign_get(
         .key(key)
         .presigned(presign_config)
         .await
-        .map_err(|e| StorageError::Presign(e.to_string()))?;
+        .map_err(|e| {
+            tracing::warn!(bucket, key, error = %e, "S3 presign GET failed");
+            StorageError::Presign(e.to_string())
+        })?;
 
     Ok(presigned.uri().to_string())
 }
@@ -489,7 +528,10 @@ pub async fn presign_put(
     let presigned = req
         .presigned(presign_config)
         .await
-        .map_err(|e| StorageError::Presign(e.to_string()))?;
+        .map_err(|e| {
+            tracing::warn!(bucket, key, error = %e, "S3 presign PUT failed");
+            StorageError::Presign(e.to_string())
+        })?;
 
     Ok(presigned.uri().to_string())
 }

@@ -64,7 +64,11 @@ pub async fn extract_document_text(
         .messages(message)
         .send()
         .await
-        .map_err(|e| BedrockError::Invocation(e.into_service_error().to_string()))?;
+        .map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::error!(model_id, filename, error = %msg, "Bedrock Converse failed during document extraction");
+            BedrockError::Invocation(msg)
+        })?;
 
     let output_message = response
         .output()
