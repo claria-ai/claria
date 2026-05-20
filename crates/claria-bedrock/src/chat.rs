@@ -160,6 +160,14 @@ pub async fn list_chat_models(
     // If the API didn't return one, construct it: the Converse API requires an
     // inference profile ID (bare model IDs fail with "on-demand throughput
     // isn't supported"). The profile ID format is `us.{foundation_model_id}`.
+    info!(
+        foundation_models = active_models.len(),
+        us_profiles = us_profiles.len(),
+        foundation_model_ids = ?active_models.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+        us_profile_ids = ?us_profiles.keys().collect::<Vec<_>>(),
+        "list_chat_models: comparing foundation models to us. inference profiles"
+    );
+
     let mut models: Vec<ChatModel> = active_models
         .into_iter()
         .map(|(model_id, model_name)| {
@@ -169,6 +177,12 @@ pub async fn list_chat_models(
                     name: profile_name.clone(),
                 }
             } else {
+                tracing::warn!(
+                    foundation_model_id = %model_id,
+                    constructed_profile_id = %format!("us.{model_id}"),
+                    "no us. inference profile returned by AWS — constructing one; \
+                     invocation may fail if AWS hasn't published this profile yet"
+                );
                 ChatModel {
                     model_id: format!("us.{model_id}"),
                     name: model_name,
