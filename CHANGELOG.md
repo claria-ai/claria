@@ -4,8 +4,9 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
-- Bedrock model-access check evaluates all four AWS availability gates (authorization, entitlement, region, agreement) instead of just one — opus-4-7 and other authorization-gated models now correctly report out-of-sync
+- Bedrock model-access check also evaluates authorization and region availability, not just entitlement
 - Per-model availability fields are logged at info level so the Console shows exactly which gate is blocking each model
+- Bedrock agreement_availability is no longer treated as an invocation gate — it describes provisioned-throughput offers, not on-demand access, and treating it as a block falsely flagged every modern Claude model
 
 ## [0.16.3] — 2026-05-20
 

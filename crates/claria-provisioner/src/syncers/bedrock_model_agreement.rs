@@ -1,6 +1,6 @@
 use aws_sdk_bedrock::Client;
 use aws_sdk_bedrock::types::{
-    AgreementAvailability, AuthorizationStatus, EntitlementAvailability, RegionAvailability,
+    AuthorizationStatus, EntitlementAvailability, RegionAvailability,
 };
 use serde_json::{json, Value};
 
@@ -94,7 +94,6 @@ impl BedrockModelAgreementSyncer {
                     );
 
                     if is_invokable(
-                        resp.agreement_availability(),
                         resp.entitlement_availability(),
                         resp.authorization_status(),
                         resp.region_availability(),
@@ -102,7 +101,6 @@ impl BedrockModelAgreementSyncer {
                         invokable.push(model_id);
                     } else {
                         let reason = describe_block(
-                            resp.agreement_availability(),
                             resp.entitlement_availability(),
                             resp.authorization_status(),
                             resp.region_availability(),
@@ -222,61 +220,32 @@ impl ModelAvailability {
     }
 }
 
-/// Return true only when every gate the Bedrock API reports is in a
-/// positive state. Any single negative blocks invocation.
+/// Return true only when every gate that actually blocks on-demand
+/// invocation is in a positive state.
+///
+/// `agreement_availability` is intentionally NOT a gate here. Empirically
+/// it stays at `AVAILABLE` for invokable on-demand models — it describes
+/// whether a provisioned-throughput purchase offer exists, not whether
+/// the account can call the model. Treating it as a gate flagged every
+/// modern Claude model as blocked even when invocation worked fine.
 fn is_invokable(
-    agreement: Option<&AgreementAvailability>,
     entitlement: &EntitlementAvailability,
     authorization: &AuthorizationStatus,
     region: &RegionAvailability,
 ) -> bool {
-    let entitlement_ok = matches!(entitlement, EntitlementAvailability::Available);
-    let authorization_ok = matches!(authorization, AuthorizationStatus::Authorized);
-    let region_ok = matches!(region, RegionAvailability::Available);
-    // Agreement is "ok" when absent (no marketplace mechanism) or when its
-    // status is NOT_AVAILABLE (the API's confusing way of saying "already
-    // accepted or none required"). AVAILABLE means "an offer exists that
-    // still needs to be accepted" — invocation is gated.
-    let agreement_ok = agreement
-        .map(|a| a.status().as_str() == "NOT_AVAILABLE")
-        .unwrap_or(true);
-    entitlement_ok && authorization_ok && region_ok && agreement_ok
+    matches!(entitlement, EntitlementAvailability::Available)
+        && matches!(authorization, AuthorizationStatus::Authorized)
+        && matches!(region, RegionAvailability::Available)
 }
 
-/// Compose a human-readable reason a model isn't invokable. Picks the
-/// most specific reason from the four gates; the AWS-console action depends
-/// on which gate is the blocker.
+/// Compose a human-readable reason a model isn't invokable.
 fn describe_block(
-    agreement: Option<&AgreementAvailability>,
     entitlement: &EntitlementAvailability,
     authorization: &AuthorizationStatus,
     region: &RegionAvailability,
 ) -> String {
-    // Region first: nothing we can do if the model isn't here.
     if matches!(region, RegionAvailability::NotAvailable) {
         return "model not available in this region — pick a region where AWS lists it".into();
-    }
-
-    // Marketplace gates Claria can act on (Apply accepts automatically).
-    let agreement_status = agreement
-        .map(|a| a.status().as_str())
-        .unwrap_or("absent");
-    match agreement_status {
-        "AVAILABLE" => {
-            return "marketplace agreement available — click Apply to accept automatically".into();
-        }
-        "PENDING" => {
-            return "marketplace agreement acceptance is in progress — re-scan in a moment".into();
-        }
-        "ERROR" => {
-            return format!(
-                "marketplace agreement errored: {}",
-                agreement
-                    .and_then(|a| a.error_message())
-                    .unwrap_or("no detail from AWS")
-            );
-        }
-        _ => {}
     }
 
     // Authorization is the per-account toggle on the Bedrock "Model access"
@@ -292,11 +261,10 @@ fn describe_block(
     }
 
     format!(
-        "blocked: entitlement={} authorization={} region={} agreement={}",
+        "blocked: entitlement={} authorization={} region={}",
         entitlement.as_str(),
         authorization.as_str(),
         region.as_str(),
-        agreement_status,
     )
 }
 
