@@ -11,6 +11,35 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - No `unwrap()` outside of tests
 - Never just swallow an error, bubble it up untils exposed in the UI
 
+### Tracing at error sites
+
+The in-app Console (Help > Claria Console) is a `tracing-subscriber` ring buffer — events emitted with `tracing::error!` / `tracing::warn!` show up there. Errors that are only `.map_err(...)`'d into a typed variant and returned never reach the Console; the user sees the red banner and nothing else.
+
+**Rule**: every `.map_err(...)` that catches an AWS SDK call, I/O, or parse failure must also emit a `tracing::` event from inside the closure, before constructing the typed error. Do this at the deepest point where the error still has its full context (raw AWS service error, file path, bucket+key, model ID, etc.). Don't re-log at outer layers — caller wrappers shouldn't duplicate the event.
+
+**Pattern**:
+```rust
+let resp = client.put_object()
+    .bucket(bucket).key(key).body(body)
+    .send().await
+    .map_err(|e| {
+        let msg = e.into_service_error().to_string();
+        tracing::error!(bucket, key, error = %msg, "S3 PutObject failed");
+        StorageError::PutObject(msg)
+    })?;
+```
+
+Always include identifying fields (`bucket`, `key`, `model_id`, `path`, `job_name`, etc.) and `error = %msg`. Structured fields beat embedding context in the message string.
+
+**Level guidance**:
+
+- **`error!`** — user-facing operation failed and the caller can't continue: S3 CRUD (`GetObject`, `PutObject`, `DeleteObject`, `ListObjectsV2`, body streaming), Bedrock `Converse` (chat, report generation, document extraction), schema parses on Bedrock responses, state-file deserialize from S3, model weight load (Whisper), Transcribe job results, STS `AssumeRole` / `GetCallerIdentity`.
+- **`warn!`** — degraded path, recoverable, or expected-input failure: discovery/list calls whose failure means "couldn't enumerate" rather than "operation failed" (`ListFoundationModels`, `ListInferenceProfiles`), user-input parse errors (search query), local SDK helpers like presigning, deliberately-swallowed errors in syncer `read()` paths that return `Ok(None)` on failure.
+
+When a syncer or other code swallows an error into `Ok(None)` (e.g. treating NotFound as absent), still log it at `warn!` first — silently swallowing AccessDenied / Throttling under the same code path that handles NotFound is exactly how false-positive "in sync" bugs happen.
+
+Don't add tracing in `From` impls, pure constructors, or happy-path emitters. Only at the site where an outside call is awaited and its error is mapped.
+
 ## Naming
 - Standard Rust: `snake_case` modules/functions, `CamelCase` types, `SCREAMING_SNAKE` constants
 - `snake_case` for all JSON serialization (no camelCase)
