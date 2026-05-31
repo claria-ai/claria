@@ -1,5 +1,5 @@
 pub mod baa_agreement;
-pub mod bedrock_model_agreement;
+pub mod bedrock_access;
 pub mod cloudtrail_trail;
 pub mod cloudtrail_trail_logging;
 pub mod cost_explorer_access;

@@ -2,6 +2,14 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Bedrock model access is now an explicit, user-driven enrollment page instead of being silently auto-accepted during setup
+- The enrollment page lists Anthropic Claude models grouped by access state and lets the clinician read the terms before signing up
+- First-time Bedrock use now prompts for and submits the required use-case form, fixing access failures for newly released Claude models
+- Model sign-up is treated as the background, multi-minute operation it actually is, so it no longer reports a false failure while provisioning
+- Chat errors caused by missing model access now offer a one-click path to set up that model
+
 ## [0.16.3] — 2026-05-20
 
 - AWS SDK and IO errors are emitted as tracing events at their origin so the in-app Console surfaces them, not just the red banner

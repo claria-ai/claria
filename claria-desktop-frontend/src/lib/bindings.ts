@@ -510,15 +510,67 @@ async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry
 }
 },
 /**
- * Accept the Marketplace agreement for a Bedrock foundation model.
- * 
- * Called when a model requires an agreement before it can be used.
- * The frontend can detect this from the error message and offer
- * a one-click accept flow.
+ * List enrollment state for every Anthropic Claude model Claria uses.
  */
-async acceptModelAgreement(modelId: string) : Promise<Result<null, string>> {
+async listModelEnrollments() : Promise<Result<ModelEnrollment[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("accept_model_agreement", { modelId }) };
+    return { status: "ok", data: await TAURI_INVOKE("list_model_enrollments") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch a single model's current enrollment — the poll target after Execute.
+ */
+async getModelEnrollment(modelId: string) : Promise<Result<ModelEnrollment, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_model_enrollment", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Read whether the account-level Anthropic use-case form has been submitted.
+ */
+async getUseCaseForm() : Promise<Result<UseCaseFormStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_use_case_form") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Submit the account-level Anthropic use-case form (once per account).
+ */
+async submitUseCaseForm(form: UseCaseForm) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("submit_use_case_form", { form }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Execute (sign up for) one model's marketplace agreement. Asynchronous — poll
+ * `get_model_enrollment` until the model becomes `executed`.
+ */
+async executeModelAgreement(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("execute_model_agreement", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Un-enroll a model by deleting its agreement.
+ */
+async deleteModelAgreement(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_model_agreement", { modelId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1045,6 +1097,10 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
 /**
+ * Per-model enrollment status (mirror of `claria_bedrock::agreements::EnrollmentStatus`).
+ */
+export type EnrollmentStatus = { kind: "executed" } | { kind: "available" } | { kind: "pending" } | { kind: "use_case_form_required" } | { kind: "region_unavailable" } | { kind: "blocked"; reason: string }
+/**
  * Structured before/after for a single field that doesn't match desired state.
  * 
  * Returned by `ResourceSyncer::diff()`. The frontend renders these directly
@@ -1079,6 +1135,10 @@ export type InfraChatResponse = { content: string; usage: TurnUsage }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type Lifecycle = "data" | "managed"
 /**
+ * One Anthropic Claude model the user can enroll in.
+ */
+export type ModelEnrollment = { model_id: string; inference_profile_id: string; name: string; status: EnrollmentStatus; offer: OfferTerms | null }
+/**
  * Pricing per million tokens for a Bedrock model.
  * 
  * Cache fields cover Anthropic-on-Bedrock prompt caching:
@@ -1092,6 +1152,10 @@ export type ModelPricing = { input_per_million: number; output_per_million: numb
  */
 export type NewCredentials = { access_key_id: string; secret_access_key: string; iam_user_arn: string }
 /**
+ * Offer terms shown before the user signs up.
+ */
+export type OfferTerms = { offer_token: string; offer_id: string | null; legal_terms_url: string | null; refund_policy: string | null; agreement_duration: string | null; pricing: PricingRate[] }
+/**
  * A single entry in the plan — the spec annotated with what happened.
  * 
  * The plan is a flat `Vec<PlanEntry>` — same shape as the manifest array,
@@ -1104,6 +1168,10 @@ export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drif
  * Live state read from AWS (if the resource exists).
  */
 actual: JsonValue | null }
+/**
+ * One row of an offer's usage-based pricing.
+ */
+export type PricingRate = { dimension: string | null; description: string | null; price: string | null; unit: string | null }
 /**
  * Result of a provision scan. Contains everything the frontend needs to
  * render the plan and decide whether escalation is required.
@@ -1288,6 +1356,14 @@ pricing_version: number }
  * Result of checking for a newer release on GitHub.
  */
 export type UpdateCheck = { current_version: string; latest_version: string; update_available: boolean; release_url: string }
+/**
+ * The Anthropic first-time-use form.
+ */
+export type UseCaseForm = { company_name: string; company_website: string; intended_users: number; industry_option: string; other_industry_option: string | null; use_cases: string }
+/**
+ * Whether the account-level FTU form has been submitted.
+ */
+export type UseCaseFormStatus = { submitted: boolean; form: UseCaseForm | null }
 /**
  * Info about a Whisper model tier (status, size, path, whether active).
  * Known tiers have `tier: Some(...)`. Orphan directories on disk that don't

@@ -49,22 +49,13 @@
 //!
 //! ## Marketplace agreements
 //!
-//! Before a model can be invoked, its Marketplace agreement must be accepted.
-//! New models (like Claude Sonnet 4 at launch) require this even if earlier
-//! Claude models were already accepted. The relevant APIs are:
-//!
-//! - `GetFoundationModelAvailability(model_id)` — returns
-//!   `agreement_availability.status`:
-//!   - `Available` → agreement exists but hasn't been accepted yet
-//!   - `NotAvailable` → already accepted, or no agreement required
-//!
-//! - `ListFoundationModelAgreementOffers(model_id)` → returns offer tokens
-//! - `CreateFoundationModelAgreement(model_id, offer_token)` → accepts it
-//!
-//! We run this during onboarding (`accept_all_model_agreements`) so users
-//! don't have to manually accept each model in the AWS console. The
-//! operation is idempotent — re-accepting an already-accepted model is a
-//! no-op.
+//! Before a model can be invoked, its Marketplace agreement must be executed
+//! and (for Anthropic) the account's first-time-use form submitted. That flow
+//! is explicit and user-driven — see the [`crate::agreements`] module and the
+//! desktop app's enrollment page. This module only *consumes* the result: a
+//! Converse failure caused by missing access is classified by
+//! [`classify_converse_error`] into [`crate::error::BedrockError::ModelAccess`]
+//! so the UI can route the user to enrollment for the offending model.
 //!
 //! ## Required IAM permissions
 //!
@@ -77,8 +68,12 @@
 //! bedrock:GetFoundationModelAvailability
 //! bedrock:ListFoundationModelAgreementOffers
 //! bedrock:CreateFoundationModelAgreement
+//! bedrock:DeleteFoundationModelAgreement
+//! bedrock:PutUseCaseForModelAccess
+//! bedrock:GetUseCaseForModelAccess
 //! bedrock:InvokeModel
 //! bedrock:InvokeModelWithResponseStream
+//! bedrock:CountTokens
 //! ```
 
 use std::collections::HashMap;
@@ -95,7 +90,10 @@ use tracing::info;
 
 use claria_core::models::turn_usage::TurnUsage;
 
-use crate::{error::BedrockError, tokens};
+use crate::{
+    error::{BedrockError, ModelAccessReason},
+    tokens,
+};
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -188,7 +186,7 @@ pub async fn list_chat_models(
 ///
 /// Skips context-window variants (IDs ending in `:48k`, `:200k`, etc.) — only
 /// the base model ID is included.
-async fn fetch_active_foundation_models(
+pub(crate) async fn fetch_active_foundation_models(
     client: &aws_sdk_bedrock::Client,
 ) -> Result<Vec<(String, String)>, BedrockError> {
     let response = client
@@ -235,7 +233,7 @@ async fn fetch_active_foundation_models(
 
 /// Fetch US-scoped inference profiles for Claude, returning a map from
 /// bare foundation model ID → (inference profile ID, profile name).
-async fn fetch_us_inference_profiles(
+pub(crate) async fn fetch_us_inference_profiles(
     client: &aws_sdk_bedrock::Client,
 ) -> Result<HashMap<String, (String, String)>, BedrockError> {
     let response = client
@@ -276,7 +274,7 @@ async fn fetch_us_inference_profiles(
 /// profile ID to get the bare foundation model ID. If the ID is already a bare
 /// foundation model ID (starts with a provider like `anthropic.`), returns it
 /// unchanged.
-fn strip_scope_prefix(id: &str) -> &str {
+pub(crate) fn strip_scope_prefix(id: &str) -> &str {
     if let Some((prefix, rest)) = id.split_once('.') {
         // Scope prefixes are short region tags; provider names contain letters
         // and are longer. A simple heuristic: scope prefixes are ≤6 chars and
@@ -409,7 +407,7 @@ pub async fn chat_converse(
         .map_err(|e| {
             let msg = e.into_service_error().to_string();
             tracing::error!(model_id, error = %msg, "Bedrock Converse call failed");
-            BedrockError::Invocation(msg)
+            classify_converse_error(model_id, &msg)
         })?;
 
     let output_message = response
@@ -456,6 +454,61 @@ pub async fn chat_converse(
     );
 
     Ok((response_text, usage))
+}
+
+/// Classify a Converse service error into a structured [`BedrockError`].
+///
+/// When the failure is an access/agreement problem we emit
+/// [`BedrockError::ModelAccess`] carrying the *bare* foundation model id (so the
+/// UI can deep-link to model enrollment) and a coarse reason. Anything else
+/// stays a plain [`BedrockError::Invocation`].
+///
+/// `model_id` is the inference profile id passed to Converse; the marker strips
+/// it to the bare foundation id. Matching is on the error message text because
+/// Bedrock collapses several distinct conditions onto `AccessDeniedException`.
+pub fn classify_converse_error(model_id: &str, msg: &str) -> BedrockError {
+    let lower = msg.to_lowercase();
+    let bare = strip_scope_prefix(model_id).to_string();
+
+    // Anthropic first-time-use form not submitted for the account.
+    if lower.contains("ftuformnotfilled")
+        || lower.contains("usecaseform")
+        || lower.contains("use case details")
+        || lower.contains("use-case")
+        || lower.contains("first-time")
+    {
+        return BedrockError::ModelAccess {
+            model_id: bare,
+            reason: ModelAccessReason::UseCaseFormRequired,
+        };
+    }
+
+    // Bare model id invoked where an inference profile is required.
+    if lower.contains("on-demand throughput isn't supported")
+        || lower.contains("on-demand throughput isn’t supported")
+        || lower.contains("inference profile")
+    {
+        return BedrockError::ModelAccess {
+            model_id: bare,
+            reason: ModelAccessReason::NeedsInferenceProfile,
+        };
+    }
+
+    // Access denied → almost always a missing marketplace agreement/subscription.
+    if lower.contains("accessdenied")
+        || lower.contains("access to the model")
+        || lower.contains("not authorized")
+        || lower.contains("marketplace")
+        || lower.contains("not subscribed")
+        || lower.contains("entitlement")
+    {
+        return BedrockError::ModelAccess {
+            model_id: bare,
+            reason: ModelAccessReason::NotSubscribed,
+        };
+    }
+
+    BedrockError::Invocation(msg.to_string())
 }
 
 // ── Token counting ───────────────────────────────────────────────────────────
@@ -509,116 +562,5 @@ pub async fn count_context_tokens(
     Ok(tokens)
 }
 
-// ── Model agreement management ───────────────────────────────────────────────
-
-/// Accept the Marketplace agreement for a foundation model.
-///
-/// Lists available offers for the model and accepts the first one.
-/// Idempotent: if the agreement already exists, this is a no-op.
-pub async fn accept_model_agreement(
-    config: &aws_config::SdkConfig,
-    model_id: &str,
-) -> Result<(), BedrockError> {
-    let client = aws_sdk_bedrock::Client::new(config);
-
-    // List offers for this model.
-    let offers_response = client
-        .list_foundation_model_agreement_offers()
-        .model_id(model_id)
-        .send()
-        .await
-        .map_err(|e| BedrockError::Agreement(e.into_service_error().to_string()))?;
-
-    let offers = offers_response.offers();
-    if offers.is_empty() {
-        // No offers means no agreement mechanism — nothing to do.
-        return Ok(());
-    }
-
-    let offer_token = offers[0].offer_token();
-
-    info!(model_id, offer_token, "accepting model agreement");
-
-    match client
-        .create_foundation_model_agreement()
-        .model_id(model_id)
-        .offer_token(offer_token)
-        .send()
-        .await
-    {
-        Ok(_) => {
-            info!(model_id, "model agreement accepted");
-        }
-        Err(e) => {
-            let msg = e.into_service_error().to_string();
-            if msg.contains("already exists") {
-                info!(model_id, "model agreement already accepted");
-            } else {
-                tracing::warn!(model_id, error = %msg, "failed to accept model agreement");
-                return Err(BedrockError::Agreement(msg));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Result of attempting to accept agreements for all available models.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgreementSummary {
-    /// Models that already had agreements accepted.
-    pub already_accepted: Vec<String>,
-    /// Models whose agreements were accepted during this call.
-    pub newly_accepted: Vec<String>,
-    /// Models that failed agreement acceptance (model_id, error message).
-    pub failed: Vec<(String, String)>,
-}
-
-/// Ensure Marketplace agreements are accepted for all available Claude models.
-///
-/// Lists all Claude inference profiles, deduplicates to bare foundation model
-/// IDs, and attempts acceptance for each. Already-accepted agreements are
-/// treated as success (idempotent).
-pub async fn accept_all_model_agreements(
-    config: &aws_config::SdkConfig,
-) -> Result<AgreementSummary, BedrockError> {
-    let models = list_chat_models(config).await?;
-
-    let mut summary = AgreementSummary {
-        already_accepted: Vec::new(),
-        newly_accepted: Vec::new(),
-        failed: Vec::new(),
-    };
-
-    // Deduplicate: inference profiles like `us.anthropic.claude-sonnet-4-...`
-    // and `global.anthropic.claude-sonnet-4-...` share the same underlying
-    // model. Strip the region prefix to get the bare model ID.
-    let mut seen_bare_ids = std::collections::HashSet::new();
-
-    for model in &models {
-        let bare_id = strip_scope_prefix(&model.model_id);
-
-        if !seen_bare_ids.insert(bare_id.to_string()) {
-            continue;
-        }
-
-        // Attempt acceptance directly — this is idempotent and handles
-        // already-accepted agreements gracefully.
-        match accept_model_agreement(config, bare_id).await {
-            Ok(()) => {
-                summary.newly_accepted.push(bare_id.to_string());
-            }
-            Err(e) => {
-                summary.failed.push((bare_id.to_string(), e.to_string()));
-            }
-        }
-    }
-
-    info!(
-        accepted = summary.newly_accepted.len(),
-        failed = summary.failed.len(),
-        "model agreement check complete"
-    );
-
-    Ok(summary)
-}
+// Model-access agreements now live in `crate::agreements` (explicit, user-driven
+// enrollment) — chat no longer accepts them on the user's behalf.

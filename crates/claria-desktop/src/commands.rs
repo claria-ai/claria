@@ -468,7 +468,7 @@ pub async fn bootstrap_iam_user(
     .await;
 
     // Delegate all IAM logic to the provisioner.
-    let mut result = claria_provisioner::bootstrap_account(
+    let result = claria_provisioner::bootstrap_account(
         &sdk_config,
         &system_name,
         &root_access_key_id,
@@ -516,63 +516,10 @@ pub async fn bootstrap_iam_user(
             *guard = Some(cfg);
             drop(guard);
 
-            // ── Accept Bedrock model agreements ─────────────────────────
-            //
-            // Use the new scoped credentials to accept Marketplace agreements
-            // for all available Claude models. This prevents the user from
-            // hitting agreement errors when they first try to use chat.
-            result.steps.push(claria_provisioner::BootstrapStep {
-                name: "accept_model_agreements".to_string(),
-                status: StepStatus::InProgress,
-                detail: None,
-            });
-
-            let new_sdk_config = claria_desktop::aws::build_aws_config(
-                &region,
-                &CredentialSource::Inline {
-                    access_key_id: new_creds.access_key_id.clone(),
-                    secret_access_key: new_creds.secret_access_key.clone(),
-                    session_token: None,
-                },
-            )
-            .await;
-
-            match claria_bedrock::chat::accept_all_model_agreements(&new_sdk_config).await {
-                Ok(summary) => {
-                    let detail = if summary.newly_accepted.is_empty() && summary.failed.is_empty() {
-                        "All model agreements already accepted.".to_string()
-                    } else {
-                        let mut parts = Vec::new();
-                        if !summary.newly_accepted.is_empty() {
-                            parts.push(format!("Accepted {} model(s)", summary.newly_accepted.len()));
-                        }
-                        if !summary.failed.is_empty() {
-                            parts.push(format!("{} failed", summary.failed.len()));
-                        }
-                        parts.join(", ")
-                    };
-
-                    let step = result.steps.iter_mut().rfind(|s| s.name == "accept_model_agreements");
-                    if let Some(s) = step {
-                        s.status = if summary.failed.is_empty() {
-                            StepStatus::Succeeded
-                        } else {
-                            // Non-fatal: some agreements failed but bootstrap itself worked.
-                            StepStatus::Succeeded
-                        };
-                        s.detail = Some(detail);
-                    }
-                }
-                Err(e) => {
-                    // Non-fatal: agreement acceptance failure shouldn't block
-                    // the user from proceeding. They can accept later from chat.
-                    let step = result.steps.iter_mut().rfind(|s| s.name == "accept_model_agreements");
-                    if let Some(s) = step {
-                        s.status = StepStatus::Failed;
-                        s.detail = Some(format!("Non-fatal: {e}. You can accept model agreements later from the chat screen."));
-                    }
-                }
-            }
+            // Model-access agreements are no longer accepted here. They're an
+            // explicit, user-driven step on the Model Access enrollment page
+            // (see the model-enrollment commands below). Auto-accepting on the
+            // user's behalf was both unethical and unreliable.
     }
 
     Ok(result)
@@ -2475,7 +2422,7 @@ pub async fn chat_message(
         cache_strategy,
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(bedrock_err_to_string)?;
 
     // Resolve or generate the chat session ID.
     let chat_uuid: uuid::Uuid = match &chat_id {
@@ -2792,22 +2739,248 @@ pub async fn load_chat_history(
     })
 }
 
-/// Accept the Marketplace agreement for a Bedrock foundation model.
-///
-/// Called when a model requires an agreement before it can be used.
-/// The frontend can detect this from the error message and offer
-/// a one-click accept flow.
+// ---------------------------------------------------------------------------
+// Model enrollment — explicit, user-driven Bedrock model-access agreements
+// ---------------------------------------------------------------------------
+
+/// Per-model enrollment status (mirror of `claria_bedrock::agreements::EnrollmentStatus`).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum EnrollmentStatus {
+    Executed,
+    Available,
+    Pending,
+    UseCaseFormRequired,
+    RegionUnavailable,
+    Blocked { reason: String },
+}
+
+/// One Anthropic Claude model the user can enroll in.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ModelEnrollment {
+    pub model_id: String,
+    pub inference_profile_id: String,
+    pub name: String,
+    pub status: EnrollmentStatus,
+    pub offer: Option<OfferTerms>,
+}
+
+/// Offer terms shown before the user signs up.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct OfferTerms {
+    pub offer_token: String,
+    pub offer_id: Option<String>,
+    pub legal_terms_url: Option<String>,
+    pub refund_policy: Option<String>,
+    pub agreement_duration: Option<String>,
+    pub pricing: Vec<PricingRate>,
+}
+
+/// One row of an offer's usage-based pricing.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct PricingRate {
+    pub dimension: Option<String>,
+    pub description: Option<String>,
+    pub price: Option<String>,
+    pub unit: Option<String>,
+}
+
+/// The Anthropic first-time-use form.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct UseCaseForm {
+    pub company_name: String,
+    pub company_website: String,
+    pub intended_users: u8,
+    pub industry_option: String,
+    pub other_industry_option: Option<String>,
+    pub use_cases: String,
+}
+
+/// Whether the account-level FTU form has been submitted.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct UseCaseFormStatus {
+    pub submitted: bool,
+    pub form: Option<UseCaseForm>,
+}
+
+impl From<claria_bedrock::agreements::EnrollmentStatus> for EnrollmentStatus {
+    fn from(s: claria_bedrock::agreements::EnrollmentStatus) -> Self {
+        use claria_bedrock::agreements::EnrollmentStatus as B;
+        match s {
+            B::Executed => Self::Executed,
+            B::Available => Self::Available,
+            B::Pending => Self::Pending,
+            B::UseCaseFormRequired => Self::UseCaseFormRequired,
+            B::RegionUnavailable => Self::RegionUnavailable,
+            B::Blocked { reason } => Self::Blocked { reason },
+        }
+    }
+}
+
+impl From<claria_bedrock::agreements::PricingRate> for PricingRate {
+    fn from(r: claria_bedrock::agreements::PricingRate) -> Self {
+        Self {
+            dimension: r.dimension,
+            description: r.description,
+            price: r.price,
+            unit: r.unit,
+        }
+    }
+}
+
+impl From<claria_bedrock::agreements::OfferTerms> for OfferTerms {
+    fn from(o: claria_bedrock::agreements::OfferTerms) -> Self {
+        Self {
+            offer_token: o.offer_token,
+            offer_id: o.offer_id,
+            legal_terms_url: o.legal_terms_url,
+            refund_policy: o.refund_policy,
+            agreement_duration: o.agreement_duration,
+            pricing: o.pricing.into_iter().map(PricingRate::from).collect(),
+        }
+    }
+}
+
+impl From<claria_bedrock::agreements::ModelEnrollment> for ModelEnrollment {
+    fn from(m: claria_bedrock::agreements::ModelEnrollment) -> Self {
+        Self {
+            model_id: m.model_id,
+            inference_profile_id: m.inference_profile_id,
+            name: m.name,
+            status: m.status.into(),
+            offer: m.offer.map(OfferTerms::from),
+        }
+    }
+}
+
+impl From<claria_bedrock::agreements::UseCaseForm> for UseCaseForm {
+    fn from(f: claria_bedrock::agreements::UseCaseForm) -> Self {
+        Self {
+            company_name: f.company_name,
+            company_website: f.company_website,
+            intended_users: f.intended_users,
+            industry_option: f.industry_option,
+            other_industry_option: f.other_industry_option,
+            use_cases: f.use_cases,
+        }
+    }
+}
+
+impl From<UseCaseForm> for claria_bedrock::agreements::UseCaseForm {
+    fn from(f: UseCaseForm) -> Self {
+        Self {
+            company_name: f.company_name,
+            company_website: f.company_website,
+            intended_users: f.intended_users,
+            industry_option: f.industry_option,
+            other_industry_option: f.other_industry_option,
+            use_cases: f.use_cases,
+        }
+    }
+}
+
+impl From<claria_bedrock::agreements::UseCaseFormStatus> for UseCaseFormStatus {
+    fn from(s: claria_bedrock::agreements::UseCaseFormStatus) -> Self {
+        Self {
+            submitted: s.submitted,
+            form: s.form.map(UseCaseForm::from),
+        }
+    }
+}
+
+/// Convert a `BedrockError` to the string the frontend receives. A
+/// `ModelAccess` error becomes a `MODEL_ACCESS::{json}` sentinel the chat UI
+/// parses to offer a one-click "Set up access" deep-link; everything else is
+/// the plain error message.
+fn bedrock_err_to_string(e: claria_bedrock::error::BedrockError) -> String {
+    use claria_bedrock::error::BedrockError;
+    match e {
+        BedrockError::ModelAccess { model_id, reason } => {
+            let payload = serde_json::json!({ "model_id": model_id, "reason": reason });
+            format!("MODEL_ACCESS::{payload}")
+        }
+        other => other.to_string(),
+    }
+}
+
+/// List enrollment state for every Anthropic Claude model Claria uses.
 #[tauri::command]
 #[specta::specta]
-pub async fn accept_model_agreement(
+pub async fn list_model_enrollments(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<ModelEnrollment>, String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    let enrollments = claria_bedrock::agreements::list_enrollments(&sdk_config)
+        .await
+        .map_err(bedrock_err_to_string)?;
+    Ok(enrollments.into_iter().map(ModelEnrollment::from).collect())
+}
+
+/// Fetch a single model's current enrollment — the poll target after Execute.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_model_enrollment(
+    state: State<'_, DesktopState>,
+    model_id: String,
+) -> Result<ModelEnrollment, String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    let enrollment = claria_bedrock::agreements::get_enrollment(&sdk_config, &model_id)
+        .await
+        .map_err(bedrock_err_to_string)?;
+    Ok(ModelEnrollment::from(enrollment))
+}
+
+/// Read whether the account-level Anthropic use-case form has been submitted.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_use_case_form(
+    state: State<'_, DesktopState>,
+) -> Result<UseCaseFormStatus, String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    let status = claria_bedrock::agreements::get_use_case_form(&sdk_config)
+        .await
+        .map_err(bedrock_err_to_string)?;
+    Ok(UseCaseFormStatus::from(status))
+}
+
+/// Submit the account-level Anthropic use-case form (once per account).
+#[tauri::command]
+#[specta::specta]
+pub async fn submit_use_case_form(
+    state: State<'_, DesktopState>,
+    form: UseCaseForm,
+) -> Result<(), String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    claria_bedrock::agreements::submit_use_case_form(&sdk_config, &form.into())
+        .await
+        .map_err(bedrock_err_to_string)
+}
+
+/// Execute (sign up for) one model's marketplace agreement. Asynchronous — poll
+/// `get_model_enrollment` until the model becomes `executed`.
+#[tauri::command]
+#[specta::specta]
+pub async fn execute_model_agreement(
     state: State<'_, DesktopState>,
     model_id: String,
 ) -> Result<(), String> {
     let (_cfg, sdk_config) = load_sdk_config(&state).await?;
-
-    claria_bedrock::chat::accept_model_agreement(&sdk_config, &model_id)
+    claria_bedrock::agreements::execute_agreement(&sdk_config, &model_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(bedrock_err_to_string)
+}
+
+/// Un-enroll a model by deleting its agreement.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_model_agreement(
+    state: State<'_, DesktopState>,
+    model_id: String,
+) -> Result<(), String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    claria_bedrock::agreements::delete_agreement(&sdk_config, &model_id)
+        .await
+        .map_err(bedrock_err_to_string)
 }
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,10 @@ use crate::state::{
 const ACCOUNT_ID: &str = "185735714230";
 const SYSTEM_NAME: &str = "claria";
 
+/// Base64 `formData` for a pre-submitted Anthropic use-case form. Decodes to the
+/// camelCase JSON the FTU API expects (companyName, intendedUsers, …).
+const FTU_FORM_B64: &str = "eyJjb21wYW55TmFtZSI6IkFjbWUgSGVhbHRoIiwiY29tcGFueVdlYnNpdGUiOiJodHRwczovL2FjbWUuZXhhbXBsZSIsImludGVuZGVkVXNlcnMiOjAsImluZHVzdHJ5T3B0aW9uIjoiSGVhbHRoY2FyZSIsInVzZUNhc2VzIjoiQ2xpbmljYWwgbm90ZSBkcmFmdGluZyJ9";
+
 fn bucket_name() -> String {
     format!("{ACCOUNT_ID}-{SYSTEM_NAME}-data")
 }
@@ -19,6 +23,8 @@ pub fn load(name: &str, state: &mut MockState) -> Result<(), String> {
         "bootstrapped" => bootstrapped(state),
         "fully-provisioned" => fully_provisioned(state),
         "drifted" => drifted(state),
+        "ftu-required" => ftu_required(state),
+        "agreements-available" => agreements_available(state),
         _ => return Err(name.to_string()),
     }
     Ok(())
@@ -42,18 +48,38 @@ fn bootstrapped(state: &mut MockState) {
     load_bedrock_models(state);
 }
 
-/// All 14 resources in sync, sample data in S3.
+/// All resources in sync, sample data in S3, Claude models enrolled.
 fn fully_provisioned(state: &mut MockState) {
     state.caller_identity = claria_admin_identity();
     create_iam_user(state);
     create_iam_policy(state);
     create_bucket_with_all_config(state);
     create_cloudtrail(state);
-    accept_bedrock_models(state);
     load_bedrock_models(state);
+    accept_bedrock_models(state);
     state.baa_accepted = true;
     load_sample_data(state);
     load_cost_data(state);
+}
+
+/// Bootstrapped account with Claude models offered, but the Anthropic use-case
+/// form not yet submitted — the enrollment page should show the FTU gate first.
+fn ftu_required(state: &mut MockState) {
+    state.caller_identity = claria_admin_identity();
+    create_iam_user(state);
+    create_iam_policy(state);
+    load_bedrock_models(state);
+    state.ftu_form = None;
+}
+
+/// Use-case form submitted, models offered but not yet executed — ready to
+/// click Execute.
+fn agreements_available(state: &mut MockState) {
+    state.caller_identity = claria_admin_identity();
+    create_iam_user(state);
+    create_iam_policy(state);
+    load_bedrock_models(state);
+    state.ftu_form = Some(FTU_FORM_B64.to_string());
 }
 
 /// Like fully-provisioned but with versioning disabled and encryption missing.
@@ -235,14 +261,29 @@ fn load_bedrock_models(state: &mut MockState) {
             }],
         })
         .collect();
+
+    // Every offered model starts with an AVAILABLE marketplace agreement
+    // (ready to sign up for), not yet executed.
+    state.model_agreement_status = models
+        .iter()
+        .map(|(id, _)| (id.to_string(), "AVAILABLE".to_string()))
+        .collect();
 }
 
+/// Mark every loaded model as enrolled (entitlement granted) and the FTU form
+/// as submitted — the post-enrollment steady state.
 fn accept_bedrock_models(state: &mut MockState) {
-    for model in &state.foundation_models {
+    let ids: Vec<String> = state
+        .foundation_models
+        .iter()
+        .map(|m| m.model_id.clone())
+        .collect();
+    for id in ids {
         state
-            .model_agreements
-            .insert(model.model_id.clone());
+            .model_agreement_status
+            .insert(id, "EXECUTED".to_string());
     }
+    state.ftu_form = Some(FTU_FORM_B64.to_string());
 }
 
 fn load_sample_data(state: &mut MockState) {

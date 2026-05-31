@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  acceptModelAgreement,
   type ChatMessage,
   type ChatModel,
   type TurnUsage,
@@ -19,8 +18,32 @@ import TurnCostBadge from "./TurnCostBadge";
 import SessionTotalBanner from "./SessionTotalBanner";
 import LastTurnFooter from "./LastTurnFooter";
 
-function isMarketplaceError(error: string): boolean {
-  return error.includes("aws-marketplace:") || error.includes("Marketplace");
+/**
+ * Detect a chat error caused by missing model access and resolve the model to
+ * enroll. The backend emits a `MODEL_ACCESS::{json}` sentinel for these; we also
+ * fall back to recognising legacy marketplace/access-denied strings using the
+ * selected model.
+ */
+function parseModelAccessError(
+  error: string,
+  selectedModelId: string | null,
+): { modelId: string } | null {
+  const marker = "MODEL_ACCESS::";
+  const idx = error.indexOf(marker);
+  if (idx >= 0) {
+    try {
+      const parsed = JSON.parse(error.slice(idx + marker.length));
+      if (parsed && typeof parsed.model_id === "string") {
+        return { modelId: parsed.model_id };
+      }
+    } catch {
+      // fall through to the heuristic below
+    }
+  }
+  if (/aws-marketplace:|marketplace|access to the model|accessdenied/i.test(error)) {
+    return { modelId: selectedModelId ? selectedModelId.replace(/^[a-z]+\./, "") : "" };
+  }
+  return null;
 }
 
 /**
@@ -47,6 +70,7 @@ export default function ChatWidget({
   toolbar,
   historyHeader,
   embedded = false,
+  onSetUpAccess,
 }: {
   chatModels: ChatModel[];
   chatModelsLoading: boolean;
@@ -72,6 +96,9 @@ export default function ChatWidget({
   /// toolbar — typically a chat-history summary header on resume.
   historyHeader?: ReactNode;
   embedded?: boolean;
+  /// Called when the user clicks "Set up access" on a model-access error,
+  /// deep-linking to the enrollment page for the offending model.
+  onSetUpAccess?: (modelId: string) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
   const [usageByIndex, setUsageByIndex] = useState<Array<TurnUsage | null>>(
@@ -81,7 +108,6 @@ export default function ChatWidget({
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [accepting, setAccepting] = useState(false);
 
   // Per-model pricing for pre-flight estimates. Looked up once per
   // selected model and cached.
@@ -212,20 +238,6 @@ export default function ChatWidget({
     }
   }
 
-  async function handleAcceptAgreement() {
-    if (!selectedModelId || accepting) return;
-    const bareModelId = selectedModelId.replace(/^[a-z]+\./, "");
-    setAccepting(true);
-    try {
-      await acceptModelAgreement(bareModelId);
-      setError(null);
-    } catch (e) {
-      setError(`Failed to accept agreement: ${String(e)}`);
-    } finally {
-      setAccepting(false);
-    }
-  }
-
   const resolvedPlaceholder =
     placeholder ??
     (extraLoading
@@ -318,20 +330,26 @@ export default function ChatWidget({
           </div>
         )}
 
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error}</p>
-            {isMarketplaceError(error) && selectedModelId && (
-              <button
-                onClick={handleAcceptAgreement}
-                disabled={accepting}
-                className="mt-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-              >
-                {accepting ? "Accepting..." : "Accept Model Agreement"}
-              </button>
-            )}
-          </div>
-        )}
+        {error && (() => {
+          const access = parseModelAccessError(error, selectedModelId);
+          return (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+              <p className="text-red-800 text-sm">
+                {access
+                  ? "This model isn't set up for your account yet."
+                  : error}
+              </p>
+              {access && onSetUpAccess && (
+                <button
+                  onClick={() => onSetUpAccess(access.modelId)}
+                  className="mt-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  Set up access
+                </button>
+              )}
+            </div>
+          );
+        })()}
 
         <div ref={messagesEndRef} />
       </div>

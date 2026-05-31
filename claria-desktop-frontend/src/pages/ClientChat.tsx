@@ -40,6 +40,7 @@ export default function ClientChat({
   chatModelsLoading,
   chatModelsError,
   preferredModelId,
+  onSetUpAccess,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
@@ -51,6 +52,7 @@ export default function ClientChat({
   chatModelsLoading: boolean;
   chatModelsError: string | null;
   preferredModelId?: string | null;
+  onSetUpAccess?: (modelId: string) => void;
 }) {
   const chatIdRef = useRef<string | null>(null);
 
@@ -311,6 +313,7 @@ export default function ClientChat({
         toolbar={toolbar}
         historyHeader={historyHeader}
         embedded={embedded}
+        onSetUpAccess={onSetUpAccess}
       />
 
       {/* System prompt modal (read-only) */}

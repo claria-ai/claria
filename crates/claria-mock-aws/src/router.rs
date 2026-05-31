@@ -27,6 +27,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/mock/health", get(health))
         .route("/mock/reset", post(reset))
         .route("/mock/scenario/{name}", post(load_scenario))
+        // Promote a model's agreement PENDING → EXECUTED (simulates the async
+        // marketplace subscription completing). Lets tests/manual runs drive the
+        // post-execute transition deterministically.
+        .route("/mock/bedrock/promote/{model_id}", post(promote_model))
         // Catch-all for AWS service requests
         .fallback(dispatch_aws)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -53,6 +57,16 @@ async fn load_scenario(
         Ok(()) => (StatusCode::OK, format!("Loaded scenario: {name}")).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, format!("Unknown scenario: {e}")).into_response(),
     }
+}
+
+async fn promote_model(
+    State(state): State<SharedState>,
+    axum::extract::Path(model_id): axum::extract::Path<String>,
+) -> Response {
+    let mut st = state.write().await;
+    st.model_agreement_status
+        .insert(model_id.clone(), "EXECUTED".to_string());
+    (StatusCode::OK, format!("Promoted {model_id} to EXECUTED")).into_response()
 }
 
 /// Central dispatch: examine headers, path, and query to determine which
@@ -100,7 +114,11 @@ async fn dispatch_aws(
 
     // 2. Bedrock REST paths
     if path.starts_with("/foundation-models")
-        || path.starts_with("/custom-model-agreements")
+        || path.starts_with("/foundation-model-availability")
+        || path.starts_with("/list-foundation-model-agreement-offers")
+        || path.starts_with("/create-foundation-model-agreement")
+        || path.starts_with("/delete-foundation-model-agreement")
+        || path.starts_with("/use-case-for-model-access")
         || path.starts_with("/inference-profiles")
         || path.starts_with("/model/")
     {

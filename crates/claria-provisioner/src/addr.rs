@@ -6,7 +6,7 @@ use specta::Type;
 /// Composite key for addressing a resource in state.
 ///
 /// Two resources of the same type but different names (e.g. two
-/// `bedrock_model_agreement` entries) have distinct addresses.
+/// `s3_bucket` entries) have distinct addresses.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, Type)]
 pub struct ResourceAddr {
     pub resource_type: String,

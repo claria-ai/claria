@@ -65,7 +65,12 @@ fn main() -> Result<()> {
             commands::list_chat_models,
             commands::chat_message,
             commands::infra_chat,
-            commands::accept_model_agreement,
+            commands::list_model_enrollments,
+            commands::get_model_enrollment,
+            commands::get_use_case_form,
+            commands::submit_use_case_form,
+            commands::execute_model_agreement,
+            commands::delete_model_agreement,
             commands::load_chat_history,
             commands::get_prompt,
             commands::save_prompt,
@@ -119,6 +124,12 @@ fn main() -> Result<()> {
             .expect("failed to read generated bindings");
         std::fs::write(&bindings_path, format!("// @ts-nocheck\n{contents}"))
             .expect("failed to write @ts-nocheck header");
+
+        // Dev convenience: regenerate bindings.ts and exit without launching the
+        // window. Lets tooling refresh TS types after backend command changes.
+        if std::env::var_os("CLARIA_EXPORT_BINDINGS_ONLY").is_some() {
+            return Ok(());
+        }
     }
 
     tauri::Builder::default()

@@ -18,3 +18,7 @@ thiserror = "=2.0.18"
 tokio = { version = "=1.52.3", features = ["full"] }
 tracing = "=0.1.44"
 uuid = { version = "=1.23.1", features = ["v4"] }
+
+[dev-dependencies]
+aws-credential-types = "=1.2.14"
+claria-mock-aws = { path = "../claria-mock-aws" }
