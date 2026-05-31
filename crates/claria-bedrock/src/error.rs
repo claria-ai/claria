@@ -46,6 +46,11 @@ pub enum ModelAccessReason {
     UseCaseFormRequired,
     /// The model must be invoked via an inference profile, not a bare model id.
     NeedsInferenceProfile,
+    /// The account isn't authorized to invoke this model — AWS gates it
+    /// ("not available for this account"). The model may be listed and even
+    /// agreement-able, but enrollment can't unlock it; access must be requested
+    /// from AWS (Bedrock console / AWS Sales).
+    NotAuthorized,
     /// Access denied for a reason we couldn't classify.
     Unknown,
 }
@@ -56,6 +61,7 @@ impl std::fmt::Display for ModelAccessReason {
             ModelAccessReason::NotSubscribed => "not subscribed",
             ModelAccessReason::UseCaseFormRequired => "use-case form required",
             ModelAccessReason::NeedsInferenceProfile => "needs inference profile",
+            ModelAccessReason::NotAuthorized => "not authorized",
             ModelAccessReason::Unknown => "unknown",
         };
         f.write_str(s)

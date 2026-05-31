@@ -117,3 +117,25 @@ async fn fully_provisioned_models_executed() {
     assert!(!enrollments.is_empty());
     assert!(enrollments.iter().all(|m| m.status == EnrollmentStatus::Executed));
 }
+
+/// A gated model — agreement executed (entitlement AVAILABLE) but the account
+/// not authorized — must surface as NotAuthorized, never Executed. This is the
+/// Claude Opus 4.8 regression: shown "Enrolled / Ready" while Converse denies
+/// it with "not available for this account".
+#[tokio::test]
+async fn gated_model_surfaces_as_not_authorized() {
+    let server = MockServer::spawn().await;
+    load_scenario(&server, "gated-model").await;
+    let sdk = build_sdk_config(&server.endpoint);
+
+    let enrollments = agreements::list_enrollments(&sdk).await.expect("list");
+    let gated = enrollments
+        .iter()
+        .find(|m| m.model_id == "anthropic.claude-opus-4-8")
+        .expect("gated model present");
+    assert_eq!(gated.status, EnrollmentStatus::NotAuthorized);
+
+    // The standard models remain enrolled.
+    let opus = enrollments.iter().find(|m| m.model_id == OPUS).expect("opus");
+    assert_eq!(opus.status, EnrollmentStatus::Executed);
+}

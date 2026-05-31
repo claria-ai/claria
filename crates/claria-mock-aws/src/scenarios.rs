@@ -25,6 +25,7 @@ pub fn load(name: &str, state: &mut MockState) -> Result<(), String> {
         "drifted" => drifted(state),
         "ftu-required" => ftu_required(state),
         "agreements-available" => agreements_available(state),
+        "gated-model" => gated_model(state),
         _ => return Err(name.to_string()),
     }
     Ok(())
@@ -80,6 +81,45 @@ fn agreements_available(state: &mut MockState) {
     create_iam_policy(state);
     load_bedrock_models(state);
     state.ftu_form = Some(FTU_FORM_B64.to_string());
+}
+
+/// FTU submitted and every standard model executed, plus one model gated by
+/// AWS: listed and agreement-executed (so entitlement reads AVAILABLE) yet the
+/// account isn't authorized to invoke it. The control plane looks "ready" but
+/// Converse denies it — mirroring the real Claude Opus 4.8 case.
+fn gated_model(state: &mut MockState) {
+    state.caller_identity = claria_admin_identity();
+    create_iam_user(state);
+    create_iam_policy(state);
+    load_bedrock_models(state);
+    accept_bedrock_models(state);
+
+    let gated_id = "anthropic.claude-opus-4-8";
+    state.foundation_models.push(FoundationModel {
+        model_id: gated_id.to_string(),
+        model_name: "Claude Opus 4.8".to_string(),
+        provider_name: "Anthropic".to_string(),
+        model_lifecycle: ModelLifecycle {
+            status: "ACTIVE".to_string(),
+        },
+    });
+    state.inference_profiles.push(InferenceProfile {
+        inference_profile_id: format!("us.{gated_id}"),
+        inference_profile_name: "US Claude Opus 4.8".to_string(),
+        r#type: "SYSTEM_DEFINED".to_string(),
+        status: "ACTIVE".to_string(),
+        models: vec![InferenceProfileModel {
+            model_arn: format!("arn:aws:bedrock:us-east-1::foundation-model/{gated_id}"),
+        }],
+    });
+    // Control plane reports the agreement executed (entitlement AVAILABLE), but
+    // the account is not authorized to invoke it.
+    state
+        .model_agreement_status
+        .insert(gated_id.to_string(), "EXECUTED".to_string());
+    state
+        .not_authorized_models
+        .insert(gated_id.to_string());
 }
 
 /// Like fully-provisioned but with versioning disabled and encryption missing.

@@ -214,6 +214,24 @@ function ModelCard({
         </p>
       )}
 
+      {status.kind === "not_authorized" && (
+        <div className="mt-2">
+          <p className="text-sm text-gray-600">
+            Your AWS account isn't authorized to use this model yet. It's gated
+            by AWS — request access in the Amazon Bedrock console, then refresh
+            this page.
+          </p>
+          <button
+            onClick={() =>
+              openUrl("https://console.aws.amazon.com/bedrock/home#/modelaccess")
+            }
+            className="mt-2 text-xs text-blue-600 hover:underline"
+          >
+            Open Bedrock console ↗
+          </button>
+        </div>
+      )}
+
       {status.kind === "pending" && (
         <div className="flex items-center gap-2 text-sm text-gray-600 mt-2">
           <Spinner />
@@ -286,6 +304,7 @@ function StatusBadge({ kind }: { kind: ModelEnrollment["status"]["kind"] }) {
     pending: "bg-amber-100 text-amber-800",
     use_case_form_required: "bg-amber-100 text-amber-800",
     region_unavailable: "bg-gray-100 text-gray-600",
+    not_authorized: "bg-gray-100 text-gray-600",
     blocked: "bg-gray-100 text-gray-600",
   };
   const labels: Record<string, string> = {
@@ -294,6 +313,7 @@ function StatusBadge({ kind }: { kind: ModelEnrollment["status"]["kind"] }) {
     pending: "Provisioning",
     use_case_form_required: "Form required",
     region_unavailable: "Region n/a",
+    not_authorized: "Not available",
     blocked: "Blocked",
   };
   return (

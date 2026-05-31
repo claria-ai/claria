@@ -56,8 +56,13 @@ pub enum EnrollmentStatus {
     UseCaseFormRequired,
     /// The model isn't offered in the configured region.
     RegionUnavailable,
-    /// Not actionable from here (agreement errored, not authorized, or no
-    /// marketplace flow exists). The reason is shown to the user verbatim.
+    /// The account isn't authorized to invoke this model — AWS gates it
+    /// (`authorization_status != AUTHORIZED`). The model may be listed and even
+    /// agreement-able, but Converse fails with "not available for this account".
+    /// Enrollment here can't unlock it; access must be requested from AWS.
+    NotAuthorized,
+    /// Not actionable from here (agreement errored, or no marketplace flow
+    /// exists). The reason is shown to the user verbatim.
     Blocked { reason: String },
 }
 
@@ -178,6 +183,14 @@ pub fn classify_axes(
     if region_availability != "AVAILABLE" {
         return EnrollmentStatus::RegionUnavailable;
     }
+    // The account must be authorized to invoke the model. Some models are listed
+    // and even agreement-able yet gated by AWS — `authorization_status` reads
+    // NOT_AUTHORIZED and Converse fails with "not available for this account".
+    // Surface that honestly instead of a false "ready", regardless of the
+    // entitlement/agreement axes (which can read optimistically for gated models).
+    if authorization_status != "AUTHORIZED" {
+        return EnrollmentStatus::NotAuthorized;
+    }
     if entitlement_availability == "AVAILABLE" {
         return EnrollmentStatus::Executed;
     }
@@ -189,18 +202,11 @@ pub fn classify_axes(
                 .unwrap_or("the marketplace agreement is in an error state")
                 .to_string(),
         },
-        // NOT_AVAILABLE or no agreement record: nothing we can sign up for here.
-        _ => {
-            if authorization_status == "AUTHORIZED" {
-                EnrollmentStatus::Blocked {
-                    reason: "no marketplace agreement is available for this model".to_string(),
-                }
-            } else {
-                EnrollmentStatus::Blocked {
-                    reason: "this account isn't authorized for this model".to_string(),
-                }
-            }
-        }
+        // NOT_AVAILABLE or no agreement record: authorized, but nothing to sign
+        // up for here.
+        _ => EnrollmentStatus::Blocked {
+            reason: "no marketplace agreement is available for this model".to_string(),
+        },
     }
 }
 

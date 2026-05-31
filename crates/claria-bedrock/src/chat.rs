@@ -494,6 +494,21 @@ pub fn classify_converse_error(model_id: &str, msg: &str) -> BedrockError {
         };
     }
 
+    // Model gated by AWS: listed and possibly agreement-able, yet not granted
+    // for invocation on this account. Bedrock returns
+    // "…is not available for this account. You can explore other available
+    // models… contact AWS Sales". Enrollment can't unlock this — the account
+    // must request access from AWS — so it gets its own reason, distinct from a
+    // missing marketplace subscription.
+    if lower.contains("not available for this account")
+        || lower.contains("explore other available models")
+    {
+        return BedrockError::ModelAccess {
+            model_id: bare,
+            reason: ModelAccessReason::NotAuthorized,
+        };
+    }
+
     // Access denied → almost always a missing marketplace agreement/subscription.
     if lower.contains("accessdenied")
         || lower.contains("access to the model")

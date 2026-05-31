@@ -155,6 +155,46 @@ async fn fully_provisioned_models_are_executed() {
 }
 
 #[tokio::test]
+async fn gated_model_availability_is_not_authorized() {
+    let app = app_with("gated-model").await;
+    let r = request(
+        &app,
+        Method::GET,
+        "/foundation-model-availability/anthropic.claude-opus-4-8",
+        "",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    // Control plane reads "entitled" yet the account isn't authorized to invoke.
+    assert_eq!(body["entitlementAvailability"], "AVAILABLE");
+    assert_eq!(body["authorizationStatus"], "NOT_AUTHORIZED");
+}
+
+#[tokio::test]
+async fn converse_gated_model_is_denied() {
+    let app = app_with("gated-model").await;
+    let body = serde_json::json!({
+        "messages": [{"role": "user", "content": [{"text": "Hi"}]}],
+    });
+    let r = request_with_header(
+        &app,
+        Method::POST,
+        "/model/us.anthropic.claude-opus-4-8/converse",
+        "content-type",
+        "application/json",
+        serde_json::to_string(&body).unwrap(),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert!(
+        r.body.contains("is not available for this account"),
+        "got: {}",
+        r.body
+    );
+}
+
+#[tokio::test]
 async fn converse_returns_canned_response() {
     let app = app();
     let body = serde_json::json!({

@@ -14,8 +14,10 @@ pub async fn dispatch(
     state: SharedState,
 ) -> Response {
     // Bedrock Runtime: POST /model/{model_id}/converse
-    if path.starts_with("/model/") && path.ends_with("/converse") {
-        return converse(body, state).await;
+    if let Some(rest) = path.strip_prefix("/model/")
+        && let Some(raw_id) = rest.strip_suffix("/converse")
+    {
+        return converse(&decode_model_id(raw_id), body, state).await;
     }
 
     // Bedrock control plane (real wire URIs).
@@ -149,13 +151,35 @@ async fn get_model_availability(model_id: &str, state: SharedState) -> Response 
         agreement["errorMessage"] = json!("the marketplace subscription failed to provision");
     }
 
+    // A gated model reads NOT_AUTHORIZED even when its agreement is executed
+    // (entitlement AVAILABLE) — the account can't actually invoke it.
+    let authorization = if st.not_authorized_models.contains(model_id) {
+        "NOT_AUTHORIZED"
+    } else {
+        "AUTHORIZED"
+    };
+
     json_response(json!({
         "modelId": model_id,
         "agreementAvailability": agreement,
-        "authorizationStatus": "AUTHORIZED",
+        "authorizationStatus": authorization,
         "entitlementAvailability": entitlement,
         "regionAvailability": "AVAILABLE",
     }))
+}
+
+/// Bedrock-runtime AccessDenied for a gated model, shaped so the SDK surfaces
+/// the exception type and message that [`classify_converse_error`] keys on.
+fn access_denied_response(message: String) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        [
+            ("content-type", "application/json"),
+            ("x-amzn-errortype", "AccessDeniedException"),
+        ],
+        json!({ "message": message }).to_string(),
+    )
+        .into_response()
 }
 
 async fn list_agreement_offers(model_id: &str) -> Response {
@@ -234,7 +258,22 @@ async fn put_use_case_form(body: Value, state: SharedState) -> Response {
     json_status(StatusCode::CREATED, json!({}))
 }
 
-async fn converse(body: Value, _state: SharedState) -> Response {
+async fn converse(model_id: &str, body: Value, state: SharedState) -> Response {
+    // Gated model: the account isn't authorized to invoke it. Mirror Bedrock's
+    // runtime denial ("not available for this account") so callers exercise the
+    // model-access error classification.
+    {
+        let st = state.read().await;
+        let bare = model_id.strip_prefix("us.").unwrap_or(model_id);
+        if st.not_authorized_models.contains(bare) || st.not_authorized_models.contains(model_id) {
+            return access_denied_response(format!(
+                "{bare} is not available for this account. You can explore other \
+                 available models on Amazon Bedrock. For additional access options, \
+                 contact AWS Sales at https://aws.amazon.com/contact-us/sales-support/"
+            ));
+        }
+    }
+
     // Return a canned response for any Converse request.
     // If the body contains a document (extraction), return extracted text.
     let has_document = body["messages"]

@@ -46,6 +46,11 @@ pub struct MockState {
     /// The Anthropic first-time-use form's base64 `formData`, once submitted.
     pub ftu_form: Option<String>,
     pub inference_profiles: Vec<InferenceProfile>,
+    /// Bare model ids the account is NOT authorized to invoke. These read
+    /// `authorizationStatus: NOT_AVAILABLE`/`NOT_AUTHORIZED` and Converse denies
+    /// them with "not available for this account" — mirroring a model gated by
+    /// AWS despite a listed/executed agreement. Default empty.
+    pub not_authorized_models: std::collections::HashSet<String>,
 
     // Transcribe
     pub transcription_jobs: HashMap<String, TranscriptionJob>,

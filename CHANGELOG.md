@@ -9,6 +9,8 @@ All notable changes to Claria are documented here.
 - First-time Bedrock use now prompts for and submits the required use-case form, fixing access failures for newly released Claude models
 - Model sign-up is treated as the background, multi-minute operation it actually is, so it no longer reports a false failure while provisioning
 - Chat errors caused by missing model access now offer a one-click path to set up that model
+- A model the AWS account isn't authorized to invoke is no longer shown as enrolled and ready; it reads as unavailable
+- Chatting with an unauthorized model now links to the AWS console to request access instead of looping back to enrollment
 
 ## [0.16.3] — 2026-05-20
 

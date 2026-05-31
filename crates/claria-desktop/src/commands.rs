@@ -2752,6 +2752,7 @@ pub enum EnrollmentStatus {
     Pending,
     UseCaseFormRequired,
     RegionUnavailable,
+    NotAuthorized,
     Blocked { reason: String },
 }
 
@@ -2812,6 +2813,7 @@ impl From<claria_bedrock::agreements::EnrollmentStatus> for EnrollmentStatus {
             B::Pending => Self::Pending,
             B::UseCaseFormRequired => Self::UseCaseFormRequired,
             B::RegionUnavailable => Self::RegionUnavailable,
+            B::NotAuthorized => Self::NotAuthorized,
             B::Blocked { reason } => Self::Blocked { reason },
         }
     }

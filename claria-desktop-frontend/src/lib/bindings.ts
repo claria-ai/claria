@@ -1099,7 +1099,7 @@ export type DeletedFile = { filename: string; deleted_at: string | null; version
 /**
  * Per-model enrollment status (mirror of `claria_bedrock::agreements::EnrollmentStatus`).
  */
-export type EnrollmentStatus = { kind: "executed" } | { kind: "available" } | { kind: "pending" } | { kind: "use_case_form_required" } | { kind: "region_unavailable" } | { kind: "blocked"; reason: string }
+export type EnrollmentStatus = { kind: "executed" } | { kind: "available" } | { kind: "pending" } | { kind: "use_case_form_required" } | { kind: "region_unavailable" } | { kind: "not_authorized" } | { kind: "blocked"; reason: string }
 /**
  * Structured before/after for a single field that doesn't match desired state.
  * 

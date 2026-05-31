@@ -60,12 +60,19 @@ fn no_agreement_when_authorized_is_blocked_no_offer() {
 }
 
 #[test]
-fn no_agreement_when_unauthorized_is_blocked_not_authorized() {
+fn unauthorized_is_not_authorized() {
     let s = classify_axes("AVAILABLE", "NOT_AVAILABLE", None, None, "NOT_AUTHORIZED");
-    match s {
-        EnrollmentStatus::Blocked { reason } => assert!(reason.contains("isn't authorized")),
-        other => panic!("expected Blocked, got {other:?}"),
-    }
+    assert_eq!(s, EnrollmentStatus::NotAuthorized);
+}
+
+#[test]
+fn entitled_but_unauthorized_is_not_authorized() {
+    // The gated-model case: AWS reports the model entitled (and even with a
+    // signed agreement) yet the account isn't authorized to invoke it. Must not
+    // be mislabeled Executed — Converse would fail with "not available for this
+    // account".
+    let s = classify_axes("AVAILABLE", "AVAILABLE", Some("AVAILABLE"), None, "NOT_AUTHORIZED");
+    assert_eq!(s, EnrollmentStatus::NotAuthorized);
 }
 
 // ── classify_converse_error ─────────────────────────────────────────────────
@@ -109,6 +116,27 @@ fn converse_access_denied_maps_to_not_subscribed() {
         BedrockError::ModelAccess { model_id, reason } => {
             assert_eq!(model_id, "anthropic.claude-opus-4-6-v1:0");
             assert_eq!(reason, ModelAccessReason::NotSubscribed);
+        }
+        other => panic!("expected ModelAccess, got {other:?}"),
+    }
+}
+
+#[test]
+fn converse_gated_message_maps_to_not_authorized() {
+    // The real-world gated-model denial: agreement looks executed but the
+    // account isn't granted invocation. Must map to NotAuthorized (not
+    // NotSubscribed), so the UI sends the user to AWS rather than looping back
+    // to enrollment.
+    let e = classify_converse_error(
+        "us.anthropic.claude-opus-4-8",
+        "AccessDeniedException: anthropic.claude-opus-4-8 is not available for this account. \
+         You can explore other available models on Amazon Bedrock. For additional access \
+         options, contact AWS Sales at https://aws.amazon.com/contact-us/sales-support/",
+    );
+    match e {
+        BedrockError::ModelAccess { model_id, reason } => {
+            assert_eq!(model_id, "anthropic.claude-opus-4-8");
+            assert_eq!(reason, ModelAccessReason::NotAuthorized);
         }
         other => panic!("expected ModelAccess, got {other:?}"),
     }
