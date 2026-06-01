@@ -16,9 +16,21 @@ fn region_unavailable_short_circuits() {
 }
 
 #[test]
-fn entitlement_available_is_executed() {
-    let s = classify_axes("AVAILABLE", "AVAILABLE", Some("NOT_AVAILABLE"), None, "AUTHORIZED");
+fn both_available_is_executed() {
+    // agree=AVAILABLE + entitle=AVAILABLE: subscription active and base entitlement
+    // in place — the model can be invoked.
+    let s = classify_axes("AVAILABLE", "AVAILABLE", Some("AVAILABLE"), None, "AUTHORIZED");
     assert_eq!(s, EnrollmentStatus::Executed);
+}
+
+#[test]
+fn entitlement_available_without_agreement_is_available() {
+    // agree=NOT_AVAILABLE + entitle=AVAILABLE: partially-provisioned account —
+    // base entitlement is present (FTU done, other models subscribed) but this
+    // specific model's marketplace agreement hasn't been accepted yet.
+    // Observed on real accounts that have accepted some but not all model agreements.
+    let s = classify_axes("AVAILABLE", "AVAILABLE", Some("NOT_AVAILABLE"), None, "AUTHORIZED");
+    assert_eq!(s, EnrollmentStatus::Available);
 }
 
 #[test]

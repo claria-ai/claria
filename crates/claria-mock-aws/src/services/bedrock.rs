@@ -136,12 +136,19 @@ async fn get_model_availability(model_id: &str, state: SharedState) -> Response 
         .map(String::as_str)
         .unwrap_or("NOT_AVAILABLE");
 
-    // The agreement axis mirrors the lifecycle; entitlement flips to AVAILABLE
-    // only once the agreement is EXECUTED (the authoritative "can invoke" gate).
+    // Map the mock's internal lifecycle state to the four wire axes that the
+    // real Bedrock API returns from GetFoundationModelAvailability.
+    //
+    // Real API observations:
+    //   - Fresh account (offer available, not yet accepted): agree=AVAILABLE, entitle=NOT_AVAILABLE
+    //   - After accepting (processing): agree=PENDING, entitle=NOT_AVAILABLE
+    //   - Fully executed (can invoke): agree=AVAILABLE, entitle=AVAILABLE
+    //   - Error: agree=ERROR, entitle=NOT_AVAILABLE
+    //   - No marketplace mechanism: agree=NOT_AVAILABLE, entitle=NOT_AVAILABLE
     let (agreement_status, entitlement) = match status {
         "AVAILABLE" => ("AVAILABLE", "NOT_AVAILABLE"),
         "PENDING" => ("PENDING", "NOT_AVAILABLE"),
-        "EXECUTED" => ("NOT_AVAILABLE", "AVAILABLE"),
+        "EXECUTED" => ("AVAILABLE", "AVAILABLE"),
         "ERROR" => ("ERROR", "NOT_AVAILABLE"),
         _ => ("NOT_AVAILABLE", "NOT_AVAILABLE"),
     };

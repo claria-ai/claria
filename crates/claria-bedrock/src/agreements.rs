@@ -170,9 +170,22 @@ impl From<WireUseCaseForm> for UseCaseForm {
 
 /// Classify the four availability axes (as their wire strings) into a status.
 ///
-/// Priority order matters: a region miss or an existing entitlement short-circuit
-/// before we look at the agreement state. Kept string-typed (not AWS enums) so
-/// it's trivially unit-testable.
+/// Kept string-typed (not AWS enums) so it's trivially unit-testable.
+///
+/// The real Bedrock API uses two independent signals:
+///
+/// - `entitlement_availability=AVAILABLE` — the account's base Anthropic access
+///   is in place (FTU form submitted, general entitlement granted).
+/// - `agreement_availability.status=AVAILABLE` — the per-model marketplace
+///   subscription has been executed and is active.
+///
+/// **Both must be AVAILABLE to invoke a model.** Either alone is insufficient:
+///
+/// - `agree=AVAILABLE, entitle=NOT_AVAILABLE` — offer available but the account
+///   hasn't gained base entitlement yet (fresh account, FTU form pending).
+/// - `agree=NOT_AVAILABLE, entitle=AVAILABLE` — base entitlement is present (FTU
+///   done, other models already subscribed) but this specific model's marketplace
+///   agreement hasn't been accepted yet (partially-provisioned account).
 pub fn classify_axes(
     region_availability: &str,
     entitlement_availability: &str,
@@ -183,30 +196,38 @@ pub fn classify_axes(
     if region_availability != "AVAILABLE" {
         return EnrollmentStatus::RegionUnavailable;
     }
-    // The account must be authorized to invoke the model. Some models are listed
-    // and even agreement-able yet gated by AWS — `authorization_status` reads
-    // NOT_AUTHORIZED and Converse fails with "not available for this account".
-    // Surface that honestly instead of a false "ready", regardless of the
-    // entitlement/agreement axes (which can read optimistically for gated models).
+    // Authorization is an independent gate: some models are listed, agreement-able,
+    // and even executed yet still denied by Converse with "not available for this
+    // account". Surface that honestly so the UI routes to AWS, not back to
+    // enrollment.
     if authorization_status != "AUTHORIZED" {
         return EnrollmentStatus::NotAuthorized;
     }
-    if entitlement_availability == "AVAILABLE" {
+    // Handle in-flight and error agreement states before the main logic.
+    match agreement_status {
+        Some("PENDING") => return EnrollmentStatus::Pending,
+        Some("ERROR") => {
+            return EnrollmentStatus::Blocked {
+                reason: agreement_error
+                    .unwrap_or("the marketplace agreement is in an error state")
+                    .to_string(),
+            }
+        }
+        _ => {}
+    }
+    // Both signals required: a model is invokable only when the per-model
+    // subscription is active (agree=AVAILABLE) AND the account's base entitlement
+    // is in place (entitle=AVAILABLE).
+    if entitlement_availability == "AVAILABLE" && agreement_status == Some("AVAILABLE") {
         return EnrollmentStatus::Executed;
     }
-    match agreement_status {
-        Some("AVAILABLE") => EnrollmentStatus::Available,
-        Some("PENDING") => EnrollmentStatus::Pending,
-        Some("ERROR") => EnrollmentStatus::Blocked {
-            reason: agreement_error
-                .unwrap_or("the marketplace agreement is in an error state")
-                .to_string(),
-        },
-        // NOT_AVAILABLE or no agreement record: authorized, but nothing to sign
-        // up for here.
-        _ => EnrollmentStatus::Blocked {
-            reason: "no marketplace agreement is available for this model".to_string(),
-        },
+    // One signal present but not the other — a subscription action is needed.
+    if agreement_status == Some("AVAILABLE") || entitlement_availability == "AVAILABLE" {
+        return EnrollmentStatus::Available;
+    }
+    // Neither signal: no marketplace agreement available for this model.
+    EnrollmentStatus::Blocked {
+        reason: "no marketplace agreement is available for this model".to_string(),
     }
 }
 

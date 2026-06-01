@@ -139,6 +139,8 @@ async fn execute_then_promote_drives_pending_to_executed() {
 
     let r = request(&app, Method::GET, &format!("/foundation-model-availability/{OPUS}"), "").await;
     let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    // EXECUTED state: both signals active — agree=AVAILABLE + entitle=AVAILABLE.
+    assert_eq!(body["agreementAvailability"]["status"], "AVAILABLE");
     assert_eq!(body["entitlementAvailability"], "AVAILABLE");
 }
 
@@ -166,7 +168,9 @@ async fn gated_model_availability_is_not_authorized() {
     .await;
     assert_eq!(r.status, StatusCode::OK);
     let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-    // Control plane reads "entitled" yet the account isn't authorized to invoke.
+    // Control plane reads "entitled" and "agreement active" yet the account
+    // isn't authorized to invoke — mirroring real enterprise-gated models.
+    assert_eq!(body["agreementAvailability"]["status"], "AVAILABLE");
     assert_eq!(body["entitlementAvailability"], "AVAILABLE");
     assert_eq!(body["authorizationStatus"], "NOT_AUTHORIZED");
 }

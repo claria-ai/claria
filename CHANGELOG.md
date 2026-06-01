@@ -11,6 +11,7 @@ All notable changes to Claria are documented here.
 - Chat errors caused by missing model access now offer a one-click path to set up that model
 - A model the AWS account isn't authorized to invoke is no longer shown as enrolled and ready; it reads as unavailable
 - Chatting with an unauthorized model now links to the AWS console to request access instead of looping back to enrollment
+- A model with base entitlement in place but its per-model marketplace agreement not yet accepted no longer shows as enrolled; it correctly shows as available to subscribe
 
 ## [0.16.3] — 2026-05-20
 
