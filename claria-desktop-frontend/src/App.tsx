@@ -12,6 +12,7 @@ import About from "./pages/About";
 import Preferences from "./pages/Preferences";
 import InfraChat from "./pages/InfraChat";
 import CostExplorer from "./pages/CostExplorer";
+import ModelEnrollment from "./pages/ModelEnrollment";
 
 export type Page =
   | "loading"
@@ -25,6 +26,7 @@ export type Page =
   | "client-chat"
   | "infra-chat"
   | "cost-explorer"
+  | "enrollment"
   | "preferences"
   | "about";
 
@@ -41,6 +43,9 @@ export default function App() {
 
   // Preferred model from config
   const [preferredModelId, setPreferredModelId] = useState<string | null>(null);
+
+  // Model the enrollment page should preselect (set by a chat deep-link).
+  const [enrollmentModelId, setEnrollmentModelId] = useState<string | null>(null);
 
   const refreshConfig = useCallback(async () => {
     const exists = await hasConfig().catch(() => false);
@@ -88,10 +93,21 @@ export default function App() {
       ) {
         refreshChatModels();
       }
+      // Reaching enrollment via the nav (not a chat deep-link) clears any
+      // previously preselected model.
+      if (target === "enrollment") {
+        setEnrollmentModelId(null);
+      }
       setPage(target);
     },
     [refreshConfig, refreshChatModels, chatModels.length],
   );
+
+  // Deep-link into the enrollment page, optionally preselecting a model.
+  const openEnrollment = useCallback((modelId?: string) => {
+    setEnrollmentModelId(modelId ?? null);
+    setPage("enrollment");
+  }, []);
 
   if (page === "loading") {
     return (
@@ -129,6 +145,7 @@ export default function App() {
           chatModelsLoading={chatModelsLoading}
           chatModelsError={chatModelsError}
           preferredModelId={preferredModelId}
+          onSetUpAccess={openEnrollment}
         />
       )}
       {page === "client-chat" && activeClientId && (
@@ -140,6 +157,7 @@ export default function App() {
           chatModelsLoading={chatModelsLoading}
           chatModelsError={chatModelsError}
           preferredModelId={preferredModelId}
+          onSetUpAccess={openEnrollment}
         />
       )}
       {page === "infra-chat" && (
@@ -149,6 +167,7 @@ export default function App() {
           chatModelsLoading={chatModelsLoading}
           chatModelsError={chatModelsError}
           preferredModelId={preferredModelId}
+          onSetUpAccess={openEnrollment}
         />
       )}
       {page === "preferences" && (
@@ -162,6 +181,13 @@ export default function App() {
         />
       )}
       {page === "cost-explorer" && <CostExplorer navigate={navigate} />}
+      {page === "enrollment" && (
+        <ModelEnrollment
+          navigate={navigate}
+          initialModelId={enrollmentModelId}
+          onEnrolled={refreshChatModels}
+        />
+      )}
       {page === "about" && <About navigate={navigate} />}
     </div>
   );

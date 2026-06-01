@@ -731,6 +731,9 @@ pub(crate) fn claria_policy_document(system_name: &str, account_id: &str) -> Str
                     "bedrock:GetFoundationModelAvailability",
                     "bedrock:ListFoundationModelAgreementOffers",
                     "bedrock:CreateFoundationModelAgreement",
+                    "bedrock:DeleteFoundationModelAgreement",
+                    "bedrock:PutUseCaseForModelAccess",
+                    "bedrock:GetUseCaseForModelAccess",
                     "bedrock:InvokeModel",
                     "bedrock:InvokeModelWithResponseStream",
                     "bedrock:CountTokens"

@@ -14,23 +14,33 @@ pub async fn dispatch(
     state: SharedState,
 ) -> Response {
     // Bedrock Runtime: POST /model/{model_id}/converse
-    if path.starts_with("/model/") && path.ends_with("/converse") {
-        return converse(body, state).await;
+    if let Some(rest) = path.strip_prefix("/model/")
+        && let Some(raw_id) = rest.strip_suffix("/converse")
+    {
+        return converse(&decode_model_id(raw_id), body, state).await;
     }
 
-    // Bedrock control plane
+    // Bedrock control plane (real wire URIs).
     match (method, path) {
-        (&Method::GET, p) if p.starts_with("/foundation-models") && p.contains("/availability") => {
-            get_model_availability(p, state).await
-        }
-        (&Method::GET, p) if p.starts_with("/foundation-models") && p.contains("/agreement-offers") => {
-            list_agreement_offers(p, state).await
-        }
         (&Method::GET, "/foundation-models") => list_foundation_models(state).await,
         (&Method::GET, "/inference-profiles") => list_inference_profiles(state).await,
-        (&Method::POST, "/custom-model-agreements") => {
+        (&Method::GET, p) if p.starts_with("/foundation-model-availability/") => {
+            let model_id = decode_model_id(p.trim_start_matches("/foundation-model-availability/"));
+            get_model_availability(&model_id, state).await
+        }
+        (&Method::GET, p) if p.starts_with("/list-foundation-model-agreement-offers/") => {
+            let model_id =
+                decode_model_id(p.trim_start_matches("/list-foundation-model-agreement-offers/"));
+            list_agreement_offers(&model_id).await
+        }
+        (&Method::POST, "/create-foundation-model-agreement") => {
             create_model_agreement(body, state).await
         }
+        (&Method::POST, "/delete-foundation-model-agreement") => {
+            delete_model_agreement(body, state).await
+        }
+        (&Method::GET, "/use-case-for-model-access") => get_use_case_form(state).await,
+        (&Method::POST, "/use-case-for-model-access") => put_use_case_form(body, state).await,
         _ => (
             StatusCode::NOT_FOUND,
             json!({"message": format!("Unknown Bedrock path: {path}")}).to_string(),
@@ -39,11 +49,42 @@ pub async fn dispatch(
     }
 }
 
+/// Path labels percent-encode the `:` in model ids (e.g. `...-v1:0`).
+fn decode_model_id(raw: &str) -> String {
+    raw.replace("%3A", ":").replace("%3a", ":")
+}
+
 fn json_response(value: Value) -> Response {
     (
         StatusCode::OK,
         [("content-type", "application/json")],
         value.to_string(),
+    )
+        .into_response()
+}
+
+fn json_status(status: StatusCode, value: Value) -> Response {
+    (
+        status,
+        [("content-type", "application/json")],
+        value.to_string(),
+    )
+        .into_response()
+}
+
+/// Error body shaped so the AWS SDK surfaces the type in the message, used for
+/// the "use-case form not submitted" case.
+fn ftu_not_filled_response() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        [
+            ("content-type", "application/json"),
+            ("x-amzn-errortype", "ResourceNotFoundException"),
+        ],
+        json!({
+            "message": "FTUFormNotFilled: Model use case details have not been submitted for this account"
+        })
+        .to_string(),
     )
         .into_response()
 }
@@ -87,45 +128,159 @@ async fn list_inference_profiles(state: SharedState) -> Response {
     json_response(json!({ "inferenceProfileSummaries": profiles }))
 }
 
-async fn get_model_availability(path: &str, state: SharedState) -> Response {
-    // Path: /foundation-models/{model_id}/availability
-    let model_id = path
-        .strip_prefix("/foundation-models/")
-        .and_then(|rest| rest.strip_suffix("/availability"))
-        .unwrap_or("");
-
+async fn get_model_availability(model_id: &str, state: SharedState) -> Response {
     let st = state.read().await;
-    let agreed = st.model_agreements.contains(model_id);
+    let status = st
+        .model_agreement_status
+        .get(model_id)
+        .map(String::as_str)
+        .unwrap_or("NOT_AVAILABLE");
+
+    // Map the mock's internal lifecycle state to the four wire axes that the
+    // real Bedrock API returns from GetFoundationModelAvailability.
+    //
+    // Real API observations:
+    //   - Fresh account (offer available, not yet accepted): agree=AVAILABLE, entitle=NOT_AVAILABLE
+    //   - After accepting (processing): agree=PENDING, entitle=NOT_AVAILABLE
+    //   - Fully executed (can invoke): agree=AVAILABLE, entitle=AVAILABLE
+    //   - Error: agree=ERROR, entitle=NOT_AVAILABLE
+    //   - No marketplace mechanism: agree=NOT_AVAILABLE, entitle=NOT_AVAILABLE
+    let (agreement_status, entitlement) = match status {
+        "AVAILABLE" => ("AVAILABLE", "NOT_AVAILABLE"),
+        "PENDING" => ("PENDING", "NOT_AVAILABLE"),
+        "EXECUTED" => ("AVAILABLE", "AVAILABLE"),
+        "ERROR" => ("ERROR", "NOT_AVAILABLE"),
+        _ => ("NOT_AVAILABLE", "NOT_AVAILABLE"),
+    };
+
+    let mut agreement = json!({ "status": agreement_status });
+    if agreement_status == "ERROR" {
+        agreement["errorMessage"] = json!("the marketplace subscription failed to provision");
+    }
+
+    // A gated model reads NOT_AUTHORIZED even when its agreement is executed
+    // (entitlement AVAILABLE) — the account can't actually invoke it.
+    let authorization = if st.not_authorized_models.contains(model_id) {
+        "NOT_AUTHORIZED"
+    } else {
+        "AUTHORIZED"
+    };
 
     json_response(json!({
-        "agreementAvailability": {
-            "status": if agreed { "AVAILABLE" } else { "NOT_AGREED" },
-        }
+        "modelId": model_id,
+        "agreementAvailability": agreement,
+        "authorizationStatus": authorization,
+        "entitlementAvailability": entitlement,
+        "regionAvailability": "AVAILABLE",
     }))
 }
 
-async fn list_agreement_offers(path: &str, _state: SharedState) -> Response {
-    // Path: /foundation-models/{model_id}/agreement-offers
-    let model_id = path
-        .strip_prefix("/foundation-models/")
-        .and_then(|rest| rest.strip_suffix("/agreement-offers"))
-        .unwrap_or("");
+/// Bedrock-runtime AccessDenied for a gated model, shaped so the SDK surfaces
+/// the exception type and message that [`classify_converse_error`] keys on.
+fn access_denied_response(message: String) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        [
+            ("content-type", "application/json"),
+            ("x-amzn-errortype", "AccessDeniedException"),
+        ],
+        json!({ "message": message }).to_string(),
+    )
+        .into_response()
+}
 
+async fn list_agreement_offers(model_id: &str) -> Response {
     json_response(json!({
         "offers": [{
+            "offerId": format!("offer-{model_id}"),
             "offerToken": format!("mock-offer-token-{model_id}"),
+            "termDetails": {
+                "usageBasedPricingTerm": {
+                    "rateCard": [
+                        {
+                            "dimension": "InputTokens",
+                            "description": "Input tokens",
+                            "price": "0.000015",
+                            "unit": "1K tokens"
+                        },
+                        {
+                            "dimension": "OutputTokens",
+                            "description": "Output tokens",
+                            "price": "0.000075",
+                            "unit": "1K tokens"
+                        }
+                    ]
+                },
+                "legalTerm": {
+                    "url": format!("https://aws.amazon.com/marketplace/eula/{model_id}")
+                },
+                "supportTerm": {
+                    "refundPolicyDescription": "No refunds for usage-based charges."
+                },
+                "validityTerm": {
+                    "agreementDuration": "P1Y"
+                }
+            }
         }]
     }))
 }
 
 async fn create_model_agreement(body: Value, state: SharedState) -> Response {
-    let model_id = body["modelId"].as_str().unwrap_or("");
+    let model_id = body["modelId"].as_str().unwrap_or("").to_string();
     let mut st = state.write().await;
-    st.model_agreements.insert(model_id.to_string());
-    json_response(json!({ "agreementId": format!("mock-agreement-{model_id}") }))
+
+    // Anthropic requires the FTU form before any agreement can be created.
+    if st.ftu_form.is_none() {
+        return ftu_not_filled_response();
+    }
+
+    // Agreement creation is async: the subscription starts PENDING and is
+    // promoted to EXECUTED out of band (see the /mock/bedrock/promote endpoint).
+    st.model_agreement_status
+        .insert(model_id.clone(), "PENDING".to_string());
+
+    json_status(StatusCode::ACCEPTED, json!({ "modelId": model_id }))
 }
 
-async fn converse(body: Value, _state: SharedState) -> Response {
+async fn delete_model_agreement(body: Value, state: SharedState) -> Response {
+    let model_id = body["modelId"].as_str().unwrap_or("");
+    let mut st = state.write().await;
+    st.model_agreement_status
+        .insert(model_id.to_string(), "NOT_AVAILABLE".to_string());
+    json_response(json!({}))
+}
+
+async fn get_use_case_form(state: SharedState) -> Response {
+    let st = state.read().await;
+    match &st.ftu_form {
+        Some(form_data) => json_response(json!({ "formData": form_data })),
+        None => ftu_not_filled_response(),
+    }
+}
+
+async fn put_use_case_form(body: Value, state: SharedState) -> Response {
+    let form_data = body["formData"].as_str().unwrap_or("").to_string();
+    let mut st = state.write().await;
+    st.ftu_form = Some(form_data);
+    json_status(StatusCode::CREATED, json!({}))
+}
+
+async fn converse(model_id: &str, body: Value, state: SharedState) -> Response {
+    // Gated model: the account isn't authorized to invoke it. Mirror Bedrock's
+    // runtime denial ("not available for this account") so callers exercise the
+    // model-access error classification.
+    {
+        let st = state.read().await;
+        let bare = model_id.strip_prefix("us.").unwrap_or(model_id);
+        if st.not_authorized_models.contains(bare) || st.not_authorized_models.contains(model_id) {
+            return access_denied_response(format!(
+                "{bare} is not available for this account. You can explore other \
+                 available models on Amazon Bedrock. For additional access options, \
+                 contact AWS Sales at https://aws.amazon.com/contact-us/sales-support/"
+            ));
+        }
+    }
+
     // Return a canned response for any Converse request.
     // If the body contains a document (extraction), return extracted text.
     let has_document = body["messages"]

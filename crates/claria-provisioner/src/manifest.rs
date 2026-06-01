@@ -311,22 +311,34 @@ impl Manifest {
                         "cloudtrail:StopLogging".into(),
                     ],
                 },
+                // Read-only marker that the scoped policy grants the Bedrock +
+                // Marketplace + use-case actions. Model-access agreements are an
+                // explicit, user-driven flow in the app (see claria-bedrock's
+                // `agreements` module) — not accepted on Apply. This spec exists
+                // so its `iam_actions` join the manifest's aggregated
+                // required-actions set, which `IamUserPolicySyncer` compares
+                // against the live policy for equality. Keep this list byte-for-
+                // byte in sync with the Bedrock/Marketplace statements in
+                // `account_setup::claria_policy_document`.
                 ResourceSpec {
-                    resource_type: "bedrock_model_agreement".into(),
+                    resource_type: "bedrock_model_access".into(),
                     resource_name: "anthropic.claude".into(),
-                    lifecycle: Lifecycle::Managed,
-                    desired: json!({"agreement": "accepted"}),
+                    lifecycle: Lifecycle::Data,
+                    desired: json!({"enabled": true}),
                     credential_scope: CredentialScope::Regular,
                     label: "Anthropic Claude Access".into(),
                     description: "AI model access for chat, report generation, and analysis"
                         .into(),
-                    severity: Severity::Elevated,
+                    severity: Severity::Info,
                     iam_actions: vec![
                         "bedrock:ListFoundationModels".into(),
                         "bedrock:ListInferenceProfiles".into(),
                         "bedrock:GetFoundationModelAvailability".into(),
                         "bedrock:ListFoundationModelAgreementOffers".into(),
                         "bedrock:CreateFoundationModelAgreement".into(),
+                        "bedrock:DeleteFoundationModelAgreement".into(),
+                        "bedrock:PutUseCaseForModelAccess".into(),
+                        "bedrock:GetUseCaseForModelAccess".into(),
                         "bedrock:InvokeModel".into(),
                         "bedrock:InvokeModelWithResponseStream".into(),
                         "bedrock:CountTokens".into(),

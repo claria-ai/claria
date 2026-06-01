@@ -76,12 +76,14 @@ export default function InfraChat({
   chatModelsLoading,
   chatModelsError,
   preferredModelId,
+  onSetUpAccess,
 }: {
   navigate: (page: Page) => void;
   chatModels: ChatModel[];
   chatModelsLoading: boolean;
   chatModelsError: string | null;
   preferredModelId?: string | null;
+  onSetUpAccess?: (modelId: string) => void;
 }) {
   const [scanning, setScanning] = useState(true);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -212,6 +214,7 @@ export default function InfraChat({
           extraLoading={scanning}
           extraLoadingText="Scanning infrastructure..."
           toolbar={toolbar}
+          onSetUpAccess={onSetUpAccess}
         />
       )}
 

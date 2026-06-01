@@ -280,7 +280,7 @@ fn e(addr: &str, action: Action, cause: Cause) -> (String, Action, Cause) {
 /// First onboarding — empty state, no manifest version.
 ///
 /// IAM user exists, policy and BAA are missing, all managed resources
-/// need creation, bedrock models need agreement acceptance.
+/// need creation. Bedrock access is a read-only marker (always in sync).
 #[tokio::test]
 async fn plan_fresh_account() {
     let m = manifest();
@@ -293,7 +293,7 @@ async fn plan_fresh_account() {
         }))),
         ("iam_user_policy.claria-admin-policy", None),
         ("baa_agreement.aws-baa", None),
-        ("bedrock_model_agreement.anthropic.claude", Some(json!({"agreement": "pending"}))),
+        ("bedrock_model_access.anthropic.claude", Some(json!({"enabled": true}))),
         ("transcribe_access.transcribe", Some(json!({"enabled": true}))),
         ("cost_explorer_access.cost-explorer", Some(json!({"enabled": true}))),
     ]);
@@ -313,7 +313,7 @@ async fn plan_fresh_account() {
         e(&format!("s3_bucket_policy.{BUCKET}"),               Action::Create,             Cause::Missing),
         e(&format!("cloudtrail_trail.{TRAIL}"),                Action::Create,             Cause::Missing),
         e(&format!("cloudtrail_trail_logging.{TRAIL}"),        Action::Create,             Cause::Missing),
-        e("bedrock_model_agreement.anthropic.claude",          Action::Modify,             Cause::Drift),
+        e("bedrock_model_access.anthropic.claude",             Action::Ok,                 Cause::InSync),
         e("transcribe_access.transcribe",                      Action::Ok,                 Cause::InSync),
         e("cost_explorer_access.cost-explorer",                Action::Ok,                 Cause::InSync),
     ]);

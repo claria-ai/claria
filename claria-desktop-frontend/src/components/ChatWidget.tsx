@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  acceptModelAgreement,
   type ChatMessage,
   type ChatModel,
   type TurnUsage,
@@ -14,13 +13,60 @@ import {
   formatCost,
   type SessionUsage,
 } from "../lib/cost";
-import { lookupModelPricing, type ModelPricing } from "../lib/tauri";
+import { lookupModelPricing, openUrl, type ModelPricing } from "../lib/tauri";
 import TurnCostBadge from "./TurnCostBadge";
 import SessionTotalBanner from "./SessionTotalBanner";
 import LastTurnFooter from "./LastTurnFooter";
 
-function isMarketplaceError(error: string): boolean {
-  return error.includes("aws-marketplace:") || error.includes("Marketplace");
+/** AWS Bedrock console "Model access" page — where a gated model is requested. */
+const BEDROCK_MODEL_ACCESS_URL =
+  "https://console.aws.amazon.com/bedrock/home#/modelaccess";
+
+/**
+ * Detect a chat error caused by missing model access and resolve the offending
+ * model plus the coarse reason. The backend emits a `MODEL_ACCESS::{json}`
+ * sentinel carrying `model_id` and a snake_case `reason`; we also fall back to
+ * recognising legacy marketplace/access-denied strings using the selected model.
+ *
+ * `reason` distinguishes a model that's *gated by AWS* (`not_authorized` — the
+ * account must request access from AWS; enrollment can't help) from one that
+ * just needs the user-driven enrollment step (`not_subscribed`,
+ * `use_case_form_required`).
+ */
+function parseModelAccessError(
+  error: string,
+  selectedModelId: string | null,
+): { modelId: string; reason: string | null } | null {
+  const marker = "MODEL_ACCESS::";
+  const idx = error.indexOf(marker);
+  if (idx >= 0) {
+    try {
+      const parsed = JSON.parse(error.slice(idx + marker.length));
+      if (parsed && typeof parsed.model_id === "string") {
+        return {
+          modelId: parsed.model_id,
+          reason: typeof parsed.reason === "string" ? parsed.reason : null,
+        };
+      }
+    } catch {
+      // fall through to the heuristic below
+    }
+  }
+  // A gated model surfaces as "not available for this account"; treat it as
+  // not_authorized so the UI routes to AWS rather than back to enrollment.
+  if (/not available for this account|explore other available models/i.test(error)) {
+    return {
+      modelId: selectedModelId ? selectedModelId.replace(/^[a-z]+\./, "") : "",
+      reason: "not_authorized",
+    };
+  }
+  if (/aws-marketplace:|marketplace|access to the model|accessdenied/i.test(error)) {
+    return {
+      modelId: selectedModelId ? selectedModelId.replace(/^[a-z]+\./, "") : "",
+      reason: null,
+    };
+  }
+  return null;
 }
 
 /**
@@ -47,6 +93,7 @@ export default function ChatWidget({
   toolbar,
   historyHeader,
   embedded = false,
+  onSetUpAccess,
 }: {
   chatModels: ChatModel[];
   chatModelsLoading: boolean;
@@ -72,6 +119,9 @@ export default function ChatWidget({
   /// toolbar — typically a chat-history summary header on resume.
   historyHeader?: ReactNode;
   embedded?: boolean;
+  /// Called when the user clicks "Set up access" on a model-access error,
+  /// deep-linking to the enrollment page for the offending model.
+  onSetUpAccess?: (modelId: string) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
   const [usageByIndex, setUsageByIndex] = useState<Array<TurnUsage | null>>(
@@ -81,7 +131,6 @@ export default function ChatWidget({
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [accepting, setAccepting] = useState(false);
 
   // Per-model pricing for pre-flight estimates. Looked up once per
   // selected model and cached.
@@ -212,20 +261,6 @@ export default function ChatWidget({
     }
   }
 
-  async function handleAcceptAgreement() {
-    if (!selectedModelId || accepting) return;
-    const bareModelId = selectedModelId.replace(/^[a-z]+\./, "");
-    setAccepting(true);
-    try {
-      await acceptModelAgreement(bareModelId);
-      setError(null);
-    } catch (e) {
-      setError(`Failed to accept agreement: ${String(e)}`);
-    } finally {
-      setAccepting(false);
-    }
-  }
-
   const resolvedPlaceholder =
     placeholder ??
     (extraLoading
@@ -318,20 +353,46 @@ export default function ChatWidget({
           </div>
         )}
 
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error}</p>
-            {isMarketplaceError(error) && selectedModelId && (
-              <button
-                onClick={handleAcceptAgreement}
-                disabled={accepting}
-                className="mt-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-              >
-                {accepting ? "Accepting..." : "Accept Model Agreement"}
-              </button>
-            )}
-          </div>
-        )}
+        {error && (() => {
+          const access = parseModelAccessError(error, selectedModelId);
+          // Gated by AWS: enrollment can't unlock it, so send the user to the
+          // Bedrock console instead of looping back to the enrollment page
+          // (which would just say the model is "ready").
+          if (access && access.reason === "not_authorized") {
+            return (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-red-800 text-sm">
+                  This model isn't available to your AWS account yet. It's gated
+                  by AWS — request access in the Amazon Bedrock console (or
+                  contact AWS), then try again.
+                </p>
+                <button
+                  onClick={() => openUrl(BEDROCK_MODEL_ACCESS_URL)}
+                  className="mt-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  Open Bedrock console ↗
+                </button>
+              </div>
+            );
+          }
+          return (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+              <p className="text-red-800 text-sm">
+                {access
+                  ? "This model isn't set up for your account yet."
+                  : error}
+              </p>
+              {access && onSetUpAccess && (
+                <button
+                  onClick={() => onSetUpAccess(access.modelId)}
+                  className="mt-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  Set up access
+                </button>
+              )}
+            </div>
+          );
+        })()}
 
         <div ref={messagesEndRef} />
       </div>

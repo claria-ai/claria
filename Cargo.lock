@@ -1422,11 +1422,13 @@ name = "claria-bedrock"
 version = "0.16.3"
 dependencies = [
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-bedrock",
  "aws-sdk-bedrockruntime",
  "aws-smithy-types",
  "claria-billing",
  "claria-core",
+ "claria-mock-aws",
  "jiff",
  "serde",
  "serde_json",

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     sync::Arc,
 };
 
@@ -39,8 +39,18 @@ pub struct MockState {
 
     // Bedrock
     pub foundation_models: Vec<FoundationModel>,
-    pub model_agreements: HashSet<String>,
+    /// model_id → agreement lifecycle: `AVAILABLE` | `PENDING` | `EXECUTED` |
+    /// `ERROR`. A missing entry is treated as `NOT_AVAILABLE` (no agreement
+    /// record).
+    pub model_agreement_status: HashMap<String, String>,
+    /// The Anthropic first-time-use form's base64 `formData`, once submitted.
+    pub ftu_form: Option<String>,
     pub inference_profiles: Vec<InferenceProfile>,
+    /// Bare model ids the account is NOT authorized to invoke. These read
+    /// `authorizationStatus: NOT_AVAILABLE`/`NOT_AUTHORIZED` and Converse denies
+    /// them with "not available for this account" — mirroring a model gated by
+    /// AWS despite a listed/executed agreement. Default empty.
+    pub not_authorized_models: std::collections::HashSet<String>,
 
     // Transcribe
     pub transcription_jobs: HashMap<String, TranscriptionJob>,

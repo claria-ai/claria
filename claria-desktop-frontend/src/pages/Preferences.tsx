@@ -171,6 +171,12 @@ export default function Preferences({
                   Applies to new chat sessions. Existing chats keep the model
                   they were started with.
                 </p>
+                <button
+                  onClick={() => navigate("enrollment")}
+                  className="text-sm text-blue-600 hover:underline mt-3"
+                >
+                  Manage model access →
+                </button>
               </>
             )}
           </div>

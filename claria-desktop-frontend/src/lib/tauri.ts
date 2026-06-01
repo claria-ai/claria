@@ -21,6 +21,12 @@ export type {
   ChatRole,
   ClientSummary,
   ConfigInfo,
+  EnrollmentStatus,
+  ModelEnrollment,
+  OfferTerms,
+  PricingRate,
+  UseCaseForm,
+  UseCaseFormStatus,
   CredentialAssessment,
   CredentialClass,
   CredentialSource,
@@ -407,8 +413,32 @@ export async function infraChat(
   return unwrap(await commands.infraChat(modelId, messages, planEntries));
 }
 
-export async function acceptModelAgreement(modelId: string): Promise<void> {
-  unwrap(await commands.acceptModelAgreement(modelId));
+// ---------------------------------------------------------------------------
+// Model enrollment wrappers
+// ---------------------------------------------------------------------------
+
+export async function listModelEnrollments() {
+  return unwrap(await commands.listModelEnrollments());
+}
+
+export async function getModelEnrollment(modelId: string) {
+  return unwrap(await commands.getModelEnrollment(modelId));
+}
+
+export async function getUseCaseForm() {
+  return unwrap(await commands.getUseCaseForm());
+}
+
+export async function submitUseCaseForm(form: import("./bindings").UseCaseForm): Promise<void> {
+  unwrap(await commands.submitUseCaseForm(form));
+}
+
+export async function executeModelAgreement(modelId: string): Promise<void> {
+  unwrap(await commands.executeModelAgreement(modelId));
+}
+
+export async function deleteModelAgreement(modelId: string): Promise<void> {
+  unwrap(await commands.deleteModelAgreement(modelId));
 }
 
 export async function loadChatHistory(clientId: string, chatId: string): Promise<import("./bindings").ChatHistoryDetail> {
