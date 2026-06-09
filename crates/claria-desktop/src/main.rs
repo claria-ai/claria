@@ -93,6 +93,7 @@ fn main() -> Result<()> {
             commands::get_console_logs,
             commands::get_console_logs_text,
             commands::save_console_logs,
+            commands::list_account_activity,
         ]);
 
     #[cfg(debug_assertions)]

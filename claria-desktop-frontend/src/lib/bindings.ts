@@ -789,6 +789,14 @@ async saveConsoleLogs() : Promise<Result<boolean, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async listAccountActivity(query: ActivityQuery) : Promise<Result<ActivityPage, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_account_activity", { query }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -831,6 +839,19 @@ last_used_at: string | null;
  */
 last_used_service: string | null }
 export type Action = "ok" | "create" | "modify" | "delete" | "precondition_failed"
+export type ActivityEvent = { event_id: string | null; 
+/**
+ * ISO-8601 string (e.g. "2026-05-18T10:23:11Z"); easier for the frontend
+ * than serializing the structured `jiff::Timestamp`.
+ */
+event_time: string | null; event_name: string | null; event_source: string | null; username: string | null; read_only: boolean | null; access_key_id: string | null; resources: ActivityResource[]; cloudtrail_event_json: string | null }
+export type ActivityPage = { events: ActivityEvent[]; next_token: string | null }
+/**
+ * Frontend-facing filter set for `list_account_activity`. Times are ISO-8601
+ * strings; the command parses them into `jiff::Timestamp` server-side.
+ */
+export type ActivityQuery = { start_time: string | null; end_time: string | null; event_name: string | null; event_source: string | null; username: string | null; read_only: boolean | null; next_token: string | null; max_results: number | null }
+export type ActivityResource = { resource_type: string | null; resource_name: string | null }
 /**
  * Temporary credentials obtained by assuming a role in a sub-account.
  * 

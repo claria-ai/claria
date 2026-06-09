@@ -1409,7 +1409,9 @@ version = "0.15.0"
 dependencies = [
  "aws-config",
  "aws-sdk-cloudtrail",
+ "aws-smithy-types",
  "claria-core",
+ "jiff",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

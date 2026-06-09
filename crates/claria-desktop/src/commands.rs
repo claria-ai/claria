@@ -3603,6 +3603,114 @@ pub async fn count_infra_context_tokens(
 }
 
 // ---------------------------------------------------------------------------
+// CloudTrail activity (LookupEvents)
+// ---------------------------------------------------------------------------
+
+/// Frontend-facing filter set for `list_account_activity`. Times are ISO-8601
+/// strings; the command parses them into `jiff::Timestamp` server-side.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
+pub struct ActivityQuery {
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub event_name: Option<String>,
+    pub event_source: Option<String>,
+    pub username: Option<String>,
+    pub read_only: Option<bool>,
+    pub next_token: Option<String>,
+    pub max_results: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ActivityResource {
+    pub resource_type: Option<String>,
+    pub resource_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ActivityEvent {
+    pub event_id: Option<String>,
+    /// ISO-8601 string (e.g. "2026-05-18T10:23:11Z"); easier for the frontend
+    /// than serializing the structured `jiff::Timestamp`.
+    pub event_time: Option<String>,
+    pub event_name: Option<String>,
+    pub event_source: Option<String>,
+    pub username: Option<String>,
+    pub read_only: Option<bool>,
+    pub access_key_id: Option<String>,
+    pub resources: Vec<ActivityResource>,
+    pub cloudtrail_event_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ActivityPage {
+    pub events: Vec<ActivityEvent>,
+    pub next_token: Option<String>,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_account_activity(
+    state: State<'_, DesktopState>,
+    query: ActivityQuery,
+) -> Result<ActivityPage, String> {
+    let (_cfg, sdk_config) = load_sdk_config(&state).await?;
+    let client = claria_audit::client::from_config(&sdk_config);
+
+    let lookup_query = claria_audit::lookup::LookupQuery {
+        start_time: parse_optional_timestamp(query.start_time.as_deref())?,
+        end_time: parse_optional_timestamp(query.end_time.as_deref())?,
+        event_name: query.event_name,
+        event_source: query.event_source,
+        username: query.username,
+        read_only: query.read_only,
+        next_token: query.next_token,
+        max_results: query.max_results,
+    };
+
+    let result = claria_audit::lookup::list_events(&client, lookup_query)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let events = result
+        .events
+        .into_iter()
+        .map(|e| ActivityEvent {
+            event_id: e.event_id,
+            event_time: e.event_time.map(|t| t.to_string()),
+            event_name: e.event_name,
+            event_source: e.event_source,
+            username: e.username,
+            read_only: e.read_only,
+            access_key_id: e.access_key_id,
+            resources: e
+                .resources
+                .into_iter()
+                .map(|r| ActivityResource {
+                    resource_type: r.resource_type,
+                    resource_name: r.resource_name,
+                })
+                .collect(),
+            cloudtrail_event_json: e.cloudtrail_event_json,
+        })
+        .collect();
+
+    Ok(ActivityPage {
+        events,
+        next_token: result.next_token,
+    })
+}
+
+fn parse_optional_timestamp(value: Option<&str>) -> Result<Option<jiff::Timestamp>, String> {
+    match value {
+        Some(s) if !s.is_empty() => s
+            .parse::<jiff::Timestamp>()
+            .map(Some)
+            .map_err(|e| format!("invalid timestamp {s:?}: {e}")),
+        _ => Ok(None),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Console log commands
 // ---------------------------------------------------------------------------
 

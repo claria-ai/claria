@@ -14,3 +14,8 @@ pub async fn build_client_with_region(region: &str) -> Client {
         .await;
     Client::new(&config)
 }
+
+/// Build a CloudTrail client from an existing `SdkConfig`.
+pub fn from_config(config: &aws_config::SdkConfig) -> Client {
+    Client::new(config)
+}

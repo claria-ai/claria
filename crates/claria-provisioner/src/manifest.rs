@@ -294,6 +294,7 @@ impl Manifest {
                         "cloudtrail:GetTrail".into(),
                         "cloudtrail:CreateTrail".into(),
                         "cloudtrail:DeleteTrail".into(),
+                        "cloudtrail:LookupEvents".into(),
                     ],
                 },
                 ResourceSpec {

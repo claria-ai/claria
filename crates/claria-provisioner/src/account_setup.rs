@@ -715,7 +715,8 @@ pub(crate) fn claria_policy_document(system_name: &str, account_id: &str) -> Str
                     "cloudtrail:CreateTrail",
                     "cloudtrail:StartLogging",
                     "cloudtrail:StopLogging",
-                    "cloudtrail:DeleteTrail"
+                    "cloudtrail:DeleteTrail",
+                    "cloudtrail:LookupEvents"
                 ],
                 "Resource": "*"
             },

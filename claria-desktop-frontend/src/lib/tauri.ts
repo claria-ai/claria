@@ -7,6 +7,10 @@ export { commands };
 export type {
   AccessKeyInfo,
   Action,
+  ActivityEvent,
+  ActivityPage,
+  ActivityQuery,
+  ActivityResource,
   AssumeRoleResult,
   BootstrapResult,
   BootstrapStep,
@@ -540,4 +544,10 @@ export async function getConsoleLogsText(): Promise<string> {
 export async function saveConsoleLogs(): Promise<boolean> {
   const { invoke } = await import("@tauri-apps/api/core");
   return await invoke("save_console_logs");
+}
+
+export async function listAccountActivity(
+  query: import("./bindings").ActivityQuery,
+): Promise<import("./bindings").ActivityPage> {
+  return unwrap(await commands.listAccountActivity(query));
 }

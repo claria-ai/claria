@@ -11,6 +11,7 @@ import ClientRecord from "./pages/ClientRecord";
 import About from "./pages/About";
 import Preferences from "./pages/Preferences";
 import InfraChat from "./pages/InfraChat";
+import InfraActivity from "./pages/InfraActivity";
 import CostExplorer from "./pages/CostExplorer";
 
 export type Page =
@@ -24,6 +25,7 @@ export type Page =
   | "client-record"
   | "client-chat"
   | "infra-chat"
+  | "infra-activity"
   | "cost-explorer"
   | "preferences"
   | "about";
@@ -151,6 +153,7 @@ export default function App() {
           preferredModelId={preferredModelId}
         />
       )}
+      {page === "infra-activity" && <InfraActivity navigate={navigate} />}
       {page === "preferences" && (
         <Preferences
           navigate={navigate}

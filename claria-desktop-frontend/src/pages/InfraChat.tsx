@@ -156,6 +156,13 @@ export default function InfraChat({
       >
         Infrastructure
       </button>
+      <button
+        onClick={() => navigate("infra-activity")}
+        className="shrink-0 px-2.5 py-1 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-full hover:bg-gray-50 transition-colors"
+        title="View recent API activity (CloudTrail)"
+      >
+        Activity
+      </button>
     </div>
   ) : null;
 

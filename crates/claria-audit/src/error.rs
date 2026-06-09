@@ -5,6 +5,9 @@ pub enum AuditError {
     #[error("CloudTrail error: {0}")]
     CloudTrail(String),
 
+    #[error("CloudTrail LookupEvents error: {0}")]
+    LookupEvents(String),
+
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
