@@ -67,22 +67,10 @@ jobs:
         working-directory: claria-desktop-frontend
         run: npm run build
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Rust setup (toolchain, sccache, caches, mold)
+        uses: ./.github/actions/rust-setup
         with:
           components: clippy
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-
-      - name: Configure mold linker
-        run: |
-          mkdir -p .cargo
-          {
-            echo '[target.x86_64-unknown-linux-gnu]'
-            echo 'linker = "clang"'
-            echo 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]'
-          } >> .cargo/config.toml
 
       - name: Clippy (workspace)
         env:
@@ -117,25 +105,17 @@ jobs:
         working-directory: claria-desktop-frontend
         run: npm run build
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-
-      - name: Configure mold linker
-        run: |
-          mkdir -p .cargo
-          {
-            echo '[target.x86_64-unknown-linux-gnu]'
-            echo 'linker = "clang"'
-            echo 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]'
-          } >> .cargo/config.toml
+      - name: Rust setup (toolchain, sccache, caches, mold)
+        uses: ./.github/actions/rust-setup
 
       - name: Test (workspace)
         env:
           CLARIA_SKIP_FRONTEND_BUILD: '1'
         run: cargo test --workspace
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   tauri-build:
     name: Tauri build
@@ -165,20 +145,8 @@ jobs:
         working-directory: claria-desktop-frontend
         run: npm run build
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-
-      - name: Configure mold linker
-        run: |
-          mkdir -p .cargo
-          {
-            echo '[target.x86_64-unknown-linux-gnu]'
-            echo 'linker = "clang"'
-            echo 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]'
-          } >> .cargo/config.toml
+      - name: Rust setup (toolchain, sccache, caches, mold)
+        uses: ./.github/actions/rust-setup
 
       - name: Build Tauri app
         env:

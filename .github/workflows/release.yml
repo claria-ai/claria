@@ -45,13 +45,10 @@ jobs:
         run: npm run build
 
       # --- Rust ---
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Rust setup (toolchain, sccache, caches)
+        uses: ./.github/actions/rust-setup
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
 
       # --- Cache warm-up (main branch only) ---
       - name: Build (warm cache)
