@@ -293,8 +293,6 @@ async fn plan_fresh_account() {
         }))),
         ("iam_user_policy.claria-admin-policy", None),
         ("baa_agreement.aws-baa", None),
-        ("bedrock_model_agreement.anthropic.claude-sonnet-4", Some(json!({"agreement": "pending"}))),
-        ("bedrock_model_agreement.anthropic.claude-opus-4", Some(json!({"agreement": "pending"}))),
         ("transcribe_access.transcribe", Some(json!({"enabled": true}))),
         ("cost_explorer_access.cost-explorer", Some(json!({"enabled": true}))),
     ]);
@@ -303,6 +301,8 @@ async fn plan_fresh_account() {
 
     // Structural comparison: missing resources → Create/Missing,
     // drifted resources → Modify/Drift, in-sync → Ok/InSync.
+    // bedrock_model_agreement entries are no longer in the static manifest —
+    // they're contributed at runtime by claria-live-aws.
     assert_plan(&result, &[
         e("iam_user.claria-admin",                             Action::Ok,                 Cause::InSync),
         e("iam_user_policy.claria-admin-policy",               Action::Create,             Cause::Missing),
@@ -314,8 +314,6 @@ async fn plan_fresh_account() {
         e(&format!("s3_bucket_policy.{BUCKET}"),               Action::Create,             Cause::Missing),
         e(&format!("cloudtrail_trail.{TRAIL}"),                Action::Create,             Cause::Missing),
         e(&format!("cloudtrail_trail_logging.{TRAIL}"),        Action::Create,             Cause::Missing),
-        e("bedrock_model_agreement.anthropic.claude-sonnet-4", Action::Modify,             Cause::Drift),
-        e("bedrock_model_agreement.anthropic.claude-opus-4",   Action::Modify,             Cause::Drift),
         e("transcribe_access.transcribe",                      Action::Ok,                 Cause::InSync),
         e("cost_explorer_access.cost-explorer",                Action::Ok,                 Cause::InSync),
     ]);

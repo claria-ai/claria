@@ -1427,6 +1427,8 @@ dependencies = [
  "aws-smithy-types",
  "claria-billing",
  "claria-core",
+ "claria-live-aws",
+ "claria-provisioner",
  "jiff",
  "serde",
  "serde_json",
@@ -1525,6 +1527,21 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "ts-rs",
+]
+
+[[package]]
+name = "claria-live-aws"
+version = "0.15.0"
+dependencies = [
+ "aws-config",
+ "claria-provisioner",
+ "jiff",
+ "serde",
+ "serde_json",
+ "specta",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

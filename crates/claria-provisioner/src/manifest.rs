@@ -3,6 +3,26 @@ use serde_json::{json, Value};
 use specta::Type;
 
 use crate::addr::ResourceAddr;
+use crate::error::ProvisionerError;
+use crate::syncer::BoxFuture;
+
+/// Inject runtime-discovered `ResourceSpec`s into the manifest.
+///
+/// Implementations live outside the provisioner crate (e.g. in
+/// `claria-live-aws` for marketplace agreements) and are passed into
+/// `build_manifest_with_contributors`. The provisioner pipeline treats
+/// the resulting specs identically to statically declared ones — same
+/// plan rendering, same state tracking, same audit trail.
+///
+/// Implementations MUST be read-only against AWS — they may call
+/// `List*`/`Describe*`/`Get*` to derive their specs, but must never
+/// mutate AWS state.
+pub trait ManifestContributor: Send + Sync {
+    fn contribute<'a>(
+        &'a self,
+        sdk: &'a aws_config::SdkConfig,
+    ) -> BoxFuture<'a, Result<Vec<ResourceSpec>, ProvisionerError>>;
+}
 
 /// Every resource in the system is declared as a `ResourceSpec`.
 ///
@@ -311,50 +331,10 @@ impl Manifest {
                         "cloudtrail:StopLogging".into(),
                     ],
                 },
-                ResourceSpec {
-                    resource_type: "bedrock_model_agreement".into(),
-                    resource_name: "anthropic.claude-sonnet-4".into(),
-                    lifecycle: Lifecycle::Managed,
-                    desired: json!({"agreement": "accepted"}),
-                    credential_scope: CredentialScope::Regular,
-                    label: "Claude Sonnet 4 Access".into(),
-                    description: "AI model access for report generation".into(),
-                    severity: Severity::Elevated,
-                    iam_actions: vec![
-                        "bedrock:ListFoundationModels".into(),
-                        "bedrock:ListInferenceProfiles".into(),
-                        "bedrock:GetFoundationModelAvailability".into(),
-                        "bedrock:ListFoundationModelAgreementOffers".into(),
-                        "bedrock:CreateFoundationModelAgreement".into(),
-                        "bedrock:InvokeModel".into(),
-                        "bedrock:InvokeModelWithResponseStream".into(),
-                        "bedrock:CountTokens".into(),
-                        "aws-marketplace:ViewSubscriptions".into(),
-                        "aws-marketplace:Subscribe".into(),
-                    ],
-                },
-                ResourceSpec {
-                    resource_type: "bedrock_model_agreement".into(),
-                    resource_name: "anthropic.claude-opus-4".into(),
-                    lifecycle: Lifecycle::Managed,
-                    desired: json!({"agreement": "accepted"}),
-                    credential_scope: CredentialScope::Regular,
-                    label: "Claude Opus 4 Access".into(),
-                    description: "AI model access for complex analysis".into(),
-                    severity: Severity::Elevated,
-                    iam_actions: vec![
-                        "bedrock:ListFoundationModels".into(),
-                        "bedrock:ListInferenceProfiles".into(),
-                        "bedrock:GetFoundationModelAvailability".into(),
-                        "bedrock:ListFoundationModelAgreementOffers".into(),
-                        "bedrock:CreateFoundationModelAgreement".into(),
-                        "bedrock:InvokeModel".into(),
-                        "bedrock:InvokeModelWithResponseStream".into(),
-                        "bedrock:CountTokens".into(),
-                        "aws-marketplace:ViewSubscriptions".into(),
-                        "aws-marketplace:Subscribe".into(),
-                    ],
-                },
+                // Marketplace agreements (bedrock_model_agreement) are
+                // contributed at runtime by the live-aws framework — they
+                // depend on AWS's current Anthropic catalog, not on
+                // hardcoded model IDs. See claria-live-aws.
                 ResourceSpec {
                     resource_type: "transcribe_access".into(),
                     resource_name: "transcribe".into(),

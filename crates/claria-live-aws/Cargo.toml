@@ -1,22 +1,16 @@
 [package]
-name = "claria-bedrock"
+name = "claria-live-aws"
 version = "0.15.0"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 aws-config = "=1.8.16"
-aws-sdk-bedrock = "=1.141.0"
-aws-sdk-bedrockruntime = "=1.130.0"
-aws-smithy-types = "=1.4.7"
-claria-billing = { path = "../claria-billing" }
-claria-core = { path = "../claria-core" }
-claria-live-aws = { path = "../claria-live-aws" }
 claria-provisioner = { path = "../claria-provisioner" }
 jiff = { version = "=0.2.24", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
+specta = { version = "=2.0.0-rc.22", features = ["derive", "serde_json"] }
 thiserror = "=2.0.18"
 tokio = { version = "=1.52.3", features = ["full"] }
 tracing = "=0.1.44"
-uuid = { version = "=1.23.1", features = ["v4"] }

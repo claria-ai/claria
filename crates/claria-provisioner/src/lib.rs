@@ -36,7 +36,7 @@ pub use crate::account_setup::{
 pub use crate::addr::ResourceAddr;
 pub use crate::error::ProvisionerError;
 pub use crate::manifest::{
-    CredentialScope, FieldDrift, Lifecycle, Manifest, ResourceSpec, Severity,
+    CredentialScope, FieldDrift, Lifecycle, ManifestContributor, Manifest, ResourceSpec, Severity,
 };
 pub use crate::orchestrate::{
     build_plan_entry, destroy_all, execute, find_orphans, log_scan_summary, plan,
@@ -46,9 +46,37 @@ pub use crate::plan::{Action, Cause, PlanEntry};
 pub use crate::state::ProvisionerState;
 pub use crate::syncer::ResourceSyncer;
 
-/// Construct the resource manifest from runtime config.
+/// Construct the static resource manifest from runtime config.
+///
+/// This produces only the resources whose specs are known at compile time.
+/// For runtime-discovered specs (e.g. marketplace agreements for currently
+/// active models), use [`build_manifest_with_contributors`] instead.
 pub fn build_manifest(account_id: &str, system_name: &str, region: &str) -> Manifest {
     Manifest::claria(account_id, system_name, region)
+}
+
+/// Construct the manifest with runtime contributions merged in.
+///
+/// Each [`ManifestContributor`] runs its `contribute()` method (read-only
+/// AWS access) and its returned `ResourceSpec`s are appended to the static
+/// manifest. The provisioner pipeline treats contributed specs identically
+/// to statically declared ones.
+///
+/// If any contributor returns `Err`, the whole build fails — partial
+/// manifests would corrupt plan/apply assumptions.
+pub async fn build_manifest_with_contributors(
+    sdk: &aws_config::SdkConfig,
+    account_id: &str,
+    system_name: &str,
+    region: &str,
+    contributors: &[Box<dyn ManifestContributor>],
+) -> Result<Manifest, ProvisionerError> {
+    let mut manifest = Manifest::claria(account_id, system_name, region);
+    for contributor in contributors {
+        let specs = contributor.contribute(sdk).await?;
+        manifest.specs.extend(specs);
+    }
+    Ok(manifest)
 }
 
 /// Construct all [`ResourceSyncer`] impls from an SDK config and manifest.
