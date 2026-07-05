@@ -1,0 +1,71 @@
+name: rust-setup
+description: >
+  Install the Rust toolchain and wire the build caches, configured identically across CI and
+  release. Two complementary layers, no real overlap:
+    - sccache (mozilla-actions/sccache-action, GitHub Actions cache backend) caches rustc
+      invocations. The wrapper is injected via CI env only (RUSTC_WRAPPER) — never via the repo's
+      .cargo/config.toml — so local builds are unaffected.
+    - Swatinem/rust-cache caches the cargo home (registry index + crate sources) and dependency
+      build-script outputs, which sccache does not cover.
+  On Linux runners this also writes the mold-linker .cargo/config.toml that the CI jobs
+  previously duplicated inline; macOS/Windows release jobs skip that step.
+
+inputs:
+  components:
+    description: "Extra rustup components passed to dtolnay/rust-toolchain (e.g. 'clippy')."
+    required: false
+    default: ""
+  targets:
+    description: "Extra compilation targets passed to dtolnay/rust-toolchain (e.g. 'aarch64-apple-darwin')."
+    required: false
+    default: ""
+  shared-key:
+    description: >
+      Stable cache segment, passed to rust-cache as shared-key (not key). rust-cache's default key
+      embeds github.job; jobs that set the same shared-key restore one shared cache. Empty (the
+      default) keeps rust-cache's per-job keying, matching the previous inline setup.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - name: Install sccache
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      with:
+        version: "v0.15.0"
+
+    - name: Enable sccache (GHA backend) for cargo
+      shell: bash
+      run: |
+        # SCCACHE_GHA_ENABLED routes sccache's store to the GitHub Actions cache (not ephemeral
+        # local disk). RUSTC_WRAPPER comes via CI env only — never the repo's .cargo/config.toml —
+        # so coworkers' local builds are unaffected. CARGO_INCREMENTAL=0 because sccache cannot
+        # cache incremental builds and silently bypasses otherwise.
+        {
+          echo "SCCACHE_GHA_ENABLED=true"
+          echo "RUSTC_WRAPPER=sccache"
+          echo "CARGO_INCREMENTAL=0"
+        } >> "$GITHUB_ENV"
+
+    - name: Rust cache (cargo home + dependency build-script outputs)
+      uses: swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.shared-key }}
+
+    - name: Configure mold linker
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        mkdir -p .cargo
+        {
+          echo '[target.x86_64-unknown-linux-gnu]'
+          echo 'linker = "clang"'
+          echo 'rustflags = ["-C", "link-arg=-fuse-ld=mold"]'
+        } >> .cargo/config.toml
