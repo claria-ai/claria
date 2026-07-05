@@ -1391,20 +1391,28 @@ const EXTRACTION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-20250514-v1:0";
 const TRANSLATION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-6";
 
 /// List files in a client's record, excluding sidecar `.text` files.
+///
+/// `prefix` narrows the listing to filenames starting with it, mapped to the
+/// S3 ListObjectsV2 `Prefix` parameter (`records/{id}/{prefix}`).
 #[tauri::command]
 #[specta::specta]
 pub async fn list_record_files(
     state: State<'_, DesktopState>,
     client_id: String,
+    prefix: Option<String>,
 ) -> Result<Vec<RecordFile>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let prefix = claria_core::s3_keys::client_records_prefix(id);
+    let records_prefix = claria_core::s3_keys::client_records_prefix(id);
+    let list_prefix = match prefix.as_deref().filter(|p| !p.is_empty()) {
+        Some(p) => claria_core::s3_keys::client_records_search_prefix(id, p),
+        None => records_prefix.clone(),
+    };
 
-    let objects = claria_storage::objects::list_objects_with_metadata(&s3, &bucket, &prefix)
+    let objects = claria_storage::objects::list_objects_with_metadata(&s3, &bucket, &list_prefix)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1414,16 +1422,10 @@ pub async fn list_record_files(
 
     let files: Vec<RecordFile> = objects
         .iter()
-        .filter(|obj| {
-            // Hide sidecar files: keys ending in `.text` where the base file exists.
-            if let Some(base) = obj.key.strip_suffix(".text") {
-                return !all_keys.contains(base);
-            }
-            true
-        })
+        .filter(|obj| !claria_core::s3_keys::is_hidden_sidecar(&obj.key, &all_keys))
         .filter_map(|obj| {
-            // Strip the prefix to get just the filename.
-            let filename = obj.key.strip_prefix(&prefix)?;
+            // Strip the records prefix to get just the filename.
+            let filename = obj.key.strip_prefix(&records_prefix)?;
             if filename.is_empty() {
                 return None;
             }

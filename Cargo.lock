@@ -1593,14 +1593,17 @@ name = "claria-storage"
 version = "0.16.3"
 dependencies = [
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-s3",
  "aws-smithy-types",
  "claria-core",
+ "claria-mock-aws",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

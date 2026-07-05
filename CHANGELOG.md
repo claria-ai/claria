@@ -2,6 +2,10 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Record files can be searched by filename prefix; the search narrows the S3 listing itself rather than filtering client-side
+
 ## [0.16.3] — 2026-05-20
 
 - AWS SDK and IO errors are emitted as tracing events at their origin so the in-app Console surfaces them, not just the red banner
