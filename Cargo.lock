@@ -1472,6 +1472,7 @@ name = "claria-desktop"
 version = "0.16.3"
 dependencies = [
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-s3",
  "aws-sdk-sts",
  "base64 0.22.1",
@@ -1479,6 +1480,7 @@ dependencies = [
  "claria-bedrock",
  "claria-billing",
  "claria-core",
+ "claria-mock-aws",
  "claria-provisioner",
  "claria-storage",
  "claria-transcribe",
