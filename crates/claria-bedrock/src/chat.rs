@@ -50,13 +50,14 @@
 //! ## Marketplace agreements
 //!
 //! Before a model can be invoked, its Marketplace agreement must be accepted.
-//! New models (like Claude Sonnet 4 at launch) require this even if earlier
-//! Claude models were already accepted. The relevant APIs are:
+//! New models require this even if earlier Claude models were already
+//! accepted. The relevant APIs are:
 //!
 //! - `GetFoundationModelAvailability(model_id)` — returns
 //!   `agreement_availability.status`:
-//!   - `Available` → agreement exists but hasn't been accepted yet
-//!   - `NotAvailable` → already accepted, or no agreement required
+//!   - `Available` → agreement is in place (accepted)
+//!   - `NotAvailable` → not accepted yet — accept via the offer APIs below
+//!   - `Pending` → acceptance is being processed
 //!
 //! - `ListFoundationModelAgreementOffers(model_id)` → returns offer tokens
 //! - `CreateFoundationModelAgreement(model_id, offer_token)` → accepts it
@@ -65,6 +66,20 @@
 //! don't have to manually accept each model in the AWS console. The
 //! operation is idempotent — re-accepting an already-accepted model is a
 //! no-op.
+//!
+//! ## AWS-side rollout gating
+//!
+//! An accepted agreement is necessary but not sufficient. AWS enables the
+//! newest Claude models per-account on a gradual rollout: the runtime rejects
+//! `Converse` with `AccessDeniedException` ("not available for this account
+//! ... contact AWS Sales") even while `GetFoundationModelAvailability`
+//! reports agreement, entitlement, authorization, and region all available.
+//! The only reliable signal is a runtime probe: `Converse` with an empty
+//! message list is free (access checks run before request validation, so an
+//! accessible model answers `ValidationException` and a gated one
+//! `AccessDeniedException`; no tokens are billed). `list_chat_models` runs
+//! this probe and hides models the account can't invoke yet — they appear
+//! automatically once AWS enables them.
 //!
 //! ## Required IAM permissions
 //!
@@ -144,6 +159,12 @@ pub enum ChatRole {
 /// model list. Models absent from the registry (e.g. Claude 3 Opus) are also
 /// excluded.
 ///
+/// Each candidate is then checked with a zero-cost runtime probe and dropped
+/// if the account can't actually invoke it — AWS rolls the newest models out
+/// per-account, and every metadata API reports them as available long before
+/// the runtime accepts an invocation (see module docs, "AWS-side rollout
+/// gating"). Gated models reappear automatically once AWS enables them.
+///
 /// Results are sorted by name.
 pub async fn list_chat_models(
     config: &aws_config::SdkConfig,
@@ -160,7 +181,7 @@ pub async fn list_chat_models(
     // If the API didn't return one, construct it: the Converse API requires an
     // inference profile ID (bare model IDs fail with "on-demand throughput
     // isn't supported"). The profile ID format is `us.{foundation_model_id}`.
-    let mut models: Vec<ChatModel> = active_models
+    let candidates: Vec<ChatModel> = active_models
         .into_iter()
         .map(|(model_id, model_name)| {
             if let Some((profile_id, profile_name)) = us_profiles.get(&model_id) {
@@ -177,11 +198,70 @@ pub async fn list_chat_models(
         })
         .collect();
 
+    // Step 4: Drop models the runtime refuses to invoke for this account.
+    // Probes run concurrently; each is a free Converse call (see module docs).
+    let runtime_client = aws_sdk_bedrockruntime::Client::new(config);
+    let probes: Vec<_> = candidates
+        .into_iter()
+        .map(|model| {
+            let client = runtime_client.clone();
+            tokio::spawn(async move {
+                let invokable = model_is_invokable(&client, &model.model_id).await;
+                (model, invokable)
+            })
+        })
+        .collect();
+
+    let mut models: Vec<ChatModel> = Vec::new();
+    for probe in probes {
+        let (model, invokable) = probe
+            .await
+            .map_err(|e| BedrockError::Invocation(e.to_string()))?;
+        if invokable {
+            models.push(model);
+        } else {
+            info!(
+                model_id = %model.model_id,
+                "hiding model — AWS has not enabled it for this account yet"
+            );
+        }
+    }
+
     models.sort_by(|a, b| a.name.cmp(&b.name));
 
     info!(count = models.len(), "discovered chat models");
 
     Ok(models)
+}
+
+/// Zero-cost check that the account can invoke a model.
+///
+/// Sends `Converse` with an empty message list: access checks run before
+/// request validation, so an invokable model fails with `ValidationException`
+/// ("conversation must start with a user message") while a model AWS hasn't
+/// enabled for the account fails with `AccessDeniedException`. No tokens are
+/// billed. Errors other than access denial (throttling, unknown profile, ...)
+/// count as invokable so transient failures never hide a working model.
+async fn model_is_invokable(client: &aws_sdk_bedrockruntime::Client, model_id: &str) -> bool {
+    match client
+        .converse()
+        .model_id(model_id)
+        .set_messages(Some(Vec::new()))
+        .send()
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            let service_err = e.into_service_error();
+            if service_err.is_access_denied_exception() {
+                let msg = service_err.meta().message().unwrap_or("access denied");
+                info!(model_id, error = %msg, "model access probe denied");
+                false
+            } else {
+                true
+            }
+        }
+    }
 }
 
 /// Fetch active Anthropic Claude foundation models, returning (model_id, name).
@@ -216,16 +296,12 @@ async fn fetch_active_foundation_models(
                 .unwrap_or(false);
             // Skip context-window variants like `:48k`, `:200k`.
             let is_variant = id.rsplit_once(':').is_some_and(|(_, suffix)| {
-                suffix.chars().next().is_some_and(|c| c.is_ascii_digit())
-                    && suffix != "0"
+                suffix.chars().next().is_some_and(|c| c.is_ascii_digit()) && suffix != "0"
             });
             is_claude && is_active && !is_variant
         })
         .map(|m| {
-            let name = m
-                .model_name()
-                .unwrap_or(m.model_id())
-                .to_string();
+            let name = m.model_name().unwrap_or(m.model_id()).to_string();
             (m.model_id().to_string(), name)
         })
         .collect();
@@ -493,9 +569,9 @@ pub async fn count_context_tokens(
     let response = client
         .count_tokens()
         .model_id(bare_model_id)
-        .input(
-            aws_sdk_bedrockruntime::types::CountTokensInput::Converse(converse_input),
-        )
+        .input(aws_sdk_bedrockruntime::types::CountTokensInput::Converse(
+            converse_input,
+        ))
         .send()
         .await
         .map_err(|e| {

@@ -2,6 +2,14 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Model availability is verified with a free runtime probe — AWS's newest Claude models can report every availability field green while invocation is still denied by AWS's per-account gradual rollout
+- Blocked models now say why and what to do: accept-on-Apply for missing marketplace agreements, contact AWS Support for rollout-gated models, console for models with no offer
+- Chat model list hides models AWS hasn't enabled for the account yet, instead of offering them and failing at send
+- Provisioner no longer tracks LEGACY-lifecycle models, avoiding permanent drift when AWS decommissions one
+- Corrected inverted agreement-status documentation
+
 ## [0.16.3] — 2026-05-20
 
 - AWS SDK and IO errors are emitted as tracing events at their origin so the in-app Console surfaces them, not just the red banner

@@ -1,10 +1,14 @@
-use aws_sdk_bedrock::Client;
-use aws_sdk_bedrock::types::{AgreementAvailability, EntitlementAvailability};
-use serde_json::{json, Value};
+use aws_sdk_bedrock::{
+    Client,
+    types::{AgreementStatus, FoundationModelLifecycleStatus},
+};
+use serde_json::{Value, json};
 
-use crate::error::{format_err_chain, ProvisionerError};
-use crate::manifest::ResourceSpec;
-use crate::syncer::{BoxFuture, ResourceSyncer};
+use crate::{
+    error::{ProvisionerError, format_err_chain},
+    manifest::ResourceSpec,
+    syncer::{BoxFuture, ResourceSyncer},
+};
 
 /// Check whether a model ID is a context-window variant (e.g. `:48k`, `:200k`).
 fn is_context_window_variant(model_id: &str) -> bool {
@@ -13,21 +17,53 @@ fn is_context_window_variant(model_id: &str) -> bool {
     })
 }
 
+/// Outcome of a zero-cost invocation probe against the Bedrock runtime.
+///
+/// `GetFoundationModelAvailability` can report a model as fully available
+/// (agreement AVAILABLE, entitlement AVAILABLE, AUTHORIZED) while the runtime
+/// still rejects invocation — AWS enables the newest models per-account on a
+/// gradual rollout. The only ground truth is asking the runtime itself.
+///
+/// The probe sends `Converse` with an empty message list. Access checks run
+/// before request validation, so an accessible model answers with a
+/// `ValidationException` ("conversation must start with a user message")
+/// while a gated model answers with an `AccessDeniedException`. No tokens are
+/// billed either way.
+enum InvocationProbe {
+    /// Runtime accepted the request past the access check.
+    Invokable,
+    /// Runtime refused with an access error (message included).
+    Denied(String),
+}
+
 pub struct BedrockModelAgreementSyncer {
     spec: ResourceSpec,
     client: Client,
+    runtime_client: aws_sdk_bedrockruntime::Client,
 }
 
 impl BedrockModelAgreementSyncer {
-    pub fn new(spec: ResourceSpec, client: Client) -> Self {
-        Self { spec, client }
+    pub fn new(
+        spec: ResourceSpec,
+        client: Client,
+        runtime_client: aws_sdk_bedrockruntime::Client,
+    ) -> Self {
+        Self {
+            spec,
+            client,
+            runtime_client,
+        }
     }
 
     fn model_prefix(&self) -> &str {
         &self.spec.resource_name
     }
 
-    /// Enumerate foundation models matching this spec's prefix.
+    /// Enumerate ACTIVE foundation models matching this spec's prefix.
+    ///
+    /// LEGACY models are excluded: the chat UI never offers them, and once
+    /// AWS begins decommissioning one its availability flips in ways the
+    /// account can't fix — including it here would create permanent drift.
     async fn matching_model_ids(&self) -> Result<Vec<String>, ProvisionerError> {
         let models = self
             .client
@@ -43,59 +79,147 @@ impl BedrockModelAgreementSyncer {
         Ok(models
             .model_summaries()
             .iter()
+            .filter(|m| {
+                m.model_lifecycle()
+                    .map(|lc| *lc.status() == FoundationModelLifecycleStatus::Active)
+                    .unwrap_or(false)
+            })
             .map(|m| m.model_id().to_string())
             .filter(|id| id.contains(self.model_prefix()) && !is_context_window_variant(id))
             .collect())
     }
 
-    /// Classify each matching model's invocation availability for this account
-    /// and region. Uses `GetFoundationModelAvailability` rather than relying
-    /// on "no pending marketplace offers" — an empty offer list does not
-    /// imply the agreement was ever accepted (it could mean the model has
-    /// no marketplace mechanism at all and access is gated elsewhere).
+    /// Zero-cost runtime probe: can this account actually invoke the model?
+    ///
+    /// Probes via the `us.{model_id}` inference profile — the same ID the
+    /// chat path invokes. Errors other than access denial (throttling,
+    /// nonexistent profile for a brand-new model, ...) count as invokable so
+    /// transient failures don't produce spurious drift.
+    async fn probe_invocation(&self, model_id: &str) -> InvocationProbe {
+        let profile_id = format!("us.{model_id}");
+        match self
+            .runtime_client
+            .converse()
+            .model_id(&profile_id)
+            .set_messages(Some(Vec::new()))
+            .send()
+            .await
+        {
+            // Can't happen with no messages, but if it did, access is proven.
+            Ok(_) => InvocationProbe::Invokable,
+            Err(e) => {
+                let service_err = e.into_service_error();
+                if service_err.is_access_denied_exception() {
+                    let msg = service_err
+                        .meta()
+                        .message()
+                        .unwrap_or("access denied")
+                        .to_string();
+                    tracing::info!(model_id, error = %msg, "invocation probe denied");
+                    InvocationProbe::Denied(msg)
+                } else {
+                    InvocationProbe::Invokable
+                }
+            }
+        }
+    }
+
+    /// Classify each matching model's invocation availability for this
+    /// account and region.
+    ///
+    /// `GetFoundationModelAvailability` alone is not trustworthy: every
+    /// field can read available/authorized while the runtime still denies
+    /// invocation (AWS rolls the newest models out per-account), and
+    /// `entitlement_availability` reads `AVAILABLE` even before the model's
+    /// marketplace agreement has been accepted. So the runtime probe decides
+    /// invokability, and the availability fields only inform the blocked
+    /// reason.
     async fn classify_models(&self) -> Result<ModelAvailability, ProvisionerError> {
         let ids = self.matching_model_ids().await?;
         let mut invokable: Vec<String> = Vec::new();
         let mut blocked: Vec<BlockedModel> = Vec::new();
 
         for model_id in ids {
-            match self
-                .client
-                .get_foundation_model_availability()
-                .model_id(&model_id)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    if matches!(resp.entitlement_availability(), EntitlementAvailability::Available)
-                    {
-                        invokable.push(model_id);
-                    } else {
-                        let reason = describe_block(
-                            resp.agreement_availability(),
-                            resp.entitlement_availability(),
-                        );
-                        blocked.push(BlockedModel { model_id, reason });
-                    }
-                }
-                Err(e) => {
-                    // Don't fail the whole sync on one model — record the
-                    // probe failure so it shows in the UI.
-                    let msg = format_err_chain(&e);
-                    tracing::warn!(
-                        model_id,
-                        error = %msg,
-                        "GetFoundationModelAvailability failed"
-                    );
-                    blocked.push(BlockedModel {
-                        model_id,
-                        reason: format!("availability probe failed: {msg}"),
-                    });
+            match self.probe_invocation(&model_id).await {
+                InvocationProbe::Invokable => invokable.push(model_id),
+                InvocationProbe::Denied(denial) => {
+                    let reason = self.describe_block(&model_id, &denial).await;
+                    blocked.push(BlockedModel { model_id, reason });
                 }
             }
         }
 
         Ok(ModelAvailability { invokable, blocked })
+    }
+
+    /// Compose a human-readable reason a model isn't invokable.
+    ///
+    /// Called only after the runtime probe was denied. Reads the agreement
+    /// status to distinguish the auto-fixable case (agreement not accepted
+    /// yet, offer available — Apply accepts it) from the AWS-side gate
+    /// (everything green but AWS hasn't enabled the model for this account
+    /// yet — only AWS Support can expedite that).
+    async fn describe_block(&self, model_id: &str, denial: &str) -> String {
+        let availability = match self
+            .client
+            .get_foundation_model_availability()
+            .model_id(model_id)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                let msg = format_err_chain(&e);
+                tracing::warn!(model_id, error = %msg, "GetFoundationModelAvailability failed");
+                return format!("not invokable ({denial}); availability probe failed: {msg}");
+            }
+        };
+
+        let agreement_status = availability
+            .agreement_availability()
+            .map(|a| a.status().clone());
+
+        match agreement_status {
+            Some(AgreementStatus::Pending) => {
+                "marketplace agreement acceptance is in progress — re-scan in a moment".into()
+            }
+            Some(AgreementStatus::Error) => format!(
+                "marketplace agreement errored: {}",
+                availability
+                    .agreement_availability()
+                    .and_then(|a| a.error_message())
+                    .unwrap_or("no detail from AWS")
+            ),
+            Some(AgreementStatus::NotAvailable) | None => {
+                // Agreement not accepted. If AWS lists an offer, Apply can
+                // accept it automatically; otherwise the console is the only
+                // path.
+                let has_offer = self
+                    .client
+                    .list_foundation_model_agreement_offers()
+                    .model_id(model_id)
+                    .send()
+                    .await
+                    .map(|resp| !resp.offers().is_empty())
+                    .unwrap_or(false);
+                if has_offer {
+                    "marketplace agreement not accepted yet — click Apply to accept it \
+                     automatically"
+                        .into()
+                } else {
+                    "no marketplace agreement offer for this model — request access on the \
+                     Bedrock \"Model access\" console page"
+                        .into()
+                }
+            }
+            // Agreement in place (or an unrecognized future status) yet the
+            // runtime still refuses: AWS hasn't enabled this model for the
+            // account. Nothing Claria or the Bedrock console can do.
+            _ => format!(
+                "AWS is rolling this model out gradually and hasn't enabled it for this \
+                 account yet — contact AWS Support to expedite (AWS said: {denial})"
+            ),
+        }
     }
 
     /// Accept all available marketplace agreements for matching models.
@@ -164,8 +288,7 @@ struct BlockedModel {
     reason: String,
 }
 
-/// Result of classifying matching models against the account's entitlement
-/// state.
+/// Result of classifying matching models against actual runtime access.
 struct ModelAvailability {
     invokable: Vec<String>,
     blocked: Vec<BlockedModel>,
@@ -187,50 +310,6 @@ impl ModelAvailability {
                 .map(|b| json!({"model_id": b.model_id, "reason": b.reason}))
                 .collect::<Vec<_>>(),
         })
-    }
-}
-
-/// Compose a human-readable reason a model isn't invokable, from the two
-/// availability fields the Bedrock API returns.
-///
-/// `AVAILABLE` / `PENDING` agreement statuses describe a marketplace flow
-/// Claria can accept automatically on Apply (see `accept_agreements`). Only
-/// `NOT_AVAILABLE` and absent-agreement cases need the user to open the AWS
-/// console themselves.
-fn describe_block(
-    agreement: Option<&AgreementAvailability>,
-    entitlement: &EntitlementAvailability,
-) -> String {
-    let agreement_status = agreement
-        .map(|a| a.status().as_str())
-        .unwrap_or("absent");
-    match agreement_status {
-        "AVAILABLE" => {
-            "marketplace agreement available — click Apply to accept automatically".into()
-        }
-        "PENDING" => {
-            "marketplace agreement acceptance is in progress — re-scan in a moment".into()
-        }
-        "ERROR" => format!(
-            "marketplace agreement errored: {}",
-            agreement
-                .and_then(|a| a.error_message())
-                .unwrap_or("no detail from AWS")
-        ),
-        // NOT_AVAILABLE or absent: no marketplace flow for this model, so
-        // Claria can't accept anything on the user's behalf. Access must be
-        // requested via the Bedrock "Model access" console page.
-        _ => match entitlement {
-            EntitlementAvailability::NotAvailable => {
-                "no marketplace agreement available — request access on the Bedrock \"Model access\" console page"
-                    .into()
-            }
-            _ => format!(
-                "entitlement {} / agreement {}",
-                entitlement.as_str(),
-                agreement_status
-            ),
-        },
     }
 }
 

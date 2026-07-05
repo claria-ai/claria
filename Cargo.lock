@@ -1554,6 +1554,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-artifact",
  "aws-sdk-bedrock",
+ "aws-sdk-bedrockruntime",
  "aws-sdk-cloudtrail",
  "aws-sdk-iam",
  "aws-sdk-s3",
