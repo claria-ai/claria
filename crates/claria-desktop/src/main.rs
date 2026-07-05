@@ -7,8 +7,9 @@ use tauri::Manager;
 use tauri_specta::{collect_commands, Builder};
 use tracing_subscriber::prelude::*;
 
+use claria_desktop::console;
+
 mod commands;
-mod console;
 mod state;
 
 fn main() -> Result<()> {
@@ -22,7 +23,12 @@ fn main() -> Result<()> {
 
     tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer())
+        // Print span close events (with timing) to the terminal so dev output
+        // matches what the exported console log carries.
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE),
+        )
         .with(console_layer)
         .init();
 

@@ -2,6 +2,11 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- S3 object operations, Bedrock chat turns, and the record/chat commands emit timing spans with elapsed milliseconds, keys, and byte counts
+- Exported console logs include those span durations, so slowness reported by users can be diagnosed from a log export
+
 ## [0.16.3] — 2026-05-20
 
 - AWS SDK and IO errors are emitted as tracing events at their origin so the in-app Console surfaces them, not just the red banner

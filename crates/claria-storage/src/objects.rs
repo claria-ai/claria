@@ -12,7 +12,14 @@ pub struct GetObjectOutput {
     pub content_type: Option<String>,
 }
 
+// Timing spans below log S3 keys/prefixes (already visible in-app) plus byte
+// counts and elapsed_ms — never object contents, which may hold PHI.
+
 /// Get an object from S3.
+#[tracing::instrument(
+    skip_all,
+    fields(bucket = %bucket, key = %key, bytes = tracing::field::Empty)
+)]
 pub async fn get_object(
     client: &Client,
     bucket: &str,
@@ -50,6 +57,8 @@ pub async fn get_object(
         .into_bytes()
         .to_vec();
 
+    tracing::Span::current().record("bytes", body.len() as u64);
+
     Ok(GetObjectOutput {
         body,
         etag,
@@ -58,6 +67,7 @@ pub async fn get_object(
 }
 
 /// Put an object to S3. Returns the new ETag.
+#[tracing::instrument(skip_all, fields(bucket = %bucket, key = %key, bytes = body.len()))]
 pub async fn put_object(
     client: &Client,
     bucket: &str,
@@ -175,6 +185,10 @@ pub struct ObjectMeta {
 }
 
 /// List objects under a prefix with size and last-modified metadata.
+#[tracing::instrument(
+    skip_all,
+    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
+)]
 pub async fn list_objects_with_metadata(
     client: &Client,
     bucket: &str,
@@ -219,10 +233,16 @@ pub async fn list_objects_with_metadata(
         }
     }
 
+    tracing::Span::current().record("count", objects.len() as u64);
+
     Ok(objects)
 }
 
 /// List objects under a prefix. Returns keys.
+#[tracing::instrument(
+    skip_all,
+    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
+)]
 pub async fn list_objects(
     client: &Client,
     bucket: &str,
@@ -262,6 +282,8 @@ pub async fn list_objects(
             break;
         }
     }
+
+    tracing::Span::current().record("count", keys.len() as u64);
 
     Ok(keys)
 }
