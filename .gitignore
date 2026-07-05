@@ -7,3 +7,4 @@ screenshots/node_modules/
 screenshots/output/*.png
 screenshots/test-results/
 *.swp
+crates/claria-desktop/gen/schemas/linux-schema.json
