@@ -39,6 +39,10 @@ ureq = "=3.3.0"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "=1.23.1", features = ["v4"] }
 
+[dev-dependencies]
+aws-credential-types = "=1.2.14"
+claria-mock-aws = { path = "../claria-mock-aws" }
+
 [package.metadata.release]
 pre-release-replacements = [
   { file = "tauri.conf.json", search = "\"version\": \"[^\"]+\"", replace = "\"version\": \"{{version}}\"" },

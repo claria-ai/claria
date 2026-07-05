@@ -55,12 +55,7 @@ pub enum ProvisionerProgress {
 // Client + Chat types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct ClientSummary {
-    pub id: String,
-    pub name: String,
-    pub created_at: String,
-}
+pub use claria_desktop::records::ClientSummary;
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ChatMessage {
@@ -1262,40 +1257,7 @@ pub async fn list_clients(
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    let keys = claria_storage::objects::list_objects(&s3, &bucket, claria_core::s3_keys::CLIENTS_PREFIX)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let mut clients: Vec<ClientSummary> = Vec::new();
-
-    for key in &keys {
-        let output = match claria_storage::objects::get_object(&s3, &bucket, key).await {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::warn!(key, error = %e, "skipping unreadable client object");
-                continue;
-            }
-        };
-
-        let client: claria_core::models::client::Client = match serde_json::from_slice(&output.body) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(key, error = %e, "skipping unparseable client object");
-                continue;
-            }
-        };
-
-        clients.push(ClientSummary {
-            id: client.id.to_string(),
-            name: client.name,
-            created_at: client.created_at.to_string(),
-        });
-    }
-
-    // Sort by created_at descending (most recent first).
-    clients.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-    Ok(clients)
+    claria_desktop::records::list_client_summaries(&s3, &bucket).await
 }
 
 /// Create a new client record in S3.
@@ -2061,59 +2023,18 @@ pub async fn list_record_context(
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let prefix = claria_core::s3_keys::client_records_prefix(id);
 
-    let keys = claria_storage::objects::list_objects(&s3, &bucket, &prefix)
-        .await
-        .map_err(|e| e.to_string())?;
+    let texts = claria_desktop::records::fetch_record_texts(&s3, &bucket, id).await?;
 
-    // Collect all keys into a set so we can identify sidecar files.
-    let all_keys: std::collections::HashSet<&str> = keys.iter().map(|k| k.as_str()).collect();
-
-    let mut context_files = Vec::new();
-
-    for key in &keys {
-        // Skip sidecar `.text` files — we read them via their parent.
-        if let Some(base) = key.strip_suffix(".text")
-            && all_keys.contains(base)
-        {
-            continue;
-        }
-
-        let filename = match key.strip_prefix(&prefix) {
-            Some(f) if !f.is_empty() => f,
-            _ => continue,
-        };
-
-        // Skip chat-history entries — they're not user-facing context files.
-        if filename.starts_with("chat-history/") {
-            continue;
-        }
-
-        let text = if filename.ends_with(".txt") {
-            // Plain text: read directly.
-            match claria_storage::objects::get_object(&s3, &bucket, key).await {
-                Ok(output) => String::from_utf8(output.body).ok(),
-                Err(_) => None,
-            }
-        } else {
-            // Other files: read the `.text` sidecar.
-            let sidecar_key = format!("{key}.text");
-            match claria_storage::objects::get_object(&s3, &bucket, &sidecar_key).await {
-                Ok(output) => String::from_utf8(output.body).ok(),
-                Err(_) => None,
-            }
-        };
-
-        // Include all files — those without extracted text get an empty string
-        // so the frontend can show them as context pills and offer re-extraction.
-        context_files.push(RecordContext {
-            filename: filename.to_string(),
+    // Include all files — those without extracted text get an empty string
+    // so the frontend can show them as context pills and offer re-extraction.
+    Ok(texts
+        .into_iter()
+        .map(|(filename, text)| RecordContext {
+            filename,
             text: text.unwrap_or_default(),
-        });
-    }
-
-    Ok(context_files)
+        })
+        .collect())
 }
 
 /// Re-run text extraction for a single record file.
@@ -2246,49 +2167,15 @@ async fn load_record_context(
     client_id: &str,
 ) -> Result<Vec<claria_bedrock::context::ContextFile>, String> {
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let prefix = claria_core::s3_keys::client_records_prefix(id);
 
-    let keys = claria_storage::objects::list_objects(s3, bucket, &prefix)
-        .await
-        .map_err(|e| e.to_string())?;
+    let texts = claria_desktop::records::fetch_record_texts(s3, bucket, id).await?;
 
-    let all_keys: std::collections::HashSet<&str> = keys.iter().map(|k| k.as_str()).collect();
-    let mut files = Vec::new();
-
-    for key in &keys {
-        if let Some(base) = key.strip_suffix(".text")
-            && all_keys.contains(base)
-        {
-            continue;
-        }
-
-        let filename = match key.strip_prefix(&prefix) {
-            Some(f) if !f.is_empty() => f,
-            _ => continue,
-        };
-
-        let text = if filename.ends_with(".txt") {
-            match claria_storage::objects::get_object(s3, bucket, key).await {
-                Ok(output) => String::from_utf8(output.body).ok(),
-                Err(_) => None,
-            }
-        } else {
-            let sidecar_key = format!("{key}.text");
-            match claria_storage::objects::get_object(s3, bucket, &sidecar_key).await {
-                Ok(output) => String::from_utf8(output.body).ok(),
-                Err(_) => None,
-            }
-        };
-
-        if let Some(text) = text {
-            files.push(claria_bedrock::context::ContextFile {
-                filename: filename.to_string(),
-                text,
-            });
-        }
-    }
-
-    Ok(files)
+    Ok(texts
+        .into_iter()
+        .filter_map(|(filename, text)| {
+            text.map(|text| claria_bedrock::context::ContextFile { filename, text })
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
