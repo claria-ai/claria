@@ -355,8 +355,8 @@ export async function deleteClient(clientId: string): Promise<void> {
 // Record file wrappers
 // ---------------------------------------------------------------------------
 
-export async function listRecordFiles(clientId: string): Promise<import("./bindings").RecordFile[]> {
-  return unwrap(await commands.listRecordFiles(clientId));
+export async function listRecordFiles(clientId: string, prefix?: string): Promise<import("./bindings").RecordFile[]> {
+  return unwrap(await commands.listRecordFiles(clientId, prefix ?? null));
 }
 
 export async function uploadRecordFile(clientId: string, filePath: string): Promise<import("./bindings").RecordFile> {

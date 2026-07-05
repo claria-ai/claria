@@ -213,22 +213,35 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
 
   const CHAT_HISTORY_PREFIX = "chat-history/";
 
+  // Filename prefix search: `search` filters client-side instantly; the
+  // debounced value is sent to S3 as a ListObjectsV2 key prefix.
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
   const chatHistoryFiles = files
     .filter((f) => f.filename.startsWith(CHAT_HISTORY_PREFIX))
     .sort((a, b) => (b.uploaded_at ?? "").localeCompare(a.uploaded_at ?? ""));
-  const regularFiles = files.filter((f) => !f.filename.startsWith(CHAT_HISTORY_PREFIX));
+  const regularFiles = files.filter(
+    (f) =>
+      !f.filename.startsWith(CHAT_HISTORY_PREFIX) &&
+      f.filename.startsWith(search.trim()),
+  );
 
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const result = await listRecordFiles(clientId);
+      const result = await listRecordFiles(clientId, debouncedSearch || undefined);
       setFiles(result);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, [clientId]);
+  }, [clientId, debouncedSearch]);
 
   useEffect(() => {
     refresh();
@@ -787,6 +800,14 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
           <div className="px-4 py-2 border-b border-gray-100 bg-gray-50 rounded-t-lg flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-700">Files</h3>
             <div className="flex gap-2">
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by prefix…"
+                title="Show files whose name starts with this text"
+                className="w-40 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+              />
               <button
                 onClick={handleToggleMore}
                 className={`p-1.5 rounded border transition-colors ${
@@ -1141,6 +1162,15 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* No search matches */}
+          {!loading && search.trim() !== "" && regularFiles.length === 0 && (
+            <div className="px-4 py-6 text-center">
+              <p className="text-sm text-gray-400">
+                No files start with &ldquo;{search.trim()}&rdquo;
+              </p>
             </div>
           )}
 
