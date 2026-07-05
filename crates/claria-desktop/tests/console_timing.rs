@@ -29,11 +29,24 @@ fn build_sdk_config(endpoint: &str) -> aws_config::SdkConfig {
 
 #[tokio::test]
 async fn instrumented_s3_calls_export_elapsed_ms() {
-    // Mirror the app wiring in main.rs: "info" filter + ConsoleLayer.
-    let buffer = ConsoleBuffer::new();
+    // Mirror the app wiring in main.rs: per-layer filters. The export layer
+    // admits claria_* trace spans on top of an info baseline; a second layer at
+    // the plain "info" level stands in for the fmt/terminal view and must NOT
+    // see the trace-level timing spans.
+    let export_buffer = ConsoleBuffer::new();
+    let default_buffer = ConsoleBuffer::new();
     let subscriber = tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("info"))
-        .with(ConsoleLayer::new(buffer.clone()));
+        .with(
+            ConsoleLayer::new(export_buffer.clone()).with_filter(
+                tracing_subscriber::EnvFilter::new(
+                    "info,claria_storage=trace,claria_bedrock=trace,claria_desktop=trace",
+                ),
+            ),
+        )
+        .with(
+            ConsoleLayer::new(default_buffer.clone())
+                .with_filter(tracing_subscriber::EnvFilter::new("info")),
+        );
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let mock = MockServer::spawn().await;
@@ -60,7 +73,7 @@ async fn instrumented_s3_calls_export_elapsed_ms() {
 
     // The exported plain-text log (what a user sends to the developer) must
     // carry per-call spans with elapsed_ms, keys, and byte counts.
-    let text = buffer.to_text();
+    let text = export_buffer.to_text();
     let timing_lines: Vec<&str> = text.lines().filter(|l| l.contains("elapsed_ms=")).collect();
 
     assert!(
@@ -80,5 +93,13 @@ async fn instrumented_s3_calls_export_elapsed_ms() {
             .iter()
             .any(|l| l.contains("list_objects") && l.contains("count=1")),
         "missing list_objects timing with result count in export:\n{text}"
+    );
+
+    // The default "info" view (fmt/terminal analog) must stay free of the
+    // trace-level timing spans.
+    let default_text = default_buffer.to_text();
+    assert!(
+        !default_text.contains("elapsed_ms="),
+        "timing spans leaked into the default info-level log:\n{default_text}"
     );
 }

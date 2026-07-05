@@ -4,8 +4,8 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
-- S3 object operations, Bedrock chat turns, and the record/chat commands emit timing spans with elapsed milliseconds, keys, and byte counts
-- Exported console logs include those span durations, so slowness reported by users can be diagnosed from a log export
+- S3 object operations, Bedrock chat turns, and the record/chat commands emit trace-level timing spans with elapsed milliseconds, keys, and byte counts
+- Exported console logs carry those span durations regardless of log level, while the terminal and default operational log stay free of them
 
 ## [0.16.3] — 2026-05-20
 

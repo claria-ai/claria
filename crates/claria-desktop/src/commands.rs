@@ -1256,7 +1256,7 @@ fn bucket_name(cfg: &ClariaConfig) -> String {
 /// returns summaries sorted by most recently created first.
 #[tauri::command]
 #[specta::specta]
-#[tracing::instrument(skip_all, fields(count = tracing::field::Empty))]
+#[tracing::instrument(level = "trace", skip_all, fields(count = tracing::field::Empty))]
 pub async fn list_clients(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<ClientSummary>, String> {
@@ -1397,7 +1397,7 @@ const TRANSLATION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-6";
 /// List files in a client's record, excluding sidecar `.text` files.
 #[tauri::command]
 #[specta::specta]
-#[tracing::instrument(skip_all, fields(client_id = %client_id, count = tracing::field::Empty))]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, count = tracing::field::Empty))]
 pub async fn list_record_files(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -1452,6 +1452,7 @@ pub async fn list_record_files(
 #[tauri::command]
 #[specta::specta]
 #[tracing::instrument(
+    level = "trace",
     skip_all,
     fields(
         client_id = %client_id,
@@ -1767,7 +1768,7 @@ async fn maybe_translate(
 /// translation. The `.text` sidecar contains the rendered headered body.
 #[tauri::command]
 #[specta::specta]
-#[tracing::instrument(skip_all, fields(client_id = %client_id))]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id))]
 pub async fn upload_record_file_with_options(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -1952,7 +1953,7 @@ pub async fn delete_record_file(
 /// For other files, returns the `.text` sidecar content if available.
 #[tauri::command]
 #[specta::specta]
-#[tracing::instrument(skip_all, fields(client_id = %client_id, filename = %filename))]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, filename = %filename))]
 pub async fn get_record_file_text(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -2071,7 +2072,7 @@ pub struct RecordContext {
 /// readable text are omitted.
 #[tauri::command]
 #[specta::specta]
-#[tracing::instrument(skip_all, fields(client_id = %client_id, files = tracing::field::Empty))]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, files = tracing::field::Empty))]
 pub async fn list_record_context(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -2447,6 +2448,7 @@ pub async fn list_chat_models(
 #[specta::specta]
 // Timing span logs ids, model, and turn count — never chat text (PHI).
 #[tracing::instrument(
+    level = "trace",
     skip_all,
     fields(client_id = %client_id, model_id = %model_id, turns = messages.len())
 )]
@@ -2610,7 +2612,7 @@ pub async fn chat_message(
 /// operating model and the current infrastructure state, then call Bedrock.
 #[tauri::command]
 #[specta::specta]
-#[tracing::instrument(skip_all, fields(model_id = %model_id, turns = messages.len()))]
+#[tracing::instrument(level = "trace", skip_all, fields(model_id = %model_id, turns = messages.len()))]
 pub async fn infra_chat(
     state: State<'_, DesktopState>,
     model_id: String,

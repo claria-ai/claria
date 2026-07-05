@@ -17,6 +17,7 @@ pub struct GetObjectOutput {
 
 /// Get an object from S3.
 #[tracing::instrument(
+    level = "trace",
     skip_all,
     fields(bucket = %bucket, key = %key, bytes = tracing::field::Empty)
 )]
@@ -67,7 +68,7 @@ pub async fn get_object(
 }
 
 /// Put an object to S3. Returns the new ETag.
-#[tracing::instrument(skip_all, fields(bucket = %bucket, key = %key, bytes = body.len()))]
+#[tracing::instrument(level = "trace", skip_all, fields(bucket = %bucket, key = %key, bytes = body.len()))]
 pub async fn put_object(
     client: &Client,
     bucket: &str,
@@ -186,6 +187,7 @@ pub struct ObjectMeta {
 
 /// List objects under a prefix with size and last-modified metadata.
 #[tracing::instrument(
+    level = "trace",
     skip_all,
     fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
 )]
@@ -240,6 +242,7 @@ pub async fn list_objects_with_metadata(
 
 /// List objects under a prefix. Returns keys.
 #[tracing::instrument(
+    level = "trace",
     skip_all,
     fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
 )]

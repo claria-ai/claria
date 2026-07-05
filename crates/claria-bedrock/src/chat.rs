@@ -361,7 +361,7 @@ impl CacheStrategy {
 /// `Option`), the returned `TurnUsage` has zero token counts and zero cost.
 // Timing span logs model id and turn count — never prompt or message text,
 // which may hold PHI.
-#[tracing::instrument(skip_all, fields(model_id = %model_id, turns = messages.len()))]
+#[tracing::instrument(level = "trace", skip_all, fields(model_id = %model_id, turns = messages.len()))]
 pub async fn chat_converse(
     config: &aws_config::SdkConfig,
     model_id: &str,
