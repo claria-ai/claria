@@ -6,6 +6,7 @@ All notable changes to Claria are documented here.
 
 - Record files can be searched by filename prefix; the search narrows the S3 listing itself rather than filtering client-side
 - Client list and chat context load fetch their S3 objects concurrently instead of one at a time, so a ~100-record practice loads in well under a second instead of several seconds
+- Bounded-concurrent S3 fetches and provisioner scans run through an ordered concurrent stream rather than a manual semaphore, preserving input order without a post-hoc sort
 
 ## [0.16.3] — 2026-05-20
 

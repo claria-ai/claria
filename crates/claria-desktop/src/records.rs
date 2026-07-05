@@ -2,14 +2,12 @@
 //! bounded-concurrent GetObject calls (serial GETs made the list pages
 //! take seconds at ~100 records).
 //!
-//! Uses semaphore + `join_all` rather than `buffer_unordered` — same
-//! lifetime workaround as `scan_with_progress`, and `join_all` returns
-//! results in input order.
+//! Concurrency is bounded with `buffered`, which caps in-flight GETs and
+//! yields results in input order — so the `created_at` sort below and the
+//! caller's listing order stay deterministic.
 
-use std::sync::Arc;
-
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
 
 /// Max concurrent GetObject requests when hydrating a listing.
 pub const S3_FETCH_CONCURRENCY: usize = 16;
@@ -33,21 +31,19 @@ pub async fn list_client_summaries(
             .await
             .map_err(|e| e.to_string())?;
 
-    let semaphore = Arc::new(Semaphore::new(S3_FETCH_CONCURRENCY));
+    // Bounded-concurrent GETs that come back in listing order, so ties in
+    // the created_at sort below stay deterministic. The futures are
+    // collected up front so the stream borrows them with a concrete
+    // lifetime — mapping references straight into `buffered` trips a
+    // higher-ranked-lifetime error.
     let fetches: Vec<_> = keys
         .iter()
-        .map(|key| {
-            let sem = Arc::clone(&semaphore);
-            async move {
-                let _permit = sem.acquire().await.expect("semaphore closed");
-                claria_storage::objects::get_object(s3, bucket, key).await
-            }
-        })
+        .map(|key| claria_storage::objects::get_object(s3, bucket, key))
         .collect();
-
-    // Results come back in listing order, so ties in the created_at sort
-    // below stay deterministic.
-    let results = futures::future::join_all(fetches).await;
+    let results: Vec<_> = futures::stream::iter(fetches)
+        .buffered(S3_FETCH_CONCURRENCY)
+        .collect()
+        .await;
 
     let mut clients: Vec<ClientSummary> = Vec::with_capacity(results.len());
 
@@ -131,21 +127,20 @@ pub async fn fetch_record_texts(
         })
         .collect();
 
-    let semaphore = Arc::new(Semaphore::new(S3_FETCH_CONCURRENCY));
     let fetches: Vec<_> = targets
         .iter()
-        .map(|(filename, fetch_key)| {
-            let sem = Arc::clone(&semaphore);
-            async move {
-                let _permit = sem.acquire().await.expect("semaphore closed");
-                let text = match claria_storage::objects::get_object(s3, bucket, fetch_key).await {
-                    Ok(output) => String::from_utf8(output.body).ok(),
-                    Err(_) => None,
-                };
-                (filename.clone(), text)
-            }
+        .map(|(filename, fetch_key)| async move {
+            let text = match claria_storage::objects::get_object(s3, bucket, fetch_key).await {
+                Ok(output) => String::from_utf8(output.body).ok(),
+                Err(_) => None,
+            };
+            (filename.clone(), text)
         })
         .collect();
+    let results = futures::stream::iter(fetches)
+        .buffered(S3_FETCH_CONCURRENCY)
+        .collect()
+        .await;
 
-    Ok(futures::future::join_all(fetches).await)
+    Ok(results)
 }

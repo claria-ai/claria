@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use tokio::sync::Semaphore;
 
 use claria_desktop::config::{
     self, ClariaConfig, ConfigInfo, CredentialSource, SyncedPreferences, TranscriptionPreferences,
@@ -675,40 +673,34 @@ async fn scan_with_progress(
 
     tracing::info!(count = total, "starting scan");
 
-    // Use a semaphore to limit concurrency to 5 while running all futures
-    // via join_all. This avoids lifetime issues with buffer_unordered.
-    let semaphore = Arc::new(Semaphore::new(5));
-    let futures: Vec<_> = syncers
+    // Bounded-concurrent reads (up to 5 at a time) that come back in
+    // manifest order, so the plan entries stay deterministic. The futures
+    // are collected up front so the stream borrows them with a concrete
+    // lifetime — mapping references straight into `buffered` trips a
+    // higher-ranked-lifetime error.
+    let scans: Vec<_> = syncers
         .iter()
         .enumerate()
-        .map(|(i, syncer)| {
-            let sem = Arc::clone(&semaphore);
-            async move {
-                let _permit = sem.acquire().await.expect("semaphore closed");
-                let label = syncer.spec().label.clone();
-                let _ = on_progress.send(ProvisionerProgress::ScanStarted {
-                    label: label.clone(),
-                    index: i as u32,
-                    total,
-                });
-                let actual = syncer.read().await;
-                let _ = on_progress.send(ProvisionerProgress::ScanCompleted {
-                    label,
-                    index: i as u32,
-                    total,
-                });
-                (i, syncer, actual)
-            }
+        .map(|(i, syncer)| async move {
+            let label = syncer.spec().label.clone();
+            let _ = on_progress.send(ProvisionerProgress::ScanStarted {
+                label: label.clone(),
+                index: i as u32,
+                total,
+            });
+            let actual = syncer.read().await;
+            let _ = on_progress.send(ProvisionerProgress::ScanCompleted {
+                label,
+                index: i as u32,
+                total,
+            });
+            (syncer, actual)
         })
         .collect();
-
-    let mut results = futures::future::join_all(futures).await;
-
-    // Sort by original index for deterministic output.
-    results.sort_by_key(|(i, _, _)| *i);
+    let results: Vec<_> = futures::stream::iter(scans).buffered(5).collect().await;
 
     let mut entries = Vec::with_capacity(results.len());
-    for (_i, syncer, actual_result) in results {
+    for (syncer, actual_result) in results {
         let actual = actual_result.map_err(|e| e.to_string())?;
         entries.push(claria_provisioner::build_plan_entry(
             syncer.as_ref(),
