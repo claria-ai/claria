@@ -5,6 +5,7 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Record file search also matches the extracted text of each file, with a badge on files that only match by content
+- The record file search opens from a magnifying-glass button, swapping the header action buttons for a wide search field while active
 - Record file name matching is substring anywhere in the name, no longer prefix-only
 - The client list can be filtered by name
 
