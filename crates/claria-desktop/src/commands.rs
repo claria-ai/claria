@@ -1249,7 +1249,7 @@ pub async fn list_clients(
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    claria_desktop::records::list_client_summaries(&s3, &bucket).await
+    claria_desktop::records::list_client_summaries(&s3, &bucket, &state.record_cache).await
 }
 
 /// Create a new client record in S3.
@@ -2016,7 +2016,8 @@ pub async fn list_record_context(
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let texts = claria_desktop::records::fetch_record_texts(&s3, &bucket, id).await?;
+    let texts =
+        claria_desktop::records::fetch_record_texts(&s3, &bucket, id, &state.record_cache).await?;
 
     // Include all files — those without extracted text get an empty string
     // so the frontend can show them as context pills and offer re-extraction.
@@ -2157,10 +2158,11 @@ async fn load_record_context(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
     client_id: &str,
+    cache: &claria_desktop::record_cache::RecordCache,
 ) -> Result<Vec<claria_bedrock::context::ContextFile>, String> {
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let texts = claria_desktop::records::fetch_record_texts(s3, bucket, id).await?;
+    let texts = claria_desktop::records::fetch_record_texts(s3, bucket, id, cache).await?;
 
     Ok(texts
         .into_iter()
@@ -2317,7 +2319,7 @@ pub async fn chat_message(
     let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;
 
     // Load record context and filter to the frontend's active set.
-    let all_files = load_record_context(&s3, &bucket, &client_id).await?;
+    let all_files = load_record_context(&s3, &bucket, &client_id, &state.record_cache).await?;
     let context_files: Vec<_> = if context_filenames.is_empty() {
         all_files
     } else {
@@ -3892,7 +3894,7 @@ pub async fn count_client_context_tokens(
     let bucket = bucket_name(&cfg);
 
     let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;
-    let all_files = load_record_context(&s3, &bucket, &client_id).await?;
+    let all_files = load_record_context(&s3, &bucket, &client_id, &state.record_cache).await?;
     let files: Vec<_> = if context_filenames.is_empty() {
         all_files
     } else {

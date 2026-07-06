@@ -266,6 +266,58 @@ pub async fn list_objects(
     Ok(keys)
 }
 
+/// List objects under a prefix, returning `(key, etag)` pairs in listing order.
+///
+/// The ETag is the freshness probe for the record cache: it comes back on the
+/// `ListObjectsV2` response the listing already makes, so a cached body can be
+/// revalidated without a GET. When `e_tag()` is absent the etag is
+/// `String::new()`, which never matches a cache entry — a safe miss.
+pub async fn list_object_etags(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<Vec<(String, String)>, StorageError> {
+    let mut pairs = Vec::new();
+    let mut continuation_token: Option<String> = None;
+
+    loop {
+        let mut req = client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(prefix);
+
+        if let Some(token) = &continuation_token {
+            req = req.continuation_token(token);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = e.into_service_error().to_string();
+                tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
+                StorageError::ListObjects(msg)
+            })?;
+
+        for obj in resp.contents() {
+            if let Some(key) = obj.key() {
+                pairs.push((
+                    key.to_string(),
+                    obj.e_tag().unwrap_or_default().to_string(),
+                ));
+            }
+        }
+
+        if resp.is_truncated() == Some(true) {
+            continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+
+    Ok(pairs)
+}
+
 // ---------------------------------------------------------------------------
 // Versioning operations
 // ---------------------------------------------------------------------------
