@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.17.0] — 2026-07-06
 
 - Record files can be searched by filename prefix; the search narrows the S3 listing itself rather than filtering client-side
 - Client list and chat context load fetch their S3 objects concurrently instead of one at a time, so a ~100-record practice loads in well under a second instead of several seconds

@@ -1405,7 +1405,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claria-audit"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "aws-config",
  "aws-sdk-cloudtrail",
@@ -1419,7 +1419,7 @@ dependencies = [
 
 [[package]]
 name = "claria-bedrock"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "aws-config",
  "aws-sdk-bedrock",
@@ -1438,7 +1438,7 @@ dependencies = [
 
 [[package]]
 name = "claria-billing"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "aws-config",
  "aws-sdk-costexplorer",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "claria-core"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "jiff",
  "serde",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "claria-desktop"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "claria-export"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "claria-core",
  "docx-rs",
@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "claria-instruments"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "claria-core",
  "serde",
@@ -1532,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "claria-mock-aws"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "axum",
  "bytes",
@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "claria-provisioner"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "aws-config",
  "aws-sdk-artifact",
@@ -1576,7 +1576,7 @@ dependencies = [
 
 [[package]]
 name = "claria-search"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "aws-sdk-s3",
  "claria-core",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "claria-storage"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "claria-transcribe"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1629,7 +1629,7 @@ dependencies = [
 
 [[package]]
 name = "claria-whisper"
-version = "0.16.3"
+version = "0.17.0"
 dependencies = [
  "byteorder",
  "candle-core",
