@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   listRecordFiles,
+  searchRecordContents,
   uploadRecordFile,
   deleteRecordFile,
   getRecordFileText,
@@ -213,8 +214,9 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
 
   const CHAT_HISTORY_PREFIX = "chat-history/";
 
-  // Filename prefix search: `search` filters client-side instantly; the
-  // debounced value is sent to S3 as a ListObjectsV2 key prefix.
+  // Search matches filenames instantly (case-insensitive substring); the
+  // debounced query is also matched against each file's extracted text on
+  // the backend, and files that only match by content get a badge.
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   useEffect(() => {
@@ -222,26 +224,49 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     return () => clearTimeout(t);
   }, [search]);
 
+  const [contentMatches, setContentMatches] = useState<Set<string>>(
+    new Set(),
+  );
+  useEffect(() => {
+    if (!debouncedSearch) {
+      setContentMatches(new Set());
+      return;
+    }
+    let stale = false;
+    searchRecordContents(clientId, debouncedSearch)
+      .then((names) => {
+        if (!stale) setContentMatches(new Set(names));
+      })
+      .catch((e) => {
+        if (!stale) setError(String(e));
+      });
+    return () => {
+      stale = true;
+    };
+  }, [clientId, debouncedSearch]);
+
+  const query = search.trim().toLowerCase();
   const chatHistoryFiles = files
     .filter((f) => f.filename.startsWith(CHAT_HISTORY_PREFIX))
     .sort((a, b) => (b.uploaded_at ?? "").localeCompare(a.uploaded_at ?? ""));
   const regularFiles = files.filter(
     (f) =>
       !f.filename.startsWith(CHAT_HISTORY_PREFIX) &&
-      f.filename.startsWith(search.trim()),
+      (f.filename.toLowerCase().includes(query) ||
+        contentMatches.has(f.filename)),
   );
 
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const result = await listRecordFiles(clientId, debouncedSearch || undefined);
+      const result = await listRecordFiles(clientId);
       setFiles(result);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, [clientId, debouncedSearch]);
+  }, [clientId]);
 
   useEffect(() => {
     refresh();
@@ -804,8 +829,8 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by prefix…"
-                title="Show files whose name starts with this text"
+                placeholder="Search files…"
+                title="Show files whose name or contents contain this text"
                 className="w-40 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
               />
               <button
@@ -1055,9 +1080,18 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                 >
                   <FileIcon filename={file.filename} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {file.filename}
-                    </p>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {file.filename}
+                      </p>
+                      {query !== "" &&
+                        contentMatches.has(file.filename) &&
+                        !file.filename.toLowerCase().includes(query) && (
+                          <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded">
+                            match in contents
+                          </span>
+                        )}
+                    </div>
                     <p className="text-xs text-gray-400">
                       {formatFileSize(file.size)}
                     </p>
@@ -1169,7 +1203,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
           {!loading && search.trim() !== "" && regularFiles.length === 0 && (
             <div className="px-4 py-6 text-center">
               <p className="text-sm text-gray-400">
-                No files start with &ldquo;{search.trim()}&rdquo;
+                No file names or contents match &ldquo;{search.trim()}&rdquo;
               </p>
             </div>
           )}

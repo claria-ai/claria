@@ -1404,6 +1404,36 @@ pub async fn list_record_files(
     Ok(files)
 }
 
+/// Filenames in a client's record whose readable text contains `query`,
+/// case-insensitively.
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, count = tracing::field::Empty))]
+pub async fn search_record_contents(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    query: String,
+) -> Result<Vec<String>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let matches = claria_desktop::records::search_record_contents(
+        &s3,
+        &bucket,
+        id,
+        &state.record_cache,
+        &query,
+    )
+    .await?;
+
+    tracing::Span::current().record("count", matches.len() as u64);
+
+    Ok(matches)
+}
+
 /// Upload a file to a client's record from a local file path.
 ///
 /// If the file is a PDF or DOCX, a sidecar `.text` file is generated

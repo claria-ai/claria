@@ -87,6 +87,35 @@ pub async fn list_client_summaries(
     Ok(clients)
 }
 
+/// Filenames of record files whose readable text contains `query`,
+/// case-insensitively. An empty or whitespace query matches nothing.
+///
+/// Goes through the same read-through cache as chat context, so repeating a
+/// search over unchanged records costs one listing and zero GETs.
+pub async fn search_record_contents(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    client_id: uuid::Uuid,
+    cache: &RecordCache,
+    query: &str,
+) -> Result<Vec<String>, String> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let texts = fetch_record_texts(s3, bucket, client_id, cache).await?;
+
+    Ok(texts
+        .into_iter()
+        .filter(|(_, text)| {
+            text.as_deref()
+                .is_some_and(|t| t.to_lowercase().contains(&query))
+        })
+        .map(|(filename, _)| filename)
+        .collect())
+}
+
 /// Fetch readable text for every record file under a client, in listing
 /// order. `.text` sidecars are read via their parent file; chat-history
 /// entries are skipped. `None` means the file has no readable text.

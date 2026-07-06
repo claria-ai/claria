@@ -5,7 +5,9 @@ use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use aws_sdk_s3::primitives::ByteStream;
 
 use claria_desktop::record_cache::RecordCache;
-use claria_desktop::records::{ClientSummary, fetch_record_texts, list_client_summaries};
+use claria_desktop::records::{
+    ClientSummary, fetch_record_texts, list_client_summaries, search_record_contents,
+};
 use claria_mock_aws::testing::MockServer;
 
 const BUCKET: &str = "claria-test-bucket";
@@ -163,6 +165,69 @@ async fn fetch_record_texts_reads_txt_and_sidecars_in_listing_order() {
             ("c.pdf".to_string(), None),
         ]
     );
+}
+
+#[tokio::test]
+async fn search_record_contents_matches_text_case_insensitively() {
+    let (_mock, s3) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let prefix = claria_core::s3_keys::client_records_prefix(id);
+
+    put(
+        &s3,
+        &format!("{prefix}notes.txt"),
+        b"Patient reports MIGRAINE symptoms".to_vec(),
+    )
+    .await;
+    put(&s3, &format!("{prefix}intake.pdf"), b"%PDF binary".to_vec()).await;
+    put(
+        &s3,
+        &format!("{prefix}intake.pdf.text"),
+        b"History of migraine and tension headache".to_vec(),
+    )
+    .await;
+    put(&s3, &format!("{prefix}scan.pdf"), b"%PDF binary".to_vec()).await;
+    put(
+        &s3,
+        &format!("{prefix}scan.pdf.text"),
+        b"no relevant terms here".to_vec(),
+    )
+    .await;
+
+    let cache = RecordCache::new();
+    let hits = search_record_contents(&s3, BUCKET, id, &cache, "Migraine")
+        .await
+        .expect("search_record_contents");
+
+    assert_eq!(hits, vec!["intake.pdf".to_string(), "notes.txt".to_string()]);
+}
+
+#[tokio::test]
+async fn search_record_contents_ignores_filenames_and_blank_queries() {
+    let (_mock, s3) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let prefix = claria_core::s3_keys::client_records_prefix(id);
+
+    put(
+        &s3,
+        &format!("{prefix}notes.txt"),
+        b"nothing of interest".to_vec(),
+    )
+    .await;
+
+    let cache = RecordCache::new();
+
+    // A query matching only the filename is not a content match.
+    let hits = search_record_contents(&s3, BUCKET, id, &cache, "notes")
+        .await
+        .expect("filename query");
+    assert!(hits.is_empty());
+
+    // Blank queries match nothing.
+    let hits = search_record_contents(&s3, BUCKET, id, &cache, "   ")
+        .await
+        .expect("blank query");
+    assert!(hits.is_empty());
 }
 
 #[tokio::test]

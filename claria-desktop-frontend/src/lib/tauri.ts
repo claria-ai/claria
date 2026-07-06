@@ -359,6 +359,10 @@ export async function listRecordFiles(clientId: string, prefix?: string): Promis
   return unwrap(await commands.listRecordFiles(clientId, prefix ?? null));
 }
 
+export async function searchRecordContents(clientId: string, query: string): Promise<string[]> {
+  return unwrap(await commands.searchRecordContents(clientId, query));
+}
+
 export async function uploadRecordFile(clientId: string, filePath: string): Promise<import("./bindings").RecordFile> {
   return unwrap(await commands.uploadRecordFile(clientId, filePath));
 }
