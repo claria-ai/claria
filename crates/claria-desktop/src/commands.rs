@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use tokio::sync::Semaphore;
 
 use claria_desktop::config::{
     self, ClariaConfig, ConfigInfo, CredentialSource, SyncedPreferences, TranscriptionPreferences,
@@ -56,12 +54,7 @@ pub enum ProvisionerProgress {
 // Client + Chat types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct ClientSummary {
-    pub id: String,
-    pub name: String,
-    pub created_at: String,
-}
+pub use claria_desktop::records::ClientSummary;
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ChatMessage {
@@ -681,40 +674,34 @@ async fn scan_with_progress(
 
     tracing::info!(count = total, "starting scan");
 
-    // Use a semaphore to limit concurrency to 5 while running all futures
-    // via join_all. This avoids lifetime issues with buffer_unordered.
-    let semaphore = Arc::new(Semaphore::new(5));
-    let futures: Vec<_> = syncers
+    // Bounded-concurrent reads (up to 5 at a time) that come back in
+    // manifest order, so the plan entries stay deterministic. The futures
+    // are collected up front so the stream borrows them with a concrete
+    // lifetime — mapping references straight into `buffered` trips a
+    // higher-ranked-lifetime error.
+    let scans: Vec<_> = syncers
         .iter()
         .enumerate()
-        .map(|(i, syncer)| {
-            let sem = Arc::clone(&semaphore);
-            async move {
-                let _permit = sem.acquire().await.expect("semaphore closed");
-                let label = syncer.spec().label.clone();
-                let _ = on_progress.send(ProvisionerProgress::ScanStarted {
-                    label: label.clone(),
-                    index: i as u32,
-                    total,
-                });
-                let actual = syncer.read().await;
-                let _ = on_progress.send(ProvisionerProgress::ScanCompleted {
-                    label,
-                    index: i as u32,
-                    total,
-                });
-                (i, syncer, actual)
-            }
+        .map(|(i, syncer)| async move {
+            let label = syncer.spec().label.clone();
+            let _ = on_progress.send(ProvisionerProgress::ScanStarted {
+                label: label.clone(),
+                index: i as u32,
+                total,
+            });
+            let actual = syncer.read().await;
+            let _ = on_progress.send(ProvisionerProgress::ScanCompleted {
+                label,
+                index: i as u32,
+                total,
+            });
+            (syncer, actual)
         })
         .collect();
-
-    let mut results = futures::future::join_all(futures).await;
-
-    // Sort by original index for deterministic output.
-    results.sort_by_key(|(i, _, _)| *i);
+    let results: Vec<_> = futures::stream::iter(scans).buffered(5).collect().await;
 
     let mut entries = Vec::with_capacity(results.len());
-    for (_i, syncer, actual_result) in results {
+    for (syncer, actual_result) in results {
         let actual = actual_result.map_err(|e| e.to_string())?;
         entries.push(claria_provisioner::build_plan_entry(
             syncer.as_ref(),
@@ -1264,38 +1251,8 @@ pub async fn list_clients(
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    let keys = claria_storage::objects::list_objects(&s3, &bucket, claria_core::s3_keys::CLIENTS_PREFIX)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let mut clients: Vec<ClientSummary> = Vec::new();
-
-    for key in &keys {
-        let output = match claria_storage::objects::get_object(&s3, &bucket, key).await {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::warn!(key, error = %e, "skipping unreadable client object");
-                continue;
-            }
-        };
-
-        let client: claria_core::models::client::Client = match serde_json::from_slice(&output.body) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(key, error = %e, "skipping unparseable client object");
-                continue;
-            }
-        };
-
-        clients.push(ClientSummary {
-            id: client.id.to_string(),
-            name: client.name,
-            created_at: client.created_at.to_string(),
-        });
-    }
-
-    // Sort by created_at descending (most recent first).
-    clients.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let clients =
+        claria_desktop::records::list_client_summaries(&s3, &bucket, &state.record_cache).await?;
 
     tracing::Span::current().record("count", clients.len() as u64);
 
@@ -1395,21 +1352,29 @@ const EXTRACTION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-20250514-v1:0";
 const TRANSLATION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-6";
 
 /// List files in a client's record, excluding sidecar `.text` files.
+///
+/// `prefix` narrows the listing to filenames starting with it, mapped to the
+/// S3 ListObjectsV2 `Prefix` parameter (`records/{id}/{prefix}`).
 #[tauri::command]
 #[specta::specta]
 #[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, count = tracing::field::Empty))]
 pub async fn list_record_files(
     state: State<'_, DesktopState>,
     client_id: String,
+    prefix: Option<String>,
 ) -> Result<Vec<RecordFile>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let prefix = claria_core::s3_keys::client_records_prefix(id);
+    let records_prefix = claria_core::s3_keys::client_records_prefix(id);
+    let list_prefix = match prefix.as_deref().filter(|p| !p.is_empty()) {
+        Some(p) => claria_core::s3_keys::client_records_search_prefix(id, p),
+        None => records_prefix.clone(),
+    };
 
-    let objects = claria_storage::objects::list_objects_with_metadata(&s3, &bucket, &prefix)
+    let objects = claria_storage::objects::list_objects_with_metadata(&s3, &bucket, &list_prefix)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1419,16 +1384,10 @@ pub async fn list_record_files(
 
     let files: Vec<RecordFile> = objects
         .iter()
-        .filter(|obj| {
-            // Hide sidecar files: keys ending in `.text` where the base file exists.
-            if let Some(base) = obj.key.strip_suffix(".text") {
-                return !all_keys.contains(base);
-            }
-            true
-        })
+        .filter(|obj| !claria_core::s3_keys::is_hidden_sidecar(&obj.key, &all_keys))
         .filter_map(|obj| {
-            // Strip the prefix to get just the filename.
-            let filename = obj.key.strip_prefix(&prefix)?;
+            // Strip the records prefix to get just the filename.
+            let filename = obj.key.strip_prefix(&records_prefix)?;
             if filename.is_empty() {
                 return None;
             }
@@ -2082,57 +2041,19 @@ pub async fn list_record_context(
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let prefix = claria_core::s3_keys::client_records_prefix(id);
 
-    let keys = claria_storage::objects::list_objects(&s3, &bucket, &prefix)
-        .await
-        .map_err(|e| e.to_string())?;
+    let texts =
+        claria_desktop::records::fetch_record_texts(&s3, &bucket, id, &state.record_cache).await?;
 
-    // Collect all keys into a set so we can identify sidecar files.
-    let all_keys: std::collections::HashSet<&str> = keys.iter().map(|k| k.as_str()).collect();
-
-    let mut context_files = Vec::new();
-
-    for key in &keys {
-        // Skip sidecar `.text` files — we read them via their parent.
-        if let Some(base) = key.strip_suffix(".text")
-            && all_keys.contains(base)
-        {
-            continue;
-        }
-
-        let filename = match key.strip_prefix(&prefix) {
-            Some(f) if !f.is_empty() => f,
-            _ => continue,
-        };
-
-        // Skip chat-history entries — they're not user-facing context files.
-        if filename.starts_with("chat-history/") {
-            continue;
-        }
-
-        let text = if filename.ends_with(".txt") {
-            // Plain text: read directly.
-            match claria_storage::objects::get_object(&s3, &bucket, key).await {
-                Ok(output) => String::from_utf8(output.body).ok(),
-                Err(_) => None,
-            }
-        } else {
-            // Other files: read the `.text` sidecar.
-            let sidecar_key = format!("{key}.text");
-            match claria_storage::objects::get_object(&s3, &bucket, &sidecar_key).await {
-                Ok(output) => String::from_utf8(output.body).ok(),
-                Err(_) => None,
-            }
-        };
-
-        // Include all files — those without extracted text get an empty string
-        // so the frontend can show them as context pills and offer re-extraction.
-        context_files.push(RecordContext {
-            filename: filename.to_string(),
+    // Include all files — those without extracted text get an empty string
+    // so the frontend can show them as context pills and offer re-extraction.
+    let context_files: Vec<RecordContext> = texts
+        .into_iter()
+        .map(|(filename, text)| RecordContext {
+            filename,
             text: text.unwrap_or_default(),
-        });
-    }
+        })
+        .collect();
 
     tracing::Span::current().record("files", context_files.len() as u64);
 
@@ -2267,51 +2188,18 @@ async fn load_record_context(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
     client_id: &str,
+    cache: &claria_desktop::record_cache::RecordCache,
 ) -> Result<Vec<claria_bedrock::context::ContextFile>, String> {
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let prefix = claria_core::s3_keys::client_records_prefix(id);
 
-    let keys = claria_storage::objects::list_objects(s3, bucket, &prefix)
-        .await
-        .map_err(|e| e.to_string())?;
+    let texts = claria_desktop::records::fetch_record_texts(s3, bucket, id, cache).await?;
 
-    let all_keys: std::collections::HashSet<&str> = keys.iter().map(|k| k.as_str()).collect();
-    let mut files = Vec::new();
-
-    for key in &keys {
-        if let Some(base) = key.strip_suffix(".text")
-            && all_keys.contains(base)
-        {
-            continue;
-        }
-
-        let filename = match key.strip_prefix(&prefix) {
-            Some(f) if !f.is_empty() => f,
-            _ => continue,
-        };
-
-        let text = if filename.ends_with(".txt") {
-            match claria_storage::objects::get_object(s3, bucket, key).await {
-                Ok(output) => String::from_utf8(output.body).ok(),
-                Err(_) => None,
-            }
-        } else {
-            let sidecar_key = format!("{key}.text");
-            match claria_storage::objects::get_object(s3, bucket, &sidecar_key).await {
-                Ok(output) => String::from_utf8(output.body).ok(),
-                Err(_) => None,
-            }
-        };
-
-        if let Some(text) = text {
-            files.push(claria_bedrock::context::ContextFile {
-                filename: filename.to_string(),
-                text,
-            });
-        }
-    }
-
-    Ok(files)
+    Ok(texts
+        .into_iter()
+        .filter_map(|(filename, text)| {
+            text.map(|text| claria_bedrock::context::ContextFile { filename, text })
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -2467,7 +2355,7 @@ pub async fn chat_message(
     let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;
 
     // Load record context and filter to the frontend's active set.
-    let all_files = load_record_context(&s3, &bucket, &client_id).await?;
+    let all_files = load_record_context(&s3, &bucket, &client_id, &state.record_cache).await?;
     let context_files: Vec<_> = if context_filenames.is_empty() {
         all_files
     } else {
@@ -4043,7 +3931,7 @@ pub async fn count_client_context_tokens(
     let bucket = bucket_name(&cfg);
 
     let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;
-    let all_files = load_record_context(&s3, &bucket, &client_id).await?;
+    let all_files = load_record_context(&s3, &bucket, &client_id, &state.record_cache).await?;
     let files: Vec<_> = if context_filenames.is_empty() {
         all_files
     } else {

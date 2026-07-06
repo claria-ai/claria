@@ -4,6 +4,10 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Record files can be searched by filename prefix; the search narrows the S3 listing itself rather than filtering client-side
+- Client list and chat context load fetch their S3 objects concurrently instead of one at a time, so a ~100-record practice loads in well under a second instead of several seconds
+- Bounded-concurrent S3 fetches and provisioner scans run through an ordered concurrent stream rather than a manual semaphore, preserving input order without a post-hoc sort
+- Cache client and record reads in memory, refetching an object only when its S3 ETag changes
 - S3 object operations, Bedrock chat turns, and the record/chat commands emit trace-level timing spans with elapsed milliseconds, keys, and byte counts
 - Exported console logs carry those span durations regardless of log level, while the terminal and default operational log stay free of them
 

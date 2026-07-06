@@ -460,7 +460,7 @@ dependencies = [
  "http 0.2.12",
  "http 1.4.0",
  "http-body 1.0.1",
- "lru",
+ "lru 0.16.3",
  "percent-encoding",
  "regex-lite",
  "sha2 0.11.0",
@@ -1490,6 +1490,7 @@ dependencies = [
  "eyre",
  "futures",
  "jiff",
+ "lru 0.18.0",
  "rfd",
  "serde",
  "serde_json",
@@ -1595,14 +1596,17 @@ name = "claria-storage"
 version = "0.16.3"
 dependencies = [
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-s3",
  "aws-smithy-types",
  "claria-core",
+ "claria-mock-aws",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3482,6 +3486,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbrown"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
+]
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4272,6 +4287,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
 dependencies = [
  "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "lru"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a860605968fce16869fd239cf4237a82f3ac470723415db603b0e8b6c8d4fb9"
+dependencies = [
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -6658,7 +6682,7 @@ dependencies = [
  "itertools",
  "levenshtein_automata",
  "log",
- "lru",
+ "lru 0.16.3",
  "lz4_flex",
  "measure_time",
  "memmap2",

@@ -355,10 +355,13 @@ async deleteClient(clientId: string) : Promise<Result<null, string>> {
 },
 /**
  * List files in a client's record, excluding sidecar `.text` files.
+ * 
+ * `prefix` narrows the listing to filenames starting with it, mapped to the
+ * S3 ListObjectsV2 `Prefix` parameter (`records/{id}/{prefix}`).
  */
-async listRecordFiles(clientId: string) : Promise<Result<RecordFile[], string>> {
+async listRecordFiles(clientId: string, prefix: string | null) : Promise<Result<RecordFile[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("list_record_files", { clientId }) };
+    return { status: "ok", data: await TAURI_INVOKE("list_record_files", { clientId, prefix }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

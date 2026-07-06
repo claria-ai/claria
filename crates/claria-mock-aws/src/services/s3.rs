@@ -363,10 +363,11 @@ async fn list_objects_v2(bucket: &str, query: &str, state: SharedState) -> Respo
         contents.push_str(&xml::wrap(
             "Contents",
             &format!(
-                "{}{}{}",
+                "{}{}{}{}",
                 xml::el("Key", key),
                 xml::el("Size", &ver.body.len().to_string()),
                 xml::el("LastModified", &ver.last_modified),
+                xml::el("ETag", &format!("\"{}\"", ver.etag)),
             ),
         ));
     }

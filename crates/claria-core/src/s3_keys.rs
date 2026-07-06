@@ -47,6 +47,24 @@ pub fn client_records_prefix(id: Uuid) -> String {
     format!("records/{id}/")
 }
 
+/// ListObjectsV2 prefix for a client's record files whose filename starts
+/// with `filename_prefix`.
+pub fn client_records_search_prefix(id: Uuid, filename_prefix: &str) -> String {
+    format!("records/{id}/{filename_prefix}")
+}
+
+/// True when `key` is a `.text` sidecar whose base file is present in `keys`.
+///
+/// `keys` must be the same (possibly prefix-filtered) listing `key` came from:
+/// a sidecar stays hidden as long as its base file matches the filter too. A
+/// prefix longer than the base filename (the user typed into the `.text`
+/// suffix) excludes the base, so the sidecar is shown — it was asked for by
+/// name.
+pub fn is_hidden_sidecar(key: &str, keys: &std::collections::HashSet<&str>) -> bool {
+    key.strip_suffix(".text")
+        .is_some_and(|base| keys.contains(base))
+}
+
 pub fn client_record_file(id: Uuid, filename: &str) -> String {
     format!("records/{id}/{filename}")
 }
