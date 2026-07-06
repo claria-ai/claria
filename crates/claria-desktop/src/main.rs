@@ -7,8 +7,9 @@ use tauri::Manager;
 use tauri_specta::{collect_commands, Builder};
 use tracing_subscriber::prelude::*;
 
+use claria_desktop::console;
+
 mod commands;
-mod console;
 mod state;
 
 fn main() -> Result<()> {
@@ -17,13 +18,28 @@ fn main() -> Result<()> {
     let console_buffer = console::ConsoleBuffer::new();
     let console_layer = console::ConsoleLayer::new(console_buffer.clone());
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+    // Per-layer filters, not a global one: a global filter runs before the
+    // layers and would drop the trace-level timing spans everywhere, including
+    // the export. The terminal honors RUST_LOG (default "info"), so timing spans
+    // stay out of the normal operational log; RUST_LOG=claria_storage=trace (etc.)
+    // still surfaces them there for ad-hoc debugging.
+    let fmt_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
+    // The exported console log always admits the claria_* timing spans on top of
+    // the info baseline, so a log a user sends in carries durations with zero
+    // configuration, while SDK/hyper trace noise stays out.
+    let console_filter = tracing_subscriber::EnvFilter::new(
+        "info,claria_storage=trace,claria_bedrock=trace,claria_desktop=trace",
+    );
+
     tracing_subscriber::registry()
-        .with(env_filter)
-        .with(tracing_subscriber::fmt::layer())
-        .with(console_layer)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+                .with_filter(fmt_filter),
+        )
+        .with(console_layer.with_filter(console_filter))
         .init();
 
     let builder = Builder::<tauri::Wry>::new()

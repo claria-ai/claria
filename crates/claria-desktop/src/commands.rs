@@ -11,7 +11,8 @@ use claria_provisioner::account_setup::{
 };
 use claria_provisioner::{Action, CredentialScope, PlanEntry};
 
-use crate::console::{ConsoleBuffer, ConsoleEntry};
+use claria_desktop::console::{ConsoleBuffer, ConsoleEntry};
+
 use crate::state::DesktopState;
 
 // ---------------------------------------------------------------------------
@@ -1242,6 +1243,7 @@ fn bucket_name(cfg: &ClariaConfig) -> String {
 /// returns summaries sorted by most recently created first.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(level = "trace", skip_all, fields(count = tracing::field::Empty))]
 pub async fn list_clients(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<ClientSummary>, String> {
@@ -1249,7 +1251,12 @@ pub async fn list_clients(
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
 
-    claria_desktop::records::list_client_summaries(&s3, &bucket, &state.record_cache).await
+    let clients =
+        claria_desktop::records::list_client_summaries(&s3, &bucket, &state.record_cache).await?;
+
+    tracing::Span::current().record("count", clients.len() as u64);
+
+    Ok(clients)
 }
 
 /// Create a new client record in S3.
@@ -1350,6 +1357,7 @@ const TRANSLATION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-6";
 /// S3 ListObjectsV2 `Prefix` parameter (`records/{id}/{prefix}`).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, count = tracing::field::Empty))]
 pub async fn list_record_files(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -1391,6 +1399,8 @@ pub async fn list_record_files(
         })
         .collect();
 
+    tracing::Span::current().record("count", files.len() as u64);
+
     Ok(files)
 }
 
@@ -1400,6 +1410,15 @@ pub async fn list_record_files(
 /// via Bedrock document text extraction and uploaded alongside.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(
+        client_id = %client_id,
+        filename = tracing::field::Empty,
+        bytes = tracing::field::Empty
+    )
+)]
 pub async fn upload_record_file(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -1419,6 +1438,10 @@ pub async fn upload_record_file(
 
     let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
     let file_size = bytes.len() as i32;
+
+    let span = tracing::Span::current();
+    span.record("filename", filename);
+    span.record("bytes", bytes.len() as u64);
 
     // Determine content type from extension.
     let extension = path
@@ -1704,6 +1727,7 @@ async fn maybe_translate(
 /// translation. The `.text` sidecar contains the rendered headered body.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id))]
 pub async fn upload_record_file_with_options(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -1888,6 +1912,7 @@ pub async fn delete_record_file(
 /// For other files, returns the `.text` sidecar content if available.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, filename = %filename))]
 pub async fn get_record_file_text(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -2006,6 +2031,7 @@ pub struct RecordContext {
 /// readable text are omitted.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, files = tracing::field::Empty))]
 pub async fn list_record_context(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -2021,13 +2047,17 @@ pub async fn list_record_context(
 
     // Include all files — those without extracted text get an empty string
     // so the frontend can show them as context pills and offer re-extraction.
-    Ok(texts
+    let context_files: Vec<RecordContext> = texts
         .into_iter()
         .map(|(filename, text)| RecordContext {
             filename,
             text: text.unwrap_or_default(),
         })
-        .collect())
+        .collect();
+
+    tracing::Span::current().record("files", context_files.len() as u64);
+
+    Ok(context_files)
 }
 
 /// Re-run text extraction for a single record file.
@@ -2304,6 +2334,12 @@ pub async fn list_chat_models(
 /// frontend can pass it back on subsequent calls.
 #[tauri::command]
 #[specta::specta]
+// Timing span logs ids, model, and turn count — never chat text (PHI).
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(client_id = %client_id, model_id = %model_id, turns = messages.len())
+)]
 pub async fn chat_message(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -2464,6 +2500,7 @@ pub async fn chat_message(
 /// operating model and the current infrastructure state, then call Bedrock.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(level = "trace", skip_all, fields(model_id = %model_id, turns = messages.len()))]
 pub async fn infra_chat(
     state: State<'_, DesktopState>,
     model_id: String,

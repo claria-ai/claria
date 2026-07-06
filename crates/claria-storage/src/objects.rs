@@ -12,7 +12,15 @@ pub struct GetObjectOutput {
     pub content_type: Option<String>,
 }
 
+// Timing spans below log S3 keys/prefixes (already visible in-app) plus byte
+// counts and elapsed_ms — never object contents, which may hold PHI.
+
 /// Get an object from S3.
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(bucket = %bucket, key = %key, bytes = tracing::field::Empty)
+)]
 pub async fn get_object(
     client: &Client,
     bucket: &str,
@@ -50,6 +58,8 @@ pub async fn get_object(
         .into_bytes()
         .to_vec();
 
+    tracing::Span::current().record("bytes", body.len() as u64);
+
     Ok(GetObjectOutput {
         body,
         etag,
@@ -58,6 +68,7 @@ pub async fn get_object(
 }
 
 /// Put an object to S3. Returns the new ETag.
+#[tracing::instrument(level = "trace", skip_all, fields(bucket = %bucket, key = %key, bytes = body.len()))]
 pub async fn put_object(
     client: &Client,
     bucket: &str,
@@ -175,6 +186,11 @@ pub struct ObjectMeta {
 }
 
 /// List objects under a prefix with size and last-modified metadata.
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
+)]
 pub async fn list_objects_with_metadata(
     client: &Client,
     bucket: &str,
@@ -219,10 +235,17 @@ pub async fn list_objects_with_metadata(
         }
     }
 
+    tracing::Span::current().record("count", objects.len() as u64);
+
     Ok(objects)
 }
 
 /// List objects under a prefix. Returns keys.
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
+)]
 pub async fn list_objects(
     client: &Client,
     bucket: &str,
@@ -263,6 +286,8 @@ pub async fn list_objects(
         }
     }
 
+    tracing::Span::current().record("count", keys.len() as u64);
+
     Ok(keys)
 }
 
@@ -272,6 +297,11 @@ pub async fn list_objects(
 /// `ListObjectsV2` response the listing already makes, so a cached body can be
 /// revalidated without a GET. When `e_tag()` is absent the etag is
 /// `String::new()`, which never matches a cache entry — a safe miss.
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
+)]
 pub async fn list_object_etags(
     client: &Client,
     bucket: &str,
@@ -314,6 +344,8 @@ pub async fn list_object_etags(
             break;
         }
     }
+
+    tracing::Span::current().record("count", pairs.len() as u64);
 
     Ok(pairs)
 }
