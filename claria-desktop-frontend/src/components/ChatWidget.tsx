@@ -343,7 +343,7 @@ export default function ChatWidget({
             ? usageByIndex[messages.length - 1]
             : undefined
         }
-        sessionTotalUsd={session.totalUsd}
+        sessionTotalUsd={session.unknownCostTurns === 0 ? session.totalUsd : null}
       />
 
       {/* Input bar */}

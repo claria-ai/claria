@@ -463,22 +463,78 @@ pub async fn chat_converse(
 
 // ── Token counting ───────────────────────────────────────────────────────────
 
+/// Model ID used for the `CountTokens` API, resolved once per process.
+static COUNTING_MODEL: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
+
+/// Resolve the model to count tokens against: the newest available Haiku.
+///
+/// Not every model supports `CountTokens` (e.g. Fable rejects it with a
+/// ValidationException), so counting never uses the chat model. Haiku has
+/// reliably supported the API across generations; "newest" is decided by
+/// the release date stamp embedded in the model ID, which orders correctly
+/// across both naming shapes (`claude-3-5-haiku-20241022`,
+/// `claude-haiku-4-5-20251001`).
+async fn counting_model(config: &aws_config::SdkConfig) -> Result<&'static str, BedrockError> {
+    COUNTING_MODEL
+        .get_or_try_init(|| async {
+            let client = aws_sdk_bedrock::Client::new(config);
+            let models = fetch_active_foundation_models(&client).await?;
+            models
+                .into_iter()
+                .map(|(model_id, _)| model_id)
+                .filter(|id| id.contains("haiku"))
+                .max_by_key(|id| release_date_stamp(id))
+                .ok_or_else(|| {
+                    BedrockError::Invocation(
+                        "no Haiku model available for token counting".to_string(),
+                    )
+                })
+        })
+        .await
+        .map(String::as_str)
+}
+
+/// The 8-digit release date stamp embedded in a foundation model ID
+/// (`anthropic.claude-haiku-4-5-20251001-v1:0` → 20251001), or 0 if absent.
+fn release_date_stamp(model_id: &str) -> u32 {
+    let bytes = model_id.as_bytes();
+    let mut run = 0;
+    // Iterate one past the end so a trailing digit run is still checked.
+    for i in 0..=bytes.len() {
+        if i < bytes.len() && bytes[i].is_ascii_digit() {
+            run += 1;
+        } else {
+            // Exactly 8 digits is a date stamp; shorter runs are version numbers.
+            if run == 8 {
+                return model_id[i - 8..i].parse().unwrap_or(0);
+            }
+            run = 0;
+        }
+    }
+    0
+}
+
 /// Count the input tokens for a context (system prompt) before the user sends
 /// a message. Uses the free Bedrock `CountTokens` API.
+///
+/// The count runs against the newest available Haiku (see [`counting_model`]),
+/// not the chat model — so it is an estimate when the chat model uses a
+/// different tokenizer. `chat_model_id` is logged for attribution only.
 ///
 /// A minimal dummy user message is included because the Converse format
 /// requires at least one message.
 pub async fn count_context_tokens(
     config: &aws_config::SdkConfig,
-    model_id: &str,
+    chat_model_id: &str,
     system_prompt: &str,
 ) -> Result<u32, BedrockError> {
     let client = aws_sdk_bedrockruntime::Client::new(config);
 
     // CountTokens requires a bare foundation model ID, not an inference
-    // profile ID (e.g. `anthropic.claude-sonnet-4-6` not
-    // `us.anthropic.claude-sonnet-4-6`).
-    let bare_model_id = strip_scope_prefix(model_id);
+    // profile ID; `counting_model` returns bare IDs from the foundation
+    // model registry.
+    let bare_model_id = counting_model(config).await?;
+    info!(chat_model_id, bare_model_id, "context token count requested");
 
     let dummy_message = Message::builder()
         .role(ConversationRole::User)
@@ -490,8 +546,6 @@ pub async fn count_context_tokens(
         .messages(dummy_message)
         .system(SystemContentBlock::Text(system_prompt.to_string()))
         .build();
-
-    info!(bare_model_id, "counting context tokens");
 
     let response = client
         .count_tokens()

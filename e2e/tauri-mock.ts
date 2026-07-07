@@ -29,19 +29,19 @@ export function buildInitScript(): string {
 
       function freshPlanEntries() {
         const specs = [
-          { resource_type: "iam_user", resource_name: "claria-admin", label: "IAM User", description: "Dedicated least-privilege user", severity: "info", iam_actions: [] },
-          { resource_type: "iam_user_policy", resource_name: "claria-admin-policy", label: "IAM Policy", description: "Permissions scoped to only what Claria needs", severity: "normal", iam_actions: [] },
-          { resource_type: "baa_agreement", resource_name: "aws-baa", label: "BAA Agreement", description: "Business Associate Agreement", severity: "elevated", iam_actions: [] },
-          { resource_type: "s3_bucket", resource_name: "185735714230-claria-data", label: "S3 Bucket", description: "Encrypted storage for client records", severity: "normal", iam_actions: [] },
-          { resource_type: "s3_bucket_versioning", resource_name: "185735714230-claria-data", label: "S3 Bucket Versioning", description: "Protects against accidental deletion", severity: "normal", iam_actions: [] },
-          { resource_type: "s3_bucket_encryption", resource_name: "185735714230-claria-data", label: "S3 Bucket Encryption", description: "Data encrypted at rest", severity: "normal", iam_actions: [] },
-          { resource_type: "s3_bucket_public_access", resource_name: "185735714230-claria-data", label: "S3 Public Access Block", description: "All public access blocked", severity: "normal", iam_actions: [] },
-          { resource_type: "s3_bucket_policy", resource_name: "185735714230-claria-data", label: "S3 Bucket Policy", description: "Enforces TLS-only access", severity: "normal", iam_actions: [] },
-          { resource_type: "cloudtrail_trail", resource_name: "claria-audit-trail", label: "CloudTrail Trail", description: "Audit log for all S3 access", severity: "normal", iam_actions: [] },
-          { resource_type: "cloudtrail_s3_events", resource_name: "claria-audit-trail", label: "CloudTrail S3 Events", description: "Object-level logging", severity: "normal", iam_actions: [] },
-          { resource_type: "bedrock_model_access", resource_name: "anthropic.claude-sonnet-4-20250514-v1:0", label: "Bedrock Model Access", description: "Claude Sonnet 4", severity: "elevated", iam_actions: [] },
-          { resource_type: "bedrock_model_access", resource_name: "anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Model Access", description: "Claude Haiku 4.5", severity: "elevated", iam_actions: [] },
-          { resource_type: "bedrock_model_access", resource_name: "anthropic.claude-opus-4-6-20260301-v1:0", label: "Bedrock Model Access", description: "Claude Opus 4.6", severity: "elevated", iam_actions: [] },
+          { resource_type: "iam_user", resource_name: "claria-admin", label: "IAM User", description: "Dedicated least-privilege user", severity: "info", credential_scope: "elevated", iam_actions: [] },
+          { resource_type: "iam_user_policy", resource_name: "claria-admin-policy", label: "IAM Policy", description: "Permissions scoped to only what Claria needs", severity: "normal", credential_scope: "elevated", iam_actions: [] },
+          { resource_type: "baa_agreement", resource_name: "aws-baa", label: "BAA Agreement", description: "Business Associate Agreement", severity: "elevated", credential_scope: "elevated", iam_actions: [] },
+          { resource_type: "s3_bucket", resource_name: "185735714230-claria-data", label: "S3 Bucket", description: "Encrypted storage for client records", severity: "normal", credential_scope: "regular", iam_actions: [] },
+          { resource_type: "s3_bucket_versioning", resource_name: "185735714230-claria-data", label: "S3 Bucket Versioning", description: "Protects against accidental deletion", severity: "normal", credential_scope: "regular", iam_actions: [] },
+          { resource_type: "s3_bucket_encryption", resource_name: "185735714230-claria-data", label: "S3 Bucket Encryption", description: "Data encrypted at rest", severity: "normal", credential_scope: "regular", iam_actions: [] },
+          { resource_type: "s3_bucket_public_access", resource_name: "185735714230-claria-data", label: "S3 Public Access Block", description: "All public access blocked", severity: "normal", credential_scope: "regular", iam_actions: [] },
+          { resource_type: "s3_bucket_policy", resource_name: "185735714230-claria-data", label: "S3 Bucket Policy", description: "Enforces TLS-only access", severity: "normal", credential_scope: "regular", iam_actions: [] },
+          { resource_type: "cloudtrail_trail", resource_name: "claria-audit-trail", label: "CloudTrail Trail", description: "Audit log for all S3 access", severity: "normal", credential_scope: "regular", iam_actions: [] },
+          { resource_type: "cloudtrail_s3_events", resource_name: "claria-audit-trail", label: "CloudTrail S3 Events", description: "Object-level logging", severity: "normal", credential_scope: "regular", iam_actions: [] },
+          { resource_type: "bedrock_model_access", resource_name: "anthropic.claude-sonnet-4-20250514-v1:0", label: "Bedrock Model Access", description: "Claude Sonnet 4", severity: "elevated", credential_scope: "elevated", iam_actions: [] },
+          { resource_type: "bedrock_model_access", resource_name: "anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Model Access", description: "Claude Haiku 4.5", severity: "elevated", credential_scope: "elevated", iam_actions: [] },
+          { resource_type: "bedrock_model_access", resource_name: "anthropic.claude-opus-4-6-20260301-v1:0", label: "Bedrock Model Access", description: "Claude Opus 4.6", severity: "elevated", credential_scope: "elevated", iam_actions: [] },
         ];
 
         if (appliedOnce) {
@@ -143,21 +143,18 @@ export function buildInitScript(): string {
             };
           }
 
-          // ── Bootstrap IAM user ───────────────────────────────────────
-          if (cmd === "bootstrap_iam_user") {
-            // Simulate the full bootstrap sequence with step-by-step progress
-            const steps = [
-              { name: "create_policy", status: "succeeded", detail: "arn:aws:iam::185735714230:policy/ClariaProvisionerAccess" },
-              { name: "create_user", status: "succeeded", detail: "claria-admin" },
-              { name: "attach_policy", status: "succeeded", detail: null },
-              { name: "create_access_key", status: "succeeded", detail: "AKIA...0001" },
-              { name: "validate_new_credentials", status: "succeeded", detail: null },
-              { name: "delete_source_key", status: "succeeded", detail: "Root access key deleted" },
-              { name: "write_config", status: "succeeded", detail: null },
-              { name: "accept_model_agreements", status: "succeeded", detail: "3 models" },
-            ];
+          // ── First-run provisioning (unified scan/apply) ──────────────
+          if (cmd === "provision_scan") {
+            return {
+              entries: freshPlanEntries(),
+              needs_escalation: !appliedOnce,
+              account_id: "185735714230",
+            };
+          }
 
-            // Auto-save config on bootstrap success
+          if (cmd === "provision_apply") {
+            appliedOnce = true;
+            // The real command bootstraps the IAM user and writes config.
             savedConfig = {
               region: args.region,
               system_name: args.systemName,
@@ -171,24 +168,14 @@ export function buildInitScript(): string {
               hourly_cost_data: false,
             };
             configSaved = true;
-
-            return {
-              success: true,
-              steps,
-              account_id: "185735714230",
-              new_credentials: {
-                access_key_id: "AKIAMOCKKEY00000001",
-                secret_access_key: "mock-secret-key-00000001",
-              },
-              error: null,
-            };
+            return freshPlanEntries();
           }
 
           // ── Plan (provisioner scan) ──────────────────────────────────
           if (cmd === "plan") {
             const entries = freshPlanEntries();
             // Skip progress events — Channel internals are too complex to mock.
-            // The ScanProvision page will jump straight from "scanning" to "planned".
+            // The Provision page will jump straight from "scanning" to "planned".
             return entries;
           }
 

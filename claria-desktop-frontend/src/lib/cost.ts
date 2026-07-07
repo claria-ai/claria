@@ -102,6 +102,9 @@ export interface SessionUsage {
   /// recompute `cost_usd`, just the savings delta.
   cacheSavedUsd: number;
   turnCount: number;
+  /// Turns with no pricing entry (pricing_version 0). When non-zero the
+  /// dollar totals are understated, so cost surfaces omit them.
+  unknownCostTurns: number;
 }
 
 export const EMPTY_SESSION_USAGE: SessionUsage = {
@@ -112,6 +115,7 @@ export const EMPTY_SESSION_USAGE: SessionUsage = {
   totalCacheWriteTokens: 0,
   cacheSavedUsd: 0,
   turnCount: 0,
+  unknownCostTurns: 0,
 };
 
 /**
@@ -131,14 +135,16 @@ export function accumulateUsage(
     ? (usage.cache_read_input_tokens / 1_000_000) *
       (pricing.input_per_million - pricing.cache_read_per_million)
     : 0;
+  const costKnown = usage.pricing_version !== 0 && Number.isFinite(usage.cost_usd);
   return {
-    totalUsd: prev.totalUsd + (Number.isFinite(usage.cost_usd) ? usage.cost_usd : 0),
+    totalUsd: prev.totalUsd + (costKnown ? usage.cost_usd : 0),
     totalInputTokens: prev.totalInputTokens + usage.input_tokens,
     totalOutputTokens: prev.totalOutputTokens + usage.output_tokens,
     totalCacheReadTokens: prev.totalCacheReadTokens + usage.cache_read_input_tokens,
     totalCacheWriteTokens: prev.totalCacheWriteTokens + usage.cache_write_input_tokens,
     cacheSavedUsd: prev.cacheSavedUsd + Math.max(0, savedThisTurn),
     turnCount: prev.turnCount + 1,
+    unknownCostTurns: prev.unknownCostTurns + (costKnown ? 0 : 1),
   };
 }
 
@@ -233,20 +239,25 @@ export function summarizeHistory(
   let turnCount = 0;
   let legacyTurnCount = 0;
   let anyUsage = false;
+  let anyUnknownCost = false;
   for (const m of messages) {
     if (m.role !== "assistant") continue;
     turnCount += 1;
     if (m.usage) {
       anyUsage = true;
-      if (Number.isFinite(m.usage.cost_usd)) {
+      if (m.usage.pricing_version !== 0 && Number.isFinite(m.usage.cost_usd)) {
         lifetimeUsd += m.usage.cost_usd;
+      } else {
+        anyUnknownCost = true;
       }
     } else {
       legacyTurnCount += 1;
     }
   }
   return {
-    lifetimeUsd: anyUsage ? lifetimeUsd : null,
+    // A turn without a pricing entry would understate the total — omit the
+    // figure rather than show a wrong one.
+    lifetimeUsd: anyUsage && !anyUnknownCost ? lifetimeUsd : null,
     turnCount,
     legacyTurnCount,
     lastActivityIso,

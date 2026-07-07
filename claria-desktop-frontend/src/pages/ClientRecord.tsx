@@ -32,6 +32,7 @@ import MoreToggle from "../components/MoreToggle";
 import DeletedSection from "../components/DeletedSection";
 import { ErrorBanner } from "../components/StateCards";
 import { formatDateTime, formatFileSize } from "../lib/format";
+import { searchMatches } from "../lib/search";
 import { useMoreMode } from "../lib/useMoreMode";
 import { diffLines, type DiffLine } from "../lib/diff";
 import ClientChat from "./ClientChat";
@@ -261,15 +262,14 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     };
   }, [clientId, debouncedSearch]);
 
-  const query = search.trim().toLowerCase();
+  const query = search.trim();
   const chatHistoryFiles = files
     .filter((f) => f.filename.startsWith(CHAT_HISTORY_PREFIX))
     .sort((a, b) => (b.uploaded_at ?? "").localeCompare(a.uploaded_at ?? ""));
   const regularFiles = files.filter(
     (f) =>
       !f.filename.startsWith(CHAT_HISTORY_PREFIX) &&
-      (f.filename.toLowerCase().includes(query) ||
-        contentMatches.has(f.filename)),
+      (searchMatches(f.filename, query) || contentMatches.has(f.filename)),
   );
 
   const refresh = useCallback(async () => {
@@ -1102,7 +1102,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                       </p>
                       {query !== "" &&
                         contentMatches.has(file.filename) &&
-                        !file.filename.toLowerCase().includes(query) && (
+                        !searchMatches(file.filename, query) && (
                           <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded">
                             match in contents
                           </span>
