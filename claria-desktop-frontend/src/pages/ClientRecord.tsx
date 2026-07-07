@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   listRecordFiles,
+  searchRecordContents,
   uploadRecordFile,
   deleteRecordFile,
   getRecordFileText,
@@ -213,35 +214,62 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
 
   const CHAT_HISTORY_PREFIX = "chat-history/";
 
-  // Filename prefix search: `search` filters client-side instantly; the
-  // debounced value is sent to S3 as a ListObjectsV2 key prefix.
+  // Search matches filenames instantly (case-insensitive substring); the
+  // debounced query is also matched against each file's extracted text on
+  // the backend, and files that only match by content get a badge.
   const [search, setSearch] = useState("");
+  // The search input replaces the header action buttons while open; closing
+  // clears the query so files are never filtered by a hidden search box.
+  const [searchOpen, setSearchOpen] = useState(false);
   const [debouncedSearch, setDebouncedSearch] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
     return () => clearTimeout(t);
   }, [search]);
 
+  const [contentMatches, setContentMatches] = useState<Set<string>>(
+    new Set(),
+  );
+  useEffect(() => {
+    if (!debouncedSearch) {
+      setContentMatches(new Set());
+      return;
+    }
+    let stale = false;
+    searchRecordContents(clientId, debouncedSearch)
+      .then((names) => {
+        if (!stale) setContentMatches(new Set(names));
+      })
+      .catch((e) => {
+        if (!stale) setError(String(e));
+      });
+    return () => {
+      stale = true;
+    };
+  }, [clientId, debouncedSearch]);
+
+  const query = search.trim().toLowerCase();
   const chatHistoryFiles = files
     .filter((f) => f.filename.startsWith(CHAT_HISTORY_PREFIX))
     .sort((a, b) => (b.uploaded_at ?? "").localeCompare(a.uploaded_at ?? ""));
   const regularFiles = files.filter(
     (f) =>
       !f.filename.startsWith(CHAT_HISTORY_PREFIX) &&
-      f.filename.startsWith(search.trim()),
+      (f.filename.toLowerCase().includes(query) ||
+        contentMatches.has(f.filename)),
   );
 
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const result = await listRecordFiles(clientId, debouncedSearch || undefined);
+      const result = await listRecordFiles(clientId);
       setFiles(result);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, [clientId, debouncedSearch]);
+  }, [clientId]);
 
   useEffect(() => {
     refresh();
@@ -800,28 +828,64 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
           <div className="px-4 py-2 border-b border-gray-100 bg-gray-50 rounded-t-lg flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-700">Files</h3>
             <div className="flex gap-2">
-              <input
-                type="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by prefix…"
-                title="Show files whose name starts with this text"
-                className="w-40 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-              />
-              <button
-                onClick={handleToggleMore}
-                className={`p-1.5 rounded border transition-colors ${
-                  moreMode
-                    ? "border-blue-300 bg-blue-50 text-blue-600"
-                    : "border-gray-300 text-gray-400 hover:bg-gray-100"
-                }`}
-                title={moreMode ? "Hide version history" : "Show version history"}
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </button>
-              {memoReady && memoState === "idle" && (
+              {searchOpen && (
+                <>
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        setSearch("");
+                        setSearchOpen(false);
+                      }
+                    }}
+                    placeholder="Search file names and contents…"
+                    title="Show files whose name or contents contain this text"
+                    autoFocus
+                    className="w-72 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <button
+                    onClick={() => {
+                      setSearch("");
+                      setSearchOpen(false);
+                    }}
+                    title="Close search"
+                    className="p-1.5 rounded border border-gray-300 text-gray-400 hover:bg-gray-100 transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </>
+              )}
+              {!searchOpen && (
+                <button
+                  onClick={() => setSearchOpen(true)}
+                  title="Search file names and contents"
+                  className="p-1.5 rounded border border-gray-300 text-gray-400 hover:bg-gray-100 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </button>
+              )}
+              {!searchOpen && (
+                <button
+                  onClick={handleToggleMore}
+                  className={`p-1.5 rounded border transition-colors ${
+                    moreMode
+                      ? "border-blue-300 bg-blue-50 text-blue-600"
+                      : "border-gray-300 text-gray-400 hover:bg-gray-100"
+                  }`}
+                  title={moreMode ? "Hide version history" : "Show version history"}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </button>
+              )}
+              {!searchOpen && memoReady && memoState === "idle" && (
                 <button
                   onClick={handleStartMemo}
                   className="px-3 py-1 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700 transition-colors flex items-center gap-1"
@@ -833,19 +897,23 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                   Record Memo
                 </button>
               )}
-              <button
-                onClick={() => setShowTranscribeWizard(true)}
-                className="px-3 py-1 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
-                title="Pick an audio file and configure transcription per-file"
-              >
-                Upload Audio File…
-              </button>
-              <button
-                onClick={() => setShowCreateText(true)}
-                className="px-3 py-1 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 transition-colors"
-              >
-                Create Text File
-              </button>
+              {!searchOpen && (
+                <button
+                  onClick={() => setShowTranscribeWizard(true)}
+                  className="px-3 py-1 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
+                  title="Pick an audio file and configure transcription per-file"
+                >
+                  Upload Audio File…
+                </button>
+              )}
+              {!searchOpen && (
+                <button
+                  onClick={() => setShowCreateText(true)}
+                  className="px-3 py-1 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 transition-colors"
+                >
+                  Create Text File
+                </button>
+              )}
             </div>
           </div>
 
@@ -1055,9 +1123,18 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                 >
                   <FileIcon filename={file.filename} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {file.filename}
-                    </p>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {file.filename}
+                      </p>
+                      {query !== "" &&
+                        contentMatches.has(file.filename) &&
+                        !file.filename.toLowerCase().includes(query) && (
+                          <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded">
+                            match in contents
+                          </span>
+                        )}
+                    </div>
                     <p className="text-xs text-gray-400">
                       {formatFileSize(file.size)}
                     </p>
@@ -1169,7 +1246,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
           {!loading && search.trim() !== "" && regularFiles.length === 0 && (
             <div className="px-4 py-6 text-center">
               <p className="text-sm text-gray-400">
-                No files start with &ldquo;{search.trim()}&rdquo;
+                No file names or contents match &ldquo;{search.trim()}&rdquo;
               </p>
             </div>
           )}

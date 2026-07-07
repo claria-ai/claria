@@ -12,8 +12,19 @@ pub async fn build_aws_config(
     region: &str,
     creds: &CredentialSource,
 ) -> aws_config::SdkConfig {
+    // An explicit HTTP client shared by every service client built from this
+    // config. Without one, each `Client::new` builds its own connector, so no
+    // connection is ever reused across clients and every command pays
+    // DNS/TCP/TLS setup on its first call.
+    let http_client = aws_smithy_http_client::Builder::new()
+        .tls_provider(aws_smithy_http_client::tls::Provider::Rustls(
+            aws_smithy_http_client::tls::rustls_provider::CryptoMode::AwsLc,
+        ))
+        .build_https();
+
     let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_config::Region::new(region.to_string()));
+        .region(aws_config::Region::new(region.to_string()))
+        .http_client(http_client);
 
     match creds {
         CredentialSource::Inline {

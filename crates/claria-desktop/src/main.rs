@@ -71,6 +71,7 @@ fn main() -> Result<()> {
             commands::create_client,
             commands::delete_client,
             commands::list_record_files,
+            commands::search_record_contents,
             commands::upload_record_file,
             commands::delete_record_file,
             commands::get_record_file_text,

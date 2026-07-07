@@ -126,8 +126,7 @@ pub async fn load_config(
 
     // Backfill account_id for configs saved before this field existed.
     if cfg.account_id.is_empty() {
-        let sdk_config =
-            claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
+        let sdk_config = cached_sdk_config(&state, &cfg).await;
         let sts = aws_sdk_sts::Client::new(&sdk_config);
         if let Ok(identity) = sts.get_caller_identity().send().await
             && let Some(account_id) = identity.account()
@@ -142,17 +141,24 @@ pub async fn load_config(
     // and any read failure (missing key, S3 unreachable) are non-fatal — the
     // local config remains authoritative.
     if !cfg.account_id.is_empty() {
-        let sdk_config =
-            claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
+        let sdk_config = cached_sdk_config(&state, &cfg).await;
         match read_cloud_preferences(&sdk_config, &cfg).await {
             Ok(Some(synced)) => {
                 synced.apply_to_config(&mut cfg);
-                tracing::info!("applied synced preferences from S3");
+                tracing::debug!("applied synced preferences from S3");
             }
             Ok(None) => {
-                tracing::info!(
-                    "no synced preferences in S3 yet (first machine or fresh provisioner)"
-                );
+                // First boot against this bucket: seed the file with the local
+                // values so every later read (here and on other machines)
+                // finds it.
+                let synced = SyncedPreferences::from_config(&cfg);
+                match write_cloud_preferences(&sdk_config, &cfg, &synced).await {
+                    Ok(()) => tracing::info!("initialized synced preferences in S3"),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "failed to initialize synced preferences in S3"
+                    ),
+                }
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to read cloud preferences; using local values");
@@ -640,6 +646,11 @@ pub async fn escalate_iam_policy(
 ///
 /// If the in-memory state is empty, attempts to load from disk first.
 /// Returns `(ClariaConfig, SdkConfig)`. Errors if no config is saved yet.
+///
+/// The built `SdkConfig` is cached in state and reused while the region and
+/// credentials it was built from are unchanged: its pooled HTTP connector is
+/// what keeps connections warm across commands, and rebuilding it per command
+/// pays DNS/TCP/TLS setup on every S3 call.
 async fn load_sdk_config(
     state: &State<'_, DesktopState>,
 ) -> Result<(ClariaConfig, aws_config::SdkConfig), String> {
@@ -658,9 +669,33 @@ async fn load_sdk_config(
         .ok_or_else(|| "No config loaded. Complete setup first.".to_string())?;
     drop(guard);
 
+    let sdk_config = cached_sdk_config(state, &cfg).await;
+    Ok((cfg, sdk_config))
+}
+
+/// Helper: the cached `SdkConfig` for `cfg`'s region and credentials,
+/// building and caching it on miss. Reuse is what keeps the pooled HTTP
+/// connections warm across commands.
+async fn cached_sdk_config(
+    state: &State<'_, DesktopState>,
+    cfg: &ClariaConfig,
+) -> aws_config::SdkConfig {
+    let mut sdk_guard = state.sdk_config.lock().await;
+    if let Some(cached) = sdk_guard.as_ref()
+        && cached.region == cfg.region
+        && cached.credentials == cfg.credentials
+    {
+        return cached.sdk_config.clone();
+    }
+
     let sdk_config =
         claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
-    Ok((cfg, sdk_config))
+    *sdk_guard = Some(crate::state::CachedSdkConfig {
+        region: cfg.region.clone(),
+        credentials: cfg.credentials.clone(),
+        sdk_config: sdk_config.clone(),
+    });
+    sdk_config
 }
 
 /// Helper: scan all resources concurrently (up to 5 at a time), streaming
@@ -1402,6 +1437,36 @@ pub async fn list_record_files(
     tracing::Span::current().record("count", files.len() as u64);
 
     Ok(files)
+}
+
+/// Filenames in a client's record whose readable text contains `query`,
+/// case-insensitively.
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, count = tracing::field::Empty))]
+pub async fn search_record_contents(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    query: String,
+) -> Result<Vec<String>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+
+    let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+
+    let matches = claria_desktop::records::search_record_contents(
+        &s3,
+        &bucket,
+        id,
+        &state.record_cache,
+        &query,
+    )
+    .await?;
+
+    tracing::Span::current().record("count", matches.len() as u64);
+
+    Ok(matches)
 }
 
 /// Upload a file to a client's record from a local file path.

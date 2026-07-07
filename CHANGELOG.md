@@ -2,6 +2,16 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Record file search also matches the extracted text of each file, with a badge on files that only match by content
+- The record file search opens from a magnifying-glass button, swapping the header action buttons for a wide search field while active
+- Record file name matching is substring anywhere in the name, no longer prefix-only
+- The client list can be filtered by name
+- The AWS SDK config is cached across commands and all AWS clients share one HTTP connection pool, so navigation no longer pays DNS/TCP/TLS setup on every S3 call
+- Missing synced preferences are seeded to S3 on first boot instead of being logged as a complaint on every view
+- Transcription preferences sync automatically when leaving the Preferences screen, replacing the Save button
+
 ## [0.17.0] — 2026-07-06
 
 - Record files can be searched by filename prefix; the search narrows the S3 listing itself rather than filtering client-side

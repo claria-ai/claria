@@ -21,6 +21,13 @@ export default function ClientList({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Case-insensitive substring filter on client name, applied to the live
+  // and deleted lists alike.
+  const [search, setSearch] = useState("");
+  const nameMatches = (name: string) =>
+    name.toLowerCase().includes(search.trim().toLowerCase());
+  const filteredClients = clients.filter((c) => nameMatches(c.name));
+
   // New client form state
   const [showNewForm, setShowNewForm] = useState(false);
   const [newName, setNewName] = useState("");
@@ -33,6 +40,9 @@ export default function ClientList({
   // More mode (deleted clients)
   const [moreMode, setMoreMode] = useState(false);
   const [deletedClients, setDeletedClients] = useState<DeletedClient[]>([]);
+  const filteredDeletedClients = deletedClients.filter((dc) =>
+    nameMatches(dc.name),
+  );
   const [deletedLoading, setDeletedLoading] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
 
@@ -126,6 +136,14 @@ export default function ClientList({
           <h2 className="text-2xl font-bold">Clients</h2>
         </div>
         <div className="flex gap-2">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search clients…"
+            title="Show clients whose name contains this text"
+            className="w-40 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+          />
           <button
             onClick={handleToggleMore}
             className={`p-2 rounded-lg border transition-colors ${
@@ -209,8 +227,17 @@ export default function ClientList({
         </div>
       )}
 
+      {/* No search matches */}
+      {!loading && clients.length > 0 && filteredClients.length === 0 && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
+          <p className="text-gray-400 text-sm">
+            No clients match &ldquo;{search.trim()}&rdquo;
+          </p>
+        </div>
+      )}
+
       {/* Client table */}
-      {!loading && clients.length > 0 && (
+      {!loading && filteredClients.length > 0 && (
         <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
           <table className="w-full">
             <thead>
@@ -225,7 +252,7 @@ export default function ClientList({
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {clients.map((client) => (
+              {filteredClients.map((client) => (
                 <tr
                   key={client.id}
                   data-client={client.id}
@@ -270,9 +297,13 @@ export default function ClientList({
                 <span>Loading deleted clients...</span>
               </div>
             </div>
-          ) : deletedClients.length === 0 ? (
+          ) : filteredDeletedClients.length === 0 ? (
             <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-              <p className="text-gray-400 text-sm">No deleted clients found.</p>
+              <p className="text-gray-400 text-sm">
+                {deletedClients.length === 0
+                  ? "No deleted clients found."
+                  : `No deleted clients match “${search.trim()}”`}
+              </p>
             </div>
           ) : (
             <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
@@ -285,7 +316,7 @@ export default function ClientList({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {deletedClients.map((dc) => (
+                  {filteredDeletedClients.map((dc) => (
                     <tr key={dc.id} className="opacity-60">
                       <td className="px-4 py-3 text-sm text-gray-500 line-through">
                         {dc.name}

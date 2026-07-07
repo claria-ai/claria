@@ -368,6 +368,18 @@ async listRecordFiles(clientId: string, prefix: string | null) : Promise<Result<
 }
 },
 /**
+ * Filenames in a client's record whose readable text contains `query`,
+ * case-insensitively.
+ */
+async searchRecordContents(clientId: string, query: string) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("search_record_contents", { clientId, query }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Upload a file to a client's record from a local file path.
  * 
  * If the file is a PDF or DOCX, a sidecar `.text` file is generated
