@@ -2,6 +2,10 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Client list and record file list share one deleted-items section and history toggle; deleted clients show as rows instead of a second table
+
 ## [0.18.0] — 2026-07-07
 
 - Record file search also matches the extracted text of each file, with a badge on files that only match by content
