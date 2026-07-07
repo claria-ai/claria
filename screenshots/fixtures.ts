@@ -13,7 +13,7 @@ function ok(
   actual: unknown = null,
 ) {
   return {
-    spec: { resource_type, resource_name, lifecycle: "managed", desired: {}, label, description, severity, iam_actions: [] },
+    spec: { resource_type, resource_name, lifecycle: "managed", desired: {}, credential_scope: "regular", label, description, severity, iam_actions: [] },
     action: "ok",
     cause: "in_sync",
     drift: [],
@@ -37,11 +37,15 @@ const planEntries = [
   ok("bedrock_model_access", "anthropic.claude-opus-4-6-20260301-v1:0", "Bedrock Model Access", "Claude Opus 4.6 — enabled for chat", "elevated"),
 ];
 
-/** Same plan with drift: IAM policy modified, one Bedrock model missing. */
+/**
+ * Same plan with drift: IAM policy modified (elevated scope, so the
+ * escalation notice renders), one Bedrock model missing.
+ */
 export const driftedPlan = planEntries.map((e) => {
   if (e.spec.resource_type === "iam_user_policy") {
     return {
       ...e,
+      spec: { ...e.spec, credential_scope: "elevated" },
       action: "modify",
       cause: "drift",
       drift: [
@@ -57,6 +61,7 @@ export const driftedPlan = planEntries.map((e) => {
             "transcribe:StartTranscriptionJob",
           ],
           actual: [
+            "bedrock:GetUseCaseForModelAccess",
             "bedrock:InvokeModel",
             "s3:GetObject",
             "s3:PutObject",

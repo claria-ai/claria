@@ -161,9 +161,12 @@ test("aws drift", async ({ page }) => {
   await page.goto(BASE_URL);
   await page.waitForSelector("[data-page=provision]");
   await page.click("[data-page=provision]");
-  // Drifted entries show their field diffs inline in the unified list
+  // Drifted entries show their field diffs inline in the unified list; the
+  // elevated-scope IAM policy adds the sync notice on top and the single
+  // escalation CTA at the bottom.
   await page.waitForSelector("text=2 changes needed");
-  await page.waitForSelector("text=Apply Changes");
+  await page.waitForSelector("text=Sync required");
+  await page.waitForSelector("text=Provide Admin Credentials");
   await page.screenshot({ path: "output/aws-drift.png", fullPage: true });
 });
 

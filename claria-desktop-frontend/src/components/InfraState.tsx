@@ -61,7 +61,7 @@ export default function InfraState({
   scanItems,
   applyItems,
   error,
-  onEscalate,
+  showEscalationNotice,
   actions,
   errorActions,
   doneMessage = "All resources provisioned successfully.",
@@ -72,7 +72,7 @@ export default function InfraState({
   scanItems: ScanItem[];
   applyItems: ApplyItem[];
   error?: string | null;
-  onEscalate?: () => void;
+  showEscalationNotice?: boolean;
   actions?: ReactNode;
   errorActions?: ReactNode;
   doneMessage?: string;
@@ -86,7 +86,7 @@ export default function InfraState({
     if (!entries) return null;
     return (
       <div className="space-y-4">
-        <PlanView entries={entries} onEscalate={onEscalate} />
+        <PlanView entries={entries} showEscalationNotice={showEscalationNotice} />
 
         {showInSync && !hasChanges(entries) && (
           <p className="text-sm text-green-600 text-center py-2">
@@ -94,7 +94,8 @@ export default function InfraState({
           </p>
         )}
 
-        {actions}
+        {/* Scroll target for the escalation notice's anchor link */}
+        <div id="infra-plan-actions">{actions}</div>
       </div>
     );
   }

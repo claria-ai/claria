@@ -7,6 +7,7 @@ All notable changes to Claria are documented here.
 - Client list and record file list share one deleted-items section and history toggle; deleted clients show as rows instead of a second table
 - AWS infrastructure scan, plan review, apply progress, and errors all render through one lifecycle widget
 - The AWS plan review is one flat list of all resources with drift diffs inline — no more sections with in-sync resources collapsed under Ready; scanning and applying render the same list with per-resource progress
+- The IAM policy appears as a first-class resource in the plan list with its permission diff inline; the elevated-credentials notice is a slim banner linking down to the single apply button instead of duplicating the CTA and diff
 - Removed two unreachable AWS management pages left over from the old onboarding wizard
 - Release tag builds reuse the main-branch warm cache instead of recompiling ~60 dependency crates, cutting the macOS release build from ~11 to an expected ~7 minutes
 - The release workflow caches npm downloads

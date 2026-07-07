@@ -4,7 +4,6 @@ import type { ApplyItem } from "../lib/provisioner";
 import PlanEntryCard from "./PlanEntryCard";
 import EscalationCard from "./EscalationCard";
 import Spinner from "./Spinner";
-import { findEscalationEntry } from "../lib/plan";
 
 function applyBadge(entry: PlanEntry, applyItems: ApplyItem[]): ReactNode {
   if (entry.action === "ok") return null;
@@ -37,19 +36,15 @@ function applyBadge(entry: PlanEntry, applyItems: ApplyItem[]): ReactNode {
  */
 export default function PlanView({
   entries,
-  onEscalate,
+  showEscalationNotice,
   applyItems,
 }: {
   entries: PlanEntry[];
-  onEscalate?: () => void;
+  showEscalationNotice?: boolean;
   applyItems?: ApplyItem[];
 }) {
   const total = entries.length;
   const changesCount = entries.filter((e) => e.action !== "ok").length;
-
-  // IAM escalation gets a CTA banner; its entry is omitted from the list
-  // below since the banner already shows its drift.
-  const escalation = onEscalate ? findEscalationEntry(entries) : null;
 
   return (
     <div className="space-y-4">
@@ -63,20 +58,16 @@ export default function PlanView({
             : "all resources in sync"}
       </p>
 
-      {escalation && onEscalate && (
-        <EscalationCard entry={escalation} onEscalate={onEscalate} />
-      )}
+      {showEscalationNotice && <EscalationCard />}
 
       <div className="space-y-2">
-        {entries
-          .filter((e) => e !== escalation)
-          .map((entry, i) => (
-            <PlanEntryCard
-              key={`${entry.spec.resource_name}-${i}`}
-              entry={entry}
-              trailing={applyItems ? applyBadge(entry, applyItems) : undefined}
-            />
-          ))}
+        {entries.map((entry, i) => (
+          <PlanEntryCard
+            key={`${entry.spec.resource_name}-${i}`}
+            entry={entry}
+            trailing={applyItems ? applyBadge(entry, applyItems) : undefined}
+          />
+        ))}
       </div>
     </div>
   );
