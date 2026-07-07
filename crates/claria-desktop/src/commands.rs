@@ -126,8 +126,7 @@ pub async fn load_config(
 
     // Backfill account_id for configs saved before this field existed.
     if cfg.account_id.is_empty() {
-        let sdk_config =
-            claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
+        let sdk_config = cached_sdk_config(&state, &cfg).await;
         let sts = aws_sdk_sts::Client::new(&sdk_config);
         if let Ok(identity) = sts.get_caller_identity().send().await
             && let Some(account_id) = identity.account()
@@ -142,8 +141,7 @@ pub async fn load_config(
     // and any read failure (missing key, S3 unreachable) are non-fatal — the
     // local config remains authoritative.
     if !cfg.account_id.is_empty() {
-        let sdk_config =
-            claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
+        let sdk_config = cached_sdk_config(&state, &cfg).await;
         match read_cloud_preferences(&sdk_config, &cfg).await {
             Ok(Some(synced)) => {
                 synced.apply_to_config(&mut cfg);
@@ -640,6 +638,11 @@ pub async fn escalate_iam_policy(
 ///
 /// If the in-memory state is empty, attempts to load from disk first.
 /// Returns `(ClariaConfig, SdkConfig)`. Errors if no config is saved yet.
+///
+/// The built `SdkConfig` is cached in state and reused while the region and
+/// credentials it was built from are unchanged: its pooled HTTP connector is
+/// what keeps connections warm across commands, and rebuilding it per command
+/// pays DNS/TCP/TLS setup on every S3 call.
 async fn load_sdk_config(
     state: &State<'_, DesktopState>,
 ) -> Result<(ClariaConfig, aws_config::SdkConfig), String> {
@@ -658,9 +661,33 @@ async fn load_sdk_config(
         .ok_or_else(|| "No config loaded. Complete setup first.".to_string())?;
     drop(guard);
 
+    let sdk_config = cached_sdk_config(state, &cfg).await;
+    Ok((cfg, sdk_config))
+}
+
+/// Helper: the cached `SdkConfig` for `cfg`'s region and credentials,
+/// building and caching it on miss. Reuse is what keeps the pooled HTTP
+/// connections warm across commands.
+async fn cached_sdk_config(
+    state: &State<'_, DesktopState>,
+    cfg: &ClariaConfig,
+) -> aws_config::SdkConfig {
+    let mut sdk_guard = state.sdk_config.lock().await;
+    if let Some(cached) = sdk_guard.as_ref()
+        && cached.region == cfg.region
+        && cached.credentials == cfg.credentials
+    {
+        return cached.sdk_config.clone();
+    }
+
     let sdk_config =
         claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
-    Ok((cfg, sdk_config))
+    *sdk_guard = Some(crate::state::CachedSdkConfig {
+        region: cfg.region.clone(),
+        credentials: cfg.credentials.clone(),
+        sdk_config: sdk_config.clone(),
+    });
+    sdk_config
 }
 
 /// Helper: scan all resources concurrently (up to 5 at a time), streaming

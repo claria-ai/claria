@@ -8,6 +8,7 @@ All notable changes to Claria are documented here.
 - The record file search opens from a magnifying-glass button, swapping the header action buttons for a wide search field while active
 - Record file name matching is substring anywhere in the name, no longer prefix-only
 - The client list can be filtered by name
+- The AWS SDK config is cached across commands and all AWS clients share one HTTP connection pool, so navigation no longer pays DNS/TCP/TLS setup on every S3 call
 
 ## [0.17.0] — 2026-07-06
 
