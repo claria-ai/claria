@@ -17,6 +17,7 @@ claria-provisioner = { path = "../claria-provisioner" }
 claria-storage = { path = "../claria-storage" }
 claria-transcribe = { path = "../claria-transcribe" }
 claria-whisper = { path = "../claria-whisper" }
+argon2 = "=0.5.3"
 aws-config = "=1.8.18"
 aws-sdk-s3 = "=1.137.0"
 aws-sdk-sts = "=1.107.0"
