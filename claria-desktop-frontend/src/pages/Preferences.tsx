@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getPrompt,
   savePrompt,
@@ -884,17 +884,16 @@ function formatFileSize(bytes: number): string {
  *
  * Cross-machine sync: on mount we call `fetchCloudPreferences` to pull the
  * latest values from S3 (so the editing machine sees its own recent changes
- * without an app restart). Saves go to both local config and S3 via
- * `savePreferences`. We stash the full synced subset so saving only one
- * field doesn't clobber the others.
+ * without an app restart). Edits accumulate in a draft and sync to local
+ * config and S3 via `savePreferences` when the user leaves the Preferences
+ * screen. We stash the full synced subset so saving only the transcription
+ * fields doesn't clobber the others.
  */
 function TranscriptionSection() {
   // The full set of synced fields, fetched on mount.
   const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
 
   // Editable copy of the transcription section only.
   const [draft, setDraft] = useState<TranscriptionPreferences | null>(null);
@@ -902,6 +901,31 @@ function TranscriptionSection() {
     snapshot != null &&
     draft != null &&
     JSON.stringify(snapshot.transcription) !== JSON.stringify(draft);
+
+  // Sync on unmount (leaving the Preferences screen). The ref carries the
+  // latest snapshot/draft into the cleanup closure; the save is fire-and-
+  // forget since the component is gone — failures surface in the backend
+  // log and the Claria Console.
+  const latestRef = useRef({ snapshot, draft });
+  latestRef.current = { snapshot, draft };
+  useEffect(() => {
+    return () => {
+      const { snapshot, draft } = latestRef.current;
+      if (
+        snapshot &&
+        draft &&
+        JSON.stringify(snapshot.transcription) !== JSON.stringify(draft)
+      ) {
+        savePreferences(
+          snapshot.preferred_model_id,
+          snapshot.cost_explorer_enabled,
+          snapshot.hourly_cost_data,
+          snapshot.prompt_caching_enabled,
+          draft
+        ).catch((e) => console.error("preferences sync on leave failed:", e));
+      }
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -928,30 +952,6 @@ function TranscriptionSection() {
   useEffect(() => {
     load();
   }, [load]);
-
-  async function handleSave() {
-    if (!snapshot || !draft) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const updated = await savePreferences(
-        snapshot.preferred_model_id,
-        snapshot.cost_explorer_enabled,
-        snapshot.hourly_cost_data,
-        snapshot.prompt_caching_enabled,
-        draft
-      );
-      setSnapshot(updated);
-      setDraft(updated.transcription);
-      setSavedAt(Date.now());
-    } catch (e) {
-      // Backend bubbles "saved locally but cloud sync failed: ..." so the
-      // partial state is visible to the user.
-      setError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
 
   function handleLanguageChange(value: TranscriptionLanguage) {
     if (!draft) return;
@@ -1104,29 +1104,11 @@ function TranscriptionSection() {
               </div>
             </label>
 
-            {/* Action row */}
-            <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
-              <button
-                onClick={handleSave}
-                disabled={!dirty || saving}
-                className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-              >
-                {saving ? (
-                  <>
-                    <Spinner />
-                    <span>Saving...</span>
-                  </>
-                ) : (
-                  "Save"
-                )}
-              </button>
-              {savedAt != null && !dirty && (
-                <span className="text-xs text-green-700">Saved.</span>
-              )}
-              {error && (
-                <span className="text-xs text-red-700">{error}</span>
-              )}
-            </div>
+            {dirty && (
+              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">
+                Changes sync when you leave this screen.
+              </p>
+            )}
           </>
         )}
       </div>

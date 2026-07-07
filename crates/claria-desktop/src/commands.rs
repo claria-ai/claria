@@ -145,12 +145,20 @@ pub async fn load_config(
         match read_cloud_preferences(&sdk_config, &cfg).await {
             Ok(Some(synced)) => {
                 synced.apply_to_config(&mut cfg);
-                tracing::info!("applied synced preferences from S3");
+                tracing::debug!("applied synced preferences from S3");
             }
             Ok(None) => {
-                tracing::info!(
-                    "no synced preferences in S3 yet (first machine or fresh provisioner)"
-                );
+                // First boot against this bucket: seed the file with the local
+                // values so every later read (here and on other machines)
+                // finds it.
+                let synced = SyncedPreferences::from_config(&cfg);
+                match write_cloud_preferences(&sdk_config, &cfg, &synced).await {
+                    Ok(()) => tracing::info!("initialized synced preferences in S3"),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "failed to initialize synced preferences in S3"
+                    ),
+                }
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to read cloud preferences; using local values");
