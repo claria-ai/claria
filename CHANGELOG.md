@@ -5,6 +5,7 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Removed the unused credential intake page
+- Dependency refresh across the workspace and frontend clears 10 of 17 RustSec advisories and all npm audit findings; the rest are transitive with no patched upstream (docx-rs, wayland-scanner, AWS smithy legacy TLS)
 - The onboarding e2e test covers the unified provisioning flow that replaced the old wizard pages
 - Client list and record file list share one deleted-items section and history toggle; deleted clients show as rows instead of a second table
 - AWS infrastructure scan, plan review, apply progress, and errors all render through one lifecycle widget

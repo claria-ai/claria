@@ -17,9 +17,7 @@ pub fn render_template(
     tera.add_raw_template(template_name, template_content)
         .map_err(|e| ExportError::TemplateParse(e.to_string()))?;
 
-    // Convert the answer to a Tera context via serde_json
-    let value = serde_json::to_value(answer)?;
-    let context = Context::from_value(value)
+    let context = Context::from_serialize(answer)
         .map_err(|e| ExportError::TemplateRender(e.to_string()))?;
 
     let rendered = tera.render(template_name, &context)?;

@@ -5,16 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-aws-config = "=1.8.16"
-aws-sdk-bedrock = "=1.141.0"
-aws-sdk-bedrockruntime = "=1.130.0"
-aws-smithy-types = "=1.4.7"
+aws-config = "=1.8.18"
+aws-sdk-bedrock = "=1.147.0"
+aws-sdk-bedrockruntime = "=1.135.0"
+aws-smithy-types = "=1.5.0"
 claria-billing = { path = "../claria-billing" }
 claria-core = { path = "../claria-core" }
-jiff = { version = "=0.2.24", features = ["serde"] }
+jiff = { version = "=0.2.31", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.149"
+serde_json = "=1.0.150"
 thiserror = "=2.0.18"
 tokio = { version = "=1.52.3", features = ["full"] }
 tracing = "=0.1.44"
-uuid = { version = "=1.23.1", features = ["v4"] }
+uuid = { version = "=1.23.4", features = ["v4"] }

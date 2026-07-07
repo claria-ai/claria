@@ -17,29 +17,29 @@ claria-provisioner = { path = "../claria-provisioner" }
 claria-storage = { path = "../claria-storage" }
 claria-transcribe = { path = "../claria-transcribe" }
 claria-whisper = { path = "../claria-whisper" }
-aws-config = "=1.8.16"
-aws-sdk-s3 = "=1.132.0"
-aws-sdk-sts = "=1.103.0"
-aws-smithy-http-client = { version = "=1.1.12", features = ["default-client", "rustls-aws-lc"] }
+aws-config = "=1.8.18"
+aws-sdk-s3 = "=1.137.0"
+aws-sdk-sts = "=1.107.0"
+aws-smithy-http-client = { version = "=1.1.13", features = ["default-client", "rustls-aws-lc"] }
 base64 = "=0.22.1"
 color-eyre = "=0.6.5"
 dirs = "=6.0.0"
 eyre = "=0.6.12"
 futures = "=0.3.32"
 rfd = "=0.17.2"
-jiff = { version = "=0.2.24", features = ["serde"] }
+jiff = { version = "=0.2.31", features = ["serde"] }
 lru = "=0.18.0"
 serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.149"
+serde_json = "=1.0.150"
 specta = { version = "=2.0.0-rc.22", features = ["derive"] }
 specta-typescript = "=0.0.9"
-tauri = { version = "=2.11.2", features = [] }
+tauri = { version = "=2.11.5", features = [] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 tokio = { version = "=1.52.3", features = ["full"] }
 tracing = "=0.1.44"
 ureq = "=3.3.0"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
-uuid = { version = "=1.23.1", features = ["v4"] }
+uuid = { version = "=1.23.4", features = ["v4"] }
 
 [dev-dependencies]
 aws-credential-types = "=1.2.14"
@@ -52,4 +52,4 @@ pre-release-replacements = [
 ]
 
 [build-dependencies]
-tauri-build = { version = "=2.6.2", features = [] }
+tauri-build = { version = "=2.6.3", features = [] }
