@@ -2,6 +2,11 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Release tag builds reuse the main-branch warm cache instead of recompiling ~60 dependency crates, cutting the macOS release build from ~11 to an expected ~7 minutes
+- The release workflow caches npm downloads
+
 ## [0.18.0] — 2026-07-07
 
 - Record file search also matches the extracted text of each file, with a badge on files that only match by content
