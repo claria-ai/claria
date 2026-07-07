@@ -5,6 +5,8 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Client list and record file list share one deleted-items section and history toggle; deleted clients show as rows instead of a second table
+- AWS infrastructure scan, plan review, apply progress, and errors all render through one lifecycle widget
+- Removed two unreachable AWS management pages left over from the old onboarding wizard
 
 ## [0.18.0] — 2026-07-07
 

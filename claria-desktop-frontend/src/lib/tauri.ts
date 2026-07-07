@@ -224,23 +224,6 @@ export async function deleteUserAccessKey(
 }
 
 // ---------------------------------------------------------------------------
-// IAM policy escalation
-// ---------------------------------------------------------------------------
-
-export async function escalateIamPolicy(
-  accessKeyId: string,
-  secretAccessKey: string,
-  onProgress?: (p: ProvisionerProgress) => void
-): Promise<void> {
-  const { invoke, Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<ProvisionerProgress>();
-  if (onProgress) {
-    channel.onmessage = onProgress;
-  }
-  await invoke("escalate_iam_policy", { accessKeyId, secretAccessKey, onProgress: channel });
-}
-
-// ---------------------------------------------------------------------------
 // Provisioner progress types
 // ---------------------------------------------------------------------------
 
@@ -302,7 +285,8 @@ export async function provisionApply(
 }
 
 // ---------------------------------------------------------------------------
-// Provisioner wrappers (legacy — used by AwsManage, kept for backwards compat)
+// Provisioner wrappers — day-2 plan/apply against the saved config
+// (used by Provision; InfraChat calls plan() headlessly on mount)
 // ---------------------------------------------------------------------------
 
 export async function plan(
