@@ -7,84 +7,49 @@ import { hasChanges } from "../lib/plan";
 
 export type InfraPhase = "scanning" | "planned" | "applying" | "done" | "error";
 
-function StepChecklist(
-  props:
-    | { variant: "scan"; items: ScanItem[] }
-    | { variant: "apply"; items: ApplyItem[] }
-) {
-  const rows =
-    props.variant === "scan"
-      ? props.items
-          .filter((i) => i.status !== "pending")
-          .map((item) => ({
-            label: item.label,
-            state: item.status === "scanning" ? ("active" as const) : ("done" as const),
-            rowClass: item.status === "scanning" ? "text-blue-700" : "text-gray-500",
-            trailing: null as ReactNode,
-          }))
-      : props.items.map((item) => ({
-          label: item.label,
-          state:
-            item.status === "in_progress"
-              ? ("active" as const)
-              : item.status === "done"
-                ? ("done" as const)
-                : ("pending" as const),
-          rowClass:
-            item.status === "pending"
-              ? "text-gray-400"
-              : item.status === "in_progress"
-                ? "text-blue-700"
-                : "text-gray-600",
-          trailing: (item.status === "in_progress" ? (
-            <span className="text-xs text-blue-500 ml-auto">
-              {item.action === "create" ? "Creating" : "Updating"}
-            </span>
-          ) : item.status === "done" ? (
-            <span className="text-xs text-gray-400 ml-auto">
-              {item.action === "create" ? "Created" : "Updated"}
-            </span>
-          ) : null) as ReactNode,
-        }));
-
+/**
+ * Scan progress rendered as the same card list the plan fills in, so rows
+ * persist across the scanning → planned transition instead of the checklist
+ * being swapped out for a differently-shaped view.
+ */
+function ScanList({ items }: { items: ScanItem[] }) {
   return (
-    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-      <p className="text-sm font-medium text-blue-800 mb-3">
-        {props.variant === "scan" ? "Scanning AWS resources..." : "Applying changes..."}
-      </p>
-      <div className="space-y-1.5">
-        {rows.map((row) => (
-          <div
-            key={row.label}
-            className={`flex items-center gap-2 text-sm transition-opacity duration-300 ${row.rowClass}`}
-          >
-            {row.state === "active" ? (
-              <Spinner className="h-3.5 w-3.5 shrink-0" />
-            ) : row.state === "done" ? (
-              <svg
-                className="h-3.5 w-3.5 shrink-0 text-green-500"
-                viewBox="0 0 20 20"
-                fill="currentColor"
+    <div className="space-y-4">
+      <p className="text-sm text-gray-600">Scanning AWS resources...</p>
+      <div className="space-y-2">
+        {items
+          .filter((i) => i.status !== "pending")
+          .map((item) => (
+            <div
+              key={item.label}
+              className={`border rounded-lg flex items-center gap-3 p-4 transition-opacity duration-300 ${
+                item.status === "scanning" ? "border-blue-200" : "border-gray-200"
+              }`}
+            >
+              {item.status === "scanning" ? (
+                <Spinner className="h-3.5 w-3.5 shrink-0 text-blue-500" />
+              ) : (
+                <svg
+                  className="h-3.5 w-3.5 shrink-0 text-green-500"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              )}
+              <span
+                className={`text-sm font-medium ${
+                  item.status === "scanning" ? "text-blue-700" : "text-gray-800"
+                }`}
               >
-                <path
-                  fillRule="evenodd"
-                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            ) : (
-              <svg
-                className="h-3.5 w-3.5 shrink-0"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <circle cx="10" cy="10" r="4" />
-              </svg>
-            )}
-            <span>{row.label}</span>
-            {row.trailing}
-          </div>
-        ))}
+                {item.label}
+              </span>
+            </div>
+          ))}
       </div>
     </div>
   );
@@ -114,7 +79,7 @@ export default function InfraState({
   showInSync?: boolean;
 }) {
   if (phase === "scanning") {
-    return <StepChecklist variant="scan" items={scanItems} />;
+    return <ScanList items={scanItems} />;
   }
 
   if (phase === "planned") {
@@ -135,17 +100,16 @@ export default function InfraState({
   }
 
   if (phase === "applying") {
-    return (
-      <div className="space-y-4">
-        {scanItems.length > 0 && <StepChecklist variant="scan" items={scanItems} />}
-        {applyItems.length > 0 && <StepChecklist variant="apply" items={applyItems} />}
-        {scanItems.length === 0 && applyItems.length === 0 && (
-          <div className="flex items-center justify-center py-8">
-            <Spinner className="h-6 w-6 text-blue-500" />
-          </div>
-        )}
-      </div>
-    );
+    // Destroy runs without a progress channel and with a stale plan — no
+    // entries worth showing, so fall back to a bare spinner.
+    if (!entries || (scanItems.length === 0 && applyItems.length === 0)) {
+      return (
+        <div className="flex items-center justify-center py-8">
+          <Spinner className="h-6 w-6 text-blue-500" />
+        </div>
+      );
+    }
+    return <PlanView entries={entries} applyItems={applyItems} />;
   }
 
   if (phase === "done") {

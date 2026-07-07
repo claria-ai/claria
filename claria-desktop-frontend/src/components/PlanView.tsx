@@ -1,92 +1,83 @@
+import type { ReactNode } from "react";
 import type { PlanEntry } from "../lib/tauri";
+import type { ApplyItem } from "../lib/provisioner";
 import PlanEntryCard from "./PlanEntryCard";
 import EscalationCard from "./EscalationCard";
+import Spinner from "./Spinner";
 import { findEscalationEntry } from "../lib/plan";
 
+function applyBadge(entry: PlanEntry, applyItems: ApplyItem[]): ReactNode {
+  if (entry.action === "ok") return null;
+  const item = applyItems.find((a) => a?.label === entry.spec.label);
+  const verb = (action: string, ing: boolean) =>
+    action === "create"
+      ? ing ? "Creating" : "Created"
+      : action === "delete"
+        ? ing ? "Deleting" : "Deleted"
+        : ing ? "Updating" : "Updated";
+
+  if (!item) {
+    return <span className="text-xs text-gray-400">Waiting</span>;
+  }
+  if (item.status === "done") {
+    return <span className="text-xs text-green-600">{verb(item.action, false)}</span>;
+  }
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-blue-600">
+      <Spinner className="h-3 w-3" />
+      {verb(item.action, true)}
+    </span>
+  );
+}
+
+/**
+ * The whole plan as one flat list in manifest order — every resource visible,
+ * drift diffs inline in the cards. During apply, `applyItems` adds a per-row
+ * progress badge.
+ */
 export default function PlanView({
   entries,
   onEscalate,
+  applyItems,
 }: {
   entries: PlanEntry[];
   onEscalate?: () => void;
+  applyItems?: ApplyItem[];
 }) {
   const total = entries.length;
-  const ready = entries.filter((e) => e.action === "ok");
-  const needsAttention = entries.filter(
-    (e) =>
-      (e.action === "precondition_failed" ||
-        e.spec.severity === "elevated" ||
-        e.spec.severity === "destructive") &&
-      e.action !== "ok"
-  );
-  const changes = entries.filter(
-    (e) =>
-      (e.action === "create" || e.action === "modify" || e.action === "delete") &&
-      !needsAttention.includes(e)
-  );
+  const changesCount = entries.filter((e) => e.action !== "ok").length;
 
-  // Detect IAM escalation: elevated-scope resource needs Create or Modify.
-  const escalation = findEscalationEntry(entries);
-
-  const changesCount =
-    needsAttention.length + changes.length;
+  // IAM escalation gets a CTA banner; its entry is omitted from the list
+  // below since the banner already shows its drift.
+  const escalation = onEscalate ? findEscalationEntry(entries) : null;
 
   return (
     <div className="space-y-4">
       {/* Summary bar */}
       <p className="text-sm text-gray-600">
         {total} resource{total !== 1 ? "s" : ""} —{" "}
-        {changesCount > 0
-          ? `${changesCount} change${changesCount !== 1 ? "s" : ""} needed`
-          : "all resources in sync"}
+        {applyItems
+          ? `applying ${changesCount} change${changesCount !== 1 ? "s" : ""}...`
+          : changesCount > 0
+            ? `${changesCount} change${changesCount !== 1 ? "s" : ""} needed`
+            : "all resources in sync"}
       </p>
 
-      {/* Needs Attention section */}
-      {needsAttention.length > 0 && (
-        <div>
-          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-            Needs Attention ({needsAttention.length})
-          </h4>
-          <div className="space-y-2">
-            {escalation && onEscalate && (
-              <EscalationCard entry={escalation} onEscalate={onEscalate} />
-            )}
-            {needsAttention
-              .filter((e) => e !== escalation)
-              .map((entry, i) => (
-                <PlanEntryCard key={`attn-${i}`} entry={entry} />
-              ))}
-          </div>
-        </div>
+      {escalation && onEscalate && (
+        <EscalationCard entry={escalation} onEscalate={onEscalate} />
       )}
 
-      {/* Changes section */}
-      {changes.length > 0 && (
-        <div>
-          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-            Changes ({changes.length})
-          </h4>
-          <div className="space-y-2">
-            {changes.map((entry, i) => (
-              <PlanEntryCard key={`change-${i}`} entry={entry} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Ready section — collapsed by default */}
-      {ready.length > 0 && (
-        <details>
-          <summary className="text-xs font-semibold text-gray-500 uppercase tracking-wide cursor-pointer">
-            Ready ({ready.length})
-          </summary>
-          <div className="space-y-2 mt-2">
-            {ready.map((entry, i) => (
-              <PlanEntryCard key={`ready-${i}`} entry={entry} />
-            ))}
-          </div>
-        </details>
-      )}
+      <div className="space-y-2">
+        {entries
+          .filter((e) => e !== escalation)
+          .map((entry, i) => (
+            <PlanEntryCard
+              key={`${entry.spec.resource_name}-${i}`}
+              entry={entry}
+              trailing={applyItems ? applyBadge(entry, applyItems) : undefined}
+            />
+          ))}
+      </div>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { PlanEntry, Action } from "../lib/tauri";
 import type { JsonValue } from "../lib/bindings";
 import CauseBadge from "./CauseBadge";
@@ -13,7 +14,13 @@ const actionStyles: Record<Action, { icon: string; border: string }> = {
   precondition_failed: { icon: "\uD83D\uDD12", border: "border-amber-300" },
 };
 
-export default function PlanEntryCard({ entry }: { entry: PlanEntry }) {
+export default function PlanEntryCard({
+  entry,
+  trailing,
+}: {
+  entry: PlanEntry;
+  trailing?: ReactNode;
+}) {
   const style = actionStyles[entry.action];
   const hasDetail = entry.actual != null;
 
@@ -37,6 +44,7 @@ export default function PlanEntryCard({ entry }: { entry: PlanEntry }) {
             <CauseBadge cause={entry.cause} />
             <FieldDriftList drifts={entry.drift} />
           </div>
+          {trailing && <span className="shrink-0 mt-0.5">{trailing}</span>}
         </div>
       </div>
     );
@@ -61,6 +69,7 @@ export default function PlanEntryCard({ entry }: { entry: PlanEntry }) {
           <CauseBadge cause={entry.cause} />
           <FieldDriftList drifts={entry.drift} />
         </div>
+        {trailing && <span className="shrink-0 mt-0.5">{trailing}</span>}
         <span className="shrink-0 mt-1 text-gray-400 text-xs transition-transform group-open:rotate-90">
           &#9656;
         </span>

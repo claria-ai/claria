@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { buildInitScript } from "./tauri-mock.js";
+import { driftedPlan } from "./fixtures.js";
 
 const BASE_URL = "http://localhost:1420";
 
@@ -146,21 +147,32 @@ test("memo review", async ({ page }) => {
 
 test("aws management", async ({ page }) => {
   await page.goto(BASE_URL);
-  await page.waitForSelector("[data-page=aws]");
-  await page.click("[data-page=aws]");
-  // Wait for the plan to load and render the Ready section
+  await page.waitForSelector("[data-page=provision]");
+  await page.click("[data-page=provision]");
+  // Wait for the plan to load — one unified list, all resources visible
   await page.waitForSelector("text=all resources in sync");
-  // Expand the collapsed Ready section
-  await page.click("summary:has-text('Ready')");
   await page.screenshot({ path: "output/aws.png", fullPage: true });
+});
+
+test("aws drift", async ({ page }) => {
+  // Override the plan fixture: this init script runs after the default
+  // one from beforeEach, so its fixtures win.
+  await page.addInitScript({ content: buildInitScript({ plan: driftedPlan }) });
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-page=provision]");
+  await page.click("[data-page=provision]");
+  // Drifted entries show their field diffs inline in the unified list
+  await page.waitForSelector("text=2 changes needed");
+  await page.waitForSelector("text=Apply Changes");
+  await page.screenshot({ path: "output/aws-drift.png", fullPage: true });
 });
 
 test("infra chat", async ({ page }) => {
   await page.goto(BASE_URL);
-  await page.waitForSelector("[data-page=aws]");
-  await page.click("[data-page=aws]");
-  await page.waitForSelector("[data-page=infra-chat]");
-  await page.click("[data-page=infra-chat]");
+  await page.waitForSelector("[data-page=provision]");
+  await page.click("[data-page=provision]");
+  await page.waitForSelector("text=all resources in sync");
+  await page.click("text=Ask AI");
   const textarea = page.locator("textarea");
   await expect(textarea).toBeVisible();
   await textarea.fill("Is my data encrypted and protected?");
@@ -172,10 +184,16 @@ test("infra chat", async ({ page }) => {
 
 test("cost explorer", async ({ page }) => {
   await page.goto(BASE_URL);
-  await page.waitForSelector("[data-page=aws]");
-  await page.click("[data-page=aws]");
-  await page.waitForSelector("[data-page=cost-explorer]");
-  await page.click("[data-page=cost-explorer]");
+  await page.waitForSelector("[data-page=clients]");
+  await page.click("[data-page=clients]");
+  await page.waitForSelector("[data-client]");
+  await page.click("[data-client]:first-child");
+  // Resume the stored conversation — the chat history header (with the
+  // account-spend link) only renders for resumed sessions.
+  await page.click("text=Chat History");
+  await page.waitForSelector('button[title="Resume conversation"]');
+  await page.click('button[title="Resume conversation"]');
+  await page.click("text=See account spend");
   // Wait for the chart to render — the "Total:" line appears once data loads
   await page.waitForSelector("text=Total:");
   await page.screenshot({ path: "output/cost-explorer.png", fullPage: true });
