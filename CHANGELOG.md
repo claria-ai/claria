@@ -7,6 +7,8 @@ All notable changes to Claria are documented here.
 - Client list and record file list share one deleted-items section and history toggle; deleted clients show as rows instead of a second table
 - AWS infrastructure scan, plan review, apply progress, and errors all render through one lifecycle widget
 - Removed two unreachable AWS management pages left over from the old onboarding wizard
+- Release tag builds reuse the main-branch warm cache instead of recompiling ~60 dependency crates, cutting the macOS release build from ~11 to an expected ~7 minutes
+- The release workflow caches npm downloads
 
 ## [0.18.0] — 2026-07-07
 
