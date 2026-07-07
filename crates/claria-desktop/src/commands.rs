@@ -4074,3 +4074,442 @@ pub fn save_console_logs(console: State<'_, ConsoleBuffer>) -> Result<bool, Stri
         None => Ok(false),
     }
 }
+// ---------------------------------------------------------------------------
+// Session lock (auto-lock / PIN / biometric unlock)
+// ---------------------------------------------------------------------------
+
+/// Lock state snapshot for the frontend `LockGate`.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct LockState {
+    pub locked: bool,
+    pub auto_lock_enabled: bool,
+    pub biometric_unlock_enabled: bool,
+    pub pin_set: bool,
+    pub failed_attempts: u32,
+    pub backoff_remaining_seconds: Option<u32>,
+}
+
+/// Broadcast to every window whenever the session locks or unlocks.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct LockStateChanged {
+    pub locked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct BiometryAvailability {
+    pub available: bool,
+    /// "touch_id" | "face_id" | "windows_hello" | "biometric" | "none"
+    pub kind: String,
+    pub error: Option<String>,
+}
+
+pub(crate) fn emit_session_audit(
+    action: &str,
+    cfg: Option<&ClariaConfig>,
+    details: serde_json::Value,
+) {
+    let (resource_id, user_sub) = match cfg {
+        Some(c) => (
+            c.system_name.clone(),
+            if c.account_id.is_empty() {
+                "unknown".to_string()
+            } else {
+                c.account_id.clone()
+            },
+        ),
+        None => ("unknown".to_string(), "unknown".to_string()),
+    };
+    claria_audit::events::AuditEvent::new(action, "session", resource_id, user_sub)
+        .with_details(details)
+        .emit();
+}
+
+/// Load the effective security settings: the state-cached config when
+/// present, falling back to disk. `None` when no config exists yet
+/// (pre-onboarding — nothing to lock).
+async fn load_security_settings(
+    state: &DesktopState,
+) -> Result<Option<claria_desktop::config::SecuritySettings>, String> {
+    {
+        let guard = state.config.lock().await;
+        if let Some(cfg) = guard.as_ref() {
+            return Ok(Some(cfg.security.clone()));
+        }
+    }
+    if !config::has_config() {
+        return Ok(None);
+    }
+    let cfg = config::load_config().map_err(|e| e.to_string())?;
+    Ok(Some(cfg.security))
+}
+
+/// Flip the session to locked, emit the event, and audit. No-op if already
+/// locked. Refuses to lock when no PIN is configured — that would strand the
+/// user with no way back in.
+pub async fn engage_lock(app: &tauri::AppHandle, reason: &str) -> Result<(), String> {
+    use tauri::Manager;
+    use tauri_specta::Event;
+
+    let state = app.state::<DesktopState>();
+    let settings = load_security_settings(&state).await?;
+    let pin_set = settings.map(|s| s.pin_hash.is_some()).unwrap_or(false);
+    if !pin_set {
+        return Err("Auto-lock is not configured".to_string());
+    }
+
+    {
+        let mut rt = state.lock.lock().map_err(|e| e.to_string())?;
+        if rt.locked() {
+            return Ok(());
+        }
+        rt.lock();
+    }
+
+    {
+        let cfg = state.config.lock().await;
+        emit_session_audit(
+            "session_lock",
+            cfg.as_ref(),
+            serde_json::json!({ "reason": reason }),
+        );
+    }
+
+    LockStateChanged { locked: true }
+        .emit(app)
+        .map_err(|e| e.to_string())
+}
+
+/// Flip the session to unlocked after a successful PIN/biometric check.
+async fn release_lock(app: &tauri::AppHandle, method: &str) -> Result<(), String> {
+    use tauri::Manager;
+    use tauri_specta::Event;
+
+    let state = app.state::<DesktopState>();
+    {
+        let mut rt = state.lock.lock().map_err(|e| e.to_string())?;
+        rt.unlock();
+    }
+
+    {
+        let cfg = state.config.lock().await;
+        emit_session_audit(
+            "session_unlock",
+            cfg.as_ref(),
+            serde_json::json!({ "method": method }),
+        );
+    }
+
+    LockStateChanged { locked: false }
+        .emit(app)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_lock_state(state: State<'_, DesktopState>) -> Result<LockState, String> {
+    let settings = load_security_settings(&state).await?.unwrap_or_default();
+    let rt = state.lock.lock().map_err(|e| e.to_string())?;
+    Ok(LockState {
+        locked: rt.locked(),
+        auto_lock_enabled: settings.auto_lock_enabled,
+        biometric_unlock_enabled: settings.biometric_unlock_enabled,
+        pin_set: settings.pin_hash.is_some(),
+        failed_attempts: rt.failed_attempts(),
+        backoff_remaining_seconds: rt.backoff_remaining_secs().map(|s| s as u32),
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn record_activity(state: State<'_, DesktopState>) -> Result<(), String> {
+    let mut rt = state.lock.lock().map_err(|e| e.to_string())?;
+    rt.note_activity();
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lock_session(app: tauri::AppHandle) -> Result<(), String> {
+    engage_lock(&app, "manual").await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn unlock_with_pin(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    pin: String,
+) -> Result<(), String> {
+    let settings = load_security_settings(&state).await?.unwrap_or_default();
+    let Some(pin_hash) = settings.pin_hash else {
+        return Err("No PIN is configured".to_string());
+    };
+
+    {
+        let rt = state.lock.lock().map_err(|e| e.to_string())?;
+        if let Some(secs) = rt.backoff_remaining_secs() {
+            return Err(format!("Too many attempts. Try again in {secs} s"));
+        }
+    }
+
+    let ok = tauri::async_runtime::spawn_blocking(move || {
+        claria_desktop::security::verify_pin(&pin, &pin_hash)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    if !ok {
+        let (attempts, backoff) = {
+            let mut rt = state.lock.lock().map_err(|e| e.to_string())?;
+            rt.register_failure();
+            (rt.failed_attempts(), rt.backoff_remaining_secs())
+        };
+        {
+            let cfg = state.config.lock().await;
+            emit_session_audit(
+                "session_unlock_failed",
+                cfg.as_ref(),
+                serde_json::json!({
+                    "method": "pin",
+                    "failed_attempts": attempts,
+                    "backoff_seconds": backoff,
+                }),
+            );
+        }
+        return Err(match backoff {
+            Some(secs) => format!("Incorrect PIN. Try again in {secs} s"),
+            None => "Incorrect PIN".to_string(),
+        });
+    }
+
+    release_lock(&app, "pin").await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn unlock_with_biometric(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    use tauri_plugin_biometry::BiometryExt;
+
+    let settings = load_security_settings(&state).await?.unwrap_or_default();
+    if !settings.biometric_unlock_enabled {
+        return Err("Biometric unlock is not enabled".to_string());
+    }
+    if settings.pin_hash.is_none() {
+        return Err("No PIN is configured".to_string());
+    }
+
+    let prompt_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        prompt_app.biometry().authenticate(
+            "Unlock Claria".to_string(),
+            tauri_plugin_biometry::AuthOptions::default(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Err(e) = result {
+        let cfg = state.config.lock().await;
+        emit_session_audit(
+            "session_unlock_failed",
+            cfg.as_ref(),
+            serde_json::json!({ "method": "biometric", "error": e.to_string() }),
+        );
+        return Err(e.to_string());
+    }
+
+    release_lock(&app, "biometric").await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_biometry_status(app: tauri::AppHandle) -> Result<BiometryAvailability, String> {
+    use tauri_plugin_biometry::BiometryExt;
+
+    let status = tauri::async_runtime::spawn_blocking(move || app.biometry().status())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(match status {
+        Ok(s) => BiometryAvailability {
+            available: s.is_available,
+            kind: biometry_kind(&s.biometry_type).to_string(),
+            error: s.error,
+        },
+        // The plugin errors on unsupported platforms; report as unavailable
+        // rather than failing the whole preferences page.
+        Err(e) => BiometryAvailability {
+            available: false,
+            kind: "none".to_string(),
+            error: Some(e.to_string()),
+        },
+    })
+}
+
+fn biometry_kind(t: &tauri_plugin_biometry::BiometryType) -> &'static str {
+    match t {
+        tauri_plugin_biometry::BiometryType::TouchID => "touch_id",
+        tauri_plugin_biometry::BiometryType::FaceID => "face_id",
+        // Windows reports Auto when Windows Hello is available.
+        #[cfg(target_os = "windows")]
+        tauri_plugin_biometry::BiometryType::Auto => "windows_hello",
+        #[cfg(not(target_os = "windows"))]
+        tauri_plugin_biometry::BiometryType::Auto => "biometric",
+        tauri_plugin_biometry::BiometryType::None => "none",
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn enable_auto_lock(
+    state: State<'_, DesktopState>,
+    pin: String,
+    timeout_minutes: u32,
+) -> Result<(), String> {
+    claria_desktop::security::validate_pin(&pin)?;
+    validate_timeout(timeout_minutes)?;
+
+    let pin_hash =
+        tauri::async_runtime::spawn_blocking(move || claria_desktop::security::hash_pin(&pin))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+
+    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    cfg.security.auto_lock_enabled = true;
+    cfg.security.auto_lock_timeout_minutes = timeout_minutes;
+    cfg.security.pin_hash = Some(pin_hash);
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    emit_session_audit(
+        "auto_lock_enabled",
+        Some(&cfg),
+        serde_json::json!({ "timeout_minutes": timeout_minutes }),
+    );
+
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
+
+    // Enabling restarts the idle clock so the user gets a full window.
+    drop(guard);
+    let mut rt = state.lock.lock().map_err(|e| e.to_string())?;
+    rt.note_activity();
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn disable_auto_lock(
+    state: State<'_, DesktopState>,
+    pin: String,
+) -> Result<(), String> {
+    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    let Some(pin_hash) = cfg.security.pin_hash.clone() else {
+        return Err("No PIN is configured".to_string());
+    };
+
+    let ok = tauri::async_runtime::spawn_blocking(move || {
+        claria_desktop::security::verify_pin(&pin, &pin_hash)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if !ok {
+        return Err("Incorrect PIN".to_string());
+    }
+
+    cfg.security = Default::default();
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    emit_session_audit("auto_lock_disabled", Some(&cfg), serde_json::json!({}));
+
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn change_pin(
+    state: State<'_, DesktopState>,
+    current_pin: String,
+    new_pin: String,
+) -> Result<(), String> {
+    claria_desktop::security::validate_pin(&new_pin)?;
+
+    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    let Some(pin_hash) = cfg.security.pin_hash.clone() else {
+        return Err("No PIN is configured".to_string());
+    };
+
+    let new_hash = tauri::async_runtime::spawn_blocking(move || {
+        if !claria_desktop::security::verify_pin(&current_pin, &pin_hash)
+            .map_err(|e| e.to_string())?
+        {
+            return Err("Incorrect PIN".to_string());
+        }
+        claria_desktop::security::hash_pin(&new_pin).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    cfg.security.pin_hash = Some(new_hash);
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    emit_session_audit("auto_lock_pin_changed", Some(&cfg), serde_json::json!({}));
+
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_auto_lock_timeout(
+    state: State<'_, DesktopState>,
+    timeout_minutes: u32,
+) -> Result<(), String> {
+    validate_timeout(timeout_minutes)?;
+
+    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    cfg.security.auto_lock_timeout_minutes = timeout_minutes;
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_biometric_unlock(
+    state: State<'_, DesktopState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    if enabled && cfg.security.pin_hash.is_none() {
+        return Err("Set a PIN before enabling biometric unlock".to_string());
+    }
+    cfg.security.biometric_unlock_enabled = enabled;
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
+
+    Ok(())
+}
+
+fn validate_timeout(timeout_minutes: u32) -> Result<(), String> {
+    if !(1..=120).contains(&timeout_minutes) {
+        return Err("Timeout must be between 1 and 120 minutes".to_string());
+    }
+    Ok(())
+}

@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 
 use claria_desktop::config::{ClariaConfig, CredentialSource};
 use claria_desktop::record_cache::RecordCache;
+use claria_desktop::security::LockRuntime;
 
 /// An `SdkConfig` cached with the inputs it was built from. The SDK's pooled
 /// HTTP connector lives inside the `SdkConfig`, so reusing it across commands
@@ -19,6 +20,9 @@ pub struct DesktopState {
     pub sdk_config: Arc<Mutex<Option<CachedSdkConfig>>>,
     pub whisper: Arc<std::sync::Mutex<Option<claria_whisper::WhisperModel>>>,
     pub record_cache: Arc<RecordCache>,
+    /// Session lock state. std mutex (never held across await) because the
+    /// idle watcher and commands only take it for short reads/writes.
+    pub lock: Arc<std::sync::Mutex<LockRuntime>>,
 }
 
 impl Default for DesktopState {
@@ -28,6 +32,7 @@ impl Default for DesktopState {
             sdk_config: Arc::new(Mutex::new(None)),
             whisper: Arc::new(std::sync::Mutex::new(None)),
             record_cache: Arc::new(RecordCache::new()),
+            lock: Arc::new(std::sync::Mutex::new(LockRuntime::default())),
         }
     }
 }

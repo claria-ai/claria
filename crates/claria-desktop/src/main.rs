@@ -4,7 +4,7 @@ use eyre::Result;
 use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::webview::WebviewWindowBuilder;
 use tauri::Manager;
-use tauri_specta::{collect_commands, Builder};
+use tauri_specta::{collect_commands, collect_events, Builder};
 use tracing_subscriber::prelude::*;
 
 use claria_desktop::console;
@@ -115,7 +115,19 @@ fn main() -> Result<()> {
             commands::get_console_logs,
             commands::get_console_logs_text,
             commands::save_console_logs,
-        ]);
+            commands::get_lock_state,
+            commands::record_activity,
+            commands::lock_session,
+            commands::unlock_with_pin,
+            commands::unlock_with_biometric,
+            commands::get_biometry_status,
+            commands::enable_auto_lock,
+            commands::disable_auto_lock,
+            commands::change_pin,
+            commands::set_auto_lock_timeout,
+            commands::set_biometric_unlock,
+        ])
+        .events(collect_events![commands::LockStateChanged]);
 
     #[cfg(debug_assertions)]
     {
@@ -141,15 +153,99 @@ fn main() -> Result<()> {
     tauri::Builder::default()
         .manage(state::DesktopState::default())
         .manage(console_buffer)
+        .plugin(tauri_plugin_biometry::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
 
-            // Build native Help menu with "Claria Console" item.
+            // Start locked when auto-lock is configured, before any window
+            // can render PHI. The frontend LockGate reads this via
+            // `get_lock_state` on mount.
+            if claria_desktop::config::has_config() {
+                match claria_desktop::config::load_config() {
+                    Ok(cfg)
+                        if cfg.security.auto_lock_enabled && cfg.security.pin_hash.is_some() =>
+                    {
+                        let state = app.state::<state::DesktopState>();
+                        if let Ok(mut rt) = state.lock.lock() {
+                            rt.lock();
+                        }
+                        commands::emit_session_audit(
+                            "session_lock",
+                            Some(&cfg),
+                            serde_json::json!({ "reason": "startup" }),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            // Idle/sleep watcher. Idle expiry comes from the frontend's
+            // throttled activity reports; a wall-clock jump past one tick
+            // means the machine slept, so lock on wake.
+            let watcher_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use std::time::Duration;
+                const TICK: Duration = Duration::from_secs(10);
+                const SLEEP_SLACK: Duration = Duration::from_secs(60);
+
+                let mut prev_wall = jiff::Timestamp::now();
+                loop {
+                    tokio::time::sleep(TICK).await;
+                    let now_wall = jiff::Timestamp::now();
+                    let jumped = claria_desktop::security::wall_clock_jumped(
+                        prev_wall,
+                        now_wall,
+                        TICK,
+                        SLEEP_SLACK,
+                    );
+                    prev_wall = now_wall;
+
+                    let state = watcher_app.state::<state::DesktopState>();
+                    let (armed, timeout) = {
+                        let guard = state.config.lock().await;
+                        match guard.as_ref() {
+                            Some(c) if c.security.auto_lock_enabled
+                                && c.security.pin_hash.is_some() =>
+                            {
+                                let mins = u64::from(c.security.auto_lock_timeout_minutes);
+                                (true, Duration::from_secs(mins * 60))
+                            }
+                            _ => (false, Duration::ZERO),
+                        }
+                    };
+                    if !armed {
+                        continue;
+                    }
+
+                    let idle = state
+                        .lock
+                        .lock()
+                        .map(|rt| rt.idle_expired(timeout))
+                        .unwrap_or(false);
+
+                    let reason = if jumped {
+                        Some("sleep")
+                    } else if idle {
+                        Some("idle")
+                    } else {
+                        None
+                    };
+                    if let Some(reason) = reason
+                        && let Err(e) = commands::engage_lock(&watcher_app, reason).await
+                    {
+                        tracing::warn!("auto-lock failed: {e}");
+                    }
+                }
+            });
+
+            // Build native Help menu with "Claria Console" and "Lock Claria".
             let console_item =
                 MenuItem::with_id(app, "console", "Claria Console", true, None::<&str>)?;
+            let lock_item =
+                MenuItem::with_id(app, "lock", "Lock Claria", true, None::<&str>)?;
             let help_menu =
-                Submenu::with_items(app, "Help", true, &[&console_item])?;
+                Submenu::with_items(app, "Help", true, &[&console_item, &lock_item])?;
             let menu = Menu::with_items(app, &[&help_menu])?;
             app.set_menu(menu)?;
 
@@ -168,6 +264,13 @@ fn main() -> Result<()> {
                         .inner_size(900.0, 600.0)
                         .build();
                     }
+                } else if event.id() == "lock" {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = commands::engage_lock(&app, "manual").await {
+                            tracing::warn!("manual lock failed: {e}");
+                        }
+                    });
                 }
             });
 
