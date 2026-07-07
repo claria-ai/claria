@@ -4,6 +4,8 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Optional auto-lock hides the app behind a PIN after a configurable idle period, on wake from sleep, or on demand
+- Unlocking accepts Touch ID on macOS and Windows Hello on Windows when biometric unlock is enabled
 - Token counting runs against the newest available Haiku instead of the chat model, which may not support the CountTokens API
 - Model pricing matches by tier so new Claude releases (Fable, Opus 4.8, Sonnet 5) are priced without a code change
 - When a model has no pricing entry the UI omits dollar figures instead of showing $0.00 or "cost unavailable"

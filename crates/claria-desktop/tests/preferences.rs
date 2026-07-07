@@ -1,7 +1,7 @@
 //! Tests for [`SyncedPreferences`] + the v5→v6 transcription migration.
 
 use claria_desktop::config::{
-    ClariaConfig, CredentialSource, SyncedPreferences, TranscriptionLanguage,
+    ClariaConfig, CredentialSource, SecuritySettings, SyncedPreferences, TranscriptionLanguage,
     TranscriptionPreferences,
 };
 
@@ -23,6 +23,7 @@ fn sample_config() -> ClariaConfig {
             use_medical_for_english: true,
             translate_to_english: true,
         },
+        security: SecuritySettings::default(),
     }
 }
 
@@ -118,4 +119,60 @@ fn legacy_v5_config_migrates_to_v6_with_default_transcription() {
     );
     assert_eq!(cfg.transcription.default_speaker_count, 2);
     assert!(!cfg.transcription.use_medical_for_english);
+}
+
+#[test]
+fn legacy_v7_config_deserializes_with_default_security() {
+    // A pre-security config JSON as stored on disk under config v7.
+    let raw = serde_json::json!({
+        "config_version": 7,
+        "region": "us-east-1",
+        "system_name": "test",
+        "account_id": "123456789012",
+        "created_at": "1970-01-01T00:00:00Z",
+        "credentials": { "type": "default_chain" },
+        "preferred_model_id": null,
+        "cost_explorer_enabled": false,
+        "hourly_cost_data": false,
+        "prompt_caching_enabled": true,
+        "transcription": {
+            "default_language": "english",
+            "default_speaker_count": 2,
+            "use_medical_for_english": false,
+            "translate_to_english": false,
+        },
+    });
+
+    let cfg: ClariaConfig = serde_json::from_value(raw).unwrap();
+
+    assert!(!cfg.security.auto_lock_enabled);
+    assert_eq!(cfg.security.auto_lock_timeout_minutes, 5);
+    assert!(!cfg.security.biometric_unlock_enabled);
+    assert!(cfg.security.pin_hash.is_none());
+}
+
+#[test]
+fn config_info_redacts_pin_hash() {
+    let mut cfg = sample_config();
+    cfg.security.auto_lock_enabled = true;
+    cfg.security.pin_hash = Some("$argon2id$v=19$m=19456,t=2,p=1$secret".into());
+
+    let info = claria_desktop::config::config_info(&cfg);
+    let json = serde_json::to_string(&info).unwrap();
+
+    assert!(json.contains("\"pin_set\":true"));
+    assert!(!json.contains("pin_hash"));
+    assert!(!json.contains("argon2id"));
+}
+
+#[test]
+fn security_settings_never_sync() {
+    let mut cfg = sample_config();
+    cfg.security.pin_hash = Some("$argon2id$v=19$hash".into());
+
+    let synced = SyncedPreferences::from_config(&cfg);
+    let json = serde_json::to_string(&synced).unwrap();
+
+    assert!(!json.contains("security"));
+    assert!(!json.contains("pin_hash"));
 }

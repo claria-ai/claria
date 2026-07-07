@@ -5,7 +5,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 7;
+const CURRENT_VERSION: u32 = 8;
 
 /// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
 /// because the synced subset lives in S3 and may be read by other machines'
@@ -47,6 +47,60 @@ pub struct ClariaConfig {
     /// wizard's pre-filled values. Added in v6.
     #[serde(default)]
     pub transcription: TranscriptionPreferences,
+    /// Auto-lock and PIN settings. Added in v8. Machine-local by design —
+    /// never part of [`SyncedPreferences`].
+    #[serde(default)]
+    pub security: SecuritySettings,
+}
+
+fn default_auto_lock_timeout_minutes() -> u32 {
+    5
+}
+
+/// Auto-lock configuration. The PIN is stored as an argon2id PHC string and
+/// must never leave this struct unredacted — the frontend only sees
+/// [`SecurityInfo`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SecuritySettings {
+    #[serde(default)]
+    pub auto_lock_enabled: bool,
+    #[serde(default = "default_auto_lock_timeout_minutes")]
+    pub auto_lock_timeout_minutes: u32,
+    #[serde(default)]
+    pub biometric_unlock_enabled: bool,
+    #[serde(default)]
+    pub pin_hash: Option<String>,
+}
+
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        Self {
+            auto_lock_enabled: false,
+            auto_lock_timeout_minutes: default_auto_lock_timeout_minutes(),
+            biometric_unlock_enabled: false,
+            pin_hash: None,
+        }
+    }
+}
+
+/// Redacted security settings safe to send to the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SecurityInfo {
+    pub auto_lock_enabled: bool,
+    pub auto_lock_timeout_minutes: u32,
+    pub biometric_unlock_enabled: bool,
+    pub pin_set: bool,
+}
+
+impl SecurityInfo {
+    pub fn from_settings(settings: &SecuritySettings) -> Self {
+        Self {
+            auto_lock_enabled: settings.auto_lock_enabled,
+            auto_lock_timeout_minutes: settings.auto_lock_timeout_minutes,
+            biometric_unlock_enabled: settings.biometric_unlock_enabled,
+            pin_set: settings.pin_hash.is_some(),
+        }
+    }
 }
 
 /// Per-clinician defaults for the transcription pipeline.
@@ -178,6 +232,7 @@ pub struct ConfigInfo {
     pub hourly_cost_data: bool,
     pub prompt_caching_enabled: bool,
     pub transcription: TranscriptionPreferences,
+    pub security: SecurityInfo,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -336,6 +391,24 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v6 → v7 (added translate_to_english)");
     }
 
+    // v7 → v8: add security settings (auto-lock disabled, no PIN).
+    if from_version < 8 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("security").or_insert(serde_json::json!({
+            "auto_lock_enabled": false,
+            "auto_lock_timeout_minutes": 5,
+            "biometric_unlock_enabled": false,
+            "pin_hash": null,
+        }));
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(8.into()),
+        );
+        tracing::info!("migrated config v7 → v8 (added security settings)");
+    }
+
     Ok(json)
 }
 
@@ -410,6 +483,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         hourly_cost_data: config.hourly_cost_data,
         prompt_caching_enabled: config.prompt_caching_enabled,
         transcription: config.transcription.clone(),
+        security: SecurityInfo::from_settings(&config.security),
     }
 }
 
