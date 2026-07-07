@@ -13,7 +13,7 @@ const ACTIVITY_THROTTLE_MS = 15_000;
 export default function LockGate({ children }: { children: React.ReactNode }) {
   const [lockState, setLockState] = useState<LockState | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(() => {
     const unlocked: LockState = {
       locked: false,
       auto_lock_enabled: false,
@@ -22,13 +22,11 @@ export default function LockGate({ children }: { children: React.ReactNode }) {
       failed_attempts: 0,
       backoff_remaining_seconds: null,
     };
-    try {
-      // Coalesce a missing response (Playwright/screenshot mocks without
-      // this command) so the app renders rather than a dead lock screen.
-      setLockState((await getLockState()) ?? unlocked);
-    } catch {
-      setLockState(unlocked);
-    }
+    // Coalesce a missing response (Playwright/screenshot mocks without
+    // this command) so the app renders rather than a dead lock screen.
+    getLockState()
+      .then((s) => setLockState(s ?? unlocked))
+      .catch(() => setLockState(unlocked));
   }, []);
 
   useEffect(() => {

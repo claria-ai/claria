@@ -85,7 +85,6 @@ export default function LockScreen({
         }
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.biometric_unlock_enabled]);
 
   async function handleSubmit(e: React.FormEvent) {
