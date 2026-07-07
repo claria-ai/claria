@@ -876,12 +876,105 @@ async saveConsoleLogs() : Promise<Result<boolean, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getLockState() : Promise<Result<LockState, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_lock_state") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async recordActivity() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("record_activity") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async lockSession() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("lock_session") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async unlockWithPin(pin: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("unlock_with_pin", { pin }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async unlockWithBiometric() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("unlock_with_biometric") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getBiometryStatus() : Promise<Result<BiometryAvailability, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_biometry_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async enableAutoLock(pin: string, timeoutMinutes: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("enable_auto_lock", { pin, timeoutMinutes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async disableAutoLock(pin: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("disable_auto_lock", { pin }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changePin(currentPin: string, newPin: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_pin", { currentPin, newPin }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setAutoLockTimeout(timeoutMinutes: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_auto_lock_timeout", { timeoutMinutes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setBiometricUnlock(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_biometric_unlock", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
 /** user-defined events **/
 
 
+export const events = __makeEvents__<{
+lockStateChanged: LockStateChanged
+}>({
+lockStateChanged: "lock-state-changed"
+})
 
 /** user-defined constants **/
 
@@ -951,6 +1044,11 @@ assumed_role_arn: string;
  * The account ID of the sub-account we assumed into.
  */
 account_id: string }
+export type BiometryAvailability = { available: boolean; 
+/**
+ * "touch_id" | "face_id" | "windows_hello" | "biometric" | "none"
+ */
+kind: string; error: string | null }
 /**
  * The result of a full bootstrap attempt.
  */
@@ -998,7 +1096,7 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; security: SecurityInfo }
 /**
  * A single log entry captured by the console ring buffer.
  */
@@ -1093,6 +1191,14 @@ export type FileVersion = { version_id: string; size: number; last_modified: str
 export type InfraChatResponse = { content: string; usage: TurnUsage }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type Lifecycle = "data" | "managed"
+/**
+ * Lock state snapshot for the frontend `LockGate`.
+ */
+export type LockState = { locked: boolean; auto_lock_enabled: boolean; biometric_unlock_enabled: boolean; pin_set: boolean; failed_attempts: number; backoff_remaining_seconds: number | null }
+/**
+ * Broadcast to every window whenever the session locks or unlocks.
+ */
+export type LockStateChanged = { locked: boolean }
 /**
  * Pricing per million tokens for a Bedrock model.
  * 
@@ -1191,6 +1297,10 @@ severity: Severity;
  * IAM actions this resource requires (aggregated for policy diff)
  */
 iam_actions: string[] }
+/**
+ * Redacted security settings safe to send to the frontend.
+ */
+export type SecurityInfo = { auto_lock_enabled: boolean; auto_lock_timeout_minutes: number; biometric_unlock_enabled: boolean; pin_set: boolean }
 export type Severity = 
 /**
  * Data sources — read-only checks
@@ -1213,7 +1323,6 @@ export type SpeakerMode = "none" | "diarize" | "channels"
  * Status of an individual bootstrap step.
  */
 export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
-export type TAURI_CHANNEL<TSend> = null
 /**
  * Result from transcription, including detected language.
  */
