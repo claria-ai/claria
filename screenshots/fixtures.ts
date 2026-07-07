@@ -98,6 +98,12 @@ export const fixtures: Record<string, unknown> = {
       use_medical_for_english: false,
       translate_to_english: false,
     },
+    security: {
+      auto_lock_enabled: false,
+      auto_lock_timeout_minutes: 5,
+      biometric_unlock_enabled: false,
+      pin_set: false,
+    },
   },
 
   // `fetch_cloud_preferences` returns the same shape as `load_config` —
@@ -120,10 +126,28 @@ export const fixtures: Record<string, unknown> = {
       use_medical_for_english: false,
       translate_to_english: false,
     },
+    security: {
+      auto_lock_enabled: false,
+      auto_lock_timeout_minutes: 5,
+      biometric_unlock_enabled: false,
+      pin_set: false,
+    },
   },
 
   save_preferences: null,
   save_transcript_edits: null,
+
+  // Session lock — unlocked, no biometrics, so LockGate renders the app.
+  get_lock_state: {
+    locked: false,
+    auto_lock_enabled: false,
+    biometric_unlock_enabled: false,
+    pin_set: false,
+    failed_attempts: 0,
+    backoff_remaining_seconds: null,
+  },
+  record_activity: null,
+  get_biometry_status: { available: false, kind: "none", error: null },
   upload_record_file_with_options: {
     filename: "session-2026-03-15.m4a",
     size: 4_823_521,

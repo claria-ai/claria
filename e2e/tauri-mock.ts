@@ -13,14 +13,69 @@ const MOCK_AWS_URL = "http://127.0.0.1:9000";
  * `page.addInitScript()`. All state lives inside the closure so each
  * test gets a fresh environment.
  */
-export function buildInitScript(): string {
+export function buildInitScript(opts: { preConfigured?: boolean } = {}): string {
   return `
     (() => {
       const MOCK_AWS_URL = "${MOCK_AWS_URL}";
 
       // ── Mutable app state ──────────────────────────────────────────────
-      let configSaved = false;
-      let savedConfig = null;
+      let configSaved = ${opts.preConfigured ? "true" : "false"};
+      let savedConfig = ${
+        opts.preConfigured
+          ? `{
+        region: "us-east-1",
+        system_name: "e2e-test",
+        account_id: "185735714230",
+        created_at: new Date().toISOString(),
+        credential_type: "inline",
+        profile_name: null,
+        access_key_hint: "AKIA...0001",
+        preferred_model_id: null,
+        cost_explorer_enabled: false,
+        hourly_cost_data: false,
+      }`
+          : "null"
+      };
+
+      // ── Session lock state (auto-lock feature) ─────────────────────────
+      const lock = {
+        locked: false,
+        pin: null,
+        autoLockEnabled: false,
+        biometricEnabled: false,
+        timeoutMinutes: 5,
+        failedAttempts: 0,
+      };
+
+      function securityInfo() {
+        return {
+          auto_lock_enabled: lock.autoLockEnabled,
+          auto_lock_timeout_minutes: lock.timeoutMinutes,
+          biometric_unlock_enabled: lock.biometricEnabled,
+          pin_set: lock.pin !== null,
+        };
+      }
+
+      function lockStateResponse() {
+        return {
+          locked: lock.locked,
+          auto_lock_enabled: lock.autoLockEnabled,
+          biometric_unlock_enabled: lock.biometricEnabled,
+          pin_set: lock.pin !== null,
+          failed_attempts: lock.failedAttempts,
+          backoff_remaining_seconds: null,
+        };
+      }
+
+      // ── Minimal event bus so lock-state-changed reaches listeners ──────
+      const eventListeners = {};
+
+      function emitEvent(name, payload) {
+        for (const id of eventListeners[name] || []) {
+          const fn = window["_" + id];
+          if (fn) fn({ event: name, id, payload });
+        }
+      }
 
       // ── Plan / apply fixtures built from mock-aws scan ─────────────────
       // We generate "create" entries for a fresh account so the UI shows
@@ -89,7 +144,10 @@ export function buildInitScript(): string {
           if (cmd === "plugin:app|version") return "0.15.0";
           if (cmd === "plugin:app|name") return "Claria";
           if (cmd === "plugin:app|tauri_version") return "2.0.0";
-          if (cmd === "plugin:event|listen") return 0;
+          if (cmd === "plugin:event|listen") {
+            (eventListeners[args.event] ||= []).push(args.handler);
+            return 0;
+          }
           if (cmd === "plugin:event|unlisten") return;
           if (cmd === "plugin:webview|get_all_webviews") {
             return [{ label: "main", url: "http://localhost:1420" }];
@@ -100,7 +158,7 @@ export function buildInitScript(): string {
 
           if (cmd === "load_config") {
             if (!configSaved || !savedConfig) throw "No config found";
-            return savedConfig;
+            return { ...savedConfig, security: securityInfo() };
           }
 
           if (cmd === "save_config") {
@@ -236,6 +294,68 @@ export function buildInitScript(): string {
 
           // ── Cost explorer ────────────────────────────────────────────
           if (cmd === "probe_cost_explorer") return false;
+
+          // ── Session lock (auto-lock / PIN) ───────────────────────────
+          if (cmd === "get_lock_state") return lockStateResponse();
+          if (cmd === "record_activity") return null;
+
+          if (cmd === "lock_session") {
+            if (lock.pin === null) throw "Auto-lock is not configured";
+            lock.locked = true;
+            emitEvent("lock-state-changed", { locked: true });
+            return null;
+          }
+
+          if (cmd === "unlock_with_pin") {
+            if (args.pin === lock.pin) {
+              lock.locked = false;
+              lock.failedAttempts = 0;
+              emitEvent("lock-state-changed", { locked: false });
+              return null;
+            }
+            lock.failedAttempts++;
+            throw "Incorrect PIN";
+          }
+
+          if (cmd === "unlock_with_biometric") throw "Biometric unlock is not enabled";
+
+          if (cmd === "get_biometry_status") {
+            return { available: false, kind: "none", error: "Not supported in E2E" };
+          }
+
+          if (cmd === "enable_auto_lock") {
+            if (!/^[0-9]{6,12}$/.test(args.pin)) throw "PIN must be 6\\u201312 digits long";
+            lock.pin = args.pin;
+            lock.autoLockEnabled = true;
+            lock.timeoutMinutes = args.timeoutMinutes;
+            return null;
+          }
+
+          if (cmd === "disable_auto_lock") {
+            if (args.pin !== lock.pin) throw "Incorrect PIN";
+            lock.pin = null;
+            lock.autoLockEnabled = false;
+            lock.biometricEnabled = false;
+            lock.timeoutMinutes = 5;
+            return null;
+          }
+
+          if (cmd === "change_pin") {
+            if (args.currentPin !== lock.pin) throw "Incorrect PIN";
+            if (!/^[0-9]{6,12}$/.test(args.newPin)) throw "PIN must be 6\\u201312 digits long";
+            lock.pin = args.newPin;
+            return null;
+          }
+
+          if (cmd === "set_auto_lock_timeout") {
+            lock.timeoutMinutes = args.timeoutMinutes;
+            return null;
+          }
+
+          if (cmd === "set_biometric_unlock") {
+            lock.biometricEnabled = args.enabled;
+            return null;
+          }
 
           console.warn("[tauri-mock-e2e] unhandled command:", cmd, args);
           return null;

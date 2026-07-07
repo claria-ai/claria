@@ -14,19 +14,20 @@ export default function LockGate({ children }: { children: React.ReactNode }) {
   const [lockState, setLockState] = useState<LockState | null>(null);
 
   const refresh = useCallback(async () => {
+    const unlocked: LockState = {
+      locked: false,
+      auto_lock_enabled: false,
+      biometric_unlock_enabled: false,
+      pin_set: false,
+      failed_attempts: 0,
+      backoff_remaining_seconds: null,
+    };
     try {
-      setLockState(await getLockState());
+      // Coalesce a missing response (Playwright/screenshot mocks without
+      // this command) so the app renders rather than a dead lock screen.
+      setLockState((await getLockState()) ?? unlocked);
     } catch {
-      // Backend unreachable (e.g. Playwright/screenshot mocks without this
-      // command) — render the app rather than a dead lock screen.
-      setLockState({
-        locked: false,
-        auto_lock_enabled: false,
-        biometric_unlock_enabled: false,
-        pin_set: false,
-        failed_attempts: 0,
-        backoff_remaining_seconds: null,
-      });
+      setLockState(unlocked);
     }
   }, []);
 

@@ -186,6 +186,12 @@ export const savedConfig = {
   preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
   cost_explorer_enabled: true,
   hourly_cost_data: false,
+  security: {
+    auto_lock_enabled: false,
+    auto_lock_timeout_minutes: 5,
+    biometric_unlock_enabled: false,
+    pin_set: false,
+  },
 };
 
 export const chatModels = [
