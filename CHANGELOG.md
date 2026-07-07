@@ -5,6 +5,7 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Removed the unused credential intake page
+- The onboarding e2e test covers the unified provisioning flow that replaced the old wizard pages
 - Client list and record file list share one deleted-items section and history toggle; deleted clients show as rows instead of a second table
 - AWS infrastructure scan, plan review, apply progress, and errors all render through one lifecycle widget
 - Removed two unreachable AWS management pages left over from the old onboarding wizard
