@@ -4,6 +4,7 @@
 
 import { commands } from "./bindings";
 export { commands };
+export { events } from "./bindings";
 export type {
   AccessKeyInfo,
   Action,
@@ -43,6 +44,9 @@ export type {
   TranscriptionLanguage,
   TranscriptionPreferences,
   TurnUsage,
+  LockState,
+  LockStateChanged,
+  BiometryAvailability,
 } from "./bindings";
 export type { Result } from "./bindings";
 
@@ -570,6 +574,54 @@ export async function countClientContextTokens(clientId: string, modelId: string
 
 export async function countInfraContextTokens(modelId: string, planEntries: import("./bindings").PlanEntry[]): Promise<number> {
   return unwrap(await commands.countInfraContextTokens(modelId, planEntries));
+}
+
+// ---------------------------------------------------------------------------
+// Session lock (auto-lock / PIN / biometric unlock)
+// ---------------------------------------------------------------------------
+
+export async function getLockState() {
+  return unwrap(await commands.getLockState());
+}
+
+export async function recordActivity(): Promise<void> {
+  unwrap(await commands.recordActivity());
+}
+
+export async function lockSession(): Promise<void> {
+  unwrap(await commands.lockSession());
+}
+
+export async function unlockWithPin(pin: string): Promise<void> {
+  unwrap(await commands.unlockWithPin(pin));
+}
+
+export async function unlockWithBiometric(): Promise<void> {
+  unwrap(await commands.unlockWithBiometric());
+}
+
+export async function getBiometryStatus() {
+  return unwrap(await commands.getBiometryStatus());
+}
+
+export async function enableAutoLock(pin: string, timeoutMinutes: number): Promise<void> {
+  unwrap(await commands.enableAutoLock(pin, timeoutMinutes));
+}
+
+export async function disableAutoLock(pin: string): Promise<void> {
+  unwrap(await commands.disableAutoLock(pin));
+}
+
+export async function changePin(currentPin: string, newPin: string): Promise<void> {
+  unwrap(await commands.changePin(currentPin, newPin));
+}
+
+export async function setAutoLockTimeout(timeoutMinutes: number): Promise<void> {
+  unwrap(await commands.setAutoLockTimeout(timeoutMinutes));
+}
+
+export async function setBiometricUnlock(enabled: boolean): Promise<void> {
+  unwrap(await commands.setBiometricUnlock(enabled));
 }
 
 // ---------------------------------------------------------------------------
