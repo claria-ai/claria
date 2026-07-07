@@ -9,6 +9,7 @@ import {
   type DeletedClient,
 } from "../lib/tauri";
 import { formatDate } from "../lib/format";
+import { searchMatches } from "../lib/search";
 import { useMoreMode } from "../lib/useMoreMode";
 import MoreToggle from "../components/MoreToggle";
 import DeletedSection from "../components/DeletedSection";
@@ -26,11 +27,10 @@ export default function ClientList({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Case-insensitive substring filter on client name, applied to the live
-  // and deleted lists alike.
+  // Case- and accent-insensitive substring filter on client name, applied
+  // to the live and deleted lists alike.
   const [search, setSearch] = useState("");
-  const nameMatches = (name: string) =>
-    name.toLowerCase().includes(search.trim().toLowerCase());
+  const nameMatches = (name: string) => searchMatches(name, search);
   const filteredClients = clients.filter((c) => nameMatches(c.name));
 
   // New client form state

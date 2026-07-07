@@ -7,6 +7,7 @@ All notable changes to Claria are documented here.
 - Token counting runs against the newest available Haiku instead of the chat model, which may not support the CountTokens API
 - Model pricing matches by tier so new Claude releases (Fable, Opus 4.8, Sonnet 5) are priced without a code change
 - When a model has no pricing entry the UI omits dollar figures instead of showing $0.00 or "cost unavailable"
+- Client and record file search ignores accents, so "Luci" finds "Lucí"
 - Removed the unused credential intake page
 - Dependency refresh across the workspace and frontend clears 10 of 17 RustSec advisories and all npm audit findings; the rest are transitive with no patched upstream (docx-rs, wayland-scanner, AWS smithy legacy TLS)
 - The onboarding e2e test covers the unified provisioning flow that replaced the old wizard pages
