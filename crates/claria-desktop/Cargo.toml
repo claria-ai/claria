@@ -23,6 +23,7 @@ claria-report-pipeline.workspace = true
 claria-report-store.workspace = true
 claria-storage.workspace = true
 claria-transcribe.workspace = true
+argon2 = "=0.5.3"
 aws-config.workspace = true
 aws-sdk-s3.workspace = true
 aws-sdk-sts.workspace = true

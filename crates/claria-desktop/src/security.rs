@@ -1,0 +1,151 @@
+//! PIN hashing and lock policy for the auto-lock feature.
+//!
+//! Pure logic only — the Tauri command layer owns the wiring (state, events,
+//! biometric prompts). Kept in the lib so integration tests can exercise it
+//! without a Tauri runtime.
+
+use std::time::{Duration, Instant};
+
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
+
+pub const MIN_PIN_LEN: usize = 6;
+pub const MAX_PIN_LEN: usize = 12;
+
+/// Free attempts before backoff kicks in.
+const FREE_ATTEMPTS: u32 = 3;
+/// First backoff window; doubles per subsequent failure.
+const BASE_BACKOFF_SECS: u64 = 5;
+const MAX_BACKOFF_SECS: u64 = 300;
+
+pub fn validate_pin(pin: &str) -> Result<(), String> {
+    if !(MIN_PIN_LEN..=MAX_PIN_LEN).contains(&pin.len()) {
+        return Err(format!(
+            "PIN must be {MIN_PIN_LEN}–{MAX_PIN_LEN} digits long"
+        ));
+    }
+    if !pin.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("PIN must contain only digits".to_string());
+    }
+    Ok(())
+}
+
+/// Hash a PIN into an argon2id PHC string (parameters are self-describing,
+/// so defaults can change without invalidating stored hashes).
+pub fn hash_pin(pin: &str) -> eyre::Result<String> {
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = Argon2::default()
+        .hash_password(pin.as_bytes(), &salt)
+        .map_err(|e| eyre::eyre!("failed to hash PIN: {e}"))?;
+    Ok(hash.to_string())
+}
+
+pub fn verify_pin(pin: &str, phc_hash: &str) -> eyre::Result<bool> {
+    let parsed =
+        PasswordHash::new(phc_hash).map_err(|e| eyre::eyre!("stored PIN hash is invalid: {e}"))?;
+    Ok(Argon2::default()
+        .verify_password(pin.as_bytes(), &parsed)
+        .is_ok())
+}
+
+/// Backoff imposed after `failed_attempts` consecutive failures, or `None`
+/// while still within the free-attempt budget. 3 failures → 5 s, doubling
+/// per failure, capped at 5 minutes.
+pub fn backoff_duration(failed_attempts: u32) -> Option<Duration> {
+    if failed_attempts < FREE_ATTEMPTS {
+        return None;
+    }
+    let doublings = (failed_attempts - FREE_ATTEMPTS).min(63);
+    let secs = BASE_BACKOFF_SECS
+        .checked_shl(doublings)
+        .unwrap_or(MAX_BACKOFF_SECS)
+        .min(MAX_BACKOFF_SECS);
+    Some(Duration::from_secs(secs))
+}
+
+/// True when the wall clock advanced far beyond one watcher tick — the
+/// machine was asleep (or the clock jumped), so the session should lock.
+/// Monotonic clocks behave differently across platforms during sleep;
+/// wall-clock deltas don't.
+pub fn wall_clock_jumped(
+    prev: jiff::Timestamp,
+    now: jiff::Timestamp,
+    expected_tick: Duration,
+    slack: Duration,
+) -> bool {
+    let threshold = expected_tick + slack;
+    now.duration_since(prev).as_secs() > threshold.as_secs() as i64
+}
+
+/// In-memory lock state. Lives in `DesktopState` behind a mutex; deliberately
+/// not persisted so a fresh launch always derives its lock state from config.
+pub struct LockRuntime {
+    locked: bool,
+    failed_attempts: u32,
+    backoff_until: Option<Instant>,
+    last_activity: Instant,
+}
+
+impl Default for LockRuntime {
+    fn default() -> Self {
+        Self {
+            locked: false,
+            failed_attempts: 0,
+            backoff_until: None,
+            last_activity: Instant::now(),
+        }
+    }
+}
+
+impl LockRuntime {
+    pub fn locked(&self) -> bool {
+        self.locked
+    }
+
+    pub fn failed_attempts(&self) -> u32 {
+        self.failed_attempts
+    }
+
+    /// Record user activity. Ignored while locked — activity on the lock
+    /// screen must not feed the idle timer that decides re-locking.
+    pub fn note_activity(&mut self) {
+        if !self.locked {
+            self.last_activity = Instant::now();
+        }
+    }
+
+    pub fn idle_expired(&self, timeout: Duration) -> bool {
+        !self.locked && self.last_activity.elapsed() >= timeout
+    }
+
+    pub fn lock(&mut self) {
+        self.locked = true;
+    }
+
+    /// Unlock and reset the failure counter and idle timer.
+    pub fn unlock(&mut self) {
+        self.locked = false;
+        self.failed_attempts = 0;
+        self.backoff_until = None;
+        self.last_activity = Instant::now();
+    }
+
+    /// Record a failed unlock attempt and arm the resulting backoff window.
+    pub fn register_failure(&mut self) {
+        self.failed_attempts += 1;
+        self.backoff_until = backoff_duration(self.failed_attempts).map(|d| Instant::now() + d);
+    }
+
+    /// Seconds until unlock attempts are accepted again, if in backoff.
+    pub fn backoff_remaining_secs(&self) -> Option<u64> {
+        let until = self.backoff_until?;
+        let now = Instant::now();
+        if now >= until {
+            return None;
+        }
+        // Round up so the UI never shows "0 s remaining" on a rejected attempt.
+        Some((until - now).as_secs().max(1))
+    }
+}
