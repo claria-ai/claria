@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.18.0] — 2026-07-07
 
 - Record file search also matches the extracted text of each file, with a badge on files that only match by content
 - The record file search opens from a magnifying-glass button, swapping the header action buttons for a wide search field while active
