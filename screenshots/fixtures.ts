@@ -13,13 +13,69 @@ function ok(
   actual: unknown = null,
 ) {
   return {
-    spec: { resource_type, resource_name, lifecycle: "managed", desired: {}, label, description, severity, iam_actions: [] },
+    spec: { resource_type, resource_name, lifecycle: "managed", desired: {}, credential_scope: "regular", label, description, severity, iam_actions: [] },
     action: "ok",
     cause: "in_sync",
     drift: [],
     actual,
   };
 }
+
+const planEntries = [
+  ok("iam_user", "claria-admin", "IAM User", "Dedicated least-privilege user that Claria operates as", "info"),
+  ok("iam_user_policy", "claria-admin-policy", "IAM Policy", "Permissions scoped to only what Claria needs", "normal"),
+  ok("baa_agreement", "aws-baa", "BAA Agreement", "Business Associate Agreement — must be accepted in the AWS Artifact console", "elevated"),
+  ok("s3_bucket", "185735714230-claria-data", "S3 Bucket", "Encrypted storage for your client records and documents", "normal", { region: "us-east-1" }),
+  ok("s3_bucket_versioning", "185735714230-claria-data", "S3 Bucket Versioning", "S3 version history — protects against accidental deletion", "normal", { status: "Enabled" }),
+  ok("s3_bucket_encryption", "185735714230-claria-data", "S3 Bucket Encryption", "Server-side encryption — your data is encrypted at rest", "normal", { sse_algorithm: "AES256" }),
+  ok("s3_bucket_public_access", "185735714230-claria-data", "S3 Public Access Block", "All public access blocked — data is private by default", "normal", { block_public_acls: true, block_public_policy: true, ignore_public_acls: true, restrict_public_buckets: true }),
+  ok("s3_bucket_policy", "185735714230-claria-data", "S3 Bucket Policy", "Enforces TLS-only access to the bucket", "normal", { Version: "2012-10-17", Statement: [{ Effect: "Deny", Principal: "*", Action: "s3:*", Resource: ["arn:aws:s3:::185735714230-claria-data", "arn:aws:s3:::185735714230-claria-data/*"], Condition: { Bool: { "aws:SecureTransport": "false" } } }] }),
+  ok("cloudtrail_trail", "claria-audit-trail", "CloudTrail Trail", "Audit log for all S3 data access events", "normal"),
+  ok("cloudtrail_s3_events", "claria-audit-trail", "CloudTrail S3 Events", "Data event logging for object-level S3 operations", "normal"),
+  ok("bedrock_model_access", "anthropic.claude-sonnet-4-20250514-v1:0", "Bedrock Model Access", "Claude Sonnet 4 — enabled for chat", "elevated"),
+  ok("bedrock_model_access", "anthropic.claude-haiku-4-5-20251001-v1:0", "Bedrock Model Access", "Claude Haiku 4.5 — enabled for chat", "elevated"),
+  ok("bedrock_model_access", "anthropic.claude-opus-4-6-20260301-v1:0", "Bedrock Model Access", "Claude Opus 4.6 — enabled for chat", "elevated"),
+];
+
+/**
+ * Same plan with drift: IAM policy modified (elevated scope, so the
+ * escalation notice renders), one Bedrock model missing.
+ */
+export const driftedPlan = planEntries.map((e) => {
+  if (e.spec.resource_type === "iam_user_policy") {
+    return {
+      ...e,
+      spec: { ...e.spec, credential_scope: "elevated" },
+      action: "modify",
+      cause: "drift",
+      drift: [
+        {
+          field: "actions",
+          label: "Allowed IAM actions",
+          expected: [
+            "bedrock:InvokeModel",
+            "bedrock:InvokeModelWithResponseStream",
+            "ce:GetCostAndUsage",
+            "s3:GetObject",
+            "s3:PutObject",
+            "transcribe:StartTranscriptionJob",
+          ],
+          actual: [
+            "bedrock:GetUseCaseForModelAccess",
+            "bedrock:InvokeModel",
+            "s3:GetObject",
+            "s3:PutObject",
+            "transcribe:StartTranscriptionJob",
+          ],
+        },
+      ],
+    };
+  }
+  if (e.spec.resource_name === "anthropic.claude-opus-4-6-20260301-v1:0") {
+    return { ...e, action: "create", cause: "missing", actual: null };
+  }
+  return e;
+});
 
 export const fixtures: Record<string, unknown> = {
   has_config: true,
@@ -134,7 +190,40 @@ export const fixtures: Record<string, unknown> = {
       last_modified: "2026-03-15T14:22:00Z",
       is_text: false,
     },
+    {
+      filename: "chat-history/cccccccc-4444-5555-6666-dddddddddddd.json",
+      size: 9400,
+      last_modified: "2026-03-02T10:15:00Z",
+      is_text: true,
+    },
   ],
+
+  load_chat_history: {
+    chat_id: "cccccccc-4444-5555-6666-dddddddddddd",
+    model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+    created_at: "2026-03-02T10:15:00Z",
+    messages: [
+      {
+        role: "user",
+        content: "Summarize the teacher observation notes.",
+        usage: null,
+      },
+      {
+        role: "assistant",
+        content:
+          "Ms. Alvarado describes Jane as eager to participate but often off-task within minutes — frequent out-of-seat behavior, blurting, and difficulty with transitions. Reading fluency is at grade level while written output is significantly below expectations; she works best in small groups with direct prompting.",
+        usage: {
+          model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+          input_tokens: 5120,
+          output_tokens: 96,
+          cache_read_input_tokens: 0,
+          cache_write_input_tokens: 0,
+          cost_usd: 0.0842,
+          pricing_version: 3,
+        },
+      },
+    ],
+  },
 
   // Sample headered transcript body for the transcript-editor screenshot.
   // Routed by filename via `cmd:filename` (see tauri-mock.ts).
@@ -243,27 +332,23 @@ The formal assessment (PDF, 2/18/2026) includes WISC-V, BASC-3 parent and teache
 *Would you like me to draft a diagnostic summary or begin organizing this into a report template?*`,
   },
 
-  plan: [
-    ok("iam_user", "claria-admin", "IAM User", "Dedicated least-privilege user that Claria operates as", "info"),
-    ok("iam_user_policy", "claria-admin-policy", "IAM Policy", "Permissions scoped to only what Claria needs", "normal"),
-    ok("baa_agreement", "aws-baa", "BAA Agreement", "Business Associate Agreement \u2014 must be accepted in the AWS Artifact console", "elevated"),
-    ok("s3_bucket", "185735714230-claria-data", "S3 Bucket", "Encrypted storage for your client records and documents", "normal", { region: "us-east-1" }),
-    ok("s3_bucket_versioning", "185735714230-claria-data", "S3 Bucket Versioning", "S3 version history \u2014 protects against accidental deletion", "normal", { status: "Enabled" }),
-    ok("s3_bucket_encryption", "185735714230-claria-data", "S3 Bucket Encryption", "Server-side encryption \u2014 your data is encrypted at rest", "normal", { sse_algorithm: "AES256" }),
-    ok("s3_bucket_public_access", "185735714230-claria-data", "S3 Public Access Block", "All public access blocked \u2014 data is private by default", "normal", { block_public_acls: true, block_public_policy: true, ignore_public_acls: true, restrict_public_buckets: true }),
-    ok("s3_bucket_policy", "185735714230-claria-data", "S3 Bucket Policy", "Enforces TLS-only access to the bucket", "normal", { Version: "2012-10-17", Statement: [{ Effect: "Deny", Principal: "*", Action: "s3:*", Resource: ["arn:aws:s3:::185735714230-claria-data", "arn:aws:s3:::185735714230-claria-data/*"], Condition: { Bool: { "aws:SecureTransport": "false" } } }] }),
-    ok("cloudtrail_trail", "claria-audit-trail", "CloudTrail Trail", "Audit log for all S3 data access events", "normal"),
-    ok("cloudtrail_s3_events", "claria-audit-trail", "CloudTrail S3 Events", "Data event logging for object-level S3 operations", "normal"),
-    ok("bedrock_model_access", "anthropic.claude-sonnet-4-20250514-v1:0", "Bedrock Model Access", "Claude Sonnet 4 \u2014 enabled for chat", "elevated"),
-    ok("bedrock_model_access", "anthropic.claude-haiku-4-5-20251001-v1:0", "Bedrock Model Access", "Claude Haiku 4.5 \u2014 enabled for chat", "elevated"),
-    ok("bedrock_model_access", "anthropic.claude-opus-4-6-20260301-v1:0", "Bedrock Model Access", "Claude Opus 4.6 \u2014 enabled for chat", "elevated"),
-  ],
+  plan: planEntries,
   transcribe_memo: {
     text: "Session with Jane Doe, March 1st, 2026. Jane presented today with flat affect and limited eye contact. Mother reports increased irritability at home over the past two weeks, coinciding with a change in classroom seating arrangement. Jane was reluctant to engage initially but warmed up during the structured play activity. She demonstrated age-appropriate vocabulary but struggled with narrative sequencing when describing her week. Notable: Jane spontaneously mentioned feeling worried about everything — first unprompted reference to generalized anxiety. Recommend adding GAD-7 child version to next session's battery. Follow up on peer relationship concerns and coordinate with Ms. Alvarado regarding classroom accommodations.",
     language: "en",
   },
 
-  infra_chat: `Your data is well protected. Here's a summary of the security configuration for account **185735714230**:
+  infra_chat: {
+    usage: {
+      model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+      input_tokens: 6242,
+      output_tokens: 388,
+      cache_read_input_tokens: 0,
+      cache_write_input_tokens: 0,
+      cost_usd: 0.1227,
+      pricing_version: 3,
+    },
+    content: `Your data is well protected. Here's a summary of the security configuration for account **185735714230**:
 
 ## Encryption
 
@@ -288,6 +373,7 @@ The formal assessment (PDF, 2/18/2026) includes WISC-V, BASC-3 parent and teache
 - The AWS Business Associate Agreement is in place, covering S3, Bedrock, CloudTrail, and Transcribe under HIPAA.
 
 All 14 resources are currently **in sync** — no drift detected.`,
+  },
 
   get_cost_and_usage: { periods: generateCostData() },
 

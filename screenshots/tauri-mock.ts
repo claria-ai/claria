@@ -3,8 +3,8 @@
 
 import { fixtures } from "./fixtures.js";
 
-export function buildInitScript(): string {
-  const fixturesJson = JSON.stringify(fixtures);
+export function buildInitScript(overrides: Record<string, unknown> = {}): string {
+  const fixturesJson = JSON.stringify({ ...fixtures, ...overrides });
 
   // This script runs in the browser context before the app loads.
   // It sets up the Tauri internals mock so that invoke() calls

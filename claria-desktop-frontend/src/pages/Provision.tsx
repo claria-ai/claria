@@ -516,7 +516,7 @@ export default function Provision({
           scanItems={scanItems}
           applyItems={applyItems}
           error={error}
-          onEscalate={needsEscalation && configExists ? () => setPhase("escalation") : undefined}
+          showEscalationNotice={needsEscalation && configExists === true}
           showInSync={configExists === true}
           actions={
             phase === "planned" && hasChanges(entries) ? (
