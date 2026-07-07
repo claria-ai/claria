@@ -1,6 +1,7 @@
 import type { PlanEntry } from "../lib/tauri";
 import PlanEntryCard from "./PlanEntryCard";
 import EscalationCard from "./EscalationCard";
+import { findEscalationEntry } from "../lib/plan";
 
 export default function PlanView({
   entries,
@@ -25,11 +26,7 @@ export default function PlanView({
   );
 
   // Detect IAM escalation: elevated-scope resource needs Create or Modify.
-  const escalation = entries.find(
-    (e) =>
-      e.spec.credential_scope === "elevated" &&
-      (e.action === "create" || e.action === "modify")
-  );
+  const escalation = findEscalationEntry(entries);
 
   const changesCount =
     needsAttention.length + changes.length;

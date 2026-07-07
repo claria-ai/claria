@@ -8,6 +8,11 @@ import {
   type ClientSummary,
   type DeletedClient,
 } from "../lib/tauri";
+import { formatDate } from "../lib/format";
+import { useMoreMode } from "../lib/useMoreMode";
+import MoreToggle from "../components/MoreToggle";
+import DeletedSection from "../components/DeletedSection";
+import { ErrorBanner, LoadingCard, EmptyCard } from "../components/StateCards";
 import type { Page } from "../App";
 
 export default function ClientList({
@@ -38,13 +43,16 @@ export default function ClientList({
   const [deleting, setDeleting] = useState(false);
 
   // More mode (deleted clients)
-  const [moreMode, setMoreMode] = useState(false);
-  const [deletedClients, setDeletedClients] = useState<DeletedClient[]>([]);
-  const filteredDeletedClients = deletedClients.filter((dc) =>
-    nameMatches(dc.name),
+  const {
+    moreMode,
+    toggleMoreMode,
+    deletedItems: deletedClients,
+    deletedLoading,
+    restoringKey,
+    restore,
+  } = useMoreMode<DeletedClient>(listDeletedClients, (e) =>
+    setError(String(e)),
   );
-  const [deletedLoading, setDeletedLoading] = useState(false);
-  const [restoringId, setRestoringId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -92,34 +100,6 @@ export default function ClientList({
     }
   }
 
-  async function handleToggleMore() {
-    const next = !moreMode;
-    setMoreMode(next);
-    if (next) {
-      setDeletedLoading(true);
-      try {
-        setDeletedClients(await listDeletedClients());
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setDeletedLoading(false);
-      }
-    }
-  }
-
-  async function handleRestoreClient(id: string, versionId: string) {
-    setRestoringId(id);
-    try {
-      await restoreClient(id, versionId);
-      setDeletedClients((prev) => prev.filter((c) => c.id !== id));
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRestoringId(null);
-    }
-  }
-
   return (
     <div className="max-w-2xl mx-auto p-8">
       {/* Header */}
@@ -144,19 +124,11 @@ export default function ClientList({
             title="Show clients whose name contains this text"
             className="w-40 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
           />
-          <button
-            onClick={handleToggleMore}
-            className={`p-2 rounded-lg border transition-colors ${
-              moreMode
-                ? "border-blue-300 bg-blue-50 text-blue-600"
-                : "border-gray-300 text-gray-500 hover:bg-gray-50"
-            }`}
+          <MoreToggle
+            active={moreMode}
+            onClick={toggleMoreMode}
             title={moreMode ? "Hide version history" : "Show version history"}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </button>
+          />
           <button
             onClick={() => setShowNewForm(true)}
             className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
@@ -201,39 +173,28 @@ export default function ClientList({
       )}
 
       {/* Error */}
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-          <p className="text-red-800 text-sm">{error}</p>
-        </div>
-      )}
+      {error && <ErrorBanner message={error} />}
 
       {/* Loading */}
-      {loading && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
-          <div className="flex items-center justify-center gap-2 text-blue-800 text-sm">
-            <Spinner />
-            <span>Loading clients...</span>
-          </div>
-        </div>
-      )}
+      {loading && <LoadingCard>Loading clients...</LoadingCard>}
 
       {/* Empty state */}
       {!loading && !error && clients.length === 0 && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
+        <EmptyCard>
           <p className="text-gray-500 text-sm mb-2">No client records yet.</p>
           <p className="text-gray-400 text-xs">
             Click "New Client" to create your first record.
           </p>
-        </div>
+        </EmptyCard>
       )}
 
       {/* No search matches */}
       {!loading && clients.length > 0 && filteredClients.length === 0 && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center">
+        <EmptyCard>
           <p className="text-gray-400 text-sm">
             No clients match &ldquo;{search.trim()}&rdquo;
           </p>
-        </div>
+        </EmptyCard>
       )}
 
       {/* Client table */}
@@ -289,56 +250,27 @@ export default function ClientList({
       {/* Deleted clients (More mode) */}
       {moreMode && !loading && (
         <div className="mt-6">
-          <h3 className="text-sm font-semibold text-gray-500 mb-3">Deleted Clients</h3>
-          {deletedLoading ? (
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-              <div className="flex items-center justify-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Loading deleted clients...</span>
-              </div>
-            </div>
-          ) : filteredDeletedClients.length === 0 ? (
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-              <p className="text-gray-400 text-sm">
-                {deletedClients.length === 0
-                  ? "No deleted clients found."
-                  : `No deleted clients match “${search.trim()}”`}
-              </p>
-            </div>
-          ) : (
-            <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-gray-100 bg-gray-50">
-                    <th className="text-left text-xs font-medium text-gray-500 px-4 py-2">Name</th>
-                    <th className="text-left text-xs font-medium text-gray-500 px-4 py-2">Deleted</th>
-                    <th className="w-24" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {filteredDeletedClients.map((dc) => (
-                    <tr key={dc.id} className="opacity-60">
-                      <td className="px-4 py-3 text-sm text-gray-500 line-through">
-                        {dc.name}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-400">
-                        {dc.deleted_at ? formatDate(dc.deleted_at) : "Unknown"}
-                      </td>
-                      <td className="px-2 py-3 text-right">
-                        <button
-                          onClick={() => handleRestoreClient(dc.id, dc.version_id)}
-                          disabled={restoringId === dc.id}
-                          className="px-3 py-1 text-xs text-blue-600 border border-blue-300 rounded hover:bg-blue-50 transition-colors disabled:opacity-50"
-                        >
-                          {restoringId === dc.id ? "Restoring..." : "Restore"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <DeletedSection
+            title="Deleted Clients"
+            noun="clients"
+            loading={deletedLoading}
+            items={deletedClients}
+            itemKey={(dc) => dc.id}
+            primary={(dc) => dc.name}
+            subtitle={(dc) =>
+              dc.deleted_at ? formatDate(dc.deleted_at) : "Unknown"
+            }
+            searchTerm={search}
+            restoringKey={restoringKey}
+            onRestore={(dc) =>
+              restore(
+                dc.id,
+                () => restoreClient(dc.id, dc.version_id),
+                (c) => c.id === dc.id,
+                refresh,
+              )
+            }
+          />
         </div>
       )}
 
@@ -374,38 +306,5 @@ export default function ClientList({
       )}
 
     </div>
-  );
-}
-
-function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
-}
-
-function Spinner() {
-  return (
-    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
   );
 }

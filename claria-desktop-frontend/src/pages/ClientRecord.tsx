@@ -27,6 +27,12 @@ import {
 } from "../lib/tauri";
 import TranscribeWizard from "../components/TranscribeWizard";
 import TranscriptEditor from "../components/TranscriptEditor";
+import Spinner from "../components/Spinner";
+import MoreToggle from "../components/MoreToggle";
+import DeletedSection from "../components/DeletedSection";
+import { ErrorBanner } from "../components/StateCards";
+import { formatDateTime, formatFileSize } from "../lib/format";
+import { useMoreMode } from "../lib/useMoreMode";
 import { diffLines, type DiffLine } from "../lib/diff";
 import ClientChat from "./ClientChat";
 import type { Page } from "../App";
@@ -175,10 +181,17 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   }, [showTranscribeWizard]);
 
   // More mode state
-  const [moreMode, setMoreMode] = useState(false);
-  const [deletedFiles, setDeletedFiles] = useState<DeletedFile[]>([]);
-  const [deletedFilesLoading, setDeletedFilesLoading] = useState(false);
-  const [restoringDeletedFile, setRestoringDeletedFile] = useState<string | null>(null);
+  const {
+    moreMode,
+    toggleMoreMode,
+    deletedItems: deletedFiles,
+    deletedLoading: deletedFilesLoading,
+    restoringKey,
+    restore,
+  } = useMoreMode<DeletedFile>(
+    () => listDeletedFiles(clientId),
+    (e) => setError(String(e)),
+  );
 
   // Version history modal state
   const [versionFile, setVersionFile] = useState<string | null>(null);
@@ -681,21 +694,6 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     }
   }
 
-  async function handleToggleMore() {
-    const next = !moreMode;
-    setMoreMode(next);
-    if (next) {
-      setDeletedFilesLoading(true);
-      try {
-        setDeletedFiles(await listDeletedFiles(clientId));
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setDeletedFilesLoading(false);
-      }
-    }
-  }
-
   async function handleOpenVersions(filename: string) {
     setVersionFile(filename);
     setVersionsLoading(true);
@@ -794,28 +792,11 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     }
   }
 
-  async function handleRestoreDeletedFile(filename: string, versionId: string) {
-    setRestoringDeletedFile(filename);
-    try {
-      await restoreDeletedFile(clientId, filename, versionId);
-      setDeletedFiles((prev) => prev.filter((f) => f.filename !== filename));
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRestoringDeletedFile(null);
-    }
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-2xl mx-auto p-8">
         {/* Error */}
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-            <p className="text-red-800 text-sm">{error}</p>
-          </div>
-        )}
+        {error && <ErrorBanner message={error} />}
 
         {/* File list / drop zone */}
         <div
@@ -871,19 +852,11 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                 </button>
               )}
               {!searchOpen && (
-                <button
-                  onClick={handleToggleMore}
-                  className={`p-1.5 rounded border transition-colors ${
-                    moreMode
-                      ? "border-blue-300 bg-blue-50 text-blue-600"
-                      : "border-gray-300 text-gray-400 hover:bg-gray-100"
-                  }`}
+                <MoreToggle
+                  active={moreMode}
+                  onClick={toggleMoreMode}
                   title={moreMode ? "Hide version history" : "Show version history"}
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </button>
+                />
               )}
               {!searchOpen && memoReady && memoState === "idle" && (
                 <button
@@ -1514,40 +1487,27 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       {/* Deleted files (More mode) */}
       {moreMode && !loading && (
         <div className="max-w-2xl mx-auto px-8 pb-8">
-          <h3 className="text-sm font-semibold text-gray-500 mb-3">Deleted Files</h3>
-          {deletedFilesLoading ? (
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-              <div className="flex items-center justify-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Loading deleted files...</span>
-              </div>
-            </div>
-          ) : deletedFiles.length === 0 ? (
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-              <p className="text-gray-400 text-sm">No deleted files found.</p>
-            </div>
-          ) : (
-            <div className="bg-white border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100">
-              {deletedFiles.map((df) => (
-                <div key={df.filename} className="px-4 py-3 flex items-center gap-3 opacity-60">
-                  <FileIcon filename={df.filename} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-gray-500 line-through truncate">{df.filename}</p>
-                    <p className="text-xs text-gray-400">
-                      {df.deleted_at ? `Deleted ${formatDate(df.deleted_at)}` : "Deleted"}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleRestoreDeletedFile(df.filename, df.version_id)}
-                    disabled={restoringDeletedFile === df.filename}
-                    className="px-3 py-1 text-xs text-blue-600 border border-blue-300 rounded hover:bg-blue-50 transition-colors disabled:opacity-50"
-                  >
-                    {restoringDeletedFile === df.filename ? "Restoring..." : "Restore"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+          <DeletedSection
+            title="Deleted Files"
+            noun="files"
+            loading={deletedFilesLoading}
+            items={deletedFiles}
+            itemKey={(df) => df.filename}
+            primary={(df) => df.filename}
+            subtitle={(df) =>
+              df.deleted_at ? `Deleted ${formatDateTime(df.deleted_at)}` : "Deleted"
+            }
+            icon={(df) => <FileIcon filename={df.filename} />}
+            restoringKey={restoringKey}
+            onRestore={(df) =>
+              restore(
+                df.filename,
+                () => restoreDeletedFile(clientId, df.filename, df.version_id),
+                (f) => f.filename === df.filename,
+                refresh,
+              )
+            }
+          />
         </div>
       )}
 
@@ -1613,7 +1573,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                         />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm text-gray-900">
-                            {v.last_modified ? formatDate(v.last_modified) : "Unknown date"}
+                            {v.last_modified ? formatDateTime(v.last_modified) : "Unknown date"}
                             {v.is_latest && (
                               <span className="ml-2 px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">
                                 Current
@@ -1800,47 +1760,3 @@ function FileIcon({ filename }: { filename: string }) {
   );
 }
 
-function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function Spinner() {
-  return (
-    <svg
-      className="animate-spin h-3.5 w-3.5"
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
-}

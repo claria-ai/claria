@@ -16,14 +16,12 @@ import {
 
   type AssumeRoleResult,
   type PlanEntry,
-  type ProvisionerProgress,
   type ConfigInfo,
   type ProvisionScanResult,
 } from "../lib/tauri";
-import PlanView from "../components/PlanView";
-import { hasChanges } from "../lib/plan";
-import ScanProgress, { type ScanItem } from "../components/ScanProgress";
-import ApplyProgress, { type ApplyItem } from "../components/ApplyProgress";
+import InfraState from "../components/InfraState";
+import { hasChanges, findEscalationEntry } from "../lib/plan";
+import { useProvisionerProgress } from "../lib/provisioner";
 import type { Page } from "../App";
 
 const AWS_REGIONS = [
@@ -81,8 +79,8 @@ export default function Provision({
   const [entries, setEntries] = useState<PlanEntry[] | null>(null);
   const [, setScanResult] = useState<ProvisionScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [scanItems, setScanItems] = useState<ScanItem[]>([]);
-  const [applyItems, setApplyItems] = useState<ApplyItem[]>([]);
+  const { scanItems, applyItems, progressHandler, resetProgress } =
+    useProvisionerProgress();
   const [resettingState, setResettingState] = useState(false);
 
   // ── Management state ─────────────────────────────────────────────────
@@ -112,34 +110,6 @@ export default function Provision({
     }
   }, [credMode, accessKeyId, secretAccessKey, profileName, assumeRoleResult]);
 
-  const progressHandler = useCallback((p: ProvisionerProgress) => {
-    if (p.kind === "scan_started") {
-      setScanItems((prev) => {
-        const next = [...prev];
-        next[p.index] = { label: p.label, status: "scanning" };
-        return next;
-      });
-    } else if (p.kind === "scan_completed") {
-      setScanItems((prev) => {
-        const next = [...prev];
-        next[p.index] = { label: p.label, status: "done" };
-        return next;
-      });
-    } else if (p.kind === "apply_started") {
-      setApplyItems((prev) => {
-        const next = [...prev];
-        next[p.index] = { label: p.label, action: p.action, status: "in_progress" };
-        return next;
-      });
-    } else if (p.kind === "apply_completed") {
-      setApplyItems((prev) => {
-        const next = [...prev];
-        next[p.index] = { label: p.label, action: p.action, status: "done" };
-        return next;
-      });
-    }
-  }, []);
-
   // ── Initialization ───────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
@@ -151,7 +121,7 @@ export default function Provision({
           setConfig(info);
           // Day-2: auto-scan using saved credentials.
           setPhase("scanning");
-          setScanItems([]);
+          resetProgress();
           const result = await plan(progressHandler);
           setEntries(result);
           setPhase("planned");
@@ -164,13 +134,13 @@ export default function Provision({
         listAwsProfiles().then(setProfiles).catch(() => {});
       }
     })();
-  }, [progressHandler]);
+  }, [progressHandler, resetProgress]);
 
   // ── First-run: scan with provided creds ──────────────────────────────
   async function handleInitialScan() {
     setPhase("scanning");
     setError(null);
-    setScanItems([]);
+    resetProgress();
 
     // If sub-account mode and not yet assumed role, do that first.
     if (credMode === "sub_account" && !assumeRoleResult) {
@@ -215,8 +185,7 @@ export default function Provision({
     if (configExists) {
       // Day-2 flow: use existing plan/apply commands.
       setPhase("applying");
-      setApplyItems([]);
-      setScanItems([]);
+      resetProgress();
       try {
         const result = await apply(progressHandler);
         setEntries(result);
@@ -230,8 +199,7 @@ export default function Provision({
 
     // First-run flow: use unified provision_apply.
     setPhase("applying");
-    setApplyItems([]);
-    setScanItems([]);
+    resetProgress();
 
     try {
       const creds = buildCredentials();
@@ -262,8 +230,7 @@ export default function Provision({
   // ── Escalation apply (day-2 with elevated creds) ─────────────────────
   async function handleEscalationApply() {
     setPhase("applying");
-    setApplyItems([]);
-    setScanItems([]);
+    resetProgress();
 
     try {
       // Load the saved scoped creds from config for regular resources.
@@ -298,8 +265,7 @@ export default function Provision({
   async function handleRescan() {
     setPhase("scanning");
     setError(null);
-    setScanItems([]);
-    setApplyItems([]);
+    resetProgress();
     try {
       const result = await plan(progressHandler);
       setEntries(result);
@@ -350,11 +316,7 @@ export default function Provision({
   }
 
   // Check if plan needs escalation
-  const needsEscalation = entries?.some(
-    (e) =>
-      e.spec.credential_scope === "elevated" &&
-      (e.action === "create" || e.action === "modify")
-  ) ?? false;
+  const needsEscalation = findEscalationEntry(entries) !== null;
 
   // ── Render ───────────────────────────────────────────────────────────
 
@@ -542,52 +504,90 @@ export default function Provision({
         </div>
       )}
 
-      {/* ── Phase: Scanning ────────────────────────────────────────── */}
-      {phase === "scanning" && (
-        <ScanProgress items={scanItems} />
-      )}
-
-      {/* ── Phase: Plan ready ──────────────────────────────────────── */}
-      {phase === "planned" && entries && (
-        <div className="space-y-4">
-          <PlanView
-            entries={entries}
-            onEscalate={needsEscalation && configExists ? () => setPhase("escalation") : undefined}
-          />
-
-          {hasChanges(entries) && (
-            <div className="flex gap-2">
-              {needsEscalation && !configExists ? (
+      {/* ── Lifecycle: scanning → planned → applying → done / error ── */}
+      {(phase === "scanning" ||
+        phase === "planned" ||
+        phase === "applying" ||
+        phase === "done" ||
+        phase === "error") && (
+        <InfraState
+          phase={phase}
+          entries={entries}
+          scanItems={scanItems}
+          applyItems={applyItems}
+          error={error}
+          onEscalate={needsEscalation && configExists ? () => setPhase("escalation") : undefined}
+          showInSync={configExists === true}
+          actions={
+            phase === "planned" && hasChanges(entries) ? (
+              <div className="flex gap-2">
+                {needsEscalation && !configExists ? (
+                  <button
+                    onClick={handleApply}
+                    className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+                  >
+                    Bootstrap & Apply
+                  </button>
+                ) : needsEscalation && configExists ? (
+                  <button
+                    onClick={() => setPhase("escalation")}
+                    className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors"
+                  >
+                    Provide Admin Credentials
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleApply}
+                    className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+                  >
+                    Apply Changes
+                  </button>
+                )}
+              </div>
+            ) : phase === "done" ? (
+              <div className="flex gap-2">
                 <button
-                  onClick={handleApply}
+                  onClick={handleRescan}
+                  className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+                >
+                  Re-scan
+                </button>
+                <button
+                  onClick={() => navigate("start")}
                   className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
                 >
-                  Bootstrap & Apply
+                  Continue to Claria
                 </button>
-              ) : needsEscalation && configExists ? (
+              </div>
+            ) : undefined
+          }
+          errorActions={
+            <div className="flex gap-2">
+              {configExists ? (
                 <button
-                  onClick={() => setPhase("escalation")}
-                  className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors"
+                  onClick={handleRescan}
+                  className="flex-1 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
                 >
-                  Provide Admin Credentials
+                  Retry Scan
                 </button>
               ) : (
                 <button
-                  onClick={handleApply}
-                  className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+                  onClick={() => { setPhase("input"); setError(null); }}
+                  className="flex-1 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
                 >
-                  Apply Changes
+                  Back to Credentials
                 </button>
               )}
+              <button
+                onClick={handleResetState}
+                disabled={resettingState}
+                className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {resettingState ? "Resetting..." : "Reset State"}
+              </button>
             </div>
-          )}
-
-          {!hasChanges(entries) && configExists && (
-            <p className="text-sm text-green-600 text-center py-2">
-              All resources are in sync.
-            </p>
-          )}
-        </div>
+          }
+        />
       )}
 
       {/* ── Phase: Escalation ──────────────────────────────────────── */}
@@ -640,87 +640,6 @@ export default function Provision({
               className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors disabled:opacity-50"
             >
               Apply with Elevated Credentials
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Phase: Applying ────────────────────────────────────────── */}
-      {phase === "applying" && (
-        <div className="space-y-4">
-          {scanItems.length > 0 && <ScanProgress items={scanItems} />}
-          {applyItems.length > 0 && <ApplyProgress items={applyItems} />}
-          {scanItems.length === 0 && applyItems.length === 0 && (
-            <div className="flex items-center justify-center py-8">
-              <svg className="animate-spin h-6 w-6 text-blue-500" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Phase: Done ────────────────────────────────────────────── */}
-      {phase === "done" && entries && (
-        <div className="space-y-4">
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
-            <p className="text-sm font-medium text-green-800">
-              All resources provisioned successfully.
-            </p>
-          </div>
-
-          <PlanView entries={entries} />
-
-          <div className="flex gap-2">
-            <button
-              onClick={handleRescan}
-              className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50"
-            >
-              Re-scan
-            </button>
-            <button
-              onClick={() => navigate("start")}
-              className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
-            >
-              Continue to Claria
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Phase: Error ───────────────────────────────────────────── */}
-      {phase === "error" && (
-        <div className="space-y-4">
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-            <p className="text-sm font-medium text-red-800 mb-1">Error</p>
-            <p className="text-xs text-red-700 font-mono whitespace-pre-wrap">
-              {error}
-            </p>
-          </div>
-
-          <div className="flex gap-2">
-            {configExists ? (
-              <button
-                onClick={handleRescan}
-                className="flex-1 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
-              >
-                Retry Scan
-              </button>
-            ) : (
-              <button
-                onClick={() => { setPhase("input"); setError(null); }}
-                className="flex-1 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600"
-              >
-                Back to Credentials
-              </button>
-            )}
-            <button
-              onClick={handleResetState}
-              disabled={resettingState}
-              className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-            >
-              {resettingState ? "Resetting..." : "Reset State"}
             </button>
           </div>
         </div>
