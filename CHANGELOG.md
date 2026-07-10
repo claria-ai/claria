@@ -18,6 +18,7 @@ All notable changes to Claria are documented here.
 - Removed two unreachable AWS management pages left over from the old onboarding wizard
 - Release tag builds reuse the main-branch warm cache instead of recompiling ~60 dependency crates, cutting the macOS release build from ~11 to an expected ~7 minutes
 - The release workflow caches npm downloads
+- The mock AWS test server builds clean under the latest Clippy
 
 ## [0.18.0] — 2026-07-07
 
