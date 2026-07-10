@@ -46,7 +46,7 @@ export default function AwsAccountGuide({
 
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mt-6">
           <p className="text-blue-800 text-sm">
-            Already have an AWS account? Skip ahead to the next step.
+            Already have an AWS account? Just click Next to continue.
           </p>
         </div>
       </div>

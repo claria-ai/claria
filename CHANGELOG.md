@@ -4,6 +4,10 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- The first-run start screen explains that no local configuration was detected instead of showing a bare Create New System button
+- Onboarding copy on the Create-an-AWS-Account step points to the Next button instead of a Skip control that does not exist
+- The MFA-step skip control renders as a bordered secondary button matching the design system instead of bare amber text
+- Back on the AWS Infrastructure screen steps to the credential form during first-run setup, preserving entered values instead of resetting to the start screen, and is disabled while a scan or apply is in flight
 - Token counting runs against the newest available Haiku instead of the chat model, which may not support the CountTokens API
 - Model pricing matches by tier so new Claude releases (Fable, Opus 4.8, Sonnet 5) are priced without a code change
 - When a model has no pricing entry the UI omits dollar figures instead of showing $0.00 or "cost unavailable"

@@ -55,12 +55,18 @@ export default function StartScreen({
       {/* Main action */}
       <div className="flex flex-col gap-4 w-full max-w-xs">
         {!configExists && (
-          <button
-            onClick={() => navigate("guide-aws")}
-            className="px-6 py-3 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
-          >
-            Create New System
-          </button>
+          <>
+            <p className="text-gray-500 text-sm text-center">
+              No local configuration detected — set up a new Claria system to
+              connect to your AWS account.
+            </p>
+            <button
+              onClick={() => navigate("guide-aws")}
+              className="px-6 py-3 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+            >
+              Create New System
+            </button>
+          </>
         )}
 
         {configExists && (
