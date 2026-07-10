@@ -19,6 +19,7 @@ All notable changes to Claria are documented here.
 - Release tag builds reuse the main-branch warm cache instead of recompiling ~60 dependency crates, cutting the macOS release build from ~11 to an expected ~7 minutes
 - The release workflow caches npm downloads
 - The mock AWS test server builds clean under the latest Clippy
+- CI pins the Rust toolchain so a new stable release can't fail the build unannounced
 
 ## [0.18.0] — 2026-07-07
 
