@@ -93,7 +93,7 @@ async fn create_user(params: &str, state: SharedState) -> Response {
 
     let user = IamUser {
         arn: format!("arn:aws:iam::{account}:user/{user_name}"),
-        user_id: format!("AIDA{}", &Uuid::new_v4().to_string()[..16].to_uppercase()),
+        user_id: format!("AIDA{}", Uuid::new_v4().to_string()[..16].to_uppercase()),
         user_name: user_name.clone(),
         create_date: jiff::Timestamp::now().to_string(),
     };
@@ -504,7 +504,7 @@ async fn create_access_key(params: &str, state: SharedState) -> Response {
 
     let access_key_id = format!(
         "AKIA{}",
-        &Uuid::new_v4().to_string().replace('-', "")[..16].to_uppercase()
+        Uuid::new_v4().to_string().replace('-', "")[..16].to_uppercase()
     );
     let secret = Uuid::new_v4().to_string();
     let now = jiff::Timestamp::now().to_string();
