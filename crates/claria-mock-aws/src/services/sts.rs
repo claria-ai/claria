@@ -47,7 +47,7 @@ async fn assume_role(params: &str, state: SharedState) -> Response {
         .unwrap_or(&st.caller_identity.account)
         .to_string();
 
-    let access_key = format!("ASIA{}", &Uuid::new_v4().to_string()[..16].to_uppercase());
+    let access_key = format!("ASIA{}", Uuid::new_v4().to_string()[..16].to_uppercase());
     let secret_key = Uuid::new_v4().to_string();
     let session_token = format!("FwoGZX...mock-session-token...{}", Uuid::new_v4());
     let expiration = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1)).to_string();
@@ -76,7 +76,7 @@ async fn assume_role(params: &str, state: SharedState) -> Response {
                     &format!(
                         "{}{}",
                         xml::el("Arn", &assumed_arn),
-                        xml::el("AssumedRoleId", &format!("AROA{}:{session_name}", &Uuid::new_v4().to_string()[..16].to_uppercase())),
+                        xml::el("AssumedRoleId", &format!("AROA{}:{session_name}", Uuid::new_v4().to_string()[..16].to_uppercase())),
                     ),
                 ),
             ),
