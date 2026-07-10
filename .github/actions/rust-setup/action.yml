@@ -30,9 +30,14 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install Rust stable
+    # Pinned, not @stable: an unannounced stable release can tighten Clippy and turn a green
+    # main red with no code change on our side (1.96.1 -> 1.97.0 did exactly this). Bump this
+    # deliberately, fixing any new lints in the same PR. All CI + release Rust jobs share this
+    # action, so this one line is the single source of truth for the toolchain version.
+    - name: Install Rust (pinned)
       uses: dtolnay/rust-toolchain@stable
       with:
+        toolchain: "1.97.0"
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
