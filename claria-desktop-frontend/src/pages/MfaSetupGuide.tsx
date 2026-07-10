@@ -94,7 +94,7 @@ export default function MfaSetupGuide({
         <div className="flex gap-3">
           <button
             onClick={() => navigate("guide-access-key")}
-            className="px-4 py-2 text-amber-700 hover:text-amber-900 text-sm"
+            className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
           >
             Skip (not recommended)
           </button>

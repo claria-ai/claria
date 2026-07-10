@@ -315,6 +315,30 @@ export default function Provision({
     }
   }
 
+  // ── Single-step back navigation ──────────────────────────────────────
+  // Step back one phase in-component (preserving all form useState) instead
+  // of unmounting to the start screen and losing everything the user typed.
+  function phaseBack() {
+    // Never interrupt an in-flight AWS call: post-await setState in
+    // handleInitialScan/handleApply is unguarded and would yank the user
+    // forward again. Back is also disabled in these phases.
+    if (phase === "scanning" || phase === "applying") return;
+    // First run: return to the credential form without unmounting.
+    if (configExists === false && (phase === "planned" || phase === "error")) {
+      setAssumeRoleResult(null);
+      setError(null);
+      setPhase("input");
+      return;
+    }
+    // Mirror the escalation Cancel button so header Back is consistent.
+    if (phase === "escalation") {
+      setPhase("planned");
+      return;
+    }
+    // input, done, and all day-2 phases: leave the screen.
+    navigate("start");
+  }
+
   // Check if plan needs escalation
   const needsEscalation = findEscalationEntry(entries) !== null;
 
@@ -343,10 +367,14 @@ export default function Provision({
             </button>
           )}
           <button
-            onClick={() => navigate("start")}
-            className="text-sm text-gray-500 hover:text-gray-700"
+            onClick={phaseBack}
+            disabled={phase === "scanning" || phase === "applying"}
+            className="text-sm text-gray-500 hover:text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Back
+            {configExists === false &&
+            (phase === "planned" || phase === "error" || phase === "escalation")
+              ? "Back to Credentials"
+              : "Back"}
           </button>
         </div>
       </div>
