@@ -3247,30 +3247,37 @@ async fn deleted_client_name(
         .map_err(|e| e.to_string())?;
 
     let Some(version) = versions.iter().find(|v| !v.is_delete_marker) else {
-        tracing::warn!(key, version_count = versions.len(), "no non-delete-marker version found for deleted client");
+        tracing::warn!(
+            key,
+            version_count = versions.len(),
+            "no non-delete-marker version found for deleted client"
+        );
         return Ok(UNKNOWN_CLIENT_NAME.to_string());
     };
 
     if version.version_id.is_empty() {
-        tracing::warn!(key, "deleted client has empty version_id (pre-versioning object)");
+        tracing::warn!(
+            key,
+            "deleted client has empty version_id (pre-versioning object)"
+        );
         return Ok(UNKNOWN_CLIENT_NAME.to_string());
     }
 
-    let output =
-        match claria_storage::objects::get_object_version(s3, bucket, key, &version.version_id)
-            .await
-        {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::warn!(key, version_id = %version.version_id, error = %e, "failed to fetch deleted client version");
-                return Ok(UNKNOWN_CLIENT_NAME.to_string());
-            }
-        };
+    let version_id = &version.version_id;
+    let output = match claria_storage::objects::get_object_version(s3, bucket, key, version_id)
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            tracing::warn!(key, version_id, error = %e, "failed to fetch deleted client version");
+            return Ok(UNKNOWN_CLIENT_NAME.to_string());
+        }
+    };
 
     match serde_json::from_slice::<claria_core::models::client::Client>(&output.body) {
         Ok(client) => Ok(client.name),
         Err(e) => {
-            tracing::warn!(key, version_id = %version.version_id, error = %e, "failed to deserialize deleted client JSON");
+            tracing::warn!(key, version_id, error = %e, "failed to deserialize deleted client JSON");
             Ok(UNKNOWN_CLIENT_NAME.to_string())
         }
     }

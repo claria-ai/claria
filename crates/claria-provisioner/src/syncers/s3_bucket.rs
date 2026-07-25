@@ -90,8 +90,9 @@ impl ResourceSyncer for S3BucketSyncer {
                 .send();
 
             while let Some(page) = pages.next().await {
-                let page = page
-                    .map_err(|e| ProvisionerError::DeleteFailed(DisplayErrorContext(&e).to_string()))?;
+                let page = page.map_err(|e| {
+                    ProvisionerError::DeleteFailed(DisplayErrorContext(&e).to_string())
+                })?;
 
                 for obj in page.contents() {
                     if let Some(key) = obj.key() {
@@ -102,9 +103,7 @@ impl ResourceSyncer for S3BucketSyncer {
                             .send()
                             .await
                             .map_err(|e| {
-                                ProvisionerError::DeleteFailed(
-                                    DisplayErrorContext(&e).to_string(),
-                                )
+                                ProvisionerError::DeleteFailed(DisplayErrorContext(&e).to_string())
                             })?;
                     }
                 }

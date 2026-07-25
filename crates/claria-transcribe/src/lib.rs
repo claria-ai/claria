@@ -433,9 +433,9 @@ async fn poll_standard_job(
                 PollError::Fatal(TranscribeError::Api(e.into_service_error().to_string()))
             })?;
 
-        let job = resp.transcription_job().ok_or_else(|| {
-            PollError::Fatal(TranscribeError::Api("no job in response".into()))
-        })?;
+        let job = resp
+            .transcription_job()
+            .ok_or_else(|| PollError::Fatal(TranscribeError::Api("no job in response".into())))?;
 
         match job.transcription_job_status() {
             Some(TranscriptionJobStatus::Completed) => Ok(()),
@@ -550,9 +550,7 @@ async fn poll_medical_job(
     })
     .retry(poll_backoff())
     .when(|e| matches!(e, PollError::Pending))
-    .notify(
-        |_, delay| tracing::debug!(job_name, ?delay, "medical transcription job still running"),
-    )
+    .notify(|_, delay| tracing::debug!(job_name, ?delay, "medical transcription job still running"))
     .await;
 
     finish_poll(transcribe, job_name, outcome, TranscriptionEngine::Medical).await

@@ -64,13 +64,17 @@ impl ResourceSyncer for S3BucketEncryptionSyncer {
                                         )
                                         .build()
                                         .map_err(|e| {
-                                            ProvisionerError::CreateFailed(DisplayErrorContext(&e).to_string())
+                                            ProvisionerError::CreateFailed(
+                                                DisplayErrorContext(&e).to_string(),
+                                            )
                                         })?,
                                 )
                                 .build(),
                         )
                         .build()
-                        .map_err(|e| ProvisionerError::CreateFailed(DisplayErrorContext(&e).to_string()))?,
+                        .map_err(|e| {
+                            ProvisionerError::CreateFailed(DisplayErrorContext(&e).to_string())
+                        })?,
                 )
                 .send()
                 .await

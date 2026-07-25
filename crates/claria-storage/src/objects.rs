@@ -1,4 +1,4 @@
-use aws_sdk_s3::{presigning::PresigningConfig, Client};
+use aws_sdk_s3::{Client, presigning::PresigningConfig};
 use aws_smithy_types::byte_stream::ByteStream;
 use std::time::Duration;
 
@@ -123,9 +123,7 @@ pub async fn put_object_if_match(
         // S3 answers an If-Match miss with 412 Precondition Failed. Read the
         // structured status and error code rather than sniffing the Display
         // string, which is free to change with any SDK release.
-        let status_412 = e
-            .raw_response()
-            .is_some_and(|r| r.status().as_u16() == 412);
+        let status_412 = e.raw_response().is_some_and(|r| r.status().as_u16() == 412);
         let err = e.into_service_error();
 
         if status_412 || err.meta().code() == Some("PreconditionFailed") {
@@ -387,15 +385,18 @@ pub async fn list_object_versions(
 
     for_each_version_page(client, bucket, key, |page| {
         // Only include entries for the exact key (prefix match may return more).
-        versions.extend(page.versions().iter().filter(|v| v.key() == Some(key)).map(
-            |v| ObjectVersion {
-                version_id: v.version_id().unwrap_or_default().to_string(),
-                size: v.size().unwrap_or(0),
-                last_modified: v.last_modified().map(|t| t.to_string()),
-                is_latest: v.is_latest().unwrap_or(false),
-                is_delete_marker: false,
-            },
-        ));
+        versions.extend(
+            page.versions()
+                .iter()
+                .filter(|v| v.key() == Some(key))
+                .map(|v| ObjectVersion {
+                    version_id: v.version_id().unwrap_or_default().to_string(),
+                    size: v.size().unwrap_or(0),
+                    last_modified: v.last_modified().map(|t| t.to_string()),
+                    is_latest: v.is_latest().unwrap_or(false),
+                    is_delete_marker: false,
+                }),
+        );
 
         versions.extend(
             page.delete_markers()
