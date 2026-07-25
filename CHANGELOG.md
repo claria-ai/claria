@@ -26,6 +26,7 @@ All notable changes to Claria are documented here.
 - CI pins the Rust toolchain so a new stable release can't fail the build unannounced
 - Removed the abandoned report-generation feature set: three crates, their domain models, and their S3 key layout
 - Builds no longer compile tantivy, tera, docx-rs, or ts-rs
+- The update check compares releases as semantic versions, so users on 0.9.x are no longer told they are current
 
 ## [0.18.0] — 2026-07-07
 

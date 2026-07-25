@@ -3841,7 +3841,7 @@ pub async fn check_for_updates() -> Result<UpdateCheck, String> {
                 .unwrap_or("https://github.com/claria-ai/claria/releases")
                 .to_string();
 
-            let update_available = latest.as_str() > current.as_str();
+            let update_available = claria_desktop::update::update_available(&current, &latest);
 
             Ok(UpdateCheck {
                 current_version: current,
