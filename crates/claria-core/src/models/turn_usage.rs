@@ -7,15 +7,13 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use ts_rs::TS;
 
 /// Per-turn token usage captured from a Bedrock Converse response.
 ///
 /// Cache fields are populated by the prompt-caching layer; until then they
 /// are `0`, which the UI must treat as "no caching active", not "missing
 /// data". `String` field means this type cannot be `Copy`.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, Type)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct TurnUsage {
     /// Inference profile ID actually invoked (e.g.
     /// `us.anthropic.claude-sonnet-4-20250514-v1:0`). Stored per-turn — not

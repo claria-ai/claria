@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TokenCount {
     pub input: u64,
     pub output: u64,
@@ -14,8 +12,7 @@ impl TokenCount {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub tokens: TokenCount,
     pub cost_usd: f64,
