@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 claria-core = { path = "../claria-core" }
 claria-storage = { path = "../claria-storage" }
-claria-audit = { path = "../claria-audit" }
 aws-config = "=1.8.18"
 aws-sdk-artifact = "=1.94.0"
 aws-sdk-bedrock = "=1.147.0"
