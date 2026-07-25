@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use ts_rs::TS;
 
 use super::token_count::TokenCount;
 
@@ -10,8 +9,7 @@ use super::token_count::TokenCount;
 /// - `cache_read_per_million` — typically ~10% of `input_per_million`.
 /// - `cache_write_per_million` — typically ~125% of `input_per_million`
 ///   for the 5-minute TTL tier.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, Type)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
 pub struct ModelPricing {
     pub input_per_million: f64,
     pub output_per_million: f64,
@@ -48,8 +46,7 @@ impl ModelPricing {
 }
 
 /// A cost estimate shown to the user before a Bedrock call.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostEstimate {
     pub model_id: String,
     pub estimated_tokens: TokenCount,
