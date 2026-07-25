@@ -1,7 +1,8 @@
 use aws_sdk_s3::Client;
+use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
-use crate::error::{format_err_chain, ProvisionerError};
+use crate::error::ProvisionerError;
 use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
@@ -65,7 +66,7 @@ impl ResourceSyncer for S3BucketSyncer {
             builder
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::CreateFailed(format_err_chain(&e)))?;
+                .map_err(|e| ProvisionerError::CreateFailed(DisplayErrorContext(&e).to_string()))?;
 
             tracing::info!(bucket = %self.bucket_name(), "S3 bucket created");
 
@@ -80,19 +81,19 @@ impl ResourceSyncer for S3BucketSyncer {
 
     fn destroy(&self) -> BoxFuture<'_, Result<(), ProvisionerError>> {
         Box::pin(async {
-            // Paginated delete all objects first
-            let mut continuation_token = None;
-            loop {
-                let mut list = self.client.list_objects_v2().bucket(self.bucket_name());
-                if let Some(token) = &continuation_token {
-                    list = list.continuation_token(token);
-                }
-                let resp = list
-                    .send()
-                    .await
-                    .map_err(|e| ProvisionerError::DeleteFailed(format_err_chain(&e)))?;
+            // Delete every object before the bucket itself.
+            let mut pages = self
+                .client
+                .list_objects_v2()
+                .bucket(self.bucket_name())
+                .into_paginator()
+                .send();
 
-                for obj in resp.contents() {
+            while let Some(page) = pages.next().await {
+                let page = page
+                    .map_err(|e| ProvisionerError::DeleteFailed(DisplayErrorContext(&e).to_string()))?;
+
+                for obj in page.contents() {
                     if let Some(key) = obj.key() {
                         self.client
                             .delete_object()
@@ -100,14 +101,12 @@ impl ResourceSyncer for S3BucketSyncer {
                             .key(key)
                             .send()
                             .await
-                            .map_err(|e| ProvisionerError::DeleteFailed(format_err_chain(&e)))?;
+                            .map_err(|e| {
+                                ProvisionerError::DeleteFailed(
+                                    DisplayErrorContext(&e).to_string(),
+                                )
+                            })?;
                     }
-                }
-
-                if resp.is_truncated() == Some(true) {
-                    continuation_token = resp.next_continuation_token().map(String::from);
-                } else {
-                    break;
                 }
             }
 
@@ -116,7 +115,7 @@ impl ResourceSyncer for S3BucketSyncer {
                 .bucket(self.bucket_name())
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::DeleteFailed(format_err_chain(&e)))?;
+                .map_err(|e| ProvisionerError::DeleteFailed(DisplayErrorContext(&e).to_string()))?;
 
             tracing::info!(bucket = %self.bucket_name(), "S3 bucket deleted");
             Ok(())

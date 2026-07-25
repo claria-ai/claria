@@ -55,18 +55,3 @@ impl ProvisionerError {
         }
     }
 }
-
-/// Walk the full error chain and join all causes into one string.
-///
-/// AWS SDK errors often have terse `Display` impls (e.g. "service error")
-/// but useful detail in the source chain.
-pub fn format_err_chain(err: &dyn std::error::Error) -> String {
-    let mut msg = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        msg.push_str(": ");
-        msg.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    msg
-}

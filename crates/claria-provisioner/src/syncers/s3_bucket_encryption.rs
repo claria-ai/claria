@@ -1,7 +1,8 @@
 use aws_sdk_s3::Client;
+use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
-use crate::error::{format_err_chain, ProvisionerError};
+use crate::error::ProvisionerError;
 use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
@@ -63,17 +64,17 @@ impl ResourceSyncer for S3BucketEncryptionSyncer {
                                         )
                                         .build()
                                         .map_err(|e| {
-                                            ProvisionerError::CreateFailed(format_err_chain(&e))
+                                            ProvisionerError::CreateFailed(DisplayErrorContext(&e).to_string())
                                         })?,
                                 )
                                 .build(),
                         )
                         .build()
-                        .map_err(|e| ProvisionerError::CreateFailed(format_err_chain(&e)))?,
+                        .map_err(|e| ProvisionerError::CreateFailed(DisplayErrorContext(&e).to_string()))?,
                 )
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::CreateFailed(format_err_chain(&e)))?;
+                .map_err(|e| ProvisionerError::CreateFailed(DisplayErrorContext(&e).to_string()))?;
 
             Ok(json!({"sse_algorithm": "AES256"}))
         })

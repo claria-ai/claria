@@ -31,6 +31,9 @@ All notable changes to Claria are documented here.
 - Transcription status polling and IAM credential propagation both back off exponentially with jitter instead of polling on a fixed interval
 - The deleted-clients list fetches names concurrently instead of two serial round-trips per entry
 - The S3 bucket name, provisioner state key, and transcription output key all come from the shared key module instead of being rebuilt at each call site
+- Object listings use the AWS SDK's own pagination instead of hand-rolled continuation-token loops
+- AWS error messages come from the SDK's error-chain formatter rather than a local reimplementation of it
+- An ETag optimistic-lock miss is detected from the HTTP status and error code instead of matching on error text
 
 ## [0.18.0] — 2026-07-07
 

@@ -26,11 +26,12 @@
 //! structured results. It never needs to know *how* IAM works — only *what
 //! happened* and *what to do next*.
 
+use aws_smithy_types::error::display::DisplayErrorContext;
 use backon::{ExponentialBuilder, Retryable};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use crate::error::{format_err_chain, ProvisionerError};
+use crate::error::ProvisionerError;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1191,7 +1192,7 @@ pub async fn validate_new_credentials(
         .map_err(|e| ProvisionerError::Timeout {
             operation: "new IAM credentials to become active".into(),
             seconds: CREDENTIAL_PROPAGATION_TIMEOUT.as_secs(),
-            last_error: format_err_chain(&e),
+            last_error: DisplayErrorContext(&e).to_string(),
         })?;
 
     tracing::info!("new IAM credentials validated successfully");
