@@ -26,6 +26,13 @@ pub enum ProvisionerError {
     #[error("AWS error: {0}")]
     Aws(String),
 
+    #[error("timed out after {seconds}s waiting for {operation}: {last_error}")]
+    Timeout {
+        operation: String,
+        seconds: u64,
+        last_error: String,
+    },
+
     #[error("storage error: {0}")]
     Storage(#[from] claria_storage::error::StorageError),
 

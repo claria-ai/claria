@@ -26,10 +26,11 @@
 //! structured results. It never needs to know *how* IAM works — only *what
 //! happened* and *what to do next*.
 
+use backon::{ExponentialBuilder, Retryable};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use crate::error::ProvisionerError;
+use crate::error::{format_err_chain, ProvisionerError};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1138,9 +1139,18 @@ async fn delete_access_key(
     Ok(())
 }
 
+/// Longest we wait for a freshly-created IAM access key to become usable.
+///
+/// IAM credential propagation is eventually consistent and normally settles
+/// in a few seconds; the old hand-rolled loop allowed ~18s of sleeping. Keep
+/// roughly that budget so bootstrap still fails fast when a key is genuinely
+/// broken rather than merely slow.
+const CREDENTIAL_PROPAGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Build a temporary SDK config from the new IAM user's credentials and
-/// verify they work. Retries up to 10 times with a 2-second backoff
-/// because IAM credential propagation is eventually consistent.
+/// verify they work, retrying with jittered exponential backoff for up to
+/// [`CREDENTIAL_PROPAGATION_TIMEOUT`] because IAM credential propagation is
+/// eventually consistent.
 pub async fn validate_new_credentials(
     access_key_id: &str,
     secret_access_key: &str,
@@ -1165,34 +1175,27 @@ pub async fn validate_new_credentials(
 
     let sts = aws_sdk_sts::Client::new(&new_config);
 
-    for attempt in 0..10 {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
+    let backoff = ExponentialBuilder::default()
+        .with_min_delay(std::time::Duration::from_millis(500))
+        .with_max_delay(std::time::Duration::from_secs(4))
+        .with_jitter()
+        .without_max_times()
+        .with_total_delay(Some(CREDENTIAL_PROPAGATION_TIMEOUT));
 
-        match sts.get_caller_identity().send().await {
-            Ok(_) => {
-                tracing::info!(
-                    attempt,
-                    "new IAM credentials validated successfully"
-                );
-                return Ok(());
-            }
-            Err(e) if attempt < 9 => {
-                tracing::debug!(attempt, "new IAM credentials not yet active: {e}");
-            }
-            Err(e) => {
-                return Err(ProvisionerError::Aws(format!(
-                    "new credentials failed validation after 10 attempts: {e}"
-                )));
-            }
-        }
-    }
+    (|| async { sts.get_caller_identity().send().await })
+        .retry(backoff)
+        .notify(|e, delay| {
+            tracing::debug!(?delay, "new IAM credentials not yet active: {e}");
+        })
+        .await
+        .map_err(|e| ProvisionerError::Timeout {
+            operation: "new IAM credentials to become active".into(),
+            seconds: CREDENTIAL_PROPAGATION_TIMEOUT.as_secs(),
+            last_error: format_err_chain(&e),
+        })?;
 
-    // Unreachable, but satisfy the compiler.
-    Err(ProvisionerError::Aws(
-        "credential validation loop exited unexpectedly".into(),
-    ))
+    tracing::info!("new IAM credentials validated successfully");
+    Ok(())
 }
 
 // ── Step tracking helpers ────────────────────────────────────────────────────

@@ -27,6 +27,8 @@ All notable changes to Claria are documented here.
 - Removed the abandoned report-generation feature set: three crates, their domain models, and their S3 key layout
 - Builds no longer compile tantivy, tera, docx-rs, or ts-rs
 - The update check compares releases as semantic versions, so users on 0.9.x are no longer told they are current
+- A transcription job that never finishes surfaces a timeout error after thirty minutes instead of freezing the app indefinitely
+- Transcription status polling and IAM credential propagation both back off exponentially with jitter instead of polling on a fixed interval
 
 ## [0.18.0] — 2026-07-07
 
