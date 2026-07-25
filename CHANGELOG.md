@@ -24,6 +24,8 @@ All notable changes to Claria are documented here.
 - The release workflow caches npm downloads
 - The mock AWS test server builds clean under the latest Clippy
 - CI pins the Rust toolchain so a new stable release can't fail the build unannounced
+- Removed the abandoned report-generation feature set: three crates, their domain models, and their S3 key layout
+- Builds no longer compile tantivy, tera, docx-rs, or ts-rs
 
 ## [0.18.0] — 2026-07-07
 

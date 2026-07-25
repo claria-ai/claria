@@ -20,7 +20,7 @@ We welcome contributions to Claria! Before you begin, please read through this g
 - Follow existing patterns in the codebase
 - No `unwrap()` outside of tests
 - Library crates accept `&SdkConfig` — they never build their own AWS configs
-- Library crates never touch the filesystem (except `claria-search`)
+- Library crates never touch the filesystem
 - All `pub` types derive `Serialize` + `Deserialize`
 
 ## Questions?

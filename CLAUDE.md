@@ -6,7 +6,7 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 
 ## Error Handling
 - `thiserror` in every lib crate — one error enum per crate (e.g., `StorageError`, `SearchError`)
-- `eyre` in bin crates (`claria-lambda`, `claria-desktop`)
+- `eyre` in bin crates (`claria-desktop`, `claria-mock-aws`)
 - `color-eyre` in `claria-desktop` for development
 - No `unwrap()` outside of tests
 - Never just swallow an error, bubble it up untils exposed in the UI
@@ -72,11 +72,12 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - CRUD for objects in S3 (get, put, delete, list, presign)
 - No knowledge of what the objects represent (cases, reports, etc.)
 
-**`claria-search` — Full-text search**
-- Local Tantivy index with S3 backup/restore
-
 **`claria-bedrock` — LLM interactions**
-- Bedrock API calls for report generation and analysis
+- Bedrock API calls for chat, text extraction, and translation
+
+**`claria-billing` — Cost Explorer + Bedrock pricing**
+- Wraps AWS Cost Explorer (`GetCostAndUsage`) and owns the Bedrock per-token pricing table
+- `PRICING_VERSION` is stamped onto every captured `TurnUsage` so historical costs never shift
 
 **`claria-transcribe` — Audio transcription**
 - Wraps Amazon Transcribe API (start job, poll, fetch transcript)
@@ -94,10 +95,14 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Domain types shared across multiple crates
 - `s3_keys.rs` is the single source of truth for all S3 object paths
 
+**`claria-mock-aws` — Fake AWS for tests**
+- axum server that speaks the S3, STS, IAM, Bedrock, CloudTrail, Cost Explorer, Transcribe, and Artifact wire protocols
+- Runs as a standalone binary or in-process via `testing::MockServer`, so tests drive real AWS SDK clients against an ephemeral port
+
 ### Boundary Rules
 - Library crates accept `&aws_config::SdkConfig` — they never build their own SDK configs
 - Library crates return `Result<T, CrateError>` — the caller decides how to present errors
-- Library crates never do I/O to the local filesystem (except `claria-search` for its index)
+- Library crates never do I/O to the local filesystem
 - `claria-desktop` is the only crate that reads/writes local config files
 - Crates communicate through well-defined public APIs, not shared mutable state
 
@@ -115,7 +120,7 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `claria-prompts/pdf-extraction.md` | Custom PDF/DOCX extraction prompt |
 | `_cloudtrail/` | CloudTrail audit logs |
 | `_state/provisioner.json` | Provisioner state |
-| `_index/tantivy.tar.zst` | Search index backup |
+| `_state/preferences.json` | Synced user preferences |
 
 ### Sidecar Pattern
 Binary uploads (PDF, DOCX, audio) generate a `.text` sidecar file containing extracted text. The file list hides sidecars when the base file exists. New extraction formats (e.g. audio transcription) follow this same pattern: upload the original, generate a `{key}.text` sidecar alongside it.
