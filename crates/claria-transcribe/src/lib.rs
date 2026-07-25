@@ -186,7 +186,7 @@ pub async fn transcribe_audio_with_options(
 
     let job_name = format!("claria-{}", Uuid::new_v4());
     let s3_uri = format!("s3://{bucket}/{audio_key}");
-    let output_key = format!("_transcribe/{job_name}.json");
+    let output_key = claria_core::s3_keys::transcribe_output(&job_name);
     let engine = resolve_engine(options.engine, options.language);
 
     info!(

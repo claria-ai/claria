@@ -157,8 +157,8 @@ pub fn build_persistence(
     account_id: &str,
 ) -> Result<StatePersistence, ProvisionerError> {
     let s3_client = claria_storage::client::from_config(config);
-    let bucket = format!("{account_id}-{system_name}-data");
-    let s3_key = "_state/provisioner.json".to_string();
+    let bucket = claria_core::s3_keys::bucket_name(account_id, system_name);
+    let s3_key = claria_core::s3_keys::PROVISIONER_STATE.to_string();
 
     let local_dir = dirs::config_dir()
         .ok_or_else(|| ProvisionerError::State("no OS config directory found".into()))?

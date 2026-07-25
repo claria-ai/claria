@@ -30,6 +30,7 @@ All notable changes to Claria are documented here.
 - A transcription job that never finishes surfaces a timeout error after thirty minutes instead of freezing the app indefinitely
 - Transcription status polling and IAM credential propagation both back off exponentially with jitter instead of polling on a fixed interval
 - The deleted-clients list fetches names concurrently instead of two serial round-trips per entry
+- The S3 bucket name, provisioner state key, and transcription output key all come from the shared key module instead of being rebuilt at each call site
 
 ## [0.18.0] — 2026-07-07
 

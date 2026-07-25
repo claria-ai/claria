@@ -5,6 +5,15 @@
 
 use uuid::Uuid;
 
+/// The one bucket Claria stores everything in, for a given AWS account and
+/// system name.
+///
+/// The provisioner creates it under this exact name and the desktop app
+/// derives it from saved config, so the two must never drift.
+pub fn bucket_name(account_id: &str, system_name: &str) -> String {
+    format!("{account_id}-{system_name}-data")
+}
+
 pub fn client(id: Uuid) -> String {
     format!("clients/{id}.json")
 }
@@ -56,5 +65,11 @@ pub const EXTRACTION_PROMPT: &str = "claria-prompts/pdf-extraction.md";
 pub const LEGACY_SYSTEM_PROMPT: &str = "system-prompt.md";
 
 pub const PROVISIONER_STATE: &str = "_state/provisioner.json";
+
+/// Scratch space for Amazon Transcribe job output. Written by Transcribe
+/// itself, read once, then deleted — nothing here outlives a transcription.
+pub fn transcribe_output(job_name: &str) -> String {
+    format!("_transcribe/{job_name}.json")
+}
 
 pub const PREFERENCES: &str = "_state/preferences.json";

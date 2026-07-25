@@ -121,7 +121,7 @@ pub struct Manifest {
 impl Manifest {
     /// Build the default Claria manifest from runtime config.
     pub fn claria(account_id: &str, system_name: &str, region: &str) -> Self {
-        let bucket = format!("{account_id}-{system_name}-data");
+        let bucket = claria_core::s3_keys::bucket_name(account_id, system_name);
         let trail = format!("{system_name}-trail");
 
         Manifest {

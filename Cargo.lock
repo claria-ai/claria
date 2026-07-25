@@ -1527,6 +1527,7 @@ dependencies = [
  "aws-sdk-s3",
  "aws-sdk-transcribe",
  "backon",
+ "claria-core",
  "claria-mock-aws",
  "claria-storage",
  "serde",

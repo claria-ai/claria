@@ -1019,13 +1019,13 @@ pub async fn provision_scan(
         Ok(p) => p.load().await.unwrap_or_else(|_| {
             claria_provisioner::ProvisionerState::new(
                 region.clone(),
-                format!("{}-{system_name}-data", identity.account_id),
+                claria_core::s3_keys::bucket_name(&identity.account_id, &system_name),
             )
         }),
         Err(_) => claria_provisioner::ProvisionerState {
             resources: Default::default(),
             region: region.clone(),
-            bucket: format!("{}-{system_name}-data", identity.account_id),
+            bucket: claria_core::s3_keys::bucket_name(&identity.account_id, &system_name),
         },
     };
 
@@ -1089,7 +1089,7 @@ pub async fn provision_apply(
         claria_provisioner::ProvisionerState {
             resources: Default::default(),
             region: region.clone(),
-            bucket: format!("{}-{system_name}-data", identity.account_id),
+            bucket: claria_core::s3_keys::bucket_name(&identity.account_id, &system_name),
         }
     });
 
@@ -1267,9 +1267,9 @@ pub async fn provision_apply(
 // Client commands — CRUD backed by S3
 // ---------------------------------------------------------------------------
 
-/// Helper: derive bucket name from config (same convention as provisioner).
+/// Helper: derive bucket name from saved config.
 fn bucket_name(cfg: &ClariaConfig) -> String {
-    format!("{}-{}-data", cfg.account_id, cfg.system_name)
+    claria_core::s3_keys::bucket_name(&cfg.account_id, &cfg.system_name)
 }
 
 /// List all client records from S3.
