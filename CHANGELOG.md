@@ -29,6 +29,7 @@ All notable changes to Claria are documented here.
 - The update check compares releases as semantic versions, so users on 0.9.x are no longer told they are current
 - A transcription job that never finishes surfaces a timeout error after thirty minutes instead of freezing the app indefinitely
 - Transcription status polling and IAM credential propagation both back off exponentially with jitter instead of polling on a fixed interval
+- The deleted-clients list fetches names concurrently instead of two serial round-trips per entry
 
 ## [0.18.0] — 2026-07-07
 

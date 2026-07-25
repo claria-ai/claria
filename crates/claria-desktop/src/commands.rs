@@ -3191,50 +3191,24 @@ pub async fn list_deleted_clients(
     .await
     .map_err(|e| e.to_string())?;
 
-    let mut clients = Vec::new();
-    for d in &deleted {
-        // Fetch the most recent real version to get the client name.
-        let versions = claria_storage::objects::list_object_versions(&s3, &bucket, &d.key)
-            .await
-            .map_err(|e| e.to_string())?;
+    // Each deleted client costs two round-trips (ListObjectVersions, then
+    // GetObject on the surviving version), which ran serially. `buffered`
+    // caps in-flight requests and yields results in input order, so the
+    // returned listing keeps the order `list_deleted_objects` produced.
+    // The futures are collected up front so the stream borrows them with a
+    // concrete lifetime — mapping references straight into `buffered` trips
+    // a higher-ranked-lifetime error.
+    let lookups: Vec<_> = deleted
+        .iter()
+        .map(|d| deleted_client_name(&s3, &bucket, &d.key))
+        .collect();
+    let names: Vec<Result<String, String>> = futures::stream::iter(lookups)
+        .buffered(claria_desktop::records::S3_FETCH_CONCURRENCY)
+        .collect()
+        .await;
 
-        // Find the most recent non-delete-marker version.
-        let latest_real = versions.iter().find(|v| !v.is_delete_marker);
-        let name = if let Some(v) = latest_real {
-            if v.version_id.is_empty() {
-                tracing::warn!(key = %d.key, "deleted client has empty version_id (pre-versioning object)");
-                "Unknown".to_string()
-            } else {
-                match claria_storage::objects::get_object_version(
-                    &s3,
-                    &bucket,
-                    &d.key,
-                    &v.version_id,
-                )
-                .await
-                {
-                    Ok(output) => {
-                        match serde_json::from_slice::<claria_core::models::client::Client>(
-                            &output.body,
-                        ) {
-                            Ok(client) => client.name,
-                            Err(e) => {
-                                tracing::warn!(key = %d.key, version_id = %v.version_id, error = %e, "failed to deserialize deleted client JSON");
-                                "Unknown".to_string()
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(key = %d.key, version_id = %v.version_id, error = %e, "failed to fetch deleted client version");
-                        "Unknown".to_string()
-                    }
-                }
-            }
-        } else {
-            tracing::warn!(key = %d.key, version_count = versions.len(), "no non-delete-marker version found for deleted client");
-            "Unknown".to_string()
-        };
-
+    let mut clients = Vec::with_capacity(deleted.len());
+    for (d, name) in deleted.iter().zip(names) {
         // Extract the UUID from the key (e.g. "clients/abc-123.json" → "abc-123")
         let id = d
             .key
@@ -3245,13 +3219,61 @@ pub async fn list_deleted_clients(
 
         clients.push(DeletedClient {
             id,
-            name,
+            name: name?,
             deleted_at: d.last_modified.clone(),
             version_id: d.version_id.clone(),
         });
     }
 
     Ok(clients)
+}
+
+/// Name shown for a deleted client whose JSON can't be read back.
+const UNKNOWN_CLIENT_NAME: &str = "Unknown";
+
+/// Resolve a deleted client's display name from its most recent
+/// non-delete-marker version.
+///
+/// Only the version listing is fatal. A missing, unreadable, or unparseable
+/// body degrades to [`UNKNOWN_CLIENT_NAME`] so one corrupt object doesn't
+/// blank the whole deleted-items list.
+async fn deleted_client_name(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+) -> Result<String, String> {
+    let versions = claria_storage::objects::list_object_versions(s3, bucket, key)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let Some(version) = versions.iter().find(|v| !v.is_delete_marker) else {
+        tracing::warn!(key, version_count = versions.len(), "no non-delete-marker version found for deleted client");
+        return Ok(UNKNOWN_CLIENT_NAME.to_string());
+    };
+
+    if version.version_id.is_empty() {
+        tracing::warn!(key, "deleted client has empty version_id (pre-versioning object)");
+        return Ok(UNKNOWN_CLIENT_NAME.to_string());
+    }
+
+    let output =
+        match claria_storage::objects::get_object_version(s3, bucket, key, &version.version_id)
+            .await
+        {
+            Ok(output) => output,
+            Err(e) => {
+                tracing::warn!(key, version_id = %version.version_id, error = %e, "failed to fetch deleted client version");
+                return Ok(UNKNOWN_CLIENT_NAME.to_string());
+            }
+        };
+
+    match serde_json::from_slice::<claria_core::models::client::Client>(&output.body) {
+        Ok(client) => Ok(client.name),
+        Err(e) => {
+            tracing::warn!(key, version_id = %version.version_id, error = %e, "failed to deserialize deleted client JSON");
+            Ok(UNKNOWN_CLIENT_NAME.to_string())
+        }
+    }
 }
 
 /// Restore a deleted client by re-putting the most recent real version as a new version.
