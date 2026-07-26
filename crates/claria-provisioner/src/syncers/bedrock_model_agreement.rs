@@ -1,8 +1,9 @@
 use aws_sdk_bedrock::Client;
 use aws_sdk_bedrock::types::{AgreementAvailability, EntitlementAvailability};
+use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::{json, Value};
 
-use crate::error::{format_err_chain, ProvisionerError};
+use crate::error::ProvisionerError;
 use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
@@ -35,7 +36,7 @@ impl BedrockModelAgreementSyncer {
             .send()
             .await
             .map_err(|e| {
-                let msg = format_err_chain(&e);
+                let msg = DisplayErrorContext(&e).to_string();
                 tracing::error!(error = %msg, "ListFoundationModels failed");
                 ProvisionerError::Aws(msg)
             })?;
@@ -81,7 +82,7 @@ impl BedrockModelAgreementSyncer {
                 Err(e) => {
                     // Don't fail the whole sync on one model — record the
                     // probe failure so it shows in the UI.
-                    let msg = format_err_chain(&e);
+                    let msg = DisplayErrorContext(&e).to_string();
                     tracing::warn!(
                         model_id,
                         error = %msg,
@@ -114,7 +115,7 @@ impl BedrockModelAgreementSyncer {
             {
                 Ok(resp) => resp,
                 Err(e) => {
-                    let msg = format_err_chain(&e);
+                    let msg = DisplayErrorContext(&e).to_string();
                     tracing::warn!(model_id, error = %msg, "failed to list agreement offers");
                     failures.push(format!("{model_id}: {msg}"));
                     continue;
@@ -139,7 +140,7 @@ impl BedrockModelAgreementSyncer {
                     tracing::info!(model_id, "model agreement accepted");
                 }
                 Err(e) => {
-                    let msg = format_err_chain(&e);
+                    let msg = DisplayErrorContext(&e).to_string();
                     if msg.contains("already exists") {
                         tracing::debug!(model_id, "model agreement already accepted");
                     } else {

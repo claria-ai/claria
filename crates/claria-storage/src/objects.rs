@@ -1,5 +1,4 @@
-use aws_sdk_s3::Client;
-use aws_sdk_s3::presigning::PresigningConfig;
+use aws_sdk_s3::{Client, presigning::PresigningConfig};
 use aws_smithy_types::byte_stream::ByteStream;
 use std::time::Duration;
 
@@ -121,12 +120,13 @@ pub async fn put_object_if_match(
     }
 
     let resp = req.send().await.map_err(|e| {
+        // S3 answers an If-Match miss with 412 Precondition Failed. Read the
+        // structured status and error code rather than sniffing the Display
+        // string, which is free to change with any SDK release.
+        let status_412 = e.raw_response().is_some_and(|r| r.status().as_u16() == 412);
         let err = e.into_service_error();
-        // S3 returns 412 Precondition Failed when If-Match doesn't match
-        if err
-            .to_string()
-            .contains("PreconditionFailed")
-        {
+
+        if status_412 || err.meta().code() == Some("PreconditionFailed") {
             StorageError::PreconditionFailed {
                 key: key.to_string(),
             }
@@ -197,28 +197,21 @@ pub async fn list_objects_with_metadata(
     prefix: &str,
 ) -> Result<Vec<ObjectMeta>, StorageError> {
     let mut objects = Vec::new();
-    let mut continuation_token: Option<String> = None;
+    let mut pages = client
+        .list_objects_v2()
+        .bucket(bucket)
+        .prefix(prefix)
+        .into_paginator()
+        .send();
 
-    loop {
-        let mut req = client
-            .list_objects_v2()
-            .bucket(bucket)
-            .prefix(prefix);
+    while let Some(page) = pages.next().await {
+        let page = page.map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
+            StorageError::ListObjects(msg)
+        })?;
 
-        if let Some(token) = &continuation_token {
-            req = req.continuation_token(token);
-        }
-
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| {
-                let msg = e.into_service_error().to_string();
-                tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
-                StorageError::ListObjects(msg)
-            })?;
-
-        for obj in resp.contents() {
+        for obj in page.contents() {
             if let Some(key) = obj.key() {
                 objects.push(ObjectMeta {
                     key: key.to_string(),
@@ -226,12 +219,6 @@ pub async fn list_objects_with_metadata(
                     last_modified: obj.last_modified().map(|t| t.to_string()),
                 });
             }
-        }
-
-        if resp.is_truncated() == Some(true) {
-            continuation_token = resp.next_continuation_token().map(|s| s.to_string());
-        } else {
-            break;
         }
     }
 
@@ -252,37 +239,24 @@ pub async fn list_objects(
     prefix: &str,
 ) -> Result<Vec<String>, StorageError> {
     let mut keys = Vec::new();
-    let mut continuation_token: Option<String> = None;
+    let mut pages = client
+        .list_objects_v2()
+        .bucket(bucket)
+        .prefix(prefix)
+        .into_paginator()
+        .send();
 
-    loop {
-        let mut req = client
-            .list_objects_v2()
-            .bucket(bucket)
-            .prefix(prefix);
+    while let Some(page) = pages.next().await {
+        let page = page.map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
+            StorageError::ListObjects(msg)
+        })?;
 
-        if let Some(token) = &continuation_token {
-            req = req.continuation_token(token);
-        }
-
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| {
-                let msg = e.into_service_error().to_string();
-                tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
-                StorageError::ListObjects(msg)
-            })?;
-
-        for obj in resp.contents() {
+        for obj in page.contents() {
             if let Some(key) = obj.key() {
                 keys.push(key.to_string());
             }
-        }
-
-        if resp.is_truncated() == Some(true) {
-            continuation_token = resp.next_continuation_token().map(|s| s.to_string());
-        } else {
-            break;
         }
     }
 
@@ -308,40 +282,27 @@ pub async fn list_object_etags(
     prefix: &str,
 ) -> Result<Vec<(String, String)>, StorageError> {
     let mut pairs = Vec::new();
-    let mut continuation_token: Option<String> = None;
+    let mut pages = client
+        .list_objects_v2()
+        .bucket(bucket)
+        .prefix(prefix)
+        .into_paginator()
+        .send();
 
-    loop {
-        let mut req = client
-            .list_objects_v2()
-            .bucket(bucket)
-            .prefix(prefix);
+    while let Some(page) = pages.next().await {
+        let page = page.map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
+            StorageError::ListObjects(msg)
+        })?;
 
-        if let Some(token) = &continuation_token {
-            req = req.continuation_token(token);
-        }
-
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| {
-                let msg = e.into_service_error().to_string();
-                tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
-                StorageError::ListObjects(msg)
-            })?;
-
-        for obj in resp.contents() {
+        for obj in page.contents() {
             if let Some(key) = obj.key() {
                 pairs.push((
                     key.to_string(),
                     obj.e_tag().unwrap_or_default().to_string(),
                 ));
             }
-        }
-
-        if resp.is_truncated() == Some(true) {
-            continuation_token = resp.next_continuation_token().map(|s| s.to_string());
-        } else {
-            break;
         }
     }
 
@@ -370,21 +331,25 @@ pub struct DeletedObject {
     pub last_modified: Option<String>,
 }
 
-/// List all versions of a specific object (identified by exact key).
-pub async fn list_object_versions(
+/// Hand each page of `ListObjectVersions` under `prefix` to `on_page`.
+///
+/// The AWS SDK ships no paginator for this operation — unlike ListObjectsV2,
+/// ListObjectVersions isn't marked paginated in the S3 model — so the
+/// key/version marker walk stays hand-rolled, but only in one place.
+async fn for_each_version_page<F>(
     client: &Client,
     bucket: &str,
-    key: &str,
-) -> Result<Vec<ObjectVersion>, StorageError> {
-    let mut versions = Vec::new();
+    prefix: &str,
+    mut on_page: F,
+) -> Result<(), StorageError>
+where
+    F: FnMut(&aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput),
+{
     let mut key_marker: Option<String> = None;
     let mut version_id_marker: Option<String> = None;
 
     loop {
-        let mut req = client
-            .list_object_versions()
-            .bucket(bucket)
-            .prefix(key);
+        let mut req = client.list_object_versions().bucket(bucket).prefix(prefix);
 
         if let Some(km) = &key_marker {
             req = req.key_marker(km);
@@ -393,47 +358,60 @@ pub async fn list_object_versions(
             req = req.version_id_marker(vm);
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| {
-                let msg = e.into_service_error().to_string();
-                tracing::error!(bucket, key, error = %msg, "S3 ListObjectVersions failed");
-                StorageError::ListObjectVersions(msg)
-            })?;
+        let resp = req.send().await.map_err(|e| {
+            let msg = e.into_service_error().to_string();
+            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectVersions failed");
+            StorageError::ListObjectVersions(msg)
+        })?;
 
-        for v in resp.versions() {
-            // Only include versions for the exact key (prefix match may return more).
-            if v.key() == Some(key) {
-                versions.push(ObjectVersion {
-                    version_id: v.version_id().unwrap_or_default().to_string(),
-                    size: v.size().unwrap_or(0),
-                    last_modified: v.last_modified().map(|t| t.to_string()),
-                    is_latest: v.is_latest().unwrap_or(false),
-                    is_delete_marker: false,
-                });
-            }
-        }
-
-        for dm in resp.delete_markers() {
-            if dm.key() == Some(key) {
-                versions.push(ObjectVersion {
-                    version_id: dm.version_id().unwrap_or_default().to_string(),
-                    size: 0,
-                    last_modified: dm.last_modified().map(|t| t.to_string()),
-                    is_latest: dm.is_latest().unwrap_or(false),
-                    is_delete_marker: true,
-                });
-            }
-        }
+        on_page(&resp);
 
         if resp.is_truncated() == Some(true) {
             key_marker = resp.next_key_marker().map(|s| s.to_string());
             version_id_marker = resp.next_version_id_marker().map(|s| s.to_string());
         } else {
-            break;
+            return Ok(());
         }
     }
+}
+
+/// List all versions of a specific object (identified by exact key).
+pub async fn list_object_versions(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+) -> Result<Vec<ObjectVersion>, StorageError> {
+    let mut versions = Vec::new();
+
+    for_each_version_page(client, bucket, key, |page| {
+        // Only include entries for the exact key (prefix match may return more).
+        versions.extend(
+            page.versions()
+                .iter()
+                .filter(|v| v.key() == Some(key))
+                .map(|v| ObjectVersion {
+                    version_id: v.version_id().unwrap_or_default().to_string(),
+                    size: v.size().unwrap_or(0),
+                    last_modified: v.last_modified().map(|t| t.to_string()),
+                    is_latest: v.is_latest().unwrap_or(false),
+                    is_delete_marker: false,
+                }),
+        );
+
+        versions.extend(
+            page.delete_markers()
+                .iter()
+                .filter(|dm| dm.key() == Some(key))
+                .map(|dm| ObjectVersion {
+                    version_id: dm.version_id().unwrap_or_default().to_string(),
+                    size: 0,
+                    last_modified: dm.last_modified().map(|t| t.to_string()),
+                    is_latest: dm.is_latest().unwrap_or(false),
+                    is_delete_marker: true,
+                }),
+        );
+    })
+    .await?;
 
     Ok(versions)
 }
@@ -445,50 +423,22 @@ pub async fn list_deleted_objects(
     prefix: &str,
 ) -> Result<Vec<DeletedObject>, StorageError> {
     let mut deleted = Vec::new();
-    let mut key_marker: Option<String> = None;
-    let mut version_id_marker: Option<String> = None;
 
-    loop {
-        let mut req = client
-            .list_object_versions()
-            .bucket(bucket)
-            .prefix(prefix);
-
-        if let Some(km) = &key_marker {
-            req = req.key_marker(km);
-        }
-        if let Some(vm) = &version_id_marker {
-            req = req.version_id_marker(vm);
-        }
-
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| {
-                let msg = e.into_service_error().to_string();
-                tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectVersions failed");
-                StorageError::ListObjectVersions(msg)
-            })?;
-
-        for dm in resp.delete_markers() {
-            if dm.is_latest().unwrap_or(false)
-                && let Some(key) = dm.key()
-            {
-                deleted.push(DeletedObject {
-                    key: key.to_string(),
-                    version_id: dm.version_id().unwrap_or_default().to_string(),
-                    last_modified: dm.last_modified().map(|t| t.to_string()),
-                });
-            }
-        }
-
-        if resp.is_truncated() == Some(true) {
-            key_marker = resp.next_key_marker().map(|s| s.to_string());
-            version_id_marker = resp.next_version_id_marker().map(|s| s.to_string());
-        } else {
-            break;
-        }
-    }
+    for_each_version_page(client, bucket, prefix, |page| {
+        deleted.extend(
+            page.delete_markers()
+                .iter()
+                .filter(|dm| dm.is_latest().unwrap_or(false))
+                .filter_map(|dm| {
+                    Some(DeletedObject {
+                        key: dm.key()?.to_string(),
+                        version_id: dm.version_id().unwrap_or_default().to_string(),
+                        last_modified: dm.last_modified().map(|t| t.to_string()),
+                    })
+                }),
+        );
+    })
+    .await?;
 
     Ok(deleted)
 }

@@ -1,7 +1,8 @@
 use aws_sdk_cloudtrail::Client;
+use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
-use crate::error::{format_err_chain, ProvisionerError};
+use crate::error::ProvisionerError;
 use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
@@ -91,7 +92,7 @@ impl ResourceSyncer for CloudTrailTrailSyncer {
                 .is_multi_region_trail(false)
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::CreateFailed(format_err_chain(&e)))?;
+                .map_err(|e| ProvisionerError::CreateFailed(DisplayErrorContext(&e).to_string()))?;
 
             let trail_arn = result.trail_arn().unwrap_or_default().to_string();
             tracing::info!(trail = %self.trail_name(), arn = %trail_arn, "CloudTrail trail created");
@@ -125,7 +126,7 @@ impl ResourceSyncer for CloudTrailTrailSyncer {
                 .name(self.trail_name())
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::DeleteFailed(format_err_chain(&e)))?;
+                .map_err(|e| ProvisionerError::DeleteFailed(DisplayErrorContext(&e).to_string()))?;
 
             tracing::info!(trail = %self.trail_name(), "CloudTrail trail deleted");
             Ok(())

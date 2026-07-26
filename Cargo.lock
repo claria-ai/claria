@@ -882,6 +882,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
+ "gloo-timers",
+ "tokio",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1430,6 +1441,7 @@ dependencies = [
  "jiff",
  "lru 0.18.0",
  "rfd",
+ "semver",
  "serde",
  "serde_json",
  "specta",
@@ -1475,6 +1487,8 @@ dependencies = [
  "aws-sdk-iam",
  "aws-sdk-s3",
  "aws-sdk-sts",
+ "aws-smithy-types",
+ "backon",
  "claria-core",
  "claria-storage",
  "dirs",
@@ -1513,6 +1527,8 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-s3",
  "aws-sdk-transcribe",
+ "backon",
+ "claria-core",
  "claria-mock-aws",
  "claria-storage",
  "serde",
@@ -3060,6 +3076,18 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "gobject-sys"

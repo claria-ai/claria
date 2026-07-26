@@ -26,9 +26,11 @@ use aws_sdk_transcribe::types::{
     LanguageCode, Media, MedicalContentIdentificationType, MedicalTranscriptionSetting, Settings,
     Specialty, TranscriptionJobStatus, Type as MedicalType,
 };
+use backon::{ExponentialBuilder, Retryable};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::time::Duration;
 use tracing::info;
 use uuid::Uuid;
 
@@ -184,7 +186,7 @@ pub async fn transcribe_audio_with_options(
 
     let job_name = format!("claria-{}", Uuid::new_v4());
     let s3_uri = format!("s3://{bucket}/{audio_key}");
-    let output_key = format!("_transcribe/{job_name}.json");
+    let output_key = claria_core::s3_keys::transcribe_output(&job_name);
     let engine = resolve_engine(options.engine, options.language);
 
     info!(
@@ -245,24 +247,106 @@ pub async fn transcribe_audio_with_options(
 
     // Clean up temporary job + intermediate JSON.
     let _ = claria_storage::objects::delete_object(&s3, bucket, &output_key).await;
+    delete_job(&transcribe, &job_name, engine).await;
+
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Job polling
+// ---------------------------------------------------------------------------
+
+/// Longest we will wait for a transcription job before giving up on it.
+///
+/// AWS Transcribe routinely takes several minutes on long recordings — the
+/// job runs roughly in proportion to the media length — so this ceiling has
+/// to be generous or it would abort real transcriptions. Thirty minutes is
+/// far beyond any recording Claria uploads today, and it guarantees the
+/// calling Tauri command eventually returns instead of freezing the UI on a
+/// job AWS has silently wedged.
+const POLL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Shortest gap between status polls, matching the previous fixed cadence.
+const POLL_MIN_DELAY: Duration = Duration::from_secs(3);
+
+/// Longest gap between status polls. Long jobs don't need second-by-second
+/// attention, and backing off keeps the GetTranscriptionJob call count down.
+const POLL_MAX_DELAY: Duration = Duration::from_secs(30);
+
+/// Why a poll attempt didn't produce a finished job.
+///
+/// `Pending` is the retryable case; `Fatal` stops the loop immediately.
+enum PollError {
+    Pending,
+    Fatal(TranscribeError),
+}
+
+/// Jittered exponential backoff bounded by [`POLL_TIMEOUT`].
+///
+/// Jitter matters because several uploads can finish together and would
+/// otherwise poll AWS in lockstep.
+fn poll_backoff() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(POLL_MIN_DELAY)
+        .with_max_delay(POLL_MAX_DELAY)
+        .with_factor(1.5)
+        .with_jitter()
+        .without_max_times()
+        .with_total_delay(Some(POLL_TIMEOUT))
+}
+
+/// Turn a poll outcome into a `TranscribeError`, deleting the job in AWS on
+/// any terminal failure so a wedged job doesn't linger in the account.
+async fn finish_poll(
+    transcribe: &aws_sdk_transcribe::Client,
+    job_name: &str,
+    outcome: Result<(), PollError>,
+    engine: TranscriptionEngine,
+) -> Result<(), TranscribeError> {
+    let err = match outcome {
+        Ok(()) => return Ok(()),
+        Err(PollError::Fatal(TranscribeError::JobFailed(reason))) => {
+            tracing::error!(job_name, reason = %reason, engine = ?engine, "transcription job failed");
+            TranscribeError::JobFailed(reason)
+        }
+        Err(PollError::Fatal(e)) => return Err(e),
+        Err(PollError::Pending) => {
+            let minutes = POLL_TIMEOUT.as_secs() / 60;
+            tracing::error!(job_name, minutes, engine = ?engine, "transcription job timed out");
+            TranscribeError::Timeout {
+                job_name: job_name.to_string(),
+                minutes,
+            }
+        }
+    };
+
+    delete_job(transcribe, job_name, engine).await;
+    Err(err)
+}
+
+/// Best-effort cleanup of a transcription job. Failures here are not worth
+/// surfacing — the caller already has a real error to report.
+async fn delete_job(
+    transcribe: &aws_sdk_transcribe::Client,
+    job_name: &str,
+    engine: TranscriptionEngine,
+) {
     match engine {
         TranscriptionEngine::Standard => {
             let _ = transcribe
                 .delete_transcription_job()
-                .transcription_job_name(&job_name)
+                .transcription_job_name(job_name)
                 .send()
                 .await;
         }
         TranscriptionEngine::Medical => {
             let _ = transcribe
                 .delete_medical_transcription_job()
-                .medical_transcription_job_name(&job_name)
+                .medical_transcription_job_name(job_name)
                 .send()
                 .await;
         }
     }
-
-    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -339,35 +423,34 @@ async fn poll_standard_job(
     transcribe: &aws_sdk_transcribe::Client,
     job_name: &str,
 ) -> Result<(), TranscribeError> {
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
+    let outcome = (|| async {
         let resp = transcribe
             .get_transcription_job()
             .transcription_job_name(job_name)
             .send()
             .await
-            .map_err(|e| TranscribeError::Api(e.into_service_error().to_string()))?;
+            .map_err(|e| {
+                PollError::Fatal(TranscribeError::Api(e.into_service_error().to_string()))
+            })?;
 
         let job = resp
             .transcription_job()
-            .ok_or_else(|| TranscribeError::Api("no job in response".into()))?;
+            .ok_or_else(|| PollError::Fatal(TranscribeError::Api("no job in response".into())))?;
 
         match job.transcription_job_status() {
-            Some(TranscriptionJobStatus::Completed) => return Ok(()),
-            Some(TranscriptionJobStatus::Failed) => {
-                let reason = job.failure_reason().unwrap_or("unknown").to_string();
-                tracing::error!(job_name, reason = %reason, "transcription job failed");
-                let _ = transcribe
-                    .delete_transcription_job()
-                    .transcription_job_name(job_name)
-                    .send()
-                    .await;
-                return Err(TranscribeError::JobFailed(reason));
-            }
-            _ => continue,
+            Some(TranscriptionJobStatus::Completed) => Ok(()),
+            Some(TranscriptionJobStatus::Failed) => Err(PollError::Fatal(
+                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").to_string()),
+            )),
+            _ => Err(PollError::Pending),
         }
-    }
+    })
+    .retry(poll_backoff())
+    .when(|e| matches!(e, PollError::Pending))
+    .notify(|_, delay| tracing::debug!(job_name, ?delay, "transcription job still running"))
+    .await;
+
+    finish_poll(transcribe, job_name, outcome, TranscriptionEngine::Standard).await
 }
 
 // ---------------------------------------------------------------------------
@@ -443,35 +526,34 @@ async fn poll_medical_job(
     transcribe: &aws_sdk_transcribe::Client,
     job_name: &str,
 ) -> Result<(), TranscribeError> {
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
+    let outcome = (|| async {
         let resp = transcribe
             .get_medical_transcription_job()
             .medical_transcription_job_name(job_name)
             .send()
             .await
-            .map_err(|e| TranscribeError::Api(e.into_service_error().to_string()))?;
+            .map_err(|e| {
+                PollError::Fatal(TranscribeError::Api(e.into_service_error().to_string()))
+            })?;
 
-        let job = resp
-            .medical_transcription_job()
-            .ok_or_else(|| TranscribeError::Api("no medical job in response".into()))?;
+        let job = resp.medical_transcription_job().ok_or_else(|| {
+            PollError::Fatal(TranscribeError::Api("no medical job in response".into()))
+        })?;
 
         match job.transcription_job_status() {
-            Some(TranscriptionJobStatus::Completed) => return Ok(()),
-            Some(TranscriptionJobStatus::Failed) => {
-                let reason = job.failure_reason().unwrap_or("unknown").to_string();
-                tracing::error!(job_name, reason = %reason, "medical transcription job failed");
-                let _ = transcribe
-                    .delete_medical_transcription_job()
-                    .medical_transcription_job_name(job_name)
-                    .send()
-                    .await;
-                return Err(TranscribeError::JobFailed(reason));
-            }
-            _ => continue,
+            Some(TranscriptionJobStatus::Completed) => Ok(()),
+            Some(TranscriptionJobStatus::Failed) => Err(PollError::Fatal(
+                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").to_string()),
+            )),
+            _ => Err(PollError::Pending),
         }
-    }
+    })
+    .retry(poll_backoff())
+    .when(|e| matches!(e, PollError::Pending))
+    .notify(|_, delay| tracing::debug!(job_name, ?delay, "medical transcription job still running"))
+    .await;
+
+    finish_poll(transcribe, job_name, outcome, TranscriptionEngine::Medical).await
 }
 
 // ---------------------------------------------------------------------------

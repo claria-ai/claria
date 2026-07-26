@@ -119,6 +119,7 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `claria-prompts/system-prompt.md` | Custom chat system prompt |
 | `claria-prompts/pdf-extraction.md` | Custom PDF/DOCX extraction prompt |
 | `_cloudtrail/` | CloudTrail audit logs |
+| `_transcribe/{job_name}.json` | Amazon Transcribe job output, read once then deleted |
 | `_state/provisioner.json` | Provisioner state |
 | `_state/preferences.json` | Synced user preferences |
 

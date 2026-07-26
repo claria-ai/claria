@@ -23,4 +23,9 @@ pub enum TranscribeError {
 
     #[error("incompatible options: {0}")]
     IncompatibleOptions(String),
+
+    #[error(
+        "transcription job {job_name} did not finish within {minutes} minutes; it may still be running in AWS Transcribe"
+    )]
+    Timeout { job_name: String, minutes: u64 },
 }

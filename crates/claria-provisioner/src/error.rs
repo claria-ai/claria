@@ -26,6 +26,13 @@ pub enum ProvisionerError {
     #[error("AWS error: {0}")]
     Aws(String),
 
+    #[error("timed out after {seconds}s waiting for {operation}: {last_error}")]
+    Timeout {
+        operation: String,
+        seconds: u64,
+        last_error: String,
+    },
+
     #[error("storage error: {0}")]
     Storage(#[from] claria_storage::error::StorageError),
 
@@ -47,19 +54,4 @@ impl ProvisionerError {
             other => other,
         }
     }
-}
-
-/// Walk the full error chain and join all causes into one string.
-///
-/// AWS SDK errors often have terse `Display` impls (e.g. "service error")
-/// but useful detail in the source chain.
-pub fn format_err_chain(err: &dyn std::error::Error) -> String {
-    let mut msg = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        msg.push_str(": ");
-        msg.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    msg
 }

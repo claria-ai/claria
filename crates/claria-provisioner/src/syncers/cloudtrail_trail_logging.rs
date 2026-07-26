@@ -1,7 +1,8 @@
 use aws_sdk_cloudtrail::Client;
+use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
-use crate::error::{format_err_chain, ProvisionerError};
+use crate::error::ProvisionerError;
 use crate::manifest::ResourceSpec;
 use crate::syncer::{BoxFuture, ResourceSyncer};
 
@@ -58,7 +59,7 @@ impl ResourceSyncer for CloudTrailTrailLoggingSyncer {
                 .name(self.trail_name())
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::CreateFailed(format_err_chain(&e)))?;
+                .map_err(|e| ProvisionerError::CreateFailed(DisplayErrorContext(&e).to_string()))?;
 
             tracing::info!(trail = %self.trail_name(), "CloudTrail logging started");
             Ok(json!({"enabled": true}))
@@ -76,7 +77,7 @@ impl ResourceSyncer for CloudTrailTrailLoggingSyncer {
                 .name(self.trail_name())
                 .send()
                 .await
-                .map_err(|e| ProvisionerError::DeleteFailed(format_err_chain(&e)))?;
+                .map_err(|e| ProvisionerError::DeleteFailed(DisplayErrorContext(&e).to_string()))?;
 
             tracing::info!(trail = %self.trail_name(), "CloudTrail logging stopped");
             Ok(())
