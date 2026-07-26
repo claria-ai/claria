@@ -43,6 +43,7 @@ All notable changes to Claria are documented here.
 - The icons pasted into pages by hand — close, back, trash, search, play, folder — come from one shared set
 - Page back buttons and icon-only close buttons carry an accessible name for screen readers
 - Every loading spinner in the app is now the same component instead of four copies of it
+- The chat context token badge is defined once instead of separately in the client and infrastructure chats
 
 ## [0.18.0] — 2026-07-07
 

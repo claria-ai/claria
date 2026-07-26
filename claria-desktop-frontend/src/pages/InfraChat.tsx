@@ -10,6 +10,7 @@ import {
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
 import { BackButton, CloseIcon } from "../components/icons";
+import TokenCountBadge from "../components/TokenCountBadge";
 
 const SYSTEM_PROMPT = `You are Claria's infrastructure assistant. Claria is a desktop application for
 healthcare clinicians that runs entirely in the user's own AWS account — there is
@@ -232,76 +233,5 @@ export default function InfraChat({
         </div>
       )}
     </div>
-  );
-}
-
-function TokenCountBadge({
-  counting,
-  tokens,
-  error,
-}: {
-  counting: boolean;
-  tokens: number | null;
-  error?: string | null;
-}) {
-  const label =
-    tokens != null
-      ? tokens >= 1000
-        ? `~${(tokens / 1000).toFixed(1)}k tokens`
-        : `~${tokens} tokens`
-      : null;
-
-  if (counting) {
-    return (
-      <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 text-gray-400">
-        <svg
-          className="animate-spin h-3.5 w-3.5"
-          viewBox="0 0 24 24"
-          fill="none"
-        >
-          <circle
-            className="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            strokeWidth="4"
-          />
-          <path
-            className="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-          />
-        </svg>
-      </span>
-    );
-  }
-
-  if (error) {
-    return (
-      <span
-        className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-50 border border-red-200 text-red-400 text-[10px] font-bold cursor-default group relative"
-        title={error}
-      >
-        !
-        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] font-normal text-white bg-red-700 rounded max-w-xs whitespace-pre-wrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-          {error}
-        </span>
-      </span>
-    );
-  }
-
-  if (label == null) return null;
-
-  return (
-    <span
-      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 border border-gray-200 text-gray-400 text-[10px] font-bold cursor-default group relative"
-      title={label}
-    >
-      ?
-      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] font-normal text-white bg-gray-800 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-        {label}
-      </span>
-    </span>
   );
 }
