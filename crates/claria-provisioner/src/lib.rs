@@ -32,6 +32,7 @@ pub use crate::account_setup::{
     delete_user_access_key, get_caller_identity, list_user_access_keys, update_iam_policy,
     validate_new_credentials, AccessKeyInfo, AssumeRoleResult, BootstrapResult, BootstrapStep,
     CallerIdentity, CredentialAssessment, CredentialClass, NewCredentials, StepStatus,
+    MAX_ACCESS_KEYS_PER_USER,
 };
 pub use crate::addr::ResourceAddr;
 pub use crate::error::ProvisionerError;
