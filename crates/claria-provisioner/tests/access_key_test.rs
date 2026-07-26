@@ -4,10 +4,10 @@
 //! app can recover from, so it has to arrive as its own error variant rather
 //! than folded into the generic AWS bucket.
 
-use aws_credential_types::{provider::SharedCredentialsProvider, Credentials};
+use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_mock_aws::testing::MockServer;
 use claria_provisioner::{
-    create_access_key, list_user_access_keys, ProvisionerError, MAX_ACCESS_KEYS_PER_USER,
+    MAX_ACCESS_KEYS_PER_USER, ProvisionerError, create_access_key, list_user_access_keys,
 };
 
 fn build_sdk_config(endpoint: &str) -> aws_config::SdkConfig {
