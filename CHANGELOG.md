@@ -34,6 +34,8 @@ All notable changes to Claria are documented here.
 - Object listings use the AWS SDK's own pagination instead of hand-rolled continuation-token loops
 - AWS error messages come from the SDK's error-chain formatter rather than a local reimplementation of it
 - An ETag optimistic-lock miss is detected from the HTTP status and error code instead of matching on error text
+- Setting up a second computer against an already-provisioned AWS account offers a Set Up This Computer button instead of stranding the user on a plan with nothing to apply
+- A conformant plan on a configured machine offers Continue to Claria
 
 ## [0.18.0] — 2026-07-07
 

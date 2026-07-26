@@ -342,6 +342,66 @@ export default function Provision({
   // Check if plan needs escalation
   const needsEscalation = findEscalationEntry(entries) !== null;
 
+  // Actions offered once a scan finishes.
+  //
+  // A conformant plan still needs an action on first run. Onboarding a second
+  // computer against an already-provisioned account scans clean, but the
+  // scoped access key and the local config are minted by `provision_apply`,
+  // so "nothing to change in AWS" is not the same as "this computer is set
+  // up". Without an action here the wizard is a dead end.
+  function plannedActions() {
+    if (hasChanges(entries)) {
+      if (needsEscalation && !configExists) {
+        return (
+          <button
+            onClick={handleApply}
+            className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+          >
+            Bootstrap &amp; Apply
+          </button>
+        );
+      }
+      if (needsEscalation && configExists) {
+        return (
+          <button
+            onClick={() => setPhase("escalation")}
+            className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors"
+          >
+            Provide Admin Credentials
+          </button>
+        );
+      }
+      return (
+        <button
+          onClick={handleApply}
+          className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+        >
+          Apply Changes
+        </button>
+      );
+    }
+
+    if (!configExists) {
+      return (
+        <button
+          onClick={handleApply}
+          className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+        >
+          Set Up This Computer
+        </button>
+      );
+    }
+
+    return (
+      <button
+        onClick={() => navigate("start")}
+        className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+      >
+        Continue to Claria
+      </button>
+    );
+  }
+
   // ── Render ───────────────────────────────────────────────────────────
 
   if (phase === "loading") {
@@ -545,32 +605,17 @@ export default function Provision({
           applyItems={applyItems}
           error={error}
           showEscalationNotice={needsEscalation && configExists === true}
-          showInSync={configExists === true}
           actions={
-            phase === "planned" && hasChanges(entries) ? (
-              <div className="flex gap-2">
-                {needsEscalation && !configExists ? (
-                  <button
-                    onClick={handleApply}
-                    className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
-                  >
-                    Bootstrap & Apply
-                  </button>
-                ) : needsEscalation && configExists ? (
-                  <button
-                    onClick={() => setPhase("escalation")}
-                    className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors"
-                  >
-                    Provide Admin Credentials
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleApply}
-                    className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
-                  >
-                    Apply Changes
-                  </button>
+            phase === "planned" ? (
+              <div className="space-y-3">
+                {!hasChanges(entries) && !configExists && (
+                  <p className="text-sm text-gray-600">
+                    This AWS account is already set up. Claria will create an
+                    access key for this computer and save its configuration
+                    locally — no AWS resources will change.
+                  </p>
                 )}
+                <div className="flex gap-2">{plannedActions()}</div>
               </div>
             ) : phase === "done" ? (
               <div className="flex gap-2">
