@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { checkForUpdates, openUrl } from "../lib/tauri";
 import type { UpdateCheck } from "../lib/tauri";
+import { BackButton } from "../components/icons";
 import type { Page } from "../App";
 
 export default function About({
@@ -21,14 +22,7 @@ export default function About({
     <div className="max-w-2xl mx-auto p-8">
       {/* Header with back arrow */}
       <div className="flex items-center gap-3 mb-8">
-        <button
-          onClick={() => navigate("start")}
-          className="text-gray-500 hover:text-gray-700 transition-colors"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
+        <BackButton onClick={() => navigate("start")} />
         <h2 className="text-2xl font-bold">About Claria</h2>
       </div>
 

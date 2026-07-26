@@ -9,6 +9,7 @@ import {
 } from "../lib/tauri";
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
+import { BackButton, CloseIcon } from "../components/icons";
 
 const SYSTEM_PROMPT = `You are Claria's infrastructure assistant. Claria is a desktop application for
 healthcare clinicians that runs entirely in the user's own AWS account — there is
@@ -163,24 +164,7 @@ export default function InfraChat({
     <div className="flex flex-col h-screen">
       {/* Header */}
       <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
-        <button
-          onClick={() => navigate("start")}
-          className="text-gray-500 hover:text-gray-700 transition-colors"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 19l-7-7 7-7"
-            />
-          </svg>
-        </button>
+        <BackButton onClick={() => navigate("start")} />
         <div className="flex-1">
           <h2 className="text-lg font-semibold">Infrastructure</h2>
           <p className="text-xs text-gray-400">Ask about your AWS resources</p>
@@ -225,21 +209,10 @@ export default function InfraChat({
               </h3>
               <button
                 onClick={() => setPreviewModal(null)}
+                aria-label="Close"
                 className="text-gray-400 hover:text-gray-600 transition-colors"
               >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
+                <CloseIcon />
               </button>
             </div>
             <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">

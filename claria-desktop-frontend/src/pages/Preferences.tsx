@@ -25,6 +25,7 @@ import {
   type WhisperModelInfo,
   type WhisperModelTier,
 } from "../lib/tauri";
+import { BackButton, CloseIcon } from "../components/icons";
 import type { Page } from "../App";
 
 export default function Preferences({
@@ -64,24 +65,7 @@ export default function Preferences({
     <div className="max-w-2xl mx-auto p-8">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <button
-          onClick={() => navigate("start")}
-          className="text-gray-500 hover:text-gray-700 transition-colors"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 19l-7-7 7-7"
-            />
-          </svg>
-        </button>
+        <BackButton onClick={() => navigate("start")} />
         <h2 className="text-2xl font-bold">Preferences</h2>
       </div>
 
@@ -387,21 +371,10 @@ function PromptEditor({
               </h3>
               <button
                 onClick={handleCloseVersions}
+                aria-label="Close"
                 className="text-gray-400 hover:text-gray-600 transition-colors"
               >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
+                <CloseIcon />
               </button>
             </div>
 
