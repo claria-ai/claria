@@ -168,7 +168,7 @@ export function buildInitScript(): string {
               hourly_cost_data: false,
             };
             configSaved = true;
-            return freshPlanEntries();
+            return { entries: freshPlanEntries(), access_key_limit: null };
           }
 
           // ── Plan (provisioner scan) ──────────────────────────────────
