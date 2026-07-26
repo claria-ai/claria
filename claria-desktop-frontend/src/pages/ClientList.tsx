@@ -15,6 +15,7 @@ import MoreToggle from "../components/MoreToggle";
 import DeletedSection from "../components/DeletedSection";
 import { ErrorBanner, LoadingCard, EmptyCard } from "../components/StateCards";
 import { BackButton, TrashIcon } from "../components/icons";
+import Modal from "../components/Modal";
 import type { Page } from "../App";
 
 export default function ClientList({
@@ -268,33 +269,35 @@ export default function ClientList({
 
       {/* Delete confirmation modal */}
       {confirmDeleteId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-sm w-full mx-4 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              Delete client?
-            </h3>
-            <p className="text-sm text-gray-600 mb-4">
-              This will permanently delete the client and all associated records,
-              files, and chat history. This cannot be undone.
-            </p>
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => setConfirmDeleteId(null)}
-                disabled={deleting}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => handleDelete(confirmDeleteId)}
-                disabled={deleting}
-                className="px-4 py-2 text-sm text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
-              >
-                {deleting ? "Deleting..." : "Delete"}
-              </button>
-            </div>
+        <Modal
+          open
+          onClose={() => setConfirmDeleteId(null)}
+          title="Delete client?"
+          className="max-w-sm p-6"
+          showClose={false}
+          dismissible={!deleting}
+        >
+          <p className="text-sm text-gray-600 mb-4">
+            This will permanently delete the client and all associated records,
+            files, and chat history. This cannot be undone.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => setConfirmDeleteId(null)}
+              disabled={deleting}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => handleDelete(confirmDeleteId)}
+              disabled={deleting}
+              className="px-4 py-2 text-sm text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
+            >
+              {deleting ? "Deleting..." : "Delete"}
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
 
     </div>

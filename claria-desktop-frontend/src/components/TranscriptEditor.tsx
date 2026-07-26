@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { saveTranscriptEdits } from "../lib/tauri";
-import { CloseIcon } from "./icons";
+import Modal from "./Modal";
 
 /**
  * Per-segment transcript editor.
@@ -101,100 +101,89 @@ export default function TranscriptEditor({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white rounded-xl shadow-lg max-w-3xl w-full max-h-[90vh] flex flex-col">
-        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h3 className="font-semibold text-gray-900">{filename}</h3>
-          <button
-            onClick={onClose}
-            disabled={saving}
-            className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
-            aria-label="Close"
-          >
-            <CloseIcon />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-          {/* Speaker rename pane — only when the body has diarization. */}
-          {speakerKeys.length > 0 && (
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
-              <p className="text-xs font-medium text-gray-700 mb-2">
-                Speakers
-              </p>
-              <p className="text-xs text-gray-500 mb-2">
-                Rename here once and every header in the transcript updates on
-                save.
-              </p>
-              <div className="space-y-1.5">
-                {speakerKeys.map((key) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-gray-400 w-16">
-                      {key}
-                    </span>
-                    <input
-                      type="text"
-                      value={labelByKey.get(key) ?? key}
-                      onChange={(e) => handleRenameSpeaker(key, e.target.value)}
-                      className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Segments */}
-          {isStructured ? (
-            <div className="space-y-3">
-              {segments.map((seg, idx) => (
-                <SegmentRow
-                  key={seg.id}
-                  seg={seg}
-                  label={
-                    seg.speakerKey != null
-                      ? labelByKey.get(seg.speakerKey) ?? seg.speakerKey
-                      : null
-                  }
-                  onTextChange={(t) => handleSegmentTextChange(idx, t)}
-                  onTranslationChange={(t) => handleTranslationChange(idx, t)}
-                />
+    <Modal
+      open
+      onClose={onClose}
+      title={filename}
+      variant="framed"
+      className="max-w-3xl max-h-[90vh] flex flex-col"
+      dismissible={!saving}
+    >
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        {/* Speaker rename pane — only when the body has diarization. */}
+        {speakerKeys.length > 0 && (
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+            <p className="text-xs font-medium text-gray-700 mb-2">Speakers</p>
+            <p className="text-xs text-gray-500 mb-2">
+              Rename here once and every header in the transcript updates on
+              save.
+            </p>
+            <div className="space-y-1.5">
+              {speakerKeys.map((key) => (
+                <div key={key} className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400 w-16">{key}</span>
+                  <input
+                    type="text"
+                    value={labelByKey.get(key) ?? key}
+                    onChange={(e) => handleRenameSpeaker(key, e.target.value)}
+                    className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
               ))}
             </div>
-          ) : (
-            // Header-less body: single textarea, no speaker pane.
-            <textarea
-              value={segments[0]?.text ?? ""}
-              onChange={(e) => handleSegmentTextChange(0, e.target.value)}
-              className="w-full min-h-[300px] px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          )}
+          </div>
+        )}
 
-          {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-              <p className="text-red-800 text-sm">{error}</p>
-            </div>
-          )}
-        </div>
+        {/* Segments */}
+        {isStructured ? (
+          <div className="space-y-3">
+            {segments.map((seg, idx) => (
+              <SegmentRow
+                key={seg.id}
+                seg={seg}
+                label={
+                  seg.speakerKey != null
+                    ? labelByKey.get(seg.speakerKey) ?? seg.speakerKey
+                    : null
+                }
+                onTextChange={(t) => handleSegmentTextChange(idx, t)}
+                onTranslationChange={(t) => handleTranslationChange(idx, t)}
+              />
+            ))}
+          </div>
+        ) : (
+          // Header-less body: single textarea, no speaker pane.
+          <textarea
+            value={segments[0]?.text ?? ""}
+            onChange={(e) => handleSegmentTextChange(0, e.target.value)}
+            className="w-full min-h-[300px] px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        )}
 
-        <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
-          <button
-            onClick={onClose}
-            disabled={saving}
-            className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-          >
-            {saving ? "Saving..." : "Save"}
-          </button>
-        </div>
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+            <p className="text-red-800 text-sm">{error}</p>
+          </div>
+        )}
       </div>
-    </div>
+
+      <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
+        <button
+          onClick={onClose}
+          disabled={saving}
+          className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+        >
+          {saving ? "Saving..." : "Save"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

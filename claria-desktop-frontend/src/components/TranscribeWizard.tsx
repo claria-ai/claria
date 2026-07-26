@@ -9,7 +9,7 @@ import {
   type TranscribeOptionsOverrides,
   type TranscriptionLanguage,
 } from "../lib/tauri";
-import { CloseIcon } from "./icons";
+import Modal from "./Modal";
 
 /**
  * Per-file transcription wizard.
@@ -152,219 +152,208 @@ export default function TranscribeWizard({
   const filename = filePath ? filePath.split("/").pop() ?? filePath : null;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !uploading) onClose();
-      }}
+    <Modal
+      open
+      onClose={onClose}
+      title="Upload audio file"
+      variant="framed"
+      className="max-w-lg max-h-[90vh] overflow-y-auto"
+      dismissible={!uploading}
+      closeOnBackdropClick
     >
-      <div className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
-        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h3 className="font-semibold text-gray-900">Upload audio file</h3>
-          <button
-            onClick={onClose}
-            disabled={uploading}
-            className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
-            aria-label="Close"
-          >
-            <CloseIcon />
-          </button>
+      <div className="px-5 pt-4">
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+          <p className="text-sm text-blue-900">
+            <span className="font-medium">Tip:</span> AWS recommends at least
+            30&nbsp;seconds of speech for reliable language identification.
+            Short clips often get tagged with a single speaker and language
+            even with Mixed mode enabled.
+          </p>
         </div>
+      </div>
 
-        <div className="px-5 pt-4">
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-            <p className="text-sm text-blue-900">
-              <span className="font-medium">Tip:</span> AWS recommends at least
-              30&nbsp;seconds of speech for reliable language identification.
-              Short clips often get tagged with a single speaker and language
-              even with Mixed mode enabled.
-            </p>
+      <div className="px-5 py-4 space-y-5">
+        {loadingPrefs ? (
+          <p className="text-sm text-gray-500">Loading your defaults...</p>
+        ) : prefsError ? (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+            <p className="text-red-800 text-sm">{prefsError}</p>
           </div>
-        </div>
-
-        <div className="px-5 py-4 space-y-5">
-          {loadingPrefs ? (
-            <p className="text-sm text-gray-500">Loading your defaults...</p>
-          ) : prefsError ? (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-              <p className="text-red-800 text-sm">{prefsError}</p>
-            </div>
-          ) : (
-            <>
-              {/* File picker / drop target */}
-              <div>
-                <label className="text-sm font-medium text-gray-700 block mb-1.5">
-                  Audio file
-                </label>
-                {filename ? (
-                  <div
-                    className={`flex items-center justify-between gap-3 px-3 py-2 border rounded-lg transition-colors ${
-                      isDragging
-                        ? "border-blue-400 bg-blue-50"
-                        : "border-gray-300 bg-gray-50"
-                    }`}
-                  >
-                    <span className="text-sm text-gray-900 truncate">
-                      {isDragging ? "Drop to replace this file" : filename}
-                    </span>
-                    <button
-                      onClick={handlePickFile}
-                      disabled={uploading}
-                      className="text-xs text-blue-600 hover:underline disabled:opacity-50"
-                    >
-                      Change
-                    </button>
-                  </div>
-                ) : (
+        ) : (
+          <>
+            {/* File picker / drop target */}
+            <div>
+              <label className="text-sm font-medium text-gray-700 block mb-1.5">
+                Audio file
+              </label>
+              {filename ? (
+                <div
+                  className={`flex items-center justify-between gap-3 px-3 py-2 border rounded-lg transition-colors ${
+                    isDragging
+                      ? "border-blue-400 bg-blue-50"
+                      : "border-gray-300 bg-gray-50"
+                  }`}
+                >
+                  <span className="text-sm text-gray-900 truncate">
+                    {isDragging ? "Drop to replace this file" : filename}
+                  </span>
                   <button
                     onClick={handlePickFile}
-                    className={`w-full px-3 py-2 text-sm text-blue-600 border border-dashed rounded-lg transition-colors ${
-                      isDragging
-                        ? "border-blue-500 bg-blue-50"
-                        : "border-blue-300 hover:bg-blue-50"
-                    }`}
+                    disabled={uploading}
+                    className="text-xs text-blue-600 hover:underline disabled:opacity-50"
                   >
-                    {isDragging ? "Drop file to use it" : "Choose a file…"}
+                    Change
                   </button>
-                )}
-                <p className="text-xs text-gray-500 mt-1">
-                  Supports MP3, M4A, WAV, FLAC, OGG, AMR, WebM. Max 4 hours / 2 GB.
-                  You can drag a file onto this dialog or click to choose.
-                </p>
-              </div>
-
-              {/* Language */}
-              <fieldset>
-                <legend className="text-sm font-medium text-gray-700 mb-2">Language</legend>
-                <div className="space-y-1.5">
-                  {(["english", "spanish", "mixed"] as TranscriptionLanguage[]).map((lang) => (
-                    <label key={lang} className="flex items-start gap-2.5 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="wizard-language"
-                        checked={effectiveLanguage === lang}
-                        onChange={() => setLanguage(lang)}
-                        className="mt-0.5"
-                      />
-                      <div>
-                        <span className="text-sm text-gray-900">
-                          {languageLabel(lang)}
-                        </span>
-                        <p className="text-xs text-gray-500">
-                          {languageDescription(lang)}
-                        </p>
-                      </div>
-                    </label>
-                  ))}
                 </div>
-              </fieldset>
-
-              {/* Speaker handling */}
-              <div>
-                <label className="text-sm font-medium text-gray-700 block mb-1.5">
-                  Speakers
-                </label>
-                <select
-                  value={
-                    speakerMode === "channels"
-                      ? "channels"
-                      : String(effectiveSpeakerCount)
-                  }
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === "channels") {
-                      setSpeakerMode("channels");
-                      setSpeakerCount(null);
-                    } else {
-                      const n = Number(v);
-                      setSpeakerMode(n <= 1 ? "none" : "diarize");
-                      setSpeakerCount(n);
-                    }
-                  }}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              ) : (
+                <button
+                  onClick={handlePickFile}
+                  className={`w-full px-3 py-2 text-sm text-blue-600 border border-dashed rounded-lg transition-colors ${
+                    isDragging
+                      ? "border-blue-500 bg-blue-50"
+                      : "border-blue-300 hover:bg-blue-50"
+                  }`}
                 >
-                  <option value="1">1 — single speaker (no diarization)</option>
-                  <option value="2">2 — clinician + patient (typical)</option>
-                  <option value="3">3 — small group</option>
-                  <option value="4">4 — family or panel</option>
-                  <option value="channels">
-                    Stereo channels (clinician L, patient R)
-                  </option>
-                </select>
-              </div>
-
-              {/* Medical override (English only) */}
-              {effectiveLanguage === "english" && (
-                <label className="flex items-start gap-2.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={effectiveUseMedical}
-                    onChange={(e) => setUseMedical(e.target.checked)}
-                    className="mt-0.5"
-                  />
-                  <div>
-                    <span className="text-sm text-gray-900">
-                      Transcribe Medical (this file only)
-                    </span>
-                    <p className="text-xs text-gray-500">
-                      Clinical vocabulary + PHI tagging. $0.075/min vs $0.024/min Standard.
-                    </p>
-                  </div>
-                </label>
+                  {isDragging ? "Drop file to use it" : "Choose a file…"}
+                </button>
               )}
+              <p className="text-xs text-gray-500 mt-1">
+                Supports MP3, M4A, WAV, FLAC, OGG, AMR, WebM. Max 4 hours / 2 GB.
+                You can drag a file onto this dialog or click to choose.
+              </p>
+            </div>
 
-              {/* Translation toggle */}
+            {/* Language */}
+            <fieldset>
+              <legend className="text-sm font-medium text-gray-700 mb-2">Language</legend>
+              <div className="space-y-1.5">
+                {(["english", "spanish", "mixed"] as TranscriptionLanguage[]).map((lang) => (
+                  <label key={lang} className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="wizard-language"
+                      checked={effectiveLanguage === lang}
+                      onChange={() => setLanguage(lang)}
+                      className="mt-0.5"
+                    />
+                    <div>
+                      <span className="text-sm text-gray-900">
+                        {languageLabel(lang)}
+                      </span>
+                      <p className="text-xs text-gray-500">
+                        {languageDescription(lang)}
+                      </p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            {/* Speaker handling */}
+            <div>
+              <label className="text-sm font-medium text-gray-700 block mb-1.5">
+                Speakers
+              </label>
+              <select
+                value={
+                  speakerMode === "channels"
+                    ? "channels"
+                    : String(effectiveSpeakerCount)
+                }
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "channels") {
+                    setSpeakerMode("channels");
+                    setSpeakerCount(null);
+                  } else {
+                    const n = Number(v);
+                    setSpeakerMode(n <= 1 ? "none" : "diarize");
+                    setSpeakerCount(n);
+                  }
+                }}
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="1">1 — single speaker (no diarization)</option>
+                <option value="2">2 — clinician + patient (typical)</option>
+                <option value="3">3 — small group</option>
+                <option value="4">4 — family or panel</option>
+                <option value="channels">
+                  Stereo channels (clinician L, patient R)
+                </option>
+              </select>
+            </div>
+
+            {/* Medical override (English only) */}
+            {effectiveLanguage === "english" && (
               <label className="flex items-start gap-2.5 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={effectiveTranslate}
-                  onChange={(e) => setTranslate(e.target.checked)}
+                  checked={effectiveUseMedical}
+                  onChange={(e) => setUseMedical(e.target.checked)}
                   className="mt-0.5"
                 />
                 <div>
                   <span className="text-sm text-gray-900">
-                    Translate non-English segments to English
+                    Transcribe Medical (this file only)
                   </span>
                   <p className="text-xs text-gray-500">
-                    Adds a translation alongside the original. Costs a few cents
-                    per session via your preferred chat model.
+                    Clinical vocabulary + PHI tagging. $0.075/min vs $0.024/min Standard.
                   </p>
                 </div>
               </label>
+            )}
 
-              {/* Engine summary */}
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
-                <p className="text-xs text-gray-500 mb-0.5">Will use:</p>
-                <p className="text-sm text-gray-900">{engineSummary}</p>
+            {/* Translation toggle */}
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={effectiveTranslate}
+                onChange={(e) => setTranslate(e.target.checked)}
+                className="mt-0.5"
+              />
+              <div>
+                <span className="text-sm text-gray-900">
+                  Translate non-English segments to English
+                </span>
+                <p className="text-xs text-gray-500">
+                  Adds a translation alongside the original. Costs a few cents
+                  per session via your preferred chat model.
+                </p>
               </div>
+            </label>
 
-              {uploadError && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                  <p className="text-red-800 text-sm">{uploadError}</p>
-                </div>
-              )}
-            </>
-          )}
-        </div>
+            {/* Engine summary */}
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+              <p className="text-xs text-gray-500 mb-0.5">Will use:</p>
+              <p className="text-sm text-gray-900">{engineSummary}</p>
+            </div>
 
-        <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
-          <button
-            onClick={onClose}
-            disabled={uploading}
-            className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleStart}
-            disabled={!filePath || uploading || loadingPrefs}
-            className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {uploading ? "Transcribing..." : "Start"}
-          </button>
-        </div>
+            {uploadError && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-red-800 text-sm">{uploadError}</p>
+              </div>
+            )}
+          </>
+        )}
       </div>
-    </div>
+
+      <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
+        <button
+          onClick={onClose}
+          disabled={uploading}
+          className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleStart}
+          disabled={!filePath || uploading || loadingPrefs}
+          className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {uploading ? "Transcribing..." : "Start"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

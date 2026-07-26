@@ -17,6 +17,7 @@ import ChatHistoryHeader from "../components/ChatHistoryHeader";
 import { BackButton, CloseIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import TokenCountBadge from "../components/TokenCountBadge";
+import Modal from "../components/Modal";
 import { summarizeHistory } from "../lib/cost";
 
 export type ResumeChat = {
@@ -296,68 +297,50 @@ export default function ClientChat({
 
       {/* System prompt modal (read-only) */}
       {showPromptModal && systemPrompt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                System Prompt
-              </h3>
-              <button
-                onClick={() => setShowPromptModal(false)}
-                aria-label="Close"
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-              <div className="prose prose-sm max-w-none">
-                <Markdown remarkPlugins={[remarkGfm]}>{systemPrompt}</Markdown>
-              </div>
-            </div>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => setShowPromptModal(false)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              >
-                Close
-              </button>
+        <Modal
+          open
+          onClose={() => setShowPromptModal(false)}
+          title="System Prompt"
+          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
+        >
+          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+            <div className="prose prose-sm max-w-none">
+              <Markdown remarkPlugins={[remarkGfm]}>{systemPrompt}</Markdown>
             </div>
           </div>
-        </div>
+          <div className="flex justify-end mt-4">
+            <button
+              onClick={() => setShowPromptModal(false)}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+            >
+              Close
+            </button>
+          </div>
+        </Modal>
       )}
 
       {/* Context file preview modal */}
       {previewContext && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                {previewContext.filename}
-              </h3>
-              <button
-                onClick={() => setPreviewContext(null)}
-                aria-label="Close"
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-              <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-                {previewContext.text}
-              </pre>
-            </div>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => setPreviewContext(null)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              >
-                Close
-              </button>
-            </div>
+        <Modal
+          open
+          onClose={() => setPreviewContext(null)}
+          title={previewContext.filename}
+          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
+        >
+          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
+              {previewContext.text}
+            </pre>
           </div>
-        </div>
+          <div className="flex justify-end mt-4">
+            <button
+              onClick={() => setPreviewContext(null)}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+            >
+              Close
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

@@ -9,8 +9,9 @@ import {
 } from "../lib/tauri";
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
-import { BackButton, CloseIcon } from "../components/icons";
+import { BackButton } from "../components/icons";
 import TokenCountBadge from "../components/TokenCountBadge";
+import Modal from "../components/Modal";
 
 const SYSTEM_PROMPT = `You are Claria's infrastructure assistant. Claria is a desktop application for
 healthcare clinicians that runs entirely in the user's own AWS account — there is
@@ -202,35 +203,26 @@ export default function InfraChat({
 
       {/* Preview modal */}
       {previewModal != null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                {previewModal.title}
-              </h3>
-              <button
-                onClick={() => setPreviewModal(null)}
-                aria-label="Close"
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-              <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-                {previewModal.content}
-              </pre>
-            </div>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => setPreviewModal(null)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              >
-                Close
-              </button>
-            </div>
+        <Modal
+          open
+          onClose={() => setPreviewModal(null)}
+          title={previewModal.title}
+          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
+        >
+          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
+              {previewModal.content}
+            </pre>
           </div>
-        </div>
+          <div className="flex justify-end mt-4">
+            <button
+              onClick={() => setPreviewModal(null)}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+            >
+              Close
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

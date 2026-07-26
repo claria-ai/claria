@@ -44,6 +44,10 @@ All notable changes to Claria are documented here.
 - Page back buttons and icon-only close buttons carry an accessible name for screen readers
 - Every loading spinner in the app is now the same component instead of four copies of it
 - The chat context token badge is defined once instead of separately in the client and infrastructure chats
+- Every dialog in the app is a real modal dialog: Escape closes it, keyboard focus stays inside it, and the page behind it no longer scrolls
+- Screen readers announce dialogs as modal and read their title
+- Escape does not discard a just-recorded memo transcript, and clicking the dimmed background still does not dismiss a delete confirmation
+- The thirteen hand-rolled modal overlays are one shared component
 
 ## [0.18.0] — 2026-07-07
 
