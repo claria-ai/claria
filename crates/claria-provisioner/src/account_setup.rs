@@ -38,6 +38,9 @@ use crate::error::ProvisionerError;
 pub(crate) const IAM_USER_NAME: &str = "claria-admin";
 pub(crate) const IAM_POLICY_NAME: &str = "ClariaProvisionerAccess";
 
+/// IAM's hard ceiling on access keys per user. Not configurable in AWS.
+pub const MAX_ACCESS_KEYS_PER_USER: u32 = 2;
+
 // ── Public types ─────────────────────────────────────────────────────────────
 
 /// Identity information returned by STS `GetCallerIdentity`.
@@ -198,7 +201,10 @@ pub async fn assume_role(
         .await
         .map_err(|e| {
             tracing::error!(role_arn = %role_arn, session = %session, error = %e, "STS AssumeRole failed");
-            ProvisionerError::Aws(format!("STS AssumeRole failed: {e}"))
+            ProvisionerError::Aws(format!(
+                "STS AssumeRole failed: {}",
+                DisplayErrorContext(&e)
+            ))
         })?;
 
     let creds = resp.credentials().ok_or_else(|| {
@@ -436,39 +442,17 @@ pub async fn bootstrap_account(
 
     // ── Step 4: Create access key for IAM user ───────────────────────────
     //
-    // AWS allows at most 2 access keys per IAM user. Check first so we
-    // can return a structured error the desktop app can act on (show the
-    // existing keys and let the operator delete one).
+    // AWS allows at most 2 access keys per IAM user. `create_access_key`
+    // classifies that rejection, so the step detail stays the machine-readable
+    // `key_limit_exceeded` the desktop app keys its recovery UI off — no
+    // speculative ListAccessKeys call whose own failure we would have to
+    // swallow to interpret.
     push_step(
         &mut steps,
         "create_access_key",
         StepStatus::InProgress,
         None,
     );
-
-    // Pre-check: how many keys does the user already have?
-    let existing_key_count = iam_client
-        .list_access_keys()
-        .user_name(IAM_USER_NAME)
-        .send()
-        .await
-        .map(|r| r.access_key_metadata().len())
-        .unwrap_or(0);
-
-    if existing_key_count >= 2 {
-        set_step_status(
-            &mut steps,
-            "create_access_key",
-            StepStatus::Failed,
-            Some("key_limit_exceeded".into()),
-        );
-        result.error = Some(format!(
-            "The {IAM_USER_NAME} user already has {existing_key_count} access keys \
-             (the AWS maximum of 2). Delete an existing key to make room."
-        ));
-        result.steps = steps;
-        return result;
-    }
 
     let (new_key_id, new_secret) = match create_access_key(config).await {
         Ok(keys) => {
@@ -481,12 +465,11 @@ pub async fn bootstrap_account(
             keys
         }
         Err(e) => {
-            set_step_status(
-                &mut steps,
-                "create_access_key",
-                StepStatus::Failed,
-                Some(e.to_string()),
-            );
+            let detail = match e {
+                ProvisionerError::AccessKeyLimitExceeded { .. } => "key_limit_exceeded".to_string(),
+                _ => e.to_string(),
+            };
+            set_step_status(&mut steps, "create_access_key", StepStatus::Failed, Some(detail));
             result.error = Some(format!("Failed to create access key: {e}"));
             result.steps = steps;
             return result;
@@ -617,7 +600,12 @@ pub async fn list_user_access_keys(
         .user_name(IAM_USER_NAME)
         .send()
         .await
-        .map_err(|e| ProvisionerError::Aws(format!("iam:ListAccessKeys failed: {e}")))?;
+        .map_err(|e| {
+            ProvisionerError::Aws(format!(
+                "iam:ListAccessKeys failed: {}",
+                DisplayErrorContext(&e)
+            ))
+        })?;
 
     let mut keys = Vec::new();
 
@@ -632,7 +620,11 @@ pub async fn list_user_access_keys(
             .unwrap_or_default();
         let created_at = meta.create_date().map(|d| d.to_string());
 
-        // Enrich with last-used info.
+        // Enrich with last-used info. This is advisory — it helps the operator
+        // tell a stale key from the one their other computer is using — so a
+        // missing `iam:GetAccessKeyLastUsed` permission degrades the row to
+        // "unknown" rather than failing the whole listing. Log it so the
+        // reason is not invisible.
         let (last_used_at, last_used_service) =
             match client.get_access_key_last_used().access_key_id(&key_id).send().await {
                 Ok(lu_resp) => {
@@ -643,7 +635,14 @@ pub async fn list_user_access_keys(
                             .filter(|s| !s.is_empty()),
                     )
                 }
-                Err(_) => (None, None),
+                Err(e) => {
+                    tracing::warn!(
+                        access_key_id = %key_id,
+                        error = %DisplayErrorContext(&e),
+                        "iam:GetAccessKeyLastUsed failed — last-used will show as unknown"
+                    );
+                    (None, None)
+                }
             };
 
         keys.push(AccessKeyInfo {
@@ -817,7 +816,10 @@ pub async fn get_caller_identity(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "STS GetCallerIdentity failed — credentials may be invalid");
-            ProvisionerError::Aws(format!("STS GetCallerIdentity failed: {e}"))
+            ProvisionerError::Aws(format!(
+                "STS GetCallerIdentity failed: {}",
+                DisplayErrorContext(&e)
+            ))
         })?;
 
     let arn = resp.arn().unwrap_or_default().to_string();
@@ -910,7 +912,8 @@ pub(crate) async fn create_policy(
             }
 
             Err(ProvisionerError::Aws(format!(
-                "iam:CreatePolicy failed: {e}"
+                "iam:CreatePolicy failed: {}",
+                DisplayErrorContext(&e)
             )))
         }
     }
@@ -951,7 +954,8 @@ pub(crate) async fn update_policy_document(
 
             if !is_limit {
                 return Err(ProvisionerError::Aws(format!(
-                    "iam:CreatePolicyVersion failed: {e}"
+                    "iam:CreatePolicyVersion failed: {}",
+                    DisplayErrorContext(&e)
                 )));
             }
 
@@ -963,7 +967,10 @@ pub(crate) async fn update_policy_document(
                 .send()
                 .await
                 .map_err(|e| {
-                    ProvisionerError::Aws(format!("iam:ListPolicyVersions failed: {e}"))
+                    ProvisionerError::Aws(format!(
+                        "iam:ListPolicyVersions failed: {}",
+                        DisplayErrorContext(&e)
+                    ))
                 })?;
 
             // Find oldest non-default version.
@@ -983,7 +990,8 @@ pub(crate) async fn update_policy_document(
                     .await
                     .map_err(|e| {
                         ProvisionerError::Aws(format!(
-                            "iam:DeletePolicyVersion failed: {e}"
+                            "iam:DeletePolicyVersion failed: {}",
+                            DisplayErrorContext(&e)
                         ))
                     })?;
                 tracing::info!(version = %vid, "deleted old policy version");
@@ -999,7 +1007,8 @@ pub(crate) async fn update_policy_document(
                 .await
                 .map_err(|e| {
                     ProvisionerError::Aws(format!(
-                        "iam:CreatePolicyVersion (retry) failed: {e}"
+                        "iam:CreatePolicyVersion (retry) failed: {}",
+                        DisplayErrorContext(&e)
                     ))
                 })?;
 
@@ -1044,7 +1053,10 @@ pub(crate) async fn create_user(
                     .send()
                     .await
                     .map_err(|e| {
-                        ProvisionerError::Aws(format!("iam:GetUser failed: {e}"))
+                        ProvisionerError::Aws(format!(
+                            "iam:GetUser failed: {}",
+                            DisplayErrorContext(&e)
+                        ))
                     })?;
 
                 let arn = get_resp
@@ -1059,7 +1071,8 @@ pub(crate) async fn create_user(
             }
 
             Err(ProvisionerError::Aws(format!(
-                "iam:CreateUser failed: {e}"
+                "iam:CreateUser failed: {}",
+                DisplayErrorContext(&e)
             )))
         }
     }
@@ -1079,7 +1092,10 @@ pub(crate) async fn attach_policy(
         .send()
         .await
         .map_err(|e| {
-            ProvisionerError::Aws(format!("iam:AttachUserPolicy failed: {e}"))
+            ProvisionerError::Aws(format!(
+                "iam:AttachUserPolicy failed: {}",
+                DisplayErrorContext(&e)
+            ))
         })?;
 
     tracing::info!(
@@ -1093,6 +1109,10 @@ pub(crate) async fn attach_policy(
 /// Create an access key pair for the Claria IAM user.
 ///
 /// Returns `(access_key_id, secret_access_key)`.
+///
+/// Hitting the [`MAX_ACCESS_KEYS_PER_USER`] ceiling comes back as
+/// [`ProvisionerError::AccessKeyLimitExceeded`] rather than a generic AWS
+/// error, because the caller can recover from it by deleting a key.
 pub async fn create_access_key(
     sdk_config: &aws_config::SdkConfig,
 ) -> Result<(String, String), ProvisionerError> {
@@ -1103,7 +1123,18 @@ pub async fn create_access_key(
         .send()
         .await
         .map_err(|e| {
-            ProvisionerError::Aws(format!("iam:CreateAccessKey failed: {e}"))
+            if e.as_service_error()
+                .is_some_and(|se| se.is_limit_exceeded_exception())
+            {
+                return ProvisionerError::AccessKeyLimitExceeded {
+                    user_name: IAM_USER_NAME.to_string(),
+                    limit: MAX_ACCESS_KEYS_PER_USER,
+                };
+            }
+            ProvisionerError::Aws(format!(
+                "iam:CreateAccessKey failed: {}",
+                DisplayErrorContext(&e)
+            ))
         })?;
 
     let ak = resp.access_key().ok_or_else(|| {
@@ -1133,7 +1164,10 @@ async fn delete_access_key(
     }
 
     req.send().await.map_err(|e| {
-        ProvisionerError::Aws(format!("iam:DeleteAccessKey failed: {e}"))
+        ProvisionerError::Aws(format!(
+            "iam:DeleteAccessKey failed: {}",
+            DisplayErrorContext(&e)
+        ))
     })?;
 
     tracing::info!(access_key_id = %access_key_id, "deleted access key from AWS");

@@ -34,7 +34,7 @@ pub async fn dispatch(action: &str, params: &str, state: SharedState) -> Respons
         "GetAccessKeyLastUsed" => get_access_key_last_used(params, state).await,
         _ => (
             StatusCode::BAD_REQUEST,
-            xml::error_xml("InvalidAction", &format!("Unknown IAM action: {action}")),
+            xml::query_error_xml("InvalidAction", &format!("Unknown IAM action: {action}")),
         )
             .into_response(),
     }
@@ -72,7 +72,7 @@ async fn get_user(params: &str, state: SharedState) -> Response {
         ))),
         None => (
             StatusCode::NOT_FOUND,
-            xml::error_xml("NoSuchEntity", &format!("User {user_name} not found")),
+            xml::query_error_xml("NoSuchEntity", &format!("User {user_name} not found")),
         )
             .into_response(),
     }
@@ -86,7 +86,7 @@ async fn create_user(params: &str, state: SharedState) -> Response {
     if st.users.contains_key(&user_name) {
         return (
             StatusCode::CONFLICT,
-            xml::error_xml("EntityAlreadyExists", "User already exists"),
+            xml::query_error_xml("EntityAlreadyExists", "User already exists"),
         )
             .into_response();
     }
@@ -147,7 +147,7 @@ async fn create_policy(params: &str, state: SharedState) -> Response {
     if st.policies.contains_key(&arn) {
         return (
             StatusCode::CONFLICT,
-            xml::error_xml("EntityAlreadyExists", "Policy already exists"),
+            xml::query_error_xml("EntityAlreadyExists", "Policy already exists"),
         )
             .into_response();
     }
@@ -206,7 +206,7 @@ async fn get_policy(params: &str, state: SharedState) -> Response {
         ))),
         None => (
             StatusCode::NOT_FOUND,
-            xml::error_xml("NoSuchEntity", "Policy not found"),
+            xml::query_error_xml("NoSuchEntity", "Policy not found"),
         )
             .into_response(),
     }
@@ -222,7 +222,7 @@ async fn get_policy_version(params: &str, state: SharedState) -> Response {
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                xml::error_xml("NoSuchEntity", "Policy not found"),
+                xml::query_error_xml("NoSuchEntity", "Policy not found"),
             )
                 .into_response()
         }
@@ -233,7 +233,7 @@ async fn get_policy_version(params: &str, state: SharedState) -> Response {
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                xml::error_xml("NoSuchEntity", "Version not found"),
+                xml::query_error_xml("NoSuchEntity", "Version not found"),
             )
                 .into_response()
         }
@@ -276,7 +276,7 @@ async fn create_policy_version(params: &str, state: SharedState) -> Response {
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                xml::error_xml("NoSuchEntity", "Policy not found"),
+                xml::query_error_xml("NoSuchEntity", "Policy not found"),
             )
                 .into_response()
         }
@@ -286,7 +286,7 @@ async fn create_policy_version(params: &str, state: SharedState) -> Response {
     if policy.versions.len() >= 5 {
         return (
             StatusCode::CONFLICT,
-            xml::error_xml("LimitExceeded", "A managed policy can have up to 5 versions"),
+            xml::query_error_xml("LimitExceeded", "A managed policy can have up to 5 versions"),
         )
             .into_response();
     }
@@ -328,7 +328,7 @@ async fn list_policy_versions(params: &str, state: SharedState) -> Response {
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                xml::error_xml("NoSuchEntity", "Policy not found"),
+                xml::query_error_xml("NoSuchEntity", "Policy not found"),
             )
                 .into_response()
         }
@@ -454,7 +454,7 @@ async fn get_user_policy(params: &str, state: SharedState) -> Response {
         }
         None => (
             StatusCode::NOT_FOUND,
-            xml::error_xml("NoSuchEntity", "Policy not found"),
+            xml::query_error_xml("NoSuchEntity", "Policy not found"),
         )
             .into_response(),
     }
@@ -494,7 +494,7 @@ async fn create_access_key(params: &str, state: SharedState) -> Response {
     if existing >= 2 {
         return (
             StatusCode::CONFLICT,
-            xml::error_xml(
+            xml::query_error_xml(
                 "LimitExceeded",
                 "Cannot exceed quota for AccessKeysPerUser: 2",
             ),

@@ -8,17 +8,22 @@ import {
   listAwsProfiles,
   provisionScan,
   provisionApply,
+  listUserAccessKeys,
+  deleteUserAccessKey,
   destroy,
   resetProvisionerState,
   plan,
   apply,
   type CredentialSource,
 
+  type AccessKeyInfo,
+  type AccessKeyLimitReached,
   type AssumeRoleResult,
   type PlanEntry,
   type ConfigInfo,
   type ProvisionScanResult,
 } from "../lib/tauri";
+import AccessKeyLimitPanel from "../components/AccessKeyLimitPanel";
 import InfraState from "../components/InfraState";
 import { hasChanges, findEscalationEntry } from "../lib/plan";
 import { useProvisionerProgress } from "../lib/provisioner";
@@ -42,6 +47,7 @@ type Phase =
   | "planned"         // Plan ready, show results
   | "escalation"      // Need elevated creds, show inline form
   | "applying"        // Executing changes
+  | "key_limit"       // IAM is out of access-key slots; operator must free one
   | "done"            // Apply succeeded, showing final state
   | "error";          // Something failed
 
@@ -82,6 +88,13 @@ export default function Provision({
   const { scanItems, applyItems, progressHandler, resetProgress } =
     useProvisionerProgress();
   const [resettingState, setResettingState] = useState(false);
+
+  // ── Access-key limit recovery ────────────────────────────────────────
+  const [keyLimit, setKeyLimit] = useState<AccessKeyLimitReached | null>(null);
+  const [existingKeys, setExistingKeys] = useState<AccessKeyInfo[]>([]);
+  const [loadingKeys, setLoadingKeys] = useState(false);
+  const [keysError, setKeysError] = useState<string | null>(null);
+  const [deletingKeyId, setDeletingKeyId] = useState<string | null>(null);
 
   // ── Management state ─────────────────────────────────────────────────
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -211,20 +224,70 @@ export default function Provision({
         assessment.credential_class === "root" ||
         assessment.credential_class === "iam_admin";
 
-      const result = await provisionApply(
+      const outcome = await provisionApply(
         region,
         systemName,
         creds,
         isElevated ? creds : null,
         progressHandler,
       );
-      setEntries(result);
+
+      // AWS resources may be untouched and this computer still unconfigured:
+      // the handoff could not mint a key because both IAM slots are taken.
+      if (outcome.access_key_limit) {
+        setKeyLimit(outcome.access_key_limit);
+        setPhase("key_limit");
+        void loadExistingKeys(creds);
+        return;
+      }
+
+      setEntries(outcome.entries);
       setConfigExists(true);
       setPhase("done");
     } catch (e) {
       setError(String(e));
       setPhase("error");
     }
+  }
+
+  // ── Access-key limit recovery ────────────────────────────────────────
+
+  async function loadExistingKeys(creds: CredentialSource) {
+    setLoadingKeys(true);
+    setKeysError(null);
+    try {
+      setExistingKeys(await listUserAccessKeys(region, creds));
+    } catch (e) {
+      setExistingKeys([]);
+      setKeysError(String(e));
+    } finally {
+      setLoadingKeys(false);
+    }
+  }
+
+  // Delete the key the operator explicitly confirmed, then retry the setup
+  // now that a slot is free. Never called without that confirmation.
+  async function handleDeleteKey(keyId: string) {
+    setDeletingKeyId(keyId);
+    setKeysError(null);
+    try {
+      await deleteUserAccessKey(region, buildCredentials(), keyId);
+    } catch (e) {
+      setKeysError(String(e));
+      setDeletingKeyId(null);
+      return;
+    }
+    setDeletingKeyId(null);
+    setKeyLimit(null);
+    setExistingKeys([]);
+    void handleApply();
+  }
+
+  function cancelKeyLimit() {
+    setKeyLimit(null);
+    setExistingKeys([]);
+    setKeysError(null);
+    setPhase("planned");
   }
 
   // ── Escalation apply (day-2 with elevated creds) ─────────────────────
@@ -244,7 +307,7 @@ export default function Provision({
       };
 
       // Use provision_apply for two-phase execution.
-      const result = await provisionApply(
+      const outcome = await provisionApply(
         savedCreds.region,
         savedCreds.system_name,
         // Regular creds — rebuild from config.
@@ -253,7 +316,9 @@ export default function Provision({
         elevatedCreds, // elevated_credentials param
         progressHandler,
       );
-      setEntries(result);
+      // The handoff only runs when no local config exists, which is never
+      // true here — this machine is already configured.
+      setEntries(outcome.entries);
       setPhase("done");
     } catch (e) {
       setError(String(e));
@@ -323,6 +388,13 @@ export default function Provision({
     // handleInitialScan/handleApply is unguarded and would yank the user
     // forward again. Back is also disabled in these phases.
     if (phase === "scanning" || phase === "applying") return;
+    // Never let Back look like it resolved the key limit. Step back to the
+    // plan with every key untouched, same as the panel's own Cancel.
+    if (phase === "key_limit") {
+      if (deletingKeyId !== null) return;
+      cancelKeyLimit();
+      return;
+    }
     // First run: return to the credential form without unmounting.
     if (configExists === false && (phase === "planned" || phase === "error")) {
       setAssumeRoleResult(null);
@@ -341,6 +413,66 @@ export default function Provision({
 
   // Check if plan needs escalation
   const needsEscalation = findEscalationEntry(entries) !== null;
+
+  // Actions offered once a scan finishes.
+  //
+  // A conformant plan still needs an action on first run. Onboarding a second
+  // computer against an already-provisioned account scans clean, but the
+  // scoped access key and the local config are minted by `provision_apply`,
+  // so "nothing to change in AWS" is not the same as "this computer is set
+  // up". Without an action here the wizard is a dead end.
+  function plannedActions() {
+    if (hasChanges(entries)) {
+      if (needsEscalation && !configExists) {
+        return (
+          <button
+            onClick={handleApply}
+            className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+          >
+            Bootstrap &amp; Apply
+          </button>
+        );
+      }
+      if (needsEscalation && configExists) {
+        return (
+          <button
+            onClick={() => setPhase("escalation")}
+            className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors"
+          >
+            Provide Admin Credentials
+          </button>
+        );
+      }
+      return (
+        <button
+          onClick={handleApply}
+          className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+        >
+          Apply Changes
+        </button>
+      );
+    }
+
+    if (!configExists) {
+      return (
+        <button
+          onClick={handleApply}
+          className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+        >
+          Set Up This Computer
+        </button>
+      );
+    }
+
+    return (
+      <button
+        onClick={() => navigate("start")}
+        className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+      >
+        Continue to Claria
+      </button>
+    );
+  }
 
   // ── Render ───────────────────────────────────────────────────────────
 
@@ -545,32 +677,17 @@ export default function Provision({
           applyItems={applyItems}
           error={error}
           showEscalationNotice={needsEscalation && configExists === true}
-          showInSync={configExists === true}
           actions={
-            phase === "planned" && hasChanges(entries) ? (
-              <div className="flex gap-2">
-                {needsEscalation && !configExists ? (
-                  <button
-                    onClick={handleApply}
-                    className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
-                  >
-                    Bootstrap & Apply
-                  </button>
-                ) : needsEscalation && configExists ? (
-                  <button
-                    onClick={() => setPhase("escalation")}
-                    className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors"
-                  >
-                    Provide Admin Credentials
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleApply}
-                    className="flex-1 py-2.5 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
-                  >
-                    Apply Changes
-                  </button>
+            phase === "planned" ? (
+              <div className="space-y-3">
+                {!hasChanges(entries) && !configExists && (
+                  <p className="text-sm text-gray-600">
+                    This AWS account is already set up. Claria will create an
+                    access key for this computer and save its configuration
+                    locally — no AWS resources will change.
+                  </p>
                 )}
+                <div className="flex gap-2">{plannedActions()}</div>
               </div>
             ) : phase === "done" ? (
               <div className="flex gap-2">
@@ -615,6 +732,19 @@ export default function Provision({
               </button>
             </div>
           }
+        />
+      )}
+
+      {/* ── Phase: Access-key limit recovery ───────────────────────── */}
+      {phase === "key_limit" && keyLimit && (
+        <AccessKeyLimitPanel
+          limit={keyLimit}
+          keys={existingKeys}
+          loadingKeys={loadingKeys}
+          keysError={keysError}
+          deletingKeyId={deletingKeyId}
+          onDelete={handleDeleteKey}
+          onCancel={cancelKeyLimit}
         />
       )}
 
