@@ -50,6 +50,8 @@ All notable changes to Claria are documented here.
 - The thirteen hand-rolled modal overlays are one shared component
 - Comparing two versions of a long transcript no longer stalls the window while a quadratic table is built; a 5,000-line pair diffs in milliseconds instead of half a second
 - Every backend call the frontend makes goes through the generated bindings, so renaming a Rust command fails the build rather than the running app
+- Transcription preferences save a moment after you change them rather than when you leave the screen, so quitting the app no longer discards the edit
+- A transcription preference that fails to save says so and offers to retry, instead of failing silently into the log
 - Typing a custom date range in Cost Explorer no longer bills a $0.01 lookup per keystroke; the range loads when you press Apply
 - Cost Explorer permission and data-availability errors are recognised in one place instead of three
 
