@@ -36,16 +36,45 @@ async fn create_bucket_with_location_constraint() {
 }
 
 #[tokio::test]
-async fn delete_bucket_removes_it_and_objects() {
+async fn delete_bucket_removes_an_empty_bucket() {
     let app = app();
     request(&app, Method::PUT, "/del-bucket", "").await;
     request_with_header(&app, Method::PUT, "/del-bucket/key1", "content-type", "text/plain", "data").await;
+    request(&app, Method::DELETE, "/del-bucket/key1", "").await;
 
     let r = request(&app, Method::DELETE, "/del-bucket", "").await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
 
     let r = request(&app, Method::HEAD, "/del-bucket", "").await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_bucket_rejects_a_bucket_holding_objects() {
+    let app = app();
+    request(&app, Method::PUT, "/full-bucket", "").await;
+    request_with_header(&app, Method::PUT, "/full-bucket/key1", "content-type", "text/plain", "data").await;
+
+    let r = request(&app, Method::DELETE, "/full-bucket", "").await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert!(r.body.contains("BucketNotEmpty"));
+
+    let r = request(&app, Method::HEAD, "/full-bucket", "").await;
+    assert_eq!(r.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn delete_bucket_rejects_a_bucket_holding_only_delete_markers() {
+    let app = app();
+    request(&app, Method::PUT, "/marker-bucket", "").await;
+    request(&app, Method::PUT, "/marker-bucket?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
+    request_with_header(&app, Method::PUT, "/marker-bucket/key1", "content-type", "text/plain", "data").await;
+    request(&app, Method::DELETE, "/marker-bucket/key1", "").await;
+
+    let r = request(&app, Method::DELETE, "/marker-bucket", "").await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert!(r.body.contains("BucketNotEmpty"));
 }
 
 // ── Object CRUD ──────────────────────────────────────────────────────
@@ -349,4 +378,94 @@ async fn list_object_versions_shows_versions_and_delete_markers() {
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("<Version>"));
     assert!(r.body.contains("<DeleteMarker>"));
+}
+
+#[tokio::test]
+async fn list_object_versions_pages_through_markers() {
+    let app = app();
+    request(&app, Method::PUT, "/paged", "").await;
+    request(&app, Method::PUT, "/paged?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
+
+    for i in 0..5 {
+        let uri = format!("/paged/key{i}.txt");
+        request_with_header(&app, Method::PUT, &uri, "content-type", "text/plain", "data").await;
+    }
+
+    let r = request(&app, Method::GET, "/paged?versions&max-keys=2", "").await;
+    assert!(r.body.contains("<IsTruncated>true</IsTruncated>"));
+    assert!(r.body.contains("<Key>key0.txt</Key>"));
+    assert!(r.body.contains("<Key>key1.txt</Key>"));
+    assert!(!r.body.contains("<Key>key2.txt</Key>"));
+    assert!(r.body.contains("<NextKeyMarker>key1.txt</NextKeyMarker>"));
+
+    let r = request(
+        &app,
+        Method::GET,
+        "/paged?versions&max-keys=2&key-marker=key1.txt",
+        "",
+    )
+    .await;
+    assert!(r.body.contains("<Key>key2.txt</Key>"));
+    assert!(!r.body.contains("<Key>key1.txt</Key>"));
+}
+
+// ── DeleteObjects ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn delete_objects_removes_a_batch_of_versions() {
+    let app = app();
+    request(&app, Method::PUT, "/batch", "").await;
+    request(&app, Method::PUT, "/batch?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
+
+    let r1 = request_with_header(&app, Method::PUT, "/batch/doc.txt", "content-type", "text/plain", "v1").await;
+    let vid1 = r1.header("x-amz-version-id").unwrap().to_string();
+    let r2 = request_with_header(&app, Method::PUT, "/batch/doc.txt", "content-type", "text/plain", "v2").await;
+    let vid2 = r2.header("x-amz-version-id").unwrap().to_string();
+
+    let body = format!(
+        "<Delete><Object><Key>doc.txt</Key><VersionId>{vid1}</VersionId></Object>\
+         <Object><Key>doc.txt</Key><VersionId>{vid2}</VersionId></Object></Delete>"
+    );
+    let r = request(&app, Method::POST, "/batch?delete", body).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("<Deleted>"));
+    assert!(!r.body.contains("<Error>"));
+
+    // Both versions are gone, so the bucket is genuinely empty.
+    let r = request(&app, Method::DELETE, "/batch", "").await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn delete_objects_without_version_ids_leaves_delete_markers() {
+    let app = app();
+    request(&app, Method::PUT, "/soft", "").await;
+    request(&app, Method::PUT, "/soft?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
+    request_with_header(&app, Method::PUT, "/soft/doc.txt", "content-type", "text/plain", "v1").await;
+
+    let r = request(
+        &app,
+        Method::POST,
+        "/soft?delete",
+        "<Delete><Object><Key>doc.txt</Key></Object></Delete>",
+    )
+    .await;
+    assert!(r.body.contains("<DeleteMarker>true</DeleteMarker>"));
+
+    let r = request(&app, Method::DELETE, "/soft", "").await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn delete_query_flag_is_not_confused_with_a_prefix() {
+    let app = app();
+    request(&app, Method::PUT, "/prefixed", "").await;
+    request_with_header(&app, Method::PUT, "/prefixed/deleted-later.txt", "content-type", "text/plain", "data").await;
+
+    let r = request(&app, Method::GET, "/prefixed?list-type=2&prefix=deleted", "").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("<Key>deleted-later.txt</Key>"));
 }

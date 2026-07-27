@@ -4,7 +4,7 @@
   "version": "0.18.0",
   "build": {
     "beforeBuildCommand": "npm --prefix ../claria-desktop-frontend install && npm --prefix ../claria-desktop-frontend run build",
-    "beforeDevCommand": "npm --prefix ../claria-desktop-frontend run dev",
+    "beforeDevCommand": "npm --prefix ../claria-desktop-frontend install && npm --prefix ../claria-desktop-frontend run dev",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../../claria-desktop-frontend/dist"
   },

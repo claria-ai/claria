@@ -4,6 +4,14 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Tearing down AWS infrastructure now deletes the storage bucket, which previously always failed because version history and delete markers were left behind
+- The IAM policy grants permission to delete object versions, without which a teardown stops partway through
+- Bulk deletes go out in batches of a thousand objects per request instead of one request per object
+- A bulk delete that S3 partially refuses now reports an error naming the objects left behind instead of reporting success
+- A teardown that fails partway through is safe to re-run
+- Starting the desktop app in development installs frontend dependencies first, so a fresh checkout no longer fails on a missing Vite binary
+- The mock AWS server refuses to delete a bucket that still holds objects
+- The mock AWS server supports batch deletes, versioned deletes, and paged version listings
 - Audit events are written to durable storage in the Claria bucket instead of only reaching an in-memory log that dies with the process
 - Audit events carry the token-usage and cost payload that was previously built and then discarded before it was logged
 - Every audit event has its own identifier and UTC timestamp, and lands under a year/month/day path so an auditor can list a single date

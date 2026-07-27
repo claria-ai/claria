@@ -23,6 +23,16 @@ pub enum StorageError {
     #[error("S3 DeleteObject error: {0}")]
     DeleteObject(String),
 
+    /// S3 reports per-object failures inside a 200 response to DeleteObjects,
+    /// so a batch that reports success at the HTTP level can still have left
+    /// objects behind.
+    #[error("S3 DeleteObjects left {failed} of {attempted} objects in place: {details}")]
+    DeleteObjects {
+        attempted: usize,
+        failed: usize,
+        details: String,
+    },
+
     #[error("S3 ListObjects error: {0}")]
     ListObjects(String),
 
