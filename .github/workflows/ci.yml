@@ -29,7 +29,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: claria-desktop-frontend
-        run: npm install
+        run: npm ci
 
       - name: Lint
         working-directory: claria-desktop-frontend
@@ -65,7 +65,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: claria-desktop-frontend
-        run: npm install
+        run: npm ci
 
       - name: Build frontend
         working-directory: claria-desktop-frontend
@@ -103,7 +103,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: claria-desktop-frontend
-        run: npm install
+        run: npm ci
 
       - name: Build frontend
         working-directory: claria-desktop-frontend
@@ -143,7 +143,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: claria-desktop-frontend
-        run: npm install
+        run: npm ci
 
       - name: Build frontend
         working-directory: claria-desktop-frontend
