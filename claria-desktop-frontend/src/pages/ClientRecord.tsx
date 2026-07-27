@@ -18,13 +18,13 @@ import {
   type RecordFile,
   type ChatHistoryDetail,
   type ChatModel,
-  type FileVersion,
   type DeletedFile,
   type TranscriptionPreferences,
 } from "../lib/tauri";
 import TranscribeWizard from "../components/TranscribeWizard";
 import MemoRecorderBar from "../components/MemoRecorderBar";
 import MemoReviewModal from "../components/MemoReviewModal";
+import VersionHistoryModal from "../components/VersionHistoryModal";
 import TranscriptEditor from "../components/TranscriptEditor";
 import Spinner from "../components/Spinner";
 import MoreToggle from "../components/MoreToggle";
@@ -50,7 +50,6 @@ import {
 import { transcribeSummary, transcribeTooltip } from "../lib/transcribe";
 import { useMemoRecorder } from "../lib/useMemoRecorder";
 import { useMoreMode } from "../lib/useMoreMode";
-import { diffLines, type DiffLine } from "../lib/diff";
 import ClientChat from "./ClientChat";
 import type { Page } from "../App";
 import type { ResumeChat } from "./ClientChat";
@@ -193,16 +192,8 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     (e) => setError(String(e)),
   );
 
-  // Version history modal state
+  // Which file's version history is open, if any.
   const [versionFile, setVersionFile] = useState<string | null>(null);
-  const [versions, setVersions] = useState<FileVersion[]>([]);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  const [versionPreview, setVersionPreview] = useState<{ versionId: string; text: string } | null>(null);
-  const [versionPreviewLoading, setVersionPreviewLoading] = useState(false);
-  const [selectedVersions, setSelectedVersions] = useState<Set<string>>(new Set());
-  const [diffResult, setDiffResult] = useState<DiffLine[] | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
-  const [restoringVersion, setRestoringVersion] = useState(false);
 
   // Live memo recording — microphone, PCM buffer and timers all live in here.
   const memo = useMemoRecorder({
@@ -457,104 +448,6 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     }
   }
 
-  async function handleOpenVersions(filename: string) {
-    setVersionFile(filename);
-    setVersionsLoading(true);
-    setVersionPreview(null);
-    setSelectedVersions(new Set());
-    setDiffResult(null);
-    try {
-      setVersions(await listFileVersions(clientId, versionKeyFor(filename)));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setVersionsLoading(false);
-    }
-  }
-
-  function handleCloseVersions() {
-    setVersionFile(null);
-    setVersions([]);
-    setVersionPreview(null);
-    setSelectedVersions(new Set());
-    setDiffResult(null);
-  }
-
-  async function handleViewVersion(versionId: string) {
-    if (versionPreview?.versionId === versionId) {
-      setVersionPreview(null);
-      return;
-    }
-    setVersionPreviewLoading(true);
-    try {
-      const text = await getFileVersionText(
-        clientId,
-        versionKeyFor(versionFile!),
-        versionId
-      );
-      setVersionPreview({ versionId, text });
-    } catch (e) {
-      setVersionPreview({ versionId, text: `Error: ${String(e)}` });
-    } finally {
-      setVersionPreviewLoading(false);
-    }
-  }
-
-  function handleToggleVersionSelect(versionId: string) {
-    setSelectedVersions((prev) => {
-      const next = new Set(prev);
-      if (next.has(versionId)) {
-        next.delete(versionId);
-      } else {
-        if (next.size >= 2) {
-          // Replace the oldest selection
-          const [first] = next;
-          next.delete(first);
-        }
-        next.add(versionId);
-      }
-      return next;
-    });
-    setDiffResult(null);
-  }
-
-  async function handleCompare() {
-    if (selectedVersions.size !== 2 || !versionFile) return;
-    setDiffLoading(true);
-    setDiffResult(null);
-    try {
-      const [v1, v2] = [...selectedVersions];
-      const key = versionKeyFor(versionFile);
-      const [text1, text2] = await Promise.all([
-        getFileVersionText(clientId, key, v1),
-        getFileVersionText(clientId, key, v2),
-      ]);
-      // Order by version position: v1 is older, v2 is newer
-      const idx1 = versions.findIndex((v) => v.version_id === v1);
-      const idx2 = versions.findIndex((v) => v.version_id === v2);
-      const [older, newer] = idx1 > idx2 ? [text1, text2] : [text2, text1];
-      setDiffResult(diffLines(older, newer));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setDiffLoading(false);
-    }
-  }
-
-  async function handleRestoreVersion(versionId: string) {
-    if (!versionFile) return;
-    setRestoringVersion(true);
-    try {
-      await restoreFileVersion(clientId, versionKeyFor(versionFile), versionId);
-      handleCloseVersions();
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRestoringVersion(false);
-    }
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-2xl mx-auto p-8">
@@ -771,7 +664,7 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                   <div className="flex gap-1">
                     {moreMode && (
                       <button
-                        onClick={() => handleOpenVersions(file.filename)}
+                        onClick={() => setVersionFile(file.filename)}
                         title="Version history"
                         className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
                       >
@@ -1095,163 +988,27 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
         </div>
       )}
 
-      {/* Version history modal */}
       {versionFile && (
-        <Modal
-          open
-          onClose={handleCloseVersions}
+        <VersionHistoryModal
           title={
             isAudioSidecar(versionFile)
               ? `Transcript History: ${versionFile}`
               : `Version History: ${versionFile}`
           }
+          source={{
+            list: () => listFileVersions(clientId, versionKeyFor(versionFile)),
+            getText: (versionId) =>
+              getFileVersionText(clientId, versionKeyFor(versionFile), versionId),
+            restore: (versionId) =>
+              restoreFileVersion(clientId, versionKeyFor(versionFile), versionId),
+          }}
+          onClose={() => setVersionFile(null)}
+          onRestored={refresh}
+          onError={setError}
+          enableCompare
+          showFooterClose
           className="max-w-4xl p-6 max-h-[90vh] flex flex-col"
-        >
-          {versionsLoading ? (
-            <div className="flex-1 flex items-center justify-center py-8">
-              <div className="flex items-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Loading versions...</span>
-              </div>
-            </div>
-          ) : versions.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center py-8">
-              <p className="text-gray-400 text-sm">No version history found.</p>
-            </div>
-          ) : (
-            <div className="flex-1 overflow-y-auto">
-              {/* Compare button */}
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-xs text-gray-500">
-                  {selectedVersions.size === 2
-                    ? "2 versions selected"
-                    : `Select 2 versions to compare (${selectedVersions.size}/2)`}
-                </p>
-                <button
-                  onClick={handleCompare}
-                  disabled={selectedVersions.size !== 2 || diffLoading}
-                  className="px-3 py-1 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {diffLoading ? "Comparing..." : "Compare"}
-                </button>
-              </div>
-
-              {/* Version list */}
-              <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
-                {versions.map((v) => (
-                  <div key={v.version_id}>
-                    <div className="px-4 py-3 flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        checked={selectedVersions.has(v.version_id)}
-                        onChange={() => handleToggleVersionSelect(v.version_id)}
-                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-gray-900">
-                          {v.last_modified ? formatDateTime(v.last_modified) : "Unknown date"}
-                          {v.is_latest && (
-                            <span className="ml-2 px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">
-                              Current
-                            </span>
-                          )}
-                        </p>
-                        <p className="text-xs text-gray-400">
-                          {formatFileSize(v.size)} &middot; {v.version_id.slice(0, 12)}...
-                        </p>
-                      </div>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => handleViewVersion(v.version_id)}
-                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                            versionPreview?.versionId === v.version_id
-                              ? "bg-blue-100 text-blue-700"
-                              : "text-blue-600 hover:bg-blue-50"
-                          }`}
-                        >
-                          {versionPreviewLoading && versionPreview?.versionId !== v.version_id
-                            ? "..."
-                            : versionPreview?.versionId === v.version_id
-                              ? "Hide"
-                              : "View"}
-                        </button>
-                        {!v.is_latest && (
-                          <button
-                            onClick={() => handleRestoreVersion(v.version_id)}
-                            disabled={restoringVersion}
-                            className="px-2 py-1 text-xs text-amber-600 hover:bg-amber-50 rounded transition-colors disabled:opacity-50"
-                          >
-                            {restoringVersion ? "..." : "Restore"}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    {/* Inline version preview */}
-                    {versionPreview?.versionId === v.version_id && (
-                      <div className="px-4 pb-3">
-                        <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono bg-gray-50 border border-gray-200 rounded p-3 max-h-[200px] overflow-y-auto">
-                          {versionPreview.text}
-                        </pre>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* Diff panel */}
-              {diffResult && (
-                <div className="mt-4">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-2">Diff</h4>
-                  <div className="border border-gray-200 rounded-lg overflow-auto max-h-[20rem]">
-                    <pre className="text-xs font-mono p-3 whitespace-pre w-max min-w-full">
-                      {diffResult.map((line, i) => (
-                        <div
-                          key={i}
-                          className={
-                            line.type === "add"
-                              ? "bg-green-50 text-green-800"
-                              : line.type === "remove"
-                                ? "bg-red-50 text-red-800"
-                                : "text-gray-600"
-                          }
-                        >
-                          <span className="select-none inline-block w-4 text-gray-400 mr-2">
-                            {line.type === "add" ? "+" : line.type === "remove" ? "-" : " "}
-                          </span>
-                          {line.spans
-                            ? line.spans.map((span, si) => (
-                                <span
-                                  key={si}
-                                  className={
-                                    span.highlight
-                                      ? line.type === "add"
-                                        ? "bg-green-200 rounded-sm"
-                                        : "bg-red-200 rounded-sm"
-                                      : ""
-                                  }
-                                >
-                                  {span.text}
-                                </span>
-                              ))
-                            : line.line}
-                        </div>
-                      ))}
-                    </pre>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="flex justify-end mt-4">
-            <button
-              onClick={handleCloseVersions}
-              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-            >
-              Close
-            </button>
-          </div>
-        </Modal>
+        />
       )}
     </div>
   );

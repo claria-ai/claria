@@ -19,16 +19,16 @@ import {
   fetchCloudPreferences,
   type ChatModel,
   type ConfigInfo,
-  type FileVersion,
   type TranscriptionLanguage,
   type TranscriptionPreferences,
   type WhisperModelInfo,
   type WhisperModelTier,
 } from "../lib/tauri";
 import { costErrorMessage } from "../lib/costErrors";
+import { formatFileSize } from "../lib/format";
 import { BackButton } from "../components/icons";
 import Spinner from "../components/Spinner";
-import Modal from "../components/Modal";
+import VersionHistoryModal from "../components/VersionHistoryModal";
 import type { Page } from "../App";
 
 export default function Preferences({
@@ -188,16 +188,7 @@ function PromptEditor({
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
-  // Version history state
   const [showVersions, setShowVersions] = useState(false);
-  const [versions, setVersions] = useState<FileVersion[]>([]);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  const [versionPreview, setVersionPreview] = useState<{
-    versionId: string;
-    text: string;
-  } | null>(null);
-  const [versionPreviewLoading, setVersionPreviewLoading] = useState(false);
-  const [restoringVersion, setRestoringVersion] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -242,54 +233,6 @@ function PromptEditor({
       setError(String(e));
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function handleOpenVersions() {
-    setShowVersions(true);
-    setVersionsLoading(true);
-    setVersionPreview(null);
-    try {
-      setVersions(await listPromptVersions(promptName));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setVersionsLoading(false);
-    }
-  }
-
-  function handleCloseVersions() {
-    setShowVersions(false);
-    setVersions([]);
-    setVersionPreview(null);
-  }
-
-  async function handleViewVersion(versionId: string) {
-    if (versionPreview?.versionId === versionId) {
-      setVersionPreview(null);
-      return;
-    }
-    setVersionPreviewLoading(true);
-    try {
-      const text = await getPromptVersion(promptName, versionId);
-      setVersionPreview({ versionId, text });
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setVersionPreviewLoading(false);
-    }
-  }
-
-  async function handleRestoreVersion(versionId: string) {
-    setRestoringVersion(true);
-    try {
-      await restorePromptVersion(promptName, versionId);
-      handleCloseVersions();
-      await load();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRestoringVersion(false);
     }
   }
 
@@ -344,7 +287,7 @@ function PromptEditor({
                     {saving ? "Resetting..." : "Reset to Default"}
                   </button>
                   <button
-                    onClick={handleOpenVersions}
+                    onClick={() => setShowVersions(true)}
                     disabled={saving}
                     className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
                   >
@@ -364,87 +307,18 @@ function PromptEditor({
         </div>
       </details>
 
-      {/* Version history modal */}
       {showVersions && (
-        <Modal
-          open
-          onClose={handleCloseVersions}
+        <VersionHistoryModal
           title={`${label} Versions`}
-          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
-        >
-          {versionsLoading ? (
-            <div className="flex-1 flex items-center justify-center py-8">
-              <div className="flex items-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Loading versions...</span>
-              </div>
-            </div>
-          ) : versions.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center py-8">
-              <p className="text-gray-400 text-sm">No version history found.</p>
-            </div>
-          ) : (
-            <div className="flex-1 overflow-y-auto">
-              <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
-                {versions.map((v) => (
-                  <div key={v.version_id}>
-                    <div className="px-4 py-3 flex items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-gray-900">
-                          {v.last_modified
-                            ? formatDate(v.last_modified)
-                            : "Unknown date"}
-                          {v.is_latest && (
-                            <span className="ml-2 px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">
-                              Current
-                            </span>
-                          )}
-                        </p>
-                        <p className="text-xs text-gray-400">
-                          {formatFileSize(v.size)} &middot;{" "}
-                          {v.version_id.slice(0, 12)}...
-                        </p>
-                      </div>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => handleViewVersion(v.version_id)}
-                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                            versionPreview?.versionId === v.version_id
-                              ? "bg-blue-100 text-blue-700"
-                              : "text-blue-600 hover:bg-blue-50"
-                          }`}
-                        >
-                          {versionPreviewLoading &&
-                          versionPreview?.versionId !== v.version_id
-                            ? "..."
-                            : versionPreview?.versionId === v.version_id
-                              ? "Hide"
-                              : "View"}
-                        </button>
-                        {!v.is_latest && (
-                          <button
-                            onClick={() => handleRestoreVersion(v.version_id)}
-                            disabled={restoringVersion}
-                            className="px-2 py-1 text-xs text-amber-600 hover:bg-amber-50 rounded transition-colors disabled:opacity-50"
-                          >
-                            {restoringVersion ? "..." : "Restore"}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    {versionPreview?.versionId === v.version_id && (
-                      <div className="px-4 pb-3">
-                        <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono bg-gray-50 border border-gray-200 rounded p-3 max-h-[200px] overflow-y-auto">
-                          {versionPreview.text}
-                        </pre>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </Modal>
+          source={{
+            list: () => listPromptVersions(promptName),
+            getText: (versionId) => getPromptVersion(promptName, versionId),
+            restore: (versionId) => restorePromptVersion(promptName, versionId),
+          }}
+          onClose={() => setShowVersions(false)}
+          onRestored={load}
+          onError={setError}
+        />
       )}
     </>
   );
@@ -805,31 +679,6 @@ function CostExplorerSection() {
       </div>
     </details>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Shared utilities
-// ---------------------------------------------------------------------------
-
-function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ---------------------------------------------------------------------------
