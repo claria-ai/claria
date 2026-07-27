@@ -1371,6 +1371,17 @@ fn bucket_name(cfg: &ClariaConfig) -> String {
     claria_core::s3_keys::bucket_name(&cfg.account_id, &cfg.system_name)
 }
 
+/// Helper: record an audit event against the bucket derived from `cfg`.
+///
+/// See [`claria_desktop::audit::record`] for why this cannot fail the caller.
+async fn record_audit(
+    sdk_config: &aws_config::SdkConfig,
+    cfg: &ClariaConfig,
+    event: claria_audit::events::AuditEvent,
+) {
+    claria_desktop::audit::record(sdk_config, &bucket_name(cfg), event).await
+}
+
 /// List all client records from S3.
 ///
 /// Loads each `clients/{id}.json` object, deserializes the Client, and
@@ -1665,23 +1676,27 @@ pub async fn upload_record_file(
                 .await
                 .map_err(|e| e.to_string())?;
 
-                claria_audit::events::AuditEvent::new(
-                    "extract_document_text",
-                    "record_file",
-                    filename,
-                    cfg.account_id.clone(),
+                record_audit(
+                    &sdk_config,
+                    &cfg,
+                    claria_audit::events::AuditEvent::new(
+                        "extract_document_text",
+                        "record_file",
+                        filename,
+                        cfg.account_id.clone(),
+                    )
+                    .with_details(serde_json::json!({
+                        "client_id": id.to_string(),
+                        "model_id": usage.model_id,
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "cache_read_input_tokens": usage.cache_read_input_tokens,
+                        "cache_write_input_tokens": usage.cache_write_input_tokens,
+                        "cost_usd": usage.cost_usd,
+                        "pricing_version": usage.pricing_version,
+                    })),
                 )
-                .with_details(serde_json::json!({
-                    "client_id": id.to_string(),
-                    "model_id": usage.model_id,
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                    "cache_read_input_tokens": usage.cache_read_input_tokens,
-                    "cache_write_input_tokens": usage.cache_write_input_tokens,
-                    "cost_usd": usage.cost_usd,
-                    "pricing_version": usage.pricing_version,
-                }))
-                .emit();
+                .await;
 
                 tracing::info!(client_id = %id, filename, "sidecar text extraction uploaded");
             }
@@ -1862,21 +1877,25 @@ async fn maybe_translate(
                     seg.translation = Some(output.translation.clone());
                 }
             }
-            claria_audit::events::AuditEvent::new(
-                "translate_transcript",
-                "transcript",
-                "",
-                cfg.account_id.clone(),
+            record_audit(
+                sdk_config,
+                cfg,
+                claria_audit::events::AuditEvent::new(
+                    "translate_transcript",
+                    "transcript",
+                    "",
+                    cfg.account_id.clone(),
+                )
+                .with_details(serde_json::json!({
+                    "segment_count": outputs.len(),
+                    "model_id": usage.model_id,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cost_usd": usage.cost_usd,
+                    "pricing_version": usage.pricing_version,
+                })),
             )
-            .with_details(serde_json::json!({
-                "segment_count": outputs.len(),
-                "model_id": usage.model_id,
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "cost_usd": usage.cost_usd,
-                "pricing_version": usage.pricing_version,
-            }))
-            .emit();
+            .await;
         }
         Err(e) => {
             tracing::warn!(error = %e, "translation failed; sidecar will be written without translations");
@@ -2023,14 +2042,18 @@ pub async fn save_transcript_edits(
     .await
     .map_err(|e| e.to_string())?;
 
-    claria_audit::events::AuditEvent::new(
-        "save_transcript_edits",
-        "transcript",
-        &filename,
-        cfg.account_id.clone(),
+    record_audit(
+        &sdk_config,
+        &cfg,
+        claria_audit::events::AuditEvent::new(
+            "save_transcript_edits",
+            "transcript",
+            &filename,
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({ "client_id": id.to_string() })),
     )
-    .with_details(serde_json::json!({ "client_id": id.to_string() }))
-    .emit();
+    .await;
 
     Ok(())
 }
@@ -2280,23 +2303,27 @@ pub async fn extract_record_file(
         .await
         .map_err(|e| e.to_string())?;
 
-        claria_audit::events::AuditEvent::new(
-            "extract_document_text",
-            "record_file",
-            &filename,
-            cfg.account_id.clone(),
+        record_audit(
+            &sdk_config,
+            &cfg,
+            claria_audit::events::AuditEvent::new(
+                "extract_document_text",
+                "record_file",
+                &filename,
+                cfg.account_id.clone(),
+            )
+            .with_details(serde_json::json!({
+                "client_id": id.to_string(),
+                "model_id": usage.model_id,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_input_tokens": usage.cache_read_input_tokens,
+                "cache_write_input_tokens": usage.cache_write_input_tokens,
+                "cost_usd": usage.cost_usd,
+                "pricing_version": usage.pricing_version,
+            })),
         )
-        .with_details(serde_json::json!({
-            "client_id": id.to_string(),
-            "model_id": usage.model_id,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_read_input_tokens": usage.cache_read_input_tokens,
-            "cache_write_input_tokens": usage.cache_write_input_tokens,
-            "cost_usd": usage.cost_usd,
-            "pricing_version": usage.pricing_version,
-        }))
-        .emit();
+        .await;
 
         text
     } else if let Some(media_format) =
@@ -2569,23 +2596,27 @@ pub async fn chat_message(
 
     // Emit a per-turn audit event with token usage in details. UUIDs only;
     // never the message content.
-    claria_audit::events::AuditEvent::new(
-        "chat_message",
-        "client",
-        client_uuid.to_string(),
-        cfg.account_id.clone(),
+    record_audit(
+        &sdk_config,
+        &cfg,
+        claria_audit::events::AuditEvent::new(
+            "chat_message",
+            "client",
+            client_uuid.to_string(),
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({
+            "chat_id": chat_uuid.to_string(),
+            "model_id": usage.model_id,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+            "cache_write_input_tokens": usage.cache_write_input_tokens,
+            "cost_usd": usage.cost_usd,
+            "pricing_version": usage.pricing_version,
+        })),
     )
-    .with_details(serde_json::json!({
-        "chat_id": chat_uuid.to_string(),
-        "model_id": usage.model_id,
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_read_input_tokens": usage.cache_read_input_tokens,
-        "cache_write_input_tokens": usage.cache_write_input_tokens,
-        "cost_usd": usage.cost_usd,
-        "pricing_version": usage.pricing_version,
-    }))
-    .emit();
+    .await;
 
     // Build the full message history including the new assistant response.
     let now = jiff::Timestamp::now();
@@ -2700,22 +2731,26 @@ pub async fn infra_chat(
 
     // Audit the infra-chat turn against the AWS account_id (no per-client
     // resource here).
-    claria_audit::events::AuditEvent::new(
-        "infra_chat",
-        "infrastructure",
-        "infra",
-        cfg.account_id.clone(),
+    record_audit(
+        &sdk_config,
+        &cfg,
+        claria_audit::events::AuditEvent::new(
+            "infra_chat",
+            "infrastructure",
+            "infra",
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({
+            "model_id": usage.model_id,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+            "cache_write_input_tokens": usage.cache_write_input_tokens,
+            "cost_usd": usage.cost_usd,
+            "pricing_version": usage.pricing_version,
+        })),
     )
-    .with_details(serde_json::json!({
-        "model_id": usage.model_id,
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_read_input_tokens": usage.cache_read_input_tokens,
-        "cache_write_input_tokens": usage.cache_write_input_tokens,
-        "cost_usd": usage.cost_usd,
-        "pricing_version": usage.pricing_version,
-    }))
-    .emit();
+    .await;
 
     Ok(InfraChatResponse { content, usage })
 }

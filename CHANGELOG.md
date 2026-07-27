@@ -4,6 +4,12 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Audit events are written to durable storage in the Claria bucket instead of only reaching an in-memory log that dies with the process
+- Audit events carry the token-usage and cost payload that was previously built and then discarded before it was logged
+- Every audit event has its own identifier and UTC timestamp, and lands under a year/month/day path so an auditor can list a single date
+- Each event is one immutable object, so nothing recorded is lost if the app is killed
+- An audit write that fails is reported in the Claria Console instead of failing the chat turn or upload that produced it
+- The audit crate has tests
 - The frontend has a unit test suite
 - The transcript body format is pinned by fixtures the Rust and TypeScript parsers both read, so a change to one that the other misses fails on both sides
 - A recording longer than an hour and forty minutes opened in the transcript editor as one un-diarized block, and saving it overwrote every speaker header

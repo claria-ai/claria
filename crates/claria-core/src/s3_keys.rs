@@ -73,3 +73,46 @@ pub fn transcribe_output(job_name: &str) -> String {
 }
 
 pub const PREFERENCES: &str = "_state/preferences.json";
+
+// ── Application audit trail ─────────────────────────────────────────────────
+
+/// Root of the application audit trail. Everything below it is written once
+/// and never modified.
+pub const AUDIT_PREFIX: &str = "_audit/";
+
+/// Prefix covering every audit event recorded in a UTC month.
+pub fn audit_month_prefix(year: i16, month: i8) -> String {
+    format!("_audit/{year:04}/{month:02}/")
+}
+
+/// Prefix covering every audit event recorded on a UTC day.
+pub fn audit_day_prefix(date: jiff::civil::Date) -> String {
+    format!(
+        "_audit/{:04}/{:02}/{:02}/",
+        date.year(),
+        date.month(),
+        date.day()
+    )
+}
+
+/// Key for a single audit event.
+///
+/// The UTC date is spread across three path segments so an auditor can list a
+/// day, a month, or a year without walking the whole trail. Within a day the
+/// filename leads with a fixed-width UTC timestamp at nanosecond precision, so
+/// S3's lexicographic listing order is also chronological order; the event's
+/// UUID follows to keep two events in the same nanosecond from colliding.
+pub fn audit_event(timestamp: jiff::Timestamp, event_id: Uuid) -> String {
+    let dt = timestamp.to_zoned(jiff::tz::TimeZone::UTC).datetime();
+    format!(
+        "_audit/{year:04}/{month:02}/{day:02}/\
+         {year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}.{nanos:09}Z-{event_id}.json",
+        year = dt.year(),
+        month = dt.month(),
+        day = dt.day(),
+        hour = dt.hour(),
+        minute = dt.minute(),
+        second = dt.second(),
+        nanos = dt.subsec_nanosecond(),
+    )
+}
