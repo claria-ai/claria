@@ -69,6 +69,7 @@ All notable changes to Claria are documented here.
 - Editing transcription preferences no longer reverts a preferred model or Cost Explorer setting changed earlier in the same visit
 - Project instructions document the machine-local build environment and worktree cleanup
 - Project instructions warn that a fresh worktree needs its frontend dependencies installed first, and name the misleading Ruby error that appears when they aren't
+- The frontend unit tests run in CI
 
 ## [0.18.0] — 2026-07-07
 

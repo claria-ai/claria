@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   frontend:
-    name: Frontend (lint + build)
+    name: Frontend (lint + test + build)
     runs-on: ubuntu-latest
 
     steps:
@@ -34,6 +34,10 @@ jobs:
       - name: Lint
         working-directory: claria-desktop-frontend
         run: npm run lint
+
+      - name: Test
+        working-directory: claria-desktop-frontend
+        run: npm test
 
       - name: Build
         working-directory: claria-desktop-frontend
