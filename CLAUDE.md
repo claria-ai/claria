@@ -182,6 +182,10 @@ Two ways to run the app:
 - **`cargo tauri dev` / `cargo tauri build`** — preferred. The Tauri CLI honors `beforeBuildCommand` in `tauri.conf.json` and reinstalls + rebuilds the frontend automatically.
 - **`cargo run -p claria-desktop`** — also fine. The `claria-desktop` build script re-runs `npm install && npm run build` whenever `claria-desktop-frontend/package-lock.json` is newer than `dist/index.html`. Set `CLARIA_SKIP_FRONTEND_BUILD=1` to opt out (CI does this).
 
+A fresh worktree has no `claria-desktop-frontend/node_modules`, so run `npm install` there before `cargo tauri dev`. If you don't, npm puts the missing `node_modules/.bin` on `PATH`, the local `vite` isn't found, and the lookup falls through to an rbenv shim for the Ruby `vite` gem. The resulting error talks about rbenv and Ruby and is a red herring — it has nothing to do with Ruby, the branch, or anything you changed.
+
+`cargo tauri dev` serves Vite on port 1420, so the `screenshots/` harness needs a different port to run at the same time.
+
 If you ever see the WebView die on startup, the first thing to check is the installed JS API version:
 
 ```bash
