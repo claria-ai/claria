@@ -10,7 +10,7 @@ pub async fn dispatch(action: &str, _params: &str, state: SharedState) -> Respon
         "AssumeRole" => assume_role(_params, state).await,
         _ => (
             StatusCode::BAD_REQUEST,
-            xml::error_xml("InvalidAction", &format!("Unknown STS action: {action}")),
+            xml::query_error_xml("InvalidAction", &format!("Unknown STS action: {action}")),
         )
             .into_response(),
     }

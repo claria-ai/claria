@@ -26,6 +26,15 @@ pub enum ProvisionerError {
     #[error("AWS error: {0}")]
     Aws(String),
 
+    /// IAM caps every user at two access keys. Kept separate from
+    /// [`Self::Aws`] so the caller can offer the operator a way to free a
+    /// slot instead of dead-ending on an opaque service error.
+    #[error(
+        "the {user_name} IAM user already has the maximum of {limit} access keys — \
+         delete one to make room for this computer"
+    )]
+    AccessKeyLimitExceeded { user_name: String, limit: u32 },
+
     #[error("timed out after {seconds}s waiting for {operation}: {last_error}")]
     Timeout {
         operation: String,

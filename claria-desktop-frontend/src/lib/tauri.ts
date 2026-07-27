@@ -6,6 +6,7 @@ import { commands } from "./bindings";
 export { commands };
 export type {
   AccessKeyInfo,
+  AccessKeyLimitReached,
   Action,
   AssumeRoleResult,
   BootstrapResult,
@@ -33,6 +34,7 @@ export type {
   ModelPricing,
   NewCredentials,
   PlanEntry,
+  ProvisionApplyOutcome,
   RecordContext,
   RecordFile,
   ResourceSpec,
@@ -269,7 +271,7 @@ export async function provisionApply(
   credentials: import("./bindings").CredentialSource,
   elevatedCredentials: import("./bindings").CredentialSource | null,
   onProgress?: (p: ProvisionerProgress) => void
-): Promise<import("./bindings").PlanEntry[]> {
+): Promise<import("./bindings").ProvisionApplyOutcome> {
   const { invoke, Channel } = await import("@tauri-apps/api/core");
   const channel = new Channel<ProvisionerProgress>();
   if (onProgress) {

@@ -1481,6 +1481,7 @@ name = "claria-provisioner"
 version = "0.18.0"
 dependencies = [
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-artifact",
  "aws-sdk-bedrock",
  "aws-sdk-cloudtrail",
@@ -1490,6 +1491,7 @@ dependencies = [
  "aws-smithy-types",
  "backon",
  "claria-core",
+ "claria-mock-aws",
  "claria-storage",
  "dirs",
  "percent-encoding",

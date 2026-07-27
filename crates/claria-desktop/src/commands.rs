@@ -979,6 +979,34 @@ pub struct ProvisionScanResult {
     pub account_id: String,
 }
 
+/// Why the credential handoff could not mint a key for this computer.
+///
+/// IAM caps a user at two access keys, so onboarding a third machine against
+/// an already-provisioned account is a routine outcome, not a crash. The
+/// frontend uses this to offer key deletion instead of dead-ending.
+#[derive(Clone, Serialize, Deserialize, specta::Type)]
+pub struct AccessKeyLimitReached {
+    /// The IAM user whose key slots are full.
+    pub user_name: String,
+    /// How many keys AWS allows.
+    pub limit: u32,
+    /// The full error text, so the operator sees exactly what AWS said.
+    pub message: String,
+}
+
+/// What `provision_apply` did.
+///
+/// Reconciliation normally ends with a fresh plan. The one recoverable
+/// interruption is the IAM access-key ceiling during the first-run credential
+/// handoff, which is reported here rather than as an opaque error string.
+#[derive(Clone, Serialize, Deserialize, specta::Type)]
+pub struct ProvisionApplyOutcome {
+    /// The post-apply plan. Empty when `access_key_limit` is set.
+    pub entries: Vec<PlanEntry>,
+    /// Set when the handoff stopped at the IAM two-key ceiling.
+    pub access_key_limit: Option<AccessKeyLimitReached>,
+}
+
 /// Scan all resources using the provided credentials.
 ///
 /// This is the entry point for both first-run and day-2 flows. On first run
@@ -1052,6 +1080,11 @@ pub async fn provision_scan(
 ///    if no config exists yet (credential handoff from admin → scoped creds).
 /// 3. Execute regular resources with the scoped credentials.
 /// 4. Re-scan and return the updated plan.
+///
+/// Step 2 can hit IAM's two-access-key ceiling when the account has already
+/// onboarded two computers. That is reported as
+/// [`ProvisionApplyOutcome::access_key_limit`] so the caller can offer key
+/// deletion and retry.
 #[tauri::command]
 #[specta::specta]
 pub async fn provision_apply(
@@ -1061,7 +1094,7 @@ pub async fn provision_apply(
     credentials: CredentialSource,
     elevated_credentials: Option<CredentialSource>,
     on_progress: tauri::ipc::Channel<ProvisionerProgress>,
-) -> Result<Vec<PlanEntry>, String> {
+) -> Result<ProvisionApplyOutcome, String> {
     let sdk_config =
         claria_desktop::aws::build_aws_config(&region, &credentials).await;
 
@@ -1147,9 +1180,39 @@ pub async fn provision_apply(
             status: "in_progress".into(),
         });
 
-        let (key_id, secret) = claria_provisioner::create_access_key(&elevated_config)
-            .await
-            .map_err(|e| e.to_string())?;
+        let (key_id, secret) = match claria_provisioner::create_access_key(&elevated_config).await {
+            Ok(pair) => pair,
+            // Recoverable: the operator can free a slot by deleting a key
+            // belonging to a computer they no longer use.
+            Err(claria_provisioner::ProvisionerError::AccessKeyLimitExceeded {
+                user_name,
+                limit,
+            }) => {
+                let message = claria_provisioner::ProvisionerError::AccessKeyLimitExceeded {
+                    user_name: user_name.clone(),
+                    limit,
+                }
+                .to_string();
+                tracing::warn!(
+                    user_name = %user_name,
+                    limit,
+                    "credential handoff blocked by the IAM access-key limit"
+                );
+                let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+                    label: "Creating access key for claria-admin".into(),
+                    status: "failed".into(),
+                });
+                return Ok(ProvisionApplyOutcome {
+                    entries: Vec::new(),
+                    access_key_limit: Some(AccessKeyLimitReached {
+                        user_name,
+                        limit,
+                        message,
+                    }),
+                });
+            }
+            Err(e) => return Err(e.to_string()),
+        };
 
         let _ = on_progress.send(ProvisionerProgress::EscalationStep {
             label: "Creating access key for claria-admin".into(),
@@ -1260,7 +1323,12 @@ pub async fn provision_apply(
         None,
     );
 
-    scan_with_progress(&all_syncers, &prov_state, &on_progress).await
+    let entries = scan_with_progress(&all_syncers, &prov_state, &on_progress).await?;
+
+    Ok(ProvisionApplyOutcome {
+        entries,
+        access_key_limit: None,
+    })
 }
 
 // ---------------------------------------------------------------------------

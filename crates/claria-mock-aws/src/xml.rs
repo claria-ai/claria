@@ -20,10 +20,31 @@ pub fn wrap(tag: &str, children: &str) -> String {
     format!("<{tag}>{children}</{tag}>")
 }
 
-/// Build an AWS error response XML.
+/// Build a REST-XML (S3) error response body, where `Error` is the root.
 pub fn error_xml(code: &str, message: &str) -> String {
     xml_doc(&wrap(
         "Error",
         &format!("{}{}", el("Code", code), el("Message", message)),
+    ))
+}
+
+/// Build a query-protocol (IAM, STS) error response body.
+///
+/// These services nest `Error` inside an `ErrorResponse` envelope. The SDK's
+/// generated parser only reads `Code` from a child element named `Error`, so a
+/// bare `Error` root deserializes to an unhandled error with no code at all —
+/// which is how a `LimitExceeded` reaches the caller as "service error".
+pub fn query_error_xml(code: &str, message: &str) -> String {
+    xml_doc(&wrap(
+        "ErrorResponse",
+        &wrap(
+            "Error",
+            &format!(
+                "{}{}{}",
+                el("Type", "Sender"),
+                el("Code", code),
+                el("Message", message)
+            ),
+        ),
     ))
 }

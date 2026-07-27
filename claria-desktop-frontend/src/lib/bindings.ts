@@ -254,8 +254,13 @@ async provisionScan(region: string, systemName: string, credentials: CredentialS
  * if no config exists yet (credential handoff from admin → scoped creds).
  * 3. Execute regular resources with the scoped credentials.
  * 4. Re-scan and return the updated plan.
+ * 
+ * Step 2 can hit IAM's two-access-key ceiling when the account has already
+ * onboarded two computers. That is reported as
+ * [`ProvisionApplyOutcome::access_key_limit`] so the caller can offer key
+ * deletion and retry.
  */
-async provisionApply(region: string, systemName: string, credentials: CredentialSource, elevatedCredentials: CredentialSource | null, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<PlanEntry[], string>> {
+async provisionApply(region: string, systemName: string, credentials: CredentialSource, elevatedCredentials: CredentialSource | null, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionApplyOutcome, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("provision_apply", { region, systemName, credentials, elevatedCredentials, onProgress }) };
 } catch (e) {
@@ -917,6 +922,26 @@ last_used_at: string | null;
  * or `None` if never used.
  */
 last_used_service: string | null }
+/**
+ * Why the credential handoff could not mint a key for this computer.
+ * 
+ * IAM caps a user at two access keys, so onboarding a third machine against
+ * an already-provisioned account is a routine outcome, not a crash. The
+ * frontend uses this to offer key deletion instead of dead-ending.
+ */
+export type AccessKeyLimitReached = { 
+/**
+ * The IAM user whose key slots are full.
+ */
+user_name: string; 
+/**
+ * How many keys AWS allows.
+ */
+limit: number; 
+/**
+ * The full error text, so the operator sees exactly what AWS said.
+ */
+message: string }
 export type Action = "ok" | "create" | "modify" | "delete" | "precondition_failed"
 /**
  * Temporary credentials obtained by assuming a role in a sub-account.
@@ -1119,6 +1144,22 @@ export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drif
  * Live state read from AWS (if the resource exists).
  */
 actual: JsonValue | null }
+/**
+ * What `provision_apply` did.
+ * 
+ * Reconciliation normally ends with a fresh plan. The one recoverable
+ * interruption is the IAM access-key ceiling during the first-run credential
+ * handoff, which is reported here rather than as an opaque error string.
+ */
+export type ProvisionApplyOutcome = { 
+/**
+ * The post-apply plan. Empty when `access_key_limit` is set.
+ */
+entries: PlanEntry[]; 
+/**
+ * Set when the handoff stopped at the IAM two-key ceiling.
+ */
+access_key_limit: AccessKeyLimitReached | null }
 /**
  * Result of a provision scan. Contains everything the frontend needs to
  * render the plan and decide whether escalation is required.

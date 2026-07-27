@@ -36,6 +36,10 @@ All notable changes to Claria are documented here.
 - An ETag optimistic-lock miss is detected from the HTTP status and error code instead of matching on error text
 - Setting up a second computer against an already-provisioned AWS account offers a Set Up This Computer button instead of stranding the user on a plan with nothing to apply
 - A conformant plan on a configured machine offers Continue to Claria
+- Setting up a computer when AWS refuses a new access key reports the actual AWS error code and message instead of the words "service error"
+- Setting up a third computer against an account whose IAM user already holds two access keys lists those keys with their creation and last-used dates and offers to delete one, instead of dead-ending
+- Deleting an access key warns that the computer using it loses access to Claria and requires a per-key confirmation; nothing is preselected
+- IAM and STS errors from the mock AWS server carry their error code, so tests exercise the same parsing path as the real SDK
 
 ## [0.18.0] — 2026-07-07
 
