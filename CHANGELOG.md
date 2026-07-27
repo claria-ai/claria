@@ -48,6 +48,7 @@ All notable changes to Claria are documented here.
 - Screen readers announce dialogs as modal and read their title
 - Escape does not discard a just-recorded memo transcript, and clicking the dimmed background still does not dismiss a delete confirmation
 - The thirteen hand-rolled modal overlays are one shared component
+- Comparing two versions of a long transcript no longer stalls the window while a quadratic table is built; a 5,000-line pair diffs in milliseconds instead of half a second
 
 ## [0.18.0] — 2026-07-07
 
