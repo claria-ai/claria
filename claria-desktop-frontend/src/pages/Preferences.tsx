@@ -873,15 +873,21 @@ function TranscriptionSection() {
       setSyncing(true);
       setSyncError(null);
       try {
+        // `savePreferences` rewrites every synced field, so the sibling values
+        // have to be current — not whatever was true when this section
+        // mounted. The model dropdown and the Cost Explorer section write them
+        // independently, and a stale snapshot here would push the old values
+        // back over both the local config and S3.
+        const current = await loadConfig().catch(() => base);
         await savePreferences(
-          base.preferred_model_id,
-          base.cost_explorer_enabled,
-          base.hourly_cost_data,
-          base.prompt_caching_enabled,
+          current.preferred_model_id,
+          current.cost_explorer_enabled,
+          current.hourly_cost_data,
+          current.prompt_caching_enabled,
           next
         );
         // Advancing the snapshot clears `dirty` and stops the debounce.
-        setSnapshot({ ...base, transcription: next });
+        setSnapshot({ ...current, transcription: next });
         setSyncedOnce(true);
       } catch (e) {
         setSyncError(String(e));
@@ -920,13 +926,20 @@ function TranscriptionSection() {
     return () => {
       const pending = pendingRef.current;
       if (!pending) return;
-      savePreferences(
-        pending.base.preferred_model_id,
-        pending.base.cost_explorer_enabled,
-        pending.base.hourly_cost_data,
-        pending.base.prompt_caching_enabled,
-        pending.next
-      ).catch((e) => console.error("preferences sync on leave failed:", e));
+      // Same freshness requirement as `sync` above — the component is gone but
+      // the write still rewrites every synced field.
+      loadConfig()
+        .catch(() => pending.base)
+        .then((current) =>
+          savePreferences(
+            current.preferred_model_id,
+            current.cost_explorer_enabled,
+            current.hourly_cost_data,
+            current.prompt_caching_enabled,
+            pending.next
+          )
+        )
+        .catch((e) => console.error("preferences sync on leave failed:", e));
     };
   }, []);
 

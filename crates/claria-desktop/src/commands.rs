@@ -216,6 +216,36 @@ async fn write_cloud_preferences(
     Ok(())
 }
 
+/// Persist `cfg` locally, mirror the synced subset to S3, and refresh the
+/// in-memory copy.
+///
+/// Every command that changes a [`SyncedPreferences`] field must go through
+/// here. `load_config` overlays the S3 copy onto the local config on each
+/// call, so a local-only write is silently reverted by the next read — the
+/// setting appears to save, survives on disk, and still comes back stale.
+///
+/// The local write happens first so the edit is not lost when S3 is
+/// unreachable; the cloud failure is returned so the UI can say so.
+async fn save_config_synced(
+    state: &State<'_, DesktopState>,
+    sdk_config: &aws_config::SdkConfig,
+    cfg: ClariaConfig,
+    what: &str,
+) -> Result<(), String> {
+    config::save_config(&cfg).map_err(|e| e.to_string())?;
+
+    let synced = SyncedPreferences::from_config(&cfg);
+    let cloud = write_cloud_preferences(sdk_config, &cfg, &synced)
+        .await
+        .map_err(|e| format!("{what} saved locally but cloud sync failed: {e}"));
+
+    let mut guard = state.config.lock().await;
+    *guard = Some(cfg);
+    drop(guard);
+
+    cloud
+}
+
 /// Save the clinician's preferences (synced subset) to both the local config
 /// file and `_state/preferences.json` in S3. Bubbles S3-write failures so the
 /// frontend can show a partial-save warning.
@@ -318,20 +348,21 @@ pub async fn delete_config(
 ///
 /// Loads the current config, updates `preferred_model_id`, and saves. Pass
 /// `None` to clear the preference (fall back to the first available model).
+///
+/// `preferred_model_id` is part of [`SyncedPreferences`], and `load_config`
+/// overlays that S3 copy onto the local config on every call. Writing only the
+/// local file would therefore be undone by the very next `load_config` — the
+/// pick would survive on disk but the app would keep reading the stale cloud
+/// value. The cloud write is not optional for this field.
 #[tauri::command]
 #[specta::specta]
 pub async fn set_preferred_model(
     state: State<'_, DesktopState>,
     model_id: Option<String>,
 ) -> Result<(), String> {
-    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    let (mut cfg, sdk_config) = load_sdk_config(&state).await?;
     cfg.preferred_model_id = model_id;
-    config::save_config(&cfg).map_err(|e| e.to_string())?;
-
-    let mut guard = state.config.lock().await;
-    *guard = Some(cfg);
-
-    Ok(())
+    save_config_synced(&state, &sdk_config, cfg, "preferred model").await
 }
 
 // ---------------------------------------------------------------------------
@@ -4001,14 +4032,9 @@ pub async fn probe_cost_explorer(
 pub async fn enable_cost_explorer(
     state: State<'_, DesktopState>,
 ) -> Result<(), String> {
-    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    let (mut cfg, sdk_config) = load_sdk_config(&state).await?;
     cfg.cost_explorer_enabled = true;
-    config::save_config(&cfg).map_err(|e| e.to_string())?;
-
-    let mut guard = state.config.lock().await;
-    *guard = Some(cfg);
-
-    Ok(())
+    save_config_synced(&state, &sdk_config, cfg, "Cost Explorer setting").await
 }
 
 #[tauri::command]
@@ -4017,14 +4043,9 @@ pub async fn set_hourly_cost_data(
     state: State<'_, DesktopState>,
     enabled: bool,
 ) -> Result<(), String> {
-    let mut cfg = config::load_config().map_err(|e| e.to_string())?;
+    let (mut cfg, sdk_config) = load_sdk_config(&state).await?;
     cfg.hourly_cost_data = enabled;
-    config::save_config(&cfg).map_err(|e| e.to_string())?;
-
-    let mut guard = state.config.lock().await;
-    *guard = Some(cfg);
-
-    Ok(())
+    save_config_synced(&state, &sdk_config, cfg, "hourly cost data setting").await
 }
 
 /// Look up `ModelPricing` for a Bedrock model_id. Returns `None` for
