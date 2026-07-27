@@ -12,6 +12,9 @@ use crate::{
     xml,
 };
 
+/// Page size ceiling for ListObjectVersions, matching S3's own cap.
+const MAX_LIST_KEYS: usize = 1000;
+
 /// Dispatch an S3 request by method + path + query params.
 pub async fn dispatch(
     method: Method,
@@ -51,7 +54,14 @@ async fn dispatch_bucket(
     state: SharedState,
     body: Bytes,
 ) -> Response {
-    // Route by query param presence
+    // Route by query param presence. `?delete` is matched as a whole flag,
+    // not a substring: a ListObjectsV2 prefix is free to contain the word.
+    if has_flag(query, "delete") {
+        return match *method {
+            Method::POST => delete_objects(bucket, state, body).await,
+            _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+        };
+    }
     if query.contains("versioning") {
         return match *method {
             Method::GET => get_bucket_versioning(bucket, state).await,
@@ -115,7 +125,7 @@ async fn dispatch_object(
         Method::HEAD => head_object(bucket, &key, query, state).await,
         Method::GET => get_object(bucket, &key, query, state).await,
         Method::PUT => put_object(bucket, &key, headers, state, body).await,
-        Method::DELETE => delete_object(bucket, &key, state).await,
+        Method::DELETE => delete_object(bucket, &key, query, state).await,
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
     }
 }
@@ -151,10 +161,136 @@ async fn create_bucket(bucket: &str, state: SharedState, body: Bytes) -> Respons
 
 async fn delete_bucket(bucket: &str, state: SharedState) -> Response {
     let mut st = state.write().await;
+
+    // S3 refuses to drop a bucket that still holds anything — and on a
+    // versioning-enabled bucket a delete marker counts, which is exactly how
+    // "I deleted every object" still leaves a bucket that won't go away.
+    let residue = st
+        .objects
+        .iter()
+        .any(|((b, _), versions)| b == bucket && !versions.is_empty());
+    if residue {
+        return (
+            StatusCode::CONFLICT,
+            xml::error_xml(
+                "BucketNotEmpty",
+                "The bucket you tried to delete is not empty. You must delete all versions in the bucket.",
+            ),
+        )
+            .into_response();
+    }
+
     st.buckets.remove(bucket);
-    // Remove all objects in the bucket
     st.objects.retain(|(b, _), _| b != bucket);
     StatusCode::NO_CONTENT.into_response()
+}
+
+// ── DeleteObjects (batch) ──
+
+/// `POST /{bucket}?delete` — delete up to 1,000 objects or object versions.
+///
+/// Answers 200 with a body that mixes `Deleted` and `Error` entries: a failure
+/// here is not an HTTP error, which is the trap this mock exists to reproduce.
+async fn delete_objects(bucket: &str, state: SharedState, body: Bytes) -> Response {
+    let text = String::from_utf8_lossy(&body);
+    let targets = parse_delete_request(&text);
+
+    let mut st = state.write().await;
+
+    let versioning = match st.buckets.get(bucket) {
+        Some(b) => b.versioning.clone(),
+        None => return (StatusCode::NOT_FOUND, xml::error_xml("NoSuchBucket", "")).into_response(),
+    };
+
+    st.s3_delete_objects_batches.push(targets.len());
+
+    let mut results = String::new();
+
+    for (key, version_id) in targets {
+        if st.s3_delete_object_failures.contains(&key) {
+            results.push_str(&xml::wrap(
+                "Error",
+                &format!(
+                    "{}{}{}",
+                    xml::el("Key", &key),
+                    xml::el("Code", "AccessDenied"),
+                    xml::el("Message", "Access Denied"),
+                ),
+            ));
+            continue;
+        }
+
+        let entry = (bucket.to_string(), key.clone());
+
+        match &version_id {
+            // A versioned delete removes that exact version, delete markers
+            // included, and never leaves a new marker behind.
+            Some(vid) => {
+                if let Some(versions) = st.objects.get_mut(&entry) {
+                    versions.retain(|v| &v.version_id != vid);
+                    if versions.is_empty() {
+                        st.objects.remove(&entry);
+                    }
+                }
+                results.push_str(&xml::wrap(
+                    "Deleted",
+                    &format!("{}{}", xml::el("Key", &key), xml::el("VersionId", vid)),
+                ));
+            }
+            None if versioning == VersioningStatus::Enabled => {
+                let marker_id = Uuid::new_v4().to_string();
+                st.objects.entry(entry).or_default().push(ObjectVersion {
+                    version_id: marker_id.clone(),
+                    body: Bytes::new(),
+                    content_type: String::new(),
+                    etag: String::new(),
+                    last_modified: jiff::Timestamp::now().to_string(),
+                    is_delete_marker: true,
+                });
+                results.push_str(&xml::wrap(
+                    "Deleted",
+                    &format!(
+                        "{}{}{}",
+                        xml::el("Key", &key),
+                        xml::el("DeleteMarker", "true"),
+                        xml::el("DeleteMarkerVersionId", &marker_id),
+                    ),
+                ));
+            }
+            None => {
+                st.objects.remove(&entry);
+                results.push_str(&xml::wrap("Deleted", &xml::el("Key", &key)));
+            }
+        }
+    }
+
+    let body = xml::xml_doc(&xml::wrap_ns(
+        "DeleteResult",
+        "http://s3.amazonaws.com/doc/2006-03-01/",
+        &results,
+    ));
+
+    (StatusCode::OK, [("content-type", "application/xml")], body).into_response()
+}
+
+/// Pull `(key, version_id)` pairs out of a `Delete` request body.
+fn parse_delete_request(xml_body: &str) -> Vec<(String, Option<String>)> {
+    let mut targets = Vec::new();
+    let mut rest = xml_body;
+
+    while let Some(start) = rest.find("<Object>") {
+        let after_open = &rest[start + "<Object>".len()..];
+        let Some(end) = after_open.find("</Object>") else {
+            break;
+        };
+        let block = &after_open[..end];
+        if let Some(key) = extract_xml_value(block, "Key") {
+            targets.push((key, extract_xml_value(block, "VersionId")));
+        }
+        rest = &after_open[end..];
+    }
+
+    targets
 }
 
 // ── Versioning ──
@@ -397,41 +533,94 @@ async fn list_object_versions(bucket: &str, query: &str, state: SharedState) -> 
     }
 
     let prefix = extract_query_param(query, "prefix").unwrap_or_default();
+    let max_keys = extract_query_param(query, "max-keys")
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MAX_LIST_KEYS)
+        .min(MAX_LIST_KEYS);
+    let key_marker = extract_query_param(query, "key-marker");
+    let version_id_marker = extract_query_param(query, "version-id-marker");
+
+    // S3 orders versions by key ascending, newest version first within a key.
+    // State stores each version stack oldest-first, so walk it in reverse.
+    let mut keys: Vec<&String> = st
+        .objects
+        .keys()
+        .filter(|(b, k)| b == bucket && k.starts_with(&prefix))
+        .map(|(_, k)| k)
+        .collect();
+    keys.sort_unstable();
+
+    let mut entries: Vec<(&str, &ObjectVersion, bool)> = Vec::new();
+    for key in keys {
+        let versions = &st.objects[&(bucket.to_string(), key.clone())];
+        for (i, ver) in versions.iter().rev().enumerate() {
+            entries.push((key.as_str(), ver, i == 0));
+        }
+    }
+
+    // Resume after the marker pair: a key marker alone starts at the next key.
+    if let Some(km) = &key_marker {
+        let start = match &version_id_marker {
+            Some(vm) => entries
+                .iter()
+                .position(|(k, v, _)| k == km && &v.version_id == vm)
+                .map(|i| i + 1)
+                .unwrap_or(0),
+            None => entries
+                .iter()
+                .position(|(k, _, _)| *k > km.as_str())
+                .unwrap_or(entries.len()),
+        };
+        entries.drain(..start);
+    }
+
+    let truncated = entries.len() > max_keys;
+    entries.truncate(max_keys);
+
+    let next_markers = if truncated {
+        entries
+            .last()
+            .map(|(k, v, _)| {
+                format!(
+                    "{}{}",
+                    xml::el("NextKeyMarker", k),
+                    xml::el("NextVersionIdMarker", &v.version_id),
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     let mut versions_xml = String::new();
     let mut delete_markers_xml = String::new();
 
-    for ((b, k), versions) in &st.objects {
-        if b != bucket || !k.starts_with(&prefix) {
-            continue;
-        }
-        let latest_idx = versions.len().saturating_sub(1);
-        for (i, ver) in versions.iter().enumerate() {
-            let is_latest = i == latest_idx;
-            if ver.is_delete_marker {
-                delete_markers_xml.push_str(&xml::wrap(
-                    "DeleteMarker",
-                    &format!(
-                        "{}{}{}{}",
-                        xml::el("Key", k),
-                        xml::el("VersionId", &ver.version_id),
-                        xml::el("IsLatest", &is_latest.to_string()),
-                        xml::el("LastModified", &ver.last_modified),
-                    ),
-                ));
-            } else {
-                versions_xml.push_str(&xml::wrap(
-                    "Version",
-                    &format!(
-                        "{}{}{}{}{}{}",
-                        xml::el("Key", k),
-                        xml::el("VersionId", &ver.version_id),
-                        xml::el("IsLatest", &is_latest.to_string()),
-                        xml::el("LastModified", &ver.last_modified),
-                        xml::el("ETag", &format!("\"{}\"", ver.etag)),
-                        xml::el("Size", &ver.body.len().to_string()),
-                    ),
-                ));
-            }
+    for (key, ver, is_latest) in &entries {
+        if ver.is_delete_marker {
+            delete_markers_xml.push_str(&xml::wrap(
+                "DeleteMarker",
+                &format!(
+                    "{}{}{}{}",
+                    xml::el("Key", key),
+                    xml::el("VersionId", &ver.version_id),
+                    xml::el("IsLatest", &is_latest.to_string()),
+                    xml::el("LastModified", &ver.last_modified),
+                ),
+            ));
+        } else {
+            versions_xml.push_str(&xml::wrap(
+                "Version",
+                &format!(
+                    "{}{}{}{}{}{}",
+                    xml::el("Key", key),
+                    xml::el("VersionId", &ver.version_id),
+                    xml::el("IsLatest", &is_latest.to_string()),
+                    xml::el("LastModified", &ver.last_modified),
+                    xml::el("ETag", &format!("\"{}\"", ver.etag)),
+                    xml::el("Size", &ver.body.len().to_string()),
+                ),
+            ));
         }
     }
 
@@ -439,10 +628,12 @@ async fn list_object_versions(bucket: &str, query: &str, state: SharedState) -> 
         "ListVersionsResult",
         "http://s3.amazonaws.com/doc/2006-03-01/",
         &format!(
-            "{}{}{}{}{}",
+            "{}{}{}{}{}{}{}",
             xml::el("Name", bucket),
             xml::el("Prefix", &prefix),
-            xml::el("IsTruncated", "false"),
+            xml::el("MaxKeys", &max_keys.to_string()),
+            xml::el("IsTruncated", &truncated.to_string()),
+            next_markers,
             versions_xml,
             delete_markers_xml,
         ),
@@ -563,13 +754,26 @@ async fn put_object(
     builder.body(Body::empty()).unwrap()
 }
 
-async fn delete_object(bucket: &str, key: &str, state: SharedState) -> Response {
+async fn delete_object(bucket: &str, key: &str, query: &str, state: SharedState) -> Response {
     let mut st = state.write().await;
 
     let versioning = match st.buckets.get(bucket) {
         Some(b) => b.versioning.clone(),
         None => return StatusCode::NO_CONTENT.into_response(),
     };
+
+    // A versioned delete removes that exact version rather than stacking a
+    // delete marker on top of it.
+    if let Some(vid) = extract_query_param(query, "versionId") {
+        let entry = (bucket.to_string(), key.to_string());
+        if let Some(versions) = st.objects.get_mut(&entry) {
+            versions.retain(|v| v.version_id != vid);
+            if versions.is_empty() {
+                st.objects.remove(&entry);
+            }
+        }
+        return StatusCode::NO_CONTENT.into_response();
+    }
 
     if versioning == VersioningStatus::Enabled {
         // Insert a delete marker
@@ -611,6 +815,13 @@ fn extract_xml_bool(xml: &str, tag: &str) -> bool {
 
 fn extract_query_param(query: &str, key: &str) -> Option<String> {
     params::extract(query, key)
+}
+
+/// Whether a valueless query flag (`?delete`, `?delete=`) is present.
+fn has_flag(query: &str, flag: &str) -> bool {
+    query
+        .split('&')
+        .any(|pair| pair == flag || pair.split_once('=').map(|(k, _)| k) == Some(flag))
 }
 
 /// Convert an ISO 8601 timestamp (jiff's default `Timestamp` Display, which is

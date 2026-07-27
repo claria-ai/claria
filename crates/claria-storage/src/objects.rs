@@ -1,5 +1,6 @@
 use aws_sdk_s3::{Client, presigning::PresigningConfig};
 use aws_smithy_types::byte_stream::ByteStream;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::error::StorageError;
@@ -161,21 +162,154 @@ pub async fn delete_object(
     Ok(())
 }
 
+/// Maximum objects S3 accepts in a single `DeleteObjects` request.
+const DELETE_BATCH_SIZE: usize = 1000;
+
+/// How many per-object failures to name before summarising the rest. The
+/// message reaches the UI, and a thousand-line error is no more useful than
+/// a handful of examples.
+const MAX_REPORTED_DELETE_ERRORS: usize = 5;
+
+/// An object to delete: a key, optionally pinned to one version.
+///
+/// Without a version ID, deleting on a versioning-enabled bucket writes a
+/// delete marker and keeps the data. With one, that exact version — including
+/// a delete marker, which is itself a version — is removed for good.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteTarget {
+    pub key: String,
+    pub version_id: Option<String>,
+}
+
+impl DeleteTarget {
+    /// Target the current version of `key` (a soft delete when versioned).
+    pub fn key(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            version_id: None,
+        }
+    }
+
+    /// Target one specific version of `key`.
+    pub fn version(key: impl Into<String>, version_id: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            version_id: Some(version_id.into()),
+        }
+    }
+}
+
+/// Delete objects in batches of up to 1,000 per request.
+///
+/// Returns the number of objects deleted. Failure is not all-or-nothing: S3
+/// reports per-object errors inside an HTTP 200, so a batch is only a success
+/// once its `errors` list comes back empty. The first batch that reports any
+/// error aborts the run — earlier batches stay deleted, and re-running picks
+/// up whatever is left.
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(bucket = %bucket, targets = targets.len())
+)]
+pub async fn delete_objects(
+    client: &Client,
+    bucket: &str,
+    targets: &[DeleteTarget],
+) -> Result<usize, StorageError> {
+    let mut deleted = 0usize;
+
+    for chunk in targets.chunks(DELETE_BATCH_SIZE) {
+        let mut delete = aws_sdk_s3::types::Delete::builder().quiet(false);
+
+        for target in chunk {
+            let mut id = aws_sdk_s3::types::ObjectIdentifier::builder().key(&target.key);
+            if let Some(version_id) = &target.version_id {
+                id = id.version_id(version_id);
+            }
+            let id = id
+                .build()
+                .map_err(|e| StorageError::DeleteObject(format!("invalid delete target: {e}")))?;
+            delete = delete.objects(id);
+        }
+
+        let delete = delete
+            .build()
+            .map_err(|e| StorageError::DeleteObject(format!("invalid delete batch: {e}")))?;
+
+        let resp = client
+            .delete_objects()
+            .bucket(bucket)
+            .delete(delete)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = e.into_service_error().to_string();
+                tracing::error!(bucket, error = %msg, "S3 DeleteObjects failed");
+                StorageError::DeleteObject(msg)
+            })?;
+
+        let errors = resp.errors();
+        if !errors.is_empty() {
+            let mut details: Vec<String> = errors
+                .iter()
+                .take(MAX_REPORTED_DELETE_ERRORS)
+                .map(|e| {
+                    format!(
+                        "{} ({}: {})",
+                        e.key().unwrap_or("<unknown key>"),
+                        e.code().unwrap_or("<no code>"),
+                        e.message().unwrap_or("<no message>"),
+                    )
+                })
+                .collect();
+            if errors.len() > MAX_REPORTED_DELETE_ERRORS {
+                details.push(format!(
+                    "and {} more",
+                    errors.len() - MAX_REPORTED_DELETE_ERRORS
+                ));
+            }
+            let details = details.join("; ");
+
+            tracing::error!(
+                bucket,
+                failed = errors.len(),
+                attempted = chunk.len(),
+                details = %details,
+                "S3 DeleteObjects reported per-object failures"
+            );
+
+            return Err(StorageError::DeleteObjects {
+                attempted: chunk.len(),
+                failed: errors.len(),
+                details,
+            });
+        }
+
+        deleted += chunk.len();
+    }
+
+    Ok(deleted)
+}
+
 /// Delete all objects under a prefix.
 ///
-/// Lists all keys with the given prefix and deletes each one.
+/// On a versioning-enabled bucket this is a soft delete: each key gets a
+/// delete marker and the prior versions survive. Use
+/// [`delete_all_object_versions`] to erase the history too.
+///
 /// Returns the number of objects deleted.
 pub async fn delete_objects_by_prefix(
     client: &Client,
     bucket: &str,
     prefix: &str,
 ) -> Result<usize, StorageError> {
-    let keys = list_objects(client, bucket, prefix).await?;
-    let count = keys.len();
-    for key in &keys {
-        delete_object(client, bucket, key).await?;
-    }
-    Ok(count)
+    let targets: Vec<DeleteTarget> = list_objects(client, bucket, prefix)
+        .await?
+        .into_iter()
+        .map(DeleteTarget::key)
+        .collect();
+
+    delete_objects(client, bucket, &targets).await
 }
 
 /// Metadata for a single S3 object, returned by [`list_objects_with_metadata`].
@@ -441,6 +575,49 @@ pub async fn list_deleted_objects(
     .await?;
 
     Ok(deleted)
+}
+
+/// Permanently delete every version and delete marker under `prefix`.
+///
+/// Pass an empty prefix to empty a whole bucket. Deleting an object on a
+/// versioning-enabled bucket only stacks a delete marker on top of it, so this
+/// is the only way to leave a bucket genuinely empty — the state
+/// `DeleteBucket` insists on.
+///
+/// The enumeration is buffered before any deletion so that listing markers are
+/// never invalidated by the deletes running underneath them. Re-running after
+/// a failure is safe: an already-deleted version simply no longer lists.
+///
+/// Returns the number of versions deleted.
+pub async fn delete_all_object_versions(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<usize, StorageError> {
+    let mut targets: Vec<DeleteTarget> = Vec::new();
+
+    for_each_version_page(client, bucket, prefix, |page| {
+        targets.extend(
+            page.versions()
+                .iter()
+                .filter_map(|v| Some(DeleteTarget::version(v.key()?, v.version_id()?))),
+        );
+        targets.extend(
+            page.delete_markers()
+                .iter()
+                .filter_map(|dm| Some(DeleteTarget::version(dm.key()?, dm.version_id()?))),
+        );
+    })
+    .await?;
+
+    tracing::info!(
+        bucket,
+        prefix,
+        versions = targets.len(),
+        "purging every object version"
+    );
+
+    delete_objects(client, bucket, &targets).await
 }
 
 /// Get the first (oldest, non-delete-marker) version of an object.

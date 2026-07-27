@@ -190,6 +190,7 @@ impl Manifest {
                         "s3:GetObjectVersion".into(),
                         "s3:PutObject".into(),
                         "s3:DeleteObject".into(),
+                        "s3:DeleteObjectVersion".into(),
                     ],
                 },
                 ResourceSpec {

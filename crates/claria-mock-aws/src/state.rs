@@ -18,6 +18,14 @@ pub struct MockState {
     pub buckets: HashMap<String, BucketState>,
     /// (bucket, key) → version stack (newest last).
     pub objects: HashMap<(String, String), Vec<ObjectVersion>>,
+    /// Keys that `DeleteObjects` refuses to delete, reporting a per-object
+    /// `AccessDenied` in the 200 response instead. A test hook: S3 signals
+    /// partial batch failure inside a success response, and that is the one
+    /// shape a caller can silently mistake for "everything deleted".
+    pub s3_delete_object_failures: HashSet<String>,
+    /// Object count of every `DeleteObjects` request received, in arrival
+    /// order. Tests read this to tell a batched delete from a per-object one.
+    pub s3_delete_objects_batches: Vec<usize>,
 
     // IAM
     pub users: HashMap<String, IamUser>,

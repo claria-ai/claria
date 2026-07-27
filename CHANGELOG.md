@@ -4,6 +4,13 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Tearing down AWS infrastructure now deletes the storage bucket, which previously always failed because version history and delete markers were left behind
+- The IAM policy grants permission to delete object versions, without which a teardown stops partway through
+- Bulk deletes go out in batches of a thousand objects per request instead of one request per object
+- A bulk delete that S3 partially refuses now reports an error naming the objects left behind instead of reporting success
+- A teardown that fails partway through is safe to re-run
+- The mock AWS server refuses to delete a bucket that still holds objects
+- The mock AWS server supports batch deletes, versioned deletes, and paged version listings
 - The frontend has a unit test suite
 - The transcript body format is pinned by fixtures the Rust and TypeScript parsers both read, so a change to one that the other misses fails on both sides
 - A recording longer than an hour and forty minutes opened in the transcript editor as one un-diarized block, and saving it overwrote every speaker header
