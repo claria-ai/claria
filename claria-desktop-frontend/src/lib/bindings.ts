@@ -115,6 +115,12 @@ async pickAudioFile() : Promise<Result<string | null, string>> {
  * 
  * Loads the current config, updates `preferred_model_id`, and saves. Pass
  * `None` to clear the preference (fall back to the first available model).
+ * 
+ * `preferred_model_id` is part of [`SyncedPreferences`], and `load_config`
+ * overlays that S3 copy onto the local config on every call. Writing only the
+ * local file would therefore be undone by the very next `load_config` — the
+ * pick would survive on disk but the app would keep reading the stale cloud
+ * value. The cloud write is not optional for this field.
  */
 async setPreferredModel(modelId: string | null) : Promise<Result<null, string>> {
     try {

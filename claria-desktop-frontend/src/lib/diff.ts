@@ -1,5 +1,10 @@
 // Line-level diff with inline character highlighting.
-// No external dependencies.
+//
+// The diffing itself is delegated to jsdiff (Myers, O(ND)); this module only
+// owns the shapes the version-compare view renders and the pairing pass that
+// attaches character-level spans to changed line pairs.
+
+import { diffArrays, diffChars } from "diff";
 
 export type DiffSpan = {
   text: string;
@@ -13,72 +18,57 @@ export type DiffLine = {
   spans?: DiffSpan[];
 };
 
+/** Collapse consecutive spans that share a highlight flag. */
+function mergeSpans(spans: DiffSpan[]): DiffSpan[] {
+  const merged: DiffSpan[] = [];
+  for (const span of spans) {
+    if (span.text === "") continue;
+    const last = merged[merged.length - 1];
+    if (last && last.highlight === span.highlight) {
+      last.text += span.text;
+    } else {
+      merged.push({ ...span });
+    }
+  }
+  return merged;
+}
+
 /**
- * Compute a character-level diff between two strings using LCS.
+ * Compute a character-level diff between two strings.
  * Returns spans for both the old and new string.
  */
-function diffChars(
+function charSpans(
   a: string,
   b: string,
 ): { removeSpans: DiffSpan[]; addSpans: DiffSpan[] } {
-  const n = a.length;
-  const m = b.length;
+  const parts = diffChars(a, b);
 
-  // Build LCS table
-  const dp: number[][] = Array.from({ length: n + 1 }, () =>
-    new Array(m + 1).fill(0),
-  );
-
-  for (let i = 1; i <= n; i++) {
-    for (let j = 1; j <= m; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
-      } else {
-        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
-      }
-    }
-  }
-
-  // Backtrack to classify each character
-  const aFlags: boolean[] = new Array(n).fill(true); // true = changed
-  const bFlags: boolean[] = new Array(m).fill(true);
-
-  let i = n;
-  let j = m;
-  while (i > 0 && j > 0) {
-    if (a[i - 1] === b[j - 1]) {
-      aFlags[i - 1] = false;
-      bFlags[j - 1] = false;
-      i--;
-      j--;
-    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
-      i--;
+  const removeSpans: DiffSpan[] = [];
+  const addSpans: DiffSpan[] = [];
+  for (const part of parts) {
+    if (part.added) {
+      addSpans.push({ text: part.value, highlight: true });
+    } else if (part.removed) {
+      removeSpans.push({ text: part.value, highlight: true });
     } else {
-      j--;
+      removeSpans.push({ text: part.value, highlight: false });
+      addSpans.push({ text: part.value, highlight: false });
     }
-  }
-
-  // Collapse consecutive same-flag characters into spans
-  function toSpans(str: string, flags: boolean[]): DiffSpan[] {
-    const spans: DiffSpan[] = [];
-    let k = 0;
-    while (k < str.length) {
-      const highlight = flags[k];
-      let end = k;
-      while (end < str.length && flags[end] === highlight) {
-        end++;
-      }
-      spans.push({ text: str.slice(k, end), highlight });
-      k = end;
-    }
-    return spans;
   }
 
   return {
-    removeSpans: toSpans(a, aFlags),
-    addSpans: toSpans(b, bFlags),
+    removeSpans: mergeSpans(removeSpans),
+    addSpans: mergeSpans(addSpans),
   };
 }
+
+/**
+ * Ceiling on the edit distance Myers will explore. Two versions of the same
+ * file sit far below it; two texts with nothing in common would otherwise cost
+ * O(n·m), and for those the wholesale replace-everything diff below is the
+ * answer anyway.
+ */
+const MAX_EDIT_LENGTH = 2000;
 
 /**
  * Compute a line-level diff between two strings.
@@ -88,46 +78,24 @@ function diffChars(
  * spans so the UI can highlight exactly which characters changed.
  */
 export function diffLines(a: string, b: string): DiffLine[] {
+  // Diff the pre-split line arrays rather than the raw text so a line is an
+  // opaque token and trailing-newline handling stays ours.
   const aLines = a.split("\n");
   const bLines = b.split("\n");
-  const n = aLines.length;
-  const m = bLines.length;
+  const changes = diffArrays(aLines, bLines, {
+    maxEditLength: MAX_EDIT_LENGTH,
+  }) ?? [
+    { value: aLines, added: false, removed: true, count: aLines.length },
+    { value: bLines, added: true, removed: false, count: bLines.length },
+  ];
 
-  // Build LCS table
-  const dp: number[][] = Array.from({ length: n + 1 }, () =>
-    new Array(m + 1).fill(0),
-  );
-
-  for (let i = 1; i <= n; i++) {
-    for (let j = 1; j <= m; j++) {
-      if (aLines[i - 1] === bLines[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
-      } else {
-        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
-      }
-    }
-  }
-
-  // Backtrack to produce the diff
   const raw: DiffLine[] = [];
-  let i = n;
-  let j = m;
-
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && aLines[i - 1] === bLines[j - 1]) {
-      raw.push({ type: "equal", line: aLines[i - 1] });
-      i--;
-      j--;
-    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      raw.push({ type: "add", line: bLines[j - 1] });
-      j--;
-    } else {
-      raw.push({ type: "remove", line: aLines[i - 1] });
-      i--;
+  for (const change of changes) {
+    const type = change.added ? "add" : change.removed ? "remove" : "equal";
+    for (const line of change.value) {
+      raw.push({ type, line });
     }
   }
-
-  raw.reverse();
 
   // Post-process: pair consecutive remove/add runs and compute char-level spans
   const result: DiffLine[] = [];
@@ -155,10 +123,7 @@ export function diffLines(a: string, b: string): DiffLine[] {
     // Pair them up for character-level diff
     const paired = Math.min(removes.length, adds.length);
     for (let p = 0; p < paired; p++) {
-      const { removeSpans, addSpans } = diffChars(
-        removes[p].line,
-        adds[p].line,
-      );
+      const { removeSpans, addSpans } = charSpans(removes[p].line, adds[p].line);
       result.push({ ...removes[p], spans: removeSpans });
       result.push({ ...adds[p], spans: addSpans });
     }

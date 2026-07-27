@@ -48,6 +48,17 @@ All notable changes to Claria are documented here.
 - Screen readers announce dialogs as modal and read their title
 - Escape does not discard a just-recorded memo transcript, and clicking the dimmed background still does not dismiss a delete confirmation
 - The thirteen hand-rolled modal overlays are one shared component
+- Comparing two versions of a long transcript no longer stalls the window while a quadratic table is built; a 5,000-line pair diffs in milliseconds instead of half a second
+- Every backend call the frontend makes goes through the generated bindings, so renaming a Rust command fails the build rather than the running app
+- Transcription preferences save a moment after you change them rather than when you leave the screen, so quitting the app no longer discards the edit
+- A transcription preference that fails to save says so and offers to retry, instead of failing silently into the log
+- Typing a custom date range in Cost Explorer no longer bills a $0.01 lookup per keystroke; the range loads when you press Apply
+- Cost Explorer permission and data-availability errors are recognised in one place instead of three
+- A failed text extraction in the chat context bar shows a dismissible banner instead of a blocking system alert
+- The Claria Console keeps updating once its log buffer is full, where it previously froze because rotation leaves the entry count unchanged
+- Choosing a preferred chat model sticks, where it previously reverted to the old model as soon as the app re-read its settings
+- Enabling Cost Explorer and turning on hourly cost data now follow you to your other computers instead of staying on the machine that set them
+- Editing transcription preferences no longer reverts a preferred model or Cost Explorer setting changed earlier in the same visit
 
 ## [0.18.0] — 2026-07-07
 

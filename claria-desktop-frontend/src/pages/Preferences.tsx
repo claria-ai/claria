@@ -25,6 +25,7 @@ import {
   type WhisperModelInfo,
   type WhisperModelTier,
 } from "../lib/tauri";
+import { costErrorMessage } from "../lib/costErrors";
 import { BackButton } from "../components/icons";
 import Spinner from "../components/Spinner";
 import Modal from "../components/Modal";
@@ -730,20 +731,16 @@ function CostExplorerSection() {
       await setHourlyCostData(true);
       setHourlyEnabled(true);
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes("AccessDenied") || msg.includes("access denied")) {
-        setError(
-          "Hourly data is not enabled for this account. In the AWS Console, go to " +
-            "Billing → Cost Explorer → Settings and enable \"Hourly and Resource Level Data\"."
-        );
-      } else if (msg.includes("DataUnavailable") || msg.includes("not enabled")) {
-        setError(
-          "Hourly cost data is not available yet. Enable it in the AWS Console under " +
-            "Billing → Cost Explorer → Settings, then wait up to 24 hours for data to appear."
-        );
-      } else {
-        setError(msg);
-      }
+      setError(
+        costErrorMessage(e, {
+          accessDenied:
+            "Hourly data is not enabled for this account. In the AWS Console, go to " +
+            'Billing → Cost Explorer → Settings and enable "Hourly and Resource Level Data".',
+          dataUnavailable:
+            "Hourly cost data is not available yet. Enable it in the AWS Console under " +
+            "Billing → Cost Explorer → Settings, then wait up to 24 hours for data to appear.",
+        })
+      );
     } finally {
       setVerifying(false);
     }
@@ -839,15 +836,18 @@ function formatFileSize(bytes: number): string {
 // Transcription section: language / speaker count / engine / translation
 // ---------------------------------------------------------------------------
 
+/** How long editing settles before a change is pushed to S3. */
+const TRANSCRIPTION_SYNC_DEBOUNCE_MS = 600;
+
 /**
  * Transcription defaults applied to drag-and-drop audio uploads. The wizard
  * uses these as starting values too, but lets the user override per file.
  *
  * Cross-machine sync: on mount we call `fetchCloudPreferences` to pull the
  * latest values from S3 (so the editing machine sees its own recent changes
- * without an app restart). Edits accumulate in a draft and sync to local
- * config and S3 via `savePreferences` when the user leaves the Preferences
- * screen. We stash the full synced subset so saving only the transcription
+ * without an app restart). Edits accumulate in a draft and are pushed to local
+ * config and S3 via `savePreferences` shortly after the user stops changing
+ * things. We stash the full synced subset so saving only the transcription
  * fields doesn't clobber the others.
  */
 function TranscriptionSection() {
@@ -863,28 +863,83 @@ function TranscriptionSection() {
     draft != null &&
     JSON.stringify(snapshot.transcription) !== JSON.stringify(draft);
 
-  // Sync on unmount (leaving the Preferences screen). The ref carries the
-  // latest snapshot/draft into the cleanup closure; the save is fire-and-
-  // forget since the component is gone — failures surface in the backend
-  // log and the Claria Console.
-  const latestRef = useRef({ snapshot, draft });
-  latestRef.current = { snapshot, draft };
+  // Sync status, shown under the controls.
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncedOnce, setSyncedOnce] = useState(false);
+
+  const sync = useCallback(
+    async (base: ConfigInfo, next: TranscriptionPreferences) => {
+      setSyncing(true);
+      setSyncError(null);
+      try {
+        // `savePreferences` rewrites every synced field, so the sibling values
+        // have to be current — not whatever was true when this section
+        // mounted. The model dropdown and the Cost Explorer section write them
+        // independently, and a stale snapshot here would push the old values
+        // back over both the local config and S3.
+        const current = await loadConfig().catch(() => base);
+        await savePreferences(
+          current.preferred_model_id,
+          current.cost_explorer_enabled,
+          current.hourly_cost_data,
+          current.prompt_caching_enabled,
+          next
+        );
+        // Advancing the snapshot clears `dirty` and stops the debounce.
+        setSnapshot({ ...current, transcription: next });
+        setSyncedOnce(true);
+      } catch (e) {
+        setSyncError(String(e));
+      } finally {
+        setSyncing(false);
+      }
+    },
+    []
+  );
+
+  // Debounced save-on-change. Saving while the screen is still mounted is what
+  // makes the edit survive a quit or a window close — an unmount cleanup never
+  // runs in either case, so edits used to be lost silently.
+  const pendingRef = useRef<{
+    base: ConfigInfo;
+    next: TranscriptionPreferences;
+  } | null>(null);
+  useEffect(() => {
+    if (!dirty || !snapshot || !draft) {
+      pendingRef.current = null;
+      return;
+    }
+    pendingRef.current = { base: snapshot, next: draft };
+    const id = setTimeout(() => {
+      pendingRef.current = null;
+      void sync(snapshot, draft);
+    }, TRANSCRIPTION_SYNC_DEBOUNCE_MS);
+    return () => clearTimeout(id);
+  }, [dirty, snapshot, draft, sync]);
+
+  // Backstop for the one case the debounce cannot cover: navigating away
+  // within the debounce window cancels the timer above. Fire-and-forget,
+  // because there is no longer any UI to report a failure into — but the
+  // window is a few hundred milliseconds, not the whole session.
   useEffect(() => {
     return () => {
-      const { snapshot, draft } = latestRef.current;
-      if (
-        snapshot &&
-        draft &&
-        JSON.stringify(snapshot.transcription) !== JSON.stringify(draft)
-      ) {
-        savePreferences(
-          snapshot.preferred_model_id,
-          snapshot.cost_explorer_enabled,
-          snapshot.hourly_cost_data,
-          snapshot.prompt_caching_enabled,
-          draft
-        ).catch((e) => console.error("preferences sync on leave failed:", e));
-      }
+      const pending = pendingRef.current;
+      if (!pending) return;
+      // Same freshness requirement as `sync` above — the component is gone but
+      // the write still rewrites every synced field.
+      loadConfig()
+        .catch(() => pending.base)
+        .then((current) =>
+          savePreferences(
+            current.preferred_model_id,
+            current.cost_explorer_enabled,
+            current.hourly_cost_data,
+            current.prompt_caching_enabled,
+            pending.next
+          )
+        )
+        .catch((e) => console.error("preferences sync on leave failed:", e));
     };
   }, []);
 
@@ -1065,11 +1120,34 @@ function TranscriptionSection() {
               </div>
             </label>
 
-            {dirty && (
-              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">
-                Changes sync when you leave this screen.
+            {syncError ? (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-red-800 text-sm">
+                  Could not save transcription preferences: {syncError}
+                </p>
+                <button
+                  onClick={() => {
+                    if (snapshot && draft) sync(snapshot, draft);
+                  }}
+                  disabled={syncing || !snapshot || !draft}
+                  className="mt-2 px-3 py-1.5 text-sm text-red-700 border border-red-300 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
+                >
+                  Try again
+                </button>
+              </div>
+            ) : syncing ? (
+              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
+                <Spinner /> Saving...
               </p>
-            )}
+            ) : dirty ? (
+              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">
+                Unsaved changes...
+              </p>
+            ) : syncedOnce ? (
+              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">
+                Saved. Other computers pick this up on restart.
+              </p>
+            ) : null}
           </>
         )}
       </div>
