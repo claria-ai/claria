@@ -4,9 +4,6 @@ import {
   savePrompt,
   deletePrompt,
   setPreferredModel,
-  listPromptVersions,
-  getPromptVersion,
-  restorePromptVersion,
   getWhisperModels,
   downloadWhisperModel,
   deleteWhisperModel,
@@ -26,6 +23,7 @@ import {
 } from "../lib/tauri";
 import { costErrorMessage } from "../lib/costErrors";
 import { formatFileSize } from "../lib/format";
+import { promptVersions } from "../lib/versions";
 import { BackButton } from "../components/icons";
 import Spinner from "../components/Spinner";
 import VersionHistoryModal from "../components/VersionHistoryModal";
@@ -310,11 +308,7 @@ function PromptEditor({
       {showVersions && (
         <VersionHistoryModal
           title={`${label} Versions`}
-          source={{
-            list: () => listPromptVersions(promptName),
-            getText: (versionId) => getPromptVersion(promptName, versionId),
-            restore: (versionId) => restorePromptVersion(promptName, versionId),
-          }}
+          source={promptVersions(promptName)}
           onClose={() => setShowVersions(false)}
           onRestored={load}
           onError={setError}

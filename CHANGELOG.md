@@ -18,6 +18,11 @@ All notable changes to Claria are documented here.
 - Each event is one immutable object, so nothing recorded is lost if the app is killed
 - An audit write that fails is reported in the Claria Console instead of failing the chat turn or upload that produced it
 - The audit crate has tests
+- The client record page is split into components and hooks, with each of its features owning its own state
+- The voice memo capture engine is a reusable hook rather than a page component's internals
+- Record files and custom prompts share one version history dialog instead of a copy each
+- Duplicate date and file-size formatters in the preferences page are gone
+- Audio buffer handling, transcription summaries, record filename rules and the webview drag-and-drop listener have tests
 - The frontend has a unit test suite
 - The transcript body format is pinned by fixtures the Rust and TypeScript parsers both read, so a change to one that the other misses fails on both sides
 - A recording longer than an hour and forty minutes opened in the transcript editor as one un-diarized block, and saving it overwrote every speaker header

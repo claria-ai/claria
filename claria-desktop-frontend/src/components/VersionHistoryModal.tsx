@@ -4,20 +4,7 @@ import Spinner from "./Spinner";
 import { formatDateTime, formatFileSize } from "../lib/format";
 import { diffLines, type DiffLine } from "../lib/diff";
 import type { FileVersion } from "../lib/tauri";
-
-/**
- * Where a version list comes from and what can be done with it.
- *
- * Record files and custom prompts are versioned by the same S3 mechanism and
- * exposed through parallel command pairs (`listFileVersions` /
- * `listPromptVersions` and friends), so the modal takes the three operations
- * rather than the identifiers they happen to need.
- */
-export type VersionSource = {
-  list: () => Promise<FileVersion[]>;
-  getText: (versionId: string) => Promise<string>;
-  restore: (versionId: string) => Promise<void>;
-};
+import type { VersionSource } from "../lib/versions";
 
 /**
  * Version history for one S3 object: list, inline preview, restore, and —
