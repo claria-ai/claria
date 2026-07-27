@@ -14,8 +14,6 @@ import {
   restoreFileVersion,
   listDeletedFiles,
   restoreDeletedFile,
-  getWhisperModels,
-  transcribeMemo,
   loadConfig,
   type RecordFile,
   type ChatHistoryDetail,
@@ -23,9 +21,10 @@ import {
   type FileVersion,
   type DeletedFile,
   type TranscriptionPreferences,
-  type WhisperModelInfo,
 } from "../lib/tauri";
 import TranscribeWizard from "../components/TranscribeWizard";
+import MemoRecorderBar from "../components/MemoRecorderBar";
+import MemoReviewModal from "../components/MemoReviewModal";
 import TranscriptEditor from "../components/TranscriptEditor";
 import Spinner from "../components/Spinner";
 import MoreToggle from "../components/MoreToggle";
@@ -49,6 +48,7 @@ import {
   versionKeyFor,
 } from "../lib/recordFiles";
 import { transcribeSummary, transcribeTooltip } from "../lib/transcribe";
+import { useMemoRecorder } from "../lib/useMemoRecorder";
 import { useMoreMode } from "../lib/useMoreMode";
 import { diffLines, type DiffLine } from "../lib/diff";
 import ClientChat from "./ClientChat";
@@ -204,26 +204,12 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   const [diffLoading, setDiffLoading] = useState(false);
   const [restoringVersion, setRestoringVersion] = useState(false);
 
-  // Memo recording state
-  const [memoReady, setMemoReady] = useState(false);
-  const [memoMultilingual, setMemoMultilingual] = useState(false);
-  const [memoGpu, setMemoGpu] = useState(false);
-  const [memoModelLabel, setMemoModelLabel] = useState("");
-  type MemoState = "idle" | "recording" | "paused" | "transcribing" | "review";
-  const [memoState, setMemoState] = useState<MemoState>("idle");
-  const [memoTranscript, setMemoTranscript] = useState("");
-  const [memoElapsed, setMemoElapsed] = useState(0);
-  const [memoFilename, setMemoFilename] = useState("");
-  const [memoSaving, setMemoSaving] = useState(false);
-  const [detectedLanguage, setDetectedLanguage] = useState<string | null>(null);
-
-  // Audio capture refs (not state — no re-renders needed)
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const pcmBufferRef = useRef<Float32Array[]>([]);
-  const transcribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const transcribingRef = useRef(false);
+  // Live memo recording — microphone, PCM buffer and timers all live in here.
+  const memo = useMemoRecorder({
+    clientId,
+    onError: setError,
+    onSaved: () => refresh(),
+  });
 
   // Search matches filenames instantly (case-insensitive substring); the
   // debounced query is also matched against each file's extracted text on
@@ -284,19 +270,6 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  // Check if a Whisper model is active.
-  useEffect(() => {
-    getWhisperModels()
-      .then((models: WhisperModelInfo[]) => {
-        const active = models.find((m) => m.active);
-        setMemoReady(!!active);
-        setMemoMultilingual(active ? active.tier !== "base_en" : false);
-        setMemoGpu(active ? active.gpu_accelerated : false);
-        setMemoModelLabel(active ? active.dir_name : "");
-      })
-      .catch(() => setMemoReady(false));
-  }, []);
 
   // Load transcription preferences once for the drag-zone tooltip. Cheap;
   // no need to re-run on tab switches.
@@ -389,229 +362,6 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
       }
     }
     await refresh();
-  }
-
-  // -------------------------------------------------------------------------
-  // Memo recording helpers
-  // -------------------------------------------------------------------------
-
-  function getPcmBuffer(): Float32Array {
-    const chunks = pcmBufferRef.current;
-    const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
-    const merged = new Float32Array(totalLen);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return merged;
-  }
-
-  async function resampleTo16kHz(buffer: Float32Array, sourceSampleRate: number): Promise<Float32Array> {
-    if (sourceSampleRate === 16000) return buffer;
-    const duration = buffer.length / sourceSampleRate;
-    const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * 16000), 16000);
-    const audioBuffer = offlineCtx.createBuffer(1, buffer.length, sourceSampleRate);
-    audioBuffer.getChannelData(0).set(buffer);
-    const source = offlineCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(offlineCtx.destination);
-    source.start();
-    const rendered = await offlineCtx.startRendering();
-    return rendered.getChannelData(0);
-  }
-
-  function float32ToBase64(samples: Float32Array): string {
-    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-  }
-
-  async function runTranscription(force = false) {
-    if (!force && transcribingRef.current) return;
-    // If forced (final pass), wait for any in-flight transcription to finish.
-    if (force) {
-      while (transcribingRef.current) {
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    }
-    transcribingRef.current = true;
-    try {
-      const sampleRate = audioCtxRef.current?.sampleRate ?? 44100;
-      const raw = getPcmBuffer();
-      if (raw.length === 0) return;
-      const pcm16k = await resampleTo16kHz(raw, sampleRate);
-      const base64 = float32ToBase64(pcm16k);
-      const result = await transcribeMemo(base64);
-      setMemoTranscript(result.text);
-      if (result.language) {
-        setDetectedLanguage(result.language);
-      }
-    } catch (e) {
-      console.error("Transcription error:", e);
-      setError(String(e));
-    } finally {
-      transcribingRef.current = false;
-    }
-  }
-
-  function startTranscribeTimer() {
-    if (transcribeTimerRef.current) return;
-    transcribeTimerRef.current = setInterval(() => {
-      runTranscription();
-    }, 4000);
-  }
-
-  function stopTranscribeTimer() {
-    if (transcribeTimerRef.current) {
-      clearInterval(transcribeTimerRef.current);
-      transcribeTimerRef.current = null;
-    }
-  }
-
-  function startElapsedTimer() {
-    if (elapsedTimerRef.current) return;
-    elapsedTimerRef.current = setInterval(() => {
-      setMemoElapsed((prev) => prev + 1);
-    }, 1000);
-  }
-
-  function stopElapsedTimer() {
-    if (elapsedTimerRef.current) {
-      clearInterval(elapsedTimerRef.current);
-      elapsedTimerRef.current = null;
-    }
-  }
-
-  async function handleStartMemo() {
-    setError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-
-      const ctx = new AudioContext();
-      audioCtxRef.current = ctx;
-      pcmBufferRef.current = [];
-      setMemoTranscript("");
-      setMemoElapsed(0);
-      setDetectedLanguage(null);
-
-      const source = ctx.createMediaStreamSource(stream);
-      // ScriptProcessorNode is deprecated but widely supported and simpler
-      // than AudioWorklet for this use case.
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processor.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0);
-        pcmBufferRef.current.push(new Float32Array(input));
-      };
-      source.connect(processor);
-      processor.connect(ctx.destination);
-
-      setMemoState("recording");
-      startElapsedTimer();
-      startTranscribeTimer();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function handlePauseMemo() {
-    stopTranscribeTimer();
-    stopElapsedTimer();
-    if (audioCtxRef.current && audioCtxRef.current.state === "running") {
-      await audioCtxRef.current.suspend();
-    }
-    // Run one final transcription pass before allowing edits.
-    await runTranscription(true);
-    setMemoState("paused");
-  }
-
-  async function handleResumeMemo() {
-    if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
-      await audioCtxRef.current.resume();
-    }
-    setMemoState("recording");
-    startElapsedTimer();
-    startTranscribeTimer();
-  }
-
-  async function handleDoneMemo() {
-    stopTranscribeTimer();
-    stopElapsedTimer();
-
-    // Stop the media stream.
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-
-    if (audioCtxRef.current) {
-      if (audioCtxRef.current.state !== "closed") {
-        // Resume if suspended so we can run final transcription
-        if (audioCtxRef.current.state === "suspended") {
-          await audioCtxRef.current.resume();
-        }
-      }
-    }
-
-    // Final transcription pass.
-    setMemoState("transcribing");
-    await runTranscription(true);
-
-    // Close AudioContext.
-    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-      await audioCtxRef.current.close();
-    }
-    audioCtxRef.current = null;
-
-    const now = new Date();
-    const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
-    setMemoFilename(`memo-${ts}`);
-    setMemoState("review");
-  }
-
-  function handleCancelMemo() {
-    // Clean up any active audio resources.
-    stopTranscribeTimer();
-    stopElapsedTimer();
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-      audioCtxRef.current.close();
-    }
-    audioCtxRef.current = null;
-    pcmBufferRef.current = [];
-    setMemoState("idle");
-    setMemoTranscript("");
-    setMemoElapsed(0);
-    setDetectedLanguage(null);
-  }
-
-  async function handleSaveMemo() {
-    if (!memoFilename.trim()) return;
-    setMemoSaving(true);
-    setError(null);
-    try {
-      await createTextRecordFile(clientId, memoFilename.trim(), memoTranscript);
-      pcmBufferRef.current = [];
-      setMemoState("idle");
-      setMemoTranscript("");
-      setMemoElapsed(0);
-      setMemoFilename("");
-      setDetectedLanguage(null);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setMemoSaving(false);
-    }
-  }
-
-  function formatElapsed(seconds: number): string {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${String(s).padStart(2, "0")}`;
   }
 
   async function handlePreview(filename: string) {
@@ -867,9 +617,9 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                   title={moreMode ? "Hide version history" : "Show version history"}
                 />
               )}
-              {!searchOpen && memoReady && memoState === "idle" && (
+              {!searchOpen && memo.ready && memo.state === "idle" && (
                 <button
-                  onClick={handleStartMemo}
+                  onClick={memo.start}
                   className="px-3 py-1 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700 transition-colors flex items-center gap-1"
                 >
                   <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
@@ -899,116 +649,20 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
             </div>
           </div>
 
-          {/* Recording bar */}
-          {(memoState === "recording" || memoState === "paused" || memoState === "transcribing") && (
-            <div className="px-4 py-3 border-b border-gray-100 bg-red-50">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  {memoState === "recording" && (
-                    <span className="relative flex h-3 w-3">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                      <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
-                    </span>
-                  )}
-                  {memoState === "paused" && (
-                    <span className="inline-flex rounded-full h-3 w-3 bg-yellow-500" />
-                  )}
-                  {memoState === "transcribing" && <Spinner />}
-                  <span className="text-sm font-medium text-gray-700">
-                    {memoState === "recording" && "Recording"}
-                    {memoState === "paused" && "Paused"}
-                    {memoState === "transcribing" && "Transcribing..."}
-                  </span>
-                  <span className="text-sm text-gray-500 font-mono">
-                    {formatElapsed(memoElapsed)}
-                  </span>
-                  <span className={`px-1.5 py-0.5 text-xs rounded ${
-                    memoGpu
-                      ? "bg-green-100 text-green-700"
-                      : "bg-gray-100 text-gray-500"
-                  }`}>
-                    {memoGpu ? "GPU" : "CPU"}
-                  </span>
-                  {memoModelLabel && (
-                    <span
-                      title={`Model: ${memoModelLabel}${memoGpu ? " (Metal GPU)" : " (CPU)"}`}
-                      className="inline-flex items-center justify-center w-4 h-4 text-xs text-gray-400 border border-gray-300 rounded-full cursor-help hover:text-gray-600 hover:border-gray-400 transition-colors"
-                    >
-                      ?
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  {memoState === "recording" && (
-                    <>
-                      <button
-                        onClick={handlePauseMemo}
-                        className="px-3 py-1 text-xs font-medium text-yellow-700 bg-yellow-100 border border-yellow-300 rounded hover:bg-yellow-200 transition-colors"
-                      >
-                        Pause
-                      </button>
-                      <button
-                        onClick={handleDoneMemo}
-                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded hover:bg-gray-200 transition-colors"
-                      >
-                        Done
-                      </button>
-                    </>
-                  )}
-                  {memoState === "paused" && (
-                    <>
-                      <button
-                        onClick={handleResumeMemo}
-                        className="px-3 py-1 text-xs font-medium text-red-700 bg-red-100 border border-red-300 rounded hover:bg-red-200 transition-colors"
-                      >
-                        Resume
-                      </button>
-                      <button
-                        onClick={handleDoneMemo}
-                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded hover:bg-gray-200 transition-colors"
-                      >
-                        Done
-                      </button>
-                    </>
-                  )}
-                  <button
-                    onClick={handleCancelMemo}
-                    className="px-3 py-1 text-xs font-medium text-gray-500 hover:text-gray-700 transition-colors"
-                    disabled={memoState === "transcribing"}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-
-              {/* Live transcript */}
-              {(memoTranscript || (memoMultilingual && memoState === "recording" && !detectedLanguage)) && (
-                <div className="mt-3">
-                  {detectedLanguage && (
-                    <span className="inline-block px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded mb-1.5">
-                      {detectedLanguage.toUpperCase()}
-                    </span>
-                  )}
-                  {memoMultilingual && memoState === "recording" && !detectedLanguage && !memoTranscript && (
-                    <p className="text-xs text-gray-400 italic py-2">
-                      Detecting language...
-                    </p>
-                  )}
-                  {memoState === "paused" ? (
-                    <textarea
-                      value={memoTranscript}
-                      onChange={(e) => setMemoTranscript(e.target.value)}
-                      className="w-full min-h-[100px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent"
-                    />
-                  ) : memoTranscript ? (
-                    <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono bg-white border border-gray-200 rounded-lg p-3 max-h-[200px] overflow-y-auto">
-                      {memoTranscript}
-                    </pre>
-                  ) : null}
-                </div>
-              )}
-            </div>
-          )}
+          <MemoRecorderBar
+            state={memo.state}
+            elapsed={memo.elapsed}
+            transcript={memo.transcript}
+            onTranscriptChange={memo.setTranscript}
+            multilingual={memo.multilingual}
+            detectedLanguage={memo.detectedLanguage}
+            gpu={memo.gpu}
+            modelLabel={memo.modelLabel}
+            onPause={memo.pause}
+            onResume={memo.resume}
+            onDone={memo.done}
+            onCancel={memo.cancel}
+          />
 
           {/* Loading */}
           {loading && (
@@ -1402,48 +1056,16 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
         </Modal>
       )}
 
-      {/* Memo review modal. Not dismissible: the only copy of a just-recorded
-          transcript lives in this form, and Escape would throw it away with
-          no way to get it back short of recording the session again. */}
-      {memoState === "review" && (
-        <Modal
-          open
-          onClose={handleCancelMemo}
-          title="Review Memo"
-          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
-          showClose={false}
-          dismissible={false}
-        >
-          <input
-            type="text"
-            placeholder="Filename (e.g. session-notes)"
-            value={memoFilename}
-            onChange={(e) => setMemoFilename(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-3"
-            autoFocus
-          />
-          <textarea
-            value={memoTranscript}
-            onChange={(e) => setMemoTranscript(e.target.value)}
-            className="flex-1 min-h-[200px] w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-4"
-          />
-          <div className="flex justify-end gap-3">
-            <button
-              onClick={handleCancelMemo}
-              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              disabled={memoSaving}
-            >
-              Discard
-            </button>
-            <button
-              onClick={handleSaveMemo}
-              disabled={memoSaving || !memoFilename.trim()}
-              className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {memoSaving ? "Saving..." : "Save"}
-            </button>
-          </div>
-        </Modal>
+      {memo.state === "review" && (
+        <MemoReviewModal
+          filename={memo.filename}
+          onFilenameChange={memo.setFilename}
+          transcript={memo.transcript}
+          onTranscriptChange={memo.setTranscript}
+          saving={memo.saving}
+          onDiscard={memo.cancel}
+          onSave={memo.save}
+        />
       )}
 
       {/* Deleted files (More mode) */}
