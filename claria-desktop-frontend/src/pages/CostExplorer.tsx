@@ -9,6 +9,7 @@ import {
   type CostTimePeriod,
   type CostResultGroup,
 } from "../lib/tauri";
+import { costErrorMessage } from "../lib/costErrors";
 import { BackButton, CloseIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import type { Page } from "../App";
@@ -253,20 +254,19 @@ function Onboarding({ onEnabled }: { onEnabled: () => void }) {
       await enableCostExplorer();
       onEnabled();
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes("not enabled") || msg.includes("DataUnavailable")) {
-        setProbeError(
-          "Cost Explorer isn't enabled yet, or data hasn't appeared. " +
-            "It can take up to 24 hours after enabling. Please check the AWS Console and try again."
-        );
-      } else if (msg.includes("access denied") || msg.includes("AccessDenied")) {
-        setProbeError(
-          "Claria doesn't have permission to access Cost Explorer. " +
-            "Go to AWS \u2192 Re-scan to update your IAM policy."
-        );
-      } else {
-        setProbeError(msg || "Couldn't reach AWS. Check your internet connection and try again.");
-      }
+      setProbeError(
+        costErrorMessage(e, {
+          dataUnavailable:
+            "Cost Explorer isn't enabled yet, or data hasn't appeared. " +
+            "It can take up to 24 hours after enabling. Please check the AWS Console and try again.",
+          accessDenied:
+            "Claria doesn't have permission to access Cost Explorer. " +
+            "Go to AWS \u2192 Re-scan to update your IAM policy.",
+          fallback:
+            String(e) ||
+            "Couldn't reach AWS. Check your internet connection and try again.",
+        })
+      );
     } finally {
       setProbing(false);
     }
@@ -331,9 +331,17 @@ function Onboarding({ onEnabled }: { onEnabled: () => void }) {
 // ---------------------------------------------------------------------------
 
 function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
-  // Date range state
+  // The committed date range. Changing it costs $0.01, so only a preset click
+  // or the Apply button below writes to it.
   const [startDate, setStartDate] = useState(() => fmtDate(daysAgo(30)));
   const [endDate, setEndDate] = useState(() => fmtDate(new Date()));
+
+  // What the two date inputs currently show. A `type="date"` input fires
+  // change events mid-edit — once per field as the user types a year — so
+  // these stay local until the user commits them.
+  const [draftStart, setDraftStart] = useState(startDate);
+  const [draftEnd, setDraftEnd] = useState(endDate);
+  const rangeDirty = draftStart !== startDate || draftEnd !== endDate;
 
   // Controls
   const [granularity, setGranularity] = useState<CostGranularity>("daily");
@@ -363,18 +371,14 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
         setResult(data);
         setCallCount((c) => c + 1);
       } catch (e) {
-        const msg = String(e);
-        if (msg.includes("not enabled") || msg.includes("DataUnavailable")) {
-          setError(
-            "Cost Explorer data is not available. It can take up to 24 hours after enabling."
-          );
-        } else if (msg.includes("access denied") || msg.includes("AccessDenied")) {
-          setError(
-            "Claria doesn't have permission to view billing data. Go to AWS \u2192 Re-scan to update your IAM policy."
-          );
-        } else {
-          setError(msg);
-        }
+        setError(
+          costErrorMessage(e, {
+            dataUnavailable:
+              "Cost Explorer data is not available. It can take up to 24 hours after enabling.",
+            accessDenied:
+              "Claria doesn't have permission to view billing data. Go to AWS \u2192 Re-scan to update your IAM policy.",
+          })
+        );
       } finally {
         setFetching(false);
       }
@@ -382,7 +386,8 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
     []
   );
 
-  // Fetch on mount + when controls change
+  // Fetch on mount + when a committed control changes. Every entry here is a
+  // single deliberate click, so it maps one-to-one onto a $0.01 charge.
   useEffect(() => {
     fetchData(startDate, endDate, granularity, groupByService);
   }, [startDate, endDate, granularity, groupByService, fetchData]);
@@ -392,11 +397,21 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
     const e = fmtDate(preset.end());
     setStartDate(s);
     setEndDate(e);
+    setDraftStart(s);
+    setDraftEnd(e);
     const gran = preset.granularity === "hourly" && !hourlyAvailable
       ? "daily"
       : preset.granularity;
     setGranularity(gran);
     setActivePreset(preset.label);
+  }
+
+  function handleApplyRange() {
+    if (!rangeDirty) return;
+    setStartDate(draftStart);
+    setEndDate(draftEnd);
+    setGranularity(defaultGranularity(draftStart, draftEnd, hourlyAvailable));
+    setActivePreset(null);
   }
 
   function handleGranularity(g: CostGranularity) {
@@ -504,31 +519,35 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
         <div className="flex items-center gap-1.5">
           <input
             type="date"
-            value={startDate}
+            value={draftStart}
             min={fmtDate(monthsAgo(13))}
-            max={endDate}
-            onChange={(e) => {
-              setStartDate(e.target.value);
-              setGranularity(defaultGranularity(e.target.value, endDate, hourlyAvailable));
-              setActivePreset(null);
-            }}
+            max={draftEnd}
+            onChange={(e) => setDraftStart(e.target.value)}
             disabled={fetching}
             className="px-2 py-1 text-xs border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           />
           <span className="text-xs text-gray-400">&ndash;</span>
           <input
             type="date"
-            value={endDate}
-            min={startDate}
+            value={draftEnd}
+            min={draftStart}
             max={fmtDate(new Date())}
-            onChange={(e) => {
-              setEndDate(e.target.value);
-              setGranularity(defaultGranularity(startDate, e.target.value, hourlyAvailable));
-              setActivePreset(null);
-            }}
+            onChange={(e) => setDraftEnd(e.target.value)}
             disabled={fetching}
             className="px-2 py-1 text-xs border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           />
+          <button
+            onClick={handleApplyRange}
+            disabled={fetching || !rangeDirty}
+            title={
+              rangeDirty
+                ? "Load this range — costs $0.01"
+                : "This range is already loaded"
+            }
+            className="px-2.5 py-1 text-xs rounded-lg transition-colors bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-40 disabled:hover:bg-gray-100"
+          >
+            Apply
+          </button>
         </div>
 
         {/* Granularity */}

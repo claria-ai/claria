@@ -25,6 +25,7 @@ import {
   type WhisperModelInfo,
   type WhisperModelTier,
 } from "../lib/tauri";
+import { costErrorMessage } from "../lib/costErrors";
 import { BackButton } from "../components/icons";
 import Spinner from "../components/Spinner";
 import Modal from "../components/Modal";
@@ -730,20 +731,16 @@ function CostExplorerSection() {
       await setHourlyCostData(true);
       setHourlyEnabled(true);
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes("AccessDenied") || msg.includes("access denied")) {
-        setError(
-          "Hourly data is not enabled for this account. In the AWS Console, go to " +
-            "Billing → Cost Explorer → Settings and enable \"Hourly and Resource Level Data\"."
-        );
-      } else if (msg.includes("DataUnavailable") || msg.includes("not enabled")) {
-        setError(
-          "Hourly cost data is not available yet. Enable it in the AWS Console under " +
-            "Billing → Cost Explorer → Settings, then wait up to 24 hours for data to appear."
-        );
-      } else {
-        setError(msg);
-      }
+      setError(
+        costErrorMessage(e, {
+          accessDenied:
+            "Hourly data is not enabled for this account. In the AWS Console, go to " +
+            'Billing → Cost Explorer → Settings and enable "Hourly and Resource Level Data".',
+          dataUnavailable:
+            "Hourly cost data is not available yet. Enable it in the AWS Console under " +
+            "Billing → Cost Explorer → Settings, then wait up to 24 hours for data to appear.",
+        })
+      );
     } finally {
       setVerifying(false);
     }
