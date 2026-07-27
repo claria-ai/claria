@@ -1,0 +1,28 @@
+{
+  "description": "Two diarized speakers, no language tags. The shape every English-only transcription produces.",
+  "speaker_labels": [
+    "Clinician",
+    "Patient"
+  ],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": "Clinician",
+      "language_code": null,
+      "start_seconds": 0,
+      "end_seconds": 4,
+      "text": "How are you feeling today?",
+      "translation": null
+    },
+    {
+      "id": "seg_0002",
+      "speaker_label": "Patient",
+      "language_code": null,
+      "start_seconds": 4,
+      "end_seconds": 9,
+      "text": "I've been having headaches for about a week.",
+      "translation": null
+    }
+  ],
+  "rendered": "[Clinician 00:00–00:04]\nHow are you feeling today?\n\n[Patient 00:04–00:09]\nI've been having headaches for about a week."
+}

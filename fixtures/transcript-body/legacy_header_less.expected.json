@@ -1,0 +1,16 @@
+{
+  "description": "A body with no headers at all — PDF/DOCX sidecars and transcripts predating diarization. Parses as one un-diarized segment and renders back without headers.",
+  "speaker_labels": [],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": null,
+      "language_code": null,
+      "start_seconds": 0,
+      "end_seconds": 0,
+      "text": "Patient was seen in the office today for follow-up.\nNo new complaints.",
+      "translation": null
+    }
+  ],
+  "rendered": "Patient was seen in the office today for follow-up.\nNo new complaints."
+}

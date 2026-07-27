@@ -5,6 +5,11 @@
 // grammar in Rust, and the two must agree — the Rust side writes the body when
 // a transcription lands, this side reads and rewrites it when the user edits.
 //
+// The mirror is held in place by the shared fixtures in
+// `fixtures/transcript-body/`, read by both `transcript.test.ts` and the Rust
+// `body_format.rs` tests. Change the grammar in one language and the other
+// language's suite fails on the same files.
+//
 // Body grammar:
 //
 //   [<label> <mm:ss>–<mm:ss>[ <language_code>]]
@@ -34,8 +39,15 @@ export interface ParsedBody {
   labelByKey: Map<string, string>;
 }
 
+/**
+ * A segment header.
+ *
+ * Minutes run to three digits, matching the Rust parser: a recording past the
+ * hour mark renders as `100:00` and has to read back. The separator accepts an
+ * en dash, an em dash or an ASCII hyphen, because the header is hand-editable.
+ */
 export const HEADER_RE =
-  /^\[(.+?)\s+(\d{1,2}:\d{2})[–—-](\d{1,2}:\d{2})(?:\s+([\w-]+))?\]$/;
+  /^\[(.+?)\s+(\d{1,3}:\d{2})[–—-](\d{1,3}:\d{2})(?:\s+([\w-]+))?\]$/;
 
 export function parseBody(body: string): ParsedBody {
   const segments: Segment[] = [];
@@ -89,8 +101,15 @@ export function parseBody(body: string): ParsedBody {
       });
       counter += 1;
     } else {
-      // Header-less body: consume everything as one segment.
-      const text = lines.slice(i).join("\n").trim();
+      // Header-less run: everything up to the next header is one un-diarized
+      // segment, and parsing then continues. Consuming to the end instead
+      // would let a hand-typed preamble swallow the segments behind it.
+      const textLines: string[] = [];
+      while (i < lines.length && lines[i].trim().match(HEADER_RE) == null) {
+        textLines.push(lines[i]);
+        i += 1;
+      }
+      const text = textLines.join("\n").trim();
       if (text.length > 0) {
         segments.push({
           id: `seg_${String(counter).padStart(4, "0")}`,
@@ -101,8 +120,8 @@ export function parseBody(body: string): ParsedBody {
           text,
           translation: null,
         });
+        counter += 1;
       }
-      break;
     }
   }
 

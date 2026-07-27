@@ -1,6 +1,136 @@
+//! Body format tests.
+//!
+//! Everything that starts from a body string is driven by the shared fixtures
+//! in `fixtures/transcript-body/`, which the frontend's `transcript.test.ts`
+//! reads from the same files — the two parsers mirror each other and nothing
+//! else stops them drifting. See that directory's README.
+//!
+//! The tests below the fixture block start from a `TranscriptResult` instead,
+//! which is the shape the AWS Transcribe parser produces and has no TypeScript
+//! counterpart, so they stay hand-written.
+
+use std::path::{Path, PathBuf};
+
 use claria_transcribe::{
     Speaker, TranscriptResult, TranscriptSegment, format_transcript_body, parse_transcript_body,
 };
+use serde::Deserialize;
+
+// ---------------------------------------------------------------------------
+// Shared fixtures
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ExpectedBody {
+    speaker_labels: Vec<String>,
+    segments: Vec<ExpectedSegment>,
+    rendered: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct ExpectedSegment {
+    id: String,
+    speaker_label: Option<String>,
+    language_code: Option<String>,
+    start_seconds: u32,
+    end_seconds: u32,
+    text: String,
+    translation: Option<String>,
+}
+
+fn fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/transcript-body")
+}
+
+fn fixture_names() -> Vec<String> {
+    let dir = fixture_dir();
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let name = path.file_name()?.to_str()?;
+            name.strip_suffix(".txt").map(str::to_string)
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+fn load_fixture(name: &str) -> (String, ExpectedBody) {
+    let dir = fixture_dir();
+    let body = std::fs::read_to_string(dir.join(format!("{name}.txt")))
+        .unwrap_or_else(|e| panic!("read {name}.txt: {e}"));
+    let raw = std::fs::read_to_string(dir.join(format!("{name}.expected.json")))
+        .unwrap_or_else(|e| panic!("read {name}.expected.json: {e}"));
+    let expected =
+        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {name}.expected.json: {e}"));
+    (body, expected)
+}
+
+/// Flatten a parse result into the language-neutral shape the fixtures use:
+/// the resolved speaker label rather than the interned `spk_N` id.
+fn flatten(result: &TranscriptResult) -> Vec<ExpectedSegment> {
+    result
+        .segments
+        .iter()
+        .map(|seg| ExpectedSegment {
+            id: seg.id.clone(),
+            speaker_label: seg.speaker_id.as_deref().and_then(|id| {
+                result
+                    .speakers
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.label.clone())
+            }),
+            language_code: seg.language_code.clone(),
+            start_seconds: seg.start_seconds,
+            end_seconds: seg.end_seconds,
+            text: seg.text.clone(),
+            translation: seg.translation.clone(),
+        })
+        .collect()
+}
+
+#[test]
+fn shared_fixtures_are_discovered() {
+    // A moved or renamed directory would otherwise quietly turn the fixture
+    // test below into zero assertions.
+    assert!(
+        !fixture_names().is_empty(),
+        "no fixtures found in {}",
+        fixture_dir().display()
+    );
+}
+
+#[test]
+fn shared_fixtures_parse_to_the_agreed_segments() {
+    for name in fixture_names() {
+        let (body, expected) = load_fixture(&name);
+        let parsed = parse_transcript_body(&body);
+        assert_eq!(flatten(&parsed), expected.segments, "fixture {name}");
+
+        let labels: Vec<String> = parsed.speakers.iter().map(|s| s.label.clone()).collect();
+        assert_eq!(labels, expected.speaker_labels, "fixture {name}");
+    }
+}
+
+#[test]
+fn shared_fixtures_render_back_to_the_agreed_body() {
+    for name in fixture_names() {
+        let (body, expected) = load_fixture(&name);
+        let rendered = format_transcript_body(&parse_transcript_body(&body));
+        assert_eq!(rendered, expected.rendered, "fixture {name}");
+
+        // Rendering is a normalisation, so applying it twice must not keep
+        // moving — an edit saves on every visit and drift would compound.
+        let twice = format_transcript_body(&parse_transcript_body(&rendered));
+        assert_eq!(twice, rendered, "fixture {name} is not round-trip stable");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering from a TranscriptResult (no TypeScript counterpart)
+// ---------------------------------------------------------------------------
 
 fn diarized_sample() -> TranscriptResult {
     TranscriptResult {
@@ -87,68 +217,6 @@ fn round_trips_diarized_body() {
 }
 
 #[test]
-fn legacy_header_less_body_parses_as_single_segment() {
-    let body = "Patient was seen in the office today for follow-up.\nNo new complaints.";
-    let parsed = parse_transcript_body(body);
-
-    assert_eq!(parsed.segments.len(), 1);
-    assert_eq!(parsed.segments[0].speaker_id, None);
-    assert_eq!(parsed.segments[0].language_code, None);
-    assert!(parsed.segments[0].text.contains("Patient was seen"));
-    assert!(parsed.segments[0].text.contains("No new complaints."));
-}
-
-#[test]
-fn hand_edited_speaker_label_round_trips() {
-    let body = "\
-[Dr. Smith 00:00\u{2013}00:04]
-How are you feeling today?
-
-[Patient 00:04\u{2013}00:09]
-Better, thank you.
-";
-    let parsed = parse_transcript_body(body);
-
-    assert_eq!(parsed.segments.len(), 2);
-    assert_eq!(parsed.speakers.len(), 2);
-    assert_eq!(parsed.speakers[0].label, "Dr. Smith");
-    assert_eq!(parsed.speakers[0].id, "spk_0");
-    assert_eq!(parsed.speakers[1].label, "Patient");
-}
-
-#[test]
-fn ascii_hyphen_in_header_is_tolerated() {
-    let body = "[Clinician 00:00-00:04]\nHello.";
-    let parsed = parse_transcript_body(body);
-    assert_eq!(parsed.segments.len(), 1);
-    assert_eq!(parsed.segments[0].start_seconds, 0);
-    assert_eq!(parsed.segments[0].end_seconds, 4);
-    assert_eq!(parsed.segments[0].text, "Hello.");
-}
-
-#[test]
-fn shared_speaker_label_collapses_to_one_speaker() {
-    let body = "\
-[Clinician 00:00\u{2013}00:04]
-First.
-
-[Clinician 00:10\u{2013}00:14]
-Second.
-";
-    let parsed = parse_transcript_body(body);
-    assert_eq!(parsed.segments.len(), 2);
-    assert_eq!(parsed.speakers.len(), 1);
-    assert_eq!(parsed.segments[0].speaker_id, parsed.segments[1].speaker_id);
-}
-
-#[test]
-fn empty_body_produces_no_segments() {
-    let parsed = parse_transcript_body("");
-    assert!(parsed.segments.is_empty());
-    assert!(parsed.speakers.is_empty());
-}
-
-#[test]
 fn renders_translation_as_blockquote() {
     let result = TranscriptResult {
         segments: vec![TranscriptSegment {
@@ -195,27 +263,6 @@ fn round_trips_translation_through_body() {
     assert_eq!(
         parsed.segments[0].translation.as_deref(),
         Some("Hello, how are you?")
-    );
-}
-
-#[test]
-fn multi_line_translation_round_trips() {
-    let body = "\
-[Patient 00:00\u{2013}00:08 es-US]
-Me duele mucho la cabeza.
-También tengo náuseas.
-> My head hurts a lot.
-> I also have nausea.
-";
-    let parsed = parse_transcript_body(body);
-    assert_eq!(parsed.segments.len(), 1);
-    assert_eq!(
-        parsed.segments[0].text,
-        "Me duele mucho la cabeza.\nTambién tengo náuseas."
-    );
-    assert_eq!(
-        parsed.segments[0].translation.as_deref(),
-        Some("My head hurts a lot.\nI also have nausea.")
     );
 }
 

@@ -1,0 +1,18 @@
+{
+  "description": "A recording long enough that the minute field runs to three digits. Anything over 99:59 renders this way, so both parsers have to read it back.",
+  "speaker_labels": [
+    "Clinician"
+  ],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": "Clinician",
+      "language_code": null,
+      "start_seconds": 6000,
+      "end_seconds": 6090,
+      "text": "Still going after an hour and forty minutes.",
+      "translation": null
+    }
+  ],
+  "rendered": "[Clinician 100:00–101:30]\nStill going after an hour and forty minutes."
+}
