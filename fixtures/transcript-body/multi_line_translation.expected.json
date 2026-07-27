@@ -1,0 +1,18 @@
+{
+  "description": "Multi-line source text with a line-for-line translation.",
+  "speaker_labels": [
+    "Patient"
+  ],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": "Patient",
+      "language_code": "es-US",
+      "start_seconds": 0,
+      "end_seconds": 8,
+      "text": "Me duele mucho la cabeza.\nTambién tengo náuseas.",
+      "translation": "My head hurts a lot.\nI also have nausea."
+    }
+  ],
+  "rendered": "[Patient 00:00–00:08 es-US]\nMe duele mucho la cabeza.\nTambién tengo náuseas.\n> My head hurts a lot.\n> I also have nausea."
+}

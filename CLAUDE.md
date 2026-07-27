@@ -207,6 +207,21 @@ Machine-local, configured in the user-level `~/.cargo/config.toml` — not commi
 
 Design documents and future feature analysis live in `../plans/` (parent repo, outside the Cargo workspace). These are reference material, not executable — they capture architectural decisions, HIPAA analysis, and implementation plans for larger features.
 
+## Frontend Tests
+
+Two suites, with different jobs:
+
+- **Vitest** (`claria-desktop-frontend`, `npm test`) — unit tests for pure modules and React components. Config lives in `vite.config.ts`, so tests run through the app's own plugins and resolution. Tests sit next to the module they cover (`lib/cost.ts` → `lib/cost.test.ts`); the "tests live in `tests/`" rule above is about Rust and does not apply here. Runs in CI.
+- **Playwright** (`e2e/`, `npm test`) — full-app flows against the Vite dev server with `window.__TAURI_INTERNALS__` mocked. Not in CI; needs `npx playwright install chromium` first.
+
+The DOM environment is `happy-dom`, not `jsdom`: jsdom does not implement `<dialog>` at all, so `showModal()` and `close()` are missing and `components/Modal.tsx` would be untestable. happy-dom implements the open/close state; the one user-agent behaviour it lacks — Escape producing a `cancel` event — is added by a small spec-faithful shim in `src/test/setup.ts`. Anything that depends on the top layer, focus containment or `::backdrop` is genuinely browser-only and belongs in `e2e/modal.spec.ts`.
+
+Test files have their own TypeScript project (`tsconfig.test.json`) so they can read fixtures off disk with Node's types without those types leaking into the app.
+
+### Shared transcript fixtures
+
+`fixtures/transcript-body/` holds `.txt` bodies plus a language-neutral expected parse. Both `crates/claria-transcribe/tests/body_format.rs` and `claria-desktop-frontend/src/lib/transcript.test.ts` read the same files, which is what stops the two implementations of the transcript body grammar drifting. Add a case by writing the pair; both suites glob the directory.
+
 ## Screenshots & Demos
 
 Marketing screenshots and videos are generated in this repo, not the docs site:

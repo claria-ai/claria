@@ -1,0 +1,5 @@
+[Patient 00:00–00:08 es-US]
+Me duele mucho la cabeza.
+También tengo náuseas.
+> My head hurts a lot.
+> I also have nausea.

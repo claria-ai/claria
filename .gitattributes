@@ -1,0 +1,3 @@
+# Transcript body fixtures are byte-compared by two test suites. A CRLF
+# checkout would change what they parse to.
+fixtures/transcript-body/* text eol=lf

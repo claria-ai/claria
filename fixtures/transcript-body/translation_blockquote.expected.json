@@ -1,0 +1,18 @@
+{
+  "description": "A translation carried as a blockquote under the source text.",
+  "speaker_labels": [
+    "Clinician"
+  ],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": "Clinician",
+      "language_code": "es-US",
+      "start_seconds": 9,
+      "end_seconds": 12,
+      "text": "¿En qué parte de la cabeza?",
+      "translation": "In what part of the head?"
+    }
+  ],
+  "rendered": "[Clinician 00:09–00:12 es-US]\n¿En qué parte de la cabeza?\n> In what part of the head?"
+}

@@ -1,0 +1,28 @@
+{
+  "description": "Speaker labels renamed by hand. A label containing a period must not confuse the label/time split.",
+  "speaker_labels": [
+    "Dr. Smith",
+    "Patient"
+  ],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": "Dr. Smith",
+      "language_code": null,
+      "start_seconds": 0,
+      "end_seconds": 4,
+      "text": "How are you feeling today?",
+      "translation": null
+    },
+    {
+      "id": "seg_0002",
+      "speaker_label": "Patient",
+      "language_code": null,
+      "start_seconds": 4,
+      "end_seconds": 9,
+      "text": "Better, thank you.",
+      "translation": null
+    }
+  ],
+  "rendered": "[Dr. Smith 00:00–00:04]\nHow are you feeling today?\n\n[Patient 00:04–00:09]\nBetter, thank you."
+}
