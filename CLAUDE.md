@@ -190,6 +190,15 @@ grep '"version"' claria-desktop-frontend/node_modules/@tauri-apps/api/package.js
 
 It must match the `tauri = "=X.Y.Z"` pin in `crates/claria-desktop/Cargo.toml`. Tauri's Rust crate and JS package are released in lockstep and must be bumped together.
 
+## Local Build Environment
+
+Machine-local, configured in the user-level `~/.cargo/config.toml` — not committed, and CI does its own setup (`.github/workflows/ci.yml`). A fresh machine hits both of these from zero.
+
+- **sccache** is expected as the `rustc-wrapper` locally. Workspace crates reported as "non-cacheable, reason: incremental" in `sccache --show-stats` are healthy — sccache caches dependencies, not your own crates. Don't chase it.
+- **macOS `<cstdint>`**: `claria-whisper` fails to build via `esaxx-rs`/`tokenizers` when clang can't find `<cstdint>`. The fix is an `[env]` entry setting `CXXFLAGS = "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -I/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1"`. This is a Command Line Tools SDK quirk, not breakage you caused.
+- Remove your worktree once its PR merges: `git worktree remove <path>` then `git worktree prune`. Never bare `rm -rf` — it strands the admin entry in `.git/worktrees/`.
+- Don't `cargo clean` before switching worktrees. Each worktree owns its `target/` and cargo's fingerprinting handles staleness.
+
 ## Plans
 
 Design documents and future feature analysis live in `../plans/` (parent repo, outside the Cargo workspace). These are reference material, not executable — they capture architectural decisions, HIPAA analysis, and implementation plans for larger features.

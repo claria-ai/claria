@@ -59,6 +59,7 @@ All notable changes to Claria are documented here.
 - Choosing a preferred chat model sticks, where it previously reverted to the old model as soon as the app re-read its settings
 - Enabling Cost Explorer and turning on hourly cost data now follow you to your other computers instead of staying on the machine that set them
 - Editing transcription preferences no longer reverts a preferred model or Cost Explorer setting changed earlier in the same visit
+- Project instructions document the machine-local build environment and worktree cleanup
 
 ## [0.18.0] — 2026-07-07
 
