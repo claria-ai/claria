@@ -9,6 +9,9 @@ All notable changes to Claria are documented here.
 - The MFA-step skip control renders as a bordered secondary button matching the design system instead of bare amber text
 - Back on the AWS Infrastructure screen steps to the credential form during first-run setup, preserving entered values instead of resetting to the start screen, and is disabled while a scan or apply is in flight
 - Token counting runs against the newest available Haiku instead of the chat model, which may not support the CountTokens API
+- Chat surfaces no longer name a model when counting context tokens, so the count cannot drift as models are added to the account
+- The context token count starts as soon as the context loads instead of waiting for the model list
+- Editing the context while a count is in flight no longer lets the superseded count land
 - Model pricing matches by tier so new Claude releases (Fable, Opus 4.8, Sonnet 5) are priced without a code change
 - When a model has no pricing entry the UI omits dollar figures instead of showing $0.00 or "cost unavailable"
 - Client and record file search ignores accents, so "Luci" finds "Lucí"

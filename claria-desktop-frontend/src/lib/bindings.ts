@@ -858,17 +858,17 @@ async openUrl(url: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async countClientContextTokens(clientId: string, modelId: string, contextFilenames: string[]) : Promise<Result<number, string>> {
+async countClientContextTokens(clientId: string, contextFilenames: string[]) : Promise<Result<number, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("count_client_context_tokens", { clientId, modelId, contextFilenames }) };
+    return { status: "ok", data: await TAURI_INVOKE("count_client_context_tokens", { clientId, contextFilenames }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async countInfraContextTokens(modelId: string, planEntries: PlanEntry[]) : Promise<Result<number, string>> {
+async countInfraContextTokens(planEntries: PlanEntry[]) : Promise<Result<number, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("count_infra_context_tokens", { modelId, planEntries }) };
+    return { status: "ok", data: await TAURI_INVOKE("count_infra_context_tokens", { planEntries }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
