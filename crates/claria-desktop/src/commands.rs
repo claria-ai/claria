@@ -4100,13 +4100,15 @@ pub async fn open_url(url: String) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 // Token counting commands
 // ---------------------------------------------------------------------------
+//
+// Neither command takes a model: the count always runs against the newest
+// available Haiku, because not every chat model supports `CountTokens`.
 
 #[tauri::command]
 #[specta::specta]
 pub async fn count_client_context_tokens(
     state: State<'_, DesktopState>,
     client_id: String,
-    model_id: String,
     context_filenames: Vec<String>,
 ) -> Result<u32, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
@@ -4132,7 +4134,7 @@ pub async fn count_client_context_tokens(
         format!("{context_block}\n\n{system_prompt}")
     };
 
-    claria_bedrock::chat::count_context_tokens(&sdk_config, &model_id, &full_prompt)
+    claria_bedrock::chat::count_context_tokens(&sdk_config, &full_prompt)
         .await
         .map_err(|e| e.to_string())
 }
@@ -4141,13 +4143,12 @@ pub async fn count_client_context_tokens(
 #[specta::specta]
 pub async fn count_infra_context_tokens(
     state: State<'_, DesktopState>,
-    model_id: String,
     plan_entries: Vec<PlanEntry>,
 ) -> Result<u32, String> {
     let (_cfg, sdk_config) = load_sdk_config(&state).await?;
     let system_prompt = build_infra_system_prompt(&plan_entries);
 
-    claria_bedrock::chat::count_context_tokens(&sdk_config, &model_id, &system_prompt)
+    claria_bedrock::chat::count_context_tokens(&sdk_config, &system_prompt)
         .await
         .map_err(|e| e.to_string())
 }

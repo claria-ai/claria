@@ -518,14 +518,14 @@ fn release_date_stamp(model_id: &str) -> u32 {
 /// a message. Uses the free Bedrock `CountTokens` API.
 ///
 /// The count runs against the newest available Haiku (see [`counting_model`]),
-/// not the chat model — so it is an estimate when the chat model uses a
-/// different tokenizer. `chat_model_id` is logged for attribution only.
+/// never the chat model — so it is an estimate when the chat model uses a
+/// different tokenizer. The result does not depend on which model the user
+/// is chatting with, so no chat model is accepted here.
 ///
 /// A minimal dummy user message is included because the Converse format
 /// requires at least one message.
 pub async fn count_context_tokens(
     config: &aws_config::SdkConfig,
-    chat_model_id: &str,
     system_prompt: &str,
 ) -> Result<u32, BedrockError> {
     let client = aws_sdk_bedrockruntime::Client::new(config);
@@ -534,7 +534,7 @@ pub async fn count_context_tokens(
     // profile ID; `counting_model` returns bare IDs from the foundation
     // model registry.
     let bare_model_id = counting_model(config).await?;
-    info!(chat_model_id, bare_model_id, "context token count requested");
+    info!(bare_model_id, "context token count requested");
 
     let dummy_message = Message::builder()
         .role(ConversationRole::User)

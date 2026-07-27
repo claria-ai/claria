@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   plan,
   infraChat,
@@ -12,6 +12,7 @@ import ChatWidget from "../components/ChatWidget";
 import { BackButton } from "../components/icons";
 import TokenCountBadge from "../components/TokenCountBadge";
 import Modal from "../components/Modal";
+import { useContextTokens } from "../lib/useContextTokens";
 
 const SYSTEM_PROMPT = `You are Claria's infrastructure assistant. Claria is a desktop application for
 healthcare clinicians that runs entirely in the user's own AWS account — there is
@@ -88,53 +89,37 @@ export default function InfraChat({
 }) {
   const [scanning, setScanning] = useState(true);
   const [scanError, setScanError] = useState<string | null>(null);
-  const planEntriesRef = useRef<PlanEntry[]>([]);
+  const [planEntries, setPlanEntries] = useState<PlanEntry[]>([]);
 
   const [previewModal, setPreviewModal] = useState<{
     title: string;
     content: string;
   } | null>(null);
 
-  // Token count state
-  const [contextTokens, setContextTokens] = useState<number | null>(null);
-  const [countingTokens, setCountingTokens] = useState(false);
-  const [tokenCountError, setTokenCountError] = useState<string | null>(null);
-
   useEffect(() => {
     plan()
-      .then((entries) => {
-        planEntriesRef.current = entries;
-      })
+      .then(setPlanEntries)
       .catch((e) => setScanError(String(e)))
       .finally(() => setScanning(false));
   }, []);
 
-  // Count context tokens once scan is done and models are loaded.
-  useEffect(() => {
-    if (scanning || chatModels.length === 0 || planEntriesRef.current.length === 0) return;
-    let cancelled = false;
-    const run = async () => {
-      setCountingTokens(true);
-      setTokenCountError(null);
-      try {
-        const tokens = await countInfraContextTokens(chatModels[0].model_id, planEntriesRef.current);
-        if (!cancelled) setContextTokens(tokens);
-      } catch (e) {
-        if (!cancelled) setTokenCountError(String(e));
-      } finally {
-        if (!cancelled) setCountingTokens(false);
-      }
-    };
-    run();
-    return () => { cancelled = true; };
-  }, [scanning, chatModels]);
+  // Count context tokens once the scan has produced a plan.
+  const countContext = useCallback(
+    () => countInfraContextTokens(planEntries),
+    [planEntries]
+  );
+  const {
+    tokens: contextTokens,
+    counting: countingTokens,
+    error: tokenCountError,
+  } = useContextTokens(planEntries.length === 0 ? null : countContext);
 
   const handleSend = useCallback(
     async (modelId: string, messages: ChatMessage[]) => {
-      const response = await infraChat(modelId, messages, planEntriesRef.current);
+      const response = await infraChat(modelId, messages, planEntries);
       return { content: response.content, usage: response.usage };
     },
-    []
+    [planEntries]
   );
 
   const toolbar = !scanning ? (
@@ -152,7 +137,7 @@ export default function InfraChat({
         onClick={() =>
           setPreviewModal({
             title: "Infrastructure Context",
-            content: buildInfraContext(planEntriesRef.current),
+            content: buildInfraContext(planEntries),
           })
         }
         className="shrink-0 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full hover:bg-blue-100 transition-colors"

@@ -582,12 +582,12 @@ export async function openUrl(url: string): Promise<void> {
 // Token counting
 // ---------------------------------------------------------------------------
 
-export async function countClientContextTokens(clientId: string, modelId: string, contextFilenames: string[]): Promise<number> {
-  return unwrap(await commands.countClientContextTokens(clientId, modelId, contextFilenames));
+export async function countClientContextTokens(clientId: string, contextFilenames: string[]): Promise<number> {
+  return unwrap(await commands.countClientContextTokens(clientId, contextFilenames));
 }
 
-export async function countInfraContextTokens(modelId: string, planEntries: PlanEntry[]): Promise<number> {
-  return unwrap(await commands.countInfraContextTokens(modelId, planEntries));
+export async function countInfraContextTokens(planEntries: PlanEntry[]): Promise<number> {
+  return unwrap(await commands.countInfraContextTokens(planEntries));
 }
 
 // ---------------------------------------------------------------------------

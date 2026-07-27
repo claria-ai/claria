@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -19,6 +19,7 @@ import Spinner from "../components/Spinner";
 import TokenCountBadge from "../components/TokenCountBadge";
 import Modal from "../components/Modal";
 import { summarizeHistory } from "../lib/cost";
+import { useContextTokens } from "../lib/useContextTokens";
 
 export type ResumeChat = {
   chatId: string;
@@ -75,11 +76,6 @@ export default function ClientChat({
     message: string;
   } | null>(null);
 
-  // Token count state
-  const [contextTokens, setContextTokens] = useState<number | null>(null);
-  const [countingTokens, setCountingTokens] = useState(false);
-  const [tokenCountError, setTokenCountError] = useState<string | null>(null);
-
   // Resume chat state to pass to ChatWidget
   const [initialMessages, setInitialMessages] = useState<
     ChatMessage[] | undefined
@@ -100,24 +96,23 @@ export default function ClientChat({
       .finally(() => setContextLoading(false));
   }, [clientId]);
 
-  // Count context tokens once context is loaded and models are available.
-  // Only count files that have extracted text.
-  useEffect(() => {
-    if (contextLoading || chatModels.length === 0) return;
-    const withText = contextFiles.filter((f) => f.text.length > 0);
-    if (withText.length === 0) {
-      setContextTokens(null);
-      return;
-    }
-    setCountingTokens(true);
-    setContextTokens(null);
-    setTokenCountError(null);
-    const filenames = withText.map((f) => f.filename);
-    countClientContextTokens(clientId, chatModels[0].model_id, filenames)
-      .then(setContextTokens)
-      .catch((e) => setTokenCountError(String(e)))
-      .finally(() => setCountingTokens(false));
-  }, [contextLoading, contextFiles, chatModels, clientId]);
+  // Count context tokens once context is loaded. Only files with extracted
+  // text are counted — the rest contribute nothing to the prompt.
+  const contextFilenames = useMemo(
+    () => contextFiles.filter((f) => f.text.length > 0).map((f) => f.filename),
+    [contextFiles]
+  );
+  const countContext = useCallback(
+    () => countClientContextTokens(clientId, contextFilenames),
+    [clientId, contextFilenames]
+  );
+  const {
+    tokens: contextTokens,
+    counting: countingTokens,
+    error: tokenCountError,
+  } = useContextTokens(
+    contextLoading || contextFilenames.length === 0 ? null : countContext
+  );
 
   function handleRemoveContext(filename: string) {
     setContextFiles((prev) => prev.filter((f) => f.filename !== filename));
