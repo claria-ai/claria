@@ -1,0 +1,18 @@
+{
+  "description": "An em dash separator, which word processors substitute automatically.",
+  "speaker_labels": [
+    "Clinician"
+  ],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": "Clinician",
+      "language_code": null,
+      "start_seconds": 0,
+      "end_seconds": 4,
+      "text": "Hello.",
+      "translation": null
+    }
+  ],
+  "rendered": "[Clinician 00:00–00:04]\nHello."
+}

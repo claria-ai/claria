@@ -1,0 +1,27 @@
+{
+  "description": "Un-headed text in front of a diarized body. The preamble is its own segment and the headed segments behind it still parse.",
+  "speaker_labels": [
+    "Clinician"
+  ],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": null,
+      "language_code": null,
+      "start_seconds": 0,
+      "end_seconds": 0,
+      "text": "Typed by hand before the recording was attached.",
+      "translation": null
+    },
+    {
+      "id": "seg_0002",
+      "speaker_label": "Clinician",
+      "language_code": null,
+      "start_seconds": 0,
+      "end_seconds": 4,
+      "text": "How are you feeling today?",
+      "translation": null
+    }
+  ],
+  "rendered": "[Speaker 00:00–00:00]\nTyped by hand before the recording was attached.\n\n[Clinician 00:00–00:04]\nHow are you feeling today?"
+}

@@ -10,6 +10,11 @@ All notable changes to Claria are documented here.
 - Each event is one immutable object, so nothing recorded is lost if the app is killed
 - An audit write that fails is reported in the Claria Console instead of failing the chat turn or upload that produced it
 - The audit crate has tests
+- The frontend has a unit test suite
+- The transcript body format is pinned by fixtures the Rust and TypeScript parsers both read, so a change to one that the other misses fails on both sides
+- A recording longer than an hour and forty minutes opened in the transcript editor as one un-diarized block, and saving it overwrote every speaker header
+- Text typed above a diarized transcript no longer hides the segments below it in the editor
+- Escape, backdrop clicks and scroll locking on the modal shell are covered by tests, in a simulated DOM and in a real browser
 - The first-run start screen explains that no local configuration was detected instead of showing a bare Create New System button
 - Onboarding copy on the Create-an-AWS-Account step points to the Next button instead of a Skip control that does not exist
 - The MFA-step skip control renders as a bordered secondary button matching the design system instead of bare amber text
@@ -70,6 +75,8 @@ All notable changes to Claria are documented here.
 - Editing transcription preferences no longer reverts a preferred model or Cost Explorer setting changed earlier in the same visit
 - Project instructions document the machine-local build environment and worktree cleanup
 - Project instructions warn that a fresh worktree needs its frontend dependencies installed first, and name the misleading Ruby error that appears when they aren't
+- The frontend unit tests run in CI
+- CI installs frontend dependencies from the lockfile instead of re-resolving them
 
 ## [0.18.0] — 2026-07-07
 

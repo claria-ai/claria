@@ -1,0 +1,27 @@
+{
+  "description": "One label across two segments collapses to a single speaker, so renaming it renames both headers.",
+  "speaker_labels": [
+    "Clinician"
+  ],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": "Clinician",
+      "language_code": null,
+      "start_seconds": 0,
+      "end_seconds": 4,
+      "text": "First.",
+      "translation": null
+    },
+    {
+      "id": "seg_0002",
+      "speaker_label": "Clinician",
+      "language_code": null,
+      "start_seconds": 10,
+      "end_seconds": 14,
+      "text": "Second.",
+      "translation": null
+    }
+  ],
+  "rendered": "[Clinician 00:00–00:04]\nFirst.\n\n[Clinician 00:10–00:14]\nSecond."
+}

@@ -1,0 +1,18 @@
+{
+  "description": "A language code on the header, as mixed-language transcription emits.",
+  "speaker_labels": [
+    "Clinician"
+  ],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "speaker_label": "Clinician",
+      "language_code": "es-US",
+      "start_seconds": 9,
+      "end_seconds": 12,
+      "text": "¿En qué parte de la cabeza?",
+      "translation": null
+    }
+  ],
+  "rendered": "[Clinician 00:09–00:12 es-US]\n¿En qué parte de la cabeza?"
+}
