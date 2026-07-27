@@ -54,6 +54,8 @@ All notable changes to Claria are documented here.
 - A transcription preference that fails to save says so and offers to retry, instead of failing silently into the log
 - Typing a custom date range in Cost Explorer no longer bills a $0.01 lookup per keystroke; the range loads when you press Apply
 - Cost Explorer permission and data-availability errors are recognised in one place instead of three
+- A failed text extraction in the chat context bar shows a dismissible banner instead of a blocking system alert
+- The Claria Console keeps updating once its log buffer is full, where it previously froze because rotation leaves the entry count unchanged
 
 ## [0.18.0] — 2026-07-07
 

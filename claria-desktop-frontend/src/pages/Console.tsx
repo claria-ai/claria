@@ -4,6 +4,28 @@ import type { ConsoleEntry } from "../lib/tauri";
 
 const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
 
+const POLL_INTERVAL_MS = 500;
+
+/**
+ * Cheap identity for a log snapshot, used to skip re-rendering an unchanged
+ * buffer. Length alone misses the case that matters most here: the backend
+ * buffer is bounded, so once it is full every new line rotates one out and the
+ * length stops changing. Both ends go into the fingerprint, and either moves
+ * on rotation.
+ */
+function fingerprint(entries: ConsoleEntry[]): string {
+  if (entries.length === 0) return "0";
+  const first = entries[0];
+  const last = entries[entries.length - 1];
+  return [
+    entries.length,
+    first.timestamp,
+    first.message,
+    last.timestamp,
+    last.message,
+  ].join("\u001f");
+}
+
 function levelColor(level: string): string {
   switch (level) {
     case "ERROR":
@@ -66,20 +88,19 @@ export default function Console() {
     fetchLogs();
   }, [fetchLogs]);
 
-  // Poll for new logs every second while the window is open.
+  // Poll for new logs twice a second while the window is open.
   const [autoScroll, setAutoScroll] = useState(true);
   useEffect(() => {
     const id = setInterval(async () => {
       try {
         const latest = await getConsoleLogs();
-        setEntries((prev) => {
-          if (latest.length === prev.length) return prev;
-          return latest;
-        });
+        setEntries((prev) =>
+          fingerprint(latest) === fingerprint(prev) ? prev : latest
+        );
       } catch {
         // Ignore poll failures
       }
-    }, 500);
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, []);
 

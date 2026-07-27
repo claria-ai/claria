@@ -24,11 +24,8 @@ function isMarketplaceError(error: string): boolean {
   return error.includes("aws-marketplace:") || error.includes("Marketplace");
 }
 
-/**
- * `handleSend` contract: components return either a plain string (legacy)
- * or `{ content, usage }`. The widget normalises both.
- */
-export type SendResult = string | { content: string; usage: TurnUsage | null };
+/** `handleSend` contract: the assistant reply plus its token usage, if known. */
+export type SendResult = { content: string; usage: TurnUsage | null };
 
 export default function ChatWidget({
   chatModels,
@@ -89,7 +86,6 @@ export default function ChatWidget({
   const [pricing, setPricing] = useState<ModelPricing | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [textareaHeight, setTextareaHeight] = useState(80);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
@@ -196,9 +192,7 @@ export default function ChatWidget({
 
     setSending(true);
     try {
-      const result = await onSend(selectedModelId, updatedMessages);
-      const content = typeof result === "string" ? result : result.content;
-      const usage = typeof result === "string" ? null : result.usage;
+      const { content, usage } = await onSend(selectedModelId, updatedMessages);
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content,
@@ -364,7 +358,6 @@ export default function ChatWidget({
         </div>
         <div className="flex gap-3 px-6 pb-4">
           <textarea
-            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {

@@ -70,6 +70,10 @@ export default function ClientChat({
     null
   );
   const [extractingFile, setExtractingFile] = useState<string | null>(null);
+  const [extractError, setExtractError] = useState<{
+    filename: string;
+    message: string;
+  } | null>(null);
 
   // Token count state
   const [contextTokens, setContextTokens] = useState<number | null>(null);
@@ -121,14 +125,15 @@ export default function ClientChat({
 
   async function handleExtract(filename: string) {
     setExtractingFile(filename);
+    setExtractError(null);
     try {
       const updated = await extractRecordFile(clientId, filename);
       setContextFiles((prev) =>
         prev.map((f) => (f.filename === filename ? updated : f))
       );
     } catch (e) {
-      // Show error briefly — the pill stays dimmed so the user can retry.
-      alert(`Extraction failed: ${String(e)}`);
+      // The pill stays dimmed so the user can retry from the same button.
+      setExtractError({ filename, message: String(e) });
     } finally {
       setExtractingFile(null);
     }
@@ -200,6 +205,21 @@ export default function ClientChat({
       {!contextLoading && contextError && (
         <div className="flex items-center gap-2 px-6 py-2 border-b border-red-100 bg-red-50">
           <span className="text-xs text-red-600">Failed to load context: {contextError}</span>
+        </div>
+      )}
+      {extractError && (
+        <div className="flex items-center gap-2 px-6 py-2 border-b border-red-100 bg-red-50">
+          <span className="flex-1 text-xs text-red-600">
+            Could not extract text from {extractError.filename}:{" "}
+            {extractError.message}
+          </span>
+          <button
+            onClick={() => setExtractError(null)}
+            aria-label="Dismiss"
+            className="shrink-0 text-red-400 hover:text-red-700 transition-colors"
+          >
+            <CloseIcon className="w-3 h-3" />
+          </button>
         </div>
       )}
       {!contextLoading && contextFiles.length > 0 && (
