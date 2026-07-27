@@ -4,6 +4,12 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Audit events are written to durable storage in the Claria bucket instead of only reaching an in-memory log that dies with the process
+- Audit events carry the token-usage and cost payload that was previously built and then discarded before it was logged
+- Every audit event has its own identifier and UTC timestamp, and lands under a year/month/day path so an auditor can list a single date
+- Each event is one immutable object, so nothing recorded is lost if the app is killed
+- An audit write that fails is reported in the Claria Console instead of failing the chat turn or upload that produced it
+- The audit crate has tests
 - The first-run start screen explains that no local configuration was detected instead of showing a bare Create New System button
 - Onboarding copy on the Create-an-AWS-Account step points to the Next button instead of a Skip control that does not exist
 - The MFA-step skip control renders as a bordered secondary button matching the design system instead of bare amber text
