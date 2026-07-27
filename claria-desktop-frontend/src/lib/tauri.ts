@@ -1,8 +1,42 @@
 // Re-export from generated bindings — the source of truth is the Rust backend.
 // tauri-specta generates bindings.ts from #[specta::specta] annotated commands.
 // If a command is renamed/removed in Rust, this file will fail to compile.
+//
+// Every wrapper below goes through `commands.*`; nothing in the frontend calls
+// `invoke()` with a hand-written command name or a hand-asserted return type,
+// because that would move the failure from `tsc` to runtime. Channel-carrying
+// commands are no exception — specta types those too, as
+// `TAURI_CHANNEL<ProvisionerProgress>`.
 
+import { Channel } from "@tauri-apps/api/core";
 import { commands } from "./bindings";
+import type {
+  ChatHistoryDetail,
+  ChatMessage,
+  ConsoleEntry,
+  CostAndUsageResult,
+  CostGranularity,
+  CredentialClass,
+  CredentialSource,
+  DeletedClient,
+  DeletedFile,
+  FileVersion,
+  InfraChatResponse,
+  ModelPricing,
+  PlanEntry,
+  ProvisionApplyOutcome,
+  ProvisionScanResult,
+  ProvisionerProgress,
+  RecordContext,
+  RecordFile,
+  TranscribeMemoResult,
+  TranscribeOptionsOverrides,
+  TranscriptionPreferences,
+  UpdateCheck,
+  WhisperModelInfo,
+  WhisperModelTier,
+} from "./bindings";
+
 export { commands };
 export type {
   AccessKeyInfo,
@@ -22,6 +56,7 @@ export type {
   ChatRole,
   ClientSummary,
   ConfigInfo,
+  ConsoleEntry,
   CredentialAssessment,
   CredentialClass,
   CredentialSource,
@@ -35,6 +70,8 @@ export type {
   NewCredentials,
   PlanEntry,
   ProvisionApplyOutcome,
+  ProvisionScanResult,
+  ProvisionerProgress,
   RecordContext,
   RecordFile,
   ResourceSpec,
@@ -89,7 +126,7 @@ export async function savePreferences(
   costExplorerEnabled: boolean,
   hourlyCostData: boolean,
   promptCachingEnabled: boolean,
-  transcription: import("./bindings").TranscriptionPreferences
+  transcription: TranscriptionPreferences
 ) {
   return unwrap(
     await commands.savePreferences(
@@ -118,7 +155,7 @@ export async function fetchCloudPreferences() {
 export async function uploadRecordFileWithOptions(
   clientId: string,
   filePath: string,
-  overrides: import("./bindings").TranscribeOptionsOverrides | null
+  overrides: TranscribeOptionsOverrides | null
 ) {
   return unwrap(
     await commands.uploadRecordFileWithOptions(clientId, filePath, overrides)
@@ -146,7 +183,7 @@ export async function saveConfig(
   region: string,
   systemName: string,
   accountId: string,
-  credentials: import("./bindings").CredentialSource
+  credentials: CredentialSource
 ): Promise<void> {
   const result = await commands.saveConfig(region, systemName, accountId, credentials);
   unwrap(result);
@@ -159,7 +196,7 @@ export async function deleteConfig(): Promise<void> {
 
 export async function assessCredentials(
   region: string,
-  credentials: import("./bindings").CredentialSource
+  credentials: CredentialSource
 ) {
   return unwrap(await commands.assessCredentials(region, credentials));
 }
@@ -173,7 +210,7 @@ export async function assessCredentials(
  */
 export async function assumeRole(
   region: string,
-  credentials: import("./bindings").CredentialSource,
+  credentials: CredentialSource,
   accountId: string,
   roleName: string
 ) {
@@ -188,7 +225,7 @@ export async function bootstrapIamUser(
   rootAccessKeyId: string,
   rootSecretAccessKey: string,
   sessionToken: string | null,
-  credentialClass: import("./bindings").CredentialClass
+  credentialClass: CredentialClass
 ) {
   return unwrap(
     await commands.bootstrapIamUser(
@@ -208,7 +245,7 @@ export async function listAwsProfiles(): Promise<string[]> {
 
 export async function listUserAccessKeys(
   region: string,
-  credentials: import("./bindings").CredentialSource
+  credentials: CredentialSource
 ) {
   return unwrap(
     await commands.listUserAccessKeys(region, credentials)
@@ -217,7 +254,7 @@ export async function listUserAccessKeys(
 
 export async function deleteUserAccessKey(
   region: string,
-  credentials: import("./bindings").CredentialSource,
+  credentials: CredentialSource,
   accessKeyId: string
 ): Promise<void> {
   unwrap(
@@ -226,91 +263,71 @@ export async function deleteUserAccessKey(
 }
 
 // ---------------------------------------------------------------------------
-// Provisioner progress types
+// Provisioner wrappers
+//
+// These stream `ProvisionerProgress` over a Tauri channel. The generated
+// bindings take the channel as an argument, so callers pass a plain callback
+// and the channel plumbing stays here.
 // ---------------------------------------------------------------------------
 
-export type ProvisionerProgress =
-  | { kind: "scan_started"; label: string; index: number; total: number }
-  | { kind: "scan_completed"; label: string; index: number; total: number }
-  | { kind: "apply_started"; label: string; action: string; index: number; total: number }
-  | { kind: "apply_completed"; label: string; action: string; index: number; total: number }
-  | { kind: "escalation_step"; label: string; status: string };
-
-// ---------------------------------------------------------------------------
-// Unified provision wrappers
-// ---------------------------------------------------------------------------
-
-export interface ProvisionScanResult {
-  entries: import("./bindings").PlanEntry[];
-  needs_escalation: boolean;
-  account_id: string;
+/** Wrap an optional progress callback in the channel the bindings expect. */
+function progressChannel(
+  onProgress?: (p: ProvisionerProgress) => void
+): Channel<ProvisionerProgress> {
+  const channel = new Channel<ProvisionerProgress>();
+  if (onProgress) {
+    channel.onmessage = onProgress;
+  }
+  return channel;
 }
 
 export async function provisionScan(
   region: string,
   systemName: string,
-  credentials: import("./bindings").CredentialSource,
+  credentials: CredentialSource,
   onProgress?: (p: ProvisionerProgress) => void
 ): Promise<ProvisionScanResult> {
-  const { invoke, Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<ProvisionerProgress>();
-  if (onProgress) {
-    channel.onmessage = onProgress;
-  }
-  return await invoke("provision_scan", {
-    region,
-    systemName,
-    credentials,
-    onProgress: channel,
-  });
+  return unwrap(
+    await commands.provisionScan(
+      region,
+      systemName,
+      credentials,
+      progressChannel(onProgress)
+    )
+  );
 }
 
 export async function provisionApply(
   region: string,
   systemName: string,
-  credentials: import("./bindings").CredentialSource,
-  elevatedCredentials: import("./bindings").CredentialSource | null,
+  credentials: CredentialSource,
+  elevatedCredentials: CredentialSource | null,
   onProgress?: (p: ProvisionerProgress) => void
-): Promise<import("./bindings").ProvisionApplyOutcome> {
-  const { invoke, Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<ProvisionerProgress>();
-  if (onProgress) {
-    channel.onmessage = onProgress;
-  }
-  return await invoke("provision_apply", {
-    region,
-    systemName,
-    credentials,
-    elevatedCredentials,
-    onProgress: channel,
-  });
+): Promise<ProvisionApplyOutcome> {
+  return unwrap(
+    await commands.provisionApply(
+      region,
+      systemName,
+      credentials,
+      elevatedCredentials,
+      progressChannel(onProgress)
+    )
+  );
 }
 
-// ---------------------------------------------------------------------------
-// Provisioner wrappers — day-2 plan/apply against the saved config
+// Day-2 plan/apply against the saved config
 // (used by Provision; InfraChat calls plan() headlessly on mount)
-// ---------------------------------------------------------------------------
 
 export async function plan(
   onProgress?: (p: ProvisionerProgress) => void
-) {
-  const { invoke, Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<ProvisionerProgress>();
-  if (onProgress) {
-    channel.onmessage = onProgress;
-  }
-  return await invoke<import("./bindings").PlanEntry[]>("plan", { onProgress: channel });
+): Promise<PlanEntry[]> {
+  return unwrap(await commands.plan(progressChannel(onProgress)));
 }
 
 export async function apply(
   onProgress?: (p: ProvisionerProgress) => void
-) {
-  const { invoke, Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<ProvisionerProgress>();
-  if (onProgress) {
-    channel.onmessage = onProgress;
-  }
-  return await invoke<import("./bindings").PlanEntry[]>("apply", { onProgress: channel });
+): Promise<PlanEntry[]> {
+  return unwrap(await commands.apply(progressChannel(onProgress)));
 }
 
 export async function destroy(): Promise<void> {
@@ -341,7 +358,7 @@ export async function deleteClient(clientId: string): Promise<void> {
 // Record file wrappers
 // ---------------------------------------------------------------------------
 
-export async function listRecordFiles(clientId: string, prefix?: string): Promise<import("./bindings").RecordFile[]> {
+export async function listRecordFiles(clientId: string, prefix?: string): Promise<RecordFile[]> {
   return unwrap(await commands.listRecordFiles(clientId, prefix ?? null));
 }
 
@@ -349,7 +366,7 @@ export async function searchRecordContents(clientId: string, query: string): Pro
   return unwrap(await commands.searchRecordContents(clientId, query));
 }
 
-export async function uploadRecordFile(clientId: string, filePath: string): Promise<import("./bindings").RecordFile> {
+export async function uploadRecordFile(clientId: string, filePath: string): Promise<RecordFile> {
   return unwrap(await commands.uploadRecordFile(clientId, filePath));
 }
 
@@ -361,7 +378,7 @@ export async function getRecordFileText(clientId: string, filename: string): Pro
   return unwrap(await commands.getRecordFileText(clientId, filename));
 }
 
-export async function createTextRecordFile(clientId: string, filename: string, content: string): Promise<import("./bindings").RecordFile> {
+export async function createTextRecordFile(clientId: string, filename: string, content: string): Promise<RecordFile> {
   return unwrap(await commands.createTextRecordFile(clientId, filename, content));
 }
 
@@ -369,11 +386,11 @@ export async function updateTextRecordFile(clientId: string, filename: string, c
   unwrap(await commands.updateTextRecordFile(clientId, filename, content));
 }
 
-export async function listRecordContext(clientId: string): Promise<import("./bindings").RecordContext[]> {
+export async function listRecordContext(clientId: string): Promise<RecordContext[]> {
   return unwrap(await commands.listRecordContext(clientId));
 }
 
-export async function extractRecordFile(clientId: string, filename: string): Promise<import("./bindings").RecordContext> {
+export async function extractRecordFile(clientId: string, filename: string): Promise<RecordContext> {
   return unwrap(await commands.extractRecordFile(clientId, filename));
 }
 
@@ -385,15 +402,15 @@ export async function listChatModels() {
   return unwrap(await commands.listChatModels());
 }
 
-export async function chatMessage(clientId: string, modelId: string, messages: import("./bindings").ChatMessage[], chatId?: string | null, contextFilenames?: string[]) {
+export async function chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId?: string | null, contextFilenames?: string[]) {
   return unwrap(await commands.chatMessage(clientId, modelId, messages, chatId ?? null, contextFilenames ?? []));
 }
 
 export async function infraChat(
   modelId: string,
-  messages: import("./bindings").ChatMessage[],
-  planEntries: import("./bindings").PlanEntry[]
-): Promise<import("./bindings").InfraChatResponse> {
+  messages: ChatMessage[],
+  planEntries: PlanEntry[]
+): Promise<InfraChatResponse> {
   return unwrap(await commands.infraChat(modelId, messages, planEntries));
 }
 
@@ -401,7 +418,7 @@ export async function acceptModelAgreement(modelId: string): Promise<void> {
   unwrap(await commands.acceptModelAgreement(modelId));
 }
 
-export async function loadChatHistory(clientId: string, chatId: string): Promise<import("./bindings").ChatHistoryDetail> {
+export async function loadChatHistory(clientId: string, chatId: string): Promise<ChatHistoryDetail> {
   return unwrap(await commands.loadChatHistory(clientId, chatId));
 }
 
@@ -429,7 +446,7 @@ export async function deletePrompt(promptName: string): Promise<void> {
   unwrap(await commands.deletePrompt(promptName));
 }
 
-export async function listPromptVersions(promptName: string): Promise<import("./bindings").FileVersion[]> {
+export async function listPromptVersions(promptName: string): Promise<FileVersion[]> {
   return unwrap(await commands.listPromptVersions(promptName));
 }
 
@@ -445,7 +462,7 @@ export async function restorePromptVersion(promptName: string, versionId: string
 // Version history wrappers
 // ---------------------------------------------------------------------------
 
-export async function listFileVersions(clientId: string, filename: string): Promise<import("./bindings").FileVersion[]> {
+export async function listFileVersions(clientId: string, filename: string): Promise<FileVersion[]> {
   return unwrap(await commands.listFileVersions(clientId, filename));
 }
 
@@ -457,7 +474,7 @@ export async function restoreFileVersion(clientId: string, filename: string, ver
   unwrap(await commands.restoreFileVersion(clientId, filename, versionId));
 }
 
-export async function listDeletedFiles(clientId: string): Promise<import("./bindings").DeletedFile[]> {
+export async function listDeletedFiles(clientId: string): Promise<DeletedFile[]> {
   return unwrap(await commands.listDeletedFiles(clientId));
 }
 
@@ -465,7 +482,7 @@ export async function restoreDeletedFile(clientId: string, filename: string, ver
   unwrap(await commands.restoreDeletedFile(clientId, filename, versionId));
 }
 
-export async function listDeletedClients(): Promise<import("./bindings").DeletedClient[]> {
+export async function listDeletedClients(): Promise<DeletedClient[]> {
   return unwrap(await commands.listDeletedClients());
 }
 
@@ -479,27 +496,27 @@ export async function restoreClient(clientId: string, versionId: string): Promis
 
 export type { WhisperModelInfo, WhisperModelTier, TranscribeMemoResult, UpdateCheck } from "./bindings";
 
-export async function getWhisperModels(): Promise<import("./bindings").WhisperModelInfo[]> {
+export async function getWhisperModels(): Promise<WhisperModelInfo[]> {
   return unwrap(await commands.getWhisperModels());
 }
 
-export async function downloadWhisperModel(tier: import("./bindings").WhisperModelTier): Promise<import("./bindings").WhisperModelInfo[]> {
+export async function downloadWhisperModel(tier: WhisperModelTier): Promise<WhisperModelInfo[]> {
   return unwrap(await commands.downloadWhisperModel(tier));
 }
 
-export async function deleteWhisperModel(tier: import("./bindings").WhisperModelTier): Promise<import("./bindings").WhisperModelInfo[]> {
+export async function deleteWhisperModel(tier: WhisperModelTier): Promise<WhisperModelInfo[]> {
   return unwrap(await commands.deleteWhisperModel(tier));
 }
 
-export async function deleteWhisperModelDir(dirName: string): Promise<import("./bindings").WhisperModelInfo[]> {
+export async function deleteWhisperModelDir(dirName: string): Promise<WhisperModelInfo[]> {
   return unwrap(await commands.deleteWhisperModelDir(dirName));
 }
 
-export async function setActiveWhisperModel(tier: import("./bindings").WhisperModelTier): Promise<import("./bindings").WhisperModelInfo[]> {
+export async function setActiveWhisperModel(tier: WhisperModelTier): Promise<WhisperModelInfo[]> {
   return unwrap(await commands.setActiveWhisperModel(tier));
 }
 
-export async function transcribeMemo(audioPcmBase64: string): Promise<import("./bindings").TranscribeMemoResult> {
+export async function transcribeMemo(audioPcmBase64: string): Promise<TranscribeMemoResult> {
   return unwrap(await commands.transcribeMemo(audioPcmBase64));
 }
 
@@ -507,7 +524,7 @@ export async function transcribeMemo(audioPcmBase64: string): Promise<import("./
 // Update check
 // ---------------------------------------------------------------------------
 
-export async function checkForUpdates(): Promise<import("./bindings").UpdateCheck> {
+export async function checkForUpdates(): Promise<UpdateCheck> {
   return unwrap(await commands.checkForUpdates());
 }
 
@@ -520,9 +537,9 @@ export type { CostGranularity, CostAndUsageResult, CostTimePeriod, CostResultGro
 export async function getCostAndUsage(
   startDate: string,
   endDate: string,
-  granularity: import("./bindings").CostGranularity,
+  granularity: CostGranularity,
   groupByService: boolean
-): Promise<import("./bindings").CostAndUsageResult> {
+): Promise<CostAndUsageResult> {
   return unwrap(await commands.getCostAndUsage(startDate, endDate, granularity, groupByService));
 }
 
@@ -549,7 +566,7 @@ export async function setHourlyCostData(enabled: boolean): Promise<void> {
  */
 export async function lookupModelPricing(
   modelId: string
-): Promise<import("./bindings").ModelPricing | null> {
+): Promise<ModelPricing | null> {
   return unwrap(await commands.lookupModelPricing(modelId));
 }
 
@@ -558,8 +575,7 @@ export async function lookupModelPricing(
 // ---------------------------------------------------------------------------
 
 export async function openUrl(url: string): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("open_url", { url });
+  unwrap(await commands.openUrl(url));
 }
 
 // ---------------------------------------------------------------------------
@@ -570,7 +586,7 @@ export async function countClientContextTokens(clientId: string, modelId: string
   return unwrap(await commands.countClientContextTokens(clientId, modelId, contextFilenames));
 }
 
-export async function countInfraContextTokens(modelId: string, planEntries: import("./bindings").PlanEntry[]): Promise<number> {
+export async function countInfraContextTokens(modelId: string, planEntries: PlanEntry[]): Promise<number> {
   return unwrap(await commands.countInfraContextTokens(modelId, planEntries));
 }
 
@@ -578,24 +594,17 @@ export async function countInfraContextTokens(modelId: string, planEntries: impo
 // Console
 // ---------------------------------------------------------------------------
 
-export interface ConsoleEntry {
-  timestamp: string;
-  level: string;
-  target: string;
-  message: string;
-}
+// The console commands are infallible on the Rust side, so the bindings return
+// the value directly rather than a `Result` — nothing to unwrap.
 
 export async function getConsoleLogs(): Promise<ConsoleEntry[]> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return await invoke("get_console_logs");
+  return await commands.getConsoleLogs();
 }
 
 export async function getConsoleLogsText(): Promise<string> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return await invoke("get_console_logs_text");
+  return await commands.getConsoleLogsText();
 }
 
 export async function saveConsoleLogs(): Promise<boolean> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return await invoke("save_console_logs");
+  return unwrap(await commands.saveConsoleLogs());
 }
