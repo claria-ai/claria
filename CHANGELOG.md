@@ -9,6 +9,7 @@ All notable changes to Claria are documented here.
 - Bulk deletes go out in batches of a thousand objects per request instead of one request per object
 - A bulk delete that S3 partially refuses now reports an error naming the objects left behind instead of reporting success
 - A teardown that fails partway through is safe to re-run
+- Starting the desktop app in development installs frontend dependencies first, so a fresh checkout no longer fails on a missing Vite binary
 - The mock AWS server refuses to delete a bucket that still holds objects
 - The mock AWS server supports batch deletes, versioned deletes, and paged version listings
 - The frontend has a unit test suite
