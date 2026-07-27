@@ -9,6 +9,7 @@ import {
   type TranscribeOptionsOverrides,
   type TranscriptionLanguage,
 } from "../lib/tauri";
+import { transcribeEngineSummary } from "../lib/transcribe";
 import Modal from "./Modal";
 
 /**
@@ -105,17 +106,13 @@ export default function TranscribeWizard({
   const effectiveTranslate =
     translate ?? snapshot?.transcription.translate_to_english ?? false;
 
-  // The wizard's engine line is derived. Medical only fires when language is
-  // English and the user has it enabled; otherwise we always end up on
-  // Standard. Showing it lets power users see what'll actually run.
-  const engineSummary =
-    effectiveLanguage === "english" && effectiveUseMedical
-      ? "Transcribe Medical (en-US, $0.075/min, PHI tagging)"
-      : effectiveLanguage === "mixed"
-      ? "Transcribe Standard (en-US + es-US, auto-detect)"
-      : effectiveLanguage === "spanish"
-      ? "Transcribe Standard (es-US, $0.024/min)"
-      : "Transcribe Standard (en-US, $0.024/min)";
+  // The wizard's engine line is derived, and shares its Medical-vs-Standard
+  // rule with the record page's drop-zone summary. Showing it lets power
+  // users see what'll actually run.
+  const engineSummary = transcribeEngineSummary(
+    effectiveLanguage,
+    effectiveUseMedical,
+  );
 
   async function handlePickFile() {
     setUploadError(null);

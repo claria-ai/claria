@@ -42,6 +42,13 @@ import {
 } from "../components/icons";
 import { formatDateTime, formatFileSize } from "../lib/format";
 import { searchMatches } from "../lib/search";
+import {
+  AUDIO_EXTENSIONS,
+  CHAT_HISTORY_PREFIX,
+  isAudioSidecar,
+  versionKeyFor,
+} from "../lib/recordFiles";
+import { transcribeSummary, transcribeTooltip } from "../lib/transcribe";
 import { useMoreMode } from "../lib/useMoreMode";
 import { diffLines, type DiffLine } from "../lib/diff";
 import ClientChat from "./ClientChat";
@@ -217,8 +224,6 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   const transcribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcribingRef = useRef(false);
-
-  const CHAT_HISTORY_PREFIX = "chat-history/";
 
   // Search matches filenames instantly (case-insensitive substring); the
   // debounced query is also matched against each file's extracted text on
@@ -1629,61 +1634,6 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     </div>
   );
 }
-
-/**
- * True when the filename is a supported audio file (e.g. `session.m4a`).
- *
- * The preview modal is opened with the *audio* filename, not the sidecar
- * name — `getRecordFileText` handles the sidecar lookup internally, and
- * `save_transcript_edits` / `restore_original_transcript` also expect the
- * audio filename and append `.text` themselves. So the structured editor
- * gate is on the audio extension, not on a `.text` suffix.
- */
-function isAudioSidecar(filename: string): boolean {
-  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
-  return AUDIO_EXTENSIONS.has(ext);
-}
-
-/**
- * Map an audio filename to the S3 key that the version-history commands
- * should operate on. For audio files this is the `.text` sidecar — the
- * raw audio file's history isn't useful (it's a single immutable
- * upload). For everything else it's the file itself.
- */
-function versionKeyFor(filename: string): string {
-  return isAudioSidecar(filename) ? `${filename}.text` : filename;
-}
-
-function transcribeSummary(prefs: TranscriptionPreferences): string {
-  const lang =
-    prefs.default_language === "english"
-      ? "English"
-      : prefs.default_language === "spanish"
-      ? "Spanish"
-      : "Mixed (en+es)";
-  const engine =
-    prefs.default_language === "english" && prefs.use_medical_for_english
-      ? "Medical"
-      : "Standard";
-  const speakers = `${prefs.default_speaker_count} speaker${
-    (prefs.default_speaker_count ?? 0) === 1 ? "" : "s"
-  }`;
-  const translate = prefs.translate_to_english ? ", translate" : "";
-  return `Audio uses: ${engine} · ${lang} · ${speakers}${translate}.`;
-}
-
-function transcribeTooltip(prefs: TranscriptionPreferences | null): string {
-  if (!prefs) return "Drag files here to upload";
-  // Rough ETA — Transcribe is typically ~5–10x real-time. Use 1 min processing
-  // per 6 min of audio as the heuristic shown to users.
-  return `${transcribeSummary(
-    prefs
-  )}\nDuration estimate: ~1 minute of processing per 6 minutes of audio.`;
-}
-
-const AUDIO_EXTENSIONS = new Set([
-  "mp3", "mp4", "m4a", "wav", "flac", "ogg", "amr", "webm",
-]);
 
 function FileIcon({ filename }: { filename: string }) {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
