@@ -12,6 +12,12 @@ All notable changes to Claria are documented here.
 - Starting the desktop app in development installs frontend dependencies first, so a fresh checkout no longer fails on a missing Vite binary
 - The mock AWS server refuses to delete a bucket that still holds objects
 - The mock AWS server supports batch deletes, versioned deletes, and paged version listings
+- Audit events are written to durable storage in the Claria bucket instead of only reaching an in-memory log that dies with the process
+- Audit events carry the token-usage and cost payload that was previously built and then discarded before it was logged
+- Every audit event has its own identifier and UTC timestamp, and lands under a year/month/day path so an auditor can list a single date
+- Each event is one immutable object, so nothing recorded is lost if the app is killed
+- An audit write that fails is reported in the Claria Console instead of failing the chat turn or upload that produced it
+- The audit crate has tests
 - The frontend has a unit test suite
 - The transcript body format is pinned by fixtures the Rust and TypeScript parsers both read, so a change to one that the other misses fails on both sides
 - A recording longer than an hour and forty minutes opened in the transcript editor as one un-diarized block, and saving it overwrote every speaker header
@@ -77,6 +83,8 @@ All notable changes to Claria are documented here.
 - Editing transcription preferences no longer reverts a preferred model or Cost Explorer setting changed earlier in the same visit
 - Project instructions document the machine-local build environment and worktree cleanup
 - Project instructions warn that a fresh worktree needs its frontend dependencies installed first, and name the misleading Ruby error that appears when they aren't
+- The frontend unit tests run in CI
+- CI installs frontend dependencies from the lockfile instead of re-resolving them
 
 ## [0.18.0] — 2026-07-07
 
