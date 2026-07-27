@@ -14,6 +14,10 @@ import {
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
 import ChatHistoryHeader from "../components/ChatHistoryHeader";
+import { BackButton, CloseIcon } from "../components/icons";
+import Spinner from "../components/Spinner";
+import TokenCountBadge from "../components/TokenCountBadge";
+import Modal from "../components/Modal";
 import { summarizeHistory } from "../lib/cost";
 
 export type ResumeChat = {
@@ -228,10 +232,7 @@ export default function ClientChat({
                     title="Extract text"
                   >
                     {isExtracting ? (
-                      <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
+                      <Spinner className="w-3 h-3" />
                     ) : (
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -244,9 +245,7 @@ export default function ClientChat({
                   className={`${hasText ? "text-blue-400 hover:text-blue-700" : "text-gray-300 hover:text-gray-500"} transition-colors ml-0.5`}
                   title="Remove from context"
                 >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
+                  <CloseIcon className="w-3 h-3" />
                 </button>
               </span>
             );
@@ -261,24 +260,7 @@ export default function ClientChat({
       {/* Header — hidden when embedded in ClientRecord */}
       {!embedded && (
         <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
-          <button
-            onClick={() => navigate("clients")}
-            className="text-gray-500 hover:text-gray-700 transition-colors"
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M15 19l-7-7 7-7"
-              />
-            </svg>
-          </button>
+          <BackButton onClick={() => navigate("clients")} />
           <div className="flex-1">
             <h2 className="text-lg font-semibold">{clientName}</h2>
             <p className="text-xs text-gray-400">Chat</p>
@@ -315,162 +297,51 @@ export default function ClientChat({
 
       {/* System prompt modal (read-only) */}
       {showPromptModal && systemPrompt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                System Prompt
-              </h3>
-              <button
-                onClick={() => setShowPromptModal(false)}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-              <div className="prose prose-sm max-w-none">
-                <Markdown remarkPlugins={[remarkGfm]}>{systemPrompt}</Markdown>
-              </div>
-            </div>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => setShowPromptModal(false)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              >
-                Close
-              </button>
+        <Modal
+          open
+          onClose={() => setShowPromptModal(false)}
+          title="System Prompt"
+          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
+        >
+          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+            <div className="prose prose-sm max-w-none">
+              <Markdown remarkPlugins={[remarkGfm]}>{systemPrompt}</Markdown>
             </div>
           </div>
-        </div>
+          <div className="flex justify-end mt-4">
+            <button
+              onClick={() => setShowPromptModal(false)}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+            >
+              Close
+            </button>
+          </div>
+        </Modal>
       )}
 
       {/* Context file preview modal */}
       {previewContext && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                {previewContext.filename}
-              </h3>
-              <button
-                onClick={() => setPreviewContext(null)}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-              <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-                {previewContext.text}
-              </pre>
-            </div>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => setPreviewContext(null)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              >
-                Close
-              </button>
-            </div>
+        <Modal
+          open
+          onClose={() => setPreviewContext(null)}
+          title={previewContext.filename}
+          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
+        >
+          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
+              {previewContext.text}
+            </pre>
           </div>
-        </div>
+          <div className="flex justify-end mt-4">
+            <button
+              onClick={() => setPreviewContext(null)}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+            >
+              Close
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
-  );
-}
-
-function TokenCountBadge({
-  counting,
-  tokens,
-  error,
-}: {
-  counting: boolean;
-  tokens: number | null;
-  error?: string | null;
-}) {
-  const label =
-    tokens != null
-      ? tokens >= 1000
-        ? `~${(tokens / 1000).toFixed(1)}k tokens`
-        : `~${tokens} tokens`
-      : null;
-
-  if (counting) {
-    return (
-      <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 text-gray-400">
-        <svg
-          className="animate-spin h-3.5 w-3.5"
-          viewBox="0 0 24 24"
-          fill="none"
-        >
-          <circle
-            className="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            strokeWidth="4"
-          />
-          <path
-            className="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-          />
-        </svg>
-      </span>
-    );
-  }
-
-  if (error) {
-    return (
-      <span
-        className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-50 border border-red-200 text-red-400 text-[10px] font-bold cursor-default group relative"
-        title={error}
-      >
-        !
-        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] font-normal text-white bg-red-700 rounded max-w-xs whitespace-pre-wrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-          {error}
-        </span>
-      </span>
-    );
-  }
-
-  if (label == null) return null;
-
-  return (
-    <span
-      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 border border-gray-200 text-gray-400 text-[10px] font-bold cursor-default group relative"
-      title={label}
-    >
-      ?
-      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] font-normal text-white bg-gray-800 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-        {label}
-      </span>
-    </span>
   );
 }

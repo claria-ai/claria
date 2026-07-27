@@ -9,6 +9,8 @@ import {
   type CostTimePeriod,
   type CostResultGroup,
 } from "../lib/tauri";
+import { BackButton, CloseIcon } from "../components/icons";
+import Spinner from "../components/Spinner";
 import type { Page } from "../App";
 
 // ---------------------------------------------------------------------------
@@ -220,24 +222,7 @@ export default function CostExplorer({
     <div className="max-w-4xl mx-auto p-8 overflow-x-clip">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <button
-          onClick={() => navigate("provision")}
-          className="text-gray-500 hover:text-gray-700 transition-colors"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 19l-7-7 7-7"
-            />
-          </svg>
-        </button>
+        <BackButton onClick={() => navigate("provision")} />
         <h2 className="text-2xl font-bold">Cost Explorer</h2>
       </div>
 
@@ -488,21 +473,10 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
           </p>
           <button
             onClick={() => setBannerDismissed(true)}
+            aria-label="Dismiss"
             className="text-amber-500 hover:text-amber-700 shrink-0"
           >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
+            <CloseIcon className="w-4 h-4" />
           </button>
         </div>
       )}
@@ -831,29 +805,5 @@ function ServiceLegendItem({
         </div>
       </div>
     </button>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Spinner
-// ---------------------------------------------------------------------------
-
-function Spinner() {
-  return (
-    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
   );
 }

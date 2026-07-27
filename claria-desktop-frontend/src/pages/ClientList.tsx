@@ -14,6 +14,8 @@ import { useMoreMode } from "../lib/useMoreMode";
 import MoreToggle from "../components/MoreToggle";
 import DeletedSection from "../components/DeletedSection";
 import { ErrorBanner, LoadingCard, EmptyCard } from "../components/StateCards";
+import { BackButton, TrashIcon } from "../components/icons";
+import Modal from "../components/Modal";
 import type { Page } from "../App";
 
 export default function ClientList({
@@ -105,14 +107,7 @@ export default function ClientList({
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate("start")}
-            className="text-gray-500 hover:text-gray-700 transition-colors"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
+          <BackButton onClick={() => navigate("start")} />
           <h2 className="text-2xl font-bold">Clients</h2>
         </div>
         <div className="flex gap-2">
@@ -235,9 +230,7 @@ export default function ClientList({
                       className="text-gray-400 hover:text-red-600 transition-colors p-1"
                       title="Delete client"
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
+                      <TrashIcon />
                     </button>
                   </td>
                 </tr>
@@ -276,33 +269,35 @@ export default function ClientList({
 
       {/* Delete confirmation modal */}
       {confirmDeleteId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-sm w-full mx-4 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              Delete client?
-            </h3>
-            <p className="text-sm text-gray-600 mb-4">
-              This will permanently delete the client and all associated records,
-              files, and chat history. This cannot be undone.
-            </p>
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => setConfirmDeleteId(null)}
-                disabled={deleting}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => handleDelete(confirmDeleteId)}
-                disabled={deleting}
-                className="px-4 py-2 text-sm text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
-              >
-                {deleting ? "Deleting..." : "Delete"}
-              </button>
-            </div>
+        <Modal
+          open
+          onClose={() => setConfirmDeleteId(null)}
+          title="Delete client?"
+          className="max-w-sm p-6"
+          showClose={false}
+          dismissible={!deleting}
+        >
+          <p className="text-sm text-gray-600 mb-4">
+            This will permanently delete the client and all associated records,
+            files, and chat history. This cannot be undone.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => setConfirmDeleteId(null)}
+              disabled={deleting}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => handleDelete(confirmDeleteId)}
+              disabled={deleting}
+              className="px-4 py-2 text-sm text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
+            >
+              {deleting ? "Deleting..." : "Delete"}
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
 
     </div>

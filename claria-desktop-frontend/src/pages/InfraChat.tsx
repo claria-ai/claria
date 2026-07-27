@@ -9,6 +9,9 @@ import {
 } from "../lib/tauri";
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
+import { BackButton } from "../components/icons";
+import TokenCountBadge from "../components/TokenCountBadge";
+import Modal from "../components/Modal";
 
 const SYSTEM_PROMPT = `You are Claria's infrastructure assistant. Claria is a desktop application for
 healthcare clinicians that runs entirely in the user's own AWS account — there is
@@ -163,24 +166,7 @@ export default function InfraChat({
     <div className="flex flex-col h-screen">
       {/* Header */}
       <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
-        <button
-          onClick={() => navigate("start")}
-          className="text-gray-500 hover:text-gray-700 transition-colors"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 19l-7-7 7-7"
-            />
-          </svg>
-        </button>
+        <BackButton onClick={() => navigate("start")} />
         <div className="flex-1">
           <h2 className="text-lg font-semibold">Infrastructure</h2>
           <p className="text-xs text-gray-400">Ask about your AWS resources</p>
@@ -217,118 +203,27 @@ export default function InfraChat({
 
       {/* Preview modal */}
       {previewModal != null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                {previewModal.title}
-              </h3>
-              <button
-                onClick={() => setPreviewModal(null)}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-              <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-                {previewModal.content}
-              </pre>
-            </div>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => setPreviewModal(null)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              >
-                Close
-              </button>
-            </div>
+        <Modal
+          open
+          onClose={() => setPreviewModal(null)}
+          title={previewModal.title}
+          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
+        >
+          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
+            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
+              {previewModal.content}
+            </pre>
           </div>
-        </div>
+          <div className="flex justify-end mt-4">
+            <button
+              onClick={() => setPreviewModal(null)}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+            >
+              Close
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
-  );
-}
-
-function TokenCountBadge({
-  counting,
-  tokens,
-  error,
-}: {
-  counting: boolean;
-  tokens: number | null;
-  error?: string | null;
-}) {
-  const label =
-    tokens != null
-      ? tokens >= 1000
-        ? `~${(tokens / 1000).toFixed(1)}k tokens`
-        : `~${tokens} tokens`
-      : null;
-
-  if (counting) {
-    return (
-      <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 text-gray-400">
-        <svg
-          className="animate-spin h-3.5 w-3.5"
-          viewBox="0 0 24 24"
-          fill="none"
-        >
-          <circle
-            className="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            strokeWidth="4"
-          />
-          <path
-            className="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-          />
-        </svg>
-      </span>
-    );
-  }
-
-  if (error) {
-    return (
-      <span
-        className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-50 border border-red-200 text-red-400 text-[10px] font-bold cursor-default group relative"
-        title={error}
-      >
-        !
-        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] font-normal text-white bg-red-700 rounded max-w-xs whitespace-pre-wrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-          {error}
-        </span>
-      </span>
-    );
-  }
-
-  if (label == null) return null;
-
-  return (
-    <span
-      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 border border-gray-200 text-gray-400 text-[10px] font-bold cursor-default group relative"
-      title={label}
-    >
-      ?
-      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] font-normal text-white bg-gray-800 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-        {label}
-      </span>
-    </span>
   );
 }

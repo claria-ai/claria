@@ -40,6 +40,14 @@ All notable changes to Claria are documented here.
 - Setting up a third computer against an account whose IAM user already holds two access keys lists those keys with their creation and last-used dates and offers to delete one, instead of dead-ending
 - Deleting an access key warns that the computer using it loses access to Claria and requires a per-key confirmation; nothing is preselected
 - IAM and STS errors from the mock AWS server carry their error code, so tests exercise the same parsing path as the real SDK
+- The icons pasted into pages by hand — close, back, trash, search, play, folder — come from one shared set
+- Page back buttons and icon-only close buttons carry an accessible name for screen readers
+- Every loading spinner in the app is now the same component instead of four copies of it
+- The chat context token badge is defined once instead of separately in the client and infrastructure chats
+- Every dialog in the app is a real modal dialog: Escape closes it, keyboard focus stays inside it, and the page behind it no longer scrolls
+- Screen readers announce dialogs as modal and read their title
+- Escape does not discard a just-recorded memo transcript, and clicking the dimmed background still does not dismiss a delete confirmation
+- The thirteen hand-rolled modal overlays are one shared component
 
 ## [0.18.0] — 2026-07-07
 

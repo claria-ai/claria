@@ -25,6 +25,9 @@ import {
   type WhisperModelInfo,
   type WhisperModelTier,
 } from "../lib/tauri";
+import { BackButton } from "../components/icons";
+import Spinner from "../components/Spinner";
+import Modal from "../components/Modal";
 import type { Page } from "../App";
 
 export default function Preferences({
@@ -64,24 +67,7 @@ export default function Preferences({
     <div className="max-w-2xl mx-auto p-8">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <button
-          onClick={() => navigate("start")}
-          className="text-gray-500 hover:text-gray-700 transition-colors"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 19l-7-7 7-7"
-            />
-          </svg>
-        </button>
+        <BackButton onClick={() => navigate("start")} />
         <h2 className="text-2xl font-bold">Preferences</h2>
       </div>
 
@@ -379,110 +365,85 @@ function PromptEditor({
 
       {/* Version history modal */}
       {showVersions && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full mx-4 p-6 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                {label} Versions
-              </h3>
-              <button
-                onClick={handleCloseVersions}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
+        <Modal
+          open
+          onClose={handleCloseVersions}
+          title={`${label} Versions`}
+          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
+        >
+          {versionsLoading ? (
+            <div className="flex-1 flex items-center justify-center py-8">
+              <div className="flex items-center gap-2 text-gray-500 text-sm">
+                <Spinner />
+                <span>Loading versions...</span>
+              </div>
             </div>
-
-            {versionsLoading ? (
-              <div className="flex-1 flex items-center justify-center py-8">
-                <div className="flex items-center gap-2 text-gray-500 text-sm">
-                  <Spinner />
-                  <span>Loading versions...</span>
-                </div>
-              </div>
-            ) : versions.length === 0 ? (
-              <div className="flex-1 flex items-center justify-center py-8">
-                <p className="text-gray-400 text-sm">
-                  No version history found.
-                </p>
-              </div>
-            ) : (
-              <div className="flex-1 overflow-y-auto">
-                <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
-                  {versions.map((v) => (
-                    <div key={v.version_id}>
-                      <div className="px-4 py-3 flex items-center gap-3">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm text-gray-900">
-                            {v.last_modified
-                              ? formatDate(v.last_modified)
-                              : "Unknown date"}
-                            {v.is_latest && (
-                              <span className="ml-2 px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">
-                                Current
-                              </span>
-                            )}
-                          </p>
-                          <p className="text-xs text-gray-400">
-                            {formatFileSize(v.size)} &middot;{" "}
-                            {v.version_id.slice(0, 12)}...
-                          </p>
-                        </div>
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => handleViewVersion(v.version_id)}
-                            className={`px-2 py-1 text-xs rounded transition-colors ${
-                              versionPreview?.versionId === v.version_id
-                                ? "bg-blue-100 text-blue-700"
-                                : "text-blue-600 hover:bg-blue-50"
-                            }`}
-                          >
-                            {versionPreviewLoading &&
-                            versionPreview?.versionId !== v.version_id
-                              ? "..."
-                              : versionPreview?.versionId === v.version_id
-                                ? "Hide"
-                                : "View"}
-                          </button>
-                          {!v.is_latest && (
-                            <button
-                              onClick={() =>
-                                handleRestoreVersion(v.version_id)
-                              }
-                              disabled={restoringVersion}
-                              className="px-2 py-1 text-xs text-amber-600 hover:bg-amber-50 rounded transition-colors disabled:opacity-50"
-                            >
-                              {restoringVersion ? "..." : "Restore"}
-                            </button>
+          ) : versions.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center py-8">
+              <p className="text-gray-400 text-sm">No version history found.</p>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto">
+              <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
+                {versions.map((v) => (
+                  <div key={v.version_id}>
+                    <div className="px-4 py-3 flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-gray-900">
+                          {v.last_modified
+                            ? formatDate(v.last_modified)
+                            : "Unknown date"}
+                          {v.is_latest && (
+                            <span className="ml-2 px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">
+                              Current
+                            </span>
                           )}
-                        </div>
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          {formatFileSize(v.size)} &middot;{" "}
+                          {v.version_id.slice(0, 12)}...
+                        </p>
                       </div>
-                      {versionPreview?.versionId === v.version_id && (
-                        <div className="px-4 pb-3">
-                          <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono bg-gray-50 border border-gray-200 rounded p-3 max-h-[200px] overflow-y-auto">
-                            {versionPreview.text}
-                          </pre>
-                        </div>
-                      )}
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => handleViewVersion(v.version_id)}
+                          className={`px-2 py-1 text-xs rounded transition-colors ${
+                            versionPreview?.versionId === v.version_id
+                              ? "bg-blue-100 text-blue-700"
+                              : "text-blue-600 hover:bg-blue-50"
+                          }`}
+                        >
+                          {versionPreviewLoading &&
+                          versionPreview?.versionId !== v.version_id
+                            ? "..."
+                            : versionPreview?.versionId === v.version_id
+                              ? "Hide"
+                              : "View"}
+                        </button>
+                        {!v.is_latest && (
+                          <button
+                            onClick={() => handleRestoreVersion(v.version_id)}
+                            disabled={restoringVersion}
+                            className="px-2 py-1 text-xs text-amber-600 hover:bg-amber-50 rounded transition-colors disabled:opacity-50"
+                          >
+                            {restoringVersion ? "..." : "Restore"}
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  ))}
-                </div>
+                    {versionPreview?.versionId === v.version_id && (
+                      <div className="px-4 pb-3">
+                        <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono bg-gray-50 border border-gray-200 rounded p-3 max-h-[200px] overflow-y-auto">
+                          {versionPreview.text}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
-            )}
-          </div>
-        </div>
+            </div>
+          )}
+        </Modal>
       )}
     </>
   );
@@ -1136,24 +1097,4 @@ function descriptionForLanguage(lang: TranscriptionLanguage): string {
     case "mixed":
       return "English and Spanish interleaved. Standard engine, no PHI tagging.";
   }
-}
-
-function Spinner() {
-  return (
-    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
 }
