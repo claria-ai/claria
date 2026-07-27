@@ -10,6 +10,7 @@ import {
   type CostResultGroup,
 } from "../lib/tauri";
 import { costErrorMessage } from "../lib/costErrors";
+import { daysBetween, defaultGranularity } from "../lib/costRange";
 import { BackButton, CloseIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import type { Page } from "../App";
@@ -142,21 +143,6 @@ const PRESETS: Preset[] = [
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Compute the number of days between two date strings. */
-function daysBetween(a: string, b: string): number {
-  const da = new Date(a);
-  const db = new Date(b);
-  return Math.round(Math.abs(db.getTime() - da.getTime()) / 86_400_000);
-}
-
-/** Pick default granularity for a date range. */
-function defaultGranularity(startDate: string, endDate: string, hourlyAvailable = true): CostGranularity {
-  const days = daysBetween(startDate, endDate);
-  if (days <= 14 && hourlyAvailable) return "hourly";
-  if (days <= 90) return "daily";
-  return "monthly";
-}
 
 /** Format a period label for x-axis display. */
 function periodLabel(period: CostTimePeriod, granularity: CostGranularity): string {
