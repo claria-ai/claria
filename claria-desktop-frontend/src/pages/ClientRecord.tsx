@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   listRecordFiles,
   searchRecordContents,
@@ -33,7 +34,6 @@ import DeletedSection from "../components/DeletedSection";
 import { ErrorBanner } from "../components/StateCards";
 import Modal from "../components/Modal";
 import {
-  BackButton,
   CloseIcon,
   FolderIcon,
   PlayIcon,
@@ -44,11 +44,13 @@ import { formatDateTime, formatFileSize } from "../lib/format";
 import { searchMatches } from "../lib/search";
 import { useMoreMode } from "../lib/useMoreMode";
 import { diffLines, type DiffLine } from "../lib/diff";
+import ClientWorkspaceTabs, {
+  type ClientWorkspaceTab,
+} from "../components/ClientWorkspaceTabs";
 import ClientChat from "./ClientChat";
+import ReportAuthoring, { type ReportLeaveState } from "./ReportAuthoring";
 import type { Page } from "../App";
 import type { ResumeChat } from "./ClientChat";
-
-type Tab = "record" | "chat";
 
 export default function ClientRecord({
   navigate,
@@ -58,6 +60,7 @@ export default function ClientRecord({
   chatModelsLoading,
   chatModelsError,
   preferredModelId,
+  onRetryChatModels,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
@@ -66,9 +69,14 @@ export default function ClientRecord({
   chatModelsLoading: boolean;
   chatModelsError: string | null;
   preferredModelId?: string | null;
+  onRetryChatModels?: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>("record");
+  const [tab, setTab] = useState<ClientWorkspaceTab>("record");
   const [resumeChat, setResumeChat] = useState<ResumeChat | null>(null);
+  const [reportLeaveState, setReportLeaveState] = useState<ReportLeaveState>({
+    hasUnsavedWork: false,
+    busy: false,
+  });
 
   function handleResumeChat(detail: ChatHistoryDetail) {
     setResumeChat({
@@ -84,44 +92,84 @@ export default function ClientRecord({
     setTab("chat");
   }
 
+  function mayLeaveReport(): boolean {
+    if (tab !== "with_tools") return true;
+    if (reportLeaveState.busy) {
+      window.alert("Wait for the current report action to finish before leaving With Tools.");
+      return false;
+    }
+    return (
+      !reportLeaveState.hasUnsavedWork ||
+      window.confirm(
+        "Discard your unsaved report work, including typed instructions?"
+      )
+    );
+  }
+
+  function handleSelectTab(next: ClientWorkspaceTab): boolean {
+    if (next === tab) return true;
+    if (!mayLeaveReport()) return false;
+    setTab(next);
+    return true;
+  }
+
+  function handleBack() {
+    if (mayLeaveReport()) navigate("clients");
+  }
+
+  useEffect(() => {
+    if (
+      tab !== "with_tools" ||
+      (!reportLeaveState.hasUnsavedWork && !reportLeaveState.busy)
+    ) {
+      return;
+    }
+
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    if ("__TAURI_INTERNALS__" in window) {
+      void getCurrentWindow()
+        .onCloseRequested((event) => {
+          if (reportLeaveState.busy) {
+            event.preventDefault();
+          } else if (
+            reportLeaveState.hasUnsavedWork &&
+            !window.confirm(
+              "Discard your unsaved report work and close Claria?"
+            )
+          ) {
+            event.preventDefault();
+          }
+        })
+        .then((stopListening) => {
+          if (disposed) stopListening();
+          else unlisten = stopListening;
+        });
+    }
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener("beforeunload", beforeUnload);
+    };
+  }, [reportLeaveState, tab]);
+
   return (
-    <div className="flex flex-col h-screen">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
-        <BackButton onClick={() => navigate("clients")} />
-        <h2 className="text-lg font-semibold flex-1">{clientName}</h2>
-
-        {/* Tabs */}
-        <div className="flex border border-gray-200 rounded-lg overflow-hidden">
-          <button
-            data-tab="record"
-            onClick={() => setTab("record")}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              tab === "record"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            Record
-          </button>
-          <button
-            data-tab="chat"
-            onClick={() => setTab("chat")}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              tab === "chat"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            Chat
-          </button>
-        </div>
-      </div>
-
-      {/* Tab content */}
+    <ClientWorkspaceTabs
+      clientName={clientName}
+      activeTab={tab}
+      onSelect={handleSelectTab}
+      onBack={handleBack}
+    >
       {tab === "record" ? (
         <RecordTab clientId={clientId} onResumeChat={handleResumeChat} />
-      ) : (
+      ) : tab === "chat" ? (
         <ClientChat
           navigate={navigate}
           clientId={clientId}
@@ -134,8 +182,18 @@ export default function ClientRecord({
           chatModelsError={chatModelsError}
           preferredModelId={preferredModelId}
         />
+      ) : (
+        <ReportAuthoring
+          clientId={clientId}
+          chatModels={chatModels}
+          chatModelsLoading={chatModelsLoading}
+          chatModelsError={chatModelsError}
+          preferredModelId={preferredModelId}
+          onLeaveStateChange={setReportLeaveState}
+          onRetryModels={onRetryChatModels}
+        />
       )}
-    </div>
+    </ClientWorkspaceTabs>
   );
 }
 

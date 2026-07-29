@@ -354,11 +354,52 @@ async createClient(name: string) : Promise<Result<ClientSummary, string>> {
 }
 },
 /**
- * Delete a client and all associated data (record files, chat history).
+ * Delete a client and all associated data through the retryable,
+ * compensating lifecycle library.
  */
 async deleteClient(clientId: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_client", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadReportWorkspace(clientId: string) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_report_workspace", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async saveReportDraft(clientId: string, expectedRevision: number, draft: ReportDraftEdit) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_report_draft", { clientId, expectedRevision, draft }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string) : Promise<Result<ReportTurnResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resolveReportProposal(clientId: string, proposalId: string, decision: ReportProposalDecision) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_report_proposal", { clientId, proposalId, decision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async exportReportDocx(clientId: string, reportId: string, expectedRevision: number) : Promise<Result<ReportExportResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_report_docx", { clientId, reportId, expectedRevision }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1193,6 +1234,24 @@ export type RecordContext = { filename: string; text: string }
  * A file in a client's record (S3 object metadata).
  */
 export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
+export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; created_at: string; completed_at: string }
+export type ReportBlockView = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] }
+export type ReportContentView = { title: string; sections: ReportSectionView[] }
+export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }
+export type ReportDraftView = { revision: number; content: ReportContentView; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
+export type ReportExportResult = { exported: boolean; report_id: string; revision: number }
+export type ReportOperationView = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSectionView } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlockView[] } | { kind: "remove_section"; section_id: string }
+export type ReportProposalDecision = "accept" | "reject"
+export type ReportProposalResolutionDecision = "accepted" | "rejected"
+export type ReportProposalResolutionView = { proposal_id: string; decision: ReportProposalResolutionDecision; resulting_revision: number; resolved_at: string }
+export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperationView[]; proposed_content: ReportContentView; created_at: string }
+export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlockView[] }
+export type ReportSectionView = { id: string; heading: string; blocks: ReportBlockView[] }
+export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; created_at: string }
+export type ReportTimelineRole = "user" | "assistant"
+export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
+export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
+export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; draft: ReportDraftView; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolutionView[]; created_at: string; updated_at: string }
 /**
  * Every resource in the system is declared as a `ResourceSpec`.
  * 
