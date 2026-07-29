@@ -68,6 +68,10 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
 
     let state = server.state.read().await;
     assert_eq!(state.bedrock_tool_model_ids, vec![MODEL_ID]);
+    assert_eq!(
+        state.bedrock_count_token_model_ids,
+        vec!["anthropic.claude-sonnet-test"]
+    );
     assert_eq!(state.bedrock_tool_requests.len(), 1);
     assert_eq!(state.bedrock_count_token_requests.len(), 1);
     let request = &state.bedrock_tool_requests[0];

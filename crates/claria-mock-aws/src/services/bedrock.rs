@@ -19,7 +19,7 @@ pub async fn dispatch(method: &Method, path: &str, body: Value, state: SharedSta
         if method != Method::POST {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
-        return count_tokens(body, state).await;
+        return count_tokens(path, body, state).await;
     }
 
     // Bedrock control plane
@@ -225,7 +225,7 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
     Ok(())
 }
 
-async fn count_tokens(body: Value, state: SharedState) -> Response {
+async fn count_tokens(path: &str, body: Value, state: SharedState) -> Response {
     // CountTokens wraps the Converse shape under `input.converse` on the wire.
     let converse = body
         .pointer("/input/converse")
@@ -234,8 +234,18 @@ async fn count_tokens(body: Value, state: SharedState) -> Response {
     if let Err(message) = validate_report_request(converse) {
         return validation_error(message);
     }
+    let model_id = path
+        .strip_prefix("/model/")
+        .and_then(|rest| rest.strip_suffix("/count-tokens"))
+        .map(|value| {
+            percent_encoding::percent_decode_str(value)
+                .decode_utf8_lossy()
+                .to_string()
+        })
+        .unwrap_or_default();
     let mut st = state.write().await;
     st.bedrock_count_token_requests.push(converse.clone());
+    st.bedrock_count_token_model_ids.push(model_id);
     let estimated = u32::try_from(converse.to_string().chars().count() / 4)
         .unwrap_or(u32::MAX)
         .max(1);

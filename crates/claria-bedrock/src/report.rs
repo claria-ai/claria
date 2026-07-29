@@ -182,9 +182,14 @@ pub async fn converse_report(
         .system(system.clone())
         .tool_config(tools.clone())
         .build();
+    // Converse uses the cross-region inference profile selected in the UI,
+    // while CountTokens requires the underlying foundation model identifier.
+    // Keep the exact selected-model tokenizer by removing only a known
+    // cross-region scope prefix.
+    let counting_model_id = report_counting_model_id(model_id);
     let token_response = client
         .count_tokens()
-        .model_id(model_id)
+        .model_id(counting_model_id)
         .input(CountTokensInput::Converse(token_request))
         .send()
         .await
@@ -395,6 +400,17 @@ pub fn report_model_context_tokens(model_id: &str) -> u32 {
 
 pub fn report_input_token_budget(model_id: &str) -> u32 {
     report_model_context_tokens(model_id).saturating_sub(REPORT_OUTPUT_TOKEN_RESERVE)
+}
+
+fn report_counting_model_id(model_id: &str) -> &str {
+    let Some((scope, foundation_model_id)) = model_id.split_once('.') else {
+        return model_id;
+    };
+    if matches!(scope, "us" | "eu" | "apac" | "global") {
+        foundation_model_id
+    } else {
+        model_id
+    }
 }
 
 fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {

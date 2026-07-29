@@ -67,6 +67,8 @@ pub struct MockState {
     pub bedrock_tool_model_ids: Vec<String>,
     /// Raw CountTokens requests for report inputs.
     pub bedrock_count_token_requests: Vec<serde_json::Value>,
+    /// Decoded model IDs for the captured report CountTokens requests.
+    pub bedrock_count_token_model_ids: Vec<String>,
     /// Optional deterministic token count returned by the mock.
     pub bedrock_count_tokens_override: Option<u32>,
 

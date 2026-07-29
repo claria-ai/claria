@@ -6,6 +6,7 @@ All notable changes to Claria are documented here.
 
 - Client workspaces have a new opt-in With Tools tab for interactive report writing
 - The report assistant uses Bedrock Converse tools to list records and read bounded text from the current client
+- Report token budgeting uses foundation model IDs while Converse continues through cross-region inference profiles
 - Record text stays in the active tool loop while persisted activity retains only ranges, hashes, and safe status metadata
 - Model-authored report changes remain reviewable proposals until the user explicitly accepts and saves them
 - Accepted reports are structured, revisioned, optimistic-locked, and synced through S3 separately from records and chat history
