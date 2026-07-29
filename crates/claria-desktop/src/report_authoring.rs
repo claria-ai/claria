@@ -1,0 +1,496 @@
+//! Tauri-facing report-authoring view models.
+//!
+//! Workflow policy and AWS orchestration live in `claria-report-authoring`.
+//! This desktop module only normalizes IPC edits and maps domain values into
+//! Specta-safe strings and timeline summaries for the view.
+
+use std::collections::{HashMap, HashSet};
+
+use claria_core::models::{
+    report::{
+        ReportBlock, ReportContent, ReportDraft, ReportOperation, ReportProposal,
+        ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
+        ReportProtocolBlock, ReportProtocolRole, ReportSection, ReportToolResultStatus,
+        ReportWorkspace,
+    },
+    turn_usage::TurnUsage,
+};
+use serde::{Deserialize, Serialize};
+use specta::Type;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportWorkspaceView {
+    pub schema_version: u32,
+    pub report_id: String,
+    pub client_id: String,
+    pub draft: ReportDraftView,
+    pub turns: Vec<ReportAuthoringTurnView>,
+    pub pending_proposal: Option<ReportProposalView>,
+    pub resolutions: Vec<ReportProposalResolutionView>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportDraftView {
+    pub revision: u64,
+    pub content: ReportContentView,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_applied_proposal_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
+pub struct ReportContentView {
+    pub title: String,
+    pub sections: Vec<ReportSectionView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
+pub struct ReportSectionView {
+    pub id: String,
+    pub heading: String,
+    pub blocks: Vec<ReportBlockView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReportBlockView {
+    Paragraph { text: String },
+    BulletList { items: Vec<String> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportAuthoringTurnView {
+    pub id: String,
+    pub model_id: String,
+    pub timeline: Vec<ReportTimelineItemView>,
+    pub usage: TurnUsage,
+    pub usage_complete: bool,
+    pub converse_calls: u32,
+    pub tool_uses: u32,
+    pub created_at: String,
+    pub completed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReportTimelineItemView {
+    Message {
+        role: ReportTimelineRole,
+        text: String,
+        created_at: String,
+    },
+    ToolActivity {
+        name: String,
+        summary: String,
+        status: ReportToolActivityStatus,
+        created_at: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportTimelineRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportToolActivityStatus {
+    Requested,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportProposalView {
+    pub id: String,
+    pub report_id: String,
+    pub base_revision: u64,
+    pub model_id: String,
+    pub summary: String,
+    pub operations: Vec<ReportOperationView>,
+    pub proposed_content: ReportContentView,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReportOperationView {
+    SetTitle {
+        title: String,
+    },
+    AddSection {
+        position: u32,
+        section: ReportSectionView,
+    },
+    ReplaceSection {
+        section_id: String,
+        heading: String,
+        blocks: Vec<ReportBlockView>,
+    },
+    RemoveSection {
+        section_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportProposalResolutionView {
+    pub proposal_id: String,
+    pub decision: ReportProposalResolutionDecision,
+    pub resulting_revision: u64,
+    pub resolved_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportProposalResolutionDecision {
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportProposalDecision {
+    Accept,
+    Reject,
+}
+
+impl From<ReportProposalDecision> for CoreProposalDecision {
+    fn from(value: ReportProposalDecision) -> Self {
+        match value {
+            ReportProposalDecision::Accept => Self::Accepted,
+            ReportProposalDecision::Reject => Self::Rejected,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportDraftEdit {
+    pub title: String,
+    pub sections: Vec<ReportSectionEdit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportSectionEdit {
+    pub id: Option<String>,
+    pub heading: String,
+    pub blocks: Vec<ReportBlockView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportTurnResponse {
+    pub workspace: ReportWorkspaceView,
+    pub turn_id: String,
+    pub attempt_id: String,
+    pub assistant_text: String,
+    pub usage: TurnUsage,
+    pub usage_complete: bool,
+    pub converse_calls: u32,
+    pub tool_uses: u32,
+    pub proposal_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportExportResult {
+    pub exported: bool,
+    pub report_id: String,
+    pub revision: u64,
+}
+
+pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String> {
+    let mut seen = HashSet::new();
+    let sections = edit
+        .sections
+        .into_iter()
+        .map(|section| {
+            let id = match section.id {
+                Some(id) => id
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("Invalid report section ID: {id}"))?,
+                None => Uuid::new_v4(),
+            };
+            if !seen.insert(id) {
+                return Err(format!("Duplicate report section ID: {id}"));
+            }
+            Ok(ReportSection {
+                id,
+                heading: section.heading,
+                blocks: section
+                    .blocks
+                    .into_iter()
+                    .map(core_block_from_view)
+                    .collect(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(ReportContent {
+        title: edit.title,
+        sections,
+    })
+}
+
+pub fn turn_response_view(
+    outcome: claria_report_authoring::ReportTurnOutcome,
+) -> ReportTurnResponse {
+    ReportTurnResponse {
+        workspace: workspace_view(&outcome.workspace),
+        turn_id: outcome.turn_id.to_string(),
+        attempt_id: outcome.attempt.attempt_id.to_string(),
+        assistant_text: outcome.assistant_text,
+        usage: outcome.attempt.usage,
+        usage_complete: outcome.attempt.usage_complete,
+        converse_calls: outcome.attempt.converse_calls,
+        tool_uses: outcome.attempt.tool_uses,
+        proposal_id: outcome.proposal_id.map(|id| id.to_string()),
+    }
+}
+
+pub fn workspace_view(workspace: &ReportWorkspace) -> ReportWorkspaceView {
+    ReportWorkspaceView {
+        schema_version: workspace.schema_version,
+        report_id: workspace.report_id.to_string(),
+        client_id: workspace.client_id.to_string(),
+        draft: draft_view(&workspace.draft),
+        turns: workspace.session.turns.iter().map(turn_view).collect(),
+        pending_proposal: workspace
+            .session
+            .pending_proposal
+            .as_ref()
+            .map(proposal_view),
+        resolutions: workspace
+            .session
+            .resolutions
+            .iter()
+            .map(resolution_view)
+            .collect(),
+        created_at: workspace.created_at.to_string(),
+        updated_at: workspace.updated_at.to_string(),
+    }
+}
+
+fn draft_view(draft: &ReportDraft) -> ReportDraftView {
+    ReportDraftView {
+        revision: draft.revision,
+        content: content_view(&draft.content),
+        created_at: draft.created_at.to_string(),
+        updated_at: draft.updated_at.to_string(),
+        last_applied_proposal_id: draft.last_applied_proposal_id.map(|id| id.to_string()),
+    }
+}
+
+fn content_view(content: &ReportContent) -> ReportContentView {
+    ReportContentView {
+        title: content.title.clone(),
+        sections: content.sections.iter().map(section_view).collect(),
+    }
+}
+
+fn section_view(section: &ReportSection) -> ReportSectionView {
+    ReportSectionView {
+        id: section.id.to_string(),
+        heading: section.heading.clone(),
+        blocks: section.blocks.iter().map(block_view).collect(),
+    }
+}
+
+fn block_view(block: &ReportBlock) -> ReportBlockView {
+    match block {
+        ReportBlock::Paragraph { text } => ReportBlockView::Paragraph { text: text.clone() },
+        ReportBlock::BulletList { items } => ReportBlockView::BulletList {
+            items: items.clone(),
+        },
+    }
+}
+
+fn core_block_from_view(block: ReportBlockView) -> ReportBlock {
+    match block {
+        ReportBlockView::Paragraph { text } => ReportBlock::Paragraph { text },
+        ReportBlockView::BulletList { items } => ReportBlock::BulletList { items },
+    }
+}
+
+fn proposal_view(proposal: &ReportProposal) -> ReportProposalView {
+    ReportProposalView {
+        id: proposal.id.to_string(),
+        report_id: proposal.report_id.to_string(),
+        base_revision: proposal.base_revision,
+        model_id: proposal.model_id.clone(),
+        summary: proposal.summary.clone(),
+        operations: proposal.operations.iter().map(operation_view).collect(),
+        proposed_content: content_view(&proposal.proposed_content),
+        created_at: proposal.created_at.to_string(),
+    }
+}
+
+fn operation_view(operation: &ReportOperation) -> ReportOperationView {
+    match operation {
+        ReportOperation::SetTitle { title } => ReportOperationView::SetTitle {
+            title: title.clone(),
+        },
+        ReportOperation::AddSection { position, section } => ReportOperationView::AddSection {
+            position: *position,
+            section: section_view(section),
+        },
+        ReportOperation::ReplaceSection {
+            section_id,
+            heading,
+            blocks,
+        } => ReportOperationView::ReplaceSection {
+            section_id: section_id.to_string(),
+            heading: heading.clone(),
+            blocks: blocks.iter().map(block_view).collect(),
+        },
+        ReportOperation::RemoveSection { section_id } => ReportOperationView::RemoveSection {
+            section_id: section_id.to_string(),
+        },
+    }
+}
+
+fn resolution_view(resolution: &ReportProposalResolution) -> ReportProposalResolutionView {
+    ReportProposalResolutionView {
+        proposal_id: resolution.proposal_id.to_string(),
+        decision: match resolution.decision {
+            CoreProposalDecision::Accepted => ReportProposalResolutionDecision::Accepted,
+            CoreProposalDecision::Rejected => ReportProposalResolutionDecision::Rejected,
+        },
+        resulting_revision: resolution.resulting_revision,
+        resolved_at: resolution.resolved_at.to_string(),
+    }
+}
+
+fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportAuthoringTurnView {
+    let mut results: HashMap<&str, (&ReportToolResultStatus, &serde_json::Value)> = HashMap::new();
+    for message in &turn.messages {
+        for block in &message.content {
+            if let ReportProtocolBlock::ToolResult {
+                tool_use_id,
+                status,
+                content,
+            } = block
+            {
+                results.insert(tool_use_id, (status, content));
+            }
+        }
+    }
+
+    let mut timeline = Vec::new();
+    for message in &turn.messages {
+        for block in &message.content {
+            match block {
+                ReportProtocolBlock::Text { text } => {
+                    timeline.push(ReportTimelineItemView::Message {
+                        role: match message.role {
+                            ReportProtocolRole::User => ReportTimelineRole::User,
+                            ReportProtocolRole::Assistant => ReportTimelineRole::Assistant,
+                        },
+                        text: text.clone(),
+                        created_at: message.created_at.to_string(),
+                    });
+                }
+                ReportProtocolBlock::ToolUse {
+                    tool_use_id,
+                    name,
+                    input,
+                } => {
+                    let result = results.get(tool_use_id.as_str());
+                    let status = match result.map(|(status, _)| *status) {
+                        Some(ReportToolResultStatus::Success) => {
+                            ReportToolActivityStatus::Succeeded
+                        }
+                        Some(ReportToolResultStatus::Error) => ReportToolActivityStatus::Failed,
+                        None => ReportToolActivityStatus::Requested,
+                    };
+                    timeline.push(ReportTimelineItemView::ToolActivity {
+                        name: name.clone(),
+                        summary: tool_activity_summary(
+                            name,
+                            input,
+                            result.map(|(_, value)| *value),
+                            status,
+                        ),
+                        status,
+                        created_at: message.created_at.to_string(),
+                    });
+                }
+                ReportProtocolBlock::ToolResult { .. } => {}
+            }
+        }
+    }
+
+    ReportAuthoringTurnView {
+        id: turn.id.to_string(),
+        model_id: turn.model_id.clone(),
+        timeline,
+        usage: turn.usage.clone(),
+        usage_complete: turn.usage_complete,
+        converse_calls: turn.converse_calls,
+        tool_uses: turn.tool_uses,
+        created_at: turn.created_at.to_string(),
+        completed_at: turn.completed_at.to_string(),
+    }
+}
+
+fn tool_activity_summary(
+    name: &str,
+    input: &serde_json::Value,
+    result: Option<&serde_json::Value>,
+    status: ReportToolActivityStatus,
+) -> String {
+    if matches!(status, ReportToolActivityStatus::Failed) {
+        return result
+            .and_then(|value| value.pointer("/error/message"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("The tool failed safely.")
+            .to_string();
+    }
+
+    match name {
+        claria_bedrock::report::LIST_RECORD_FILES_TOOL => {
+            let count = result
+                .and_then(|value| {
+                    value
+                        .get("file_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .or_else(|| {
+                            value
+                                .get("files")
+                                .and_then(serde_json::Value::as_array)
+                                .map(|files| files.len() as u64)
+                        })
+                })
+                .unwrap_or(0);
+            format!("Listed {count} record files")
+        }
+        claria_bedrock::report::READ_RECORD_FILE_TOOL => {
+            let filename = input
+                .get("filename")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("record file");
+            let offset = result
+                .and_then(|value| value.get("offset"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_else(|| {
+                    input
+                        .get("offset")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                });
+            let returned = result
+                .and_then(|value| value.get("returned_characters"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            format!(
+                "Read {filename}, characters {offset}–{}",
+                offset.saturating_add(returned)
+            )
+        }
+        claria_bedrock::report::PROPOSE_REPORT_CHANGES_TOOL => {
+            "Staged report changes for approval".to_string()
+        }
+        _ => format!("Requested {name}"),
+    }
+}

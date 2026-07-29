@@ -4,6 +4,18 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Client workspaces have a new opt-in With Tools tab for interactive report writing
+- The report assistant uses Bedrock Converse tools to list records and read bounded text from the current client
+- Record text stays in the active tool loop while persisted activity retains only ranges, hashes, and safe status metadata
+- Model-authored report changes remain reviewable proposals until the user explicitly accepts and saves them
+- Accepted reports are structured, revisioned, optimistic-locked, and synced through S3 separately from records and chat history
+- Bedrock usage and completion status are retained per call even when a report turn aborts or conflicts
+- Manual report editing supports ordered sections, paragraphs, and bullet lists without giving the model direct write access
+- Pending report proposals survive tab switches and app restarts, and follow deleted clients through restoration
+- Client deletion compensates partial failures and retries without overwriting concurrently restored report work
+- Accepted report revisions export as genuine Word documents with headings, paragraphs, and real bullet numbering
+- Local Word exports disclose their PHI risk and use atomic writes with private file permissions
+- The existing text-only Chat workflow remains unchanged and does not opt into report tools
 - Tearing down AWS infrastructure now deletes the storage bucket, which previously always failed because version history and delete markers were left behind
 - The IAM policy grants permission to delete object versions, without which a teardown stops partway through
 - Bulk deletes go out in batches of a thousand objects per request instead of one request per object
@@ -35,7 +47,7 @@ All notable changes to Claria are documented here.
 - When a model has no pricing entry the UI omits dollar figures instead of showing $0.00 or "cost unavailable"
 - Client and record file search ignores accents, so "Luci" finds "Lucí"
 - Removed the unused credential intake page
-- Dependency refresh across the workspace and frontend clears 10 of 17 RustSec advisories and all npm audit findings; the rest are transitive with no patched upstream (docx-rs, wayland-scanner, AWS smithy legacy TLS)
+- Dependency refresh across the workspace and frontend clears 10 of 17 RustSec advisories and all npm audit findings; the rest are transitive with no patched upstream (wayland-scanner and AWS smithy legacy TLS)
 - The onboarding e2e test covers the unified provisioning flow that replaced the old wizard pages
 - Client list and record file list share one deleted-items section and history toggle; deleted clients show as rows instead of a second table
 - AWS infrastructure scan, plan review, apply progress, and errors all render through one lifecycle widget
@@ -46,8 +58,8 @@ All notable changes to Claria are documented here.
 - The release workflow caches npm downloads
 - The mock AWS test server builds clean under the latest Clippy
 - CI pins the Rust toolchain so a new stable release can't fail the build unannounced
-- Removed the abandoned report-generation feature set: three crates, their domain models, and their S3 key layout
-- Builds no longer compile tantivy, tera, docx-rs, or ts-rs
+- Removed the abandoned template-driven report-generation feature set: three crates, their domain models, and their S3 key layout
+- Builds no longer compile tantivy, tera, or ts-rs
 - The update check compares releases as semantic versions, so users on 0.9.x are no longer told they are current
 - A transcription job that never finishes surfaces a timeout error after thirty minutes instead of freezing the app indefinitely
 - Transcription status polling and IAM credential propagation both back off exponentially with jitter instead of polling on a fixed interval

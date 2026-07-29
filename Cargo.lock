@@ -1381,11 +1381,13 @@ name = "claria-bedrock"
 version = "0.18.0"
 dependencies = [
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-bedrock",
  "aws-sdk-bedrockruntime",
  "aws-smithy-types",
  "claria-billing",
  "claria-core",
+ "claria-mock-aws",
  "jiff",
  "serde",
  "serde_json",
@@ -1413,6 +1415,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "claria-client-lifecycle"
+version = "0.18.0"
+dependencies = [
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
+ "claria-core",
+ "claria-mock-aws",
+ "claria-report-authoring",
+ "claria-storage",
+ "jiff",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "claria-core"
 version = "0.18.0"
 dependencies = [
@@ -1437,9 +1458,12 @@ dependencies = [
  "claria-audit",
  "claria-bedrock",
  "claria-billing",
+ "claria-client-lifecycle",
  "claria-core",
+ "claria-docx",
  "claria-mock-aws",
  "claria-provisioner",
+ "claria-report-authoring",
  "claria-storage",
  "claria-transcribe",
  "claria-whisper",
@@ -1458,11 +1482,25 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-specta",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "ureq",
  "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "claria-docx"
+version = "0.18.0"
+dependencies = [
+ "claria-core",
+ "docx-rs",
+ "quick-xml 0.41.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zip",
 ]
 
 [[package]]
@@ -1510,6 +1548,26 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "claria-report-authoring"
+version = "0.18.0"
+dependencies = [
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
+ "claria-bedrock",
+ "claria-core",
+ "claria-mock-aws",
+ "claria-storage",
+ "jiff",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2189,6 +2247,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "docx-rs"
+version = "0.4.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fdf00e8af6d0b3e92d4bbf9b76f773d8b84ea80f310324ad16cbdc2e653e02c"
+dependencies = [
+ "base64 0.22.1",
+ "crc32fast",
+ "quick-xml 0.41.0",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "thiserror 2.0.18",
+ "zip",
+]
+
+[[package]]
 name = "dom_query"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2343,6 +2417,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "enum-as-inner"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2460,6 +2543,7 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -4995,6 +5079,7 @@ version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
+ "encoding_rs",
  "memchr",
 ]
 
@@ -8142,13 +8227,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
 dependencies = [
  "crc32fast",
+ "flate2",
  "indexmap 2.14.0",
  "memchr",
  "typed-path",
+ "zopfli",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b142a20ec14a91d5bc708c1dc21b080c550113d8aa77afa29635673a65dd02c5"
 
 [[package]]
 name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zopfli"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249"
+dependencies = [
+ "bumpalo",
+ "crc32fast",
+ "log",
+ "simd-adler32",
+]
