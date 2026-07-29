@@ -12,6 +12,7 @@ All notable changes to Claria are documented here.
 - Bedrock usage and completion status are retained per call even when a report turn aborts or conflicts
 - Manual report editing supports ordered sections, paragraphs, and bullet lists without giving the model direct write access
 - Pending report proposals survive tab switches and app restarts, and follow deleted clients through restoration
+- Restoring a deleted client leaves its record files and text-only chat history deleted while recovering the opt-in report workspace
 - Client deletion compensates partial failures and retries without overwriting concurrently restored report work
 - Accepted report revisions export as genuine Word documents with headings, paragraphs, and real bullet numbering
 - Local Word exports disclose their PHI risk and use atomic writes with private file permissions

@@ -3740,7 +3740,6 @@ pub async fn restore_client(
 
     tracing::info!(
         client_id = %id,
-        restored_records = outcome.restored_records,
         report_restored = outcome.report_restored,
         "deleted client restored"
     );

@@ -53,7 +53,6 @@ pub struct ClientDeletionOutcome {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientRestoreOutcome {
-    pub restored_records: usize,
     pub report_restored: bool,
 }
 
@@ -195,13 +194,11 @@ pub async fn restore_client(
         .map_err(|source| storage("validating the restored client", source))?;
     validate_client_body(&current.body, client_id)?;
 
-    let restored_records = claria_storage::objects::restore_deleted_objects_by_prefix(
-        s3,
-        bucket,
-        &claria_core::s3_keys::client_records_prefix(client_id),
-    )
-    .await
-    .map_err(|source| storage("restoring client records", source))?;
+    // Preserve the established restore behavior for record files and the
+    // text-only Chat history stored beneath the same prefix: a successful
+    // client deletion keeps those objects deleted after the client is
+    // restored. Only the separate, opt-in report workspace follows the
+    // restored client.
     let report_restored =
         claria_report_authoring::restore_report_workspace_for_client(s3, bucket, client_id)
             .await
@@ -213,10 +210,7 @@ pub async fn restore_client(
     )
     .await?;
 
-    Ok(ClientRestoreOutcome {
-        restored_records,
-        report_restored,
-    })
+    Ok(ClientRestoreOutcome { report_restored })
 }
 
 async fn load_or_start_deletion(

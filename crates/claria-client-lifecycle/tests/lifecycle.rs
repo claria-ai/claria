@@ -65,7 +65,7 @@ async fn put_text(s3: &aws_sdk_s3::Client, key: &str, value: &str) {
     .expect("put text");
 }
 
-async fn seed_client(s3: &aws_sdk_s3::Client) -> (Uuid, String, String) {
+async fn seed_client(s3: &aws_sdk_s3::Client) -> (Uuid, String, String, String) {
     let client_id = Uuid::new_v4();
     let now = jiff::Timestamp::now();
     put_json(
@@ -83,6 +83,8 @@ async fn seed_client(s3: &aws_sdk_s3::Client) -> (Uuid, String, String) {
     let second = claria_core::s3_keys::client_record_file(client_id, "second.txt");
     put_text(s3, &first, "first record").await;
     put_text(s3, &second, "second record").await;
+    let chat = claria_core::s3_keys::chat_history(client_id, Uuid::new_v4());
+    put_text(s3, &chat, "existing text-only chat history").await;
     let workspace = claria_report_authoring::load_report_workspace(s3, BUCKET, client_id)
         .await
         .expect("workspace");
@@ -98,7 +100,7 @@ async fn seed_client(s3: &aws_sdk_s3::Client) -> (Uuid, String, String) {
     )
     .await
     .expect("save report");
-    (client_id, first, second)
+    (client_id, first, second, chat)
 }
 
 async fn assert_current(s3: &aws_sdk_s3::Client, key: &str) {
@@ -110,7 +112,7 @@ async fn assert_current(s3: &aws_sdk_s3::Client, key: &str) {
 #[tokio::test]
 async fn partial_child_deletion_is_compensated_before_the_client_remains_visible() {
     let (server, s3) = setup().await;
-    let (client_id, first, second) = seed_client(&s3).await;
+    let (client_id, first, second, chat) = seed_client(&s3).await;
     server
         .state
         .write()
@@ -128,6 +130,7 @@ async fn partial_child_deletion_is_compensated_before_the_client_remains_visible
     assert_current(&s3, &claria_core::s3_keys::client(client_id)).await;
     assert_current(&s3, &first).await;
     assert_current(&s3, &second).await;
+    assert_current(&s3, &chat).await;
     let workspace = claria_report_authoring::load_report_workspace(&s3, BUCKET, client_id)
         .await
         .expect("restored report");
@@ -144,18 +147,19 @@ async fn partial_child_deletion_is_compensated_before_the_client_remains_visible
 }
 
 #[tokio::test]
-async fn deletion_and_concurrent_restore_are_idempotent_without_report_rollback() {
+async fn restore_keeps_records_and_chat_deleted_without_report_rollback() {
     let (server, s3) = setup().await;
-    let (client_id, first, second) = seed_client(&s3).await;
+    let (client_id, first, second, chat) = seed_client(&s3).await;
     server.state.write().await.s3_delete_object_failures.clear();
     let outcome = delete_client(&s3, BUCKET, client_id)
         .await
         .expect("delete client");
-    assert_eq!(outcome.deleted_records, 2);
+    assert_eq!(outcome.deleted_records, 3);
     for key in [
         claria_core::s3_keys::client(client_id),
         first.clone(),
         second.clone(),
+        chat.clone(),
         claria_core::s3_keys::report_workspace(client_id),
     ] {
         assert!(matches!(
@@ -172,8 +176,12 @@ async fn deletion_and_concurrent_restore_are_idempotent_without_report_rollback(
     );
     first_restore.expect("first restore");
     second_restore.expect("second restore");
-    assert_current(&s3, &first).await;
-    assert_current(&s3, &second).await;
+    for key in [&first, &second, &chat] {
+        assert!(matches!(
+            claria_storage::objects::get_object(&s3, BUCKET, key).await,
+            Err(claria_storage::error::StorageError::NotFound { .. })
+        ));
+    }
 
     let workspace = claria_report_authoring::load_report_workspace(&s3, BUCKET, client_id)
         .await
