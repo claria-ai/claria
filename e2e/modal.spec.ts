@@ -17,7 +17,7 @@
 import { expect, test } from "@playwright/test";
 import { buildInitScript } from "./tauri-mock.js";
 
-const BASE_URL = "http://localhost:1420";
+const BASE_URL = process.env.CLARIA_TEST_URL ?? "http://localhost:1420";
 
 const SEEDED_CONFIG = {
   region: "us-east-1",

@@ -18,6 +18,7 @@ All notable changes to Claria are documented here.
 - Accepted report revisions export as genuine Word documents with headings, paragraphs, and real bullet numbering
 - Local Word exports disclose their PHI risk and use atomic writes with private file permissions
 - The existing text-only Chat workflow remains unchanged and does not opt into report tools
+- End-to-end browser checks can use an alternate local Vite port when port 1420 is already occupied
 - Tearing down AWS infrastructure now deletes the storage bucket, which previously always failed because version history and delete markers were left behind
 - The IAM policy grants permission to delete object versions, without which a teardown stops partway through
 - Bulk deletes go out in batches of a thousand objects per request instead of one request per object
