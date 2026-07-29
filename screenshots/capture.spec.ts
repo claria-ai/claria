@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { buildInitScript } from "./tauri-mock.js";
 import { driftedPlan } from "./fixtures.js";
 
-const BASE_URL = "http://localhost:1420";
+const BASE_URL = process.env.CLARIA_TEST_URL ?? "http://localhost:1420";
 
 test.beforeEach(async ({ page }) => {
   // Inject Tauri IPC mock before the app loads
@@ -96,6 +96,19 @@ test("client record", async ({ page }) => {
   await page.click("[data-client]:first-child");
   await page.waitForSelector("[data-tab=record]");
   await page.screenshot({ path: "output/client-record.png", fullPage: true });
+});
+
+test("client with tools", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-page=clients]");
+  await page.click("[data-page=clients]");
+  await page.waitForSelector("[data-client]");
+  await page.click("[data-client]:first-child");
+  await page.waitForSelector("[data-tab=with-tools]");
+  await page.click("[data-tab=with-tools]");
+  await page.waitForSelector("[data-testid=report-proposal]");
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: "output/client-with-tools.png", fullPage: true });
 });
 
 test("client chat", async ({ page }) => {

@@ -1,0 +1,139 @@
+import { expect, test } from "@playwright/test";
+import { buildInitScript } from "./tauri-mock.js";
+
+const BASE_URL = process.env.CLARIA_TEST_URL ?? "http://localhost:1420";
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript({ content: buildInitScript({ configured: true }) });
+});
+
+test("With Tools is lazy, proposal-based, editable, and exportable", async ({
+  page,
+}) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await expect(page.locator('[data-tab="record"]')).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+
+  const reportCommands = () =>
+    page.evaluate(() =>
+      (window as unknown as { __REPORT_COMMANDS__: string[] }).__REPORT_COMMANDS__.slice(),
+    );
+  expect(await reportCommands()).toEqual([]);
+
+  // Existing Chat selection still does not opt into report IPC.
+  await page.locator('[data-tab="chat"]').click();
+  await expect(page.getByText("Start the conversation.")).toBeVisible();
+  expect(await reportCommands()).toEqual([]);
+
+  await page.locator('[data-tab="with-tools"]').click();
+  await expect(page.getByText("Tool-assisted report writing")).toBeVisible();
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Untitled report",
+  );
+  const loads = (await reportCommands()).filter(
+    (command) => command === "load_report_workspace",
+  );
+  expect(loads.length).toBeGreaterThan(0);
+
+  await page
+    .getByLabel("Report instruction")
+    .fill("Draft an initial report from the intake and teacher records.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByTestId("report-proposal")).toBeVisible();
+  await expect(page.getByText("Read intake-parent-interview.txt, characters 0–3200")).toBeVisible();
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Untitled report",
+  );
+  await expect(page.getByTestId("accepted-report-canvas")).not.toContainText(
+    "Comprehensive Evaluation",
+  );
+
+  await page.getByRole("button", { name: "Accept & save" }).click();
+  await expect(page.getByTestId("report-proposal")).not.toBeVisible();
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Comprehensive Evaluation",
+  );
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Jane was referred for an evaluation",
+  );
+
+  // Unsaved canvas edits guard tab navigation.
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByLabel("Report title").fill("Unsaved local title");
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Discard your unsaved report work");
+    await dialog.dismiss();
+  });
+  await page.locator('[data-tab="record"]').click();
+  await expect(page.locator('[data-tab="with-tools"]')).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByLabel("Report title")).toHaveValue("Unsaved local title");
+
+  await page.getByRole("button", { name: "Cancel" }).click();
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("may contain PHI");
+    await dialog.accept();
+  });
+  await page.getByRole("button", { name: "Export .docx" }).click();
+  await expect(
+    page.getByText("Word document exported from revision 1.")
+  ).toBeVisible();
+  const commands = await reportCommands();
+  expect(commands.filter((command) => command === "send_report_message")).toHaveLength(1);
+  expect(
+    commands.filter((command) => command === "resolve_report_proposal"),
+  ).toHaveLength(1);
+  expect(commands.filter((command) => command === "export_report_docx")).toHaveLength(1);
+
+  const invocations = await page.evaluate(() =>
+    (window as unknown as {
+      __REPORT_INVOCATIONS__: Array<{ cmd: string; args: Record<string, unknown> }>;
+    }).__REPORT_INVOCATIONS__
+  );
+  expect(
+    invocations.find((invocation) => invocation.cmd === "send_report_message")
+      ?.args
+  ).toMatchObject({ expectedRevision: 0 });
+  expect(
+    invocations.find(
+      (invocation) => invocation.cmd === "resolve_report_proposal"
+    )?.args
+  ).toMatchObject({ proposalId: "proposal-1", decision: "accept" });
+  expect(
+    invocations.find((invocation) => invocation.cmd === "export_report_docx")
+      ?.args
+  ).toMatchObject({
+    reportId: "99999999-9999-4999-8999-999999999999",
+    expectedRevision: 1,
+  });
+});
+
+test("existing Chat still sends and resumes its original history contract", async ({
+  page,
+}) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.getByRole("button", { name: "Chat History" }).click();
+  await page.getByTitle("Resume conversation").click();
+  await expect(page.getByText("Earlier question")).toBeVisible();
+  await expect(page.getByText("Earlier answer")).toBeVisible();
+
+  await page.getByPlaceholder("Type a message...").fill("New chat question");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Unchanged Chat response")).toBeVisible();
+
+  const state = await page.evaluate(() => ({
+    chat: (window as unknown as { __CHAT_COMMANDS__: unknown[] }).__CHAT_COMMANDS__,
+    report: (window as unknown as { __REPORT_COMMANDS__: string[] })
+      .__REPORT_COMMANDS__,
+  }));
+  expect(state.chat).toHaveLength(2);
+  expect(state.report).toEqual([]);
+});

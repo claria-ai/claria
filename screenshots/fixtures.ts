@@ -246,6 +246,191 @@ export const fixtures: Record<string, unknown> = {
     "Have you noticed anything that makes them worse — screens, lack of sleep, stress?",
   ].join("\n").replace(/– /g, "–"),
 
+  load_report_workspace: {
+    schema_version: 1,
+    report_id: "99999999-9999-4999-8999-999999999999",
+    client_id: CLIENT_ID,
+    draft: {
+      revision: 3,
+      content: {
+        title: "Psychological Evaluation",
+        sections: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            heading: "Reason for Referral",
+            blocks: [
+              {
+                kind: "paragraph",
+                text: "Jane was referred for evaluation of persistent attention, emotional-regulation, and written-output concerns across home and school settings.",
+              },
+            ],
+          },
+          {
+            id: "22222222-2222-4222-8222-222222222222",
+            heading: "Background",
+            blocks: [
+              {
+                kind: "paragraph",
+                text: "Parent and teacher interviews describe age-appropriate reading fluency alongside difficulty sustaining effort during independent written work.",
+              },
+              {
+                kind: "bullet_list",
+                items: [
+                  "Frequent redirection during transitions",
+                  "Stronger performance in small-group instruction",
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      created_at: "2026-03-01T17:30:02Z",
+      updated_at: "2026-03-15T15:04:00Z",
+      last_applied_proposal_id: "77777777-7777-4777-8777-777777777777",
+    },
+    turns: [
+      {
+        id: "88888888-8888-4888-8888-888888888888",
+        model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+        timeline: [
+          {
+            kind: "message",
+            role: "user",
+            text: "Review the intake and teacher observation, then propose a concise behavioral findings section.",
+            created_at: "2026-03-15T15:08:00Z",
+          },
+          {
+            kind: "tool_activity",
+            name: "list_record_files",
+            summary: "Listed 4 record files",
+            status: "succeeded",
+            created_at: "2026-03-15T15:08:01Z",
+          },
+          {
+            kind: "tool_activity",
+            name: "read_record_file",
+            summary: "Read teacher-observation.txt, characters 0–2800",
+            status: "succeeded",
+            created_at: "2026-03-15T15:08:02Z",
+          },
+          {
+            kind: "tool_activity",
+            name: "propose_report_changes",
+            summary: "Staged report changes for approval",
+            status: "succeeded",
+            created_at: "2026-03-15T15:08:04Z",
+          },
+          {
+            kind: "message",
+            role: "assistant",
+            text: "I staged a focused findings section for your review.",
+            created_at: "2026-03-15T15:08:05Z",
+          },
+        ],
+        usage: {
+          model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+          input_tokens: 4860,
+          output_tokens: 410,
+          cache_read_input_tokens: 0,
+          cache_write_input_tokens: 0,
+          cost_usd: 0.03455,
+          pricing_version: 4,
+        },
+        usage_complete: true,
+        converse_calls: 3,
+        tool_uses: 3,
+        created_at: "2026-03-15T15:08:00Z",
+        completed_at: "2026-03-15T15:08:05Z",
+      },
+    ],
+    pending_proposal: {
+      id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      report_id: "99999999-9999-4999-8999-999999999999",
+      base_revision: 3,
+      model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+      summary: "Add behavioral findings from the reviewed records",
+      operations: [
+        {
+          kind: "add_section",
+          position: 2,
+          section: {
+            id: "33333333-3333-4333-8333-333333333333",
+            heading: "Behavioral Findings",
+            blocks: [
+              {
+                kind: "paragraph",
+                text: "Across informants, Jane demonstrates difficulty sustaining attention and organizing written responses, with improvement under direct prompting.",
+              },
+              {
+                kind: "bullet_list",
+                items: [
+                  "Leaves her seat during independent work",
+                  "Benefits from predictable transitions and brief check-ins",
+                ],
+              },
+            ],
+          },
+        },
+      ],
+      proposed_content: {
+        title: "Psychological Evaluation",
+        sections: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            heading: "Reason for Referral",
+            blocks: [{
+              kind: "paragraph",
+              text: "Jane was referred for evaluation of persistent attention, emotional-regulation, and written-output concerns across home and school settings.",
+            }],
+          },
+          {
+            id: "22222222-2222-4222-8222-222222222222",
+            heading: "Background",
+            blocks: [
+              {
+                kind: "paragraph",
+                text: "Parent and teacher interviews describe age-appropriate reading fluency alongside difficulty sustaining effort during independent written work.",
+              },
+              {
+                kind: "bullet_list",
+                items: [
+                  "Frequent redirection during transitions",
+                  "Stronger performance in small-group instruction",
+                ],
+              },
+            ],
+          },
+          {
+            id: "33333333-3333-4333-8333-333333333333",
+            heading: "Behavioral Findings",
+            blocks: [
+              {
+                kind: "paragraph",
+                text: "Across informants, Jane demonstrates difficulty sustaining attention and organizing written responses, with improvement under direct prompting.",
+              },
+              {
+                kind: "bullet_list",
+                items: [
+                  "Leaves her seat during independent work",
+                  "Benefits from predictable transitions and brief check-ins",
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      created_at: "2026-03-15T15:08:04Z",
+    },
+    resolutions: [],
+    created_at: "2026-03-01T17:30:02Z",
+    updated_at: "2026-03-15T15:08:05Z",
+  },
+  export_report_docx: {
+    exported: false,
+    report_id: "99999999-9999-4999-8999-999999999999",
+    revision: 3,
+  },
+
   list_record_context: [
     {
       filename: "intake-parent-interview.txt",
