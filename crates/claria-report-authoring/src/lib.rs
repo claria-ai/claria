@@ -109,6 +109,26 @@ pub struct ReportParagraphReference {
     pub block_index: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ReportMessageRequest<'a> {
+    pub instruction: &'a str,
+    pub references: &'a [ReportParagraphReference],
+}
+
+impl<'a> ReportMessageRequest<'a> {
+    pub fn new(instruction: &'a str) -> Self {
+        Self {
+            instruction,
+            references: &[],
+        }
+    }
+
+    pub fn with_references(mut self, references: &'a [ReportParagraphReference]) -> Self {
+        self.references = references;
+        self
+    }
+}
+
 pub async fn load_report_workspace(
     s3: &S3Client,
     bucket: &str,
@@ -172,10 +192,10 @@ pub async fn send_report_message(
     client_id: Uuid,
     expected_revision: u64,
     model_id: &str,
-    instruction: &str,
-    references: &[ReportParagraphReference],
+    message: ReportMessageRequest<'_>,
 ) -> Result<ReportTurnOutcome, ReportAuthoringError> {
-    let instruction = instruction.trim();
+    let instruction = message.instruction.trim();
+    let references = message.references;
     if instruction.is_empty() {
         return Err(ReportAuthoringError::InvalidInput(
             "Enter an instruction for the report assistant.".to_string(),

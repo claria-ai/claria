@@ -1591,8 +1591,8 @@ pub async fn send_report_message(
         client_id,
         expected_revision,
         &model_id,
-        &instruction,
-        &references,
+        claria_report_authoring::ReportMessageRequest::new(&instruction)
+            .with_references(&references),
     )
     .await;
 

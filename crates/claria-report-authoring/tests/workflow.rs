@@ -295,8 +295,9 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
         client_id,
         0,
         MODEL_ID,
-        "Draft an initial report from the intake.",
-        &[],
+        report_authoring::ReportMessageRequest::new(
+            "Draft an initial report from the intake.",
+        ),
     )
     .await
     .expect("report turn");
@@ -443,8 +444,7 @@ async fn rejecting_a_persisted_proposal_leaves_the_draft_unchanged() {
         client_id,
         0,
         MODEL_ID,
-        "Rename it",
-        &[],
+        report_authoring::ReportMessageRequest::new("Rename it"),
     )
     .await
     .expect("turn");
@@ -507,8 +507,7 @@ async fn record_reads_are_capped_at_48000_unicode_characters_per_turn() {
         client_id,
         0,
         MODEL_ID,
-        "Read the long record",
-        &[],
+        report_authoring::ReportMessageRequest::new("Read the long record"),
     )
     .await
     .expect("turn");
@@ -569,8 +568,7 @@ async fn fifth_tool_round_fails_without_persisting_an_incomplete_turn() {
         client_id,
         0,
         MODEL_ID,
-        "Keep listing forever",
-        &[],
+        report_authoring::ReportMessageRequest::new("Keep listing forever"),
     )
     .await
     .unwrap_err();
@@ -741,11 +739,12 @@ async fn accepted_report_text_is_never_elevated_into_the_system_prompt() {
         client_id,
         1,
         MODEL_ID,
-        "Review the accepted title",
-        &[report_authoring::ReportParagraphReference {
-            section_id,
-            block_index: 0,
-        }],
+        report_authoring::ReportMessageRequest::new("Review the accepted title").with_references(
+            &[report_authoring::ReportParagraphReference {
+                section_id,
+                block_index: 0,
+            }],
+        ),
     )
     .await
     .expect("turn");
@@ -810,8 +809,7 @@ async fn oversized_records_are_rejected_without_a_body_download() {
         client_id,
         0,
         MODEL_ID,
-        "Read the oversized record",
-        &[],
+        report_authoring::ReportMessageRequest::new("Read the oversized record"),
     )
     .await
     .expect("bounded turn");
@@ -861,8 +859,7 @@ async fn record_storage_failure_aborts_without_staging_and_surfaces_safe_error()
         client_id,
         0,
         MODEL_ID,
-        "Read the unavailable record",
-        &[],
+        report_authoring::ReportMessageRequest::new("Read the unavailable record"),
     )
     .await
     .expect_err("storage failure");
@@ -933,8 +930,7 @@ async fn usage_receipts_survive_later_bedrock_failure_with_cache_and_cost() {
         client_id,
         0,
         PRICED_MODEL,
-        "List and then fail",
-        &[],
+        report_authoring::ReportMessageRequest::new("List and then fail"),
     )
     .await
     .expect_err("later Bedrock failure");
@@ -999,8 +995,7 @@ async fn missing_usage_is_recorded_as_incomplete_instead_of_metered_zero() {
         client_id,
         0,
         MODEL_ID,
-        "Complete without usage",
-        &[],
+        report_authoring::ReportMessageRequest::new("Complete without usage"),
     )
     .await
     .expect("turn");
@@ -1047,8 +1042,7 @@ async fn usage_receipt_and_aborted_status_survive_workspace_save_conflict() {
         client_id,
         0,
         MODEL_ID,
-        "Trigger save conflict",
-        &[],
+        report_authoring::ReportMessageRequest::new("Trigger save conflict"),
     )
     .await
     .expect_err("save conflict");
