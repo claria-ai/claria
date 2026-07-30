@@ -54,6 +54,40 @@ pub fn chat_history(client_id: Uuid, chat_id: Uuid) -> String {
     format!("records/{client_id}/chat-history/{chat_id}.json")
 }
 
+/// Root for the opt-in report-authoring workspace. It is intentionally
+/// separate from `records/` so report state cannot appear in record listings
+/// or the existing Chat context.
+pub const REPORT_AUTHORING_PREFIX: &str = "report-authoring/";
+
+pub fn report_authoring_client_prefix(client_id: Uuid) -> String {
+    format!("{REPORT_AUTHORING_PREFIX}{client_id}/")
+}
+
+pub fn report_workspace(client_id: Uuid) -> String {
+    format!(
+        "{}workspace.json",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
+pub fn report_attempt(client_id: Uuid, attempt_id: Uuid) -> String {
+    format!(
+        "{}attempts/{attempt_id}.json",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
+pub fn report_call_usage(client_id: Uuid, attempt_id: Uuid, call_number: u32) -> String {
+    format!(
+        "{}usage/{attempt_id}/{call_number}.json",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
+pub fn client_lifecycle(client_id: Uuid) -> String {
+    format!("_state/client-lifecycle/{client_id}.json")
+}
+
 pub const PROMPTS_PREFIX: &str = "claria-prompts/";
 
 pub const SYSTEM_PROMPT: &str = "claria-prompts/system-prompt.md";

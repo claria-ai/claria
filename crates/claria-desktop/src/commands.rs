@@ -54,7 +54,14 @@ pub enum ProvisionerProgress {
 // Client + Chat types
 // ---------------------------------------------------------------------------
 
-pub use claria_desktop::records::ClientSummary;
+pub use claria_desktop::{
+    records::ClientSummary,
+    report_authoring::{
+        EditorHistoryEntry, ReportDraftEdit, ReportExportResult, ReportExportStatusView,
+        ReportParagraphReferenceInput, ReportProposalDecision, ReportTurnResponse,
+        ReportWorkspaceView,
+    },
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ChatMessage {
@@ -1440,7 +1447,8 @@ pub async fn create_client(
     })
 }
 
-/// Delete a client and all associated data (record files, chat history).
+/// Delete a client and all associated data through the retryable,
+/// compensating lifecycle library.
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_client(
@@ -1450,24 +1458,391 @@ pub async fn delete_client(
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
-
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-
-    // Delete all record files (includes chat history, sidecars, etc.)
-    let records_prefix = claria_core::s3_keys::client_records_prefix(id);
-    let deleted = claria_storage::objects::delete_objects_by_prefix(&s3, &bucket, &records_prefix)
+    let outcome = claria_client_lifecycle::delete_client(&s3, &bucket, id)
         .await
-        .map_err(|e| e.to_string())?;
-
-    // Delete the client JSON itself.
-    let client_key = claria_core::s3_keys::client(id);
-    claria_storage::objects::delete_object(&s3, &bucket, &client_key)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    tracing::info!(client_id = %id, deleted_records = deleted, "client deleted");
-
+        .map_err(|error| error.to_string())?;
+    tracing::info!(
+        client_id = %id,
+        deleted_records = outcome.deleted_records,
+        deleted_report_objects = outcome.deleted_report_objects,
+        "client deleted"
+    );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Writing — separate opt-in report workflow
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+#[specta::specta]
+pub async fn load_report_workspace(
+    state: State<'_, DesktopState>,
+    client_id: String,
+) -> Result<ReportWorkspaceView, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let workspace = claria_report_authoring::load_report_workspace(&s3, &bucket, client_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(claria_desktop::report_authoring::workspace_view(&workspace))
+}
+
+/// Return the current persisted writing session for the Record screen's
+/// Editor History folder without creating a new workspace.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_editor_history(
+    state: State<'_, DesktopState>,
+    client_id: String,
+) -> Result<Vec<EditorHistoryEntry>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let workspace = claria_report_authoring::find_report_workspace(&s3, &bucket, client_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(workspace
+        .as_ref()
+        .map(claria_desktop::report_authoring::editor_history_entry)
+        .into_iter()
+        .collect())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn save_report_draft(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    expected_revision: u64,
+    draft: ReportDraftEdit,
+) -> Result<ReportWorkspaceView, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let content = claria_desktop::report_authoring::content_from_edit(draft)?;
+    let workspace = claria_report_authoring::save_report_draft(
+        &s3,
+        &bucket,
+        client_id,
+        expected_revision,
+        content,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let workspace = claria_desktop::report_authoring::workspace_view(&workspace);
+
+    record_audit(
+        &sdk_config,
+        &cfg,
+        claria_audit::events::AuditEvent::new(
+            "report_draft_saved",
+            "report",
+            workspace.report_id.clone(),
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({
+            "client_id": client_id.to_string(),
+            "report_id": workspace.report_id,
+            "revision": workspace.draft.revision,
+            "section_count": workspace.draft.content.sections.len()
+        })),
+    )
+    .await;
+
+    Ok(workspace)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn send_report_message(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    expected_revision: u64,
+    model_id: String,
+    instruction: String,
+    references: Vec<ReportParagraphReferenceInput>,
+) -> Result<ReportTurnResponse, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let references = references
+        .into_iter()
+        .map(ReportParagraphReferenceInput::into_domain)
+        .collect::<Result<Vec<_>, _>>()?;
+    let result = claria_report_authoring::send_report_message(
+        &sdk_config,
+        &s3,
+        &bucket,
+        client_id,
+        expected_revision,
+        &model_id,
+        claria_report_authoring::ReportMessageRequest::new(&instruction)
+            .with_references(&references),
+    )
+    .await;
+
+    match result {
+        Ok(outcome) => {
+            let attempt = outcome.attempt.clone();
+            let response = claria_desktop::report_authoring::turn_response_view(outcome);
+            record_audit(
+                &sdk_config,
+                &cfg,
+                claria_audit::events::AuditEvent::new(
+                    "report_tool_turn_succeeded",
+                    "report",
+                    attempt.report_id.to_string(),
+                    cfg.account_id.clone(),
+                )
+                .with_details(serde_json::json!({
+                    "status": "succeeded",
+                    "client_id": attempt.client_id.to_string(),
+                    "report_id": attempt.report_id.to_string(),
+                    "attempt_id": attempt.attempt_id.to_string(),
+                    "turn_id": response.turn_id,
+                    "proposal_id": response.proposal_id,
+                    "revision": response.workspace.draft.revision,
+                    "model_id": attempt.model_id,
+                    "converse_calls": attempt.converse_calls,
+                    "tool_uses": attempt.tool_uses,
+                    "usage_complete": attempt.usage_complete,
+                    "input_tokens": attempt.usage.input_tokens,
+                    "output_tokens": attempt.usage.output_tokens,
+                    "cache_read_input_tokens": attempt.usage.cache_read_input_tokens,
+                    "cache_write_input_tokens": attempt.usage.cache_write_input_tokens,
+                    "cost_usd": attempt.usage.cost_usd,
+                    "pricing_version": attempt.usage.pricing_version
+                })),
+            )
+            .await;
+            Ok(response)
+        }
+        Err(error) => {
+            let attempt = error.attempt().cloned();
+            let resource_id = attempt.as_ref().map_or_else(
+                || client_id.to_string(),
+                |value| value.report_id.to_string(),
+            );
+            record_audit(
+                &sdk_config,
+                &cfg,
+                claria_audit::events::AuditEvent::new(
+                    "report_tool_turn_failed",
+                    "report",
+                    resource_id,
+                    cfg.account_id.clone(),
+                )
+                .with_details(serde_json::json!({
+                    "status": "failed",
+                    "client_id": client_id.to_string(),
+                    "report_id": attempt.as_ref().map(|value| value.report_id.to_string()),
+                    "attempt_id": attempt.as_ref().map(|value| value.attempt_id.to_string()),
+                    "model_id": model_id,
+                    "failure_code": error.failure_code(),
+                    "converse_calls": attempt.as_ref().map_or(0, |value| value.converse_calls),
+                    "tool_uses": attempt.as_ref().map_or(0, |value| value.tool_uses),
+                    "usage_complete": attempt.as_ref().is_none_or(|value| value.usage_complete),
+                    "input_tokens": attempt.as_ref().map_or(0, |value| value.usage.input_tokens),
+                    "output_tokens": attempt.as_ref().map_or(0, |value| value.usage.output_tokens),
+                    "cache_read_input_tokens": attempt.as_ref().map_or(0, |value| value.usage.cache_read_input_tokens),
+                    "cache_write_input_tokens": attempt.as_ref().map_or(0, |value| value.usage.cache_write_input_tokens),
+                    "cost_usd": attempt.as_ref().map_or(0.0, |value| value.usage.cost_usd),
+                    "pricing_version": attempt.as_ref().map_or(0, |value| value.usage.pricing_version)
+                })),
+            )
+            .await;
+            Err(error.to_string())
+        }
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn resolve_report_proposal(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    proposal_id: String,
+    decision: ReportProposalDecision,
+) -> Result<ReportWorkspaceView, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let proposal_id = proposal_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let action = match decision {
+        ReportProposalDecision::Accept => "report_proposal_accepted",
+        ReportProposalDecision::Reject => "report_proposal_rejected",
+    };
+    let workspace = claria_report_authoring::resolve_report_proposal(
+        &s3,
+        &bucket,
+        client_id,
+        proposal_id,
+        decision.into(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let workspace = claria_desktop::report_authoring::workspace_view(&workspace);
+
+    record_audit(
+        &sdk_config,
+        &cfg,
+        claria_audit::events::AuditEvent::new(
+            action,
+            "report",
+            workspace.report_id.clone(),
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({
+            "client_id": client_id.to_string(),
+            "report_id": workspace.report_id,
+            "proposal_id": proposal_id.to_string(),
+            "resulting_revision": workspace.draft.revision,
+            "section_count": workspace.draft.content.sections.len()
+        })),
+    )
+    .await;
+
+    Ok(workspace)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn export_report_docx(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+    expected_revision: u64,
+) -> Result<ReportExportResult, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let report_id = report_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let draft = claria_report_authoring::load_export_snapshot(
+        &s3,
+        &bucket,
+        client_id,
+        report_id,
+        expected_revision,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let bytes = claria_docx::render_report(&draft).map_err(|error| error.to_string())?;
+    let filename = claria_report_authoring::suggested_docx_filename(&draft.content.title);
+    // Use the asynchronous dialog implementation. In particular, macOS must
+    // schedule NSSavePanel work on the main thread; opening the synchronous
+    // dialog after async S3 work can otherwise return as canceled repeatedly.
+    let selected = rfd::AsyncFileDialog::new()
+        .set_title("Export report to Word")
+        .set_file_name(filename)
+        .add_filter("Word documents", &["docx"])
+        .save_file()
+        .await;
+    let Some(selected) = selected else {
+        let attempted_at = jiff::Timestamp::now();
+        let status_persisted = claria_report_authoring::record_report_export(
+            &s3,
+            &bucket,
+            client_id,
+            report_id,
+            draft.revision,
+            claria_core::models::report::ReportExportStatus::Canceled,
+        )
+        .await
+        .is_ok();
+        return Ok(ReportExportResult {
+            exported: false,
+            report_id: report_id.to_string(),
+            revision: draft.revision,
+            status: ReportExportStatusView::Canceled,
+            attempted_at: attempted_at.to_string(),
+            status_persisted,
+        });
+    };
+    let mut path = selected.path().to_path_buf();
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case("docx"))
+    {
+        path.set_extension("docx");
+    }
+    // The selected local path is intentionally never logged or audited.
+    if let Err(error) = claria_desktop::local_export::write_private_atomic(&path, &bytes) {
+        let _ = claria_report_authoring::record_report_export(
+            &s3,
+            &bucket,
+            client_id,
+            report_id,
+            draft.revision,
+            claria_core::models::report::ReportExportStatus::Failed,
+        )
+        .await;
+        return Err(error.to_string());
+    }
+    let attempted_at = jiff::Timestamp::now();
+    let status_persisted = claria_report_authoring::record_report_export(
+        &s3,
+        &bucket,
+        client_id,
+        report_id,
+        draft.revision,
+        claria_core::models::report::ReportExportStatus::Exported,
+    )
+    .await
+    .is_ok();
+
+    record_audit(
+        &sdk_config,
+        &cfg,
+        claria_audit::events::AuditEvent::new(
+            "report_docx_exported",
+            "report",
+            report_id.to_string(),
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({
+            "client_id": client_id.to_string(),
+            "report_id": report_id.to_string(),
+            "revision": draft.revision,
+            "section_count": draft.content.sections.len(),
+            "destination": "local_unmanaged_storage"
+        })),
+    )
+    .await;
+
+    Ok(ReportExportResult {
+        exported: true,
+        report_id: report_id.to_string(),
+        revision: draft.revision,
+        status: ReportExportStatusView::Exported,
+        attempted_at: attempted_at.to_string(),
+        status_persisted,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -3434,34 +3809,15 @@ pub async fn restore_client(
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let key = claria_core::s3_keys::client(id);
-
-    // Find the most recent non-delete-marker version.
-    let versions = claria_storage::objects::list_object_versions(&s3, &bucket, &key)
+    let outcome = claria_client_lifecycle::restore_client(&s3, &bucket, id)
         .await
-        .map_err(|e| e.to_string())?;
-    let real = versions
-        .iter()
-        .find(|v| !v.is_delete_marker)
-        .ok_or_else(|| format!("no restorable version found for {key}"))?;
+        .map_err(|error| error.to_string())?;
 
-    // Fetch that version's content and write it back as a new current version.
-    let output =
-        claria_storage::objects::get_object_version(&s3, &bucket, &key, &real.version_id)
-            .await
-            .map_err(|e| e.to_string())?;
-
-    claria_storage::objects::put_object(
-        &s3,
-        &bucket,
-        &key,
-        output.body,
-        output.content_type.as_deref(),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    tracing::info!(client_id = %id, "deleted client restored");
+    tracing::info!(
+        client_id = %id,
+        report_restored = outcome.report_restored,
+        "deleted client restored"
+    );
 
     Ok(())
 }

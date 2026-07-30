@@ -11,6 +11,16 @@ pub enum StorageError {
     #[error("precondition failed for key: {key}")]
     PreconditionFailed { key: String },
 
+    #[error("conditional request conflict for key after retries: {key}")]
+    ConditionalRequestConflict { key: String },
+
+    #[error("object {key} is {actual_bytes} bytes, exceeding the {max_bytes}-byte read limit")]
+    ObjectTooLarge {
+        key: String,
+        actual_bytes: u64,
+        max_bytes: u64,
+    },
+
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

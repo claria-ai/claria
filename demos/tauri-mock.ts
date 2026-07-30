@@ -173,6 +173,8 @@ export function buildInitScript(config: ScenarioConfig): string {
             return clientFiles[args.clientId] || [];
           }
 
+          if (cmd === "list_editor_history") return [];
+
           if (cmd === "create_text_record_file") {
             const filename = args.filename.endsWith(".txt") ? args.filename : args.filename + ".txt";
             const file = {

@@ -13,7 +13,9 @@
       {
         "title": "Claria",
         "width": 1024,
-        "height": 768
+        "height": 768,
+        "minWidth": 640,
+        "minHeight": 600
       }
     ]
   },

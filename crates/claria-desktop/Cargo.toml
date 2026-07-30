@@ -12,8 +12,11 @@ metal = ["claria-whisper/metal"]
 claria-audit = { path = "../claria-audit" }
 claria-bedrock = { path = "../claria-bedrock" }
 claria-billing = { path = "../claria-billing" }
+claria-client-lifecycle = { path = "../claria-client-lifecycle" }
 claria-core = { path = "../claria-core" }
+claria-docx = { path = "../claria-docx" }
 claria-provisioner = { path = "../claria-provisioner" }
+claria-report-authoring = { path = "../claria-report-authoring" }
 claria-storage = { path = "../claria-storage" }
 claria-transcribe = { path = "../claria-transcribe" }
 claria-whisper = { path = "../claria-whisper" }
@@ -45,12 +48,21 @@ uuid = { version = "=1.23.4", features = ["v4"] }
 [dev-dependencies]
 aws-credential-types = "=1.2.14"
 claria-mock-aws = { path = "../claria-mock-aws" }
+tempfile = "=3.27.0"
 
 [package.metadata.release]
 pre-release-replacements = [
   { file = "tauri.conf.json", search = "\"version\": \"[^\"]+\"", replace = "\"version\": \"{{version}}\"" },
   { file = "../../CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [{{version}}] — {{date}}" },
 ]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+] }
 
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }

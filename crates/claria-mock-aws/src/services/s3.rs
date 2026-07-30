@@ -137,7 +137,11 @@ async fn head_bucket(bucket: &str, state: SharedState) -> Response {
     if st.buckets.contains_key(bucket) {
         StatusCode::OK.into_response()
     } else {
-        (StatusCode::NOT_FOUND, xml::error_xml("NoSuchBucket", "The specified bucket does not exist")).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            xml::error_xml("NoSuchBucket", "The specified bucket does not exist"),
+        )
+            .into_response()
     }
 }
 
@@ -147,8 +151,7 @@ async fn create_bucket(bucket: &str, state: SharedState, body: Bytes) -> Respons
     } else {
         // Parse <CreateBucketConfiguration><LocationConstraint>REGION</...>
         let text = String::from_utf8_lossy(&body);
-        extract_xml_value(&text, "LocationConstraint")
-            .unwrap_or_else(|| "us-east-1".to_string())
+        extract_xml_value(&text, "LocationConstraint").unwrap_or_else(|| "us-east-1".to_string())
     };
 
     let mut st = state.write().await;
@@ -363,16 +366,14 @@ async fn get_bucket_encryption(bucket: &str, state: SharedState) -> Response {
             ));
             (StatusCode::OK, [("content-type", "application/xml")], body).into_response()
         }
-        None => {
-            (
-                StatusCode::NOT_FOUND,
-                xml::error_xml(
-                    "ServerSideEncryptionConfigurationNotFoundError",
-                    "The server side encryption configuration was not found",
-                ),
-            )
-                .into_response()
-        }
+        None => (
+            StatusCode::NOT_FOUND,
+            xml::error_xml(
+                "ServerSideEncryptionConfigurationNotFoundError",
+                "The server side encryption configuration was not found",
+            ),
+        )
+            .into_response(),
     }
 }
 
@@ -408,18 +409,19 @@ async fn get_public_access_block(bucket: &str, state: SharedState) -> Response {
                     xml::el("BlockPublicAcls", &pab.block_public_acls.to_string()),
                     xml::el("IgnorePublicAcls", &pab.ignore_public_acls.to_string()),
                     xml::el("BlockPublicPolicy", &pab.block_public_policy.to_string()),
-                    xml::el("RestrictPublicBuckets", &pab.restrict_public_buckets.to_string()),
+                    xml::el(
+                        "RestrictPublicBuckets",
+                        &pab.restrict_public_buckets.to_string()
+                    ),
                 ),
             ));
             (StatusCode::OK, [("content-type", "application/xml")], body).into_response()
         }
-        None => {
-            (
-                StatusCode::NOT_FOUND,
-                xml::error_xml("NoSuchPublicAccessBlockConfiguration", ""),
-            )
-                .into_response()
-        }
+        None => (
+            StatusCode::NOT_FOUND,
+            xml::error_xml("NoSuchPublicAccessBlockConfiguration", ""),
+        )
+            .into_response(),
     }
 }
 
@@ -459,8 +461,17 @@ async fn get_bucket_policy(bucket: &str, state: SharedState) -> Response {
     };
 
     match &b.policy {
-        Some(policy) => (StatusCode::OK, [("content-type", "application/json")], policy.clone()).into_response(),
-        None => (StatusCode::NOT_FOUND, xml::error_xml("NoSuchBucketPolicy", "")).into_response(),
+        Some(policy) => (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            policy.clone(),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            xml::error_xml("NoSuchBucketPolicy", ""),
+        )
+            .into_response(),
     }
 }
 
@@ -670,7 +681,17 @@ async fn head_object(bucket: &str, key: &str, query: &str, state: SharedState) -
 }
 
 async fn get_object(bucket: &str, key: &str, query: &str, state: SharedState) -> Response {
-    let st = state.read().await;
+    let mut st = state.write().await;
+    *st.s3_get_object_requests
+        .entry(key.to_string())
+        .or_default() += 1;
+    if st.s3_get_object_failures.contains(key) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            xml::error_xml("InternalError", "Injected GET Object failure"),
+        )
+            .into_response();
+    }
     let version = if let Some(vid) = extract_query_param(query, "versionId") {
         st.get_object_version(bucket, key, &vid)
     } else {
@@ -711,11 +732,85 @@ async fn put_object(
 
     let mut st = state.write().await;
 
-    // Check if bucket exists
+    // Check if bucket exists.
     let versioning = match st.buckets.get(bucket) {
         Some(b) => b.versioning.clone(),
         None => return (StatusCode::NOT_FOUND, xml::error_xml("NoSuchBucket", "")).into_response(),
     };
+
+    // Fault-inject the two conditional race responses documented by S3.
+    // Hooks apply only to requests that actually carry a write precondition.
+    let conditional = headers.contains_key("if-none-match") || headers.contains_key("if-match");
+    if conditional {
+        if let Some(remaining) = st.s3_conditional_conflicts_remaining.get_mut(key)
+            && *remaining > 0
+        {
+            *remaining -= 1;
+            return (
+                StatusCode::CONFLICT,
+                xml::error_xml(
+                    "ConditionalRequestConflict",
+                    "A conflicting conditional operation is in progress",
+                ),
+            )
+                .into_response();
+        }
+        if let Some(remaining) = st.s3_precondition_failures_remaining.get_mut(key)
+            && *remaining > 0
+        {
+            *remaining -= 1;
+            return (
+                StatusCode::PRECONDITION_FAILED,
+                xml::error_xml(
+                    "PreconditionFailed",
+                    "At least one of the preconditions you specified did not hold",
+                ),
+            )
+                .into_response();
+        }
+    }
+
+    // Enforce the same conditional-write preconditions report workspaces use
+    // against real S3. Header values carry quoted ETags on the wire while the
+    // mock stores the bare digest.
+    let current = st
+        .objects
+        .get(&(bucket.to_string(), key.to_string()))
+        .and_then(|versions| versions.last())
+        .filter(|version| !version.is_delete_marker);
+
+    if headers
+        .get("if-none-match")
+        .and_then(|value| value.to_str().ok())
+        == Some("*")
+        && current.is_some()
+    {
+        return (
+            StatusCode::PRECONDITION_FAILED,
+            xml::error_xml(
+                "PreconditionFailed",
+                "At least one of the preconditions you specified did not hold",
+            ),
+        )
+            .into_response();
+    }
+
+    if let Some(expected) = headers
+        .get("if-match")
+        .and_then(|value| value.to_str().ok())
+    {
+        let expected = expected.trim_matches('"');
+        if current.is_none_or(|version| version.etag != expected) {
+            return (
+                StatusCode::PRECONDITION_FAILED,
+                xml::error_xml(
+                    "PreconditionFailed",
+                    "At least one of the preconditions you specified did not hold",
+                ),
+            )
+                .into_response();
+        }
+    }
 
     let version_id = if versioning == VersioningStatus::Enabled {
         Uuid::new_v4().to_string()

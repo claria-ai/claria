@@ -13,7 +13,7 @@
 import { test, expect } from "@playwright/test";
 import { buildInitScript } from "./tauri-mock.js";
 
-const BASE_URL = "http://localhost:1420";
+const BASE_URL = process.env.CLARIA_TEST_URL ?? "http://localhost:1420";
 
 test.beforeEach(async ({ page }) => {
   // Inject the stateful Tauri mock before the app loads

@@ -70,6 +70,38 @@ fn short_prefix_keeps_sidecar_hidden() {
     }
 }
 
+// ── Report-authoring keys ──────────────────────────────────────────────────
+
+#[test]
+fn report_workspace_is_isolated_from_records_and_chat_history() {
+    let id = Uuid::new_v4();
+    let prefix = s3_keys::report_authoring_client_prefix(id);
+    let workspace = s3_keys::report_workspace(id);
+    let attempt_id = Uuid::new_v4();
+    let attempt = s3_keys::report_attempt(id, attempt_id);
+    let usage = s3_keys::report_call_usage(id, attempt_id, 3);
+
+    assert_eq!(prefix, format!("report-authoring/{id}/"));
+    assert_eq!(workspace, format!("report-authoring/{id}/workspace.json"));
+    assert_eq!(
+        attempt,
+        format!("report-authoring/{id}/attempts/{attempt_id}.json")
+    );
+    assert_eq!(
+        usage,
+        format!("report-authoring/{id}/usage/{attempt_id}/3.json")
+    );
+    assert!(prefix.starts_with(s3_keys::REPORT_AUTHORING_PREFIX));
+    assert!(attempt.starts_with(&prefix));
+    assert!(usage.starts_with(&prefix));
+    assert_eq!(
+        s3_keys::client_lifecycle(id),
+        format!("_state/client-lifecycle/{id}.json")
+    );
+    assert!(!workspace.starts_with(&s3_keys::client_records_prefix(id)));
+    assert!(!workspace.starts_with(&s3_keys::chat_history_prefix(id)));
+}
+
 // ── Audit trail keys ────────────────────────────────────────────────────────
 
 #[test]

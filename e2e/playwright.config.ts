@@ -1,5 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
+const testUrl = process.env.CLARIA_TEST_URL ?? "http://localhost:1420";
+const testPort = new URL(testUrl).port || "1420";
+
 export default defineConfig({
   testDir: ".",
   testMatch: "*.spec.ts",
@@ -13,9 +16,9 @@ export default defineConfig({
     video: "retain-on-failure",
   },
   webServer: {
-    command: "npm run dev",
+    command: `npm run dev -- --port ${testPort}`,
     cwd: "../claria-desktop-frontend",
-    url: "http://localhost:1420",
+    url: testUrl,
     reuseExistingServer: true,
     timeout: 30_000,
   },

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   listRecordFiles,
   searchRecordContents,
@@ -9,6 +10,7 @@ import {
   createTextRecordFile,
   updateTextRecordFile,
   loadChatHistory,
+  listEditorHistory,
   listFileVersions,
   getFileVersionText,
   restoreFileVersion,
@@ -22,6 +24,7 @@ import {
   type ChatModel,
   type FileVersion,
   type DeletedFile,
+  type EditorHistoryEntry,
   type TranscriptionPreferences,
   type WhisperModelInfo,
 } from "../lib/tauri";
@@ -33,7 +36,6 @@ import DeletedSection from "../components/DeletedSection";
 import { ErrorBanner } from "../components/StateCards";
 import Modal from "../components/Modal";
 import {
-  BackButton,
   CloseIcon,
   FolderIcon,
   PlayIcon,
@@ -44,11 +46,13 @@ import { formatDateTime, formatFileSize } from "../lib/format";
 import { searchMatches } from "../lib/search";
 import { useMoreMode } from "../lib/useMoreMode";
 import { diffLines, type DiffLine } from "../lib/diff";
+import ClientWorkspaceTabs, {
+  type ClientWorkspaceTab,
+} from "../components/ClientWorkspaceTabs";
 import ClientChat from "./ClientChat";
+import Writing, { type WritingLeaveState } from "./Writing";
 import type { Page } from "../App";
 import type { ResumeChat } from "./ClientChat";
-
-type Tab = "record" | "chat";
 
 export default function ClientRecord({
   navigate,
@@ -58,6 +62,7 @@ export default function ClientRecord({
   chatModelsLoading,
   chatModelsError,
   preferredModelId,
+  onRetryChatModels,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
@@ -66,9 +71,17 @@ export default function ClientRecord({
   chatModelsLoading: boolean;
   chatModelsError: string | null;
   preferredModelId?: string | null;
+  onRetryChatModels?: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>("record");
+  const [tab, setTab] = useState<ClientWorkspaceTab>("record");
   const [resumeChat, setResumeChat] = useState<ResumeChat | null>(null);
+  const [writingLeaveState, setWritingLeaveState] = useState<WritingLeaveState>({
+    hasUnsavedWork: false,
+    hasUnsavedReportEdits: false,
+    busy: false,
+  });
+  const [writingReportId, setWritingReportId] = useState<string | null>(null);
+  const [writingKey, setWritingKey] = useState(0);
 
   function handleResumeChat(detail: ChatHistoryDetail) {
     setResumeChat({
@@ -84,44 +97,101 @@ export default function ClientRecord({
     setTab("chat");
   }
 
+  function handleResumeWriting(reportId: string) {
+    setWritingReportId(reportId);
+    setWritingKey((value) => value + 1);
+    setTab("writing");
+  }
+
+  function mayLeaveWriting(): boolean {
+    if (tab !== "writing") return true;
+    if (writingLeaveState.busy) {
+      window.alert("Wait for the current Writing action to finish before leaving.");
+      return false;
+    }
+    // Composer text and paragraph references are retained in memory while the
+    // user navigates around Claria. Only inline report edits need a discard
+    // confirmation here.
+    return (
+      !writingLeaveState.hasUnsavedReportEdits ||
+      window.confirm(
+        "Discard unsaved report edits? Your typed Writing instruction and references will be kept."
+      )
+    );
+  }
+
+  function handleSelectTab(next: ClientWorkspaceTab): boolean {
+    if (next === tab) return true;
+    if (!mayLeaveWriting()) return false;
+    if (next === "writing") {
+      setWritingReportId(null);
+      setWritingKey((value) => value + 1);
+    }
+    setTab(next);
+    return true;
+  }
+
+  function handleBack() {
+    if (mayLeaveWriting()) navigate("clients");
+  }
+
+  useEffect(() => {
+    if (
+      tab !== "writing" ||
+      (!writingLeaveState.hasUnsavedWork && !writingLeaveState.busy)
+    ) {
+      return;
+    }
+
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    if ("__TAURI_INTERNALS__" in window) {
+      void getCurrentWindow()
+        .onCloseRequested((event) => {
+          if (writingLeaveState.busy) {
+            event.preventDefault();
+          } else if (
+            writingLeaveState.hasUnsavedWork &&
+            !window.confirm(
+              "Discard your unsaved report work and close Claria?"
+            )
+          ) {
+            event.preventDefault();
+          }
+        })
+        .then((stopListening) => {
+          if (disposed) stopListening();
+          else unlisten = stopListening;
+        });
+    }
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener("beforeunload", beforeUnload);
+    };
+  }, [writingLeaveState, tab]);
+
   return (
-    <div className="flex flex-col h-screen">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
-        <BackButton onClick={() => navigate("clients")} />
-        <h2 className="text-lg font-semibold flex-1">{clientName}</h2>
-
-        {/* Tabs */}
-        <div className="flex border border-gray-200 rounded-lg overflow-hidden">
-          <button
-            data-tab="record"
-            onClick={() => setTab("record")}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              tab === "record"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            Record
-          </button>
-          <button
-            data-tab="chat"
-            onClick={() => setTab("chat")}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              tab === "chat"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            Chat
-          </button>
-        </div>
-      </div>
-
-      {/* Tab content */}
+    <ClientWorkspaceTabs
+      clientName={clientName}
+      activeTab={tab}
+      onSelect={handleSelectTab}
+      onBack={handleBack}
+    >
       {tab === "record" ? (
-        <RecordTab clientId={clientId} onResumeChat={handleResumeChat} />
-      ) : (
+        <RecordTab
+          clientId={clientId}
+          onResumeChat={handleResumeChat}
+          onResumeWriting={handleResumeWriting}
+        />
+      ) : tab === "chat" ? (
         <ClientChat
           navigate={navigate}
           clientId={clientId}
@@ -134,12 +204,32 @@ export default function ClientRecord({
           chatModelsError={chatModelsError}
           preferredModelId={preferredModelId}
         />
+      ) : (
+        <Writing
+          key={`${clientId}:${writingReportId ?? "current"}:${writingKey}`}
+          clientId={clientId}
+          expectedReportId={writingReportId}
+          chatModels={chatModels}
+          chatModelsLoading={chatModelsLoading}
+          chatModelsError={chatModelsError}
+          preferredModelId={preferredModelId}
+          onLeaveStateChange={setWritingLeaveState}
+          onRetryModels={onRetryChatModels}
+        />
       )}
-    </div>
+    </ClientWorkspaceTabs>
   );
 }
 
-function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat: (detail: ChatHistoryDetail) => void }) {
+function RecordTab({
+  clientId,
+  onResumeChat,
+  onResumeWriting,
+}: {
+  clientId: string;
+  onResumeChat: (detail: ChatHistoryDetail) => void;
+  onResumeWriting: (reportId: string) => void;
+}) {
   const [files, setFiles] = useState<RecordFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -156,6 +246,8 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   const [createContent, setCreateContent] = useState("");
   const [creating, setCreating] = useState(false);
   const [chatFolderOpen, setChatFolderOpen] = useState(false);
+  const [editorFolderOpen, setEditorFolderOpen] = useState(false);
+  const [editorHistory, setEditorHistory] = useState<EditorHistoryEntry[]>([]);
   const [resumeLoading, setResumeLoading] = useState<string | null>(null);
 
   // Transcription wizard state + cached prefs (used by the drag-zone tooltip).
@@ -267,8 +359,12 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
   const refresh = useCallback(async () => {
     setError(null);
     try {
+      // History is additive: a corrupted or temporarily unavailable writing
+      // session must never prevent the existing Record file list from opening.
+      const writingHistory = listEditorHistory(clientId).catch(() => []);
       const result = await listRecordFiles(clientId);
       setFiles(result);
+      setEditorHistory(await writingHistory);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -669,6 +765,10 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  function handleResumeEditor(reportId: string) {
+    onResumeWriting(reportId);
   }
 
   async function handleResume(filename: string) {
@@ -1078,6 +1178,68 @@ function RecordTab({ clientId, onResumeChat }: { clientId: string; onResumeChat:
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Editor history folder */}
+          {!loading && editorHistory.length > 0 && (
+            <div className="border-b border-gray-100">
+              <button
+                onClick={() => setEditorFolderOpen(!editorFolderOpen)}
+                className="w-full px-4 py-3 flex items-center gap-3 hover:bg-gray-50 transition-colors"
+              >
+                <div className="w-8 h-8 rounded flex items-center justify-center bg-blue-100 text-blue-600">
+                  <FolderIcon />
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <p className="text-sm font-medium text-gray-900">Editor History</p>
+                  <p className="text-xs text-gray-400">
+                    {editorHistory.length} writing session{editorHistory.length !== 1 ? "s" : ""}
+                  </p>
+                </div>
+                <svg
+                  className={`w-4 h-4 text-gray-400 transition-transform ${editorFolderOpen ? "rotate-90" : ""}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+              {editorFolderOpen && (
+                <div className="divide-y divide-gray-100 bg-gray-50/50">
+                  {editorHistory.map((entry) => (
+                    <div
+                      key={entry.report_id}
+                      className="px-4 py-3 pl-8 flex items-center gap-3"
+                    >
+                      <div className="w-8 h-8 rounded flex items-center justify-center bg-blue-50 text-blue-600 text-xs font-bold">
+                        W
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900 truncate">
+                          {entry.title}
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          Revision {entry.revision} · {entry.turn_count} turn{entry.turn_count === 1 ? "" : "s"} · {formatDateTime(entry.updated_at)}
+                        </p>
+                        {entry.last_export && (
+                          <p className="text-[10px] text-gray-400 capitalize">
+                            Word export {entry.last_export.status} · revision {entry.last_export.revision}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => handleResumeEditor(entry.report_id)}
+                        title="Resume writing session"
+                        className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                      >
+                        <PlayIcon />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

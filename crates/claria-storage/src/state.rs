@@ -30,6 +30,17 @@ pub async fn save_state<T: Serialize>(
     objects::put_object(client, bucket, key, body, Some("application/json")).await
 }
 
+/// Save a JSON state file only if no current object exists at `key`.
+pub async fn save_state_if_none_match<T: Serialize>(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    value: &T,
+) -> Result<String, StorageError> {
+    let body = serde_json::to_vec_pretty(value)?;
+    objects::put_object_if_none_match(client, bucket, key, body, Some("application/json")).await
+}
+
 /// Save a JSON state file to S3 with ETag optimistic locking.
 pub async fn save_state_if_match<T: Serialize>(
     client: &Client,
