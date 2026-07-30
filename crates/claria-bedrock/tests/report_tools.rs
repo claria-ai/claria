@@ -10,7 +10,10 @@ use claria_bedrock::{
 use claria_core::models::report::{
     ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
 };
-use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
+use claria_mock_aws::{
+    state::{FoundationModel, ModelLifecycle, ScriptedBedrockResponse},
+    testing::MockServer,
+};
 
 const MODEL_ID: &str = "us.anthropic.claude-sonnet-test";
 
@@ -105,7 +108,10 @@ async fn nested_tool_input_round_trips_from_smithy_document() {
     script(
         &server,
         vec![serde_json::json!({
-            "output": {"message": {"role": "assistant", "content": [{
+            "output": {"message": {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": {"text": "private reasoning", "signature": "signature-1"}}},
+                {"text": ""},
+                {
                 "toolUse": {
                     "toolUseId": "proposal-1",
                     "name": "propose_report_changes",
@@ -139,6 +145,12 @@ async fn nested_tool_input_round_trips_from_smithy_document() {
     .expect("converse");
     assert_eq!(output.stop_reason, ReportStopReason::ToolUse);
     assert_eq!(output.tool_calls.len(), 1);
+    assert_eq!(output.message.content.len(), 2);
+    assert!(matches!(
+        &output.message.content[0],
+        ReportProtocolBlock::ReasoningText { text, signature }
+            if text == "private reasoning" && signature.as_deref() == Some("signature-1")
+    ));
     let call = &output.tool_calls[0];
     assert_eq!(call.name, PROPOSE_REPORT_CHANGES_TOOL);
     assert_eq!(
@@ -169,11 +181,17 @@ async fn tool_results_are_sent_as_correlated_json_blocks() {
         user_message("Read the intake"),
         ReportProtocolMessage {
             role: ReportProtocolRole::Assistant,
-            content: vec![ReportProtocolBlock::ToolUse {
-                tool_use_id: "read-1".to_string(),
-                name: "read_record_file".to_string(),
-                input: serde_json::json!({"filename": "intake.txt"}),
-            }],
+            content: vec![
+                ReportProtocolBlock::ReasoningText {
+                    text: "private reasoning".to_string(),
+                    signature: Some("signature-1".to_string()),
+                },
+                ReportProtocolBlock::ToolUse {
+                    tool_use_id: "read-1".to_string(),
+                    name: "read_record_file".to_string(),
+                    input: serde_json::json!({"filename": "intake.txt"}),
+                },
+            ],
             created_at: now,
         },
         ReportProtocolMessage {
@@ -195,7 +213,12 @@ async fn tool_results_are_sent_as_correlated_json_blocks() {
         .expect("converse");
 
     let state = server.state.read().await;
-    let sent = &state.bedrock_tool_requests[0]["messages"][2]["content"][0]["toolResult"];
+    let request = &state.bedrock_tool_requests[0];
+    assert_eq!(
+        request["messages"][1]["content"][0]["reasoningContent"]["reasoningText"]["signature"],
+        "signature-1"
+    );
+    let sent = &request["messages"][2]["content"][0]["toolResult"];
     assert_eq!(sent["toolUseId"], "read-1");
     assert_eq!(sent["status"], "success");
     assert_eq!(sent["content"][0]["json"]["range"]["offset"], 0);
@@ -326,6 +349,54 @@ async fn omitted_usage_is_preserved_as_missing() {
     .await
     .expect("converse");
     assert!(output.usage.is_none());
+}
+
+#[tokio::test]
+async fn unsupported_selected_tokenizer_falls_back_to_active_haiku() {
+    let server = MockServer::spawn().await;
+    let selected_model = "us.anthropic.claude-opus-4-7";
+    {
+        let mut state = server.state.write().await;
+        state
+            .bedrock_count_tokens_unsupported_models
+            .insert("anthropic.claude-opus-4-7".to_string());
+        state.foundation_models.push(FoundationModel {
+            model_id: "anthropic.claude-haiku-4-5-20251001-v1:0".to_string(),
+            model_name: "Claude Haiku 4.5".to_string(),
+            provider_name: "Anthropic".to_string(),
+            model_lifecycle: ModelLifecycle {
+                status: "ACTIVE".to_string(),
+            },
+        });
+    }
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Done"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 10, "outputTokens": 2}
+        })],
+    )
+    .await;
+
+    converse_report(
+        &sdk_config(&server.endpoint),
+        selected_model,
+        "System",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("fallback count and converse");
+
+    let state = server.state.read().await;
+    assert_eq!(
+        state.bedrock_count_token_model_ids,
+        vec![
+            "anthropic.claude-opus-4-7",
+            "anthropic.claude-haiku-4-5-20251001-v1:0"
+        ]
+    );
+    assert_eq!(state.bedrock_tool_model_ids, vec![selected_model]);
 }
 
 #[tokio::test]

@@ -251,6 +251,8 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
         vec![
             serde_json::json!({
                 "output": {"message": {"role": "assistant", "content": [
+                    {"reasoningContent": {"reasoningText": {"text": "PRIVATE TRANSIENT REASONING", "signature": "signature-1"}}},
+                    {"text": ""},
                     {"text": "I will review the approved inventory."},
                     {"toolUse": {"toolUseId": "list-1", "name": "list_record_files", "input": {}}},
                     {"toolUse": {"toolUseId": "read-1", "name": "read_record_file", "input": {"filename": "intake.txt", "offset": 0, "limit": 8000}}},
@@ -295,9 +297,7 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
         client_id,
         0,
         MODEL_ID,
-        report_authoring::ReportMessageRequest::new(
-            "Draft an initial report from the intake.",
-        ),
+        report_authoring::ReportMessageRequest::new("Draft an initial report from the intake."),
     )
     .await
     .expect("report turn");
@@ -325,6 +325,8 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
     assert!(!workspace_json.contains("PRIVATE CURRENT CLIENT RECORD"));
     assert!(!workspace_json.contains("OTHER CLIENT SECRET"));
     assert!(!workspace_json.contains("CHAT MUST NOT BE VISIBLE"));
+    assert!(!workspace_json.contains("PRIVATE TRANSIENT REASONING"));
+    assert!(!workspace_json.contains("signature-1"));
     assert!(workspace_json.contains("intake.txt"));
     assert!(workspace_json.contains("content_retained"));
 
@@ -335,6 +337,11 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
             .bedrock_tool_requests
             .iter()
             .all(|request| request.get("toolConfig").is_some())
+    );
+    assert_eq!(
+        state.bedrock_tool_requests[1]["messages"][1]["content"][0]["reasoningContent"]["reasoningText"]
+            ["signature"],
+        "signature-1"
     );
     let first_results = state.bedrock_tool_requests[1]["messages"]
         .as_array()

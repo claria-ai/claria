@@ -193,6 +193,10 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
                 {
                     return Err("toolResult must contain status and content");
                 }
+            } else if block.get("reasoningContent").is_some() {
+                if role != Some("assistant") {
+                    return Err("reasoningContent blocks require assistant role");
+                }
             } else if block.get("text").and_then(Value::as_str).is_none() {
                 return Err("unsupported content block");
             } else if expected_results.is_some() {
@@ -245,7 +249,13 @@ async fn count_tokens(path: &str, body: Value, state: SharedState) -> Response {
         .unwrap_or_default();
     let mut st = state.write().await;
     st.bedrock_count_token_requests.push(converse.clone());
-    st.bedrock_count_token_model_ids.push(model_id);
+    st.bedrock_count_token_model_ids.push(model_id.clone());
+    if st
+        .bedrock_count_tokens_unsupported_models
+        .contains(&model_id)
+    {
+        return validation_error("CountTokens is not supported for this model");
+    }
     let estimated = u32::try_from(converse.to_string().chars().count() / 4)
         .unwrap_or(u32::MAX)
         .max(1);

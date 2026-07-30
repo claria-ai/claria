@@ -49,6 +49,7 @@ vi.mock("../lib/tauri", () => ({
   exportReportDocx: vi.fn(),
 }));
 
+import { clearWritingComposerDrafts } from "../lib/writingComposerDraft";
 import ClientRecord from "./ClientRecord";
 
 const workspace = {
@@ -71,10 +72,10 @@ const workspace = {
   updated_at: "2026-08-01T00:00:00Z",
 };
 
-function renderClient() {
+function renderClient(navigate = vi.fn()) {
   return render(
     <ClientRecord
-      navigate={vi.fn()}
+      navigate={navigate}
       clientId="client-1"
       clientName="Ada"
       chatModels={[{ model_id: "model-1", name: "Claude" }]}
@@ -87,6 +88,7 @@ function renderClient() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearWritingComposerDrafts();
   mocks.listFiles.mockResolvedValue([]);
   mocks.listEditorHistory.mockResolvedValue([]);
   mocks.getPrompt.mockResolvedValue("");
@@ -160,7 +162,7 @@ describe("ClientRecord Writing integration", () => {
     vi.stubGlobal("confirm", confirm);
     await userEvent.click(screen.getByRole("tab", { name: "Chat" }));
     expect(confirm).toHaveBeenCalledWith(
-      "Discard your unsaved Writing work, including typed instructions?"
+      "Discard unsaved report edits? Your typed Writing instruction and references will be kept."
     );
     expect(
       screen.getByRole("tab", { name: "Writing" }).getAttribute(
@@ -179,7 +181,25 @@ describe("ClientRecord Writing integration", () => {
     vi.unstubAllGlobals();
   });
 
-  it("guards typed instructions and blocks navigation during a turn", async () => {
+  it("allows the back caret when only a Writing instruction is typed", async () => {
+    const navigate = vi.fn();
+    const confirm = vi.fn().mockReturnValue(false);
+    vi.stubGlobal("confirm", confirm);
+    renderClient(navigate);
+    await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
+    await screen.findByTestId("accepted-report-canvas");
+    await userEvent.type(
+      screen.getByLabelText("Writing instruction"),
+      "Keep this typed instruction"
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(navigate).toHaveBeenCalledWith("clients");
+    expect(confirm).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("retains typed instructions across tabs and blocks navigation during a turn", async () => {
     mocks.sendReport.mockReturnValue(new Promise(() => undefined));
     renderClient();
     await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
@@ -195,7 +215,13 @@ describe("ClientRecord Writing integration", () => {
     const confirm = vi.fn().mockReturnValue(false);
     vi.stubGlobal("confirm", confirm);
     await userEvent.click(screen.getByRole("tab", { name: "Record" }));
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("tab", { name: "Record" }).getAttribute("aria-selected")
+    ).toBe("true");
+
+    await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
+    await screen.findByTestId("accepted-report-canvas");
     expect(
       (screen.getByLabelText("Writing instruction") as HTMLTextAreaElement).value
     ).toBe("Keep this typed instruction");

@@ -9,16 +9,10 @@ import type {
 } from "../lib/tauri";
 import { dismissNotice, isNoticeDismissed } from "../lib/localPreference";
 import { moveItem, newReportSection } from "../lib/writingWorkspace";
+import type { WritingParagraphReference } from "../lib/writingComposerDraft";
 import { CloseIcon } from "./icons";
 
 const EXPORT_NOTICE_KEY = "claria.writing.hide_export_notice";
-
-export type WritingParagraphReference = {
-  sectionId: string;
-  blockIndex: number;
-  sectionHeading: string;
-  preview: string;
-};
 
 export default function WritingCanvas({
   workspace,

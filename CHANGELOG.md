@@ -7,6 +7,9 @@ All notable changes to Claria are documented here.
 - Client workspaces have a new opt-in Writing tab for interactive report authoring
 - Writing responses and accepted report content render Markdown formatting
 - Reports edit inline without textarea cards, and unsaved edits are saved into the assistant's next message automatically
+- Unsent Writing instructions survive in-app navigation, and no longer trap the client back control
+- Writing tool loops accept empty companion text and transient Bedrock reasoning blocks without persisting private reasoning
+- Writing falls back to the active Haiku tokenizer when a newly launched selected model does not support CountTokens
 - Report paragraphs can be attached to a Writing message from their hover control
 - Writing exposes the accepted report and record excerpts read during the session in a context control
 - Writing and local-export notices can be dismissed

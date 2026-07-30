@@ -132,6 +132,17 @@ pub enum ReportProtocolBlock {
     Text {
         text: String,
     },
+    /// Opaque model reasoning retained only long enough to round-trip an
+    /// immediate tool-result call. The authoring controller removes it before
+    /// workspace persistence.
+    ReasoningText {
+        text: String,
+        signature: Option<String>,
+    },
+    /// Provider-redacted reasoning bytes, also transient and never persisted.
+    ReasoningRedacted {
+        data: Vec<u8>,
+    },
     ToolUse {
         tool_use_id: String,
         name: String,
@@ -616,6 +627,17 @@ fn validate_turn(turn: &ReportAuthoringTurn) -> Result<(), CoreError> {
     if turn.created_at > turn.completed_at {
         return Err(invalid("turn completed_at precedes created_at"));
     }
+    if turn.messages.iter().any(|message| {
+        message.content.iter().any(|block| {
+            matches!(
+                block,
+                ReportProtocolBlock::ReasoningText { .. }
+                    | ReportProtocolBlock::ReasoningRedacted { .. }
+            )
+        })
+    }) {
+        return Err(invalid("persisted turns must not retain model reasoning"));
+    }
     validate_protocol(&turn.messages, true)?;
 
     let counted_tool_uses = turn
@@ -667,6 +689,22 @@ fn validate_protocol(
                         return Err(invalid(
                             "a correlated tool-result message must contain only results",
                         ));
+                    }
+                }
+                ReportProtocolBlock::ReasoningText { text, .. } => {
+                    if message.role != ReportProtocolRole::Assistant {
+                        return Err(invalid("reasoning blocks must have the assistant role"));
+                    }
+                    if text.is_empty() {
+                        return Err(invalid("reasoning text must not be empty"));
+                    }
+                }
+                ReportProtocolBlock::ReasoningRedacted { data } => {
+                    if message.role != ReportProtocolRole::Assistant {
+                        return Err(invalid("reasoning blocks must have the assistant role"));
+                    }
+                    if data.is_empty() {
+                        return Err(invalid("redacted reasoning must not be empty"));
                     }
                 }
                 ReportProtocolBlock::ToolUse {

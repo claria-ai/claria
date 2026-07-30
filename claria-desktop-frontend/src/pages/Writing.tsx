@@ -19,18 +19,24 @@ import {
   reportEditsEqual,
   validateReportEdit,
 } from "../lib/writingWorkspace";
-import WritingCanvas, {
-  type WritingParagraphReference,
-} from "../components/WritingCanvas";
+import WritingCanvas from "../components/WritingCanvas";
 import WritingProposalCard from "../components/WritingProposalCard";
 import Spinner from "../components/Spinner";
 import { CloseIcon } from "../components/icons";
 import { dismissNotice, isNoticeDismissed } from "../lib/localPreference";
+import {
+  readWritingComposerDraft,
+  writeWritingComposerDraft,
+  type WritingParagraphReference,
+} from "../lib/writingComposerDraft";
 
 const INTRO_NOTICE_KEY = "claria.writing.hide_intro_notice";
 
 export type WritingLeaveState = {
+  /** Any work that would be lost when the desktop app closes. */
   hasUnsavedWork: boolean;
+  /** Inline report changes that cannot be restored after leaving this page. */
+  hasUnsavedReportEdits: boolean;
   busy: boolean;
 };
 
@@ -55,6 +61,7 @@ export default function Writing({
 }) {
   const generationRef = useRef(0);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const initialComposerDraft = useRef(readWritingComposerDraft(clientId)).current;
   const [workspace, setWorkspace] = useState<ReportWorkspaceView | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -63,13 +70,17 @@ export default function Writing({
     null | "saving" | "sending" | "resolving" | "exporting"
   >(null);
   const [selectedModelId, setSelectedModelId] = useState("");
-  const [instruction, setInstruction] = useState("");
+  const [instruction, setInstruction] = useState(
+    initialComposerDraft?.instruction ?? ""
+  );
   const [editing, setEditing] = useState(false);
   const [edit, setEdit] = useState<ReportDraftEdit>({
     title: "Untitled report",
     sections: [],
   });
-  const [references, setReferences] = useState<WritingParagraphReference[]>([]);
+  const [references, setReferences] = useState<WritingParagraphReference[]>(
+    initialComposerDraft?.references ?? []
+  );
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -94,6 +105,7 @@ export default function Writing({
       }
       setWorkspace(result);
       setEdit(draftToEdit(result.draft));
+      setReferences((current) => reconcileReferences(current, result));
       setEditing(false);
     } catch (error) {
       if (generation !== generationRef.current) return;
@@ -104,12 +116,15 @@ export default function Writing({
   }, [clientId, expectedReportId]);
 
   useEffect(() => {
-    setReferences([]);
     void load();
     return () => {
       generationRef.current += 1;
     };
   }, [clientId, expectedReportId, load]);
+
+  useEffect(() => {
+    writeWritingComposerDraft(clientId, { instruction, references });
+  }, [clientId, instruction, references]);
 
   useEffect(() => {
     if (
@@ -145,10 +160,18 @@ export default function Writing({
     dirty || instruction.trim() !== "" || references.length > 0;
 
   useEffect(() => {
-    onLeaveStateChange?.({ hasUnsavedWork, busy: busy !== null });
+    onLeaveStateChange?.({
+      hasUnsavedWork,
+      hasUnsavedReportEdits: dirty,
+      busy: busy !== null,
+    });
     return () =>
-      onLeaveStateChange?.({ hasUnsavedWork: false, busy: false });
-  }, [busy, hasUnsavedWork, onLeaveStateChange]);
+      onLeaveStateChange?.({
+        hasUnsavedWork: false,
+        hasUnsavedReportEdits: false,
+        busy: false,
+      });
+  }, [busy, dirty, hasUnsavedWork, onLeaveStateChange]);
 
   const pendingProposalId = workspace?.pending_proposal?.id;
   useEffect(() => {
@@ -746,6 +769,27 @@ function ContextControl({
       </div>
     </div>
   );
+}
+
+function reconcileReferences(
+  references: WritingParagraphReference[],
+  workspace: ReportWorkspaceView
+): WritingParagraphReference[] {
+  return references.flatMap((reference) => {
+    const section = workspace.draft.content.sections.find(
+      (candidate) => candidate.id === reference.sectionId
+    );
+    const block = section?.blocks[reference.blockIndex];
+    if (!section || !block || block.kind !== "paragraph") return [];
+    const compact = block.text.replace(/\s+/g, " ").trim();
+    return [
+      {
+        ...reference,
+        sectionHeading: section.heading,
+        preview: compact.length > 90 ? `${compact.slice(0, 87)}…` : compact,
+      },
+    ];
+  });
 }
 
 function isReportConflict(message: string): boolean {

@@ -431,4 +431,20 @@ fn turn_protocol_requires_role_order_unique_ids_and_exact_results() {
             .to_string()
             .contains("correlate exactly")
     );
+
+    let mut retained_reasoning = complete_turn(4, 10);
+    retained_reasoning.messages[1].content.insert(
+        0,
+        ReportProtocolBlock::ReasoningText {
+            text: "must remain transient".to_string(),
+            signature: Some("signature".to_string()),
+        },
+    );
+    assert!(
+        workspace()
+            .push_turn(retained_reasoning)
+            .expect_err("persisted reasoning")
+            .to_string()
+            .contains("must not retain model reasoning")
+    );
 }

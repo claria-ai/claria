@@ -751,6 +751,14 @@ async fn run_turn(
 }
 
 fn map_bedrock_failure(error: BedrockError) -> TurnRunFailure {
+    if matches!(
+        &error,
+        BedrockError::SchemaViolation(_) | BedrockError::ResponseParse(_)
+    ) {
+        // These messages describe protocol structure, never report or record
+        // text, and make otherwise opaque provider regressions diagnosable.
+        tracing::error!(error = %error, "invalid Bedrock report protocol");
+    }
     let failure = match &error {
         BedrockError::ContextBudgetExceeded { .. } => TurnRunFailure::new(
             ReportFailureCode::ContextBudget,
@@ -1476,12 +1484,16 @@ fn sanitize_turn_messages(messages: Vec<ReportProtocolMessage>) -> Vec<ReportPro
             content: message
                 .content
                 .into_iter()
-                .map(|block| match block {
+                .filter_map(|block| match block {
+                    // Reasoning may contain PHI and is needed only for the
+                    // immediate Bedrock tool round. Never persist or display it.
+                    ReportProtocolBlock::ReasoningText { .. }
+                    | ReportProtocolBlock::ReasoningRedacted { .. } => None,
                     ReportProtocolBlock::ToolResult {
                         tool_use_id,
                         status,
                         content,
-                    } => ReportProtocolBlock::ToolResult {
+                    } => Some(ReportProtocolBlock::ToolResult {
                         content: sanitize_tool_result(
                             names.get(&tool_use_id).map(String::as_str),
                             status,
@@ -1489,8 +1501,8 @@ fn sanitize_turn_messages(messages: Vec<ReportProtocolMessage>) -> Vec<ReportPro
                         ),
                         tool_use_id,
                         status,
-                    },
-                    other => other,
+                    }),
+                    other => Some(other),
                 })
                 .collect(),
         })

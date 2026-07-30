@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReportWorkspaceView } from "../lib/tauri";
+import { clearWritingComposerDrafts } from "../lib/writingComposerDraft";
 
 const mocks = vi.hoisted(() => ({
   load: vi.fn(),
@@ -162,6 +163,7 @@ function renderWriting(clientId = "client-1", expectedReportId?: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearWritingComposerDrafts();
   const stored = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => stored.get(key) ?? null,

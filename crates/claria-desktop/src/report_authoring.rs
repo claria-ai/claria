@@ -513,7 +513,9 @@ fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportA
                         created_at: message.created_at.to_string(),
                     });
                 }
-                ReportProtocolBlock::ToolResult { .. } => {}
+                ReportProtocolBlock::ReasoningText { .. }
+                | ReportProtocolBlock::ReasoningRedacted { .. }
+                | ReportProtocolBlock::ToolResult { .. } => {}
             }
         }
     }

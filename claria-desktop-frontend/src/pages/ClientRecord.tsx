@@ -77,6 +77,7 @@ export default function ClientRecord({
   const [resumeChat, setResumeChat] = useState<ResumeChat | null>(null);
   const [writingLeaveState, setWritingLeaveState] = useState<WritingLeaveState>({
     hasUnsavedWork: false,
+    hasUnsavedReportEdits: false,
     busy: false,
   });
   const [writingReportId, setWritingReportId] = useState<string | null>(null);
@@ -108,10 +109,13 @@ export default function ClientRecord({
       window.alert("Wait for the current Writing action to finish before leaving.");
       return false;
     }
+    // Composer text and paragraph references are retained in memory while the
+    // user navigates around Claria. Only inline report edits need a discard
+    // confirmation here.
     return (
-      !writingLeaveState.hasUnsavedWork ||
+      !writingLeaveState.hasUnsavedReportEdits ||
       window.confirm(
-        "Discard your unsaved Writing work, including typed instructions?"
+        "Discard unsaved report edits? Your typed Writing instruction and references will be kept."
       )
     );
   }

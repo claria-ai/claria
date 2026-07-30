@@ -71,6 +71,9 @@ pub struct MockState {
     pub bedrock_count_token_model_ids: Vec<String>,
     /// Optional deterministic token count returned by the mock.
     pub bedrock_count_tokens_override: Option<u32>,
+    /// Bare model IDs that return CountTokens ValidationException while still
+    /// allowing Converse, matching newly launched Bedrock models.
+    pub bedrock_count_tokens_unsupported_models: HashSet<String>,
 
     // Transcribe
     pub transcription_jobs: HashMap<String, TranscriptionJob>,

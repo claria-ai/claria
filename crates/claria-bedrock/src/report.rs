@@ -11,11 +11,12 @@ use aws_sdk_bedrockruntime::{
     operation::RequestId,
     types::{
         ContentBlock, ConversationRole, ConverseTokensRequest, CountTokensInput, Message,
-        SystemContentBlock, Tool, ToolConfiguration, ToolInputSchema, ToolResultBlock,
-        ToolResultContentBlock, ToolResultStatus, ToolSpecification,
+        ReasoningContentBlock, ReasoningTextBlock, SystemContentBlock, Tool, ToolConfiguration,
+        ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolResultStatus,
+        ToolSpecification,
     },
 };
-use aws_smithy_types::{Document, Number};
+use aws_smithy_types::{Blob, Document, Number};
 use claria_core::models::{
     report::{
         ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
@@ -187,37 +188,53 @@ pub async fn converse_report(
     // Keep the exact selected-model tokenizer by removing only a known
     // cross-region scope prefix.
     let counting_model_id = report_counting_model_id(model_id);
-    let token_response = client
-        .count_tokens()
-        .model_id(counting_model_id)
-        .input(CountTokensInput::Converse(token_request))
-        .send()
-        .await
-        .map_err(|error| {
-            let status = error
-                .raw_response()
-                .map(|response| response.status().as_u16());
-            let service_error = error.into_service_error();
-            let code = service_error
-                .meta()
-                .code()
-                .unwrap_or("UnknownServiceError")
-                .to_string();
-            let request_id = service_error.meta().request_id().map(ToString::to_string);
-            tracing::error!(
-                model_id,
-                ?status,
-                code,
-                ?request_id,
-                "report CountTokens call failed"
-            );
-            BedrockError::ReportService {
-                status,
-                code,
-                request_id,
+    let input_tokens = match count_report_input_tokens(
+        &client,
+        counting_model_id,
+        token_request.clone(),
+    )
+    .await
+    {
+        Ok(tokens) => tokens,
+        Err(error)
+            if matches!(
+                &error,
+                BedrockError::ReportService { code, .. } if code == "ValidationException"
+            ) =>
+        {
+            // Some newly listed Claude foundations support Converse before
+            // CountTokens. Fall back to the newest active Haiku tokenizer so
+            // the Writing turn remains usable while retaining the selected
+            // model's conservative context-window limit.
+            let fallback_model_id = crate::chat::counting_model(config).await?;
+            if fallback_model_id == counting_model_id {
+                tracing::error!(model_id, error = %error, "report CountTokens fallback unavailable");
+                return Err(error);
             }
-        })?;
-    let input_tokens = u32::try_from(token_response.input_tokens()).unwrap_or(u32::MAX);
+            tracing::warn!(
+                model_id,
+                counting_model_id,
+                fallback_model_id,
+                error = %error,
+                "selected report model does not support CountTokens; using Haiku tokenizer"
+            );
+            count_report_input_tokens(&client, fallback_model_id, token_request)
+                .await
+                .map_err(|fallback_error| {
+                    tracing::error!(
+                        model_id,
+                        fallback_model_id,
+                        error = %fallback_error,
+                        "report CountTokens fallback failed"
+                    );
+                    fallback_error
+                })?
+        }
+        Err(error) => {
+            tracing::error!(model_id, error = %error, "report CountTokens call failed");
+            return Err(error);
+        }
+    };
     let input_token_budget = report_input_token_budget(model_id);
     if input_tokens > input_token_budget {
         return Err(BedrockError::ContextBudgetExceeded {
@@ -282,8 +299,28 @@ pub async fn converse_report(
         .collect();
     for block in output_message.content() {
         match block {
+            // Bedrock can emit an empty text block next to a valid tool use.
+            // It carries no semantic content and cannot be sent back because
+            // Converse rejects empty protocol text on the next tool round.
+            ContentBlock::Text(text) if text.is_empty() => {}
             ContentBlock::Text(text) => {
                 content.push(ReportProtocolBlock::Text { text: text.clone() })
+            }
+            ContentBlock::ReasoningContent(ReasoningContentBlock::ReasoningText(reasoning)) => {
+                content.push(ReportProtocolBlock::ReasoningText {
+                    text: reasoning.text().to_string(),
+                    signature: reasoning.signature().map(ToString::to_string),
+                });
+            }
+            ContentBlock::ReasoningContent(ReasoningContentBlock::RedactedContent(reasoning)) => {
+                content.push(ReportProtocolBlock::ReasoningRedacted {
+                    data: reasoning.as_ref().to_vec(),
+                });
+            }
+            ContentBlock::ReasoningContent(_) => {
+                return Err(BedrockError::ResponseParse(
+                    "report response contained unknown reasoning content".to_string(),
+                ));
             }
             ContentBlock::ToolUse(tool) => {
                 let tool_use_id = tool.tool_use_id().to_string();
@@ -323,9 +360,14 @@ pub async fn converse_report(
         }
     }
 
-    if content.is_empty() {
+    if !content.iter().any(|block| {
+        matches!(
+            block,
+            ReportProtocolBlock::Text { .. } | ReportProtocolBlock::ToolUse { .. }
+        )
+    }) {
         return Err(BedrockError::ResponseParse(
-            "report response message was empty".to_string(),
+            "report response had no visible text or tool use".to_string(),
         ));
     }
     if tool_calls.len() > MAX_TOOL_USES_PER_RESPONSE {
@@ -400,6 +442,37 @@ pub fn report_model_context_tokens(model_id: &str) -> u32 {
 
 pub fn report_input_token_budget(model_id: &str) -> u32 {
     report_model_context_tokens(model_id).saturating_sub(REPORT_OUTPUT_TOKEN_RESERVE)
+}
+
+async fn count_report_input_tokens(
+    client: &aws_sdk_bedrockruntime::Client,
+    model_id: &str,
+    request: ConverseTokensRequest,
+) -> Result<u32, BedrockError> {
+    let response = client
+        .count_tokens()
+        .model_id(model_id)
+        .input(CountTokensInput::Converse(request))
+        .send()
+        .await
+        .map_err(|error| {
+            let status = error
+                .raw_response()
+                .map(|response| response.status().as_u16());
+            let service_error = error.into_service_error();
+            let code = service_error
+                .meta()
+                .code()
+                .unwrap_or("UnknownServiceError")
+                .to_string();
+            let request_id = service_error.meta().request_id().map(ToString::to_string);
+            BedrockError::ReportService {
+                status,
+                code,
+                request_id,
+            }
+        })?;
+    Ok(u32::try_from(response.input_tokens()).unwrap_or(u32::MAX))
 }
 
 fn report_counting_model_id(model_id: &str) -> &str {
@@ -570,6 +643,19 @@ fn protocol_message_to_sdk(message: &ReportProtocolMessage) -> Result<Message, B
 fn protocol_block_to_sdk(block: &ReportProtocolBlock) -> Result<ContentBlock, BedrockError> {
     match block {
         ReportProtocolBlock::Text { text } => Ok(ContentBlock::Text(text.clone())),
+        ReportProtocolBlock::ReasoningText { text, signature } => {
+            let reasoning = ReasoningTextBlock::builder()
+                .text(text)
+                .set_signature(signature.clone())
+                .build()
+                .map_err(|error| BedrockError::Invocation(error.to_string()))?;
+            Ok(ContentBlock::ReasoningContent(
+                ReasoningContentBlock::ReasoningText(reasoning),
+            ))
+        }
+        ReportProtocolBlock::ReasoningRedacted { data } => Ok(ContentBlock::ReasoningContent(
+            ReasoningContentBlock::RedactedContent(Blob::new(data.clone())),
+        )),
         ReportProtocolBlock::ToolUse {
             tool_use_id,
             name,

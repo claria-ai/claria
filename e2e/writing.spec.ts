@@ -76,7 +76,7 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
   await page.getByRole("button", { name: "Edit" }).click();
   await page.getByLabel("Report title").fill("Unsaved local title");
   page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Discard your unsaved Writing work");
+    expect(dialog.message()).toContain("Discard unsaved report edits");
     await dialog.dismiss();
   });
   await page.locator('[data-tab="record"]').click();
@@ -119,6 +119,23 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
     reportId: "99999999-9999-4999-8999-999999999999",
     expectedRevision: 1,
   });
+});
+
+test("Writing back navigation retains an unsent instruction", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="writing"]').click();
+  await page.getByLabel("Writing instruction").fill("Keep this draft");
+
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByText("Jane Doe")).toBeVisible();
+
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="writing"]').click();
+  await expect(page.getByLabel("Writing instruction")).toHaveValue(
+    "Keep this draft",
+  );
 });
 
 test("existing Chat still sends and resumes its original history contract", async ({
