@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use claria_core::models::{
     report::{
-        ReportBlock, ReportContent, ReportDraft, ReportOperation, ReportProposal,
-        ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
+        ReportBlock, ReportContent, ReportDraft, ReportExportStatus, ReportOperation,
+        ReportProposal, ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
         ReportProtocolBlock, ReportProtocolRole, ReportSection, ReportToolResultStatus,
         ReportWorkspace,
     },
@@ -28,8 +28,45 @@ pub struct ReportWorkspaceView {
     pub turns: Vec<ReportAuthoringTurnView>,
     pub pending_proposal: Option<ReportProposalView>,
     pub resolutions: Vec<ReportProposalResolutionView>,
+    pub last_agent_revision: Option<u64>,
+    pub last_export: Option<ReportExportView>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportExportView {
+    pub revision: u64,
+    pub status: ReportExportStatusView,
+    pub attempted_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportExportStatusView {
+    Exported,
+    Canceled,
+    Failed,
+}
+
+impl From<ReportExportStatus> for ReportExportStatusView {
+    fn from(value: ReportExportStatus) -> Self {
+        match value {
+            ReportExportStatus::Exported => Self::Exported,
+            ReportExportStatus::Canceled => Self::Canceled,
+            ReportExportStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct EditorHistoryEntry {
+    pub report_id: String,
+    pub title: String,
+    pub revision: u64,
+    pub turn_count: u32,
+    pub updated_at: String,
+    pub last_export: Option<ReportExportView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -70,8 +107,18 @@ pub struct ReportAuthoringTurnView {
     pub usage_complete: bool,
     pub converse_calls: u32,
     pub tool_uses: u32,
+    pub context_reads: Vec<ReportContextReadView>,
     pub created_at: String,
     pub completed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportContextReadView {
+    pub filename: String,
+    pub offset: u64,
+    pub returned_characters: u64,
+    pub total_characters: Option<u64>,
+    pub read_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -175,6 +222,24 @@ pub struct ReportDraftEdit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportParagraphReferenceInput {
+    pub section_id: String,
+    pub block_index: u32,
+}
+
+impl ReportParagraphReferenceInput {
+    pub fn into_domain(self) -> Result<claria_report_authoring::ReportParagraphReference, String> {
+        Ok(claria_report_authoring::ReportParagraphReference {
+            section_id: self
+                .section_id
+                .parse::<Uuid>()
+                .map_err(|_| format!("Invalid referenced section ID: {}", self.section_id))?,
+            block_index: self.block_index,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ReportSectionEdit {
     pub id: Option<String>,
     pub heading: String,
@@ -199,6 +264,9 @@ pub struct ReportExportResult {
     pub exported: bool,
     pub report_id: String,
     pub revision: u64,
+    pub status: ReportExportStatusView,
+    pub attempted_at: String,
+    pub status_persisted: bool,
 }
 
 pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String> {
@@ -267,6 +335,16 @@ pub fn workspace_view(workspace: &ReportWorkspace) -> ReportWorkspaceView {
             .iter()
             .map(resolution_view)
             .collect(),
+        last_agent_revision: workspace.session.last_agent_revision,
+        last_export: workspace
+            .session
+            .last_export
+            .as_ref()
+            .map(|export| ReportExportView {
+                revision: export.revision,
+                status: export.status.into(),
+                attempted_at: export.attempted_at.to_string(),
+            }),
         created_at: workspace.created_at.to_string(),
         updated_at: workspace.updated_at.to_string(),
     }
@@ -362,6 +440,25 @@ fn resolution_view(resolution: &ReportProposalResolution) -> ReportProposalResol
     }
 }
 
+pub fn editor_history_entry(workspace: &ReportWorkspace) -> EditorHistoryEntry {
+    EditorHistoryEntry {
+        report_id: workspace.report_id.to_string(),
+        title: workspace.draft.content.title.clone(),
+        revision: workspace.draft.revision,
+        turn_count: u32::try_from(workspace.session.turns.len()).unwrap_or(u32::MAX),
+        updated_at: workspace.updated_at.to_string(),
+        last_export: workspace
+            .session
+            .last_export
+            .as_ref()
+            .map(|export| ReportExportView {
+                revision: export.revision,
+                status: export.status.into(),
+                attempted_at: export.attempted_at.to_string(),
+            }),
+    }
+}
+
 fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportAuthoringTurnView {
     let mut results: HashMap<&str, (&ReportToolResultStatus, &serde_json::Value)> = HashMap::new();
     for message in &turn.messages {
@@ -421,6 +518,48 @@ fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportA
         }
     }
 
+    let mut context_reads = Vec::new();
+    for message in &turn.messages {
+        for block in &message.content {
+            let ReportProtocolBlock::ToolUse {
+                tool_use_id,
+                name,
+                input,
+            } = block
+            else {
+                continue;
+            };
+            if name != claria_bedrock::report::READ_RECORD_FILE_TOOL {
+                continue;
+            }
+            let Some((status, result)) = results.get(tool_use_id.as_str()) else {
+                continue;
+            };
+            if **status != ReportToolResultStatus::Success {
+                continue;
+            }
+            context_reads.push(ReportContextReadView {
+                filename: input
+                    .get("filename")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("record file")
+                    .to_string(),
+                offset: result
+                    .get("offset")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                returned_characters: result
+                    .get("returned_characters")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                total_characters: result
+                    .get("total_characters")
+                    .and_then(serde_json::Value::as_u64),
+                read_at: message.created_at.to_string(),
+            });
+        }
+    }
+
     ReportAuthoringTurnView {
         id: turn.id.to_string(),
         model_id: turn.model_id.clone(),
@@ -429,6 +568,7 @@ fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportA
         usage_complete: turn.usage_complete,
         converse_calls: turn.converse_calls,
         tool_uses: turn.tool_uses,
+        context_reads,
         created_at: turn.created_at.to_string(),
         completed_at: turn.completed_at.to_string(),
     }

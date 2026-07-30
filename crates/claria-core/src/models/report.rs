@@ -73,6 +73,29 @@ pub struct ReportSession {
     pub turns: Vec<ReportAuthoringTurn>,
     pub pending_proposal: Option<ReportProposal>,
     pub resolutions: Vec<ReportProposalResolution>,
+    /// Revision of the accepted report included in the most recent completed
+    /// assistant turn. A newer draft revision means user edits are queued for
+    /// the assistant's next message.
+    #[serde(default)]
+    pub last_agent_revision: Option<u64>,
+    /// Most recent attempt to export this writing session to Word.
+    #[serde(default)]
+    pub last_export: Option<ReportExport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReportExport {
+    pub revision: u64,
+    pub status: ReportExportStatus,
+    pub attempted_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportExportStatus {
+    Exported,
+    Canceled,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -384,6 +407,24 @@ impl ReportSession {
         }
         for turn in &self.turns {
             validate_turn(turn)?;
+        }
+        if self
+            .last_agent_revision
+            .is_some_and(|revision| revision > workspace.draft.revision)
+        {
+            return Err(invalid(
+                "last agent revision is newer than the accepted report",
+            ));
+        }
+        if let Some(export) = &self.last_export {
+            if export.revision > workspace.draft.revision {
+                return Err(invalid(
+                    "last export revision is newer than the accepted report",
+                ));
+            }
+            if export.attempted_at < workspace.created_at {
+                return Err(invalid("last export predates the writing session"));
+            }
         }
         if let Some(proposal) = &self.pending_proposal {
             validate_proposal(proposal, Some(workspace))?;

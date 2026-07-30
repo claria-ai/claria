@@ -84,6 +84,7 @@ fn failed_tool_activity_uses_safe_error_copy_without_success_summary() {
         .expect("valid turn");
 
     let view = workspace_view(&workspace);
+    assert!(view.turns[0].context_reads.is_empty());
     let activities: Vec<_> = view.turns[0]
         .timeline
         .iter()
@@ -99,4 +100,75 @@ fn failed_tool_activity_uses_safe_error_copy_without_success_summary() {
     assert!(matches!(activities[0].1, ReportToolActivityStatus::Failed));
     assert_eq!(activities[1].0, "The proposal was invalid.");
     assert!(!activities[1].0.contains("Staged"));
+}
+
+#[test]
+fn successful_record_reads_are_exposed_as_context_metadata() {
+    let now = "2026-08-01T12:00:00Z".parse().expect("timestamp");
+    let mut workspace = ReportWorkspace::new(Uuid::new_v4(), now);
+    workspace
+        .push_turn(ReportAuthoringTurn {
+            id: Uuid::new_v4(),
+            model_id: "us.anthropic.claude-sonnet-test".to_string(),
+            messages: vec![
+                ReportProtocolMessage {
+                    role: ReportProtocolRole::User,
+                    content: vec![ReportProtocolBlock::Text {
+                        text: "Read the intake".to_string(),
+                    }],
+                    created_at: now,
+                },
+                ReportProtocolMessage {
+                    role: ReportProtocolRole::Assistant,
+                    content: vec![ReportProtocolBlock::ToolUse {
+                        tool_use_id: "read".to_string(),
+                        name: "read_record_file".to_string(),
+                        input: serde_json::json!({"filename": "intake.txt"}),
+                    }],
+                    created_at: now,
+                },
+                ReportProtocolMessage {
+                    role: ReportProtocolRole::User,
+                    content: vec![ReportProtocolBlock::ToolResult {
+                        tool_use_id: "read".to_string(),
+                        status: ReportToolResultStatus::Success,
+                        content: serde_json::json!({
+                            "offset": 12,
+                            "returned_characters": 34,
+                            "total_characters": 90
+                        }),
+                    }],
+                    created_at: now,
+                },
+                ReportProtocolMessage {
+                    role: ReportProtocolRole::Assistant,
+                    content: vec![ReportProtocolBlock::Text {
+                        text: "Done".to_string(),
+                    }],
+                    created_at: now,
+                },
+            ],
+            usage: TurnUsage {
+                model_id: "us.anthropic.claude-sonnet-test".to_string(),
+                input_tokens: 10,
+                output_tokens: 2,
+                cache_read_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                cost_usd: 0.0,
+                pricing_version: 0,
+            },
+            usage_complete: true,
+            converse_calls: 2,
+            tool_uses: 1,
+            created_at: now,
+            completed_at: now,
+        })
+        .expect("valid turn");
+
+    let view = workspace_view(&workspace);
+    let read = &view.turns[0].context_reads[0];
+    assert_eq!(read.filename, "intake.txt");
+    assert_eq!(read.offset, 12);
+    assert_eq!(read.returned_characters, 34);
+    assert_eq!(read.total_characters, Some(90));
 }

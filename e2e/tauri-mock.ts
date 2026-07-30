@@ -59,6 +59,8 @@ export function buildInitScript(
         turns: [],
         pending_proposal: null,
         resolutions: [],
+        last_agent_revision: null,
+        last_export: null,
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-01T00:00:00Z",
       };
@@ -287,7 +289,19 @@ export function buildInitScript(
             };
           }
 
-          // ── Tool-assisted report authoring ───────────────────────────
+          // ── Writing assistant ────────────────────────────────────────
+          if (cmd === "list_editor_history") {
+            return reportWorkspace.turns.length === 0 && reportWorkspace.draft.revision === 0
+              ? []
+              : [{
+                  report_id: reportWorkspace.report_id,
+                  title: reportWorkspace.draft.content.title,
+                  revision: reportWorkspace.draft.revision,
+                  turn_count: reportWorkspace.turns.length,
+                  updated_at: reportWorkspace.updated_at,
+                  last_export: reportWorkspace.last_export,
+                }];
+          }
           if (cmd === "load_report_workspace") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
@@ -347,9 +361,17 @@ export function buildInitScript(
                 usage_complete: true,
                 converse_calls: 3,
                 tool_uses: 3,
+                context_reads: [{
+                  filename: "intake-parent-interview.txt",
+                  offset: 0,
+                  returned_characters: 3200,
+                  total_characters: 3200,
+                  read_at: new Date().toISOString(),
+                }],
                 created_at: new Date().toISOString(),
                 completed_at: new Date().toISOString(),
               }],
+              last_agent_revision: reportWorkspace.draft.revision,
               pending_proposal: {
                 id: "proposal-1",
                 report_id: reportWorkspace.report_id,
@@ -393,6 +415,7 @@ export function buildInitScript(
                   last_applied_proposal_id: proposal.id,
                 },
                 pending_proposal: null,
+                last_agent_revision: reportWorkspace.draft.revision + 1,
               };
             } else {
               reportWorkspace = { ...reportWorkspace, pending_proposal: null };
@@ -403,7 +426,23 @@ export function buildInitScript(
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
             if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
-            return { exported: true, report_id: args.reportId, revision: args.expectedRevision };
+            const attemptedAt = new Date().toISOString();
+            reportWorkspace = {
+              ...reportWorkspace,
+              last_export: {
+                revision: args.expectedRevision,
+                status: "exported",
+                attempted_at: attemptedAt,
+              },
+            };
+            return {
+              exported: true,
+              report_id: args.reportId,
+              revision: args.expectedRevision,
+              status: "exported",
+              attempted_at: attemptedAt,
+              status_persisted: true,
+            };
           }
 
           // ── Update check ─────────────────────────────────────────────

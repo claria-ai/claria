@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eyre::Result;
-use tauri::menu::{Menu, MenuItem, Submenu};
+use tauri::menu::{HELP_SUBMENU_ID, Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::webview::WebviewWindowBuilder;
 use tauri::Manager;
 use tauri_specta::{collect_commands, Builder};
@@ -71,6 +71,7 @@ fn main() -> Result<()> {
             commands::create_client,
             commands::delete_client,
             commands::load_report_workspace,
+            commands::list_editor_history,
             commands::save_report_draft,
             commands::send_report_message,
             commands::resolve_report_proposal,
@@ -150,12 +151,17 @@ fn main() -> Result<()> {
         .setup(move |app| {
             builder.mount_events(app);
 
-            // Build native Help menu with "Claria Console" item.
+            // Keep Tauri's native application menu—including the standard
+            // Edit actions that make Cmd/Ctrl+C/V/X/A work in the webview—and
+            // add Claria Console to its Help submenu. Replacing the whole menu
+            // with Help alone silently disables normal clipboard shortcuts.
             let console_item =
                 MenuItem::with_id(app, "console", "Claria Console", true, None::<&str>)?;
-            let help_menu =
-                Submenu::with_items(app, "Help", true, &[&console_item])?;
-            let menu = Menu::with_items(app, &[&help_menu])?;
+            let menu = Menu::default(app.handle())?;
+            if let Some(MenuItemKind::Submenu(help_menu)) = menu.get(HELP_SUBMENU_ID) {
+                help_menu.append(&PredefinedMenuItem::separator(app)?)?;
+                help_menu.append(&console_item)?;
+            }
             app.set_menu(menu)?;
 
             app.on_menu_event(move |app, event| {

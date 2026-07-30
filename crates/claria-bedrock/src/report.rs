@@ -1,4 +1,4 @@
-//! Bedrock Converse integration for opt-in, tool-assisted report authoring.
+//! Bedrock Converse integration for the opt-in Writing workflow.
 //!
 //! This module is deliberately separate from `chat`: every request carries a
 //! real Bedrock tool configuration, and every response preserves tool-use

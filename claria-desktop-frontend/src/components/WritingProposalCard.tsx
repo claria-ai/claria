@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type {
   ReportBlockView,
   ReportContentView,
@@ -6,7 +8,7 @@ import type {
   ReportSectionView,
 } from "../lib/tauri";
 
-export default function ReportProposalCard({
+export default function WritingProposalCard({
   proposal,
   accepted,
   busy,
@@ -30,7 +32,7 @@ export default function ReportProposalCard({
           Proposed by Claude
         </p>
         <h4 className="text-sm font-semibold text-gray-900 mt-1">
-          {proposal.summary}
+          <InlineMarkdown text={proposal.summary} />
         </h4>
         <p className="text-xs text-gray-500 mt-1">
           Based on accepted revision {proposal.base_revision}. All changes are
@@ -178,7 +180,9 @@ function Comparison({
 function ContentPreview({ content }: { content: ReportContentView }) {
   return (
     <article className="border border-gray-200 rounded p-2 bg-white space-y-2">
-      <p className="text-xs font-bold text-gray-900">{content.title}</p>
+      <p className="text-xs font-bold text-gray-900">
+        <InlineMarkdown text={content.title} />
+      </p>
       {content.sections.length === 0 ? (
         <p className="text-xs italic text-gray-400">No sections</p>
       ) : (
@@ -193,7 +197,9 @@ function ContentPreview({ content }: { content: ReportContentView }) {
 function SectionPreview({ section }: { section: ReportSectionView }) {
   return (
     <div className="border border-gray-200 rounded p-2 bg-white">
-      <p className="text-xs font-semibold text-gray-900">{section.heading}</p>
+      <p className="text-xs font-semibold text-gray-900">
+        <InlineMarkdown text={section.heading} />
+      </p>
       <Blocks blocks={section.blocks} />
     </div>
   );
@@ -205,13 +211,15 @@ function Blocks({ blocks }: { blocks: ReportBlockView[] }) {
       {blocks.length === 0 && <p className="italic text-gray-400">No blocks</p>}
       {blocks.map((block, index) =>
         block.kind === "paragraph" ? (
-          <p key={index} className="whitespace-pre-wrap">
-            {block.text}
-          </p>
+          <div key={index} className="prose prose-xs max-w-none prose-p:my-1">
+            <Markdown remarkPlugins={[remarkGfm]}>{block.text}</Markdown>
+          </div>
         ) : (
           <ul key={index} className="list-disc pl-4">
             {block.items.map((item, itemIndex) => (
-              <li key={itemIndex}>{item}</li>
+              <li key={itemIndex}>
+                <InlineMarkdown text={item} />
+              </li>
             ))}
           </ul>
         )
@@ -222,8 +230,19 @@ function Blocks({ blocks }: { blocks: ReportBlockView[] }) {
 
 function PlainText({ text }: { text: string }) {
   return (
-    <p className="text-xs text-gray-700 whitespace-pre-wrap border border-gray-200 rounded p-2 bg-white">
+    <div className="text-xs text-gray-700 border border-gray-200 rounded p-2 bg-white prose prose-xs max-w-none prose-p:my-1">
+      <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+    </div>
+  );
+}
+
+function InlineMarkdown({ text }: { text: string }) {
+  return (
+    <Markdown
+      remarkPlugins={[remarkGfm]}
+      components={{ p: ({ children }) => <>{children}</> }}
+    >
       {text}
-    </p>
+    </Markdown>
   );
 }

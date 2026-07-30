@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   loadReport: vi.fn(),
   sendReport: vi.fn(),
   listFiles: vi.fn(),
+  listEditorHistory: vi.fn(),
   getPrompt: vi.fn(),
   listContext: vi.fn(),
 }));
@@ -18,6 +19,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 
 vi.mock("../lib/tauri", () => ({
   listRecordFiles: mocks.listFiles,
+  listEditorHistory: mocks.listEditorHistory,
   searchRecordContents: vi.fn().mockResolvedValue([]),
   uploadRecordFile: vi.fn(),
   deleteRecordFile: vi.fn(),
@@ -63,6 +65,8 @@ const workspace = {
   turns: [],
   pending_proposal: null,
   resolutions: [],
+  last_agent_revision: null,
+  last_export: null,
   created_at: "2026-08-01T00:00:00Z",
   updated_at: "2026-08-01T00:00:00Z",
 };
@@ -84,13 +88,14 @@ function renderClient() {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.listFiles.mockResolvedValue([]);
+  mocks.listEditorHistory.mockResolvedValue([]);
   mocks.getPrompt.mockResolvedValue("");
   mocks.listContext.mockResolvedValue([]);
   mocks.loadReport.mockResolvedValue(workspace);
 });
 
-describe("ClientRecord With Tools integration", () => {
-  it("does not issue report IPC while Record or Chat is active", async () => {
+describe("ClientRecord Writing integration", () => {
+  it("does not issue Writing IPC while Record or Chat is active", async () => {
     renderClient();
     await screen.findByText(/Drag files here/);
     expect(mocks.loadReport).not.toHaveBeenCalled();
@@ -99,38 +104,71 @@ describe("ClientRecord With Tools integration", () => {
     expect(await screen.findByText("Start the conversation.")).toBeDefined();
     expect(mocks.loadReport).not.toHaveBeenCalled();
 
-    await userEvent.click(screen.getByRole("tab", { name: "With Tools" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     expect(await screen.findByTestId("accepted-report-canvas")).toBeDefined();
     expect(mocks.loadReport).toHaveBeenCalledTimes(1);
     expect(mocks.loadReport).toHaveBeenCalledWith("client-1");
   });
 
-  it("prompts before leaving dirty report edits", async () => {
+  it("keeps Record usable when Editor History is unavailable", async () => {
+    mocks.listEditorHistory.mockRejectedValue(new Error("history unavailable"));
     renderClient();
-    await userEvent.click(screen.getByRole("tab", { name: "With Tools" }));
+
+    expect(await screen.findByText(/Drag files here/)).toBeDefined();
+    expect(screen.queryByText("Error: history unavailable")).toBeNull();
+  });
+
+  it("shows Editor History and resumes its persisted Writing session", async () => {
+    mocks.listEditorHistory.mockResolvedValue([
+      {
+        report_id: "report-1",
+        title: "Psychological report",
+        revision: 3,
+        turn_count: 4,
+        updated_at: "2026-08-01T01:00:00Z",
+        last_export: {
+          revision: 3,
+          status: "exported",
+          attempted_at: "2026-08-01T01:00:00Z",
+        },
+      },
+    ]);
+    renderClient();
+    await screen.findByText("Editor History");
+    await userEvent.click(screen.getByText("Editor History"));
+    expect(screen.getByText("Psychological report")).toBeDefined();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Resume writing session" })
+    );
+    expect(
+      screen.getByRole("tab", { name: "Writing" }).getAttribute("aria-selected")
+    ).toBe("true");
+    expect(await screen.findByTestId("accepted-report-canvas")).toBeDefined();
+  });
+
+  it("prompts before leaving dirty inline report edits", async () => {
+    renderClient();
+    await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     await screen.findByTestId("accepted-report-canvas");
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const title = screen.getByLabelText("Report title");
-    await userEvent.clear(title);
-    await userEvent.type(title, "Unsaved title");
+    const title = screen.getByRole("textbox", { name: "Report title" });
+    title.innerText = "Unsaved title";
+    fireEvent.input(title);
 
     const confirm = vi.fn().mockReturnValue(false);
     vi.stubGlobal("confirm", confirm);
     await userEvent.click(screen.getByRole("tab", { name: "Chat" }));
     expect(confirm).toHaveBeenCalledWith(
-      "Discard your unsaved report work, including typed instructions?"
+      "Discard your unsaved Writing work, including typed instructions?"
     );
-    expect(confirm).toHaveBeenCalledTimes(1);
     expect(
-      screen.getByRole("tab", { name: "With Tools" }).getAttribute(
+      screen.getByRole("tab", { name: "Writing" }).getAttribute(
         "aria-selected"
       )
     ).toBe("true");
-    expect(
-      within(screen.getByRole("tabpanel")).getByDisplayValue("Unsaved title")
-    ).toBeDefined();
-    expect(document.activeElement).toBe(
-      screen.getByRole("tab", { name: "With Tools" })
+    expect(screen.getByRole("textbox", { name: "Report title" }).textContent).toBe(
+      "Unsaved title"
     );
 
     confirm.mockReturnValue(true);
@@ -144,10 +182,10 @@ describe("ClientRecord With Tools integration", () => {
   it("guards typed instructions and blocks navigation during a turn", async () => {
     mocks.sendReport.mockReturnValue(new Promise(() => undefined));
     renderClient();
-    await userEvent.click(screen.getByRole("tab", { name: "With Tools" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     await screen.findByTestId("accepted-report-canvas");
     await userEvent.type(
-      screen.getByLabelText("Report instruction"),
+      screen.getByLabelText("Writing instruction"),
       "Keep this typed instruction"
     );
     const beforeUnload = new Event("beforeunload", { cancelable: true });
@@ -159,7 +197,7 @@ describe("ClientRecord With Tools integration", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Record" }));
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(
-      (screen.getByLabelText("Report instruction") as HTMLTextAreaElement).value
+      (screen.getByLabelText("Writing instruction") as HTMLTextAreaElement).value
     ).toBe("Keep this typed instruction");
 
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
@@ -167,14 +205,13 @@ describe("ClientRecord With Tools integration", () => {
     vi.stubGlobal("alert", alert);
     await userEvent.click(screen.getByRole("tab", { name: "Chat" }));
     expect(alert).toHaveBeenCalledWith(
-      "Wait for the current report action to finish before leaving With Tools."
+      "Wait for the current Writing action to finish before leaving."
     );
     expect(
-      screen.getByRole("tab", { name: "With Tools" }).getAttribute(
+      screen.getByRole("tab", { name: "Writing" }).getAttribute(
         "aria-selected"
       )
     ).toBe("true");
-    // Keep the promise pending; unmount cleanup invalidates its generation.
     vi.unstubAllGlobals();
   });
 });

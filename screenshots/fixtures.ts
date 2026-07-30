@@ -339,6 +339,15 @@ export const fixtures: Record<string, unknown> = {
         usage_complete: true,
         converse_calls: 3,
         tool_uses: 3,
+        context_reads: [
+          {
+            filename: "teacher-observation.txt",
+            offset: 0,
+            returned_characters: 2800,
+            total_characters: 2800,
+            read_at: "2026-03-15T15:08:02Z",
+          },
+        ],
         created_at: "2026-03-15T15:08:00Z",
         completed_at: "2026-03-15T15:08:05Z",
       },
@@ -422,13 +431,36 @@ export const fixtures: Record<string, unknown> = {
       created_at: "2026-03-15T15:08:04Z",
     },
     resolutions: [],
+    last_agent_revision: 3,
+    last_export: {
+      revision: 2,
+      status: "exported",
+      attempted_at: "2026-03-14T12:00:00Z",
+    },
     created_at: "2026-03-01T17:30:02Z",
     updated_at: "2026-03-15T15:08:05Z",
   },
+  list_editor_history: [
+    {
+      report_id: "99999999-9999-4999-8999-999999999999",
+      title: "Psychological Evaluation",
+      revision: 3,
+      turn_count: 1,
+      updated_at: "2026-03-15T15:08:05Z",
+      last_export: {
+        revision: 2,
+        status: "exported",
+        attempted_at: "2026-03-14T12:00:00Z",
+      },
+    },
+  ],
   export_report_docx: {
     exported: false,
     report_id: "99999999-9999-4999-8999-999999999999",
     revision: 3,
+    status: "canceled",
+    attempted_at: "2026-03-15T16:00:00Z",
+    status_persisted: true,
   },
 
   list_record_context: [

@@ -57,7 +57,23 @@ fn new_workspace_has_versioned_empty_accepted_draft() {
     assert_eq!(workspace.draft.content.title, "Untitled report");
     assert!(workspace.draft.content.sections.is_empty());
     assert!(workspace.session.pending_proposal.is_none());
+    assert_eq!(workspace.session.last_agent_revision, None);
+    assert_eq!(workspace.session.last_export, None);
     workspace.validate().expect("valid workspace");
+}
+
+#[test]
+fn legacy_workspace_defaults_writing_queue_and_export_status() {
+    let workspace = workspace();
+    let mut value = serde_json::to_value(&workspace).expect("serialize workspace");
+    let session = value["session"].as_object_mut().expect("session object");
+    session.remove("last_agent_revision");
+    session.remove("last_export");
+    let bytes = serde_json::to_vec(&value).expect("legacy bytes");
+
+    let decoded = decode_report_workspace(&bytes).expect("decode legacy workspace");
+    assert_eq!(decoded.session.last_agent_revision, None);
+    assert_eq!(decoded.session.last_export, None);
 }
 
 #[test]

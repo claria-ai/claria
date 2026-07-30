@@ -24,18 +24,18 @@ function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
 }
 
 describe("client workspace tabs", () => {
-  it("keeps Record and Chat identifiers and adds an opt-in With Tools tab", () => {
+  it("keeps Record and Chat identifiers and adds an opt-in Writing tab", () => {
     render(<Harness />);
     expect(document.querySelector('[data-tab="record"]')).not.toBeNull();
     expect(document.querySelector('[data-tab="chat"]')).not.toBeNull();
-    expect(document.querySelector('[data-tab="with-tools"]')).not.toBeNull();
+    expect(document.querySelector('[data-tab="writing"]')).not.toBeNull();
     expect(
       screen.getByRole("tab", { name: "Record" }).getAttribute("aria-selected")
     ).toBe("true");
     expect(screen.getByText("record panel")).toBeDefined();
   });
 
-  it("selects Chat and With Tools without changing their labels", async () => {
+  it("selects Chat and Writing without changing the existing Chat label", async () => {
     render(<Harness />);
     await userEvent.click(screen.getByRole("tab", { name: "Chat" }));
     expect(screen.getByText("chat panel")).toBeDefined();
@@ -43,12 +43,10 @@ describe("client workspace tabs", () => {
       screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")
     ).toBe("true");
 
-    await userEvent.click(screen.getByRole("tab", { name: "With Tools" }));
-    expect(screen.getByText("with_tools panel")).toBeDefined();
+    await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
+    expect(screen.getByText("writing panel")).toBeDefined();
     expect(
-      screen
-        .getByRole("tab", { name: "With Tools" })
-        .getAttribute("aria-selected")
+      screen.getByRole("tab", { name: "Writing" }).getAttribute("aria-selected")
     ).toBe("true");
   });
 
@@ -65,9 +63,9 @@ describe("client workspace tabs", () => {
 
     await userEvent.keyboard("{End}");
     expect(document.activeElement).toBe(
-      screen.getByRole("tab", { name: "With Tools" })
+      screen.getByRole("tab", { name: "Writing" })
     );
-    expect(screen.getByText("with_tools panel")).toBeDefined();
+    expect(screen.getByText("writing panel")).toBeDefined();
 
     await userEvent.keyboard("{Home}");
     expect(document.activeElement).toBe(record);
@@ -75,7 +73,7 @@ describe("client workspace tabs", () => {
 
     await userEvent.keyboard("{ArrowLeft}");
     expect(document.activeElement).toBe(
-      screen.getByRole("tab", { name: "With Tools" })
+      screen.getByRole("tab", { name: "Writing" })
     );
   });
 

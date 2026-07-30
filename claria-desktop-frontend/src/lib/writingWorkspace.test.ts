@@ -6,7 +6,7 @@ import {
   newReportSection,
   reportEditsEqual,
   validateReportEdit,
-} from "./reportWorkspace";
+} from "./writingWorkspace";
 import type { ReportDraftView } from "./tauri";
 
 const draft: ReportDraftView = {

@@ -34,6 +34,34 @@ export function reportEditsEqual(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/** Approximate user-facing count of fields/blocks changed from the saved draft. */
+export function countReportEdits(
+  baseline: ReportDraftEdit,
+  edit: ReportDraftEdit
+): number {
+  let count = baseline.title === edit.title ? 0 : 1;
+  const sectionCount = Math.max(baseline.sections.length, edit.sections.length);
+  for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex += 1) {
+    const before = baseline.sections[sectionIndex];
+    const after = edit.sections[sectionIndex];
+    if (!before || !after) {
+      count += 1;
+      continue;
+    }
+    if (before.id !== after.id || before.heading !== after.heading) count += 1;
+    const blockCount = Math.max(before.blocks.length, after.blocks.length);
+    for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
+      if (
+        JSON.stringify(before.blocks[blockIndex]) !==
+        JSON.stringify(after.blocks[blockIndex])
+      ) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
 export function newReportSection(): ReportSectionEdit {
   return {
     id: null,

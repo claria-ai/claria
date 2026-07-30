@@ -57,7 +57,8 @@ pub enum ProvisionerProgress {
 pub use claria_desktop::{
     records::ClientSummary,
     report_authoring::{
-        ReportDraftEdit, ReportExportResult, ReportProposalDecision, ReportTurnResponse,
+        EditorHistoryEntry, ReportDraftEdit, ReportExportResult, ReportExportStatusView,
+        ReportParagraphReferenceInput, ReportProposalDecision, ReportTurnResponse,
         ReportWorkspaceView,
     },
 };
@@ -1471,7 +1472,7 @@ pub async fn delete_client(
 }
 
 // ---------------------------------------------------------------------------
-// Tool-assisted report authoring — separate opt-in workflow
+// Writing — separate opt-in report workflow
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
@@ -1490,6 +1491,30 @@ pub async fn load_report_workspace(
         .await
         .map_err(|error| error.to_string())?;
     Ok(claria_desktop::report_authoring::workspace_view(&workspace))
+}
+
+/// Return the current persisted writing session for the Record screen's
+/// Editor History folder without creating a new workspace.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_editor_history(
+    state: State<'_, DesktopState>,
+    client_id: String,
+) -> Result<Vec<EditorHistoryEntry>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let workspace = claria_report_authoring::find_report_workspace(&s3, &bucket, client_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(workspace
+        .as_ref()
+        .map(claria_desktop::report_authoring::editor_history_entry)
+        .into_iter()
+        .collect())
 }
 
 #[tauri::command]
@@ -1547,6 +1572,7 @@ pub async fn send_report_message(
     expected_revision: u64,
     model_id: String,
     instruction: String,
+    references: Vec<ReportParagraphReferenceInput>,
 ) -> Result<ReportTurnResponse, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
@@ -1554,6 +1580,10 @@ pub async fn send_report_message(
     let client_id = client_id
         .parse::<uuid::Uuid>()
         .map_err(|error| error.to_string())?;
+    let references = references
+        .into_iter()
+        .map(ReportParagraphReferenceInput::into_domain)
+        .collect::<Result<Vec<_>, _>>()?;
     let result = claria_report_authoring::send_report_message(
         &sdk_config,
         &s3,
@@ -1562,6 +1592,7 @@ pub async fn send_report_message(
         expected_revision,
         &model_id,
         &instruction,
+        &references,
     )
     .await;
 
@@ -1722,17 +1753,37 @@ pub async fn export_report_docx(
     .map_err(|error| error.to_string())?;
     let bytes = claria_docx::render_report(&draft).map_err(|error| error.to_string())?;
     let filename = claria_report_authoring::suggested_docx_filename(&draft.content.title);
-    let selected = rfd::FileDialog::new()
+    // Use the asynchronous dialog implementation. In particular, macOS must
+    // schedule NSSavePanel work on the main thread; opening the synchronous
+    // dialog after async S3 work can otherwise return as canceled repeatedly.
+    let selected = rfd::AsyncFileDialog::new()
+        .set_title("Export report to Word")
         .set_file_name(filename)
         .add_filter("Word documents", &["docx"])
-        .save_file();
-    let Some(mut path) = selected else {
+        .save_file()
+        .await;
+    let Some(selected) = selected else {
+        let attempted_at = jiff::Timestamp::now();
+        let status_persisted = claria_report_authoring::record_report_export(
+            &s3,
+            &bucket,
+            client_id,
+            report_id,
+            draft.revision,
+            claria_core::models::report::ReportExportStatus::Canceled,
+        )
+        .await
+        .is_ok();
         return Ok(ReportExportResult {
             exported: false,
             report_id: report_id.to_string(),
             revision: draft.revision,
+            status: ReportExportStatusView::Canceled,
+            attempted_at: attempted_at.to_string(),
+            status_persisted,
         });
     };
+    let mut path = selected.path().to_path_buf();
     if path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -1741,8 +1792,29 @@ pub async fn export_report_docx(
         path.set_extension("docx");
     }
     // The selected local path is intentionally never logged or audited.
-    claria_desktop::local_export::write_private_atomic(&path, &bytes)
-        .map_err(|error| error.to_string())?;
+    if let Err(error) = claria_desktop::local_export::write_private_atomic(&path, &bytes) {
+        let _ = claria_report_authoring::record_report_export(
+            &s3,
+            &bucket,
+            client_id,
+            report_id,
+            draft.revision,
+            claria_core::models::report::ReportExportStatus::Failed,
+        )
+        .await;
+        return Err(error.to_string());
+    }
+    let attempted_at = jiff::Timestamp::now();
+    let status_persisted = claria_report_authoring::record_report_export(
+        &s3,
+        &bucket,
+        client_id,
+        report_id,
+        draft.revision,
+        claria_core::models::report::ReportExportStatus::Exported,
+    )
+    .await
+    .is_ok();
 
     record_audit(
         &sdk_config,
@@ -1767,6 +1839,9 @@ pub async fn export_report_docx(
         exported: true,
         report_id: report_id.to_string(),
         revision: draft.revision,
+        status: ReportExportStatusView::Exported,
+        attempted_at: attempted_at.to_string(),
+        status_persisted,
     })
 }
 

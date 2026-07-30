@@ -98,17 +98,17 @@ test("client record", async ({ page }) => {
   await page.screenshot({ path: "output/client-record.png", fullPage: true });
 });
 
-test("client with tools", async ({ page }) => {
+test("client writing", async ({ page }) => {
   await page.goto(BASE_URL);
   await page.waitForSelector("[data-page=clients]");
   await page.click("[data-page=clients]");
   await page.waitForSelector("[data-client]");
   await page.click("[data-client]:first-child");
-  await page.waitForSelector("[data-tab=with-tools]");
-  await page.click("[data-tab=with-tools]");
+  await page.waitForSelector("[data-tab=writing]");
+  await page.click("[data-tab=writing]");
   await page.waitForSelector("[data-testid=report-proposal]");
   await page.waitForTimeout(300);
-  await page.screenshot({ path: "output/client-with-tools.png", fullPage: true });
+  await page.screenshot({ path: "output/client-writing.png", fullPage: true });
 });
 
 test("client chat", async ({ page }) => {

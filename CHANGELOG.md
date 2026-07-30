@@ -4,7 +4,15 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
-- Client workspaces have a new opt-in With Tools tab for interactive report writing
+- Client workspaces have a new opt-in Writing tab for interactive report authoring
+- Writing responses and accepted report content render Markdown formatting
+- Reports edit inline without textarea cards, and unsaved edits are saved into the assistant's next message automatically
+- Report paragraphs can be attached to a Writing message from their hover control
+- Writing exposes the accepted report and record excerpts read during the session in a context control
+- Writing and local-export notices can be dismissed
+- The native application menu restores standard copy, cut, paste, and select-all behavior in the desktop webview
+- Word export uses an asynchronous native save dialog, remains retryable after cancellation, and persists its latest status
+- Persisted writing sessions appear under Editor History on the client record
 - The report assistant uses Bedrock Converse tools to list records and read bounded text from the current client
 - Report token budgeting uses foundation model IDs while Converse continues through cross-region inference profiles
 - Record text stays in the active tool loop while persisted activity retains only ranges, hashes, and safe status metadata

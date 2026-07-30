@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript({ content: buildInitScript({ configured: true }) });
 });
 
-test("With Tools is lazy, proposal-based, editable, and exportable", async ({
+test("Writing is lazy, proposal-based, editable, referenceable, and exportable", async ({
   page,
 }) => {
   await page.goto(BASE_URL);
@@ -29,8 +29,8 @@ test("With Tools is lazy, proposal-based, editable, and exportable", async ({
   await expect(page.getByText("Start the conversation.")).toBeVisible();
   expect(await reportCommands()).toEqual([]);
 
-  await page.locator('[data-tab="with-tools"]').click();
-  await expect(page.getByText("Tool-assisted report writing")).toBeVisible();
+  await page.locator('[data-tab="writing"]').click();
+  await expect(page.getByText("Writing assistant")).toBeVisible();
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Untitled report",
   );
@@ -40,7 +40,7 @@ test("With Tools is lazy, proposal-based, editable, and exportable", async ({
   expect(loads.length).toBeGreaterThan(0);
 
   await page
-    .getByLabel("Report instruction")
+    .getByLabel("Writing instruction")
     .fill("Draft an initial report from the intake and teacher records.");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByTestId("report-proposal")).toBeVisible();
@@ -60,26 +60,33 @@ test("With Tools is lazy, proposal-based, editable, and exportable", async ({
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Jane was referred for an evaluation",
   );
+  await expect(page.getByTestId("queued-report-edits")).toHaveCount(0);
+  await page.getByRole("button", { name: /Context/ }).click();
+  await expect(
+    page.getByText("intake-parent-interview.txt", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", {
+    name: "Reference Summary, paragraph 1 in Writing chat",
+  }).click();
+  await expect(page.getByLabel("Referenced report paragraphs")).toContainText(
+    "Summary ¶1",
+  );
 
   // Unsaved canvas edits guard tab navigation.
   await page.getByRole("button", { name: "Edit" }).click();
   await page.getByLabel("Report title").fill("Unsaved local title");
   page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Discard your unsaved report work");
+    expect(dialog.message()).toContain("Discard your unsaved Writing work");
     await dialog.dismiss();
   });
   await page.locator('[data-tab="record"]').click();
-  await expect(page.locator('[data-tab="with-tools"]')).toHaveAttribute(
+  await expect(page.locator('[data-tab="writing"]')).toHaveAttribute(
     "aria-selected",
     "true",
   );
-  await expect(page.getByLabel("Report title")).toHaveValue("Unsaved local title");
+  await expect(page.getByLabel("Report title")).toContainText("Unsaved local title");
 
-  await page.getByRole("button", { name: "Cancel" }).click();
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("may contain PHI");
-    await dialog.accept();
-  });
+  await page.getByRole("button", { name: "Discard" }).click();
   await page.getByRole("button", { name: "Export .docx" }).click();
   await expect(
     page.getByText("Word document exported from revision 1.")

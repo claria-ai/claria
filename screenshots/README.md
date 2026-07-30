@@ -40,7 +40,7 @@ Screenshots are written to `output/` at 2× resolution (Retina):
 - `clients.png` — Client list
 - `client-record.png` — Client record (files tab)
 - `client-chat.png` — Existing text-only client chat with AI response
-- `client-with-tools.png` — Tool-assisted report workspace with a pending proposal
+- `client-writing.png` — Writing workspace with a pending proposal
 - `memo-recording.png` — Voice memo recording in progress
 - `memo-review.png` — Voice memo review modal
 - `aws.png` — AWS resource management

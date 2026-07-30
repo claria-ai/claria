@@ -20,6 +20,7 @@ import type {
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  EditorHistoryEntry,
   FileVersion,
   InfraChatResponse,
   ModelPricing,
@@ -31,6 +32,7 @@ import type {
   RecordFile,
   ReportDraftEdit,
   ReportExportResult,
+  ReportParagraphReferenceInput,
   ReportProposalDecision,
   ReportTurnResponse,
   ReportWorkspaceView,
@@ -67,6 +69,7 @@ export type {
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  EditorHistoryEntry,
   FieldDrift,
   FileVersion,
   InfraChatResponse,
@@ -82,10 +85,14 @@ export type {
   ReportAuthoringTurnView,
   ReportBlockView,
   ReportContentView,
+  ReportContextReadView,
   ReportDraftEdit,
   ReportDraftView,
   ReportExportResult,
+  ReportExportStatusView,
+  ReportExportView,
   ReportOperationView,
+  ReportParagraphReferenceInput,
   ReportProposalDecision,
   ReportProposalResolutionDecision,
   ReportProposalResolutionView,
@@ -378,13 +385,19 @@ export async function deleteClient(clientId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Tool-assisted report wrappers
+// Writing workspace wrappers
 // ---------------------------------------------------------------------------
 
 export async function loadReportWorkspace(
   clientId: string
 ): Promise<ReportWorkspaceView> {
   return unwrap(await commands.loadReportWorkspace(clientId));
+}
+
+export async function listEditorHistory(
+  clientId: string
+): Promise<EditorHistoryEntry[]> {
+  return unwrap(await commands.listEditorHistory(clientId));
 }
 
 export async function saveReportDraft(
@@ -401,14 +414,16 @@ export async function sendReportMessage(
   clientId: string,
   expectedRevision: number,
   modelId: string,
-  instruction: string
+  instruction: string,
+  references: ReportParagraphReferenceInput[] = []
 ): Promise<ReportTurnResponse> {
   return unwrap(
     await commands.sendReportMessage(
       clientId,
       expectedRevision,
       modelId,
-      instruction
+      instruction,
+      references
     )
   );
 }

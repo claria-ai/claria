@@ -373,6 +373,18 @@ async loadReportWorkspace(clientId: string) : Promise<Result<ReportWorkspaceView
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Return the current persisted writing session for the Record screen's
+ * Editor History folder without creating a new workspace.
+ */
+async listEditorHistory(clientId: string) : Promise<Result<EditorHistoryEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_editor_history", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async saveReportDraft(clientId: string, expectedRevision: number, draft: ReportDraftEdit) : Promise<Result<ReportWorkspaceView, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_report_draft", { clientId, expectedRevision, draft }) };
@@ -381,9 +393,9 @@ async saveReportDraft(clientId: string, expectedRevision: number, draft: ReportD
     else return { status: "error", error: e  as any };
 }
 },
-async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string) : Promise<Result<ReportTurnResponse, string>> {
+async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportParagraphReferenceInput[]) : Promise<Result<ReportTurnResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction }) };
+    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction, references }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1131,6 +1143,7 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  * A file that has been deleted (has a delete marker as the latest version).
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
+export type EditorHistoryEntry = { report_id: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExportView | null }
 /**
  * Structured before/after for a single field that doesn't match desired state.
  * 
@@ -1234,13 +1247,17 @@ export type RecordContext = { filename: string; text: string }
  * A file in a client's record (S3 object metadata).
  */
 export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
-export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; created_at: string; completed_at: string }
+export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
 export type ReportBlockView = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] }
 export type ReportContentView = { title: string; sections: ReportSectionView[] }
+export type ReportContextReadView = { filename: string; offset: number; returned_characters: number; total_characters: number | null; read_at: string }
 export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }
 export type ReportDraftView = { revision: number; content: ReportContentView; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
-export type ReportExportResult = { exported: boolean; report_id: string; revision: number }
+export type ReportExportResult = { exported: boolean; report_id: string; revision: number; status: ReportExportStatusView; attempted_at: string; status_persisted: boolean }
+export type ReportExportStatusView = "exported" | "canceled" | "failed"
+export type ReportExportView = { revision: number; status: ReportExportStatusView; attempted_at: string }
 export type ReportOperationView = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSectionView } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlockView[] } | { kind: "remove_section"; section_id: string }
+export type ReportParagraphReferenceInput = { section_id: string; block_index: number }
 export type ReportProposalDecision = "accept" | "reject"
 export type ReportProposalResolutionDecision = "accepted" | "rejected"
 export type ReportProposalResolutionView = { proposal_id: string; decision: ReportProposalResolutionDecision; resulting_revision: number; resolved_at: string }
@@ -1251,7 +1268,7 @@ export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
-export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; draft: ReportDraftView; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolutionView[]; created_at: string; updated_at: string }
+export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; draft: ReportDraftView; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolutionView[]; last_agent_revision: number | null; last_export: ReportExportView | null; created_at: string; updated_at: string }
 /**
  * Every resource in the system is declared as a `ResourceSpec`.
  * 

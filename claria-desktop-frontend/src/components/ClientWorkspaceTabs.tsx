@@ -1,7 +1,7 @@
 import { useRef, type KeyboardEvent, type ReactNode } from "react";
 import { BackButton } from "./icons";
 
-export type ClientWorkspaceTab = "record" | "chat" | "with_tools";
+export type ClientWorkspaceTab = "record" | "chat" | "writing";
 
 const tabs: Array<{
   id: ClientWorkspaceTab;
@@ -10,7 +10,7 @@ const tabs: Array<{
 }> = [
   { id: "record", label: "Record", dataTab: "record" },
   { id: "chat", label: "Chat", dataTab: "chat" },
-  { id: "with_tools", label: "With Tools", dataTab: "with-tools" },
+  { id: "writing", label: "Writing", dataTab: "writing" },
 ];
 
 export default function ClientWorkspaceTabs({
