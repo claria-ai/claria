@@ -11,6 +11,8 @@ All notable changes to Claria are documented here.
 - Writing tool loops accept empty companion text and transient Bedrock reasoning blocks without persisting private reasoning
 - Writing falls back to the active Haiku tokenizer when a newly launched selected model does not support CountTokens
 - Report paragraphs can be attached to a Writing message from their hover control
+- Writing proposals show only net title, section, and changed-block differences instead of repeating the complete report
+- Tool activity rows expand into collapsed-by-default raw LLM invocation and correlated-result JSON
 - Writing exposes the accepted report and record excerpts read during the session in a context control
 - Writing and local-export notices can be dismissed
 - The native application menu restores standard copy, cut, paste, and select-all behavior in the desktop webview

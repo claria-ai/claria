@@ -45,6 +45,21 @@ export function buildInitScript(
       window.__REPORT_COMMANDS__ = [];
       window.__REPORT_INVOCATIONS__ = [];
       window.__CHAT_COMMANDS__ = [];
+      const toolActivity = (name, toolUseId, summary, input, result) => ({
+        kind: "tool_activity",
+        name,
+        summary,
+        status: "succeeded",
+        invocation_json: JSON.stringify({ toolUse: { toolUseId, name, input } }, null, 2),
+        result_json: JSON.stringify({
+          toolResult: {
+            toolUseId,
+            status: "success",
+            content: [{ json: result }],
+          },
+        }, null, 2),
+        created_at: new Date().toISOString(),
+      });
       let reportWorkspace = {
         schema_version: 1,
         report_id: "99999999-9999-4999-8999-999999999999",
@@ -352,9 +367,9 @@ export function buildInitScript(
                 model_id: args.modelId,
                 timeline: [
                   { kind: "message", role: "user", text: args.instruction, created_at: new Date().toISOString() },
-                  { kind: "tool_activity", name: "list_record_files", summary: "Listed 3 record files", status: "succeeded", created_at: new Date().toISOString() },
-                  { kind: "tool_activity", name: "read_record_file", summary: "Read intake-parent-interview.txt, characters 0–3200", status: "succeeded", created_at: new Date().toISOString() },
-                  { kind: "tool_activity", name: "propose_report_changes", summary: "Staged report changes for approval", status: "succeeded", created_at: new Date().toISOString() },
+                  toolActivity("list_record_files", "list-1", "Listed 3 record files", {}, { file_count: 3, truncated: false }),
+                  toolActivity("read_record_file", "read-1", "Read intake-parent-interview.txt, characters 0–3200", { filename: "intake-parent-interview.txt", offset: 0, limit: 8000 }, { filename: "intake-parent-interview.txt", offset: 0, returned_characters: 3200, total_characters: 3200, content_retained: false }),
+                  toolActivity("propose_report_changes", "proposal-1", "Staged report changes for approval", { summary: "Create an initial evaluation report", operations: [{ kind: "set_title", title: proposedContent.title }, { kind: "add_section", position: 0, heading: proposedContent.sections[0].heading, blocks: proposedContent.sections[0].blocks }] }, { status: "pending_user_acceptance", proposal_id: "proposal-1", base_revision: reportWorkspace.draft.revision }),
                   { kind: "message", role: "assistant", text: "I staged a proposal for your review.", created_at: new Date().toISOString() },
                 ],
                 usage: { model_id: args.modelId, input_tokens: 1240, output_tokens: 220, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cost_usd: 0.00702, pricing_version: 4 },

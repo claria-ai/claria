@@ -113,7 +113,13 @@ function workspace({
           operations: [{ kind: "set_title", title: "Proposed report title" }],
           proposed_content: {
             title: "Proposed report title",
-            sections: [],
+            sections: [
+              {
+                id: SECTION_ID,
+                heading: "Findings",
+                blocks: [{ kind: "paragraph", text: paragraph }],
+              },
+            ],
           },
           created_at: "2026-08-01T01:00:00Z",
         }
@@ -228,6 +234,57 @@ describe("Writing", () => {
     ).toBe(true);
   });
 
+  it("shows only the changed paragraph instead of repeating the complete report", async () => {
+    const value = workspace({ pending: true });
+    const unchangedOpening = { kind: "paragraph" as const, text: "Unchanged opening" };
+    const unchangedClosing = { kind: "paragraph" as const, text: "Unchanged closing" };
+    value.draft.content.sections[0].blocks = [
+      unchangedOpening,
+      { kind: "paragraph", text: "Old focused paragraph" },
+      unchangedClosing,
+    ];
+    value.pending_proposal = {
+      ...value.pending_proposal!,
+      summary: "Revise one paragraph",
+      operations: [
+        {
+          kind: "replace_section",
+          section_id: SECTION_ID,
+          heading: "Findings",
+          blocks: [
+            unchangedOpening,
+            { kind: "paragraph", text: "New focused paragraph" },
+            unchangedClosing,
+          ],
+        },
+      ],
+      proposed_content: {
+        title: value.draft.content.title,
+        sections: [
+          {
+            id: SECTION_ID,
+            heading: "Findings",
+            blocks: [
+              unchangedOpening,
+              { kind: "paragraph", text: "New focused paragraph" },
+              unchangedClosing,
+            ],
+          },
+        ],
+      },
+    };
+    mocks.load.mockResolvedValue(value);
+    renderWriting();
+
+    const proposal = within(await screen.findByTestId("report-proposal"));
+    expect(proposal.queryByText("Complete accepted vs final report")).toBeNull();
+    expect(proposal.getByText("Change paragraph 2")).toBeDefined();
+    expect(proposal.getByText("Old focused paragraph")).toBeDefined();
+    expect(proposal.getByText("New focused paragraph")).toBeDefined();
+    expect(proposal.queryByText("Unchanged opening")).toBeNull();
+    expect(proposal.queryByText("Unchanged closing")).toBeNull();
+  });
+
   it("uses transparent inline editing and saves edits before the next message", async () => {
     const saved = workspace({ title: "Edited directly", revision: 1 });
     mocks.save.mockResolvedValue(saved);
@@ -304,6 +361,50 @@ describe("Writing", () => {
     expect(screen.getByText(/Complete accepted report · revision 0/)).toBeDefined();
     expect(screen.getByText("intake.txt")).toBeDefined();
     expect(screen.getByText(/chars 0–120/)).toBeDefined();
+  });
+
+  it("keeps raw LLM tool invocations nerdy and collapsed by default", async () => {
+    const value = workspace({ assistantMarkdown: "Done" });
+    value.turns[0].timeline.unshift({
+      kind: "tool_activity",
+      name: "read_record_file",
+      summary: "Read intake.txt, characters 0–120",
+      status: "succeeded",
+      invocation_json: JSON.stringify(
+        {
+          toolUse: {
+            toolUseId: "read-1",
+            name: "read_record_file",
+            input: { filename: "intake.txt", offset: 0, limit: 8000 },
+          },
+        },
+        null,
+        2
+      ),
+      result_json: JSON.stringify(
+        {
+          toolResult: {
+            toolUseId: "read-1",
+            status: "success",
+            content: [{ json: { returned_characters: 120 } }],
+          },
+        },
+        null,
+        2
+      ),
+      created_at: "2026-08-01T00:01:00Z",
+    });
+    mocks.load.mockResolvedValue(value);
+    renderWriting();
+
+    const summary = await screen.findByText("Read intake.txt, characters 0–120");
+    const details = summary.closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    await userEvent.click(details.querySelector("summary")!);
+    expect(details.open).toBe(true);
+    expect(within(details).getByText("Raw LLM invocation")).toBeDefined();
+    expect(details.textContent).toContain('"filename": "intake.txt"');
+    expect(details.textContent).toContain("Correlated tool result");
   });
 
   it("lets users persistently hide both explanatory notices", async () => {

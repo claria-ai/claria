@@ -304,6 +304,8 @@ export const fixtures: Record<string, unknown> = {
             name: "list_record_files",
             summary: "Listed 4 record files",
             status: "succeeded",
+            invocation_json: JSON.stringify({ toolUse: { toolUseId: "list-1", name: "list_record_files", input: {} } }, null, 2),
+            result_json: JSON.stringify({ toolResult: { toolUseId: "list-1", status: "success", content: [{ json: { file_count: 4, truncated: false } }] } }, null, 2),
             created_at: "2026-03-15T15:08:01Z",
           },
           {
@@ -311,6 +313,8 @@ export const fixtures: Record<string, unknown> = {
             name: "read_record_file",
             summary: "Read teacher-observation.txt, characters 0–2800",
             status: "succeeded",
+            invocation_json: JSON.stringify({ toolUse: { toolUseId: "read-1", name: "read_record_file", input: { filename: "teacher-observation.txt", offset: 0, limit: 8000 } } }, null, 2),
+            result_json: JSON.stringify({ toolResult: { toolUseId: "read-1", status: "success", content: [{ json: { filename: "teacher-observation.txt", offset: 0, returned_characters: 2800, total_characters: 2800, content_retained: false } }] } }, null, 2),
             created_at: "2026-03-15T15:08:02Z",
           },
           {
@@ -318,6 +322,8 @@ export const fixtures: Record<string, unknown> = {
             name: "propose_report_changes",
             summary: "Staged report changes for approval",
             status: "succeeded",
+            invocation_json: JSON.stringify({ toolUse: { toolUseId: "proposal-1", name: "propose_report_changes", input: { summary: "Add behavioral findings", operations: [{ kind: "add_section", position: 2, heading: "Behavioral Findings", blocks: [{ kind: "paragraph", text: "Across informants, Jane demonstrates difficulty sustaining attention." }] }] } } }, null, 2),
+            result_json: JSON.stringify({ toolResult: { toolUseId: "proposal-1", status: "success", content: [{ json: { status: "pending_user_acceptance", proposal_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" } }] } }, null, 2),
             created_at: "2026-03-15T15:08:04Z",
           },
           {

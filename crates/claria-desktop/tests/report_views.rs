@@ -85,6 +85,27 @@ fn failed_tool_activity_uses_safe_error_copy_without_success_summary() {
 
     let view = workspace_view(&workspace);
     assert!(view.turns[0].context_reads.is_empty());
+    let raw_read = view.turns[0]
+        .timeline
+        .iter()
+        .find_map(|item| match item {
+            ReportTimelineItemView::ToolActivity {
+                name,
+                invocation_json,
+                result_json,
+                ..
+            } if name == "read_record_file" => Some((invocation_json, result_json.as_deref())),
+            _ => None,
+        })
+        .expect("raw read invocation");
+    assert!(raw_read.0.contains("record.txt"));
+    assert!(raw_read.0.contains("toolUseId"));
+    assert!(
+        raw_read
+            .1
+            .expect("raw result")
+            .contains("record_read_failed")
+    );
     let activities: Vec<_> = view.turns[0]
         .timeline
         .iter()

@@ -133,6 +133,12 @@ pub enum ReportTimelineItemView {
         name: String,
         summary: String,
         status: ReportToolActivityStatus,
+        /// Pretty-printed Bedrock toolUse block exactly as reconstructed from
+        /// the model response. Intended for the collapsed nerd view.
+        invocation_json: String,
+        /// Pretty-printed correlated toolResult block. Record excerpts remain
+        /// absent because persisted tool results are sanitized upstream.
+        result_json: Option<String>,
         created_at: String,
     },
 }
@@ -501,6 +507,25 @@ fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportA
                         Some(ReportToolResultStatus::Error) => ReportToolActivityStatus::Failed,
                         None => ReportToolActivityStatus::Requested,
                     };
+                    let invocation_json = pretty_json(&serde_json::json!({
+                        "toolUse": {
+                            "toolUseId": tool_use_id,
+                            "name": name,
+                            "input": input
+                        }
+                    }));
+                    let result_json = result.map(|(result_status, content)| {
+                        pretty_json(&serde_json::json!({
+                            "toolResult": {
+                                "toolUseId": tool_use_id,
+                                "status": match result_status {
+                                    ReportToolResultStatus::Success => "success",
+                                    ReportToolResultStatus::Error => "error",
+                                },
+                                "content": [{"json": content}]
+                            }
+                        }))
+                    });
                     timeline.push(ReportTimelineItemView::ToolActivity {
                         name: name.clone(),
                         summary: tool_activity_summary(
@@ -510,6 +535,8 @@ fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportA
                             status,
                         ),
                         status,
+                        invocation_json,
+                        result_json,
                         created_at: message.created_at.to_string(),
                     });
                 }
@@ -574,6 +601,10 @@ fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportA
         created_at: turn.created_at.to_string(),
         completed_at: turn.completed_at.to_string(),
     }
+}
+
+fn pretty_json(value: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
 fn tool_activity_summary(

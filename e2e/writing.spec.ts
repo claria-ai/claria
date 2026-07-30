@@ -44,7 +44,22 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
     .fill("Draft an initial report from the intake and teacher records.");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByTestId("report-proposal")).toBeVisible();
+  await expect(page.getByText("Complete accepted vs final report")).toHaveCount(0);
   await expect(page.getByText("Read intake-parent-interview.txt, characters 0–3200")).toBeVisible();
+  const rawReadTool = page.locator("details").filter({
+    hasText: "Read intake-parent-interview.txt, characters 0–3200",
+  });
+  await expect(rawReadTool).not.toHaveAttribute("open", "");
+  await rawReadTool.locator("summary").click();
+  await expect(rawReadTool).toHaveAttribute("open", "");
+  await expect(rawReadTool).toContainText('"filename": "intake-parent-interview.txt"');
+  const rawProposalTool = page.locator("details").filter({
+    hasText: "Staged report changes for approval",
+  });
+  await expect(rawProposalTool).not.toHaveAttribute("open", "");
+  await rawProposalTool.locator("summary").click();
+  await expect(rawProposalTool).toContainText('"name": "propose_report_changes"');
+  await expect(rawProposalTool).toContainText('"operations"');
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Untitled report",
   );

@@ -35,89 +35,15 @@ export default function WritingProposalCard({
           <InlineMarkdown text={proposal.summary} />
         </h4>
         <p className="text-xs text-gray-500 mt-1">
-          Based on accepted revision {proposal.base_revision}. All changes are
-          applied together only after approval.
+          Based on accepted revision {proposal.base_revision}. Only fields that
+          would actually change are shown below.
         </p>
       </div>
 
-      <Change label="Complete accepted vs final report">
-        <Comparison
-          current={<ContentPreview content={accepted} />}
-          proposed={
-            <div data-testid="proposal-final-candidate">
-              <ContentPreview content={proposal.proposed_content} />
-            </div>
-          }
-        />
-      </Change>
-
-      <div className="space-y-3">
-        {proposal.operations.map((operation, index) => {
-          if (operation.kind === "set_title") {
-            return (
-              <Change key={index} label="Change title">
-                <Comparison
-                  current={<PlainText text={accepted.title} />}
-                  proposed={<PlainText text={operation.title} />}
-                />
-              </Change>
-            );
-          }
-          if (operation.kind === "add_section") {
-            return (
-              <Change
-                key={index}
-                label={`Add section at position ${operation.position + 1}`}
-              >
-                <div>
-                  <p className="text-[11px] font-medium text-violet-700 mb-1">
-                    Proposed
-                  </p>
-                  <SectionPreview section={operation.section} />
-                </div>
-              </Change>
-            );
-          }
-          const current = accepted.sections.find(
-            (section) => section.id === operation.section_id
-          );
-          if (operation.kind === "replace_section") {
-            const proposed: ReportSectionView = {
-              id: operation.section_id,
-              heading: operation.heading,
-              blocks: operation.blocks,
-            };
-            return (
-              <Change key={index} label="Replace section">
-                <Comparison
-                  current={
-                    current ? (
-                      <SectionPreview section={current} />
-                    ) : (
-                      <PlainText text="Section no longer exists" />
-                    )
-                  }
-                  proposed={<SectionPreview section={proposed} />}
-                />
-              </Change>
-            );
-          }
-          return (
-            <Change key={index} label="Remove section">
-              <div>
-                <p className="text-[11px] font-medium text-red-700 mb-1">
-                  Proposed deletion
-                </p>
-                {current ? (
-                  <SectionPreview section={current} />
-                ) : (
-                  <PlainText text="Section no longer exists" />
-                )}
-              </div>
-            </Change>
-          );
-        })}
-      </div>
+      <ProposalChanges
+        accepted={accepted}
+        proposed={proposal.proposed_content}
+      />
 
       <div className="flex justify-end gap-2 pt-1">
         <button
@@ -139,6 +65,245 @@ export default function WritingProposalCard({
       </div>
     </section>
   );
+}
+
+function ProposalChanges({
+  accepted,
+  proposed,
+}: {
+  accepted: ReportContentView;
+  proposed: ReportContentView;
+}) {
+  const currentSections = new Map(
+    accepted.sections.map((section) => [section.id, section])
+  );
+  const proposedSections = new Map(
+    proposed.sections.map((section) => [section.id, section])
+  );
+  const titleChanged = accepted.title !== proposed.title;
+  const changedOrAdded = proposed.sections.filter((section) => {
+    const current = currentSections.get(section.id);
+    return !current || !sectionsEqual(current, section);
+  });
+  const removed = accepted.sections.filter(
+    (section) => !proposedSections.has(section.id)
+  );
+
+  if (!titleChanged && changedOrAdded.length === 0 && removed.length === 0) {
+    return (
+      <p className="text-xs text-gray-500 bg-white border border-violet-100 rounded-md p-3">
+        This proposal has no net report changes.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {titleChanged && (
+        <Change label="Change title">
+          <Comparison
+            current={<PlainText text={accepted.title} />}
+            proposed={<PlainText text={proposed.title} />}
+          />
+        </Change>
+      )}
+
+      {changedOrAdded.map((section) => {
+        const current = currentSections.get(section.id);
+        return current ? (
+          <ChangedSection
+            key={section.id}
+            current={current}
+            proposed={section}
+          />
+        ) : (
+          <Change key={section.id} label="Add section">
+            <SectionPreview section={section} />
+          </Change>
+        );
+      })}
+
+      {removed.map((section) => (
+        <Change key={section.id} label="Remove section">
+          <SectionPreview section={section} tone="removed" />
+        </Change>
+      ))}
+    </div>
+  );
+}
+
+function ChangedSection({
+  current,
+  proposed,
+}: {
+  current: ReportSectionView;
+  proposed: ReportSectionView;
+}) {
+  const headingChanged = current.heading !== proposed.heading;
+  const blockChanges = diffBlocks(current.blocks, proposed.blocks);
+
+  return (
+    <Change label={`Change section · ${proposed.heading}`}>
+      <div className="space-y-3">
+        {headingChanged && (
+          <div>
+            <p className="text-[11px] font-semibold text-gray-600 mb-1">
+              Heading
+            </p>
+            <Comparison
+              current={<PlainText text={current.heading} />}
+              proposed={<PlainText text={proposed.heading} />}
+            />
+          </div>
+        )}
+        {blockChanges.map((change, index) => (
+          <div key={`${change.currentStart}:${change.proposedStart}:${index}`}>
+            <p className="text-[11px] font-semibold text-gray-600 mb-1">
+              {blockChangeLabel(change)}
+            </p>
+            <Comparison
+              current={
+                change.current.length > 0 ? (
+                  <Blocks blocks={change.current} />
+                ) : (
+                  <EmptyPreview />
+                )
+              }
+              proposed={
+                change.proposed.length > 0 ? (
+                  <Blocks blocks={change.proposed} />
+                ) : (
+                  <EmptyPreview />
+                )
+              }
+            />
+          </div>
+        ))}
+      </div>
+    </Change>
+  );
+}
+
+type BlockChange = {
+  current: ReportBlockView[];
+  proposed: ReportBlockView[];
+  currentStart: number;
+  proposedStart: number;
+};
+
+/**
+ * Return only changed block runs. Exact unchanged paragraphs and lists are
+ * aligned with an LCS and omitted from the proposal card entirely.
+ */
+function diffBlocks(
+  current: ReportBlockView[],
+  proposed: ReportBlockView[]
+): BlockChange[] {
+  const rows = current.length + 1;
+  const columns = proposed.length + 1;
+  const lcs = Array.from({ length: rows }, () =>
+    Array<number>(columns).fill(0)
+  );
+
+  for (let currentIndex = current.length - 1; currentIndex >= 0; currentIndex -= 1) {
+    for (
+      let proposedIndex = proposed.length - 1;
+      proposedIndex >= 0;
+      proposedIndex -= 1
+    ) {
+      lcs[currentIndex][proposedIndex] = blocksEqual(
+        current[currentIndex],
+        proposed[proposedIndex]
+      )
+        ? 1 + lcs[currentIndex + 1][proposedIndex + 1]
+        : Math.max(
+            lcs[currentIndex + 1][proposedIndex],
+            lcs[currentIndex][proposedIndex + 1]
+          );
+    }
+  }
+
+  const changes: BlockChange[] = [];
+  let currentIndex = 0;
+  let proposedIndex = 0;
+  let pending: BlockChange | null = null;
+  const pendingChange = () => {
+    pending ??= {
+      current: [],
+      proposed: [],
+      currentStart: currentIndex,
+      proposedStart: proposedIndex,
+    };
+    return pending;
+  };
+  const flush = () => {
+    if (pending) changes.push(pending);
+    pending = null;
+  };
+
+  while (currentIndex < current.length || proposedIndex < proposed.length) {
+    if (
+      currentIndex < current.length &&
+      proposedIndex < proposed.length &&
+      blocksEqual(current[currentIndex], proposed[proposedIndex])
+    ) {
+      flush();
+      currentIndex += 1;
+      proposedIndex += 1;
+    } else if (
+      proposedIndex < proposed.length &&
+      (currentIndex === current.length ||
+        lcs[currentIndex][proposedIndex + 1] >=
+          lcs[currentIndex + 1][proposedIndex])
+    ) {
+      pendingChange().proposed.push(proposed[proposedIndex]);
+      proposedIndex += 1;
+    } else {
+      pendingChange().current.push(current[currentIndex]);
+      currentIndex += 1;
+    }
+  }
+  flush();
+  return changes;
+}
+
+function blockChangeLabel(change: BlockChange): string {
+  if (change.current.length === 1 && change.proposed.length === 1) {
+    const block = change.current[0];
+    const kind = block.kind === "paragraph" ? "paragraph" : "bullet list";
+    return `Change ${kind} ${change.currentStart + 1}`;
+  }
+  if (change.current.length === 0) {
+    return `Add ${formatBlockCount(change.proposed.length)} at position ${change.proposedStart + 1}`;
+  }
+  if (change.proposed.length === 0) {
+    return `Remove ${formatBlockCount(change.current.length)} at position ${change.currentStart + 1}`;
+  }
+  return "Change section content";
+}
+
+function formatBlockCount(count: number): string {
+  return `${count} block${count === 1 ? "" : "s"}`;
+}
+
+function sectionsEqual(
+  current: ReportSectionView,
+  proposed: ReportSectionView
+): boolean {
+  return (
+    current.heading === proposed.heading &&
+    current.blocks.length === proposed.blocks.length &&
+    current.blocks.every((block, index) =>
+      blocksEqual(block, proposed.blocks[index])
+    )
+  );
+}
+
+function blocksEqual(
+  current: ReportBlockView,
+  proposed: ReportBlockView
+): boolean {
+  return JSON.stringify(current) === JSON.stringify(proposed);
 }
 
 function Change({
@@ -177,26 +342,19 @@ function Comparison({
   );
 }
 
-function ContentPreview({ content }: { content: ReportContentView }) {
+function SectionPreview({
+  section,
+  tone = "proposed",
+}: {
+  section: ReportSectionView;
+  tone?: "proposed" | "removed";
+}) {
   return (
-    <article className="border border-gray-200 rounded p-2 bg-white space-y-2">
-      <p className="text-xs font-bold text-gray-900">
-        <InlineMarkdown text={content.title} />
-      </p>
-      {content.sections.length === 0 ? (
-        <p className="text-xs italic text-gray-400">No sections</p>
-      ) : (
-        content.sections.map((section) => (
-          <SectionPreview key={section.id} section={section} />
-        ))
-      )}
-    </article>
-  );
-}
-
-function SectionPreview({ section }: { section: ReportSectionView }) {
-  return (
-    <div className="border border-gray-200 rounded p-2 bg-white">
+    <div
+      className={`border rounded p-2 bg-white ${
+        tone === "removed" ? "border-red-200" : "border-violet-200"
+      }`}
+    >
       <p className="text-xs font-semibold text-gray-900">
         <InlineMarkdown text={section.heading} />
       </p>
@@ -207,8 +365,7 @@ function SectionPreview({ section }: { section: ReportSectionView }) {
 
 function Blocks({ blocks }: { blocks: ReportBlockView[] }) {
   return (
-    <div className="mt-1.5 space-y-1 text-xs leading-5 text-gray-700">
-      {blocks.length === 0 && <p className="italic text-gray-400">No blocks</p>}
+    <div className="border border-gray-200 rounded p-2 bg-white mt-1.5 space-y-1 text-xs leading-5 text-gray-700">
       {blocks.map((block, index) =>
         block.kind === "paragraph" ? (
           <div key={index} className="prose prose-xs max-w-none prose-p:my-1">
@@ -224,6 +381,14 @@ function Blocks({ blocks }: { blocks: ReportBlockView[] }) {
           </ul>
         )
       )}
+    </div>
+  );
+}
+
+function EmptyPreview() {
+  return (
+    <div className="border border-dashed border-gray-200 rounded p-2 text-xs italic text-gray-400">
+      Nothing
     </div>
   );
 }
