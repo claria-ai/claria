@@ -393,6 +393,46 @@ async saveReportDraft(clientId: string, expectedRevision: number, draft: ReportD
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Open a bounded native DOCX picker and return a structured content preview.
+ * The parsed candidate remains only in process memory until explicitly
+ * applied or discarded.
+ */
+async pickReportTemplateDocx(clientId: string) : Promise<Result<ReportTemplatePreview | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pick_report_template_docx", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply an already previewed DOCX candidate as a new accepted revision.
+ */
+async applyReportTemplate(clientId: string, expectedRevision: number, importId: string) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("apply_report_template", { clientId, expectedRevision, importId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async discardReportTemplatePreview(importId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("discard_report_template_preview", { importId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async acknowledgeReportTemplateReview(clientId: string, reportId: string, expectedRevision: number) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("acknowledge_report_template_review", { clientId, reportId, expectedRevision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportParagraphReferenceInput[]) : Promise<Result<ReportTurnResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction, references }) };
@@ -1248,7 +1288,7 @@ export type RecordContext = { filename: string; text: string }
  */
 export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
 export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
-export type ReportBlockView = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] }
+export type ReportBlockView = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | { kind: "table"; rows: string[][]; has_header: boolean; column_widths: number[] | null }
 export type ReportContentView = { title: string; sections: ReportSectionView[] }
 export type ReportContextReadView = { filename: string; offset: number; returned_characters: number; total_characters: number | null; read_at: string }
 export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }
@@ -1264,11 +1304,15 @@ export type ReportProposalResolutionView = { proposal_id: string; decision: Repo
 export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperationView[]; proposed_content: ReportContentView; created_at: string }
 export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlockView[] }
 export type ReportSectionView = { id: string; heading: string; blocks: ReportBlockView[] }
+export type ReportTemplateImportView = { imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
+export type ReportTemplatePreview = { import_id: string; content: ReportContentView; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
+export type ReportTemplateStatsView = { sections: number; paragraphs: number; bullet_lists: number; tables: number; table_cells: number; placeholder_count: number }
+export type ReportTemplateWarningView = { code: string; message: string; count: number }
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
-export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; draft: ReportDraftView; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolutionView[]; last_agent_revision: number | null; last_export: ReportExportView | null; created_at: string; updated_at: string }
+export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; draft: ReportDraftView; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolutionView[]; last_agent_revision: number | null; last_export: ReportExportView | null; template_import: ReportTemplateImportView | null; created_at: string; updated_at: string }
 /**
  * Every resource in the system is declared as a `ResourceSpec`.
  * 

@@ -12,6 +12,10 @@ All notable changes to Claria are documented here.
 - Writing falls back to the active Haiku tokenizer when a newly launched selected model does not support CountTokens
 - Report paragraphs can be attached to a Writing message from their hover control
 - Writing proposals show only net title, section, and changed-block differences instead of repeating the complete report
+- Writing imports bounded DOCX templates through an explicit structured-content preview without retaining source files, filenames, or local paths
+- Template-derived reports require a revision-specific carryover review before Word export
+- Reports support editable plain-text tables with header rows, optional column widths, model proposals, and Word export
+- Table proposals highlight changed cells while retaining surrounding row and column context
 - Tool activity rows expand into collapsed-by-default raw LLM invocation and correlated-result JSON
 - Writing exposes the accepted report and record excerpts read during the session in a context control
 - Writing and local-export notices can be dismissed
@@ -24,11 +28,11 @@ All notable changes to Claria are documented here.
 - Model-authored report changes remain reviewable proposals until the user explicitly accepts and saves them
 - Accepted reports are structured, revisioned, optimistic-locked, and synced through S3 separately from records and chat history
 - Bedrock usage and completion status are retained per call even when a report turn aborts or conflicts
-- Manual report editing supports ordered sections, paragraphs, and bullet lists without giving the model direct write access
+- Manual report editing supports ordered sections, paragraphs, bullet lists, and tables without giving the model direct write access
 - Pending report proposals survive tab switches and app restarts, and follow deleted clients through restoration
 - Restoring a deleted client leaves its record files and text-only chat history deleted while recovering the opt-in report workspace
 - Client deletion compensates partial failures and retries without overwriting concurrently restored report work
-- Accepted report revisions export as genuine Word documents with headings, paragraphs, and real bullet numbering
+- Accepted report revisions export as genuine Word documents with headings, paragraphs, real bullet numbering, and styled tables
 - Local Word exports disclose their PHI risk and use atomic writes with private file permissions
 - The existing text-only Chat workflow remains unchanged and does not opt into report tools
 - End-to-end browser checks can use an alternate local Vite port when port 1420 is already occupied

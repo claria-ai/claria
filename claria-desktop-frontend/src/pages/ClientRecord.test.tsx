@@ -47,13 +47,17 @@ vi.mock("../lib/tauri", () => ({
   sendReportMessage: mocks.sendReport,
   resolveReportProposal: vi.fn(),
   exportReportDocx: vi.fn(),
+  pickReportTemplateDocx: vi.fn().mockResolvedValue(null),
+  applyReportTemplate: vi.fn(),
+  discardReportTemplatePreview: vi.fn(),
+  acknowledgeReportTemplateReview: vi.fn(),
 }));
 
 import { clearWritingComposerDrafts } from "../lib/writingComposerDraft";
 import ClientRecord from "./ClientRecord";
 
 const workspace = {
-  schema_version: 1,
+  schema_version: 2,
   report_id: "report-1",
   client_id: "client-1",
   draft: {
@@ -68,6 +72,7 @@ const workspace = {
   resolutions: [],
   last_agent_revision: null,
   last_export: null,
+  template_import: null,
   created_at: "2026-08-01T00:00:00Z",
   updated_at: "2026-08-01T00:00:00Z",
 };

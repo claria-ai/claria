@@ -5,10 +5,15 @@ import type {
   ReportBlockView,
   ReportDraftEdit,
   ReportSectionEdit,
+  ReportTemplateImportView,
   ReportWorkspaceView,
 } from "../lib/tauri";
 import { dismissNotice, isNoticeDismissed } from "../lib/localPreference";
-import { moveItem, newReportSection } from "../lib/writingWorkspace";
+import {
+  moveItem,
+  newReportSection,
+  newReportTable,
+} from "../lib/writingWorkspace";
 import type { WritingParagraphReference } from "../lib/writingComposerDraft";
 import { CloseIcon } from "./icons";
 
@@ -25,6 +30,8 @@ export default function WritingCanvas({
   onChange,
   onSave,
   onExport,
+  onImportTemplate,
+  onReviewTemplate,
   onReference,
   saveStatus,
   exportStatus,
@@ -40,12 +47,15 @@ export default function WritingCanvas({
   onChange: (edit: ReportDraftEdit) => void;
   onSave: () => void;
   onExport: () => void;
+  onImportTemplate: () => void;
+  onReviewTemplate: () => void;
   onReference: (reference: WritingParagraphReference) => void;
   saveStatus: string | null;
   exportStatus: string | null;
   validationErrors: string[];
 }) {
   const pending = workspace.pending_proposal !== null;
+  const templateReviewRequired = workspace.template_import?.review_required === true;
   const [showExportNotice, setShowExportNotice] = useState(
     () => !isNoticeDismissed(EXPORT_NOTICE_KEY)
   );
@@ -97,6 +107,21 @@ export default function WritingCanvas({
             {dirty ? " · Unsaved changes" : " · Saved"}
           </p>
         </div>
+        <button
+          type="button"
+          onClick={onImportTemplate}
+          disabled={busy || pending || dirty || editing}
+          title={
+            dirty || editing
+              ? "Save or discard edits before importing a template"
+              : pending
+                ? "Resolve the pending proposal before importing a template"
+                : "Import DOCX content as a new accepted revision"
+          }
+          className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50"
+        >
+          Import .docx
+        </button>
         {!editing ? (
           <button
             type="button"
@@ -129,8 +154,14 @@ export default function WritingCanvas({
         <button
           type="button"
           onClick={onExport}
-          disabled={busy || dirty}
-          title={dirty ? "Save or discard edits before exporting" : undefined}
+          disabled={busy || dirty || templateReviewRequired}
+          title={
+            dirty
+              ? "Save or discard edits before exporting"
+              : templateReviewRequired
+                ? "Review template carryover for this revision before exporting"
+                : undefined
+          }
           className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 rounded-md hover:bg-emerald-700 disabled:opacity-50"
         >
           Export .docx
@@ -155,6 +186,14 @@ export default function WritingCanvas({
               <CloseIcon className="w-3.5 h-3.5" />
             </button>
           </div>
+        )}
+        {workspace.template_import && (
+          <TemplateSafetyPanel
+            template={workspace.template_import}
+            revision={workspace.draft.revision}
+            busy={busy}
+            onReview={onReviewTemplate}
+          />
         )}
         {(saveStatus || exportStatus || persistedExportStatus) && (
           <p role="status" aria-live="polite" className="text-xs text-gray-600">
@@ -201,6 +240,76 @@ export default function WritingCanvas({
   );
 }
 
+function TemplateSafetyPanel({
+  template,
+  revision,
+  busy,
+  onReview,
+}: {
+  template: ReportTemplateImportView;
+  revision: number;
+  busy: boolean;
+  onReview: () => void;
+}) {
+  return (
+    <div
+      className={`rounded border px-3 py-2 text-[11px] leading-4 ${
+        template.review_required
+          ? "border-amber-300 bg-amber-50 text-amber-900"
+          : "border-emerald-200 bg-emerald-50 text-emerald-800"
+      }`}
+      data-testid="template-safety-panel"
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1">
+          <p className="font-semibold">
+            DOCX template · {template.review_required ? "carryover review required" : `revision ${revision} reviewed`}
+          </p>
+          {template.review_required ? (
+            <p className="mt-0.5">
+              Check every name, date, pronoun, diagnosis, score, and client-specific
+              fact before exporting.
+              {template.placeholder_count > 0
+                ? ` ${template.placeholder_count} possible unresolved template marker${template.placeholder_count === 1 ? "" : "s"} remain.`
+                : " No common unresolved template markers were detected."}
+            </p>
+          ) : (
+            <p className="mt-0.5">
+              A later manual edit or accepted Claude proposal will require another
+              carryover review.
+            </p>
+          )}
+        </div>
+        {template.review_required && (
+          <button
+            type="button"
+            onClick={onReview}
+            disabled={busy}
+            className="shrink-0 px-2.5 py-1.5 font-semibold text-white bg-amber-700 rounded hover:bg-amber-800 disabled:opacity-50"
+          >
+            Mark reviewed
+          </button>
+        )}
+      </div>
+      {template.warnings.length > 0 && (
+        <details className="mt-1.5">
+          <summary className="cursor-pointer font-medium">
+            Import notes · {template.warnings.length}
+          </summary>
+          <ul className="mt-1 list-disc pl-4 space-y-0.5">
+            {template.warnings.map((warning) => (
+              <li key={warning.code}>
+                {warning.message}
+                {warning.count > 1 ? ` (${warning.count})` : ""}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function AcceptedReport({
   workspace,
   onReference,
@@ -229,37 +338,103 @@ function AcceptedReport({
                 <InlineMarkdown text={section.heading} />
               </h2>
               <div className="space-y-3 text-sm leading-6 text-gray-700">
-                {section.blocks.map((block, blockIndex) =>
-                  block.kind === "paragraph" ? (
-                    <ParagraphDisplay
-                      key={blockIndex}
-                      text={block.text}
-                      referenceLabel={`Reference ${section.heading}, paragraph ${blockIndex + 1} in Writing chat`}
-                      onReference={() =>
-                        onReference({
-                          sectionId: section.id,
-                          blockIndex,
-                          sectionHeading: section.heading,
-                          preview: referencePreview(block.text),
-                        })
-                      }
-                    />
-                  ) : (
-                    <ul key={blockIndex} className="list-disc pl-6 space-y-1">
-                      {block.items.map((item, itemIndex) => (
-                        <li key={itemIndex}>
-                          <MarkdownContent text={item} compact />
-                        </li>
-                      ))}
-                    </ul>
-                  )
-                )}
+                {section.blocks.map((block, blockIndex) => {
+                  if (block.kind === "paragraph") {
+                    return (
+                      <ParagraphDisplay
+                        key={blockIndex}
+                        text={block.text}
+                        referenceLabel={`Reference ${section.heading}, paragraph ${blockIndex + 1} in Writing chat`}
+                        onReference={() =>
+                          onReference({
+                            sectionId: section.id,
+                            blockIndex,
+                            sectionHeading: section.heading,
+                            preview: referencePreview(block.text),
+                          })
+                        }
+                      />
+                    );
+                  }
+                  if (block.kind === "bullet_list") {
+                    return (
+                      <ul key={blockIndex} className="list-disc pl-6 space-y-1">
+                        {block.items.map((item, itemIndex) => (
+                          <li key={itemIndex}>
+                            <MarkdownContent text={item} compact />
+                          </li>
+                        ))}
+                      </ul>
+                    );
+                  }
+                  return <ReportTable key={blockIndex} table={block} />;
+                })}
               </div>
             </section>
           ))}
         </div>
       )}
     </article>
+  );
+}
+
+function ReportTable({
+  table,
+}: {
+  table: Extract<ReportBlockView, { kind: "table" }>;
+}) {
+  const header = table.has_header ? table.rows[0] : null;
+  const body = table.has_header ? table.rows.slice(1) : table.rows;
+  return (
+    <div className="overflow-x-auto rounded border border-gray-300" data-testid="report-table">
+      <table className="w-full border-collapse text-xs leading-5">
+        <TableColumns table={table} />
+        {header && (
+          <thead className="bg-slate-100 text-gray-900">
+            <tr>
+              {header.map((cell, columnIndex) => (
+                <th
+                  key={columnIndex}
+                  scope="col"
+                  className="border-b border-r last:border-r-0 border-gray-300 px-2 py-1.5 text-left font-semibold whitespace-pre-wrap align-top"
+                >
+                  {cell}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>
+          {body.map((row, rowIndex) => (
+            <tr key={rowIndex} className="even:bg-gray-50/60">
+              {row.map((cell, columnIndex) => (
+                <td
+                  key={columnIndex}
+                  className="border-b last:border-b-0 border-r last:border-r-0 border-gray-200 px-2 py-1.5 whitespace-pre-wrap align-top"
+                >
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TableColumns({
+  table,
+}: {
+  table: Extract<ReportBlockView, { kind: "table" }>;
+}) {
+  if (!table.column_widths) return null;
+  return (
+    <colgroup>
+      {table.column_widths.map((width, index) => (
+        <col key={index} style={{ width: `${width / 100}%` }} />
+      ))}
+    </colgroup>
   );
 }
 
@@ -388,7 +563,7 @@ function EditableReport({
                     disabled={disabled}
                     multiline
                   />
-                ) : (
+                ) : block.kind === "bullet_list" ? (
                   <ul className="list-disc pl-6 space-y-1">
                     {block.items.map((item, itemIndex) => (
                       <li key={itemIndex}>
@@ -409,6 +584,16 @@ function EditableReport({
                       </li>
                     ))}
                   </ul>
+                ) : (
+                  <EditableTable
+                    table={block}
+                    sectionIndex={sectionIndex}
+                    blockIndex={blockIndex}
+                    disabled={disabled}
+                    onChange={(table) =>
+                      updateBlock(sectionIndex, blockIndex, table)
+                    }
+                  />
                 )}
 
                 <div className="absolute -right-8 top-0 opacity-0 group-hover/block:opacity-100 group-focus-within/block:opacity-100 flex flex-col bg-white border border-gray-200 rounded shadow-sm transition-opacity">
@@ -491,6 +676,19 @@ function EditableReport({
             >
               Add bullet list
             </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() =>
+                updateSection(sectionIndex, {
+                  ...section,
+                  blocks: [...section.blocks, newReportTable()],
+                })
+              }
+              className="px-2.5 py-1.5 text-xs border border-gray-300 bg-white rounded hover:bg-gray-50 disabled:opacity-50"
+            >
+              Add table
+            </button>
           </div>
         </section>
       ))}
@@ -505,6 +703,144 @@ function EditableReport({
       >
         Add section
       </button>
+    </div>
+  );
+}
+
+function EditableTable({
+  table,
+  sectionIndex,
+  blockIndex,
+  disabled,
+  onChange,
+}: {
+  table: Extract<ReportBlockView, { kind: "table" }>;
+  sectionIndex: number;
+  blockIndex: number;
+  disabled: boolean;
+  onChange: (table: Extract<ReportBlockView, { kind: "table" }>) => void;
+}) {
+  const columns = table.rows[0]?.length ?? 0;
+
+  function updateCell(rowIndex: number, columnIndex: number, value: string) {
+    const rows = table.rows.map((row) => [...row]);
+    rows[rowIndex][columnIndex] = value;
+    onChange({ ...table, rows });
+  }
+
+  return (
+    <div className="rounded border border-gray-300 bg-white overflow-hidden">
+      <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 bg-gray-50 px-2 py-1.5 text-[11px]">
+        <label className="inline-flex items-center gap-1.5 text-gray-700">
+          <input
+            type="checkbox"
+            checked={table.has_header}
+            onChange={(event) =>
+              onChange({ ...table, has_header: event.target.checked })
+            }
+            disabled={disabled}
+          />
+          First row is header
+        </label>
+        <button
+          type="button"
+          disabled={disabled || table.rows.length >= 200}
+          onClick={() =>
+            onChange({
+              ...table,
+              rows: [...table.rows, Array.from({ length: columns }, () => "")],
+            })
+          }
+          className="ml-auto px-2 py-0.5 border border-gray-300 rounded bg-white hover:bg-gray-100 disabled:opacity-50"
+        >
+          Add row
+        </button>
+        <button
+          type="button"
+          disabled={disabled || columns >= 20}
+          onClick={() =>
+            onChange({
+              ...table,
+              rows: table.rows.map((row) => [...row, ""]),
+              column_widths: null,
+            })
+          }
+          className="px-2 py-0.5 border border-gray-300 rounded bg-white hover:bg-gray-100 disabled:opacity-50"
+        >
+          Add column
+        </button>
+        <button
+          type="button"
+          disabled={disabled || columns <= 1}
+          onClick={() =>
+            onChange({
+              ...table,
+              rows: table.rows.map((row) => row.slice(0, -1)),
+              column_widths: null,
+            })
+          }
+          className="px-2 py-0.5 border border-gray-300 rounded bg-white hover:bg-gray-100 disabled:opacity-50"
+        >
+          Remove last column
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-xs leading-5">
+          <TableColumns table={table} />
+          <tbody>
+            {table.rows.map((row, rowIndex) => (
+              <tr
+                key={rowIndex}
+                className={
+                  table.has_header && rowIndex === 0
+                    ? "bg-slate-100 font-semibold"
+                    : "even:bg-gray-50/60"
+                }
+              >
+                {row.map((cell, columnIndex) => {
+                  const Cell = table.has_header && rowIndex === 0 ? "th" : "td";
+                  return (
+                    <Cell
+                      key={columnIndex}
+                      scope={Cell === "th" ? "col" : undefined}
+                      className="border-b border-r border-gray-200 px-2 py-1 align-top text-left min-w-24"
+                    >
+                      <EditableText
+                        as="span"
+                        ariaLabel={`Section ${sectionIndex + 1} table ${blockIndex + 1}, row ${rowIndex + 1}, column ${columnIndex + 1}`}
+                        value={cell}
+                        onChange={(value) =>
+                          updateCell(rowIndex, columnIndex, value)
+                        }
+                        disabled={disabled}
+                        multiline
+                        className="block min-h-5"
+                      />
+                    </Cell>
+                  );
+                })}
+                <td className="border-b border-gray-200 px-1 align-middle w-7">
+                  <button
+                    type="button"
+                    aria-label={`Remove table row ${rowIndex + 1}`}
+                    title="Remove row"
+                    disabled={disabled || table.rows.length <= 1}
+                    onClick={() =>
+                      onChange({
+                        ...table,
+                        rows: table.rows.filter((_, index) => index !== rowIndex),
+                      })
+                    }
+                    className="px-1 text-red-600 hover:bg-red-50 rounded disabled:opacity-25"
+                  >
+                    ×
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

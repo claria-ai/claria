@@ -1,12 +1,13 @@
 use claria_core::models::{
     report::{
-        ReportAuthoringTurn, ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole,
-        ReportToolResultStatus, ReportWorkspace,
+        ReportAuthoringTurn, ReportBlock, ReportContent, ReportProtocolBlock,
+        ReportProtocolMessage, ReportProtocolRole, ReportSection, ReportTemplateImport,
+        ReportTemplateWarning, ReportTemplateWarningCode, ReportToolResultStatus, ReportWorkspace,
     },
     turn_usage::TurnUsage,
 };
 use claria_desktop::report_authoring::{
-    ReportTimelineItemView, ReportToolActivityStatus, workspace_view,
+    ReportBlockView, ReportTimelineItemView, ReportToolActivityStatus, workspace_view,
 };
 use uuid::Uuid;
 
@@ -192,4 +193,62 @@ fn successful_record_reads_are_exposed_as_context_metadata() {
     assert_eq!(read.offset, 12);
     assert_eq!(read.returned_characters, 34);
     assert_eq!(read.total_characters, Some(90));
+}
+
+#[test]
+fn table_and_template_review_metadata_are_exposed_without_source_identity() {
+    let created = "2026-08-01T12:00:00Z".parse().expect("timestamp");
+    let imported_at = "2026-08-01T12:01:00Z".parse().expect("timestamp");
+    let mut workspace = ReportWorkspace::new(Uuid::new_v4(), created);
+    workspace.draft = workspace
+        .draft
+        .replace_content(
+            0,
+            ReportContent {
+                title: "Imported".to_string(),
+                sections: vec![ReportSection {
+                    id: Uuid::new_v4(),
+                    heading: "Scores".to_string(),
+                    blocks: vec![ReportBlock::Table {
+                        rows: vec![
+                            vec!["Measure".to_string(), "Score".to_string()],
+                            vec!["{{name}}".to_string(), "87".to_string()],
+                        ],
+                        has_header: true,
+                        column_widths: Some(vec![7_000, 3_000]),
+                    }],
+                }],
+            },
+            imported_at,
+        )
+        .expect("import revision");
+    workspace.updated_at = imported_at;
+    workspace.template_import = Some(ReportTemplateImport {
+        source_sha256: "b".repeat(64),
+        imported_revision: 1,
+        imported_at,
+        warnings: vec![ReportTemplateWarning {
+            code: ReportTemplateWarningCode::ImagesOmitted,
+            count: 2,
+        }],
+        reviewed_revision: None,
+    });
+
+    let view = workspace_view(&workspace);
+    assert!(matches!(
+        &view.draft.content.sections[0].blocks[0],
+        ReportBlockView::Table {
+            has_header: true,
+            column_widths: Some(widths),
+            ..
+        } if widths == &[7_000, 3_000]
+    ));
+    let template = view.template_import.expect("template view");
+    assert!(template.review_required);
+    assert_eq!(template.placeholder_count, 1);
+    assert_eq!(template.warnings[0].code, "images_omitted");
+    let json = serde_json::to_string(&template).expect("view JSON");
+    assert!(!json.contains("sha256"));
+    assert!(!json.contains("filename"));
+    assert!(!json.contains("path"));
 }

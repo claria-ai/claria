@@ -123,7 +123,8 @@ async fn nested_tool_input_round_trips_from_smithy_document() {
                             "heading": "Summary",
                             "blocks": [
                                 {"kind": "paragraph", "text": "Unicode: café — 東京"},
-                                {"kind": "bullet_list", "items": ["One", "Two"]}
+                                {"kind": "bullet_list", "items": ["One", "Two"]},
+                                {"kind": "table", "rows": [["Measure", "Score"], ["Attention", "87"]], "has_header": true, "column_widths": [7000, 3000]}
                             ]
                         }]
                     }
@@ -157,9 +158,22 @@ async fn nested_tool_input_round_trips_from_smithy_document() {
         call.input["operations"][0]["blocks"][0]["text"],
         "Unicode: café — 東京"
     );
+    let request = decode_tool_request(call).expect("typed request");
+    let ReportToolRequest::ProposeReportChanges(request) = request else {
+        panic!("proposal request");
+    };
+    let claria_bedrock::report::ReportProposalOperationRequest::AddSection { blocks, .. } =
+        &request.operations[0]
+    else {
+        panic!("add section");
+    };
     assert!(matches!(
-        decode_tool_request(call).expect("typed request"),
-        ReportToolRequest::ProposeReportChanges(_)
+        &blocks[2],
+        claria_bedrock::report::ReportBlockRequest::Table {
+            has_header: true,
+            column_widths: Some(widths),
+            ..
+        } if widths == &[7_000, 3_000]
     ));
 }
 

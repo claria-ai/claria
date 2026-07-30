@@ -1,6 +1,7 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_core::models::report::{
-    ReportBlock, ReportContent, ReportProposalDecision, ReportSection,
+    ReportBlock, ReportContent, ReportProposalDecision, ReportSection, ReportTemplateWarning,
+    ReportTemplateWarningCode,
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 use claria_report_authoring::{self as report_authoring, REPORT_CONFLICT_MESSAGE};
@@ -207,6 +208,114 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
 }
 
 #[tokio::test]
+async fn template_import_is_previewed_content_with_revision_bound_export_review() {
+    let (_server, _sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let initial = report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("workspace");
+    let imported = report_authoring::apply_report_template(
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        ReportContent {
+            title: "Imported template".to_string(),
+            sections: vec![ReportSection {
+                id: Uuid::new_v4(),
+                heading: "Scores".to_string(),
+                blocks: vec![ReportBlock::Table {
+                    rows: vec![
+                        vec!["Measure".to_string(), "Score".to_string()],
+                        vec!["Attention".to_string(), "".to_string()],
+                    ],
+                    has_header: true,
+                    column_widths: Some(vec![7_000, 3_000]),
+                }],
+            }],
+        },
+        "a".repeat(64),
+        vec![ReportTemplateWarning {
+            code: ReportTemplateWarningCode::HeadersFootersOmitted,
+            count: 2,
+        }],
+    )
+    .await
+    .expect("apply template");
+    assert_eq!(imported.draft.revision, 1);
+    let metadata = imported
+        .template_import
+        .as_ref()
+        .expect("template metadata");
+    assert_eq!(metadata.imported_revision, 1);
+    assert_eq!(metadata.reviewed_revision, None);
+
+    let blocked =
+        report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 1)
+            .await
+            .expect_err("unreviewed import must not export");
+    assert!(blocked.to_string().contains("Review template carryover"));
+
+    let reviewed = report_authoring::acknowledge_report_template_review(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        1,
+    )
+    .await
+    .expect("review template");
+    assert_eq!(
+        reviewed
+            .template_import
+            .as_ref()
+            .and_then(|template| template.reviewed_revision),
+        Some(1)
+    );
+    report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 1)
+        .await
+        .expect("reviewed export snapshot");
+
+    let edited = report_authoring::save_report_draft(
+        &s3,
+        BUCKET,
+        client_id,
+        1,
+        ReportContent {
+            title: "Imported template revised".to_string(),
+            sections: reviewed.draft.content.sections,
+        },
+    )
+    .await
+    .expect("edit imported report");
+    assert_eq!(edited.draft.revision, 2);
+    assert_eq!(
+        edited
+            .template_import
+            .as_ref()
+            .and_then(|template| template.reviewed_revision),
+        None
+    );
+    assert!(
+        report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 2,)
+            .await
+            .is_err()
+    );
+
+    let persisted = claria_storage::objects::get_object(
+        &s3,
+        BUCKET,
+        &claria_core::s3_keys::report_workspace(client_id),
+    )
+    .await
+    .expect("workspace object");
+    let json = String::from_utf8(persisted.body).expect("workspace JSON");
+    assert!(!json.contains("local_path"));
+    assert!(!json.contains("source_filename"));
+}
+
+#[tokio::test]
 async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();
@@ -272,7 +381,8 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
                                 {"kind": "set_title", "title": "Initial Assessment"},
                                 {"kind": "add_section", "position": 0, "heading": "Summary", "blocks": [
                                     {"kind": "paragraph", "text": "Reviewed proposed summary"},
-                                    {"kind": "bullet_list", "items": ["Follow up", "Document progress"]}
+                                    {"kind": "bullet_list", "items": ["Follow up", "Document progress"]},
+                                    {"kind": "table", "rows": [["Measure", "Score"], ["Attention", "87"]], "has_header": true, "column_widths": [7000, 3000]}
                                 ]}
                             ]
                         }
@@ -318,6 +428,14 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
     assert_eq!(pending.proposed_content.title, "Initial Assessment");
     let new_section_id = &pending.proposed_content.sections[0].id;
     assert!(!new_section_id.is_nil());
+    assert!(matches!(
+        &pending.proposed_content.sections[0].blocks[2],
+        ReportBlock::Table {
+            has_header: true,
+            column_widths: Some(widths),
+            ..
+        } if widths == &[7_000, 3_000]
+    ));
 
     // Persisted protocol keeps only bounded activity metadata, never the
     // durable record-text copy used during the current loop.

@@ -10,6 +10,7 @@ use tracing_subscriber::prelude::*;
 use claria_desktop::console;
 
 mod commands;
+mod report_template_commands;
 mod state;
 
 fn main() -> Result<()> {
@@ -73,6 +74,10 @@ fn main() -> Result<()> {
             commands::load_report_workspace,
             commands::list_editor_history,
             commands::save_report_draft,
+            report_template_commands::pick_report_template_docx,
+            report_template_commands::apply_report_template,
+            report_template_commands::discard_report_template_preview,
+            report_template_commands::acknowledge_report_template_review,
             commands::send_report_message,
             commands::resolve_report_proposal,
             commands::export_report_docx,

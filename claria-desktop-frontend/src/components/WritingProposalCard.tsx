@@ -156,33 +156,50 @@ function ChangedSection({
             />
           </div>
         )}
-        {blockChanges.map((change, index) => (
-          <div key={`${change.currentStart}:${change.proposedStart}:${index}`}>
-            <p className="text-[11px] font-semibold text-gray-600 mb-1">
-              {blockChangeLabel(change)}
-            </p>
-            <Comparison
-              current={
-                change.current.length > 0 ? (
-                  <Blocks blocks={change.current} />
-                ) : (
-                  <EmptyPreview />
-                )
-              }
-              proposed={
-                change.proposed.length > 0 ? (
-                  <Blocks blocks={change.proposed} />
-                ) : (
-                  <EmptyPreview />
-                )
-              }
-            />
-          </div>
-        ))}
+        {blockChanges.map((change, index) => {
+          const tablePair = pairedTableChange(change);
+          return (
+            <div key={`${change.currentStart}:${change.proposedStart}:${index}`}>
+              <p className="text-[11px] font-semibold text-gray-600 mb-1">
+                {blockChangeLabel(change)}
+              </p>
+              <Comparison
+                current={
+                  tablePair ? (
+                    <TablePreview
+                      table={tablePair.current}
+                      comparison={tablePair.proposed}
+                      tone="current"
+                    />
+                  ) : change.current.length > 0 ? (
+                    <Blocks blocks={change.current} />
+                  ) : (
+                    <EmptyPreview />
+                  )
+                }
+                proposed={
+                  tablePair ? (
+                    <TablePreview
+                      table={tablePair.proposed}
+                      comparison={tablePair.current}
+                      tone="proposed"
+                    />
+                  ) : change.proposed.length > 0 ? (
+                    <Blocks blocks={change.proposed} />
+                  ) : (
+                    <EmptyPreview />
+                  )
+                }
+              />
+            </div>
+          );
+        })}
       </div>
     </Change>
   );
 }
+
+type TableBlock = Extract<ReportBlockView, { kind: "table" }>;
 
 type BlockChange = {
   current: ReportBlockView[];
@@ -201,6 +218,10 @@ function diffBlocks(
 ): BlockChange[] {
   const rows = current.length + 1;
   const columns = proposed.length + 1;
+  // Tables can contain thousands of cells. Serialize each block once rather
+  // than repeating that work at every cell in the LCS matrix.
+  const currentKeys = current.map((block) => JSON.stringify(block));
+  const proposedKeys = proposed.map((block) => JSON.stringify(block));
   const lcs = Array.from({ length: rows }, () =>
     Array<number>(columns).fill(0)
   );
@@ -211,10 +232,8 @@ function diffBlocks(
       proposedIndex >= 0;
       proposedIndex -= 1
     ) {
-      lcs[currentIndex][proposedIndex] = blocksEqual(
-        current[currentIndex],
-        proposed[proposedIndex]
-      )
+      lcs[currentIndex][proposedIndex] =
+        currentKeys[currentIndex] === proposedKeys[proposedIndex]
         ? 1 + lcs[currentIndex + 1][proposedIndex + 1]
         : Math.max(
             lcs[currentIndex + 1][proposedIndex],
@@ -245,7 +264,7 @@ function diffBlocks(
     if (
       currentIndex < current.length &&
       proposedIndex < proposed.length &&
-      blocksEqual(current[currentIndex], proposed[proposedIndex])
+      currentKeys[currentIndex] === proposedKeys[proposedIndex]
     ) {
       flush();
       currentIndex += 1;
@@ -267,9 +286,28 @@ function diffBlocks(
   return changes;
 }
 
+function pairedTableChange(
+  change: BlockChange
+): { current: TableBlock; proposed: TableBlock } | null {
+  const current = change.current[0];
+  const proposed = change.proposed[0];
+  return change.current.length === 1 &&
+    change.proposed.length === 1 &&
+    current.kind === "table" &&
+    proposed.kind === "table"
+    ? { current, proposed }
+    : null;
+}
+
 function blockChangeLabel(change: BlockChange): string {
   if (change.current.length === 1 && change.proposed.length === 1) {
     const block = change.current[0];
+    if (block.kind === "table" && change.proposed[0].kind === "table") {
+      const cells = changedTableCells(block, change.proposed[0]);
+      return cells === 0
+        ? `Change table ${change.currentStart + 1} settings`
+        : `Change table ${change.currentStart + 1} · ${cells} cell${cells === 1 ? "" : "s"}`;
+    }
     const kind = block.kind === "paragraph" ? "paragraph" : "bullet list";
     return `Change ${kind} ${change.currentStart + 1}`;
   }
@@ -366,23 +404,113 @@ function SectionPreview({
 function Blocks({ blocks }: { blocks: ReportBlockView[] }) {
   return (
     <div className="border border-gray-200 rounded p-2 bg-white mt-1.5 space-y-1 text-xs leading-5 text-gray-700">
-      {blocks.map((block, index) =>
-        block.kind === "paragraph" ? (
-          <div key={index} className="prose prose-xs max-w-none prose-p:my-1">
-            <Markdown remarkPlugins={[remarkGfm]}>{block.text}</Markdown>
-          </div>
-        ) : (
-          <ul key={index} className="list-disc pl-4">
-            {block.items.map((item, itemIndex) => (
-              <li key={itemIndex}>
-                <InlineMarkdown text={item} />
-              </li>
-            ))}
-          </ul>
-        )
-      )}
+      {blocks.map((block, index) => {
+        if (block.kind === "paragraph") {
+          return (
+            <div key={index} className="prose prose-xs max-w-none prose-p:my-1">
+              <Markdown remarkPlugins={[remarkGfm]}>{block.text}</Markdown>
+            </div>
+          );
+        }
+        if (block.kind === "bullet_list") {
+          return (
+            <ul key={index} className="list-disc pl-4">
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>
+                  <InlineMarkdown text={item} />
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        return <TablePreview key={index} table={block} />;
+      })}
     </div>
   );
+}
+
+function TablePreview({
+  table,
+  comparison,
+  tone = "neutral",
+}: {
+  table: TableBlock;
+  comparison?: TableBlock;
+  tone?: "current" | "proposed" | "neutral";
+}) {
+  const layoutChanged =
+    comparison !== undefined &&
+    (table.has_header !== comparison.has_header ||
+      JSON.stringify(table.column_widths) !==
+        JSON.stringify(comparison.column_widths));
+  return (
+    <div className="mt-1.5 overflow-x-auto rounded border border-gray-200 bg-white">
+      {layoutChanged && (
+        <p className="border-b border-gray-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+          Header or column layout changed
+        </p>
+      )}
+      <table className="w-full border-collapse text-[11px] leading-4">
+        {table.column_widths && (
+          <colgroup>
+            {table.column_widths.map((width, index) => (
+              <col key={index} style={{ width: `${width / 100}%` }} />
+            ))}
+          </colgroup>
+        )}
+        <tbody>
+          {table.rows.map((row, rowIndex) => (
+            <tr
+              key={rowIndex}
+              className={table.has_header && rowIndex === 0 ? "font-semibold" : ""}
+            >
+              {row.map((cell, columnIndex) => {
+                const changed =
+                  comparison !== undefined &&
+                  comparison.rows[rowIndex]?.[columnIndex] !== cell;
+                return (
+                  <td
+                    key={columnIndex}
+                    className={`border-b border-r last:border-r-0 border-gray-200 px-1.5 py-1 whitespace-pre-wrap align-top ${
+                      changed
+                        ? tone === "current"
+                          ? "bg-red-50 text-red-900"
+                          : "bg-violet-100 text-violet-950"
+                        : table.has_header && rowIndex === 0
+                          ? "bg-slate-100"
+                          : ""
+                    }`}
+                  >
+                    {cell || <span className="italic text-gray-400">blank</span>}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function changedTableCells(current: TableBlock, proposed: TableBlock): number {
+  let changed = 0;
+  const rows = Math.max(current.rows.length, proposed.rows.length);
+  for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
+    const columns = Math.max(
+      current.rows[rowIndex]?.length ?? 0,
+      proposed.rows[rowIndex]?.length ?? 0
+    );
+    for (let columnIndex = 0; columnIndex < columns; columnIndex += 1) {
+      if (
+        current.rows[rowIndex]?.[columnIndex] !==
+        proposed.rows[rowIndex]?.[columnIndex]
+      ) {
+        changed += 1;
+      }
+    }
+  }
+  return changed;
 }
 
 function EmptyPreview() {

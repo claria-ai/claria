@@ -13,9 +13,14 @@ use uuid::Uuid;
 
 use crate::{error::CoreError, models::turn_usage::TurnUsage};
 
-pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 1;
+pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 2;
 pub const MAX_REPORT_SECTIONS: usize = 100;
 pub const MAX_SECTION_BLOCKS: usize = 200;
+pub const MAX_TABLE_ROWS: usize = 200;
+pub const MAX_TABLE_COLUMNS: usize = 20;
+pub const MAX_TABLE_CELL_CHARACTERS: usize = 5_000;
+pub const MAX_REPORT_TABLE_CELLS: usize = 20_000;
+pub const TABLE_WIDTH_BASIS_POINTS: u32 = 10_000;
 pub const MAX_REPORT_TEXT_CHARACTERS: usize = 500_000;
 pub const MAX_PROPOSAL_OPERATIONS: usize = 25;
 pub const MAX_REPORT_TURNS: usize = 20;
@@ -35,6 +40,10 @@ pub struct ReportWorkspace {
     pub client_id: Uuid,
     pub draft: ReportDraft,
     pub session: ReportSession,
+    /// Provenance and review state for the most recently imported DOCX
+    /// template. The original file, filename, and local path are never stored.
+    #[serde(default)]
+    pub template_import: Option<ReportTemplateImport>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -64,8 +73,59 @@ pub struct ReportSection {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReportBlock {
-    Paragraph { text: String },
-    BulletList { items: Vec<String> },
+    Paragraph {
+        text: String,
+    },
+    BulletList {
+        items: Vec<String>,
+    },
+    /// A rectangular, plain-text table. The first row is rendered as a
+    /// semantic header when `has_header` is true. Optional widths are basis
+    /// points whose sum is exactly 10,000 (100%).
+    Table {
+        rows: Vec<Vec<String>>,
+        has_header: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        column_widths: Option<Vec<u16>>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReportTemplateImport {
+    /// SHA-256 of the selected DOCX bytes. This ties the import to the file
+    /// inspected locally without persisting its name, path, or package bytes.
+    pub source_sha256: String,
+    pub imported_revision: u64,
+    pub imported_at: Timestamp,
+    pub warnings: Vec<ReportTemplateWarning>,
+    /// Export is allowed only when this equals the current accepted revision.
+    #[serde(default)]
+    pub reviewed_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReportTemplateWarning {
+    pub code: ReportTemplateWarningCode,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportTemplateWarningCode {
+    CommentsOmitted,
+    ExternalLinksRemoved,
+    FootnotesEndnotesOmitted,
+    HeadersFootersOmitted,
+    HeadingLevelsFlattened,
+    ImagesOmitted,
+    IrregularTablesOmitted,
+    MergedTablesOmitted,
+    MissingTitle,
+    NestedTablesOmitted,
+    NumberedListsImportedAsBullets,
+    TextBoxesOmitted,
+    TrackedChangesResolved,
+    UnsupportedElementsOmitted,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -227,6 +287,7 @@ impl ReportWorkspace {
                 last_applied_proposal_id: None,
             },
             session: ReportSession::default(),
+            template_import: None,
             created_at: now,
             updated_at: now,
         }
@@ -253,6 +314,9 @@ impl ReportWorkspace {
         }
         self.draft.validate()?;
         self.session.validate(self)?;
+        if let Some(template) = &self.template_import {
+            validate_template_import(template, self)?;
+        }
         Ok(())
     }
 
@@ -457,7 +521,22 @@ impl ReportSession {
 /// of decoding so future schema versions and corrupted candidates are never
 /// presented as accepted state.
 pub fn decode_report_workspace(bytes: &[u8]) -> Result<ReportWorkspace, CoreError> {
-    let workspace: ReportWorkspace = serde_json::from_slice(bytes)?;
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    // Version 1 predates DOCX-template provenance and structured table blocks.
+    // The new field is optional and the old report variants remain unchanged,
+    // so migration is a deterministic schema stamp rather than a content
+    // rewrite.
+    if value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(1)
+    {
+        value["schema_version"] = serde_json::json!(REPORT_WORKSPACE_SCHEMA_VERSION);
+        if value.get("template_import").is_none() {
+            value["template_import"] = serde_json::Value::Null;
+        }
+    }
+    let workspace: ReportWorkspace = serde_json::from_value(value)?;
     workspace.validate()?;
     Ok(workspace)
 }
@@ -468,6 +547,34 @@ pub fn validate_report_content(content: &ReportContent) -> Result<(), CoreError>
 
 pub fn validate_report_summary(summary: &str) -> Result<(), CoreError> {
     validate_nonempty_text("proposal summary", summary, MAX_PROPOSAL_SUMMARY_CHARACTERS)
+}
+
+/// Count common unresolved template markers without retaining or logging any
+/// report text. This is a review hint, not a claim that all carryover can be
+/// detected automatically.
+pub fn report_template_placeholder_count(content: &ReportContent) -> u32 {
+    let mut count = placeholder_count(&content.title);
+    for section in &content.sections {
+        count = count.saturating_add(placeholder_count(&section.heading));
+        for block in &section.blocks {
+            match block {
+                ReportBlock::Paragraph { text } => {
+                    count = count.saturating_add(placeholder_count(text));
+                }
+                ReportBlock::BulletList { items } => {
+                    for item in items {
+                        count = count.saturating_add(placeholder_count(item));
+                    }
+                }
+                ReportBlock::Table { rows, .. } => {
+                    for cell in rows.iter().flatten() {
+                        count = count.saturating_add(placeholder_count(cell));
+                    }
+                }
+            }
+        }
+    }
+    count
 }
 
 /// Validate Bedrock message ordering and exact tool-use/result correlation.
@@ -499,6 +606,7 @@ fn validate_content(content: &ReportContent) -> Result<(), CoreError> {
 
     let mut ids = HashSet::with_capacity(content.sections.len());
     let mut total_characters = content.title.chars().count();
+    let mut total_table_cells = 0_usize;
     for section in &content.sections {
         validate_section(section)?;
         if !ids.insert(section.id) {
@@ -506,10 +614,25 @@ fn validate_content(content: &ReportContent) -> Result<(), CoreError> {
         }
         total_characters += section.heading.chars().count();
         for block in &section.blocks {
+            if let ReportBlock::Table { rows, .. } = block {
+                total_table_cells = total_table_cells.saturating_add(
+                    rows.iter()
+                        .map(Vec::len)
+                        .fold(0_usize, usize::saturating_add),
+                );
+                if total_table_cells > MAX_REPORT_TABLE_CELLS {
+                    return Err(invalid(format!(
+                        "report tables may contain at most {MAX_REPORT_TABLE_CELLS} cells"
+                    )));
+                }
+            }
             total_characters += match block {
                 ReportBlock::Paragraph { text } => text.chars().count(),
                 ReportBlock::BulletList { items } => {
                     items.iter().map(|item| item.chars().count()).sum()
+                }
+                ReportBlock::Table { rows, .. } => {
+                    rows.iter().flatten().map(|cell| cell.chars().count()).sum()
                 }
             };
         }
@@ -551,6 +674,101 @@ fn validate_blocks(blocks: &[ReportBlock]) -> Result<(), CoreError> {
                     validate_nonempty_text("bullet item", item, MAX_BULLET_ITEM_CHARACTERS)?;
                 }
             }
+            ReportBlock::Table {
+                rows,
+                column_widths,
+                ..
+            } => validate_table(rows, column_widths.as_deref())?,
+        }
+    }
+    Ok(())
+}
+
+fn validate_table(rows: &[Vec<String>], column_widths: Option<&[u16]>) -> Result<(), CoreError> {
+    if rows.is_empty() || rows.len() > MAX_TABLE_ROWS {
+        return Err(invalid(format!(
+            "a table must contain 1 to {MAX_TABLE_ROWS} rows"
+        )));
+    }
+    let columns = rows[0].len();
+    if columns == 0 || columns > MAX_TABLE_COLUMNS {
+        return Err(invalid(format!(
+            "a table must contain 1 to {MAX_TABLE_COLUMNS} columns"
+        )));
+    }
+    let mut any_text = false;
+    for row in rows {
+        if row.len() != columns {
+            return Err(invalid(
+                "every table row must contain the same number of cells",
+            ));
+        }
+        for cell in row {
+            validate_xml_text("table cell", cell, MAX_TABLE_CELL_CHARACTERS)?;
+            any_text |= !cell.trim().is_empty();
+        }
+    }
+    if !any_text {
+        return Err(invalid("a table must contain at least one nonempty cell"));
+    }
+
+    if let Some(widths) = column_widths {
+        if widths.len() != columns || widths.contains(&0) {
+            return Err(invalid(
+                "table column widths must contain one positive width per column",
+            ));
+        }
+        let total: u32 = widths.iter().map(|width| u32::from(*width)).sum();
+        if total != TABLE_WIDTH_BASIS_POINTS {
+            return Err(invalid(format!(
+                "table column widths must sum to {TABLE_WIDTH_BASIS_POINTS}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_template_import(
+    template: &ReportTemplateImport,
+    workspace: &ReportWorkspace,
+) -> Result<(), CoreError> {
+    if template.source_sha256.len() != 64
+        || !template
+            .source_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(invalid("template source hash must be a SHA-256 hex digest"));
+    }
+    if template.imported_revision == 0 || template.imported_revision > workspace.draft.revision {
+        return Err(invalid(
+            "template import revision is outside the accepted report history",
+        ));
+    }
+    if template.imported_at < workspace.created_at || template.imported_at > workspace.updated_at {
+        return Err(invalid(
+            "template import timestamp is outside the workspace history",
+        ));
+    }
+    if template
+        .reviewed_revision
+        .is_some_and(|revision| revision != workspace.draft.revision)
+    {
+        return Err(invalid(
+            "template review must apply to the current accepted revision",
+        ));
+    }
+    if template.warnings.len() > 32 {
+        return Err(invalid(
+            "template import contains too many warning categories",
+        ));
+    }
+    let mut codes = HashSet::with_capacity(template.warnings.len());
+    for warning in &template.warnings {
+        if warning.count == 0 || !codes.insert(warning.code) {
+            return Err(invalid(
+                "template warnings must have positive counts and unique codes",
+            ));
         }
     }
     Ok(())
@@ -564,6 +782,10 @@ fn validate_nonempty_text(
     if value.trim().is_empty() {
         return Err(invalid(format!("{label} must not be empty")));
     }
+    validate_xml_text(label, value, max_characters)
+}
+
+fn validate_xml_text(label: &str, value: &str, max_characters: usize) -> Result<(), CoreError> {
     let characters = value.chars().count();
     if characters > max_characters {
         return Err(invalid(format!(
@@ -581,6 +803,14 @@ fn validate_nonempty_text(
         )));
     }
     Ok(())
+}
+
+fn placeholder_count(text: &str) -> u32 {
+    let lowercase = text.to_lowercase();
+    ["{{", "<<", "[client", "[name", "[date", "_____"]
+        .iter()
+        .map(|marker| u32::try_from(lowercase.matches(marker).count()).unwrap_or(u32::MAX))
+        .fold(0_u32, u32::saturating_add)
 }
 
 fn validate_proposal(

@@ -689,7 +689,7 @@ pub async fn escalate_iam_policy(
 /// credentials it was built from are unchanged: its pooled HTTP connector is
 /// what keeps connections warm across commands, and rebuilding it per command
 /// pays DNS/TCP/TLS setup on every S3 call.
-async fn load_sdk_config(
+pub(crate) async fn load_sdk_config(
     state: &State<'_, DesktopState>,
 ) -> Result<(ClariaConfig, aws_config::SdkConfig), String> {
     let mut guard = state.config.lock().await;
@@ -1374,14 +1374,14 @@ pub async fn provision_apply(
 // ---------------------------------------------------------------------------
 
 /// Helper: derive bucket name from saved config.
-fn bucket_name(cfg: &ClariaConfig) -> String {
+pub(crate) fn bucket_name(cfg: &ClariaConfig) -> String {
     claria_core::s3_keys::bucket_name(&cfg.account_id, &cfg.system_name)
 }
 
 /// Helper: record an audit event against the bucket derived from `cfg`.
 ///
 /// See [`claria_desktop::audit::record`] for why this cannot fail the caller.
-async fn record_audit(
+pub(crate) async fn record_audit(
     sdk_config: &aws_config::SdkConfig,
     cfg: &ClariaConfig,
     event: claria_audit::events::AuditEvent,

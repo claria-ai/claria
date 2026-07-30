@@ -61,7 +61,7 @@ export function buildInitScript(
         created_at: new Date().toISOString(),
       });
       let reportWorkspace = {
-        schema_version: 1,
+        schema_version: 2,
         report_id: "99999999-9999-4999-8999-999999999999",
         client_id: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb",
         draft: {
@@ -76,8 +76,31 @@ export function buildInitScript(
         resolutions: [],
         last_agent_revision: null,
         last_export: null,
+        template_import: null,
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-01T00:00:00Z",
+      };
+      const reportTemplatePreview = {
+        import_id: "77777777-7777-4777-8777-777777777777",
+        content: {
+          title: "Imported Evaluation Template",
+          sections: [{
+            id: "66666666-6666-4666-8666-666666666666",
+            heading: "Assessment Scores",
+            blocks: [{
+              kind: "table",
+              rows: [["Measure", "Score"], ["Attention", "{{score}}"]],
+              has_header: true,
+              column_widths: [7000, 3000],
+            }],
+          }],
+        },
+        warnings: [{
+          code: "headers_footers_omitted",
+          message: "Headers or footers were omitted.",
+          count: 2,
+        }],
+        stats: { sections: 1, paragraphs: 0, bullet_lists: 0, tables: 1, table_cells: 4, placeholder_count: 1 },
       };
 
       // ── Plan / apply fixtures built from mock-aws scan ─────────────────
@@ -341,8 +364,59 @@ export function buildInitScript(
                 },
                 updated_at: new Date().toISOString(),
               },
+              template_import: reportWorkspace.template_import
+                ? { ...reportWorkspace.template_import, reviewed_revision: null, review_required: true }
+                : null,
             };
             return reportWorkspace;
+          }
+          if (cmd === "pick_report_template_docx") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            return structuredClone(reportTemplatePreview);
+          }
+          if (cmd === "apply_report_template") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.importId !== reportTemplatePreview.import_id) throw "That template preview expired. Choose the DOCX again.";
+            if (args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            reportWorkspace = {
+              ...reportWorkspace,
+              draft: {
+                ...reportWorkspace.draft,
+                revision: reportWorkspace.draft.revision + 1,
+                content: structuredClone(reportTemplatePreview.content),
+                updated_at: new Date().toISOString(),
+              },
+              template_import: {
+                imported_revision: reportWorkspace.draft.revision + 1,
+                imported_at: new Date().toISOString(),
+                warnings: structuredClone(reportTemplatePreview.warnings),
+                reviewed_revision: null,
+                review_required: true,
+                placeholder_count: reportTemplatePreview.stats.placeholder_count,
+              },
+            };
+            return structuredClone(reportWorkspace);
+          }
+          if (cmd === "discard_report_template_preview") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            return null;
+          }
+          if (cmd === "acknowledge_report_template_review") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (!reportWorkspace.template_import) throw "This report was not initialized from a DOCX template.";
+            reportWorkspace = {
+              ...reportWorkspace,
+              template_import: {
+                ...reportWorkspace.template_import,
+                reviewed_revision: reportWorkspace.draft.revision,
+                review_required: false,
+              },
+            };
+            return structuredClone(reportWorkspace);
           }
           if (cmd === "send_report_message") {
             window.__REPORT_COMMANDS__.push(cmd);
@@ -357,6 +431,7 @@ export function buildInitScript(
                 blocks: [
                   { kind: "paragraph", text: "Jane was referred for an evaluation of attention and written-output concerns." },
                   { kind: "bullet_list", items: ["Review teacher observations", "Coordinate follow-up"] },
+                  { kind: "table", rows: [["Domain", "Finding"], ["Attention", "Needs support"]], has_header: true, column_widths: [3500, 6500] },
                 ],
               }],
             };
@@ -431,6 +506,9 @@ export function buildInitScript(
                 },
                 pending_proposal: null,
                 last_agent_revision: reportWorkspace.draft.revision + 1,
+                template_import: reportWorkspace.template_import
+                  ? { ...reportWorkspace.template_import, reviewed_revision: null, review_required: true }
+                  : null,
               };
             } else {
               reportWorkspace = { ...reportWorkspace, pending_proposal: null };
@@ -441,6 +519,7 @@ export function buildInitScript(
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
             if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (reportWorkspace.template_import?.review_required) throw "Review template carryover for this revision before exporting to Word.";
             const attemptedAt = new Date().toISOString();
             reportWorkspace = {
               ...reportWorkspace,

@@ -34,6 +34,7 @@ import type {
   ReportExportResult,
   ReportParagraphReferenceInput,
   ReportProposalDecision,
+  ReportTemplatePreview,
   ReportTurnResponse,
   ReportWorkspaceView,
   TranscribeMemoResult,
@@ -98,6 +99,10 @@ export type {
   ReportProposalResolutionView,
   ReportProposalView,
   ReportSectionEdit,
+  ReportTemplateImportView,
+  ReportTemplatePreview,
+  ReportTemplateStatsView,
+  ReportTemplateWarningView,
   ReportSectionView,
   ReportTimelineItemView,
   ReportTimelineRole,
@@ -407,6 +412,42 @@ export async function saveReportDraft(
 ): Promise<ReportWorkspaceView> {
   return unwrap(
     await commands.saveReportDraft(clientId, expectedRevision, draft)
+  );
+}
+
+export async function pickReportTemplateDocx(
+  clientId: string
+): Promise<ReportTemplatePreview | null> {
+  return unwrap(await commands.pickReportTemplateDocx(clientId));
+}
+
+export async function applyReportTemplate(
+  clientId: string,
+  expectedRevision: number,
+  importId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.applyReportTemplate(clientId, expectedRevision, importId)
+  );
+}
+
+export async function discardReportTemplatePreview(
+  importId: string
+): Promise<void> {
+  unwrap(await commands.discardReportTemplatePreview(importId));
+}
+
+export async function acknowledgeReportTemplateReview(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.acknowledgeReportTemplateReview(
+      clientId,
+      reportId,
+      expectedRevision
+    )
   );
 }
 
