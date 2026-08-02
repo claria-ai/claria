@@ -62,6 +62,8 @@ export type {
   ChatModel,
   ChatResponse,
   ChatRole,
+  ClientNameHistoryEntry,
+  ClientNameUpdate,
   ClientRecordDetails,
   ClientSummary,
   ConfigInfo,

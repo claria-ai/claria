@@ -55,7 +55,7 @@ pub enum ProvisionerProgress {
 // ---------------------------------------------------------------------------
 
 pub use claria_desktop::{
-    records::{ClientRecordDetails, ClientSummary},
+    records::{ClientNameUpdate, ClientRecordDetails, ClientSummary},
     report_authoring::{
         EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportExportResult,
         ReportExportStatusView, ReportProposalDecision, ReportTurnResponse, ReportWorkspaceView,
@@ -1447,7 +1447,7 @@ pub async fn create_client(
     })
 }
 
-/// Load editable metadata and current storage statistics for one client.
+/// Load editable metadata, storage statistics, and name history for one client.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_client_record_details(
@@ -1470,17 +1470,16 @@ pub async fn update_client_name(
     state: State<'_, DesktopState>,
     client_id: String,
     name: String,
-) -> Result<ClientSummary, String> {
+) -> Result<ClientNameUpdate, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
     let id = client_id
         .parse::<uuid::Uuid>()
         .map_err(|error| error.to_string())?;
-    let summary =
-        claria_desktop::records::update_client_name(&s3, &bucket, id, &name).await?;
+    let update = claria_desktop::records::update_client_name(&s3, &bucket, id, &name).await?;
     tracing::info!(client_id = %id, "client record renamed");
-    Ok(summary)
+    Ok(update)
 }
 
 /// Delete a client and all associated data through the retryable,

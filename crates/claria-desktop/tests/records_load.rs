@@ -51,6 +51,19 @@ async fn put(s3: &aws_sdk_s3::Client, key: &str, body: impl Into<Vec<u8>>) {
         .expect("put object");
 }
 
+async fn enable_versioning(s3: &aws_sdk_s3::Client) {
+    s3.put_bucket_versioning()
+        .bucket(BUCKET)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+}
+
 fn client_json(id: uuid::Uuid, name: &str) -> Vec<u8> {
     let client = claria_core::models::client::Client {
         id,
@@ -99,8 +112,9 @@ async fn list_client_summaries_returns_all_clients_sorted_by_created_at_desc() {
 }
 
 #[tokio::test]
-async fn client_record_details_count_files_and_current_storage() {
+async fn client_record_details_count_files_and_current_and_historical_storage() {
     let (_mock, s3) = setup().await;
+    enable_versioning(&s3).await;
     let id = uuid::Uuid::new_v4();
     put(
         &s3,
@@ -110,6 +124,7 @@ async fn client_record_details_count_files_and_current_storage() {
     .await;
 
     let records_prefix = claria_core::s3_keys::client_records_prefix(id);
+    put(&s3, &format!("{records_prefix}notes.txt"), vec![b'z'; 5]).await;
     put(&s3, &format!("{records_prefix}notes.txt"), vec![b'a'; 10]).await;
     put(&s3, &format!("{records_prefix}scan.pdf"), vec![b'b'; 20]).await;
     put(
@@ -127,9 +142,23 @@ async fn client_record_details_count_files_and_current_storage() {
     put(
         &s3,
         &claria_core::s3_keys::report_workspace(id),
+        vec![b'z'; 25],
+    )
+    .await;
+    put(
+        &s3,
+        &claria_core::s3_keys::report_workspace(id),
         vec![b'e'; 50],
     )
     .await;
+    let deleted_key = format!("{records_prefix}superseded.txt");
+    put(&s3, &deleted_key, vec![b'f'; 7]).await;
+    s3.delete_object()
+        .bucket(BUCKET)
+        .key(deleted_key)
+        .send()
+        .await
+        .expect("delete historical object");
 
     let details = get_client_record_details(&s3, BUCKET, id)
         .await
@@ -139,7 +168,10 @@ async fn client_record_details_count_files_and_current_storage() {
     assert_eq!(details.name, "Jane Doe");
     assert_eq!(details.file_count, 2);
     assert_eq!(details.storage_bytes, 150);
+    assert_eq!(details.storage_bytes_with_history, 187);
     assert_eq!(details.created_at, "2023-11-14T22:13:20Z");
+    assert_eq!(details.name_history.len(), 1);
+    assert_eq!(details.name_history[0].name, "Jane Doe");
 }
 
 #[tokio::test]
@@ -154,7 +186,10 @@ async fn update_client_name_trims_and_preserves_client_identity() {
         .expect("rename client");
     assert_eq!(updated.id, id.to_string());
     assert_eq!(updated.name, "Renamed Client");
-    assert_eq!(updated.created_at, "2023-11-14T22:13:20Z");
+    let updated_at: jiff::Timestamp = updated.updated_at.parse().expect("updated timestamp");
+    assert!(
+        updated_at > jiff::Timestamp::from_second(1_700_000_000).expect("created timestamp")
+    );
 
     let stored = claria_storage::objects::get_object(&s3, BUCKET, &key)
         .await
@@ -168,6 +203,41 @@ async fn update_client_name_trims_and_preserves_client_identity() {
         jiff::Timestamp::from_second(1_700_000_000).expect("timestamp")
     );
     assert!(client.updated_at > client.created_at);
+}
+
+#[tokio::test]
+async fn client_record_details_include_distinct_name_changes_newest_first() {
+    let (_mock, s3) = setup().await;
+    enable_versioning(&s3).await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client(id);
+    let original = client_json(id, "Original Name");
+    put(&s3, &key, original.clone()).await;
+    // A metadata version that did not rename the client is not a name change.
+    put(&s3, &key, original).await;
+
+    update_client_name(&s3, BUCKET, id, "First Rename")
+        .await
+        .expect("first rename");
+    update_client_name(&s3, BUCKET, id, "Current Name")
+        .await
+        .expect("second rename");
+
+    let details = get_client_record_details(&s3, BUCKET, id)
+        .await
+        .expect("client record details");
+    let names: Vec<&str> = details
+        .name_history
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["Current Name", "First Rename", "Original Name"]);
+    assert!(
+        details
+            .name_history
+            .iter()
+            .all(|entry| !entry.changed_at.is_empty())
+    );
 }
 
 #[test]

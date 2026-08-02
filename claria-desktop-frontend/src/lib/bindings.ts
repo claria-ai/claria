@@ -354,7 +354,7 @@ async createClient(name: string) : Promise<Result<ClientSummary, string>> {
 }
 },
 /**
- * Load editable metadata and current storage statistics for one client.
+ * Load editable metadata, storage statistics, and name history for one client.
  */
 async getClientRecordDetails(clientId: string) : Promise<Result<ClientRecordDetails, string>> {
     try {
@@ -367,7 +367,7 @@ async getClientRecordDetails(clientId: string) : Promise<Result<ClientRecordDeta
 /**
  * Update a client's display name with optimistic concurrency control.
  */
-async updateClientName(clientId: string, name: string) : Promise<Result<ClientSummary, string>> {
+async updateClientName(clientId: string, name: string) : Promise<Result<ClientNameUpdate, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_client_name", { clientId, name }) };
 } catch (e) {
@@ -1140,7 +1140,9 @@ export type ChatModel = { model_id: string; name: string }
  */
 export type ChatResponse = { chat_id: string; content: string; usage: TurnUsage }
 export type ChatRole = "user" | "assistant"
-export type ClientRecordDetails = { id: string; name: string; created_at: string; updated_at: string; file_count: number; storage_bytes: number }
+export type ClientNameHistoryEntry = { name: string; changed_at: string }
+export type ClientNameUpdate = { id: string; name: string; updated_at: string }
+export type ClientRecordDetails = { id: string; name: string; created_at: string; updated_at: string; file_count: number; storage_bytes: number; storage_bytes_with_history: number; name_history: ClientNameHistoryEntry[] }
 export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
