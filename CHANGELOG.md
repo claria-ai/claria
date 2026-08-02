@@ -10,7 +10,7 @@ All notable changes to Claria are documented here.
 - Unsent Writing instructions survive in-app navigation, and no longer trap the client back control
 - Writing tool loops accept empty companion text and transient Bedrock reasoning blocks without persisting private reasoning
 - Writing falls back to the active Haiku tokenizer when a newly launched selected model does not support CountTokens
-- Report paragraphs can be attached to a Writing message from their hover control
+- Report paragraphs and tables can be attached to a Writing message from their hover controls
 - Writing proposals show only net title, section, and changed-block differences instead of repeating the complete report
 - Writing imports bounded DOCX templates through an explicit structured-content preview without retaining source files, filenames, or local paths
 - Template-derived reports require a revision-specific carryover review before Word export

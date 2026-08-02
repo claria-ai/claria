@@ -109,7 +109,7 @@ export default function ClientRecord({
       window.alert("Wait for the current Writing action to finish before leaving.");
       return false;
     }
-    // Composer text and paragraph references are retained in memory while the
+    // Composer text and report-block references are retained in memory while the
     // user navigates around Claria. Only inline report edits need a discard
     // confirmation here.
     return (

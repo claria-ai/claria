@@ -444,7 +444,7 @@ describe("Writing", () => {
         name: "Reference Findings, paragraph 1 in Writing chat",
       })
     );
-    expect(screen.getByLabelText("Referenced report paragraphs").textContent).toContain(
+    expect(screen.getByLabelText("Referenced report blocks").textContent).toContain(
       "Findings ¶1"
     );
     await userEvent.type(
@@ -458,6 +458,46 @@ describe("Writing", () => {
       0,
       "model-1",
       "Shorten this",
+      [{ section_id: SECTION_ID, block_index: 0 }]
+    );
+  });
+
+  it("attaches a hovered table to the next Writing message", async () => {
+    const value = workspace();
+    value.draft.content.sections[0].blocks = [
+      {
+        kind: "table",
+        rows: [
+          ["Measure", "Score"],
+          ["Attention", "87"],
+        ],
+        has_header: true,
+        column_widths: [7000, 3000],
+      },
+    ];
+    mocks.load.mockResolvedValue(value);
+    renderWriting();
+    await screen.findByTestId("report-table");
+
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Reference Findings, table 1 in Writing chat",
+      })
+    );
+    expect(screen.getByLabelText("Referenced report blocks").textContent).toContain(
+      "Findings table 1: Measure | Score · Attention | 87"
+    );
+    await userEvent.type(
+      screen.getByLabelText("Writing instruction"),
+      "Update this score table"
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(mocks.send).toHaveBeenCalledWith(
+      "client-1",
+      0,
+      "model-1",
+      "Update this score table",
       [{ section_id: SECTION_ID, block_index: 0 }]
     );
   });
@@ -655,7 +695,7 @@ describe("Writing", () => {
     expect(window.confirm).not.toHaveBeenCalled();
   });
 
-  it("preserves a failed instruction and its paragraph references for retry", async () => {
+  it("preserves a failed instruction and its report references for retry", async () => {
     mocks.send.mockRejectedValue(new Error("Bedrock unavailable"));
     renderWriting();
     await screen.findByText("bold report");
@@ -676,7 +716,7 @@ describe("Writing", () => {
       "Error: Bedrock unavailable"
     );
     expect(composer.value).toBe("Draft the findings section");
-    expect(screen.getByLabelText("Referenced report paragraphs")).toBeDefined();
+    expect(screen.getByLabelText("Referenced report blocks")).toBeDefined();
   });
 
   it("rejects an Editor History entry for a different report", async () => {

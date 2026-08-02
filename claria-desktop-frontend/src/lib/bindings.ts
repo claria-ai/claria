@@ -433,7 +433,7 @@ async acknowledgeReportTemplateReview(clientId: string, reportId: string, expect
     else return { status: "error", error: e  as any };
 }
 },
-async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportParagraphReferenceInput[]) : Promise<Result<ReportTurnResponse, string>> {
+async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[]) : Promise<Result<ReportTurnResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction, references }) };
 } catch (e) {
@@ -1288,6 +1288,7 @@ export type RecordContext = { filename: string; text: string }
  */
 export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
 export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
+export type ReportBlockReferenceInput = { section_id: string; block_index: number }
 export type ReportBlockView = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | { kind: "table"; rows: string[][]; has_header: boolean; column_widths: number[] | null }
 export type ReportContentView = { title: string; sections: ReportSectionView[] }
 export type ReportContextReadView = { filename: string; offset: number; returned_characters: number; total_characters: number | null; read_at: string }
@@ -1297,7 +1298,6 @@ export type ReportExportResult = { exported: boolean; report_id: string; revisio
 export type ReportExportStatusView = "exported" | "canceled" | "failed"
 export type ReportExportView = { revision: number; status: ReportExportStatusView; attempted_at: string }
 export type ReportOperationView = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSectionView } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlockView[] } | { kind: "remove_section"; section_id: string }
-export type ReportParagraphReferenceInput = { section_id: string; block_index: number }
 export type ReportProposalDecision = "accept" | "reject"
 export type ReportProposalResolutionDecision = "accepted" | "rejected"
 export type ReportProposalResolutionView = { proposal_id: string; decision: ReportProposalResolutionDecision; resulting_revision: number; resolved_at: string }

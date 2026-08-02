@@ -14,7 +14,10 @@ import {
   newReportSection,
   newReportTable,
 } from "../lib/writingWorkspace";
-import type { WritingParagraphReference } from "../lib/writingComposerDraft";
+import {
+  reportBlockReferencePreview,
+  type WritingBlockReference,
+} from "../lib/writingComposerDraft";
 import { CloseIcon } from "./icons";
 
 const EXPORT_NOTICE_KEY = "claria.writing.hide_export_notice";
@@ -49,7 +52,7 @@ export default function WritingCanvas({
   onExport: () => void;
   onImportTemplate: () => void;
   onReviewTemplate: () => void;
-  onReference: (reference: WritingParagraphReference) => void;
+  onReference: (reference: WritingBlockReference) => void;
   saveStatus: string | null;
   exportStatus: string | null;
   validationErrors: string[];
@@ -315,7 +318,7 @@ function AcceptedReport({
   onReference,
 }: {
   workspace: ReportWorkspaceView;
-  onReference: (reference: WritingParagraphReference) => void;
+  onReference: (reference: WritingBlockReference) => void;
 }) {
   const content = workspace.draft.content;
   return (
@@ -347,10 +350,11 @@ function AcceptedReport({
                         referenceLabel={`Reference ${section.heading}, paragraph ${blockIndex + 1} in Writing chat`}
                         onReference={() =>
                           onReference({
+                            kind: "paragraph",
                             sectionId: section.id,
                             blockIndex,
                             sectionHeading: section.heading,
-                            preview: referencePreview(block.text),
+                            preview: reportBlockReferencePreview(block),
                           })
                         }
                       />
@@ -367,7 +371,22 @@ function AcceptedReport({
                       </ul>
                     );
                   }
-                  return <ReportTable key={blockIndex} table={block} />;
+                  return (
+                    <ReportTable
+                      key={blockIndex}
+                      table={block}
+                      referenceLabel={`Reference ${section.heading}, table ${blockIndex + 1} in Writing chat`}
+                      onReference={() =>
+                        onReference({
+                          kind: "table",
+                          sectionId: section.id,
+                          blockIndex,
+                          sectionHeading: section.heading,
+                          preview: reportBlockReferencePreview(block),
+                        })
+                      }
+                    />
+                  );
                 })}
               </div>
             </section>
@@ -380,45 +399,63 @@ function AcceptedReport({
 
 function ReportTable({
   table,
+  referenceLabel,
+  onReference,
 }: {
   table: Extract<ReportBlockView, { kind: "table" }>;
+  referenceLabel: string;
+  onReference: () => void;
 }) {
   const header = table.has_header ? table.rows[0] : null;
   const body = table.has_header ? table.rows.slice(1) : table.rows;
   return (
-    <div className="overflow-x-auto rounded border border-gray-300" data-testid="report-table">
-      <table className="w-full border-collapse text-xs leading-5">
-        <TableColumns table={table} />
-        {header && (
-          <thead className="bg-slate-100 text-gray-900">
-            <tr>
-              {header.map((cell, columnIndex) => (
-                <th
-                  key={columnIndex}
-                  scope="col"
-                  className="border-b border-r last:border-r-0 border-gray-300 px-2 py-1.5 text-left font-semibold whitespace-pre-wrap align-top"
-                >
-                  {cell}
-                </th>
-              ))}
-            </tr>
-          </thead>
-        )}
-        <tbody>
-          {body.map((row, rowIndex) => (
-            <tr key={rowIndex} className="even:bg-gray-50/60">
-              {row.map((cell, columnIndex) => (
-                <td
-                  key={columnIndex}
-                  className="border-b last:border-b-0 border-r last:border-r-0 border-gray-200 px-2 py-1.5 whitespace-pre-wrap align-top"
-                >
-                  {cell}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="group/table relative rounded hover:bg-blue-50/40 focus-within:bg-blue-50/40">
+      <div
+        className="overflow-x-auto rounded border border-gray-300"
+        data-testid="report-table"
+      >
+        <table className="w-full border-collapse text-xs leading-5">
+          <TableColumns table={table} />
+          {header && (
+            <thead className="bg-slate-100 text-gray-900">
+              <tr>
+                {header.map((cell, columnIndex) => (
+                  <th
+                    key={columnIndex}
+                    scope="col"
+                    className="border-b border-r last:border-r-0 border-gray-300 px-2 py-1.5 text-left font-semibold whitespace-pre-wrap align-top"
+                  >
+                    {cell}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+          )}
+          <tbody>
+            {body.map((row, rowIndex) => (
+              <tr key={rowIndex} className="even:bg-gray-50/60">
+                {row.map((cell, columnIndex) => (
+                  <td
+                    key={columnIndex}
+                    className="border-b last:border-b-0 border-r last:border-r-0 border-gray-200 px-2 py-1.5 whitespace-pre-wrap align-top"
+                  >
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <button
+        type="button"
+        aria-label={referenceLabel}
+        title="Reference this table in Writing chat"
+        onClick={onReference}
+        className="absolute -right-8 top-0 opacity-0 group-hover/table:opacity-100 group-focus-within/table:opacity-100 p-1 text-blue-500 hover:text-blue-800 bg-white border border-blue-200 rounded shadow-sm transition-opacity"
+      >
+        ↙
+      </button>
     </div>
   );
 }
@@ -482,7 +519,7 @@ function EditableReport({
     block: ReportBlockView
   ) => void;
   removeBlock: (sectionIndex: number, blockIndex: number) => void;
-  onReference: (reference: WritingParagraphReference) => void;
+  onReference: (reference: WritingBlockReference) => void;
 }) {
   return (
     <div className="space-y-8" data-testid="inline-report-editor">
@@ -597,25 +634,27 @@ function EditableReport({
                 )}
 
                 <div className="absolute -right-8 top-0 opacity-0 group-hover/block:opacity-100 group-focus-within/block:opacity-100 flex flex-col bg-white border border-gray-200 rounded shadow-sm transition-opacity">
-                  {block.kind === "paragraph" && section.id && (
-                    <button
-                      type="button"
-                      aria-label={`Reference ${section.heading}, paragraph ${blockIndex + 1} in Writing chat`}
-                      title="Reference this paragraph in Writing chat"
-                      onClick={() =>
-                        onReference({
-                          sectionId: section.id!,
-                          blockIndex,
-                          sectionHeading: section.heading,
-                          preview: referencePreview(block.text),
-                        })
-                      }
-                      disabled={disabled}
-                      className="px-1.5 py-1 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-                    >
-                      ↙
-                    </button>
-                  )}
+                  {(block.kind === "paragraph" || block.kind === "table") &&
+                    section.id && (
+                      <button
+                        type="button"
+                        aria-label={`Reference ${section.heading}, ${block.kind === "paragraph" ? "paragraph" : "table"} ${blockIndex + 1} in Writing chat`}
+                        title={`Reference this ${block.kind} in Writing chat`}
+                        onClick={() =>
+                          onReference({
+                            kind: block.kind,
+                            sectionId: section.id!,
+                            blockIndex,
+                            sectionHeading: section.heading,
+                            preview: reportBlockReferencePreview(block),
+                          })
+                        }
+                        disabled={disabled}
+                        className="px-1.5 py-1 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+                      >
+                        ↙
+                      </button>
+                    )}
                   <ReorderButtons
                     label="block"
                     index={blockIndex}
@@ -949,11 +988,6 @@ function ReorderButtons({
       </button>
     </div>
   );
-}
-
-function referencePreview(text: string): string {
-  const compact = text.replace(/\s+/g, " ").trim();
-  return compact.length > 90 ? `${compact.slice(0, 87)}…` : compact;
 }
 
 function exportStatusLabel(status: "exported" | "canceled" | "failed"): string {

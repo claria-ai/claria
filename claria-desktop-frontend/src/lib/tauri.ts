@@ -30,9 +30,9 @@ import type {
   ProvisionerProgress,
   RecordContext,
   RecordFile,
+  ReportBlockReferenceInput,
   ReportDraftEdit,
   ReportExportResult,
-  ReportParagraphReferenceInput,
   ReportProposalDecision,
   ReportTemplatePreview,
   ReportTurnResponse,
@@ -84,6 +84,7 @@ export type {
   RecordContext,
   RecordFile,
   ReportAuthoringTurnView,
+  ReportBlockReferenceInput,
   ReportBlockView,
   ReportContentView,
   ReportContextReadView,
@@ -93,7 +94,6 @@ export type {
   ReportExportStatusView,
   ReportExportView,
   ReportOperationView,
-  ReportParagraphReferenceInput,
   ReportProposalDecision,
   ReportProposalResolutionDecision,
   ReportProposalResolutionView,
@@ -456,7 +456,7 @@ export async function sendReportMessage(
   expectedRevision: number,
   modelId: string,
   instruction: string,
-  references: ReportParagraphReferenceInput[] = []
+  references: ReportBlockReferenceInput[] = []
 ): Promise<ReportTurnResponse> {
   return unwrap(
     await commands.sendReportMessage(

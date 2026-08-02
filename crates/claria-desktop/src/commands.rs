@@ -57,9 +57,8 @@ pub enum ProvisionerProgress {
 pub use claria_desktop::{
     records::ClientSummary,
     report_authoring::{
-        EditorHistoryEntry, ReportDraftEdit, ReportExportResult, ReportExportStatusView,
-        ReportParagraphReferenceInput, ReportProposalDecision, ReportTurnResponse,
-        ReportWorkspaceView,
+        EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportExportResult,
+        ReportExportStatusView, ReportProposalDecision, ReportTurnResponse, ReportWorkspaceView,
     },
 };
 
@@ -1572,7 +1571,7 @@ pub async fn send_report_message(
     expected_revision: u64,
     model_id: String,
     instruction: String,
-    references: Vec<ReportParagraphReferenceInput>,
+    references: Vec<ReportBlockReferenceInput>,
 ) -> Result<ReportTurnResponse, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
@@ -1582,7 +1581,7 @@ pub async fn send_report_message(
         .map_err(|error| error.to_string())?;
     let references = references
         .into_iter()
-        .map(ReportParagraphReferenceInput::into_domain)
+        .map(ReportBlockReferenceInput::into_domain)
         .collect::<Result<Vec<_>, _>>()?;
     let result = claria_report_authoring::send_report_message(
         &sdk_config,

@@ -32,8 +32,9 @@ import { CloseIcon } from "../components/icons";
 import { dismissNotice, isNoticeDismissed } from "../lib/localPreference";
 import {
   readWritingComposerDraft,
+  reportBlockReferencePreview,
   writeWritingComposerDraft,
-  type WritingParagraphReference,
+  type WritingBlockReference,
 } from "../lib/writingComposerDraft";
 
 const INTRO_NOTICE_KEY = "claria.writing.hide_intro_notice";
@@ -91,7 +92,7 @@ export default function Writing({
     title: "Untitled report",
     sections: [],
   });
-  const [references, setReferences] = useState<WritingParagraphReference[]>(
+  const [references, setReferences] = useState<WritingBlockReference[]>(
     initialComposerDraft?.references ?? []
   );
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
@@ -260,7 +261,7 @@ export default function Writing({
     if (
       dirty &&
       !window.confirm(
-        "Reloading will discard your local report edits. Your typed instruction and paragraph references will be kept. Continue?"
+        "Reloading will discard your local report edits. Your typed instruction and report references will be kept. Continue?"
       )
     ) {
       return;
@@ -559,7 +560,7 @@ export default function Writing({
     }
   }
 
-  function addReference(reference: WritingParagraphReference) {
+  function addReference(reference: WritingBlockReference) {
     setReferences((current) => {
       if (
         current.some(
@@ -572,7 +573,9 @@ export default function Writing({
       }
       return [...current, reference].slice(-10);
     });
-    setSaveStatus("Paragraph attached to your next Writing message.");
+    setSaveStatus(
+      `${reference.kind === "paragraph" ? "Paragraph" : "Table"} attached to your next Writing message.`
+    );
     requestAnimationFrame(() => composerRef.current?.focus());
   }
 
@@ -754,18 +757,25 @@ export default function Writing({
             </p>
           )}
           {references.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-2" aria-label="Referenced report paragraphs">
+            <div
+              className="flex flex-wrap gap-1.5 mb-2"
+              aria-label="Referenced report blocks"
+            >
               {references.map((reference) => (
                 <span
                   key={`${reference.sectionId}-${reference.blockIndex}`}
                   className="inline-flex items-center gap-1.5 max-w-full px-2 py-1 text-[11px] text-blue-800 bg-blue-50 border border-blue-200 rounded-full"
                 >
                   <span className="truncate">
-                    {reference.sectionHeading} ¶{reference.blockIndex + 1}: {reference.preview}
+                    {reference.sectionHeading}{" "}
+                    {reference.kind === "paragraph"
+                      ? `¶${reference.blockIndex + 1}`
+                      : `table ${reference.blockIndex + 1}`}
+                    : {reference.preview}
                   </span>
                   <button
                     type="button"
-                    aria-label={`Remove reference to ${reference.sectionHeading}, paragraph ${reference.blockIndex + 1}`}
+                    aria-label={`Remove reference to ${reference.sectionHeading}, ${reference.kind} ${reference.blockIndex + 1}`}
                     onClick={() =>
                       setReferences((current) =>
                         current.filter(
@@ -870,7 +880,7 @@ function ContextControl({
   revision: number;
   turns: number;
   reads: ReportContextReadView[];
-  references: WritingParagraphReference[];
+  references: WritingBlockReference[];
   templateImported: boolean;
 }) {
   const uniqueReads = Array.from(
@@ -893,7 +903,10 @@ function ContextControl({
           <li>{turns} retained Writing turn{turns === 1 ? "" : "s"}</li>
           {templateImported && <li>DOCX template provenance and import notes</li>}
           {references.length > 0 && (
-            <li>{references.length} paragraph reference{references.length === 1 ? "" : "s"}</li>
+            <li>
+              {references.length} focused report block
+              {references.length === 1 ? "" : "s"}
+            </li>
           )}
         </ul>
       </div>
@@ -924,21 +937,22 @@ function ContextControl({
 }
 
 function reconcileReferences(
-  references: WritingParagraphReference[],
+  references: WritingBlockReference[],
   workspace: ReportWorkspaceView
-): WritingParagraphReference[] {
+): WritingBlockReference[] {
   return references.flatMap((reference) => {
     const section = workspace.draft.content.sections.find(
       (candidate) => candidate.id === reference.sectionId
     );
     const block = section?.blocks[reference.blockIndex];
-    if (!section || !block || block.kind !== "paragraph") return [];
-    const compact = block.text.replace(/\s+/g, " ").trim();
+    if (!section || !block || block.kind === "bullet_list") return [];
+    if (block.kind !== reference.kind) return [];
     return [
       {
         ...reference,
+        kind: block.kind,
         sectionHeading: section.heading,
-        preview: compact.length > 90 ? `${compact.slice(0, 87)}…` : compact,
+        preview: reportBlockReferencePreview(block),
       },
     ];
   });

@@ -84,8 +84,13 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
   await page.getByRole("button", {
     name: "Reference Summary, paragraph 1 in Writing chat",
   }).click();
-  await expect(page.getByLabel("Referenced report paragraphs")).toContainText(
-    "Summary ¶1",
+  await page.getByRole("button", {
+    name: "Reference Summary, table 3 in Writing chat",
+  }).click();
+  const reportReferences = page.getByLabel("Referenced report blocks");
+  await expect(reportReferences).toContainText("Summary ¶1");
+  await expect(reportReferences).toContainText(
+    "Summary table 3: Domain | Finding · Attention | Needs support",
   );
 
   // Unsaved canvas edits guard tab navigation.

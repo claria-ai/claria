@@ -274,14 +274,14 @@ pub struct ReportDraftEdit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct ReportParagraphReferenceInput {
+pub struct ReportBlockReferenceInput {
     pub section_id: String,
     pub block_index: u32,
 }
 
-impl ReportParagraphReferenceInput {
-    pub fn into_domain(self) -> Result<claria_report_authoring::ReportParagraphReference, String> {
-        Ok(claria_report_authoring::ReportParagraphReference {
+impl ReportBlockReferenceInput {
+    pub fn into_domain(self) -> Result<claria_report_authoring::ReportBlockReference, String> {
+        Ok(claria_report_authoring::ReportBlockReference {
             section_id: self
                 .section_id
                 .parse::<Uuid>()
