@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.19.0] — 2026-08-02
 
 - Client workspaces have a new opt-in Writing tab for interactive report authoring
 - Writing responses and accepted report content render Markdown formatting
