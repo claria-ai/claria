@@ -1,0 +1,22 @@
+[package]
+name = "claria-client-lifecycle"
+version = "0.19.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aws-sdk-s3 = "=1.137.0"
+claria-core = { path = "../claria-core" }
+claria-report-authoring = { path = "../claria-report-authoring" }
+claria-storage = { path = "../claria-storage" }
+jiff = { version = "=0.2.31", features = ["serde"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+thiserror = "=2.0.18"
+uuid = { version = "=1.23.4", features = ["serde"] }
+
+[dev-dependencies]
+aws-config = "=1.8.18"
+aws-credential-types = "=1.2.14"
+claria-mock-aws = { path = "../claria-mock-aws" }
+tokio = { version = "=1.52.3", features = ["full"] }

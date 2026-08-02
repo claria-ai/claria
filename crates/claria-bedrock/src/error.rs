@@ -17,6 +17,24 @@ pub enum BedrockError {
     #[error("model not supported: {0}")]
     UnsupportedModel(String),
 
+    #[error(
+        "Bedrock report request failed (status {status:?}, code {code}, request ID {request_id:?})"
+    )]
+    ReportService {
+        status: Option<u16>,
+        code: String,
+        request_id: Option<String>,
+    },
+
+    #[error(
+        "report input uses {input_tokens} tokens, exceeding the {input_token_budget}-token budget for {model_id}"
+    )]
+    ContextBudgetExceeded {
+        model_id: String,
+        input_tokens: u32,
+        input_token_budget: u32,
+    },
+
     #[error("AWS config error: {0}")]
     Config(String),
 

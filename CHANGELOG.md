@@ -4,6 +4,46 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- The client record page is split into components and hooks, with each feature owning its own state
+- The voice memo capture engine is a reusable hook rather than a page component's internals
+- Record files and custom prompts share one version history dialog instead of a copy each
+- Duplicate date and file-size formatters in the preferences page are gone
+- Audio buffer handling, transcription summaries, record filename rules and the webview drag-and-drop listener have tests
+
+## [0.19.0] — 2026-08-02
+
+- Client workspaces have a new opt-in Writing tab for interactive report authoring
+- Writing responses and accepted report content render Markdown formatting
+- Reports edit inline without textarea cards, and unsaved edits are saved into the assistant's next message automatically
+- Unsent Writing instructions survive in-app navigation, and no longer trap the client back control
+- Writing tool loops accept empty companion text and transient Bedrock reasoning blocks without persisting private reasoning
+- Writing falls back to the active Haiku tokenizer when a newly launched selected model does not support CountTokens
+- Report paragraphs and tables can be attached to a Writing message from their hover controls
+- Writing proposals show only net title, section, and changed-block differences instead of repeating the complete report
+- Writing imports bounded DOCX templates through an explicit structured-content preview without retaining source files, filenames, or local paths
+- Template-derived reports require a revision-specific carryover review before Word export
+- Reports support editable plain-text tables with header rows, optional column widths, model proposals, and Word export
+- Table proposals highlight changed cells while retaining surrounding row and column context
+- Tool activity rows expand into collapsed-by-default raw LLM invocation and correlated-result JSON
+- Writing exposes the accepted report and record excerpts read during the session in a context control
+- Writing and local-export notices can be dismissed
+- The native application menu restores standard copy, cut, paste, and select-all behavior in the desktop webview
+- Word export uses an asynchronous native save dialog, remains retryable after cancellation, and persists its latest status
+- Persisted writing sessions appear under Editor History on the client record
+- The report assistant uses Bedrock Converse tools to list records and read bounded text from the current client
+- Report token budgeting uses foundation model IDs while Converse continues through cross-region inference profiles
+- Record text stays in the active tool loop while persisted activity retains only ranges, hashes, and safe status metadata
+- Model-authored report changes remain reviewable proposals until the user explicitly accepts and saves them
+- Accepted reports are structured, revisioned, optimistic-locked, and synced through S3 separately from records and chat history
+- Bedrock usage and completion status are retained per call even when a report turn aborts or conflicts
+- Manual report editing supports ordered sections, paragraphs, bullet lists, and tables without giving the model direct write access
+- Pending report proposals survive tab switches and app restarts, and follow deleted clients through restoration
+- Restoring a deleted client leaves its record files and text-only chat history deleted while recovering the opt-in report workspace
+- Client deletion compensates partial failures and retries without overwriting concurrently restored report work
+- Accepted report revisions export as genuine Word documents with headings, paragraphs, real bullet numbering, and styled tables
+- Local Word exports disclose their PHI risk and use atomic writes with private file permissions
+- The existing text-only Chat workflow remains unchanged and does not opt into report tools
+- End-to-end browser checks can use an alternate local Vite port when port 1420 is already occupied
 - Tearing down AWS infrastructure now deletes the storage bucket, which previously always failed because version history and delete markers were left behind
 - The IAM policy grants permission to delete object versions, without which a teardown stops partway through
 - Bulk deletes go out in batches of a thousand objects per request instead of one request per object
@@ -18,11 +58,6 @@ All notable changes to Claria are documented here.
 - Each event is one immutable object, so nothing recorded is lost if the app is killed
 - An audit write that fails is reported in the Claria Console instead of failing the chat turn or upload that produced it
 - The audit crate has tests
-- The client record page is split into components and hooks, with each of its features owning its own state
-- The voice memo capture engine is a reusable hook rather than a page component's internals
-- Record files and custom prompts share one version history dialog instead of a copy each
-- Duplicate date and file-size formatters in the preferences page are gone
-- Audio buffer handling, transcription summaries, record filename rules and the webview drag-and-drop listener have tests
 - The frontend has a unit test suite
 - The transcript body format is pinned by fixtures the Rust and TypeScript parsers both read, so a change to one that the other misses fails on both sides
 - A recording longer than an hour and forty minutes opened in the transcript editor as one un-diarized block, and saving it overwrote every speaker header
@@ -40,7 +75,7 @@ All notable changes to Claria are documented here.
 - When a model has no pricing entry the UI omits dollar figures instead of showing $0.00 or "cost unavailable"
 - Client and record file search ignores accents, so "Luci" finds "Lucí"
 - Removed the unused credential intake page
-- Dependency refresh across the workspace and frontend clears 10 of 17 RustSec advisories and all npm audit findings; the rest are transitive with no patched upstream (docx-rs, wayland-scanner, AWS smithy legacy TLS)
+- Dependency refresh across the workspace and frontend clears 10 of 17 RustSec advisories and all npm audit findings; the rest are transitive with no patched upstream (wayland-scanner and AWS smithy legacy TLS)
 - The onboarding e2e test covers the unified provisioning flow that replaced the old wizard pages
 - Client list and record file list share one deleted-items section and history toggle; deleted clients show as rows instead of a second table
 - AWS infrastructure scan, plan review, apply progress, and errors all render through one lifecycle widget
@@ -51,8 +86,8 @@ All notable changes to Claria are documented here.
 - The release workflow caches npm downloads
 - The mock AWS test server builds clean under the latest Clippy
 - CI pins the Rust toolchain so a new stable release can't fail the build unannounced
-- Removed the abandoned report-generation feature set: three crates, their domain models, and their S3 key layout
-- Builds no longer compile tantivy, tera, docx-rs, or ts-rs
+- Removed the abandoned template-driven report-generation feature set: three crates, their domain models, and their S3 key layout
+- Builds no longer compile tantivy, tera, or ts-rs
 - The update check compares releases as semantic versions, so users on 0.9.x are no longer told they are current
 - A transcription job that never finishes surfaces a timeout error after thirty minutes instead of freezing the app indefinitely
 - Transcription status polling and IAM credential propagation both back off exponentially with jitter instead of polling on a fixed interval

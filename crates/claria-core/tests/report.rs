@@ -1,0 +1,587 @@
+use claria_core::models::{
+    report::{
+        MAX_REPORT_TURNS, REPORT_WORKSPACE_SCHEMA_VERSION, ReportAuthoringTurn, ReportBlock,
+        ReportContent, ReportOperation, ReportProposal, ReportProtocolBlock, ReportProtocolMessage,
+        ReportProtocolRole, ReportSection, ReportTemplateImport, ReportTemplateWarning,
+        ReportTemplateWarningCode, ReportWorkspace, decode_report_workspace,
+        report_template_placeholder_count, validate_report_content,
+    },
+    turn_usage::TurnUsage,
+};
+use jiff::Timestamp;
+use uuid::Uuid;
+
+fn timestamp(value: &str) -> Timestamp {
+    value.parse().expect("timestamp")
+}
+
+fn workspace() -> ReportWorkspace {
+    ReportWorkspace::new(Uuid::new_v4(), timestamp("2026-08-01T12:00:00Z"))
+}
+
+fn paragraph(text: &str) -> ReportBlock {
+    ReportBlock::Paragraph {
+        text: text.to_string(),
+    }
+}
+
+fn section(id: Uuid, heading: &str, text: &str) -> ReportSection {
+    ReportSection {
+        id,
+        heading: heading.to_string(),
+        blocks: vec![paragraph(text)],
+    }
+}
+
+fn proposal(workspace: &ReportWorkspace, operations: Vec<ReportOperation>) -> ReportProposal {
+    ReportProposal {
+        id: Uuid::new_v4(),
+        report_id: workspace.report_id,
+        base_revision: workspace.draft.revision,
+        model_id: "us.anthropic.claude-sonnet-test".to_string(),
+        summary: "Add the reviewed assessment".to_string(),
+        proposed_content: workspace
+            .draft
+            .preview(&operations)
+            .expect("valid operations"),
+        operations,
+        tool_use_id: "tool-1".to_string(),
+        created_at: timestamp("2026-08-01T12:01:00Z"),
+    }
+}
+
+#[test]
+fn new_workspace_has_versioned_empty_accepted_draft() {
+    let workspace = workspace();
+    assert_eq!(workspace.schema_version, REPORT_WORKSPACE_SCHEMA_VERSION);
+    assert_eq!(workspace.draft.revision, 0);
+    assert_eq!(workspace.draft.content.title, "Untitled report");
+    assert!(workspace.draft.content.sections.is_empty());
+    assert!(workspace.session.pending_proposal.is_none());
+    assert_eq!(workspace.session.last_agent_revision, None);
+    assert_eq!(workspace.session.last_export, None);
+    workspace.validate().expect("valid workspace");
+}
+
+#[test]
+fn legacy_workspace_defaults_writing_queue_and_export_status() {
+    let workspace = workspace();
+    let mut value = serde_json::to_value(&workspace).expect("serialize workspace");
+    value["schema_version"] = serde_json::json!(1);
+    value
+        .as_object_mut()
+        .expect("workspace object")
+        .remove("template_import");
+    let session = value["session"].as_object_mut().expect("session object");
+    session.remove("last_agent_revision");
+    session.remove("last_export");
+    let bytes = serde_json::to_vec(&value).expect("legacy bytes");
+
+    let decoded = decode_report_workspace(&bytes).expect("decode legacy workspace");
+    assert_eq!(decoded.schema_version, REPORT_WORKSPACE_SCHEMA_VERSION);
+    assert_eq!(decoded.session.last_agent_revision, None);
+    assert_eq!(decoded.session.last_export, None);
+    assert_eq!(decoded.template_import, None);
+}
+
+#[test]
+fn report_enums_round_trip_with_snake_case_tags() {
+    let block = ReportBlock::BulletList {
+        items: vec!["One".to_string(), "Two".to_string()],
+    };
+    let json = serde_json::to_value(&block).expect("serialize");
+    assert_eq!(json["kind"], "bullet_list");
+    assert_eq!(serde_json::from_value::<ReportBlock>(json).unwrap(), block);
+
+    let operation = ReportOperation::SetTitle {
+        title: "Assessment".to_string(),
+    };
+    let json = serde_json::to_value(&operation).expect("serialize");
+    assert_eq!(json["kind"], "set_title");
+    assert_eq!(
+        serde_json::from_value::<ReportOperation>(json).unwrap(),
+        operation
+    );
+}
+
+#[test]
+fn decode_rejects_future_schema_version() {
+    let mut value = serde_json::to_value(workspace()).expect("serialize");
+    value["schema_version"] = serde_json::json!(REPORT_WORKSPACE_SCHEMA_VERSION + 1);
+    let error = decode_report_workspace(&serde_json::to_vec(&value).unwrap()).unwrap_err();
+    assert!(error.to_string().contains("newer than supported"));
+}
+
+#[test]
+fn preview_applies_ordered_operations_atomically() {
+    let workspace = workspace();
+    let first_id = Uuid::new_v4();
+    let second_id = Uuid::new_v4();
+    let operations = vec![
+        ReportOperation::SetTitle {
+            title: "Clinical report".to_string(),
+        },
+        ReportOperation::AddSection {
+            position: 0,
+            section: section(first_id, "Background", "Initial history"),
+        },
+        ReportOperation::AddSection {
+            position: 1,
+            section: section(second_id, "Findings", "Initial findings"),
+        },
+        ReportOperation::ReplaceSection {
+            section_id: first_id,
+            heading: "History".to_string(),
+            blocks: vec![paragraph("Reviewed history")],
+        },
+        ReportOperation::RemoveSection {
+            section_id: second_id,
+        },
+    ];
+
+    let content = workspace.draft.preview(&operations).expect("preview");
+    assert_eq!(content.title, "Clinical report");
+    assert_eq!(content.sections.len(), 1);
+    assert_eq!(content.sections[0].id, first_id);
+    assert_eq!(content.sections[0].heading, "History");
+}
+
+#[test]
+fn invalid_operation_leaves_source_draft_unchanged() {
+    let workspace = workspace();
+    let before = workspace.draft.clone();
+    let error = workspace
+        .draft
+        .preview(&[
+            ReportOperation::SetTitle {
+                title: "Changed".to_string(),
+            },
+            ReportOperation::RemoveSection {
+                section_id: Uuid::new_v4(),
+            },
+        ])
+        .unwrap_err();
+    assert!(error.to_string().contains("does not exist"));
+    assert_eq!(workspace.draft, before);
+}
+
+#[test]
+fn preview_rejects_duplicate_ids_invalid_positions_and_no_op() {
+    let mut workspace = workspace();
+    let id = Uuid::new_v4();
+    workspace
+        .draft
+        .content
+        .sections
+        .push(section(id, "A", "Text"));
+
+    let duplicate = workspace.draft.preview(&[ReportOperation::AddSection {
+        position: 1,
+        section: section(id, "B", "Text"),
+    }]);
+    assert!(
+        duplicate
+            .unwrap_err()
+            .to_string()
+            .contains("already exists")
+    );
+
+    let outside = workspace.draft.preview(&[ReportOperation::AddSection {
+        position: 3,
+        section: section(Uuid::new_v4(), "B", "Text"),
+    }]);
+    assert!(outside.unwrap_err().to_string().contains("outside"));
+
+    let no_op = workspace.draft.preview(&[ReportOperation::SetTitle {
+        title: "Untitled report".to_string(),
+    }]);
+    assert!(no_op.unwrap_err().to_string().contains("does not change"));
+}
+
+#[test]
+fn acceptance_recomputes_candidate_and_increments_once() {
+    let workspace = workspace();
+    let operations = vec![ReportOperation::AddSection {
+        position: 0,
+        section: section(Uuid::new_v4(), "Summary", "Accepted text"),
+    }];
+    let proposal = proposal(&workspace, operations);
+    let accepted = workspace
+        .draft
+        .accept(&proposal, timestamp("2026-08-01T12:02:00Z"))
+        .expect("accept");
+
+    assert_eq!(accepted.revision, 1);
+    assert_eq!(accepted.last_applied_proposal_id, Some(proposal.id));
+    assert_eq!(accepted.content, proposal.proposed_content);
+
+    let stale = accepted.accept(&proposal, timestamp("2026-08-01T12:03:00Z"));
+    assert!(stale.unwrap_err().to_string().contains("based on revision"));
+}
+
+#[test]
+fn acceptance_never_trusts_tampered_candidate() {
+    let workspace = workspace();
+    let operations = vec![ReportOperation::SetTitle {
+        title: "Reviewed title".to_string(),
+    }];
+    let mut proposal = proposal(&workspace, operations);
+    proposal.proposed_content.title = "Unreviewed title".to_string();
+
+    let error = workspace
+        .draft
+        .accept(&proposal, timestamp("2026-08-01T12:02:00Z"))
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match"));
+}
+
+#[test]
+fn manual_replace_checks_revision_and_increments_once() {
+    let workspace = workspace();
+    let content = ReportContent {
+        title: "Manually edited".to_string(),
+        sections: vec![],
+    };
+    let saved = workspace
+        .draft
+        .replace_content(0, content, timestamp("2026-08-01T12:02:00Z"))
+        .expect("save");
+    assert_eq!(saved.revision, 1);
+
+    let error = saved
+        .replace_content(0, saved.content.clone(), timestamp("2026-08-01T12:03:00Z"))
+        .unwrap_err();
+    assert!(error.to_string().contains("expected revision"));
+}
+
+#[test]
+fn limits_and_empty_text_are_rejected() {
+    let workspace = workspace();
+    let too_long_title = "x".repeat(201);
+    assert!(
+        workspace
+            .draft
+            .preview(&[ReportOperation::SetTitle {
+                title: too_long_title
+            }])
+            .unwrap_err()
+            .to_string()
+            .contains("200")
+    );
+
+    let invalid_bullets = ReportOperation::AddSection {
+        position: 0,
+        section: ReportSection {
+            id: Uuid::new_v4(),
+            heading: "Findings".to_string(),
+            blocks: vec![ReportBlock::BulletList { items: vec![] }],
+        },
+    };
+    assert!(
+        workspace
+            .draft
+            .preview(&[invalid_bullets])
+            .unwrap_err()
+            .to_string()
+            .contains("bullet list")
+    );
+}
+
+#[test]
+fn structured_tables_validate_shape_widths_and_empty_cells() {
+    let valid = ReportContent {
+        title: "Assessment".to_string(),
+        sections: vec![ReportSection {
+            id: Uuid::new_v4(),
+            heading: "Scores".to_string(),
+            blocks: vec![ReportBlock::Table {
+                rows: vec![
+                    vec!["Measure".to_string(), "Score".to_string()],
+                    vec!["Attention".to_string(), String::new()],
+                ],
+                has_header: true,
+                column_widths: Some(vec![7_000, 3_000]),
+            }],
+        }],
+    };
+    validate_report_content(&valid).expect("valid table");
+
+    for rows in [
+        vec![
+            vec!["A".to_string()],
+            vec!["B".to_string(), "C".to_string()],
+        ],
+        vec![vec![String::new(), String::new()]],
+    ] {
+        let mut invalid = valid.clone();
+        invalid.sections[0].blocks[0] = ReportBlock::Table {
+            rows,
+            has_header: false,
+            column_widths: None,
+        };
+        assert!(validate_report_content(&invalid).is_err());
+    }
+
+    let mut invalid_widths = valid.clone();
+    invalid_widths.sections[0].blocks[0] = ReportBlock::Table {
+        rows: vec![vec!["A".to_string(), "B".to_string()]],
+        has_header: true,
+        column_widths: Some(vec![5_000, 4_999]),
+    };
+    assert!(
+        validate_report_content(&invalid_widths)
+            .unwrap_err()
+            .to_string()
+            .contains("sum to 10000")
+    );
+
+    let mut full_rows = vec![vec![String::new(); 20]; 200];
+    full_rows[0][0] = "value".to_string();
+    let too_many_cells = ReportContent {
+        title: "Assessment".to_string(),
+        sections: vec![ReportSection {
+            id: Uuid::new_v4(),
+            heading: "Large tables".to_string(),
+            blocks: (0..6)
+                .map(|_| ReportBlock::Table {
+                    rows: full_rows.clone(),
+                    has_header: false,
+                    column_widths: None,
+                })
+                .collect(),
+        }],
+    };
+    assert!(
+        validate_report_content(&too_many_cells)
+            .unwrap_err()
+            .to_string()
+            .contains("at most 20000 cells")
+    );
+}
+
+#[test]
+fn template_metadata_is_revision_bound_and_contains_no_local_identity() {
+    let mut workspace = workspace();
+    workspace.draft = workspace
+        .draft
+        .replace_content(
+            0,
+            ReportContent {
+                title: "Imported".to_string(),
+                sections: vec![],
+            },
+            timestamp("2026-08-01T12:01:00Z"),
+        )
+        .expect("import revision");
+    workspace.updated_at = timestamp("2026-08-01T12:01:00Z");
+    workspace.template_import = Some(ReportTemplateImport {
+        source_sha256: "a".repeat(64),
+        imported_revision: 1,
+        imported_at: timestamp("2026-08-01T12:01:00Z"),
+        warnings: vec![ReportTemplateWarning {
+            code: ReportTemplateWarningCode::MissingTitle,
+            count: 1,
+        }],
+        reviewed_revision: Some(1),
+    });
+    workspace.validate().expect("valid metadata");
+    let json = serde_json::to_string(&workspace).expect("serialize");
+    assert!(!json.contains("filename"));
+    assert!(!json.contains("path"));
+
+    workspace.draft.revision = 2;
+    assert!(
+        workspace
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("current accepted revision")
+    );
+}
+
+#[test]
+fn unresolved_template_markers_are_counted_across_tables() {
+    let content = ReportContent {
+        title: "Report for {{client}}".to_string(),
+        sections: vec![ReportSection {
+            id: Uuid::new_v4(),
+            heading: "[DATE]".to_string(),
+            blocks: vec![ReportBlock::Table {
+                rows: vec![vec!["<<score>>".to_string(), "_____".to_string()]],
+                has_header: false,
+                column_widths: None,
+            }],
+        }],
+    };
+    assert_eq!(report_template_placeholder_count(&content), 4);
+}
+
+fn complete_turn(index: usize, text_size: usize) -> ReportAuthoringTurn {
+    let now = timestamp("2026-08-01T12:00:00Z");
+    ReportAuthoringTurn {
+        id: Uuid::new_v4(),
+        model_id: "test-model".to_string(),
+        messages: vec![
+            ReportProtocolMessage {
+                role: ReportProtocolRole::User,
+                content: vec![ReportProtocolBlock::Text {
+                    text: "Read the record".to_string(),
+                }],
+                created_at: now,
+            },
+            ReportProtocolMessage {
+                role: ReportProtocolRole::Assistant,
+                content: vec![ReportProtocolBlock::ToolUse {
+                    tool_use_id: format!("tool-{index}"),
+                    name: "read_record_file".to_string(),
+                    input: serde_json::json!({"filename": "record.txt"}),
+                }],
+                created_at: now,
+            },
+            ReportProtocolMessage {
+                role: ReportProtocolRole::User,
+                content: vec![ReportProtocolBlock::ToolResult {
+                    tool_use_id: format!("tool-{index}"),
+                    status: claria_core::models::report::ReportToolResultStatus::Success,
+                    content: serde_json::json!({"metadata": "x".repeat(text_size)}),
+                }],
+                created_at: now,
+            },
+            ReportProtocolMessage {
+                role: ReportProtocolRole::Assistant,
+                content: vec![ReportProtocolBlock::Text {
+                    text: "Done".to_string(),
+                }],
+                created_at: now,
+            },
+        ],
+        usage: TurnUsage {
+            model_id: "test-model".to_string(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            cost_usd: 0.0,
+            pricing_version: 0,
+        },
+        usage_complete: true,
+        converse_calls: 1,
+        tool_uses: 1,
+        created_at: now,
+        completed_at: now,
+    }
+}
+
+#[test]
+fn history_pruning_removes_whole_oldest_turns() {
+    let mut workspace = workspace();
+    for index in 0..(MAX_REPORT_TURNS + 3) {
+        workspace
+            .push_turn(complete_turn(index, 10))
+            .expect("push turn");
+    }
+    assert_eq!(workspace.session.turns.len(), MAX_REPORT_TURNS);
+    let oldest_json = serde_json::to_string(&workspace.session.turns[0]).unwrap();
+    assert!(oldest_json.contains("tool-3"));
+    assert!(oldest_json.contains("ToolUse") || oldest_json.contains("tool_use"));
+    assert!(oldest_json.contains("tool_result"));
+}
+
+#[test]
+fn byte_pruning_keeps_newest_complete_turn() {
+    let mut workspace = workspace();
+    for index in 0..5 {
+        workspace
+            .push_turn(complete_turn(index, 140_000))
+            .expect("push turn");
+    }
+    assert!(workspace.session.turns.len() < 5);
+    let newest = workspace.session.turns.last().expect("newest turn");
+    let json = serde_json::to_string(newest).unwrap();
+    assert!(json.contains("tool-4"));
+    assert_eq!(newest.messages.len(), 4);
+}
+
+#[test]
+fn report_text_rejects_xml_illegal_controls() {
+    let content = ReportContent {
+        title: "Valid title".to_string(),
+        sections: vec![section(
+            Uuid::new_v4(),
+            "Findings",
+            "contains a vertical tab\u{000B}",
+        )],
+    };
+    let error = validate_report_content(&content).expect_err("illegal XML character");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot be represented in Word XML")
+    );
+}
+
+#[test]
+fn turn_protocol_requires_role_order_unique_ids_and_exact_results() {
+    let mut wrong_role = complete_turn(1, 10);
+    wrong_role.messages[0].role = ReportProtocolRole::Assistant;
+    assert!(
+        workspace()
+            .push_turn(wrong_role)
+            .expect_err("wrong role")
+            .to_string()
+            .contains("alternate")
+    );
+
+    let mut duplicate = complete_turn(2, 10);
+    if let ReportProtocolBlock::ToolUse {
+        tool_use_id,
+        name,
+        input,
+    } = duplicate.messages[1].content[0].clone()
+    {
+        duplicate.messages[1]
+            .content
+            .push(ReportProtocolBlock::ToolUse {
+                tool_use_id,
+                name,
+                input,
+            });
+    }
+    assert!(
+        workspace()
+            .push_turn(duplicate)
+            .expect_err("duplicate tool ID")
+            .to_string()
+            .contains("unique")
+    );
+
+    let mut mismatched = complete_turn(3, 10);
+    if let ReportProtocolBlock::ToolResult { tool_use_id, .. } =
+        &mut mismatched.messages[2].content[0]
+    {
+        *tool_use_id = "different-id".to_string();
+    }
+    assert!(
+        workspace()
+            .push_turn(mismatched)
+            .expect_err("mismatched result")
+            .to_string()
+            .contains("correlate exactly")
+    );
+
+    let mut retained_reasoning = complete_turn(4, 10);
+    retained_reasoning.messages[1].content.insert(
+        0,
+        ReportProtocolBlock::ReasoningText {
+            text: "must remain transient".to_string(),
+            signature: Some("signature".to_string()),
+        },
+    );
+    assert!(
+        workspace()
+            .push_turn(retained_reasoning)
+            .expect_err("persisted reasoning")
+            .to_string()
+            .contains("must not retain model reasoning")
+    );
+}

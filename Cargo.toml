@@ -9,6 +9,9 @@ members = [
     "crates/claria-transcribe",
     "crates/claria-whisper",
     "crates/claria-billing",
+    "crates/claria-client-lifecycle",
+    "crates/claria-report-authoring",
+    "crates/claria-docx",
     "crates/claria-desktop",
     "crates/claria-mock-aws",
 ]

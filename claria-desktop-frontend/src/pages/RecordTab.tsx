@@ -14,6 +14,7 @@ import CreateTextFileModal from "../components/CreateTextFileModal";
 import DeletedSection from "../components/DeletedSection";
 import DeleteFileModal from "../components/DeleteFileModal";
 import DropZoneHint from "../components/DropZoneHint";
+import EditorHistoryFolder from "../components/EditorHistoryFolder";
 import EditTextModal from "../components/EditTextModal";
 import FileIcon from "../components/FileIcon";
 import FileList from "../components/FileList";
@@ -35,6 +36,7 @@ import {
   isChatHistory,
 } from "../lib/recordFiles";
 import { recordFileVersions } from "../lib/versions";
+import { useEditorHistory } from "../lib/useEditorHistory";
 import { useMemoRecorder } from "../lib/useMemoRecorder";
 import { useMoreMode } from "../lib/useMoreMode";
 import { useRecordFiles } from "../lib/useRecordFiles";
@@ -54,9 +56,11 @@ import { useWebviewFileDrop } from "../lib/useWebviewFileDrop";
 export default function RecordTab({
   clientId,
   onResumeChat,
+  onResumeWriting,
 }: {
   clientId: string;
   onResumeChat: (detail: ChatHistoryDetail) => void;
+  onResumeWriting: (reportId: string) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const { files, loading, uploading, refresh, upload, remove } = useRecordFiles(
@@ -65,6 +69,7 @@ export default function RecordTab({
   );
   const search = useRecordSearch(clientId, setError);
   const transcriptionPrefs = useTranscriptionPrefs();
+  const editorHistory = useEditorHistory(clientId);
 
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [previewFilename, setPreviewFilename] = useState<string | null>(null);
@@ -250,6 +255,13 @@ export default function RecordTab({
               resumeLoading={resumeLoading}
               onResume={handleResume}
               onDelete={setDeleteConfirm}
+            />
+          )}
+
+          {!loading && (
+            <EditorHistoryFolder
+              entries={editorHistory}
+              onResume={onResumeWriting}
             />
           )}
 

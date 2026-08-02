@@ -13,7 +13,7 @@ use specta::Type;
 /// Cache fields are populated by the prompt-caching layer; until then they
 /// are `0`, which the UI must treat as "no caching active", not "missing
 /// data". `String` field means this type cannot be `Copy`.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 pub struct TurnUsage {
     /// Inference profile ID actually invoked (e.g.
     /// `us.anthropic.claude-sonnet-4-20250514-v1:0`). Stored per-turn — not

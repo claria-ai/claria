@@ -13,14 +13,95 @@ const MOCK_AWS_URL = "http://127.0.0.1:9000";
  * `page.addInitScript()`. All state lives inside the closure so each
  * test gets a fresh environment.
  */
-export function buildInitScript(): string {
+export function buildInitScript(
+  options: { configured?: boolean } = {},
+): string {
+  const configured = options.configured === true;
   return `
     (() => {
       const MOCK_AWS_URL = "${MOCK_AWS_URL}";
 
       // ── Mutable app state ──────────────────────────────────────────────
-      let configSaved = false;
-      let savedConfig = null;
+      let configSaved = ${configured};
+      let savedConfig = ${configured ? `{
+        region: "us-east-1",
+        system_name: "claria",
+        account_id: "185735714230",
+        created_at: "2026-08-01T00:00:00Z",
+        credential_type: "inline",
+        profile_name: null,
+        access_key_hint: "AKIA...0001",
+        preferred_model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        cost_explorer_enabled: false,
+        hourly_cost_data: false,
+        prompt_caching_enabled: true,
+        transcription: {
+          default_language: "english",
+          default_speaker_count: 2,
+          use_medical_for_english: false,
+          translate_to_english: false,
+        },
+      }` : "null"};
+      window.__REPORT_COMMANDS__ = [];
+      window.__REPORT_INVOCATIONS__ = [];
+      window.__CHAT_COMMANDS__ = [];
+      const toolActivity = (name, toolUseId, summary, input, result) => ({
+        kind: "tool_activity",
+        name,
+        summary,
+        status: "succeeded",
+        invocation_json: JSON.stringify({ toolUse: { toolUseId, name, input } }, null, 2),
+        result_json: JSON.stringify({
+          toolResult: {
+            toolUseId,
+            status: "success",
+            content: [{ json: result }],
+          },
+        }, null, 2),
+        created_at: new Date().toISOString(),
+      });
+      let reportWorkspace = {
+        schema_version: 2,
+        report_id: "99999999-9999-4999-8999-999999999999",
+        client_id: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb",
+        draft: {
+          revision: 0,
+          content: { title: "Untitled report", sections: [] },
+          created_at: "2026-08-01T00:00:00Z",
+          updated_at: "2026-08-01T00:00:00Z",
+          last_applied_proposal_id: null,
+        },
+        turns: [],
+        pending_proposal: null,
+        resolutions: [],
+        last_agent_revision: null,
+        last_export: null,
+        template_import: null,
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-01T00:00:00Z",
+      };
+      const reportTemplatePreview = {
+        import_id: "77777777-7777-4777-8777-777777777777",
+        content: {
+          title: "Imported Evaluation Template",
+          sections: [{
+            id: "66666666-6666-4666-8666-666666666666",
+            heading: "Assessment Scores",
+            blocks: [{
+              kind: "table",
+              rows: [["Measure", "Score"], ["Attention", "{{score}}"]],
+              has_header: true,
+              column_widths: [7000, 3000],
+            }],
+          }],
+        },
+        warnings: [{
+          code: "headers_footers_omitted",
+          message: "Headers or footers were omitted.",
+          count: 2,
+        }],
+        stats: { sections: 1, paragraphs: 0, bullet_lists: 0, tables: 1, table_cells: 4, placeholder_count: 1 },
+      };
 
       // ── Plan / apply fixtures built from mock-aws scan ─────────────────
       // We generate "create" entries for a fresh account so the UI shows
@@ -199,7 +280,15 @@ export function buildInitScript(): string {
           }
 
           // ── Client operations (post-onboarding) ──────────────────────
-          if (cmd === "list_clients") return [];
+          if (cmd === "list_clients") {
+            return ${configured}
+              ? [{
+                  id: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb",
+                  name: "Jane Doe",
+                  created_at: "2026-08-01T00:00:00Z",
+                }]
+              : [];
+          }
           if (cmd === "create_client") {
             return {
               id: "e2e-test-client-" + Date.now(),
@@ -208,11 +297,247 @@ export function buildInitScript(): string {
             };
           }
 
-          // ── Record files ─────────────────────────────────────────────
-          if (cmd === "list_record_files") return [];
+          // ── Record files and unchanged Chat workflow ─────────────────
+          if (cmd === "list_record_files") return [{
+            filename: "chat-history/77777777-7777-4777-8777-777777777777.json",
+            size: 842,
+            uploaded_at: "2026-08-01T12:00:00Z",
+          }];
           if (cmd === "list_record_context") return [];
           if (cmd === "list_deleted_files") return [];
           if (cmd === "list_deleted_clients") return [];
+          if (cmd === "load_chat_history") {
+            window.__CHAT_COMMANDS__.push({ cmd, args: structuredClone(args) });
+            return {
+              chat_id: args.chatId,
+              model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+              messages: [
+                { role: "user", content: "Earlier question", usage: null },
+                { role: "assistant", content: "Earlier answer", usage: { model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0", input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cost_usd: 0.0001, pricing_version: 4 } },
+              ],
+              created_at: "2026-08-01T12:00:00Z",
+            };
+          }
+          if (cmd === "chat_message") {
+            window.__CHAT_COMMANDS__.push({ cmd, args: structuredClone(args) });
+            return {
+              chat_id: args.chatId || "77777777-7777-4777-8777-777777777777",
+              content: "Unchanged Chat response",
+              usage: { model_id: args.modelId, input_tokens: 30, output_tokens: 8, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cost_usd: 0.0002, pricing_version: 4 },
+            };
+          }
+
+          // ── Writing assistant ────────────────────────────────────────
+          if (cmd === "list_editor_history") {
+            return reportWorkspace.turns.length === 0 && reportWorkspace.draft.revision === 0
+              ? []
+              : [{
+                  report_id: reportWorkspace.report_id,
+                  title: reportWorkspace.draft.content.title,
+                  revision: reportWorkspace.draft.revision,
+                  turn_count: reportWorkspace.turns.length,
+                  updated_at: reportWorkspace.updated_at,
+                  last_export: reportWorkspace.last_export,
+                }];
+          }
+          if (cmd === "load_report_workspace") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            return structuredClone(reportWorkspace);
+          }
+          if (cmd === "save_report_draft") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (reportWorkspace.pending_proposal) throw "Accept or reject the pending proposal before editing the report.";
+            reportWorkspace = {
+              ...reportWorkspace,
+              draft: {
+                ...reportWorkspace.draft,
+                revision: reportWorkspace.draft.revision + 1,
+                content: {
+                  title: args.draft.title,
+                  sections: args.draft.sections.map((section, index) => ({
+                    ...section,
+                    id: section.id || "10000000-0000-4000-8000-" + String(index + 1).padStart(12, "0"),
+                  })),
+                },
+                updated_at: new Date().toISOString(),
+              },
+              template_import: reportWorkspace.template_import
+                ? { ...reportWorkspace.template_import, reviewed_revision: null, review_required: true }
+                : null,
+            };
+            return reportWorkspace;
+          }
+          if (cmd === "pick_report_template_docx") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            return structuredClone(reportTemplatePreview);
+          }
+          if (cmd === "apply_report_template") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.importId !== reportTemplatePreview.import_id) throw "That template preview expired. Choose the DOCX again.";
+            if (args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            reportWorkspace = {
+              ...reportWorkspace,
+              draft: {
+                ...reportWorkspace.draft,
+                revision: reportWorkspace.draft.revision + 1,
+                content: structuredClone(reportTemplatePreview.content),
+                updated_at: new Date().toISOString(),
+              },
+              template_import: {
+                imported_revision: reportWorkspace.draft.revision + 1,
+                imported_at: new Date().toISOString(),
+                warnings: structuredClone(reportTemplatePreview.warnings),
+                reviewed_revision: null,
+                review_required: true,
+                placeholder_count: reportTemplatePreview.stats.placeholder_count,
+              },
+            };
+            return structuredClone(reportWorkspace);
+          }
+          if (cmd === "discard_report_template_preview") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            return null;
+          }
+          if (cmd === "acknowledge_report_template_review") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (!reportWorkspace.template_import) throw "This report was not initialized from a DOCX template.";
+            reportWorkspace = {
+              ...reportWorkspace,
+              template_import: {
+                ...reportWorkspace.template_import,
+                reviewed_revision: reportWorkspace.draft.revision,
+                review_required: false,
+              },
+            };
+            return structuredClone(reportWorkspace);
+          }
+          if (cmd === "send_report_message") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (reportWorkspace.pending_proposal) throw "Accept or reject the pending proposal before sending another instruction.";
+            const proposedContent = {
+              title: "Comprehensive Evaluation",
+              sections: [{
+                id: "11111111-2222-4333-8444-555555555555",
+                heading: "Summary",
+                blocks: [
+                  { kind: "paragraph", text: "Jane was referred for an evaluation of attention and written-output concerns." },
+                  { kind: "bullet_list", items: ["Review teacher observations", "Coordinate follow-up"] },
+                  { kind: "table", rows: [["Domain", "Finding"], ["Attention", "Needs support"]], has_header: true, column_widths: [3500, 6500] },
+                ],
+              }],
+            };
+            reportWorkspace = {
+              ...reportWorkspace,
+              turns: [{
+                id: "turn-1",
+                model_id: args.modelId,
+                timeline: [
+                  { kind: "message", role: "user", text: args.instruction, created_at: new Date().toISOString() },
+                  toolActivity("list_record_files", "list-1", "Listed 3 record files", {}, { file_count: 3, truncated: false }),
+                  toolActivity("read_record_file", "read-1", "Read intake-parent-interview.txt, characters 0–3200", { filename: "intake-parent-interview.txt", offset: 0, limit: 8000 }, { filename: "intake-parent-interview.txt", offset: 0, returned_characters: 3200, total_characters: 3200, content_retained: false }),
+                  toolActivity("propose_report_changes", "proposal-1", "Staged report changes for approval", { summary: "Create an initial evaluation report", operations: [{ kind: "set_title", title: proposedContent.title }, { kind: "add_section", position: 0, heading: proposedContent.sections[0].heading, blocks: proposedContent.sections[0].blocks }] }, { status: "pending_user_acceptance", proposal_id: "proposal-1", base_revision: reportWorkspace.draft.revision }),
+                  { kind: "message", role: "assistant", text: "I staged a proposal for your review.", created_at: new Date().toISOString() },
+                ],
+                usage: { model_id: args.modelId, input_tokens: 1240, output_tokens: 220, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cost_usd: 0.00702, pricing_version: 4 },
+                usage_complete: true,
+                converse_calls: 3,
+                tool_uses: 3,
+                context_reads: [{
+                  filename: "intake-parent-interview.txt",
+                  offset: 0,
+                  returned_characters: 3200,
+                  total_characters: 3200,
+                  read_at: new Date().toISOString(),
+                }],
+                created_at: new Date().toISOString(),
+                completed_at: new Date().toISOString(),
+              }],
+              last_agent_revision: reportWorkspace.draft.revision,
+              pending_proposal: {
+                id: "proposal-1",
+                report_id: reportWorkspace.report_id,
+                base_revision: reportWorkspace.draft.revision,
+                model_id: args.modelId,
+                summary: "Create an initial evaluation report",
+                operations: [
+                  { kind: "set_title", title: proposedContent.title },
+                  { kind: "add_section", position: 0, section: proposedContent.sections[0] },
+                ],
+                proposed_content: proposedContent,
+                created_at: new Date().toISOString(),
+              },
+            };
+            return {
+              workspace: reportWorkspace,
+              turn_id: "turn-1",
+              attempt_id: "88888888-8888-4888-8888-888888888888",
+              assistant_text: "I staged a proposal for your review.",
+              usage: reportWorkspace.turns[0].usage,
+              usage_complete: true,
+              converse_calls: 3,
+              tool_uses: 3,
+              proposal_id: "proposal-1",
+            };
+          }
+          if (cmd === "resolve_report_proposal") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            const proposal = reportWorkspace.pending_proposal;
+            if (!proposal || args.proposalId !== proposal.id) throw "The pending proposal changed. Reload the report before continuing.";
+            if (args.decision !== "accept" && args.decision !== "reject") throw "Invalid proposal decision.";
+            if (args.decision === "accept") {
+              reportWorkspace = {
+                ...reportWorkspace,
+                draft: {
+                  ...reportWorkspace.draft,
+                  revision: reportWorkspace.draft.revision + 1,
+                  content: proposal.proposed_content,
+                  updated_at: new Date().toISOString(),
+                  last_applied_proposal_id: proposal.id,
+                },
+                pending_proposal: null,
+                last_agent_revision: reportWorkspace.draft.revision + 1,
+                template_import: reportWorkspace.template_import
+                  ? { ...reportWorkspace.template_import, reviewed_revision: null, review_required: true }
+                  : null,
+              };
+            } else {
+              reportWorkspace = { ...reportWorkspace, pending_proposal: null };
+            }
+            return reportWorkspace;
+          }
+          if (cmd === "export_report_docx") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (reportWorkspace.template_import?.review_required) throw "Review template carryover for this revision before exporting to Word.";
+            const attemptedAt = new Date().toISOString();
+            reportWorkspace = {
+              ...reportWorkspace,
+              last_export: {
+                revision: args.expectedRevision,
+                status: "exported",
+                attempted_at: attemptedAt,
+              },
+            };
+            return {
+              exported: true,
+              report_id: args.reportId,
+              revision: args.expectedRevision,
+              status: "exported",
+              attempted_at: attemptedAt,
+              status_persisted: true,
+            };
+          }
 
           // ── Update check ─────────────────────────────────────────────
           if (cmd === "check_for_updates") {

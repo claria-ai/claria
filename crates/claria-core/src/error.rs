@@ -13,4 +13,7 @@ pub enum CoreError {
 
     #[error("invalid uuid: {0}")]
     InvalidUuid(#[from] uuid::Error),
+
+    #[error("invalid report workspace: {0}")]
+    InvalidReport(String),
 }

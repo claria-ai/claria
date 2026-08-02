@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::error::StorageError;
 
 /// Result of a GET operation, including the body and ETag.
+#[derive(Debug)]
 pub struct GetObjectOutput {
     pub body: Vec<u8>,
     pub etag: Option<String>,
@@ -26,6 +27,29 @@ pub async fn get_object(
     bucket: &str,
     key: &str,
 ) -> Result<GetObjectOutput, StorageError> {
+    get_object_with_limit(client, bucket, key, None).await
+}
+
+/// Get an object only when its declared S3 body length is within `max_bytes`.
+///
+/// The limit is checked after S3 returns headers but before the response body
+/// stream is collected. This prevents a caller that only needs bounded text
+/// from buffering an arbitrarily large object.
+pub async fn get_object_bounded(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    max_bytes: u64,
+) -> Result<GetObjectOutput, StorageError> {
+    get_object_with_limit(client, bucket, key, Some(max_bytes)).await
+}
+
+async fn get_object_with_limit(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    max_bytes: Option<u64>,
+) -> Result<GetObjectOutput, StorageError> {
     let resp = client
         .get_object()
         .bucket(bucket)
@@ -45,6 +69,17 @@ pub async fn get_object(
             }
         })?;
 
+    if let (Some(max_bytes), Some(content_length)) = (max_bytes, resp.content_length()) {
+        let actual_bytes = u64::try_from(content_length).unwrap_or(u64::MAX);
+        if actual_bytes > max_bytes {
+            return Err(StorageError::ObjectTooLarge {
+                key: key.to_string(),
+                actual_bytes,
+                max_bytes,
+            });
+        }
+    }
+
     let etag = resp.e_tag().map(|s| s.to_string());
     let content_type = resp.content_type().map(|s| s.to_string());
     let body = resp
@@ -57,6 +92,16 @@ pub async fn get_object(
         })?
         .into_bytes()
         .to_vec();
+
+    if let Some(max_bytes) = max_bytes
+        && body.len() as u64 > max_bytes
+    {
+        return Err(StorageError::ObjectTooLarge {
+            key: key.to_string(),
+            actual_bytes: body.len() as u64,
+            max_bytes,
+        });
+    }
 
     tracing::Span::current().record("bytes", body.len() as u64);
 
@@ -86,16 +131,73 @@ pub async fn put_object(
         req = req.content_type(ct);
     }
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(bucket, key, error = %msg, "S3 PutObject failed");
-            StorageError::PutObject(msg)
-        })?;
+    let resp = req.send().await.map_err(|e| {
+        let msg = e.into_service_error().to_string();
+        tracing::error!(bucket, key, error = %msg, "S3 PutObject failed");
+        StorageError::PutObject(msg)
+    })?;
 
     Ok(resp.e_tag().unwrap_or_default().to_string())
+}
+
+/// Put an object to S3 only when the key has no current object.
+///
+/// S3's `If-None-Match: *` makes lazy workspace creation race-safe: exactly one
+/// writer creates the object and every loser receives
+/// [`StorageError::PreconditionFailed`] instead of overwriting it.
+pub async fn put_object_if_none_match(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    body: Vec<u8>,
+    content_type: Option<&str>,
+) -> Result<String, StorageError> {
+    const MAX_CONFLICT_RETRIES: u32 = 3;
+
+    for attempt in 0..=MAX_CONFLICT_RETRIES {
+        let mut req = client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from(body.clone()))
+            .if_none_match("*");
+        if let Some(ct) = content_type {
+            req = req.content_type(ct);
+        }
+
+        match req.send().await {
+            Ok(resp) => return Ok(resp.e_tag().unwrap_or_default().to_string()),
+            Err(error) => {
+                let status = error
+                    .raw_response()
+                    .map(|response| response.status().as_u16());
+                let err = error.into_service_error();
+                let code = err.meta().code();
+                if status == Some(412) || code == Some("PreconditionFailed") {
+                    return Err(StorageError::PreconditionFailed {
+                        key: key.to_string(),
+                    });
+                }
+                if status == Some(409) || code == Some("ConditionalRequestConflict") {
+                    if attempt < MAX_CONFLICT_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(10 * u64::from(attempt + 1)))
+                            .await;
+                        continue;
+                    }
+                    return Err(StorageError::ConditionalRequestConflict {
+                        key: key.to_string(),
+                    });
+                }
+                let msg = err.to_string();
+                tracing::error!(bucket, key, error = %msg, "S3 PutObject (if-none-match) failed");
+                return Err(StorageError::PutObject(msg));
+            }
+        }
+    }
+
+    Err(StorageError::ConditionalRequestConflict {
+        key: key.to_string(),
+    })
 }
 
 /// Put an object to S3 with an If-Match precondition (ETag optimistic locking).
@@ -109,44 +211,59 @@ pub async fn put_object_if_match(
     content_type: Option<&str>,
     expected_etag: &str,
 ) -> Result<String, StorageError> {
-    let mut req = client
-        .put_object()
-        .bucket(bucket)
-        .key(key)
-        .body(ByteStream::from(body))
-        .if_match(expected_etag);
+    const MAX_CONFLICT_RETRIES: u32 = 3;
 
-    if let Some(ct) = content_type {
-        req = req.content_type(ct);
+    for attempt in 0..=MAX_CONFLICT_RETRIES {
+        let mut req = client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from(body.clone()))
+            .if_match(expected_etag);
+        if let Some(ct) = content_type {
+            req = req.content_type(ct);
+        }
+
+        match req.send().await {
+            Ok(resp) => return Ok(resp.e_tag().unwrap_or_default().to_string()),
+            Err(error) => {
+                // S3 answers an If-Match miss with 412. A 409 is a transient
+                // race between conditional evaluation and the write and is
+                // safe to retry with the same condition.
+                let status = error
+                    .raw_response()
+                    .map(|response| response.status().as_u16());
+                let err = error.into_service_error();
+                let code = err.meta().code();
+                if status == Some(412) || code == Some("PreconditionFailed") {
+                    return Err(StorageError::PreconditionFailed {
+                        key: key.to_string(),
+                    });
+                }
+                if status == Some(409) || code == Some("ConditionalRequestConflict") {
+                    if attempt < MAX_CONFLICT_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(10 * u64::from(attempt + 1)))
+                            .await;
+                        continue;
+                    }
+                    return Err(StorageError::ConditionalRequestConflict {
+                        key: key.to_string(),
+                    });
+                }
+                let msg = err.to_string();
+                tracing::error!(bucket, key, error = %msg, "S3 PutObject (if-match) failed");
+                return Err(StorageError::PutObject(msg));
+            }
+        }
     }
 
-    let resp = req.send().await.map_err(|e| {
-        // S3 answers an If-Match miss with 412 Precondition Failed. Read the
-        // structured status and error code rather than sniffing the Display
-        // string, which is free to change with any SDK release.
-        let status_412 = e.raw_response().is_some_and(|r| r.status().as_u16() == 412);
-        let err = e.into_service_error();
-
-        if status_412 || err.meta().code() == Some("PreconditionFailed") {
-            StorageError::PreconditionFailed {
-                key: key.to_string(),
-            }
-        } else {
-            let msg = err.to_string();
-            tracing::error!(bucket, key, error = %msg, "S3 PutObject (if-match) failed");
-            StorageError::PutObject(msg)
-        }
-    })?;
-
-    Ok(resp.e_tag().unwrap_or_default().to_string())
+    Err(StorageError::ConditionalRequestConflict {
+        key: key.to_string(),
+    })
 }
 
 /// Delete an object from S3.
-pub async fn delete_object(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-) -> Result<(), StorageError> {
+pub async fn delete_object(client: &Client, bucket: &str, key: &str) -> Result<(), StorageError> {
     client
         .delete_object()
         .bucket(bucket)
@@ -316,6 +433,7 @@ pub async fn delete_objects_by_prefix(
 pub struct ObjectMeta {
     pub key: String,
     pub size: i64,
+    pub etag: Option<String>,
     pub last_modified: Option<String>,
 }
 
@@ -350,6 +468,7 @@ pub async fn list_objects_with_metadata(
                 objects.push(ObjectMeta {
                     key: key.to_string(),
                     size: obj.size().unwrap_or(0),
+                    etag: obj.e_tag().map(ToString::to_string),
                     last_modified: obj.last_modified().map(|t| t.to_string()),
                 });
             }
@@ -432,10 +551,7 @@ pub async fn list_object_etags(
 
         for obj in page.contents() {
             if let Some(key) = obj.key() {
-                pairs.push((
-                    key.to_string(),
-                    obj.e_tag().unwrap_or_default().to_string(),
-                ));
+                pairs.push((key.to_string(), obj.e_tag().unwrap_or_default().to_string()));
             }
         }
     }
@@ -575,6 +691,56 @@ pub async fn list_deleted_objects(
     .await?;
 
     Ok(deleted)
+}
+
+/// Restore the newest real version of a currently deleted object without
+/// overwriting a concurrent create or edit. Returns `true` when this call
+/// wrote a restored current version and `false` when another writer won.
+pub async fn restore_deleted_object_if_absent(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+) -> Result<bool, StorageError> {
+    let versions = list_object_versions(client, bucket, key).await?;
+    // S3 preserves newest-first ordering within its `versions` collection.
+    let version = versions
+        .iter()
+        .find(|version| !version.is_delete_marker)
+        .ok_or_else(|| StorageError::NotFound {
+            key: key.to_string(),
+        })?;
+    let output = get_object_version(client, bucket, key, &version.version_id).await?;
+    match put_object_if_none_match(
+        client,
+        bucket,
+        key,
+        output.body,
+        output.content_type.as_deref(),
+    )
+    .await
+    {
+        Ok(_) => Ok(true),
+        Err(StorageError::PreconditionFailed { .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Restore every currently deleted key under `prefix` using conditional
+/// creates. Safe to retry after partial failure and safe alongside a
+/// concurrent writer, whose current object is never overwritten.
+pub async fn restore_deleted_objects_by_prefix(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<usize, StorageError> {
+    let deleted = list_deleted_objects(client, bucket, prefix).await?;
+    let mut restored = 0usize;
+    for object in deleted {
+        if restore_deleted_object_if_absent(client, bucket, &object.key).await? {
+            restored = restored.saturating_add(1);
+        }
+    }
+    Ok(restored)
 }
 
 /// Permanently delete every version and delete marker under `prefix`.
@@ -736,13 +902,10 @@ pub async fn presign_put(
         req = req.content_type(ct);
     }
 
-    let presigned = req
-        .presigned(presign_config)
-        .await
-        .map_err(|e| {
-            tracing::warn!(bucket, key, error = %e, "S3 presign PUT failed");
-            StorageError::Presign(e.to_string())
-        })?;
+    let presigned = req.presigned(presign_config).await.map_err(|e| {
+        tracing::warn!(bucket, key, error = %e, "S3 presign PUT failed");
+        StorageError::Presign(e.to_string())
+    })?;
 
     Ok(presigned.uri().to_string())
 }

@@ -20,6 +20,7 @@ import type {
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  EditorHistoryEntry,
   FileVersion,
   InfraChatResponse,
   ModelPricing,
@@ -29,6 +30,13 @@ import type {
   ProvisionerProgress,
   RecordContext,
   RecordFile,
+  ReportBlockReferenceInput,
+  ReportDraftEdit,
+  ReportExportResult,
+  ReportProposalDecision,
+  ReportTemplatePreview,
+  ReportTurnResponse,
+  ReportWorkspaceView,
   TranscribeMemoResult,
   TranscribeOptionsOverrides,
   TranscriptionPreferences,
@@ -62,6 +70,7 @@ export type {
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  EditorHistoryEntry,
   FieldDrift,
   FileVersion,
   InfraChatResponse,
@@ -74,6 +83,32 @@ export type {
   ProvisionerProgress,
   RecordContext,
   RecordFile,
+  ReportAuthoringTurnView,
+  ReportBlockReferenceInput,
+  ReportBlockView,
+  ReportContentView,
+  ReportContextReadView,
+  ReportDraftEdit,
+  ReportDraftView,
+  ReportExportResult,
+  ReportExportStatusView,
+  ReportExportView,
+  ReportOperationView,
+  ReportProposalDecision,
+  ReportProposalResolutionDecision,
+  ReportProposalResolutionView,
+  ReportProposalView,
+  ReportSectionEdit,
+  ReportTemplateImportView,
+  ReportTemplatePreview,
+  ReportTemplateStatsView,
+  ReportTemplateWarningView,
+  ReportSectionView,
+  ReportTimelineItemView,
+  ReportTimelineRole,
+  ReportToolActivityStatus,
+  ReportTurnResponse,
+  ReportWorkspaceView,
   ResourceSpec,
   Severity,
   SpeakerMode,
@@ -352,6 +387,106 @@ export async function createClient(name: string) {
 
 export async function deleteClient(clientId: string): Promise<void> {
   unwrap(await commands.deleteClient(clientId));
+}
+
+// ---------------------------------------------------------------------------
+// Writing workspace wrappers
+// ---------------------------------------------------------------------------
+
+export async function loadReportWorkspace(
+  clientId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.loadReportWorkspace(clientId));
+}
+
+export async function listEditorHistory(
+  clientId: string
+): Promise<EditorHistoryEntry[]> {
+  return unwrap(await commands.listEditorHistory(clientId));
+}
+
+export async function saveReportDraft(
+  clientId: string,
+  expectedRevision: number,
+  draft: ReportDraftEdit
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.saveReportDraft(clientId, expectedRevision, draft)
+  );
+}
+
+export async function pickReportTemplateDocx(
+  clientId: string
+): Promise<ReportTemplatePreview | null> {
+  return unwrap(await commands.pickReportTemplateDocx(clientId));
+}
+
+export async function applyReportTemplate(
+  clientId: string,
+  expectedRevision: number,
+  importId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.applyReportTemplate(clientId, expectedRevision, importId)
+  );
+}
+
+export async function discardReportTemplatePreview(
+  importId: string
+): Promise<void> {
+  unwrap(await commands.discardReportTemplatePreview(importId));
+}
+
+export async function acknowledgeReportTemplateReview(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.acknowledgeReportTemplateReview(
+      clientId,
+      reportId,
+      expectedRevision
+    )
+  );
+}
+
+export async function sendReportMessage(
+  clientId: string,
+  expectedRevision: number,
+  modelId: string,
+  instruction: string,
+  references: ReportBlockReferenceInput[] = []
+): Promise<ReportTurnResponse> {
+  return unwrap(
+    await commands.sendReportMessage(
+      clientId,
+      expectedRevision,
+      modelId,
+      instruction,
+      references
+    )
+  );
+}
+
+export async function resolveReportProposal(
+  clientId: string,
+  proposalId: string,
+  decision: ReportProposalDecision
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.resolveReportProposal(clientId, proposalId, decision)
+  );
+}
+
+export async function exportReportDocx(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number
+): Promise<ReportExportResult> {
+  return unwrap(
+    await commands.exportReportDocx(clientId, reportId, expectedRevision)
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -26,6 +26,14 @@ pub struct MockState {
     /// Object count of every `DeleteObjects` request received, in arrival
     /// order. Tests read this to tell a batched delete from a per-object one.
     pub s3_delete_objects_batches: Vec<usize>,
+    /// Number of GET Object requests received for each key.
+    pub s3_get_object_requests: HashMap<String, usize>,
+    /// Keys whose GET Object operation returns an injected service failure.
+    pub s3_get_object_failures: HashSet<String>,
+    /// Fault injection: conditional PUTs for a key return 409 this many times.
+    pub s3_conditional_conflicts_remaining: HashMap<String, u32>,
+    /// Fault injection: conditional PUTs for a key return 412 this many times.
+    pub s3_precondition_failures_remaining: HashMap<String, u32>,
 
     // IAM
     pub users: HashMap<String, IamUser>,
@@ -49,6 +57,23 @@ pub struct MockState {
     pub foundation_models: Vec<FoundationModel>,
     pub model_agreements: HashSet<String>,
     pub inference_profiles: Vec<InferenceProfile>,
+    /// FIFO responses consumed only by Converse requests that carry
+    /// `toolConfig`. Ordinary chat/extraction requests keep their existing
+    /// canned behavior.
+    pub bedrock_tool_responses: Vec<ScriptedBedrockResponse>,
+    /// Raw tool-configured Converse request bodies, in wire order.
+    pub bedrock_tool_requests: Vec<serde_json::Value>,
+    /// Decoded model IDs for the captured tool-configured requests.
+    pub bedrock_tool_model_ids: Vec<String>,
+    /// Raw CountTokens requests for report inputs.
+    pub bedrock_count_token_requests: Vec<serde_json::Value>,
+    /// Decoded model IDs for the captured report CountTokens requests.
+    pub bedrock_count_token_model_ids: Vec<String>,
+    /// Optional deterministic token count returned by the mock.
+    pub bedrock_count_tokens_override: Option<u32>,
+    /// Bare model IDs that return CountTokens ValidationException while still
+    /// allowing Converse, matching newly launched Bedrock models.
+    pub bedrock_count_tokens_unsupported_models: HashSet<String>,
 
     // Transcribe
     pub transcription_jobs: HashMap<String, TranscriptionJob>,
@@ -208,6 +233,22 @@ pub struct InferenceProfileModel {
     pub model_arn: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptedBedrockResponse {
+    pub status: u16,
+    pub body: serde_json::Value,
+}
+
+impl ScriptedBedrockResponse {
+    pub fn success(body: serde_json::Value) -> Self {
+        Self { status: 200, body }
+    }
+
+    pub fn error(status: u16, body: serde_json::Value) -> Self {
+        Self { status, body }
+    }
+}
+
 // ── Transcribe types ──
 
 #[derive(Debug, Clone)]
@@ -247,17 +288,13 @@ pub struct CostGroup {
 // ── State helpers ──
 
 impl MockState {
-    /// Look up the latest non-deleted version of an object.
-    pub fn get_latest_object(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Option<&ObjectVersion> {
+    /// Look up the current object. A latest delete marker makes the key
+    /// absent even though older data versions remain restorable.
+    pub fn get_latest_object(&self, bucket: &str, key: &str) -> Option<&ObjectVersion> {
         self.objects
             .get(&(bucket.to_string(), key.to_string()))
-            .and_then(|versions| {
-                versions.iter().rev().find(|v| !v.is_delete_marker)
-            })
+            .and_then(|versions| versions.last())
+            .filter(|version| !version.is_delete_marker)
     }
 
     /// Get a specific version of an object.
@@ -269,9 +306,7 @@ impl MockState {
     ) -> Option<&ObjectVersion> {
         self.objects
             .get(&(bucket.to_string(), key.to_string()))
-            .and_then(|versions| {
-                versions.iter().find(|v| v.version_id == version_id)
-            })
+            .and_then(|versions| versions.iter().find(|v| v.version_id == version_id))
     }
 
     /// List all keys in a bucket under a given prefix (latest version, not deleted).
@@ -281,7 +316,7 @@ impl MockState {
             if b != bucket || !k.starts_with(prefix) {
                 continue;
             }
-            if let Some(latest) = versions.iter().rev().find(|v| !v.is_delete_marker) {
+            if let Some(latest) = versions.last().filter(|version| !version.is_delete_marker) {
                 result.insert(k.clone(), latest);
             }
         }

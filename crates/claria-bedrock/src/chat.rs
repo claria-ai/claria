@@ -474,7 +474,9 @@ static COUNTING_MODEL: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::co
 /// the release date stamp embedded in the model ID, which orders correctly
 /// across both naming shapes (`claude-3-5-haiku-20241022`,
 /// `claude-haiku-4-5-20251001`).
-async fn counting_model(config: &aws_config::SdkConfig) -> Result<&'static str, BedrockError> {
+pub(crate) async fn counting_model(
+    config: &aws_config::SdkConfig,
+) -> Result<&'static str, BedrockError> {
     COUNTING_MODEL
         .get_or_try_init(|| async {
             let client = aws_sdk_bedrock::Client::new(config);
