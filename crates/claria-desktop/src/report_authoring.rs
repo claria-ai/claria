@@ -10,8 +10,9 @@ use claria_core::models::{
     report::{
         ReportBlock, ReportContent, ReportDraft, ReportExportStatus, ReportOperation,
         ReportProposal, ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
-        ReportProtocolBlock, ReportProtocolRole, ReportSection, ReportToolResultStatus,
-        ReportWorkspace,
+        ReportProtocolBlock, ReportProtocolRole, ReportSection, ReportTemplateImport,
+        ReportTemplateWarning, ReportTemplateWarningCode, ReportToolResultStatus, ReportWorkspace,
+        report_template_placeholder_count,
     },
     turn_usage::TurnUsage,
 };
@@ -30,6 +31,7 @@ pub struct ReportWorkspaceView {
     pub resolutions: Vec<ReportProposalResolutionView>,
     pub last_agent_revision: Option<u64>,
     pub last_export: Option<ReportExportView>,
+    pub template_import: Option<ReportTemplateImportView>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -94,8 +96,52 @@ pub struct ReportSectionView {
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReportBlockView {
-    Paragraph { text: String },
-    BulletList { items: Vec<String> },
+    Paragraph {
+        text: String,
+    },
+    BulletList {
+        items: Vec<String>,
+    },
+    Table {
+        rows: Vec<Vec<String>>,
+        has_header: bool,
+        column_widths: Option<Vec<u16>>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportTemplateImportView {
+    pub imported_revision: u64,
+    pub imported_at: String,
+    pub warnings: Vec<ReportTemplateWarningView>,
+    pub reviewed_revision: Option<u64>,
+    pub review_required: bool,
+    pub placeholder_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportTemplateWarningView {
+    pub code: String,
+    pub message: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportTemplatePreview {
+    pub import_id: String,
+    pub content: ReportContentView,
+    pub warnings: Vec<ReportTemplateWarningView>,
+    pub stats: ReportTemplateStatsView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportTemplateStatsView {
+    pub sections: u32,
+    pub paragraphs: u32,
+    pub bullet_lists: u32,
+    pub tables: u32,
+    pub table_cells: u32,
+    pub placeholder_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -228,14 +274,14 @@ pub struct ReportDraftEdit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct ReportParagraphReferenceInput {
+pub struct ReportBlockReferenceInput {
     pub section_id: String,
     pub block_index: u32,
 }
 
-impl ReportParagraphReferenceInput {
-    pub fn into_domain(self) -> Result<claria_report_authoring::ReportParagraphReference, String> {
-        Ok(claria_report_authoring::ReportParagraphReference {
+impl ReportBlockReferenceInput {
+    pub fn into_domain(self) -> Result<claria_report_authoring::ReportBlockReference, String> {
+        Ok(claria_report_authoring::ReportBlockReference {
             section_id: self
                 .section_id
                 .parse::<Uuid>()
@@ -351,8 +397,117 @@ pub fn workspace_view(workspace: &ReportWorkspace) -> ReportWorkspaceView {
                 status: export.status.into(),
                 attempted_at: export.attempted_at.to_string(),
             }),
+        template_import: workspace
+            .template_import
+            .as_ref()
+            .map(|template| template_import_view(template, workspace)),
         created_at: workspace.created_at.to_string(),
         updated_at: workspace.updated_at.to_string(),
+    }
+}
+
+pub fn template_preview_view(
+    import_id: Uuid,
+    imported: &claria_docx::ImportedTemplate,
+) -> ReportTemplatePreview {
+    ReportTemplatePreview {
+        import_id: import_id.to_string(),
+        content: content_view(&imported.content),
+        warnings: imported
+            .warnings
+            .iter()
+            .map(template_warning_view)
+            .collect(),
+        stats: ReportTemplateStatsView {
+            sections: imported.stats.sections,
+            paragraphs: imported.stats.paragraphs,
+            bullet_lists: imported.stats.bullet_lists,
+            tables: imported.stats.tables,
+            table_cells: imported.stats.table_cells,
+            placeholder_count: imported.stats.placeholder_count,
+        },
+    }
+}
+
+fn template_import_view(
+    template: &ReportTemplateImport,
+    workspace: &ReportWorkspace,
+) -> ReportTemplateImportView {
+    ReportTemplateImportView {
+        imported_revision: template.imported_revision,
+        imported_at: template.imported_at.to_string(),
+        warnings: template
+            .warnings
+            .iter()
+            .map(template_warning_view)
+            .collect(),
+        reviewed_revision: template.reviewed_revision,
+        review_required: template.reviewed_revision != Some(workspace.draft.revision),
+        placeholder_count: report_template_placeholder_count(&workspace.draft.content),
+    }
+}
+
+fn template_warning_view(warning: &ReportTemplateWarning) -> ReportTemplateWarningView {
+    ReportTemplateWarningView {
+        code: template_warning_code(warning.code).to_string(),
+        message: template_warning_message(warning.code).to_string(),
+        count: warning.count,
+    }
+}
+
+fn template_warning_code(code: ReportTemplateWarningCode) -> &'static str {
+    match code {
+        ReportTemplateWarningCode::CommentsOmitted => "comments_omitted",
+        ReportTemplateWarningCode::ExternalLinksRemoved => "external_links_removed",
+        ReportTemplateWarningCode::FootnotesEndnotesOmitted => "footnotes_endnotes_omitted",
+        ReportTemplateWarningCode::HeadersFootersOmitted => "headers_footers_omitted",
+        ReportTemplateWarningCode::HeadingLevelsFlattened => "heading_levels_flattened",
+        ReportTemplateWarningCode::ImagesOmitted => "images_omitted",
+        ReportTemplateWarningCode::IrregularTablesOmitted => "irregular_tables_omitted",
+        ReportTemplateWarningCode::MergedTablesOmitted => "merged_tables_omitted",
+        ReportTemplateWarningCode::MissingTitle => "missing_title",
+        ReportTemplateWarningCode::NestedTablesOmitted => "nested_tables_omitted",
+        ReportTemplateWarningCode::NumberedListsImportedAsBullets => {
+            "numbered_lists_imported_as_bullets"
+        }
+        ReportTemplateWarningCode::TextBoxesOmitted => "text_boxes_omitted",
+        ReportTemplateWarningCode::TrackedChangesResolved => "tracked_changes_resolved",
+        ReportTemplateWarningCode::UnsupportedElementsOmitted => "unsupported_elements_omitted",
+    }
+}
+
+fn template_warning_message(code: ReportTemplateWarningCode) -> &'static str {
+    match code {
+        ReportTemplateWarningCode::CommentsOmitted => "Word comments were omitted.",
+        ReportTemplateWarningCode::ExternalLinksRemoved => {
+            "External link targets were removed; visible link text was retained."
+        }
+        ReportTemplateWarningCode::FootnotesEndnotesOmitted => {
+            "Footnotes or endnotes were omitted."
+        }
+        ReportTemplateWarningCode::HeadersFootersOmitted => "Headers or footers were omitted.",
+        ReportTemplateWarningCode::HeadingLevelsFlattened => {
+            "Nested Word heading levels were flattened into report sections."
+        }
+        ReportTemplateWarningCode::ImagesOmitted => "Images were omitted.",
+        ReportTemplateWarningCode::IrregularTablesOmitted => {
+            "Tables outside the supported row and column limits were omitted."
+        }
+        ReportTemplateWarningCode::MergedTablesOmitted => "Tables with merged cells were omitted.",
+        ReportTemplateWarningCode::MissingTitle => {
+            "No Word Title style was found; a placeholder report title was added."
+        }
+        ReportTemplateWarningCode::NestedTablesOmitted => "Nested tables were omitted.",
+        ReportTemplateWarningCode::NumberedListsImportedAsBullets => {
+            "Word list paragraphs were imported as bullet lists."
+        }
+        ReportTemplateWarningCode::TextBoxesOmitted => "Text-box content was omitted.",
+        ReportTemplateWarningCode::TrackedChangesResolved => {
+            "Visible inserted text was retained and deleted tracked text was omitted."
+        }
+        ReportTemplateWarningCode::UnsupportedElementsOmitted => {
+            "Unsupported Word elements were omitted."
+        }
     }
 }
 
@@ -387,6 +542,15 @@ fn block_view(block: &ReportBlock) -> ReportBlockView {
         ReportBlock::BulletList { items } => ReportBlockView::BulletList {
             items: items.clone(),
         },
+        ReportBlock::Table {
+            rows,
+            has_header,
+            column_widths,
+        } => ReportBlockView::Table {
+            rows: rows.clone(),
+            has_header: *has_header,
+            column_widths: column_widths.clone(),
+        },
     }
 }
 
@@ -394,6 +558,15 @@ fn core_block_from_view(block: ReportBlockView) -> ReportBlock {
     match block {
         ReportBlockView::Paragraph { text } => ReportBlock::Paragraph { text },
         ReportBlockView::BulletList { items } => ReportBlock::BulletList { items },
+        ReportBlockView::Table {
+            rows,
+            has_header,
+            column_widths,
+        } => ReportBlock::Table {
+            rows,
+            has_header,
+            column_widths,
+        },
     }
 }
 

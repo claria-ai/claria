@@ -119,8 +119,18 @@ pub enum ReportProposalOperationRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReportBlockRequest {
-    Paragraph { text: String },
-    BulletList { items: Vec<String> },
+    Paragraph {
+        text: String,
+    },
+    BulletList {
+        items: Vec<String>,
+    },
+    Table {
+        rows: Vec<Vec<String>>,
+        has_header: bool,
+        #[serde(default)]
+        column_widths: Option<Vec<u16>>,
+    },
 }
 
 /// Decode one model tool call into its strict typed request. Unknown names and
@@ -524,6 +534,32 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                         "minItems": 1,
                         "maxItems": 100,
                         "items": {"type": "string", "minLength": 1, "maxLength": 2000}
+                    }
+                }
+            },
+            {
+                "type": "object",
+                "required": ["kind", "rows", "has_header"],
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {"enum": ["table"]},
+                    "rows": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 200,
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 20,
+                            "items": {"type": "string", "maxLength": 5000}
+                        }
+                    },
+                    "has_header": {"type": "boolean"},
+                    "column_widths": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "items": {"type": "integer", "minimum": 1, "maximum": 10000}
                     }
                 }
             }

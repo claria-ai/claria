@@ -3,8 +3,9 @@ use std::io::Cursor;
 use claria_core::models::report::{ReportBlock, ReportDraft, validate_report_content};
 use docx_rs::{
     AbstractNumbering, AlignmentType, BreakType, Docx, IndentLevel, Level, LevelJc, LevelText,
-    NumberFormat, Numbering, NumberingId, PageMargin, Paragraph, Run, RunFonts, SpecialIndentType,
-    Start, Style, StyleType,
+    NumberFormat, Numbering, NumberingId, PageMargin, Paragraph, Run, RunFonts, Shading,
+    SpecialIndentType, Start, Style, StyleType, Table, TableCell, TableLayoutType, TableRow,
+    WidthType,
 };
 
 use crate::error::DocxError;
@@ -12,6 +13,7 @@ use crate::error::DocxError;
 const LETTER_WIDTH_TWIPS: u32 = 12_240;
 const LETTER_HEIGHT_TWIPS: u32 = 15_840;
 const ONE_INCH_TWIPS: i32 = 1_440;
+const TABLE_CONTENT_WIDTH_TWIPS: usize = 9_360;
 const BULLET_NUMBERING_ID: usize = 42;
 const BODY_FONT: &str = "Times New Roman";
 
@@ -125,6 +127,18 @@ pub fn render_report(draft: &ReportDraft) -> Result<Vec<u8>, DocxError> {
                         );
                     }
                 }
+                ReportBlock::Table {
+                    rows,
+                    has_header,
+                    column_widths,
+                } => {
+                    document = document.add_table(render_table(
+                        rows,
+                        *has_header,
+                        column_widths.as_deref(),
+                        &mut paragraph_id,
+                    ));
+                }
             }
         }
     }
@@ -135,6 +149,69 @@ pub fn render_report(draft: &ReportDraft) -> Result<Vec<u8>, DocxError> {
         .pack(&mut output)
         .map_err(|error| DocxError::Render(error.to_string()))?;
     Ok(output.into_inner())
+}
+
+fn render_table(
+    rows: &[Vec<String>],
+    has_header: bool,
+    column_widths: Option<&[u16]>,
+    paragraph_id: &mut u32,
+) -> Table {
+    let grid = table_grid(rows[0].len(), column_widths);
+    let table_rows = rows
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            let cells = row
+                .iter()
+                .enumerate()
+                .map(|(column_index, text)| {
+                    let header = has_header && row_index == 0;
+                    let mut cell = TableCell::new().width(grid[column_index], WidthType::Dxa);
+                    if header {
+                        cell = cell.shading(Shading::new().fill("E2E8F0"));
+                    }
+                    for line in text.split('\n') {
+                        let mut paragraph = Paragraph::new()
+                            .id(next_paragraph_id(paragraph_id))
+                            .style("Normal");
+                        if !line.is_empty() {
+                            let run = if header {
+                                Run::new().bold().add_text(line)
+                            } else {
+                                Run::new().add_text(line)
+                            };
+                            paragraph = paragraph.add_run(run);
+                        }
+                        cell = cell.add_paragraph(paragraph);
+                    }
+                    cell
+                })
+                .collect();
+            TableRow::new(cells).cant_split()
+        })
+        .collect();
+
+    Table::new(table_rows)
+        .set_grid(grid)
+        .width(TABLE_CONTENT_WIDTH_TWIPS, WidthType::Dxa)
+        .layout(TableLayoutType::Fixed)
+}
+
+fn table_grid(columns: usize, widths: Option<&[u16]>) -> Vec<usize> {
+    let mut grid = if let Some(widths) = widths {
+        widths
+            .iter()
+            .map(|width| usize::from(*width).saturating_mul(TABLE_CONTENT_WIDTH_TWIPS) / 10_000)
+            .collect::<Vec<_>>()
+    } else {
+        vec![TABLE_CONTENT_WIDTH_TWIPS / columns; columns]
+    };
+    let assigned = grid.iter().sum::<usize>();
+    if let Some(last) = grid.last_mut() {
+        *last = last.saturating_add(TABLE_CONTENT_WIDTH_TWIPS.saturating_sub(assigned));
+    }
+    grid
 }
 
 fn next_paragraph_id(next: &mut u32) -> String {

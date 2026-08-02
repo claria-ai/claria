@@ -2,14 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  acknowledgeReportTemplateReview,
+  applyReportTemplate,
+  discardReportTemplatePreview,
   exportReportDocx,
   loadReportWorkspace,
+  pickReportTemplateDocx,
   resolveReportProposal,
   saveReportDraft,
   sendReportMessage,
   type ChatModel,
   type ReportContextReadView,
   type ReportDraftEdit,
+  type ReportTemplatePreview,
   type ReportTimelineItemView,
   type ReportWorkspaceView,
 } from "../lib/tauri";
@@ -21,13 +26,15 @@ import {
 } from "../lib/writingWorkspace";
 import WritingCanvas from "../components/WritingCanvas";
 import WritingProposalCard from "../components/WritingProposalCard";
+import WritingTemplateImportModal from "../components/WritingTemplateImportModal";
 import Spinner from "../components/Spinner";
 import { CloseIcon } from "../components/icons";
 import { dismissNotice, isNoticeDismissed } from "../lib/localPreference";
 import {
   readWritingComposerDraft,
+  reportBlockReferencePreview,
   writeWritingComposerDraft,
-  type WritingParagraphReference,
+  type WritingBlockReference,
 } from "../lib/writingComposerDraft";
 
 const INTRO_NOTICE_KEY = "claria.writing.hide_intro_notice";
@@ -67,7 +74,14 @@ export default function Writing({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState<
-    null | "saving" | "sending" | "resolving" | "exporting"
+    | null
+    | "saving"
+    | "sending"
+    | "resolving"
+    | "exporting"
+    | "picking_template"
+    | "applying_template"
+    | "reviewing_template"
   >(null);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [instruction, setInstruction] = useState(
@@ -78,13 +92,16 @@ export default function Writing({
     title: "Untitled report",
     sections: [],
   });
-  const [references, setReferences] = useState<WritingParagraphReference[]>(
+  const [references, setReferences] = useState<WritingBlockReference[]>(
     initialComposerDraft?.references ?? []
   );
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const [templatePreview, setTemplatePreview] =
+    useState<ReportTemplatePreview | null>(null);
+  const templatePreviewRef = useRef<ReportTemplatePreview | null>(null);
   const [showIntroNotice, setShowIntroNotice] = useState(
     () => !isNoticeDismissed(INTRO_NOTICE_KEY)
   );
@@ -125,6 +142,15 @@ export default function Writing({
   useEffect(() => {
     writeWritingComposerDraft(clientId, { instruction, references });
   }, [clientId, instruction, references]);
+
+  templatePreviewRef.current = templatePreview;
+  useEffect(
+    () => () => {
+      const importId = templatePreviewRef.current?.import_id;
+      if (importId) void discardReportTemplatePreview(importId).catch(() => undefined);
+    },
+    [clientId]
+  );
 
   useEffect(() => {
     if (
@@ -235,7 +261,7 @@ export default function Writing({
     if (
       dirty &&
       !window.confirm(
-        "Reloading will discard your local report edits. Your typed instruction and paragraph references will be kept. Continue?"
+        "Reloading will discard your local report edits. Your typed instruction and report references will be kept. Continue?"
       )
     ) {
       return;
@@ -360,8 +386,116 @@ export default function Writing({
     }
   }
 
+  async function handlePickTemplate() {
+    if (controlsBusy || dirty || editing || workspace?.pending_proposal) return;
+    const generation = generationRef.current;
+    setBusy("picking_template");
+    setActionError(null);
+    setSaveStatus("Choose a .docx template to inspect locally…");
+    try {
+      const preview = await pickReportTemplateDocx(clientId);
+      if (generation !== generationRef.current) {
+        if (preview) await discardReportTemplatePreview(preview.import_id);
+        return;
+      }
+      setTemplatePreview(preview);
+      setSaveStatus(
+        preview
+          ? "Template parsed locally. Review the structured import before applying it."
+          : "Template import canceled."
+      );
+    } catch (error) {
+      if (generation !== generationRef.current) return;
+      showActionError(error);
+      setSaveStatus(null);
+    } finally {
+      if (generation === generationRef.current) setBusy(null);
+    }
+  }
+
+  async function handleDiscardTemplatePreview() {
+    const preview = templatePreviewRef.current;
+    setTemplatePreview(null);
+    if (!preview) return;
+    try {
+      await discardReportTemplatePreview(preview.import_id);
+    } catch (error) {
+      showActionError(error);
+    }
+  }
+
+  async function handleApplyTemplate() {
+    if (!workspace || !templatePreview || controlsBusy) return;
+    const generation = generationRef.current;
+    setBusy("applying_template");
+    setActionError(null);
+    setSaveStatus("Importing the reviewed template as a new accepted revision…");
+    try {
+      const result = await applyReportTemplate(
+        clientId,
+        workspace.draft.revision,
+        templatePreview.import_id
+      );
+      if (generation !== generationRef.current) return;
+      setWorkspace(result);
+      setEdit(draftToEdit(result.draft));
+      setEditing(false);
+      setTemplatePreview(null);
+      setConflict(false);
+      setSaveStatus(
+        `Imported DOCX content as revision ${result.draft.revision}. Review all carryover before export.`
+      );
+    } catch (error) {
+      if (generation !== generationRef.current) return;
+      showActionError(error);
+      setSaveStatus(null);
+    } finally {
+      if (generation === generationRef.current) setBusy(null);
+    }
+  }
+
+  async function handleReviewTemplate() {
+    if (!workspace?.template_import?.review_required || controlsBusy) return;
+    if (
+      !window.confirm(
+        "Confirm that you reviewed this revision for carried-over names, dates, pronouns, diagnoses, scores, placeholders, and other client-specific facts."
+      )
+    ) {
+      return;
+    }
+    const generation = generationRef.current;
+    setBusy("reviewing_template");
+    setActionError(null);
+    setSaveStatus("Recording template carryover review…");
+    try {
+      const result = await acknowledgeReportTemplateReview(
+        clientId,
+        workspace.report_id,
+        workspace.draft.revision
+      );
+      if (generation !== generationRef.current) return;
+      setWorkspace(result);
+      setEdit(draftToEdit(result.draft));
+      setConflict(false);
+      setSaveStatus(`Template carryover reviewed for revision ${result.draft.revision}.`);
+    } catch (error) {
+      if (generation !== generationRef.current) return;
+      showActionError(error);
+      setSaveStatus(null);
+    } finally {
+      if (generation === generationRef.current) setBusy(null);
+    }
+  }
+
   async function handleExport() {
-    if (dirty || controlsBusy || !workspace) return;
+    if (
+      dirty ||
+      controlsBusy ||
+      !workspace ||
+      workspace.template_import?.review_required
+    ) {
+      return;
+    }
     const generation = generationRef.current;
     const visibleReportId = workspace.report_id;
     const visibleRevision = workspace.draft.revision;
@@ -426,7 +560,7 @@ export default function Writing({
     }
   }
 
-  function addReference(reference: WritingParagraphReference) {
+  function addReference(reference: WritingBlockReference) {
     setReferences((current) => {
       if (
         current.some(
@@ -439,7 +573,9 @@ export default function Writing({
       }
       return [...current, reference].slice(-10);
     });
-    setSaveStatus("Paragraph attached to your next Writing message.");
+    setSaveStatus(
+      `${reference.kind === "paragraph" ? "Paragraph" : "Table"} attached to your next Writing message.`
+    );
     requestAnimationFrame(() => composerRef.current?.focus());
   }
 
@@ -451,7 +587,8 @@ export default function Writing({
   const contextReads = workspace.turns.flatMap((turn) => turn.context_reads);
 
   return (
-    <div className="flex-1 min-h-0 grid grid-cols-1 min-[800px]:grid-cols-[minmax(340px,42%)_minmax(0,58%)] overflow-y-auto min-[800px]:overflow-hidden">
+    <>
+      <div className="flex-1 min-h-0 grid grid-cols-1 min-[800px]:grid-cols-[minmax(340px,42%)_minmax(0,58%)] overflow-y-auto min-[800px]:overflow-hidden">
       <section className="min-h-[32rem] min-[800px]:min-h-0 flex flex-col bg-white">
         <div className="px-5 py-4 border-b border-gray-200 space-y-3">
           {showIntroNotice && (
@@ -516,6 +653,7 @@ export default function Writing({
               turns={workspace.turns.length}
               reads={contextReads}
               references={references}
+              templateImported={workspace.template_import !== null}
             />
           )}
 
@@ -548,7 +686,7 @@ export default function Writing({
               </p>
               <p className="text-xs text-gray-500 mt-1">
                 Ask Claude to inspect records, answer a question, or propose
-                specific sections.
+                specific sections, or import a DOCX content template.
               </p>
             </div>
           )}
@@ -619,18 +757,25 @@ export default function Writing({
             </p>
           )}
           {references.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-2" aria-label="Referenced report paragraphs">
+            <div
+              className="flex flex-wrap gap-1.5 mb-2"
+              aria-label="Referenced report blocks"
+            >
               {references.map((reference) => (
                 <span
                   key={`${reference.sectionId}-${reference.blockIndex}`}
                   className="inline-flex items-center gap-1.5 max-w-full px-2 py-1 text-[11px] text-blue-800 bg-blue-50 border border-blue-200 rounded-full"
                 >
                   <span className="truncate">
-                    {reference.sectionHeading} ¶{reference.blockIndex + 1}: {reference.preview}
+                    {reference.sectionHeading}{" "}
+                    {reference.kind === "paragraph"
+                      ? `¶${reference.blockIndex + 1}`
+                      : `table ${reference.blockIndex + 1}`}
+                    : {reference.preview}
                   </span>
                   <button
                     type="button"
-                    aria-label={`Remove reference to ${reference.sectionHeading}, paragraph ${reference.blockIndex + 1}`}
+                    aria-label={`Remove reference to ${reference.sectionHeading}, ${reference.kind} ${reference.blockIndex + 1}`}
                     onClick={() =>
                       setReferences((current) =>
                         current.filter(
@@ -702,12 +847,26 @@ export default function Writing({
         onChange={setEdit}
         onSave={() => void handleSave()}
         onExport={() => void handleExport()}
+        onImportTemplate={() => void handlePickTemplate()}
+        onReviewTemplate={() => void handleReviewTemplate()}
         onReference={addReference}
         saveStatus={null}
         exportStatus={exportStatus}
         validationErrors={validationErrors}
       />
-    </div>
+      </div>
+      {templatePreview && (
+        <WritingTemplateImportModal
+          key={templatePreview.import_id}
+          preview={templatePreview}
+          currentRevision={workspace.draft.revision}
+          busy={busy === "applying_template"}
+          error={actionError}
+          onCancel={() => void handleDiscardTemplatePreview()}
+          onApply={() => void handleApplyTemplate()}
+        />
+      )}
+    </>
   );
 }
 
@@ -716,11 +875,13 @@ function ContextControl({
   turns,
   reads,
   references,
+  templateImported,
 }: {
   revision: number;
   turns: number;
   reads: ReportContextReadView[];
-  references: WritingParagraphReference[];
+  references: WritingBlockReference[];
+  templateImported: boolean;
 }) {
   const uniqueReads = Array.from(
     new Map(
@@ -740,8 +901,12 @@ function ContextControl({
         <ul className="mt-1 list-disc pl-4 space-y-0.5">
           <li>Complete accepted report · revision {revision}</li>
           <li>{turns} retained Writing turn{turns === 1 ? "" : "s"}</li>
+          {templateImported && <li>DOCX template provenance and import notes</li>}
           {references.length > 0 && (
-            <li>{references.length} paragraph reference{references.length === 1 ? "" : "s"}</li>
+            <li>
+              {references.length} focused report block
+              {references.length === 1 ? "" : "s"}
+            </li>
           )}
         </ul>
       </div>
@@ -772,21 +937,22 @@ function ContextControl({
 }
 
 function reconcileReferences(
-  references: WritingParagraphReference[],
+  references: WritingBlockReference[],
   workspace: ReportWorkspaceView
-): WritingParagraphReference[] {
+): WritingBlockReference[] {
   return references.flatMap((reference) => {
     const section = workspace.draft.content.sections.find(
       (candidate) => candidate.id === reference.sectionId
     );
     const block = section?.blocks[reference.blockIndex];
-    if (!section || !block || block.kind !== "paragraph") return [];
-    const compact = block.text.replace(/\s+/g, " ").trim();
+    if (!section || !block || block.kind === "bullet_list") return [];
+    if (block.kind !== reference.kind) return [];
     return [
       {
         ...reference,
+        kind: block.kind,
         sectionHeading: section.heading,
-        preview: compact.length > 90 ? `${compact.slice(0, 87)}…` : compact,
+        preview: reportBlockReferencePreview(block),
       },
     ];
   });

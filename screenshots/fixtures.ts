@@ -247,7 +247,7 @@ export const fixtures: Record<string, unknown> = {
   ].join("\n").replace(/– /g, "–"),
 
   load_report_workspace: {
-    schema_version: 1,
+    schema_version: 2,
     report_id: "99999999-9999-4999-8999-999999999999",
     client_id: CLIENT_ID,
     draft: {
@@ -383,6 +383,16 @@ export const fixtures: Record<string, unknown> = {
                   "Benefits from predictable transitions and brief check-ins",
                 ],
               },
+              {
+                kind: "table",
+                rows: [
+                  ["Setting", "Observed support"],
+                  ["Classroom", "Brief check-ins"],
+                  ["Transitions", "Predictable sequence"],
+                ],
+                has_header: true,
+                column_widths: [3500, 6500],
+              },
             ],
           },
         },
@@ -430,6 +440,16 @@ export const fixtures: Record<string, unknown> = {
                   "Benefits from predictable transitions and brief check-ins",
                 ],
               },
+              {
+                kind: "table",
+                rows: [
+                  ["Setting", "Observed support"],
+                  ["Classroom", "Brief check-ins"],
+                  ["Transitions", "Predictable sequence"],
+                ],
+                has_header: true,
+                column_widths: [3500, 6500],
+              },
             ],
           },
         ],
@@ -443,6 +463,7 @@ export const fixtures: Record<string, unknown> = {
       status: "exported",
       attempted_at: "2026-03-14T12:00:00Z",
     },
+    template_import: null,
     created_at: "2026-03-01T17:30:02Z",
     updated_at: "2026-03-15T15:08:05Z",
   },

@@ -10,6 +10,10 @@ const mocks = vi.hoisted(() => ({
   send: vi.fn(),
   resolve: vi.fn(),
   exportDocx: vi.fn(),
+  pickTemplate: vi.fn(),
+  applyTemplate: vi.fn(),
+  discardTemplate: vi.fn(),
+  reviewTemplate: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -18,6 +22,10 @@ vi.mock("../lib/tauri", () => ({
   sendReportMessage: mocks.send,
   resolveReportProposal: mocks.resolve,
   exportReportDocx: mocks.exportDocx,
+  pickReportTemplateDocx: mocks.pickTemplate,
+  applyReportTemplate: mocks.applyTemplate,
+  discardReportTemplatePreview: mocks.discardTemplate,
+  acknowledgeReportTemplateReview: mocks.reviewTemplate,
 }));
 
 import Writing from "./Writing";
@@ -43,7 +51,7 @@ function workspace({
   lastAgentRevision?: number | null;
 } = {}): ReportWorkspaceView {
   return {
-    schema_version: 1,
+    schema_version: 2,
     report_id: "report-1",
     client_id: "client-1",
     draft: {
@@ -127,6 +135,7 @@ function workspace({
     resolutions: [],
     last_agent_revision: lastAgentRevision,
     last_export: null,
+    template_import: null,
     created_at: "2026-08-01T00:00:00Z",
     updated_at: "2026-08-01T00:00:00Z",
   };
@@ -190,6 +199,8 @@ beforeEach(() => {
     }
   );
   mocks.send.mockResolvedValue(turnResponse(workspace({ lastAgentRevision: 0 })));
+  mocks.pickTemplate.mockResolvedValue(null);
+  mocks.discardTemplate.mockResolvedValue(undefined);
   mocks.exportDocx.mockResolvedValue({
     exported: true,
     report_id: "report-1",
@@ -285,6 +296,107 @@ describe("Writing", () => {
     expect(proposal.queryByText("Unchanged closing")).toBeNull();
   });
 
+  it("renders and directly edits structured report tables", async () => {
+    const value = workspace();
+    value.draft.content.sections[0].blocks = [
+      {
+        kind: "table",
+        rows: [
+          ["Measure", "Score"],
+          ["Attention", "87"],
+        ],
+        has_header: true,
+        column_widths: [7000, 3000],
+      },
+    ];
+    mocks.load.mockResolvedValue(value);
+    renderWriting();
+
+    const table = await screen.findByTestId("report-table");
+    expect(table.textContent).toContain("Attention");
+    expect(table.querySelectorAll("th")).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const score = screen.getByRole("textbox", {
+      name: "Section 1 table 1, row 2, column 2",
+    });
+    score.innerText = "91";
+    fireEvent.input(score);
+    await userEvent.click(screen.getByRole("button", { name: "Add row" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save now" }));
+
+    expect(mocks.save).toHaveBeenCalledWith(
+      "client-1",
+      0,
+      expect.objectContaining({
+        sections: [
+          expect.objectContaining({
+            blocks: [
+              expect.objectContaining({
+                kind: "table",
+                rows: [
+                  ["Measure", "Score"],
+                  ["Attention", "91"],
+                  ["", ""],
+                ],
+              }),
+            ],
+          }),
+        ],
+      })
+    );
+  });
+
+  it("highlights focused cell changes in table proposals", async () => {
+    const value = workspace({ pending: true });
+    const currentTable = {
+      kind: "table" as const,
+      rows: [
+        ["Measure", "Score"],
+        ["Attention", "87"],
+      ],
+      has_header: true,
+      column_widths: [7000, 3000],
+    };
+    const proposedTable = {
+      ...currentTable,
+      rows: [
+        ["Measure", "Score"],
+        ["Attention", "91"],
+      ],
+    };
+    value.draft.content.sections[0].blocks = [currentTable];
+    value.pending_proposal = {
+      ...value.pending_proposal!,
+      summary: "Update one score",
+      operations: [
+        {
+          kind: "replace_section",
+          section_id: SECTION_ID,
+          heading: "Findings",
+          blocks: [proposedTable],
+        },
+      ],
+      proposed_content: {
+        title: value.draft.content.title,
+        sections: [
+          {
+            id: SECTION_ID,
+            heading: "Findings",
+            blocks: [proposedTable],
+          },
+        ],
+      },
+    };
+    mocks.load.mockResolvedValue(value);
+    renderWriting();
+
+    const proposal = within(await screen.findByTestId("report-proposal"));
+    expect(proposal.getByText("Change table 1 · 1 cell")).toBeDefined();
+    expect(proposal.getByText("87").className).toContain("bg-red-50");
+    expect(proposal.getByText("91").className).toContain("bg-violet-100");
+  });
+
   it("uses transparent inline editing and saves edits before the next message", async () => {
     const saved = workspace({ title: "Edited directly", revision: 1 });
     mocks.save.mockResolvedValue(saved);
@@ -332,7 +444,7 @@ describe("Writing", () => {
         name: "Reference Findings, paragraph 1 in Writing chat",
       })
     );
-    expect(screen.getByLabelText("Referenced report paragraphs").textContent).toContain(
+    expect(screen.getByLabelText("Referenced report blocks").textContent).toContain(
       "Findings ¶1"
     );
     await userEvent.type(
@@ -346,6 +458,46 @@ describe("Writing", () => {
       0,
       "model-1",
       "Shorten this",
+      [{ section_id: SECTION_ID, block_index: 0 }]
+    );
+  });
+
+  it("attaches a hovered table to the next Writing message", async () => {
+    const value = workspace();
+    value.draft.content.sections[0].blocks = [
+      {
+        kind: "table",
+        rows: [
+          ["Measure", "Score"],
+          ["Attention", "87"],
+        ],
+        has_header: true,
+        column_widths: [7000, 3000],
+      },
+    ];
+    mocks.load.mockResolvedValue(value);
+    renderWriting();
+    await screen.findByTestId("report-table");
+
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Reference Findings, table 1 in Writing chat",
+      })
+    );
+    expect(screen.getByLabelText("Referenced report blocks").textContent).toContain(
+      "Findings table 1: Measure | Score · Attention | 87"
+    );
+    await userEvent.type(
+      screen.getByLabelText("Writing instruction"),
+      "Update this score table"
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(mocks.send).toHaveBeenCalledWith(
+      "client-1",
+      0,
+      "model-1",
+      "Update this score table",
       [{ section_id: SECTION_ID, block_index: 0 }]
     );
   });
@@ -424,6 +576,96 @@ describe("Writing", () => {
     );
   });
 
+  it("previews a DOCX import and requires carryover review before export", async () => {
+    const preview = {
+      import_id: "import-1",
+      content: {
+        title: "Imported evaluation",
+        sections: [
+          {
+            id: SECTION_ID,
+            heading: "Scores",
+            blocks: [
+              {
+                kind: "table" as const,
+                rows: [
+                  ["Measure", "Score"],
+                  ["Attention", "{{score}}"],
+                ],
+                has_header: true,
+                column_widths: [7000, 3000],
+              },
+            ],
+          },
+        ],
+      },
+      warnings: [
+        {
+          code: "headers_footers_omitted",
+          message: "Headers or footers were omitted.",
+          count: 2,
+        },
+      ],
+      stats: {
+        sections: 1,
+        paragraphs: 0,
+        bullet_lists: 0,
+        tables: 1,
+        table_cells: 4,
+        placeholder_count: 1,
+      },
+    };
+    const imported = workspace({ title: "Imported evaluation", revision: 1 });
+    imported.draft.content = preview.content;
+    imported.template_import = {
+      imported_revision: 1,
+      imported_at: "2026-08-01T02:00:00Z",
+      warnings: preview.warnings,
+      reviewed_revision: null,
+      review_required: true,
+      placeholder_count: 1,
+    };
+    const reviewed = structuredClone(imported);
+    reviewed.template_import = {
+      ...imported.template_import,
+      reviewed_revision: 1,
+      review_required: false,
+    };
+    mocks.pickTemplate.mockResolvedValue(preview);
+    mocks.applyTemplate.mockResolvedValue(imported);
+    mocks.reviewTemplate.mockResolvedValue(reviewed);
+    renderWriting();
+    await screen.findByText("Accepted report title");
+
+    await userEvent.click(screen.getByRole("button", { name: "Import .docx" }));
+    expect(await screen.findByText("Review DOCX template import")).toBeDefined();
+    expect(screen.getByText("Structured content preview")).toBeDefined();
+    expect(screen.getByText("Headers or footers were omitted. (2)")).toBeDefined();
+    const apply = screen.getByRole("button", {
+      name: "Import as accepted revision",
+    }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    await userEvent.click(
+      screen.getByText(/I reviewed the structured preview/)
+    );
+    expect(apply.disabled).toBe(false);
+    await userEvent.click(apply);
+
+    expect(mocks.applyTemplate).toHaveBeenCalledWith("client-1", 0, "import-1");
+    expect(await screen.findByText(/carryover review required/)).toBeDefined();
+    const exportButton = screen.getByRole("button", {
+      name: "Export .docx",
+    }) as HTMLButtonElement;
+    expect(exportButton.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+    expect(mocks.reviewTemplate).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      1
+    );
+    expect(exportButton.disabled).toBe(false);
+  });
+
   it("can retry export immediately after the native dialog is canceled", async () => {
     mocks.exportDocx
       .mockResolvedValueOnce({
@@ -453,7 +695,7 @@ describe("Writing", () => {
     expect(window.confirm).not.toHaveBeenCalled();
   });
 
-  it("preserves a failed instruction and its paragraph references for retry", async () => {
+  it("preserves a failed instruction and its report references for retry", async () => {
     mocks.send.mockRejectedValue(new Error("Bedrock unavailable"));
     renderWriting();
     await screen.findByText("bold report");
@@ -474,7 +716,7 @@ describe("Writing", () => {
       "Error: Bedrock unavailable"
     );
     expect(composer.value).toBe("Draft the findings section");
-    expect(screen.getByLabelText("Referenced report paragraphs")).toBeDefined();
+    expect(screen.getByLabelText("Referenced report blocks")).toBeDefined();
   });
 
   it("rejects an Editor History entry for a different report", async () => {

@@ -30,10 +30,11 @@ import type {
   ProvisionerProgress,
   RecordContext,
   RecordFile,
+  ReportBlockReferenceInput,
   ReportDraftEdit,
   ReportExportResult,
-  ReportParagraphReferenceInput,
   ReportProposalDecision,
+  ReportTemplatePreview,
   ReportTurnResponse,
   ReportWorkspaceView,
   TranscribeMemoResult,
@@ -83,6 +84,7 @@ export type {
   RecordContext,
   RecordFile,
   ReportAuthoringTurnView,
+  ReportBlockReferenceInput,
   ReportBlockView,
   ReportContentView,
   ReportContextReadView,
@@ -92,12 +94,15 @@ export type {
   ReportExportStatusView,
   ReportExportView,
   ReportOperationView,
-  ReportParagraphReferenceInput,
   ReportProposalDecision,
   ReportProposalResolutionDecision,
   ReportProposalResolutionView,
   ReportProposalView,
   ReportSectionEdit,
+  ReportTemplateImportView,
+  ReportTemplatePreview,
+  ReportTemplateStatsView,
+  ReportTemplateWarningView,
   ReportSectionView,
   ReportTimelineItemView,
   ReportTimelineRole,
@@ -410,12 +415,48 @@ export async function saveReportDraft(
   );
 }
 
+export async function pickReportTemplateDocx(
+  clientId: string
+): Promise<ReportTemplatePreview | null> {
+  return unwrap(await commands.pickReportTemplateDocx(clientId));
+}
+
+export async function applyReportTemplate(
+  clientId: string,
+  expectedRevision: number,
+  importId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.applyReportTemplate(clientId, expectedRevision, importId)
+  );
+}
+
+export async function discardReportTemplatePreview(
+  importId: string
+): Promise<void> {
+  unwrap(await commands.discardReportTemplatePreview(importId));
+}
+
+export async function acknowledgeReportTemplateReview(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.acknowledgeReportTemplateReview(
+      clientId,
+      reportId,
+      expectedRevision
+    )
+  );
+}
+
 export async function sendReportMessage(
   clientId: string,
   expectedRevision: number,
   modelId: string,
   instruction: string,
-  references: ReportParagraphReferenceInput[] = []
+  references: ReportBlockReferenceInput[] = []
 ): Promise<ReportTurnResponse> {
   return unwrap(
     await commands.sendReportMessage(

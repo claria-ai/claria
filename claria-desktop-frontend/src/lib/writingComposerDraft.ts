@@ -1,4 +1,7 @@
-export type WritingParagraphReference = {
+import type { ReportBlockView } from "./tauri";
+
+export type WritingBlockReference = {
+  kind: "paragraph" | "table";
   sectionId: string;
   blockIndex: number;
   sectionHeading: string;
@@ -7,7 +10,7 @@ export type WritingParagraphReference = {
 
 export type WritingComposerDraft = {
   instruction: string;
-  references: WritingParagraphReference[];
+  references: WritingBlockReference[];
 };
 
 // Composer drafts can contain PHI, so keep them in process memory rather than
@@ -35,6 +38,30 @@ export function writeWritingComposerDraft(
 
 export function clearWritingComposerDrafts(): void {
   drafts.clear();
+}
+
+type ReferenceableReportBlock =
+  | Extract<ReportBlockView, { kind: "paragraph" }>
+  | Extract<ReportBlockView, { kind: "table" }>;
+
+export function reportBlockReferencePreview(
+  block: ReferenceableReportBlock
+): string {
+  const text =
+    block.kind === "paragraph"
+      ? block.text
+      : block.rows
+          .map((row) =>
+            row
+              .map((cell) => cell.replace(/\s+/g, " ").trim())
+              .filter(Boolean)
+              .join(" | ")
+          )
+          .filter(Boolean)
+          .join(" · ");
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact === "") return "Empty table";
+  return compact.length > 90 ? `${compact.slice(0, 87)}…` : compact;
 }
 
 function cloneDraft(draft: WritingComposerDraft): WritingComposerDraft {

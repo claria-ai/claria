@@ -2,8 +2,9 @@ use claria_core::models::{
     report::{
         MAX_REPORT_TURNS, REPORT_WORKSPACE_SCHEMA_VERSION, ReportAuthoringTurn, ReportBlock,
         ReportContent, ReportOperation, ReportProposal, ReportProtocolBlock, ReportProtocolMessage,
-        ReportProtocolRole, ReportSection, ReportWorkspace, decode_report_workspace,
-        validate_report_content,
+        ReportProtocolRole, ReportSection, ReportTemplateImport, ReportTemplateWarning,
+        ReportTemplateWarningCode, ReportWorkspace, decode_report_workspace,
+        report_template_placeholder_count, validate_report_content,
     },
     turn_usage::TurnUsage,
 };
@@ -66,14 +67,21 @@ fn new_workspace_has_versioned_empty_accepted_draft() {
 fn legacy_workspace_defaults_writing_queue_and_export_status() {
     let workspace = workspace();
     let mut value = serde_json::to_value(&workspace).expect("serialize workspace");
+    value["schema_version"] = serde_json::json!(1);
+    value
+        .as_object_mut()
+        .expect("workspace object")
+        .remove("template_import");
     let session = value["session"].as_object_mut().expect("session object");
     session.remove("last_agent_revision");
     session.remove("last_export");
     let bytes = serde_json::to_vec(&value).expect("legacy bytes");
 
     let decoded = decode_report_workspace(&bytes).expect("decode legacy workspace");
+    assert_eq!(decoded.schema_version, REPORT_WORKSPACE_SCHEMA_VERSION);
     assert_eq!(decoded.session.last_agent_revision, None);
     assert_eq!(decoded.session.last_export, None);
+    assert_eq!(decoded.template_import, None);
 }
 
 #[test]
@@ -277,6 +285,135 @@ fn limits_and_empty_text_are_rejected() {
             .to_string()
             .contains("bullet list")
     );
+}
+
+#[test]
+fn structured_tables_validate_shape_widths_and_empty_cells() {
+    let valid = ReportContent {
+        title: "Assessment".to_string(),
+        sections: vec![ReportSection {
+            id: Uuid::new_v4(),
+            heading: "Scores".to_string(),
+            blocks: vec![ReportBlock::Table {
+                rows: vec![
+                    vec!["Measure".to_string(), "Score".to_string()],
+                    vec!["Attention".to_string(), String::new()],
+                ],
+                has_header: true,
+                column_widths: Some(vec![7_000, 3_000]),
+            }],
+        }],
+    };
+    validate_report_content(&valid).expect("valid table");
+
+    for rows in [
+        vec![
+            vec!["A".to_string()],
+            vec!["B".to_string(), "C".to_string()],
+        ],
+        vec![vec![String::new(), String::new()]],
+    ] {
+        let mut invalid = valid.clone();
+        invalid.sections[0].blocks[0] = ReportBlock::Table {
+            rows,
+            has_header: false,
+            column_widths: None,
+        };
+        assert!(validate_report_content(&invalid).is_err());
+    }
+
+    let mut invalid_widths = valid.clone();
+    invalid_widths.sections[0].blocks[0] = ReportBlock::Table {
+        rows: vec![vec!["A".to_string(), "B".to_string()]],
+        has_header: true,
+        column_widths: Some(vec![5_000, 4_999]),
+    };
+    assert!(
+        validate_report_content(&invalid_widths)
+            .unwrap_err()
+            .to_string()
+            .contains("sum to 10000")
+    );
+
+    let mut full_rows = vec![vec![String::new(); 20]; 200];
+    full_rows[0][0] = "value".to_string();
+    let too_many_cells = ReportContent {
+        title: "Assessment".to_string(),
+        sections: vec![ReportSection {
+            id: Uuid::new_v4(),
+            heading: "Large tables".to_string(),
+            blocks: (0..6)
+                .map(|_| ReportBlock::Table {
+                    rows: full_rows.clone(),
+                    has_header: false,
+                    column_widths: None,
+                })
+                .collect(),
+        }],
+    };
+    assert!(
+        validate_report_content(&too_many_cells)
+            .unwrap_err()
+            .to_string()
+            .contains("at most 20000 cells")
+    );
+}
+
+#[test]
+fn template_metadata_is_revision_bound_and_contains_no_local_identity() {
+    let mut workspace = workspace();
+    workspace.draft = workspace
+        .draft
+        .replace_content(
+            0,
+            ReportContent {
+                title: "Imported".to_string(),
+                sections: vec![],
+            },
+            timestamp("2026-08-01T12:01:00Z"),
+        )
+        .expect("import revision");
+    workspace.updated_at = timestamp("2026-08-01T12:01:00Z");
+    workspace.template_import = Some(ReportTemplateImport {
+        source_sha256: "a".repeat(64),
+        imported_revision: 1,
+        imported_at: timestamp("2026-08-01T12:01:00Z"),
+        warnings: vec![ReportTemplateWarning {
+            code: ReportTemplateWarningCode::MissingTitle,
+            count: 1,
+        }],
+        reviewed_revision: Some(1),
+    });
+    workspace.validate().expect("valid metadata");
+    let json = serde_json::to_string(&workspace).expect("serialize");
+    assert!(!json.contains("filename"));
+    assert!(!json.contains("path"));
+
+    workspace.draft.revision = 2;
+    assert!(
+        workspace
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("current accepted revision")
+    );
+}
+
+#[test]
+fn unresolved_template_markers_are_counted_across_tables() {
+    let content = ReportContent {
+        title: "Report for {{client}}".to_string(),
+        sections: vec![ReportSection {
+            id: Uuid::new_v4(),
+            heading: "[DATE]".to_string(),
+            blocks: vec![ReportBlock::Table {
+                rows: vec![vec!["<<score>>".to_string(), "_____".to_string()]],
+                has_header: false,
+                column_widths: None,
+            }],
+        }],
+    };
+    assert_eq!(report_template_placeholder_count(&content), 4);
 }
 
 fn complete_turn(index: usize, text_size: usize) -> ReportAuthoringTurn {

@@ -138,6 +138,30 @@ fn document_contains_ordered_structured_content_and_page_setup() {
 }
 
 #[test]
+fn structured_tables_render_with_grid_header_style_and_cell_text() {
+    let mut report = draft();
+    report.content.sections[0].blocks.push(ReportBlock::Table {
+        rows: vec![
+            vec!["Measure".to_string(), "Score".to_string()],
+            vec!["Attention".to_string(), "87\npercentile".to_string()],
+        ],
+        has_header: true,
+        column_widths: Some(vec![7_000, 3_000]),
+    });
+    let bytes = render_report(&report).expect("render table");
+    let document = entry(&bytes, "word/document.xml");
+
+    assert!(document.contains("<w:tbl>"));
+    assert!(document.contains(r#"<w:gridCol w:w="6552" w:type="dxa" />"#));
+    assert!(document.contains(r#"<w:gridCol w:w="2808" w:type="dxa" />"#));
+    assert!(document.contains(r#"<w:shd w:val="clear" w:color="auto" w:fill="E2E8F0" />"#));
+    assert!(document.contains("Measure"));
+    assert!(document.contains("Attention"));
+    assert!(document.contains("percentile"));
+    assert!(document.contains("<w:cantSplit />"));
+}
+
+#[test]
 fn bullets_reference_real_ooxml_numbering() {
     let bytes = render_report(&draft()).expect("render");
     let document = entry(&bytes, "word/document.xml");
