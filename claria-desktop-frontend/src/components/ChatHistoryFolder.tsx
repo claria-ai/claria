@@ -1,35 +1,46 @@
+import { useState } from "react";
 import Spinner from "./Spinner";
 import { FolderIcon, PlayIcon, TrashIcon } from "./icons";
 import { formatFileSize } from "../lib/format";
-import { chatHistoryLabel } from "../lib/recordFiles";
-import type { RecordFile } from "../lib/tauri";
+import { chatHistoryLabel, chatIdFromFilename } from "../lib/recordFiles";
+import {
+  loadChatHistory,
+  type ChatHistoryDetail,
+  type RecordFile,
+} from "../lib/tauri";
 
-/**
- * Persisted chat sessions, collapsed into one folder row.
- *
- * They are ordinary objects in the record and would otherwise crowd out the
- * user's own documents, so they get folded away rather than listed inline.
- */
+/** Persisted chat sessions, collapsed into one self-contained folder row. */
 export default function ChatHistoryFolder({
+  clientId,
   files,
-  open,
-  onToggle,
-  resumeLoading,
   onResume,
   onDelete,
+  onError,
 }: {
+  clientId: string;
   files: RecordFile[];
-  open: boolean;
-  onToggle: () => void;
-  /** Filename of the chat currently being loaded, if any. */
-  resumeLoading: string | null;
-  onResume: (filename: string) => void;
+  onResume: (detail: ChatHistoryDetail) => void;
   onDelete: (filename: string) => void;
+  onError: (message: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const [resumeLoading, setResumeLoading] = useState<string | null>(null);
+
+  async function handleResume(filename: string) {
+    setResumeLoading(filename);
+    try {
+      onResume(await loadChatHistory(clientId, chatIdFromFilename(filename)));
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setResumeLoading(null);
+    }
+  }
+
   return (
     <div className="border-b border-gray-100">
       <button
-        onClick={onToggle}
+        onClick={() => setOpen((value) => !value)}
         className="w-full px-4 py-3 flex items-center gap-3 hover:bg-gray-50 transition-colors"
       >
         <div className="w-8 h-8 rounded flex items-center justify-center bg-purple-100 text-purple-600">
@@ -77,7 +88,7 @@ export default function ChatHistoryFolder({
               </div>
               <div className="flex gap-1">
                 <button
-                  onClick={() => onResume(file.filename)}
+                  onClick={() => handleResume(file.filename)}
                   disabled={resumeLoading === file.filename}
                   title="Resume conversation"
                   className="p-1.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded transition-colors disabled:opacity-50"

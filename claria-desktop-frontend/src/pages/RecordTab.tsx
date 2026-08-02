@@ -1,44 +1,30 @@
 import { useState } from "react";
 import {
-  createTextRecordFile,
-  getRecordFileText,
   listDeletedFiles,
-  loadChatHistory,
   restoreDeletedFile,
-  updateTextRecordFile,
   type ChatHistoryDetail,
   type DeletedFile,
 } from "../lib/tauri";
 import ChatHistoryFolder from "../components/ChatHistoryFolder";
-import CreateTextFileModal from "../components/CreateTextFileModal";
 import DeletedSection from "../components/DeletedSection";
-import DeleteFileModal from "../components/DeleteFileModal";
 import DropZoneHint from "../components/DropZoneHint";
 import EditorHistoryFolder from "../components/EditorHistoryFolder";
-import EditTextModal from "../components/EditTextModal";
 import FileIcon from "../components/FileIcon";
 import FileList from "../components/FileList";
 import FilesPanelHeader from "../components/FilesPanelHeader";
 import MemoRecorderBar from "../components/MemoRecorderBar";
 import MemoReviewModal from "../components/MemoReviewModal";
+import RecordFileDialogs from "../components/RecordFileDialogs";
 import Spinner from "../components/Spinner";
-import TextPreviewModal from "../components/TextPreviewModal";
-import TranscribeWizard from "../components/TranscribeWizard";
-import TranscriptEditor from "../components/TranscriptEditor";
 import UploadingRows from "../components/UploadingRows";
-import VersionHistoryModal from "../components/VersionHistoryModal";
 import { ErrorBanner } from "../components/StateCards";
 import { formatDateTime } from "../lib/format";
+import { isChatHistory } from "../lib/recordFiles";
 import { searchMatches } from "../lib/search";
-import {
-  chatIdFromFilename,
-  isAudioSidecar,
-  isChatHistory,
-} from "../lib/recordFiles";
-import { recordFileVersions } from "../lib/versions";
 import { useEditorHistory } from "../lib/useEditorHistory";
 import { useMemoRecorder } from "../lib/useMemoRecorder";
 import { useMoreMode } from "../lib/useMoreMode";
+import { useRecordFileDialog } from "../lib/useRecordFileDialog";
 import { useRecordFiles } from "../lib/useRecordFiles";
 import { useRecordSearch } from "../lib/useRecordSearch";
 import { useTranscriptionPrefs } from "../lib/useTranscriptionPrefs";
@@ -48,10 +34,8 @@ import { useWebviewFileDrop } from "../lib/useWebviewFileDrop";
  * A client's files, and everything that reads from or writes to them: upload
  * by drop, live memo recording, search, version history and the text editors.
  *
- * Each of those owns its own state, in a hook or in a child. What stays here
- * is the state more than one of them touches — the error banner every
- * operation reports into, and the file list most of them invalidate — plus
- * which modal is open, which is the page's decision to make.
+ * Each feature owns its state in a hook or child. This page only composes
+ * them around the shared file list and error banner.
  */
 export default function RecordTab({
   clientId,
@@ -70,35 +54,16 @@ export default function RecordTab({
   const search = useRecordSearch(clientId, setError);
   const transcriptionPrefs = useTranscriptionPrefs();
   const editorHistory = useEditorHistory(clientId);
+  const fileDialog = useRecordFileDialog({
+    clientId,
+    onError: setError,
+    onChanged: refresh,
+    remove,
+  });
 
-  const [previewText, setPreviewText] = useState<string | null>(null);
-  const [previewFilename, setPreviewFilename] = useState<string | null>(null);
-  const [editText, setEditText] = useState<string | null>(null);
-  const [editFilename, setEditFilename] = useState<string | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [showCreateText, setShowCreateText] = useState(false);
-  const [chatFolderOpen, setChatFolderOpen] = useState(false);
-  const [resumeLoading, setResumeLoading] = useState<string | null>(null);
-  /** Which file's version history is open, if any. */
-  const [versionFile, setVersionFile] = useState<string | null>(null);
-
-  const [showTranscribeWizard, setShowTranscribeWizard] = useState(false);
-  const [wizardDroppedFile, setWizardDroppedFile] = useState<string | null>(
-    null,
-  );
-
-  // A drop while the wizard is open belongs to the wizard, which adopts the
-  // path as its chosen file — otherwise it would upload via the fast path and
-  // bypass the per-file options the user opened the wizard to set. Only the
-  // first path is forwarded; the wizard is single-file.
   const dragging = useWebviewFileDrop({
     onDrop: upload,
-    divert: (paths) => {
-      if (!showTranscribeWizard) return false;
-      const first = paths[0];
-      if (first) setWizardDroppedFile(first);
-      return true;
-    },
+    divert: fileDialog.divertDrop,
   });
 
   // Live memo recording — microphone, PCM buffer and timers all live in here.
@@ -130,74 +95,6 @@ export default function RecordTab({
         search.contentMatches.has(f.filename)),
   );
 
-  async function handlePreview(filename: string) {
-    setPreviewFilename(filename);
-    try {
-      setPreviewText(await getRecordFileText(clientId, filename));
-    } catch (e) {
-      setPreviewText(`Error loading preview: ${String(e)}`);
-    }
-  }
-
-  function handleClosePreview() {
-    setPreviewText(null);
-    setPreviewFilename(null);
-  }
-
-  async function handleEdit(filename: string) {
-    setEditFilename(filename);
-    try {
-      setEditText(await getRecordFileText(clientId, filename));
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  function handleCancelEdit() {
-    setEditText(null);
-    setEditFilename(null);
-  }
-
-  async function handleSaveEdit(filename: string, text: string) {
-    setError(null);
-    try {
-      await updateTextRecordFile(clientId, filename, text);
-      handleCancelEdit();
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function handleDelete(filename: string) {
-    setDeleteConfirm(null);
-    await remove(filename);
-  }
-
-  async function handleResume(filename: string) {
-    setResumeLoading(filename);
-    try {
-      onResumeChat(
-        await loadChatHistory(clientId, chatIdFromFilename(filename)),
-      );
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setResumeLoading(null);
-    }
-  }
-
-  async function handleCreateTextFile(filename: string, content: string) {
-    setError(null);
-    try {
-      await createTextRecordFile(clientId, filename, content);
-      setShowCreateText(false);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-2xl mx-auto p-8">
@@ -219,8 +116,8 @@ export default function RecordTab({
             onToggleMoreMode={toggleMoreMode}
             showRecordMemo={memo.ready && memo.state === "idle"}
             onRecordMemo={memo.start}
-            onUploadAudio={() => setShowTranscribeWizard(true)}
-            onCreateTextFile={() => setShowCreateText(true)}
+            onUploadAudio={fileDialog.openTranscription}
+            onCreateTextFile={fileDialog.openCreate}
           />
 
           <MemoRecorderBar
@@ -249,12 +146,11 @@ export default function RecordTab({
 
           {!loading && chatHistoryFiles.length > 0 && (
             <ChatHistoryFolder
+              clientId={clientId}
               files={chatHistoryFiles}
-              open={chatFolderOpen}
-              onToggle={() => setChatFolderOpen(!chatFolderOpen)}
-              resumeLoading={resumeLoading}
-              onResume={handleResume}
-              onDelete={setDeleteConfirm}
+              onResume={onResumeChat}
+              onDelete={fileDialog.openDelete}
+              onError={setError}
             />
           )}
 
@@ -271,10 +167,10 @@ export default function RecordTab({
               query={search.query}
               contentMatches={search.contentMatches}
               showVersions={moreMode}
-              onOpenVersions={setVersionFile}
-              onEdit={handleEdit}
-              onPreview={handlePreview}
-              onDelete={setDeleteConfirm}
+              onOpenVersions={fileDialog.openVersions}
+              onEdit={fileDialog.openEdit}
+              onPreview={fileDialog.openPreview}
+              onDelete={fileDialog.openDelete}
             />
           )}
 
@@ -298,66 +194,13 @@ export default function RecordTab({
         </div>
       </div>
 
-      {/* Preview / segment editor.
-          Audio sidecars get the structured TranscriptEditor (header parser,
-          per-segment rows, speaker rename, save / restore-to-original via S3
-          versioning). PDF/DOCX sidecars are plain text — render read-only. */}
-      {previewText !== null &&
-        previewFilename &&
-        (isAudioSidecar(previewFilename) ? (
-          <TranscriptEditor
-            clientId={clientId}
-            filename={previewFilename}
-            initialBody={previewText}
-            onClose={handleClosePreview}
-            onSaved={(newBody) => setPreviewText(newBody)}
-          />
-        ) : (
-          <TextPreviewModal
-            filename={previewFilename}
-            text={previewText}
-            onClose={handleClosePreview}
-          />
-        ))}
+      <RecordFileDialogs
+        clientId={clientId}
+        dragging={dragging}
+        controller={fileDialog}
+        onError={setError}
+      />
 
-      {editText !== null && editFilename && (
-        <EditTextModal
-          filename={editFilename}
-          initialText={editText}
-          onCancel={handleCancelEdit}
-          onSave={(text) => handleSaveEdit(editFilename, text)}
-        />
-      )}
-
-      {deleteConfirm && (
-        <DeleteFileModal
-          filename={deleteConfirm}
-          onCancel={() => setDeleteConfirm(null)}
-          onConfirm={() => handleDelete(deleteConfirm)}
-        />
-      )}
-
-      {showTranscribeWizard && (
-        <TranscribeWizard
-          clientId={clientId}
-          droppedFilePath={wizardDroppedFile}
-          isDragging={dragging}
-          onClose={() => {
-            setShowTranscribeWizard(false);
-            setWizardDroppedFile(null);
-          }}
-          onUploaded={() => {
-            void refresh();
-          }}
-        />
-      )}
-
-      {showCreateText && (
-        <CreateTextFileModal
-          onCancel={() => setShowCreateText(false)}
-          onCreate={handleCreateTextFile}
-        />
-      )}
 
       {memo.state === "review" && (
         <MemoReviewModal
@@ -400,22 +243,6 @@ export default function RecordTab({
         </div>
       )}
 
-      {versionFile && (
-        <VersionHistoryModal
-          title={
-            isAudioSidecar(versionFile)
-              ? `Transcript History: ${versionFile}`
-              : `Version History: ${versionFile}`
-          }
-          source={recordFileVersions(clientId, versionFile)}
-          onClose={() => setVersionFile(null)}
-          onRestored={refresh}
-          onError={setError}
-          enableCompare
-          showFooterClose
-          className="max-w-4xl p-6 max-h-[90vh] flex flex-col"
-        />
-      )}
     </div>
   );
 }
