@@ -4,7 +4,7 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
-- Client record settings can rename a record and show its file count, current storage, and creation date
+- Client record settings can rename a record and show file counts, current and historical storage, creation dates, and name history
 - The client record page is split into components and hooks, with each feature owning its own state
 - The voice memo capture engine is a reusable hook rather than a page component's internals
 - Leaving the Record tab during a voice memo stops the microphone, transcription loop, and audio context

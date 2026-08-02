@@ -105,7 +105,7 @@ test("client record settings", async ({ page }) => {
   await page.waitForSelector("[data-client]");
   await page.click("[data-client]:first-child");
   await page.getByRole("button", { name: "Record settings" }).click();
-  await page.waitForSelector("text=Record statistics");
+  await page.waitForSelector("text=Name history");
   await page.waitForTimeout(300);
   await page.screenshot({ path: "output/client-record-settings.png", fullPage: true });
 });

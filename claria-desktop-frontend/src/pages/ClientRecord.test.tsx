@@ -111,11 +111,19 @@ beforeEach(() => {
     updated_at: "2026-08-01T00:00:00Z",
     file_count: 3,
     storage_bytes: 1_572_864,
+    storage_bytes_with_history: 2_097_152,
+    name_history: [
+      { name: "Ada", changed_at: "2026-08-01T00:00:00Z" },
+      {
+        name: "Augusta Ada King",
+        changed_at: "2026-07-01T00:00:00Z",
+      },
+    ],
   });
   mocks.updateClientName.mockResolvedValue({
     id: "client-1",
     name: "Ada",
-    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
   });
 });
 
@@ -132,6 +140,14 @@ describe("ClientRecord Writing integration", () => {
     expect(mocks.getClientRecordDetails).toHaveBeenCalledWith("client-1");
     expect(screen.getByText("3 files")).toBeDefined();
     expect(screen.getByText("1.5 MB")).toBeDefined();
+    const historicalStorage = screen.getByText("Including history: 2.0 MB");
+    expect(historicalStorage.className).toContain("text-gray-400");
+    expect(screen.queryByText("Record details")).toBeNull();
+    expect(screen.queryByText("Record statistics")).toBeNull();
+    expect(screen.getByRole("table", { name: "Record name history" })).toBeDefined();
+    expect(screen.getByRole("columnheader", { name: "Name" })).toBeDefined();
+    expect(screen.getByRole("columnheader", { name: "Time" })).toBeDefined();
+    expect(screen.getByRole("cell", { name: "Augusta Ada King" })).toBeDefined();
   });
 
   it("renames a record from settings", async () => {
@@ -139,7 +155,7 @@ describe("ClientRecord Writing integration", () => {
     mocks.updateClientName.mockResolvedValue({
       id: "client-1",
       name: "Ada Byron",
-      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-02T00:00:00Z",
     });
     renderClient(vi.fn(), onNameChanged);
     await userEvent.click(
@@ -156,6 +172,9 @@ describe("ClientRecord Writing integration", () => {
     );
     expect(onNameChanged).toHaveBeenCalledWith("Ada Byron");
     expect(await screen.findByText("Record name updated.")).toBeDefined();
+    expect(
+      screen.getByRole("cell", { name: "Ada Byron" })
+    ).toBeDefined();
   });
 
   it("does not issue Writing IPC while Record or Chat is active", async () => {

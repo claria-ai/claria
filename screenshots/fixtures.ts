@@ -172,12 +172,18 @@ export const fixtures: Record<string, unknown> = {
     updated_at: "2026-03-15T15:08:05Z",
     file_count: 4,
     storage_bytes: 6291456,
+    storage_bytes_with_history: 9437184,
+    name_history: [
+      { name: "Jane Doe", changed_at: "2026-03-15T15:08:05Z" },
+      { name: "Jane Marie Doe", changed_at: "2026-03-01T09:30:00Z" },
+      { name: "Jane Doe", changed_at: "2026-02-15T10:00:00Z" },
+    ],
   },
 
   update_client_name: {
     id: CLIENT_ID,
     name: "Jane Doe",
-    created_at: "2026-02-15T10:00:00Z",
+    updated_at: "2026-03-15T15:08:05Z",
   },
 
   list_record_files: [

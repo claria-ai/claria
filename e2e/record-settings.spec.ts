@@ -26,13 +26,21 @@ test("record settings show statistics and rename the client", async ({
   ).toBeVisible();
   await expect(page.getByText("3 files")).toBeVisible();
   await expect(page.getByText("5.5 MB")).toBeVisible();
-  await expect(page.getByText("Aug 1, 2026")).toBeVisible();
+  await expect(page.getByText("Including history: 7.0 MB")).toBeVisible();
+  await expect(page.getByText("Aug 1, 2026", { exact: true })).toBeVisible();
+  await expect(page.getByText("Record details")).toHaveCount(0);
+  await expect(page.getByText("Record statistics")).toHaveCount(0);
+  await expect(
+    page.getByRole("table", { name: "Record name history" })
+  ).toBeVisible();
+  await expect(page.getByRole("cell", { name: "Jane A. Doe" })).toBeVisible();
 
-  const name = page.getByLabel("Record name");
+  const name = page.getByRole("textbox", { name: "Record name", exact: true });
   await name.fill("Jane Smith");
   await page.getByRole("button", { name: "Save" }).click();
   await expect(page.getByText("Record name updated.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Jane Smith" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "Jane Smith" })).toBeVisible();
 
   await page.getByRole("button", { name: "Back" }).click();
   await expect(page.getByText("Jane Smith")).toBeVisible();
