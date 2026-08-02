@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createTextRecordFile,
   getWhisperModels,
@@ -61,10 +61,57 @@ export function useMemoRecorder({
   // Audio capture handles (not state — no re-renders needed).
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Keep the capture graph strongly reachable. Browsers may collect Web Audio
+  // nodes that only reference each other, which silently stops PCM delivery.
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
   const pcmBufferRef = useRef<Float32Array[]>([]);
   const transcribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcribingRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  const disconnectCaptureGraph = useCallback(() => {
+    if (processorRef.current) {
+      processorRef.current.onaudioprocess = null;
+      processorRef.current.disconnect();
+      processorRef.current = null;
+    }
+    sourceNodeRef.current?.disconnect();
+    sourceNodeRef.current = null;
+  }, []);
+
+  const releaseRecorder = useCallback(() => {
+    if (transcribeTimerRef.current) {
+      clearInterval(transcribeTimerRef.current);
+      transcribeTimerRef.current = null;
+    }
+    if (elapsedTimerRef.current) {
+      clearInterval(elapsedTimerRef.current);
+      elapsedTimerRef.current = null;
+    }
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    disconnectCaptureGraph();
+
+    const context = audioCtxRef.current;
+    audioCtxRef.current = null;
+    if (context && context.state !== "closed") {
+      void context.close().catch((error) => {
+        console.error("Failed to close memo audio context:", error);
+      });
+    }
+    pcmBufferRef.current = [];
+    transcribingRef.current = false;
+  }, [disconnectCaptureGraph]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      releaseRecorder();
+    };
+  }, [releaseRecorder]);
 
   // The interval callbacks outlive the render that created them, so the
   // caller's callbacks are read through refs rather than captured.
@@ -112,13 +159,14 @@ export function useMemoRecorder({
       const pcm16k = await resampleTo16kHz(raw, sampleRate);
       const base64 = float32ToBase64(pcm16k);
       const result = await transcribeMemo(base64);
+      if (!mountedRef.current) return;
       setTranscript(result.text);
       if (result.language) {
         setDetectedLanguage(result.language);
       }
     } catch (e) {
       console.error("Transcription error:", e);
-      onErrorRef.current(String(e));
+      if (mountedRef.current) onErrorRef.current(String(e));
     } finally {
       transcribingRef.current = false;
     }
@@ -156,6 +204,10 @@ export function useMemoRecorder({
     onErrorRef.current(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!mountedRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
 
       const ctx = new AudioContext();
@@ -169,6 +221,8 @@ export function useMemoRecorder({
       // ScriptProcessorNode is deprecated but widely supported and simpler
       // than AudioWorklet for this use case.
       const processor = ctx.createScriptProcessor(4096, 1, 1);
+      sourceNodeRef.current = source;
+      processorRef.current = processor;
       processor.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
         pcmBufferRef.current.push(new Float32Array(input));
@@ -180,7 +234,8 @@ export function useMemoRecorder({
       startElapsedTimer();
       startTranscribeTimer();
     } catch (e) {
-      onErrorRef.current(String(e));
+      releaseRecorder();
+      if (mountedRef.current) onErrorRef.current(String(e));
     }
   }
 
@@ -211,6 +266,7 @@ export function useMemoRecorder({
     // Stop the media stream.
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    disconnectCaptureGraph();
 
     if (audioCtxRef.current) {
       if (audioCtxRef.current.state !== "closed") {
@@ -236,16 +292,7 @@ export function useMemoRecorder({
   }
 
   function cancel() {
-    // Clean up any active audio resources.
-    stopTranscribeTimer();
-    stopElapsedTimer();
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-      audioCtxRef.current.close();
-    }
-    audioCtxRef.current = null;
-    pcmBufferRef.current = [];
+    releaseRecorder();
     setState("idle");
     setTranscript("");
     setElapsed(0);
