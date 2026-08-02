@@ -2,6 +2,15 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- The client record page is split into components and hooks, with each feature owning its own state
+- The voice memo capture engine is a reusable hook rather than a page component's internals
+- Leaving the Record tab during a voice memo stops the microphone, transcription loop, and audio context
+- Record files and custom prompts share one version history dialog instead of a copy each
+- Duplicate date and file-size formatters in the preferences page are gone
+- Audio buffer handling, transcription summaries, record filename rules and the webview drag-and-drop listener have tests
+
 ## [0.19.0] — 2026-08-02
 
 - Client workspaces have a new opt-in Writing tab for interactive report authoring
