@@ -1,2 +1,74 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+
+/* ---------------------------------------------------------------------------
+ * Distraction mode: sock drop + Lucia
+ *
+ * Keyframes only — durations and iteration counts come from
+ * SOCK_DROP_TIMINGS in components/SockDrop.tsx via inline styles, so the
+ * visuals can never drift from the phase state machine's timing.
+ * ------------------------------------------------------------------------- */
+
+@keyframes sock-drop-fall {
+  0% {
+    transform: translateY(-100vh) rotate(-35deg);
+  }
+  70% {
+    transform: translateY(0) rotate(8deg);
+  }
+  82% {
+    transform: translateY(-16px) rotate(-5deg);
+  }
+  92% {
+    transform: translateY(0) rotate(3deg);
+  }
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+}
+
+@keyframes sock-dog-waggle {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2.5deg);
+  }
+  50% {
+    transform: translateY(-5px) rotate(2.5deg);
+  }
+}
+
+@keyframes sock-dog-shake {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-16deg);
+  }
+  75% {
+    transform: rotate(16deg);
+  }
+}
+
+/* Two-frame walk cycle: each frame holds for half a stride. */
+@keyframes sock-dog-frame-a {
+  0%,
+  49.99% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes sock-dog-frame-b {
+  0%,
+  49.99% {
+    opacity: 0;
+  }
+  50%,
+  100% {
+    opacity: 1;
+  }
+}

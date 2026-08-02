@@ -22,6 +22,7 @@ import {
   type WhisperModelTier,
 } from "../lib/tauri";
 import { costErrorMessage } from "../lib/costErrors";
+import { useDistractionMode } from "../lib/distractionMode";
 import { formatFileSize } from "../lib/format";
 import { promptVersions } from "../lib/versions";
 import { BackButton } from "../components/icons";
@@ -160,8 +161,55 @@ export default function Preferences({
             )}
           </div>
         </details>
+
+        {/* Distraction Mode section */}
+        <DistractionModeSection />
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Distraction mode: the sock drop
+// ---------------------------------------------------------------------------
+
+function DistractionModeSection() {
+  const [enabled, setEnabled] = useDistractionMode();
+
+  return (
+    <details className="border border-gray-200 rounded-lg group">
+      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-gray-900">Distraction Mode</span>
+          {enabled && <span className="text-xs text-gray-400">On</span>}
+        </div>
+        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
+          &#9656;
+        </span>
+      </summary>
+      <div className="border-t border-gray-100 p-4">
+        <p className="text-xs text-gray-400 mb-3">
+          A moment of levity for heavy sessions. Unlike the settings above,
+          this switch is stored on this computer only and does not sync.
+        </p>
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            className="mt-0.5 rounded border-gray-300"
+          />
+          <div className="flex-1">
+            <span className="text-sm text-gray-900">Enable distraction mode</span>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Adds a sock button to chat. Pressing it drops a sock for Lucia,
+              the Claria mascot, who trots in, gives it a good shake, and
+              carries it away.
+            </p>
+          </div>
+        </label>
+      </div>
+    </details>
   );
 }
 
