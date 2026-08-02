@@ -354,6 +354,28 @@ async createClient(name: string) : Promise<Result<ClientSummary, string>> {
 }
 },
 /**
+ * Load editable metadata and current storage statistics for one client.
+ */
+async getClientRecordDetails(clientId: string) : Promise<Result<ClientRecordDetails, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_client_record_details", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update a client's display name with optimistic concurrency control.
+ */
+async updateClientName(clientId: string, name: string) : Promise<Result<ClientSummary, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_client_name", { clientId, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Delete a client and all associated data through the retryable,
  * compensating lifecycle library.
  */
@@ -1118,6 +1140,7 @@ export type ChatModel = { model_id: string; name: string }
  */
 export type ChatResponse = { chat_id: string; content: string; usage: TurnUsage }
 export type ChatRole = "user" | "assistant"
+export type ClientRecordDetails = { id: string; name: string; created_at: string; updated_at: string; file_count: number; storage_bytes: number }
 export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.

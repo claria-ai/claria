@@ -6,7 +6,8 @@ use aws_sdk_s3::primitives::ByteStream;
 
 use claria_desktop::record_cache::RecordCache;
 use claria_desktop::records::{
-    ClientSummary, fetch_record_texts, list_client_summaries, search_record_contents,
+    ClientSummary, fetch_record_texts, get_client_record_details, list_client_summaries,
+    search_record_contents, update_client_name, validate_client_name,
 };
 use claria_mock_aws::testing::MockServer;
 
@@ -95,6 +96,90 @@ async fn list_client_summaries_returns_all_clients_sorted_by_created_at_desc() {
     for window in summaries.windows(2) {
         assert!(window[0].created_at >= window[1].created_at);
     }
+}
+
+#[tokio::test]
+async fn client_record_details_count_files_and_current_storage() {
+    let (_mock, s3) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    put(
+        &s3,
+        &claria_core::s3_keys::client(id),
+        client_json(id, "Jane Doe"),
+    )
+    .await;
+
+    let records_prefix = claria_core::s3_keys::client_records_prefix(id);
+    put(&s3, &format!("{records_prefix}notes.txt"), vec![b'a'; 10]).await;
+    put(&s3, &format!("{records_prefix}scan.pdf"), vec![b'b'; 20]).await;
+    put(
+        &s3,
+        &format!("{records_prefix}scan.pdf.text"),
+        vec![b'c'; 30],
+    )
+    .await;
+    put(
+        &s3,
+        &format!("{records_prefix}chat-history/chat.json"),
+        vec![b'd'; 40],
+    )
+    .await;
+    put(
+        &s3,
+        &claria_core::s3_keys::report_workspace(id),
+        vec![b'e'; 50],
+    )
+    .await;
+
+    let details = get_client_record_details(&s3, BUCKET, id)
+        .await
+        .expect("client record details");
+
+    assert_eq!(details.id, id.to_string());
+    assert_eq!(details.name, "Jane Doe");
+    assert_eq!(details.file_count, 2);
+    assert_eq!(details.storage_bytes, 150);
+    assert_eq!(details.created_at, "2023-11-14T22:13:20Z");
+}
+
+#[tokio::test]
+async fn update_client_name_trims_and_preserves_client_identity() {
+    let (_mock, s3) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client(id);
+    put(&s3, &key, client_json(id, "Original Name")).await;
+
+    let updated = update_client_name(&s3, BUCKET, id, "  Renamed Client  ")
+        .await
+        .expect("rename client");
+    assert_eq!(updated.id, id.to_string());
+    assert_eq!(updated.name, "Renamed Client");
+    assert_eq!(updated.created_at, "2023-11-14T22:13:20Z");
+
+    let stored = claria_storage::objects::get_object(&s3, BUCKET, &key)
+        .await
+        .expect("renamed client object");
+    let client: claria_core::models::client::Client =
+        serde_json::from_slice(&stored.body).expect("client json");
+    assert_eq!(client.id, id);
+    assert_eq!(client.name, "Renamed Client");
+    assert_eq!(
+        client.created_at,
+        jiff::Timestamp::from_second(1_700_000_000).expect("timestamp")
+    );
+    assert!(client.updated_at > client.created_at);
+}
+
+#[test]
+fn client_name_validation_rejects_blank_and_oversized_names() {
+    assert_eq!(
+        validate_client_name("   ").expect_err("blank name"),
+        "Client name cannot be empty."
+    );
+    assert_eq!(
+        validate_client_name(&"x".repeat(201)).expect_err("oversized name"),
+        "Client name cannot exceed 200 characters."
+    );
 }
 
 #[tokio::test]

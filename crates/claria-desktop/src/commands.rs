@@ -55,7 +55,7 @@ pub enum ProvisionerProgress {
 // ---------------------------------------------------------------------------
 
 pub use claria_desktop::{
-    records::ClientSummary,
+    records::{ClientRecordDetails, ClientSummary},
     report_authoring::{
         EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportExportResult,
         ReportExportStatusView, ReportProposalDecision, ReportTurnResponse, ReportWorkspaceView,
@@ -1417,6 +1417,7 @@ pub async fn create_client(
     state: State<'_, DesktopState>,
     name: String,
 ) -> Result<ClientSummary, String> {
+    let name = claria_desktop::records::validate_client_name(&name)?;
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
@@ -1444,6 +1445,42 @@ pub async fn create_client(
         name,
         created_at: now.to_string(),
     })
+}
+
+/// Load editable metadata and current storage statistics for one client.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_client_record_details(
+    state: State<'_, DesktopState>,
+    client_id: String,
+) -> Result<ClientRecordDetails, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    claria_desktop::records::get_client_record_details(&s3, &bucket, id).await
+}
+
+/// Update a client's display name with optimistic concurrency control.
+#[tauri::command]
+#[specta::specta]
+pub async fn update_client_name(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    name: String,
+) -> Result<ClientSummary, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let summary =
+        claria_desktop::records::update_client_name(&s3, &bucket, id, &name).await?;
+    tracing::info!(client_id = %id, "client record renamed");
+    Ok(summary)
 }
 
 /// Delete a client and all associated data through the retryable,
