@@ -45,6 +45,7 @@ export function buildInitScript(
       window.__REPORT_COMMANDS__ = [];
       window.__REPORT_INVOCATIONS__ = [];
       window.__CHAT_COMMANDS__ = [];
+      let clientName = "Jane Doe";
       const toolActivity = (name, toolUseId, summary, input, result) => ({
         kind: "tool_activity",
         name,
@@ -284,8 +285,8 @@ export function buildInitScript(
             return ${configured}
               ? [{
                   id: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb",
-                  name: "Jane Doe",
-                  created_at: "2026-08-01T00:00:00Z",
+                  name: clientName,
+                  created_at: "2026-08-01T12:00:00Z",
                 }]
               : [];
           }
@@ -294,6 +295,24 @@ export function buildInitScript(
               id: "e2e-test-client-" + Date.now(),
               name: args.name,
               created_at: new Date().toISOString(),
+            };
+          }
+          if (cmd === "get_client_record_details") {
+            return {
+              id: args.clientId,
+              name: clientName,
+              created_at: "2026-08-01T12:00:00Z",
+              updated_at: "2026-08-01T12:00:00Z",
+              file_count: 3,
+              storage_bytes: 5767168,
+            };
+          }
+          if (cmd === "update_client_name") {
+            clientName = args.name.trim();
+            return {
+              id: args.clientId,
+              name: clientName,
+              created_at: "2026-08-01T12:00:00Z",
             };
           }
 

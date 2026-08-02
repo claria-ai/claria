@@ -1,7 +1,8 @@
 import { useRef, type KeyboardEvent, type ReactNode } from "react";
-import { BackButton } from "./icons";
+import { BackButton, GearIcon } from "./icons";
 
 export type ClientWorkspaceTab = "record" | "chat" | "writing";
+export type ClientWorkspaceView = ClientWorkspaceTab | "settings";
 
 const tabs: Array<{
   id: ClientWorkspaceTab;
@@ -15,18 +16,27 @@ const tabs: Array<{
 
 export default function ClientWorkspaceTabs({
   clientName,
-  activeTab,
+  activeView,
   onSelect,
+  onSettings,
   onBack,
   children,
 }: {
   clientName: string;
-  activeTab: ClientWorkspaceTab;
+  activeView: ClientWorkspaceView;
   onSelect: (tab: ClientWorkspaceTab) => boolean;
+  onSettings: () => boolean;
   onBack: () => void;
   children: ReactNode;
 }) {
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  function restoreActiveFocus() {
+    const activeIndex = tabs.findIndex((tab) => tab.id === activeView);
+    if (activeIndex >= 0) buttonRefs.current[activeIndex]?.focus();
+    else settingsButtonRef.current?.focus();
+  }
 
   function handleKeyDown(
     event: KeyboardEvent<HTMLButtonElement>,
@@ -45,18 +55,41 @@ export default function ClientWorkspaceTabs({
     if (nextIndex === null) return;
     event.preventDefault();
     const next = tabs[nextIndex];
-    if (onSelect(next.id)) {
-      buttonRefs.current[nextIndex]?.focus();
-    } else {
-      const activeIndex = tabs.findIndex((tab) => tab.id === activeTab);
-      buttonRefs.current[activeIndex]?.focus();
-    }
+    if (onSelect(next.id)) buttonRefs.current[nextIndex]?.focus();
+    else restoreActiveFocus();
   }
+
+  const settingsActive = activeView === "settings";
+  const panelId = settingsActive
+    ? "client-workspace-settings"
+    : `client-workspace-panel-${activeView}`;
+  const panelLabel = settingsActive
+    ? "client-workspace-settings-button"
+    : `client-workspace-tab-${activeView}`;
 
   return (
     <div className="flex flex-col h-screen">
       <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
         <BackButton onClick={onBack} />
+        <button
+          ref={settingsButtonRef}
+          id="client-workspace-settings-button"
+          type="button"
+          data-view="settings"
+          aria-label="Record settings"
+          aria-pressed={settingsActive}
+          title="Record settings"
+          onClick={() => {
+            if (!onSettings()) restoreActiveFocus();
+          }}
+          className={`p-1.5 rounded-md transition-colors ${
+            settingsActive
+              ? "bg-blue-100 text-blue-700"
+              : "text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+          }`}
+        >
+          <GearIcon />
+        </button>
         <h2 className="text-lg font-semibold flex-1">{clientName}</h2>
         <div
           role="tablist"
@@ -64,7 +97,7 @@ export default function ClientWorkspaceTabs({
           className="flex border border-gray-200 rounded-lg overflow-hidden"
         >
           {tabs.map((tab, index) => {
-            const selected = activeTab === tab.id;
+            const selected = activeView === tab.id;
             return (
               <button
                 key={tab.id}
@@ -77,14 +110,9 @@ export default function ClientWorkspaceTabs({
                 data-tab={tab.dataTab}
                 aria-selected={selected}
                 aria-controls={`client-workspace-panel-${tab.id}`}
-                tabIndex={selected ? 0 : -1}
+                tabIndex={selected || (settingsActive && index === 0) ? 0 : -1}
                 onClick={() => {
-                  if (!onSelect(tab.id)) {
-                    const activeIndex = tabs.findIndex(
-                      (candidate) => candidate.id === activeTab
-                    );
-                    buttonRefs.current[activeIndex]?.focus();
-                  }
+                  if (!onSelect(tab.id)) restoreActiveFocus();
                 }}
                 onKeyDown={(event) => handleKeyDown(event, index)}
                 className={`px-4 py-1.5 text-sm font-medium transition-colors ${
@@ -100,9 +128,9 @@ export default function ClientWorkspaceTabs({
         </div>
       </div>
       <div
-        id={`client-workspace-panel-${activeTab}`}
-        role="tabpanel"
-        aria-labelledby={`client-workspace-tab-${activeTab}`}
+        id={panelId}
+        role={settingsActive ? "region" : "tabpanel"}
+        aria-labelledby={panelLabel}
         className="flex-1 min-h-0 flex flex-col"
       >
         {children}

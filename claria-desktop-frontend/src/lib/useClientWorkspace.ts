@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { type ClientWorkspaceTab } from "../components/ClientWorkspaceTabs";
+import {
+  type ClientWorkspaceTab,
+  type ClientWorkspaceView,
+} from "../components/ClientWorkspaceTabs";
 import { type ResumeChat } from "../pages/ClientChat";
 import { type WritingLeaveState } from "../pages/Writing";
 import { type ChatHistoryDetail } from "./tauri";
@@ -12,14 +15,15 @@ const cleanWritingState: WritingLeaveState = {
 };
 
 /**
- * Cross-tab navigation for a client workspace.
+ * Cross-view navigation for a client workspace.
  *
- * Record, Chat, and Writing own their feature state. This hook owns only the
- * state needed to cross those boundaries: persisted sessions being resumed,
- * the Writing instance identity, and guards against losing unsaved work.
+ * Record, Chat, Writing, and Settings own their feature state. This hook owns
+ * only the state needed to cross those boundaries: persisted sessions being
+ * resumed, the Writing instance identity, and guards against losing work.
  */
 export function useClientWorkspace(onBack: () => void) {
-  const [activeTab, setActiveTab] = useState<ClientWorkspaceTab>("record");
+  const [activeView, setActiveView] =
+    useState<ClientWorkspaceView>("record");
   const [pendingChat, setPendingChat] = useState<ResumeChat | null>(null);
   const [writingLeaveState, setWritingLeaveState] =
     useState<WritingLeaveState>(cleanWritingState);
@@ -37,17 +41,17 @@ export function useClientWorkspace(onBack: () => void) {
       usageByIndex: detail.messages.map((message) => message.usage),
       lastActivityIso: detail.created_at,
     });
-    setActiveTab("chat");
+    setActiveView("chat");
   }
 
   function openWriting(reportId: string) {
     setExpectedReportId(reportId);
     setWritingInstance((value) => value + 1);
-    setActiveTab("writing");
+    setActiveView("writing");
   }
 
   function mayLeaveWriting(): boolean {
-    if (activeTab !== "writing") return true;
+    if (activeView !== "writing") return true;
     if (writingLeaveState.busy) {
       window.alert("Wait for the current Writing action to finish before leaving.");
       return false;
@@ -63,13 +67,20 @@ export function useClientWorkspace(onBack: () => void) {
   }
 
   function selectTab(next: ClientWorkspaceTab): boolean {
-    if (next === activeTab) return true;
+    if (next === activeView) return true;
     if (!mayLeaveWriting()) return false;
     if (next === "writing") {
       setExpectedReportId(null);
       setWritingInstance((value) => value + 1);
     }
-    setActiveTab(next);
+    setActiveView(next);
+    return true;
+  }
+
+  function openSettings(): boolean {
+    if (activeView === "settings") return true;
+    if (!mayLeaveWriting()) return false;
+    setActiveView("settings");
     return true;
   }
 
@@ -79,7 +90,7 @@ export function useClientWorkspace(onBack: () => void) {
 
   useEffect(() => {
     if (
-      activeTab !== "writing" ||
+      activeView !== "writing" ||
       (!writingLeaveState.hasUnsavedWork && !writingLeaveState.busy)
     ) {
       return;
@@ -116,15 +127,16 @@ export function useClientWorkspace(onBack: () => void) {
       unlisten?.();
       window.removeEventListener("beforeunload", beforeUnload);
     };
-  }, [activeTab, writingLeaveState]);
+  }, [activeView, writingLeaveState]);
 
   return {
-    activeTab,
+    activeView,
     pendingChat,
     expectedReportId,
     writingInstance,
     openChat,
     openWriting,
+    openSettings,
     selectTab,
     back,
     clearPendingChat: () => setPendingChat(null),

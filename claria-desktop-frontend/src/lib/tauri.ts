@@ -62,6 +62,7 @@ export type {
   ChatModel,
   ChatResponse,
   ChatRole,
+  ClientRecordDetails,
   ClientSummary,
   ConfigInfo,
   ConsoleEntry,
@@ -383,6 +384,14 @@ export async function listClients() {
 
 export async function createClient(name: string) {
   return unwrap(await commands.createClient(name));
+}
+
+export async function getClientRecordDetails(clientId: string) {
+  return unwrap(await commands.getClientRecordDetails(clientId));
+}
+
+export async function updateClientName(clientId: string, name: string) {
+  return unwrap(await commands.updateClientName(clientId, name));
 }
 
 export async function deleteClient(clientId: string): Promise<void> {

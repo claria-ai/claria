@@ -140,6 +140,28 @@ export function FolderIcon({ className = "w-4 h-4" }: IconProps) {
   );
 }
 
+/** Cog for record settings and other configuration controls. */
+export function GearIcon({ className = "w-5 h-5" }: IconProps) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M9.6 3.9l.2 1.3c.1.5.4.8.8 1l.4.2c.4.2.9.3 1.3.1l1.2-.5c.5-.2 1.1 0 1.4.5l1.3 2.2c.3.5.2 1.1-.3 1.5l-1 .8c-.4.3-.5.8-.5 1.2v.5c0 .5.2.9.5 1.2l1 .8c.4.4.6 1 .3 1.5l-1.3 2.2c-.3.5-.9.7-1.4.5l-1.2-.5c-.4-.2-.9-.1-1.3.1l-.4.2c-.4.2-.7.6-.8 1l-.2 1.3c-.1.5-.6.9-1.1.9H8c-.6 0-1-.4-1.1-.9l-.2-1.3c-.1-.5-.4-.8-.8-1l-.4-.2c-.4-.2-.9-.3-1.3-.1l-1.2.5c-.5.2-1.1 0-1.4-.5L.3 16.5c-.3-.5-.2-1.1.3-1.5l1-.8c.4-.3.5-.8.5-1.2v-.5c0-.5-.2-.9-.5-1.2l-1-.8C.2 10.1 0 9.5.3 9l1.3-2.2c.3-.5.9-.7 1.4-.5l1.2.5c.4.2.9.1 1.3-.1l.4-.2c.4-.2.7-.6.8-1l.2-1.3c.1-.5.6-.9 1.1-.9h1.6z"
+        transform="translate(2 0)"
+      />
+      <circle cx="12" cy="12" r="3" strokeWidth={2} />
+    </svg>
+  );
+}
+
 /**
  * The back chevron every page header re-implemented by hand, including the
  * accessible name those hand-rolled copies were missing.

@@ -98,6 +98,18 @@ test("client record", async ({ page }) => {
   await page.screenshot({ path: "output/client-record.png", fullPage: true });
 });
 
+test("client record settings", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-page=clients]");
+  await page.click("[data-page=clients]");
+  await page.waitForSelector("[data-client]");
+  await page.click("[data-client]:first-child");
+  await page.getByRole("button", { name: "Record settings" }).click();
+  await page.waitForSelector("text=Record statistics");
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: "output/client-record-settings.png", fullPage: true });
+});
+
 test("client writing", async ({ page }) => {
   await page.goto(BASE_URL);
   await page.waitForSelector("[data-page=clients]");

@@ -165,6 +165,21 @@ export const fixtures: Record<string, unknown> = {
     },
   ],
 
+  get_client_record_details: {
+    id: CLIENT_ID,
+    name: "Jane Doe",
+    created_at: "2026-02-15T10:00:00Z",
+    updated_at: "2026-03-15T15:08:05Z",
+    file_count: 4,
+    storage_bytes: 6291456,
+  },
+
+  update_client_name: {
+    id: CLIENT_ID,
+    name: "Jane Doe",
+    created_at: "2026-02-15T10:00:00Z",
+  },
+
   list_record_files: [
     {
       filename: "intake-parent-interview.txt",
