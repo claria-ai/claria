@@ -666,6 +666,30 @@ pub async fn list_object_versions(
     Ok(versions)
 }
 
+/// Sum the bytes in every real object version under `prefix`.
+///
+/// Unlike `ListObjectsV2`, this includes noncurrent and currently deleted
+/// objects. Delete markers carry no object body and therefore add no bytes.
+pub async fn sum_object_version_sizes(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+) -> Result<u64, StorageError> {
+    let mut total = 0_u64;
+
+    for_each_version_page(client, bucket, prefix, |page| {
+        let page_total = page
+            .versions()
+            .iter()
+            .filter_map(|version| u64::try_from(version.size().unwrap_or(0)).ok())
+            .fold(0_u64, u64::saturating_add);
+        total = total.saturating_add(page_total);
+    })
+    .await?;
+
+    Ok(total)
+}
+
 /// List objects under a prefix that have been deleted (have a delete marker as the latest version).
 pub async fn list_deleted_objects(
     client: &Client,

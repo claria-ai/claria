@@ -70,6 +70,8 @@ fn main() -> Result<()> {
             commands::reset_provisioner_state,
             commands::list_clients,
             commands::create_client,
+            commands::get_client_record_details,
+            commands::update_client_name,
             commands::delete_client,
             commands::load_report_workspace,
             commands::list_editor_history,
