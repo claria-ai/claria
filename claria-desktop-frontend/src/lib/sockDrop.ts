@@ -7,13 +7,13 @@ export const SOCK_DROP_TIMINGS = {
   dropMs: 1000,
   /** Lucia walks in from the left edge to the sock. */
   walkInMs: 2200,
-  /** Head-dip while she picks the sock up. */
-  grabMs: 450,
-  /** One full side-to-side shake. */
+  /** Lucia lowers into a play bow and picks the sock up. */
+  grabMs: 500,
+  /** One full side-to-side neck shake. */
   shakeMsPerShake: 340,
-  /** Lucia walks off the right edge, sock in mouth. */
+  /** Lucia stands and walks off with the sock. */
   walkOffMs: 2200,
-  /** One walk cycle: leg-frame swap and body waggle. */
+  /** One walk cycle: leg-frame swap and gentle trot. */
   strideMs: 360,
 } as const;
 
@@ -51,47 +51,179 @@ export const SOCK_MAP: PixelMap = [
   "..DDDDDDDD..",
 ];
 
-// Lucia, facing right: black silhouette, red collar, white eye, gray nose,
-// pink tongue. Rows 0–11 are shared; the two frames differ only in the legs.
+// Lucia is based on the greying black schnauzer from the Claria website:
+// layered blue-charcoal fur, silver brows, a warm eye, red collar and tag,
+// and the strong ivory moustache that gives her face its character.
 export const DOG_PALETTE: PixelPalette = {
-  K: "#18181b",
-  R: "#dc2626",
-  W: "#ffffff",
-  N: "#71717a",
-  P: "#f472b6",
+  O: "#0b0f17", // near-black outline
+  K: "#151a23", // deepest fur
+  D: "#202834", // dark charcoal
+  C: "#2c3745", // charcoal
+  G: "#3f4c5c", // mid-grey fur
+  H: "#59697b", // cool highlight
+  S: "#8493a5", // silver fur
+  L: "#cbd5e1", // light silver
+  I: "#e2e8f0", // cool ivory shadow
+  W: "#f7f3e8", // warm white moustache
+  E: "#d2a85a", // amber eye
+  N: "#030508", // nose
+  R: "#a9343a", // collar
+  A: "#e06a67", // collar/tongue highlight
+  T: "#d5a13e", // brass tag
+  P: "#ef8f9f", // tongue
 };
 
-const DOG_BODY: PixelMap = [
-  ".................KKK....",
-  "................KKKKK...",
-  "..K.............KKKKKK..",
-  "..KK...........KKKKKKKK.",
-  "...KK..........KKKKWKKKK",
-  "...KKK.........KKKKKKKKN",
-  "....KKKKKKKKKKKKKKKKKK..",
-  "....KKKKKKKKKKKKRKKKKP..",
-  "...KKKKKKKKKKKKKRKKKK...",
-  "...KKKKKKKKKKKKKRKKK....",
-  "...KKKKKKKKKKKKKKKK.....",
-  "....KKKKKKKKKKKKKK......",
-];
-
+// Side-on standing body. The second frame changes the legs for the trot;
+// the detailed torso and raised tail remain stable between frames.
 export const DOG_FRAME_A: PixelMap = [
-  ...DOG_BODY,
-  "....KKK......KKK........",
-  "....KK........KK........",
-  "...KK..........KK.......",
-  "...KK...........KK......",
+  ".......OO.......................................",
+  ".....OOHHO......................................",
+  "...OOHHHHO......................................",
+  "..OHHHHOO.......................................",
+  "..OHHOO.........................................",
+  "..OGGO..........................................",
+  "..OGGGO..........OOOOOOOOOOOO...................",
+  "...OGGO.......OOOCCCCCCCOOOOOOOO................",
+  "...OGGOO...OOOCCCCCCGGGGGGGCCCCCOOO.............",
+  "...OGGGOO.OOCCCGGGGGGGGHGGGGGGGGCDORROO.........",
+  "...OOGGGGOODDDGGGSGGGGCCCCCCCGHGGCCRAAARO.......",
+  "....OOGGOODDDDDDGCCCCCCCCCCGCCCCCDDRRRRRO.......",
+  "......OOODDDDDHCCCCCGCCCCCCCCCCCCCGGDRRROO......",
+  ".......OODDDDCCCCCCCCCCCCCCCCCCCCCGGGGGTOO......",
+  ".......OODDDDCCCCCCCCHCCCCCCCHCCCCGGHHHDOO......",
+  ".......OODDDGDCCCCCCCCCCCCCCCCCCCCKGHHHDOO......",
+  "........OODDDDDDHCCCCCCCCGCCCCCKKKKGGHHGOO......",
+  ".........OODDDDKKKKKKKKKKKKKKKKKCKKGGGGGDOO.....",
+  "..........OOOOOOOOKKKOOOOOKKKKOOOOODOOGDDOO.....",
+  "...........OODDDOOCKKODDOODDDDODDOODOOOOOOO.....",
+  "............ODDDOOOOOODDOOOOOOODDOODODDOOO......",
+  "............ODDDOOOOOODDOOOOO.ODDOOOODDOO.......",
+  "............ODDDOO...ODDOO....ODDOO.ODDOO.......",
+  "............ODDOO....DDOO....ODDOO...DDDO.......",
+  "............ODDOO....DDOO....ODDOO...DDDOO......",
+  "............ODDOO....DDOO....ODDOO...DDDOO......",
+  "............ODDOO....DDOO....ODDOO...OOOOO......",
+  "............OOOOO....GOOO....OOOOO...OGOOO......",
+  "............OGOOO............OGOOO..............",
+  "................................................",
+  "................................................",
+  "................................................",
 ];
 
 export const DOG_FRAME_B: PixelMap = [
-  ...DOG_BODY,
-  "....KKK......KKK........",
-  ".....KK.......KK........",
-  ".....KK.......KK........",
-  "....KKK.......KKK.......",
+  ".......OO.......................................",
+  ".....OOHHO......................................",
+  "...OOHHHHO......................................",
+  "..OHHHHOO.......................................",
+  "..OHHOO.........................................",
+  "..OGGO..........................................",
+  "..OGGGO..........OOOOOOOOOOOO...................",
+  "...OGGO.......OOOCCCCCCCOOOOOOOO................",
+  "...OGGOO...OOOCCCCCCGGGGGGGCCCCCOOO.............",
+  "...OGGGOO.OOCCCGGGGGGGGHGGGGGGGGCDORROO.........",
+  "...OOGGGGOODDDGGGSGGGGCCCCCCCGHGGCCRAAARO.......",
+  "....OOGGOODDDDDDGCCCCCCCCCCGCCCCCDDRRRRRO.......",
+  "......OOODDDDDHCCCCCGCCCCCCCCCCCCCGGDRRROO......",
+  ".......OODDDDCCCCCCCCCCCCCCCCCCCCCGGGGGTOO......",
+  ".......OODDDDCCCCCCCCHCCCCCCCHCCCCGGHHHDOO......",
+  ".......OODDDGDCCCCCCCCCCCCCCCCCCCCKGHHHDOO......",
+  "........OODDDDDDHCCCCCCCCGCCCCCKKKKGGHHGOO......",
+  ".........OODDDDKKKKKKKKKKKKKKKKKCKKGGGGGDOO.....",
+  "..........OOOOOOOOKKKOOOOOKKKKOOOOODOOGDDOO.....",
+  "...........OODDDOOCKKODDOODDDDODDOODOOOOOOO.....",
+  "............ODDDOOOOOODDOOOOOOODDOOOODDOOO......",
+  "............ODDDOOOOODDOOOOOO.ODDDOOODDOO.......",
+  "............ODDDOO..ODDOO.....DDDDOOODDOO.......",
+  "...........ODDDDDOO.ODDOO....ODDDDOODDOOO.......",
+  "...........ODDDDDOO.ODDOO....ODDDDDODDOO........",
+  "...........ODDDDDOO.DDOOO....ODDDDDODDOO........",
+  "...........ODDDOOOOODDOO.....OODDDOODDOO........",
+  "...........OOOOOOO.OOOOO.....OOOOOOOOOOO........",
+  "...........OOOOO...OOOOO.......OOOOOOOOO........",
+  "................................................",
+  "................................................",
+  "................................................",
 ];
 
-const DOG_SCALE = 6;
-export const DOG_WIDTH = DOG_FRAME_A[0].length * DOG_SCALE;
-export const DOG_HEIGHT = DOG_FRAME_A.length * DOG_SCALE;
+// Play-bow/downward-dog pose: rump and tail stay high while the shoulders,
+// neck and forelegs reach down toward the sock.
+export const DOG_PLAY_BOW: PixelMap = [
+  ".........OO.....................................",
+  ".....OOOOSOO....................................",
+  "....OHSSSSOO....................................",
+  "....OHSOOOO.....................................",
+  "....OHHO......OOOOOOOOOOOOOO....................",
+  "....OHHO...OOOOODCCCCDDDDDOOOOO.................",
+  "....OHHOO.OOODCCCCCGGGGCCCDDDOOO................",
+  "....OHHGOOOCCCCGGGGGGGGGGGGCCCDOO...............",
+  "....OOGGOODDDDGGGSGGGGGGHGGGGGCDOO..............",
+  ".....OOOODDDDDDDDCCCCCCCCCCCCGGGCOO.............",
+  ".......OODDDDHCCCCCCCCCCCCCCCCCHCCOO............",
+  ".......OODDDCCCCCCCCGCCCCCCGCCCCDROOO...........",
+  ".......OODDDCCCCCCCCCCCCCCCCCCCCDGAAOO..........",
+  "........OODDDCCCCCCHCCCCCCCCCHCCCGRAAO..........",
+  ".........OODDDGCCCCCCCCCCCCCCCCCCGGRAAO.........",
+  "..........OOOOOOOCCCKKKKGKKKKCCCCCHGRROO........",
+  "...........OODDDOKKKKOOOOOOKKKKKCDGGGGRO........",
+  "...........OODDDOKKKKODDDOOKKKKKKDGGGGTOO.......",
+  "...........OODDDOKKKKODDDOOKKKKKDDDGGSGDOO......",
+  "...........OODDDO....ODDDOO.....ODDDGGGGOO......",
+  "...........OODDDO....ODDDOO.....OOOOOOOOO.......",
+  "...........OODDOO....ODDDOO.....ODDDDDDOO.......",
+  "............ODDOO....ODDOO.......ODDODDOO.......",
+  "............ODDOO....ODDOO.......ODDOODDO.......",
+  "............ODDOO....ODDOO.......OODOODDOO......",
+  "............ODDOO....ODDOO........ODDOODOO......",
+  "............ODDOO....ODDOO........OODOOODOO.....",
+  "............OOOOO....OOOOO.........OOOOODOOOO...",
+  "............OGOOO....OGOOO..........OODOODDOOOO.",
+  ".....................................OODDGDDHOO.",
+  "......................................OOOOOOOOO.",
+  "................................................",
+];
+
+// Separate head-and-neck sprite. Keeping this apart from the body lets the
+// sock shake come from Lucia's neck while her play-bow stance stays planted.
+export const DOG_HEAD: PixelMap = [
+  "............................",
+  "..........OOOOOO............",
+  "........OOODDDDOOOO.........",
+  "...OO..OODGGGDDDDKKOOO......",
+  "..OOKOOOGGGGGGGGDDKKKOO.....",
+  ".OOKCKOGGCCCCGGGLWKCKKO.....",
+  "OOKCCCKDCLWCCCCSGGSCGKOO....",
+  "OOKCCCKCSCCWCCCCCWGCCKKOO...",
+  "OOKCHCCCGCOEHGCCOEGCCHKOO...",
+  "OOKCCKGGGCCCCCHCGGGCCCCOO...",
+  ".OOCCGGGGHCCCSSSSSGHGCCCOO..",
+  ".OOKCGGGGGSSSSLLLLSSSSCCCOO.",
+  ".OOKGGGGGSSLWWWWWLLLLLSSCOHO",
+  ".OOOKGGGSSLWWWWWLLWWWLLSCNNO",
+  "..OOOKGHCSLLWWWLSSSLLLSCCOO.",
+  "...OOOOOCLLSLLSLLLOOSSCCOOO.",
+  "....OOOOLSLWLLLWWLPPLOOOOOO.",
+  ".....O.OLLWWWWWWWWALSOO.....",
+  "........OLSWWWWWWWWLOO......",
+  "........OOLWIWWWWWLLOO......",
+  ".........OOLLLWWWLLOOO......",
+  "..........OOOLIWWLOOO.......",
+  "............OOOOLOOO........",
+  "................OOO.........",
+];
+
+const DOG_SCALE = 4;
+export const DOG_BODY_WIDTH = DOG_FRAME_A[0].length * DOG_SCALE;
+export const DOG_BODY_HEIGHT = DOG_FRAME_A.length * DOG_SCALE;
+export const DOG_HEAD_WIDTH = DOG_HEAD[0].length * DOG_SCALE;
+export const DOG_HEAD_HEIGHT = DOG_HEAD.length * DOG_SCALE;
+export const DOG_WIDTH = 64 * DOG_SCALE;
+export const DOG_HEIGHT = 34 * DOG_SCALE;
+
+export const DOG_LAYOUT = {
+  bodyLeft: DOG_SCALE,
+  bodyTop: DOG_SCALE,
+  headLeft: 34 * DOG_SCALE,
+  headStandingTop: DOG_SCALE,
+  headBowTop: 9 * DOG_SCALE,
+  mouthX: 60 * DOG_SCALE,
+} as const;

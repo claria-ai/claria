@@ -202,9 +202,9 @@ function DistractionModeSection() {
           <div className="flex-1">
             <span className="text-sm text-gray-900">Enable distraction mode</span>
             <p className="text-xs text-gray-400 mt-0.5">
-              Adds a sock button to chat. Pressing it drops a sock for Lucia,
-              the Claria mascot, who trots in, gives it a good shake, and
-              carries it away.
+              Adds a quiet sock button beside each client name. Pressing it
+              drops a sock for Lucia, the Claria mascot, who trots in, gives it
+              a good shake, and carries it away.
             </p>
           </div>
         </label>

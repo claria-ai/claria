@@ -27,26 +27,30 @@
   }
 }
 
-@keyframes sock-dog-waggle {
+@keyframes sock-dog-trot {
   0%,
   100% {
-    transform: translateY(0) rotate(-2.5deg);
+    transform: translateY(0) rotate(-0.75deg);
   }
   50% {
-    transform: translateY(-5px) rotate(2.5deg);
+    transform: translateY(-3px) rotate(0.75deg);
   }
 }
 
-@keyframes sock-dog-shake {
+/* The planted play-bow body stays still; motion comes from Lucia's neck. */
+@keyframes sock-dog-neck-shake {
   0%,
   100% {
     transform: rotate(0deg);
   }
-  25% {
-    transform: rotate(-16deg);
+  22% {
+    transform: rotate(-15deg) translateY(1px);
   }
-  75% {
-    transform: rotate(16deg);
+  50% {
+    transform: rotate(13deg) translateY(-1px);
+  }
+  78% {
+    transform: rotate(-11deg);
   }
 }
 

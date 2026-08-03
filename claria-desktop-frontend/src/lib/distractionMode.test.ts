@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isDistractionModeEnabled,
   setDistractionModeEnabled,
@@ -7,7 +7,12 @@ import {
 } from "./distractionMode";
 
 beforeEach(() => {
-  window.localStorage.clear();
+  const stored = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => stored.set(key, value),
+    clear: () => stored.clear(),
+  });
 });
 
 describe("distraction mode preference", () => {
@@ -36,7 +41,7 @@ describe("distraction mode preference", () => {
     expect(second.result.current[0]).toBe(false);
 
     // Toggling through one hook updates the other — this is what lets the
-    // chat's sock button appear as soon as the Preferences switch flips.
+    // header sock button appear as soon as the Preferences switch flips.
     act(() => first.result.current[1](true));
     expect(first.result.current[0]).toBe(true);
     expect(second.result.current[0]).toBe(true);

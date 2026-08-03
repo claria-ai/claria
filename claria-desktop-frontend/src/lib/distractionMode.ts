@@ -36,7 +36,7 @@ export function setDistractionModeEnabled(enabled: boolean): void {
 
 /**
  * The toggle as React state, shared across every mounted subscriber — the
- * Preferences switch and the chat's sock button see each other's changes
+ * Preferences switch and the client header's sock button see each other's changes
  * without a page reload.
  */
 export function useDistractionMode(): [boolean, (enabled: boolean) => void] {

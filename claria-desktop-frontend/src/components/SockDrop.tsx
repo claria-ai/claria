@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import {
+  DOG_BODY_HEIGHT,
+  DOG_BODY_WIDTH,
   DOG_FRAME_A,
   DOG_FRAME_B,
+  DOG_HEAD,
+  DOG_HEAD_HEIGHT,
+  DOG_HEAD_WIDTH,
   DOG_HEIGHT,
+  DOG_LAYOUT,
   DOG_PALETTE,
+  DOG_PLAY_BOW,
   DOG_WIDTH,
   SOCK_DROP_TIMINGS,
   SOCK_MAP,
@@ -15,14 +22,13 @@ import {
 } from "../lib/sockDrop";
 
 // The distraction-mode sock drop: a pixelated sock falls to the bottom of the
-// screen, Lucia (the Claria mascot, a black dog) waggles in from the left,
-// grabs the sock, shakes it violently 3–8 times, and walks off with it in her
-// mouth. When she leaves, the overlay unmounts and the distraction is cleared.
+// screen, Lucia trots in from the left, lowers into a play bow, grabs the sock,
+// shakes it from her neck, and carries it away. When she leaves, the overlay
+// unmounts and the distraction is cleared.
 //
 // Phases are driven by setTimeout rather than animationend so the sequence is
-// deterministic under fake timers; the CSS animations (keyframes in
-// index.css) are purely visual and take their durations from the shared
-// timing constants via inline styles.
+// deterministic under fake timers; CSS animations are purely visual and take
+// their durations from the shared timing constants via inline styles.
 
 type Phase = "drop" | "walk-in" | "grab" | "shake" | "walk-off";
 
@@ -66,16 +72,17 @@ export default function SockDrop({
 
   const t = SOCK_DROP_TIMINGS;
   const walking = phase === "walk-in" || phase === "walk-off";
+  const bowing = phase === "grab" || phase === "shake";
   const carrying = phase === "grab" || phase === "shake" || phase === "walk-off";
 
-  // Lucia's mouth is at her right edge; parking her just left of center puts
-  // the mouth on the sock, which rests at the horizontal center.
+  // Park Lucia's mouth on the sock at bottom-center. Her larger, layered
+  // sprite can grow without changing where the interaction lands.
   const dogLeft =
     phase === "drop"
       ? `-${DOG_WIDTH + 24}px`
       : phase === "walk-off"
         ? "110%"
-        : `calc(50% - ${DOG_WIDTH - 16}px)`;
+        : `calc(50% - ${DOG_LAYOUT.mouthX}px)`;
   const dogTransition =
     phase === "walk-in"
       ? `left ${t.walkInMs}ms linear`
@@ -83,28 +90,53 @@ export default function SockDrop({
         ? `left ${t.walkOffMs}ms linear`
         : "none";
 
-  const waggleStyle: CSSProperties = walking
-    ? { animation: `sock-dog-waggle ${t.strideMs}ms ease-in-out infinite` }
+  const motionStyle: CSSProperties = walking
+    ? { animation: `sock-dog-trot ${t.strideMs}ms ease-in-out infinite` }
     : {};
-  // The shake rotates around roughly where her mouth is. During the grab she
-  // leans into the sock; the shake animation then overrides that transform.
-  const shakeStyle: CSSProperties = {
-    transformOrigin: "85% 45%",
+  const poseTransition = `opacity ${Math.min(t.grabMs, 180)}ms ease-out`;
+  const frameAStyle: CSSProperties = bowing
+    ? { opacity: 0, transition: poseTransition }
+    : walking
+      ? {
+          animation: `sock-dog-frame-a ${t.strideMs}ms linear infinite`,
+          transition: poseTransition,
+        }
+      : { opacity: 1, transition: poseTransition };
+  const frameBStyle: CSSProperties = bowing
+    ? { opacity: 0, transition: poseTransition }
+    : walking
+      ? {
+          animation: `sock-dog-frame-b ${t.strideMs}ms linear infinite`,
+          transition: poseTransition,
+        }
+      : { opacity: 0, transition: poseTransition };
+  const bowStyle: CSSProperties = {
+    opacity: bowing ? 1 : 0,
+    transition: poseTransition,
+  };
+  const headAnchorStyle: CSSProperties = {
+    width: DOG_HEAD_WIDTH,
+    height: DOG_HEAD_HEIGHT,
+    left: DOG_LAYOUT.headLeft,
+    top: bowing ? DOG_LAYOUT.headBowTop : DOG_LAYOUT.headStandingTop,
+    transition: `top ${t.grabMs}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+  };
+  const neckStyle: CSSProperties = {
+    width: DOG_HEAD_WIDTH,
+    height: DOG_HEAD_HEIGHT,
+    transformOrigin: "18% 48%",
     ...(phase === "grab"
-      ? { transform: "rotate(7deg)", transition: `transform ${t.grabMs}ms ease-out` }
+      ? {
+          transform: "rotate(6deg)",
+          transition: `transform ${t.grabMs}ms ease-out`,
+        }
       : {}),
     ...(phase === "shake"
       ? {
-          animation: `sock-dog-shake ${t.shakeMsPerShake}ms ease-in-out ${shakes}`,
+          animation: `sock-dog-neck-shake ${t.shakeMsPerShake}ms ease-in-out ${shakes}`,
         }
       : {}),
   };
-  const frameAStyle: CSSProperties = walking
-    ? { animation: `sock-dog-frame-a ${t.strideMs}ms linear infinite` }
-    : { opacity: 1 };
-  const frameBStyle: CSSProperties = walking
-    ? { animation: `sock-dog-frame-b ${t.strideMs}ms linear infinite` }
-    : { opacity: 0 };
 
   return createPortal(
     <div
@@ -134,29 +166,76 @@ export default function SockDrop({
         </div>
       )}
 
-      {/* Lucia */}
+      {/* Lucia: body pose and neck are separate so only her neck shakes. */}
       <div
         className="absolute bottom-1"
-        style={{ left: dogLeft, transition: dogTransition }}
+        style={{
+          width: DOG_WIDTH,
+          height: DOG_HEIGHT,
+          left: dogLeft,
+          transition: dogTransition,
+        }}
         data-testid="sock-dog"
       >
-        <div style={waggleStyle}>
-          <div style={shakeStyle}>
-            <div
-              className="relative"
-              style={{ width: DOG_WIDTH, height: DOG_HEIGHT }}
-            >
+        <div
+          className="relative w-full h-full"
+          style={motionStyle}
+          data-testid="sock-dog-motion"
+        >
+          <div
+            className="absolute inset-0"
+            data-testid="sock-dog-body"
+            data-pose={bowing ? "play-bow" : "standing"}
+          >
+            <PixelSprite
+              map={DOG_FRAME_A}
+              palette={DOG_PALETTE}
+              className="absolute"
+              style={{
+                ...frameAStyle,
+                width: DOG_BODY_WIDTH,
+                height: DOG_BODY_HEIGHT,
+                left: DOG_LAYOUT.bodyLeft,
+                top: DOG_LAYOUT.bodyTop,
+              }}
+            />
+            <PixelSprite
+              map={DOG_FRAME_B}
+              palette={DOG_PALETTE}
+              className="absolute"
+              style={{
+                ...frameBStyle,
+                width: DOG_BODY_WIDTH,
+                height: DOG_BODY_HEIGHT,
+                left: DOG_LAYOUT.bodyLeft,
+                top: DOG_LAYOUT.bodyTop,
+              }}
+            />
+            <PixelSprite
+              map={DOG_PLAY_BOW}
+              palette={DOG_PALETTE}
+              className="absolute"
+              style={{
+                ...bowStyle,
+                width: DOG_BODY_WIDTH,
+                height: DOG_BODY_HEIGHT,
+                left: DOG_LAYOUT.bodyLeft,
+                top: DOG_LAYOUT.bodyTop,
+              }}
+            />
+          </div>
+
+          <div
+            className="absolute"
+            style={headAnchorStyle}
+            data-testid="sock-dog-neck-anchor"
+          >
+            <div style={neckStyle} data-testid="sock-dog-neck">
               <PixelSprite
-                map={DOG_FRAME_A}
+                map={DOG_HEAD}
                 palette={DOG_PALETTE}
-                className="absolute inset-0 w-full h-full"
-                style={frameAStyle}
-              />
-              <PixelSprite
-                map={DOG_FRAME_B}
-                palette={DOG_PALETTE}
-                className="absolute inset-0 w-full h-full"
-                style={frameBStyle}
+                className="absolute inset-0"
+                style={{ width: DOG_HEAD_WIDTH, height: DOG_HEAD_HEIGHT }}
               />
               {carrying && (
                 <PixelSprite
@@ -164,10 +243,10 @@ export default function SockDrop({
                   palette={SOCK_PALETTE}
                   className="absolute"
                   style={{
-                    width: 34,
-                    height: 31,
-                    left: DOG_WIDTH - 26,
-                    top: DOG_HEIGHT * 0.36,
+                    width: 38,
+                    height: 35,
+                    left: DOG_HEAD_WIDTH - 20,
+                    top: DOG_HEAD_HEIGHT * 0.49,
                     transform: "rotate(105deg)",
                   }}
                   data-testid="sock-carried"
@@ -182,7 +261,7 @@ export default function SockDrop({
   );
 }
 
-/** The composer button's pixel-sock glyph, drawn from the same sprite. */
+/** The header button's pixel-sock glyph, drawn from the same sprite. */
 export function SockIcon({ className }: { className?: string }) {
   return (
     <PixelSprite map={SOCK_MAP} palette={SOCK_PALETTE} className={className} />
@@ -207,7 +286,16 @@ function PixelSprite({
     [...row].forEach((ch, x) => {
       const fill = palette[ch];
       if (fill) {
-        rects.push(<rect key={`${x},${y}`} x={x} y={y} width={1} height={1} fill={fill} />);
+        rects.push(
+          <rect
+            key={`${x},${y}`}
+            x={x}
+            y={y}
+            width={1}
+            height={1}
+            fill={fill}
+          />
+        );
       }
     });
   });

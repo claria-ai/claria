@@ -19,8 +19,6 @@ import TurnCostBadge from "./TurnCostBadge";
 import SessionTotalBanner from "./SessionTotalBanner";
 import LastTurnFooter from "./LastTurnFooter";
 import Spinner from "./Spinner";
-import SockDrop, { SockIcon } from "./SockDrop";
-import { useDistractionMode } from "../lib/distractionMode";
 
 function isMarketplaceError(error: string): boolean {
   return error.includes("aws-marketplace:") || error.includes("Marketplace");
@@ -94,11 +92,6 @@ export default function ChatWidget({
   const [selectedModelId, setSelectedModelId] = useState<string | null>(
     initialModelId ?? null
   );
-
-  // Distraction mode: an opt-in sock button that summons Lucia. One sock at
-  // a time — the button re-arms when she has carried it off.
-  const [distractionMode] = useDistractionMode();
-  const [sockDropping, setSockDropping] = useState(false);
 
   // Default to preferred model (or first available) once models are loaded
   useEffect(() => {
@@ -364,17 +357,6 @@ export default function ChatWidget({
           <div className="w-8 h-1 rounded-full bg-gray-300" />
         </div>
         <div className="flex gap-3 px-6 pb-4">
-          {distractionMode && (
-            <button
-              onClick={() => setSockDropping(true)}
-              disabled={sockDropping}
-              title="Drop a sock for Lucia"
-              aria-label="Drop a sock for Lucia"
-              className="self-end p-2 border border-gray-200 rounded-lg hover:bg-amber-50 hover:border-amber-200 transition-colors disabled:opacity-50"
-            >
-              <SockIcon className="w-6 h-6" />
-            </button>
-          )}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -403,8 +385,6 @@ export default function ChatWidget({
           </button>
         </div>
       </div>
-
-      {sockDropping && <SockDrop onDone={() => setSockDropping(false)} />}
     </div>
   );
 }
