@@ -6,6 +6,7 @@ All notable changes to Claria are documented here.
 
 - Distraction mode adds a quiet sock control beside client names, off by default and toggled in preferences
 - A dropped sock summons a detailed pixel-art Lucia, who play-bows, shakes it from her neck, and carries it away
+- Client record settings can rename a record and show file counts, current and historical storage, creation dates, and name history
 - The client record page is split into components and hooks, with each feature owning its own state
 - The voice memo capture engine is a reusable hook rather than a page component's internals
 - Leaving the Record tab during a voice memo stops the microphone, transcription loop, and audio context

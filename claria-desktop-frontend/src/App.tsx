@@ -130,6 +130,7 @@ export default function App() {
           chatModelsError={chatModelsError}
           preferredModelId={preferredModelId}
           onRetryChatModels={() => void refreshChatModels()}
+          onClientNameChanged={setActiveClientName}
         />
       )}
       {page === "client-chat" && activeClientId && (

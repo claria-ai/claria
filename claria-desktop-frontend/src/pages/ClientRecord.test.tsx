@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   listEditorHistory: vi.fn(),
   getPrompt: vi.fn(),
   listContext: vi.fn(),
+  getClientRecordDetails: vi.fn(),
+  updateClientName: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/webview", () => ({
@@ -20,6 +22,8 @@ vi.mock("@tauri-apps/api/webview", () => ({
 vi.mock("../lib/tauri", () => ({
   listRecordFiles: mocks.listFiles,
   listEditorHistory: mocks.listEditorHistory,
+  getClientRecordDetails: mocks.getClientRecordDetails,
+  updateClientName: mocks.updateClientName,
   searchRecordContents: vi.fn().mockResolvedValue([]),
   uploadRecordFile: vi.fn(),
   deleteRecordFile: vi.fn(),
@@ -77,7 +81,7 @@ const workspace = {
   updated_at: "2026-08-01T00:00:00Z",
 };
 
-function renderClient(navigate = vi.fn()) {
+function renderClient(navigate = vi.fn(), onNameChanged = vi.fn()) {
   return render(
     <ClientRecord
       navigate={navigate}
@@ -87,6 +91,7 @@ function renderClient(navigate = vi.fn()) {
       chatModelsLoading={false}
       chatModelsError={null}
       preferredModelId="model-1"
+      onClientNameChanged={onNameChanged}
     />
   );
 }
@@ -99,9 +104,79 @@ beforeEach(() => {
   mocks.getPrompt.mockResolvedValue("");
   mocks.listContext.mockResolvedValue([]);
   mocks.loadReport.mockResolvedValue(workspace);
+  mocks.getClientRecordDetails.mockResolvedValue({
+    id: "client-1",
+    name: "Ada",
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
+    file_count: 3,
+    storage_bytes: 1_572_864,
+    storage_bytes_with_history: 2_097_152,
+    name_history: [
+      { name: "Ada", changed_at: "2026-08-01T00:00:00Z" },
+      {
+        name: "Augusta Ada King",
+        changed_at: "2026-07-01T00:00:00Z",
+      },
+    ],
+  });
+  mocks.updateClientName.mockResolvedValue({
+    id: "client-1",
+    name: "Ada",
+    updated_at: "2026-08-01T00:00:00Z",
+  });
 });
 
 describe("ClientRecord Writing integration", () => {
+  it("loads record settings only after the gear is opened", async () => {
+    renderClient();
+    await screen.findByText(/Drag files here/);
+    expect(mocks.getClientRecordDetails).not.toHaveBeenCalled();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Record settings" })
+    );
+    expect(await screen.findByText("Record settings")).toBeDefined();
+    expect(mocks.getClientRecordDetails).toHaveBeenCalledWith("client-1");
+    expect(screen.getByText("3 files")).toBeDefined();
+    expect(screen.getByText("1.5 MB")).toBeDefined();
+    const historicalStorage = screen.getByText("Including history: 2.0 MB");
+    expect(historicalStorage.className).toContain("text-gray-400");
+    expect(screen.queryByText("Record details")).toBeNull();
+    expect(screen.queryByText("Record statistics")).toBeNull();
+    expect(screen.getByRole("table", { name: "Record name history" })).toBeDefined();
+    expect(screen.getByRole("columnheader", { name: "Name" })).toBeDefined();
+    expect(screen.getByRole("columnheader", { name: "Time" })).toBeDefined();
+    expect(screen.getByRole("cell", { name: "Augusta Ada King" })).toBeDefined();
+  });
+
+  it("renames a record from settings", async () => {
+    const onNameChanged = vi.fn();
+    mocks.updateClientName.mockResolvedValue({
+      id: "client-1",
+      name: "Ada Byron",
+      updated_at: "2026-08-02T00:00:00Z",
+    });
+    renderClient(vi.fn(), onNameChanged);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Record settings" })
+    );
+    const input = await screen.findByLabelText("Record name");
+    await userEvent.clear(input);
+    await userEvent.type(input, "Ada Byron");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mocks.updateClientName).toHaveBeenCalledWith(
+      "client-1",
+      "Ada Byron"
+    );
+    expect(onNameChanged).toHaveBeenCalledWith("Ada Byron");
+    expect(await screen.findByText("Record name updated.")).toBeDefined();
+    expect(
+      screen.getByRole("cell", { name: "Ada Byron" })
+    ).toBeDefined();
+  });
+
   it("does not issue Writing IPC while Record or Chat is active", async () => {
     renderClient();
     await screen.findByText(/Drag files here/);
@@ -177,6 +252,12 @@ describe("ClientRecord Writing integration", () => {
     expect(screen.getByRole("textbox", { name: "Report title" }).textContent).toBe(
       "Unsaved title"
     );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Record settings" })
+    );
+    expect(screen.queryByText("Record settings")).toBeNull();
+    expect(mocks.getClientRecordDetails).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
     await userEvent.click(screen.getByRole("tab", { name: "Chat" }));

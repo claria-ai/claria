@@ -3,18 +3,22 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ClientWorkspaceTabs, {
-  type ClientWorkspaceTab,
+  type ClientWorkspaceView,
 } from "./ClientWorkspaceTabs";
 import { setDistractionModeEnabled } from "../lib/distractionMode";
 
 function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
-  const [active, setActive] = useState<ClientWorkspaceTab>("record");
+  const [active, setActive] = useState<ClientWorkspaceView>("record");
   return (
     <ClientWorkspaceTabs
       clientName="Ada Lovelace"
-      activeTab={active}
+      activeView={active}
       onSelect={(tab) => {
         setActive(tab);
+        return true;
+      }}
+      onSettings={() => {
+        setActive("settings");
         return true;
       }}
       onBack={onBack}
@@ -37,6 +41,21 @@ describe("client workspace tabs", () => {
     expect(
       screen.getByRole("tab", { name: "Record" }).getAttribute("aria-selected")
     ).toBe("true");
+    expect(screen.getByText("record panel")).toBeDefined();
+  });
+
+  it("opens record settings from the gear and returns through a tab", async () => {
+    render(<Harness />);
+    const settings = screen.getByRole("button", { name: "Record settings" });
+    await userEvent.click(settings);
+
+    expect(settings.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("settings panel")).toBeDefined();
+    const record = screen.getByRole("tab", { name: "Record" });
+    expect(record.getAttribute("aria-selected")).toBe("false");
+    expect(record.tabIndex).toBe(0);
+
+    await userEvent.click(screen.getByRole("tab", { name: "Record" }));
     expect(screen.getByText("record panel")).toBeDefined();
   });
 

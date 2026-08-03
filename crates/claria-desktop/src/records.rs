@@ -9,6 +9,8 @@
 //! yields results in input order — so the `created_at` sort below and the
 //! caller's listing order stay deterministic.
 
+use std::collections::HashSet;
+
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +24,50 @@ pub struct ClientSummary {
     pub id: String,
     pub name: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ClientNameUpdate {
+    pub id: String,
+    pub name: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ClientNameHistoryEntry {
+    pub name: String,
+    pub changed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ClientRecordDetails {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    // User-visible files, excluding extraction sidecars and Chat history.
+    pub file_count: u64,
+    // Current record and Writing objects, excluding historical S3 versions.
+    pub storage_bytes: u64,
+    // Current and noncurrent record and Writing object versions.
+    pub storage_bytes_with_history: u64,
+    pub name_history: Vec<ClientNameHistoryEntry>,
+}
+
+const MAX_CLIENT_NAME_CHARS: usize = 200;
+
+/// Trim and validate a client name before it is persisted.
+pub fn validate_client_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Client name cannot be empty.".to_string());
+    }
+    if name.chars().count() > MAX_CLIENT_NAME_CHARS {
+        return Err(format!(
+            "Client name cannot exceed {MAX_CLIENT_NAME_CHARS} characters."
+        ));
+    }
+    Ok(name.to_string())
 }
 
 /// Load all `clients/{id}.json` objects and return summaries sorted by
@@ -85,6 +131,195 @@ pub async fn list_client_summaries(
     clients.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     Ok(clients)
+}
+
+/// Load editable client metadata, storage statistics, and name history.
+pub async fn get_client_record_details(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    client_id: uuid::Uuid,
+) -> Result<ClientRecordDetails, String> {
+    let (client, _) = load_client(s3, bucket, client_id).await?;
+    let records_prefix = claria_core::s3_keys::client_records_prefix(client_id);
+    let report_prefix = claria_core::s3_keys::report_authoring_client_prefix(client_id);
+    let (
+        record_objects,
+        report_objects,
+        record_storage_with_history,
+        report_storage_with_history,
+        name_history,
+    ) = tokio::try_join!(
+        async {
+            claria_storage::objects::list_objects_with_metadata(s3, bucket, &records_prefix)
+                .await
+                .map_err(|error| error.to_string())
+        },
+        async {
+            claria_storage::objects::list_objects_with_metadata(s3, bucket, &report_prefix)
+                .await
+                .map_err(|error| error.to_string())
+        },
+        async {
+            claria_storage::objects::sum_object_version_sizes(s3, bucket, &records_prefix)
+                .await
+                .map_err(|error| error.to_string())
+        },
+        async {
+            claria_storage::objects::sum_object_version_sizes(s3, bucket, &report_prefix)
+                .await
+                .map_err(|error| error.to_string())
+        },
+        load_client_name_history(s3, bucket, client_id),
+    )?;
+
+    let all_record_keys: HashSet<&str> = record_objects
+        .iter()
+        .map(|object| object.key.as_str())
+        .collect();
+    let file_count = record_objects
+        .iter()
+        .filter(|object| !claria_core::s3_keys::is_hidden_sidecar(&object.key, &all_record_keys))
+        .filter_map(|object| object.key.strip_prefix(&records_prefix))
+        .filter(|filename| !filename.is_empty() && !filename.starts_with("chat-history/"))
+        .count() as u64;
+
+    let storage_bytes = record_objects
+        .iter()
+        .chain(report_objects.iter())
+        .filter_map(|object| u64::try_from(object.size).ok())
+        .fold(0_u64, u64::saturating_add);
+    let storage_bytes_with_history =
+        record_storage_with_history.saturating_add(report_storage_with_history);
+
+    Ok(ClientRecordDetails {
+        id: client.id.to_string(),
+        name: client.name,
+        created_at: client.created_at.to_string(),
+        updated_at: client.updated_at.to_string(),
+        file_count,
+        storage_bytes,
+        storage_bytes_with_history,
+        name_history,
+    })
+}
+
+async fn load_client_name_history(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    client_id: uuid::Uuid,
+) -> Result<Vec<ClientNameHistoryEntry>, String> {
+    let key = claria_core::s3_keys::client(client_id);
+    let versions = claria_storage::objects::list_object_versions(s3, bucket, &key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let fetches: Vec<_> = versions
+        .into_iter()
+        .filter(|version| !version.is_delete_marker)
+        .map(|version| {
+            let key = key.clone();
+            async move {
+                let output = claria_storage::objects::get_object_version(
+                    s3,
+                    bucket,
+                    &key,
+                    &version.version_id,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                let client: claria_core::models::client::Client =
+                    serde_json::from_slice(&output.body).map_err(|error| error.to_string())?;
+                if client.id != client_id {
+                    return Err(
+                        "Client record identifier does not match its storage key.".to_string()
+                    );
+                }
+                Ok(ClientNameHistoryEntry {
+                    name: client.name,
+                    changed_at: version
+                        .last_modified
+                        .unwrap_or_else(|| client.updated_at.to_string()),
+                })
+            }
+        })
+        .collect();
+    let snapshots: Vec<Result<ClientNameHistoryEntry, String>> =
+        futures::stream::iter(fetches)
+            .buffered(S3_FETCH_CONCURRENCY)
+            .collect()
+            .await;
+
+    // S3 returns newest-first. Walk chronologically so repeated metadata
+    // versions with the same name collapse to the time that name first appeared.
+    let mut history = Vec::with_capacity(snapshots.len());
+    for snapshot in snapshots.into_iter().rev() {
+        let entry = snapshot?;
+        if history
+            .last()
+            .is_none_or(|previous: &ClientNameHistoryEntry| previous.name != entry.name)
+        {
+            history.push(entry);
+        }
+    }
+    history.reverse();
+    Ok(history)
+}
+
+/// Rename a client without overwriting a concurrent metadata change.
+pub async fn update_client_name(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    client_id: uuid::Uuid,
+    name: &str,
+) -> Result<ClientNameUpdate, String> {
+    let name = validate_client_name(name)?;
+    let (mut client, etag) = load_client(s3, bucket, client_id).await?;
+    let etag = etag.ok_or_else(|| {
+        "Client record is missing its S3 version identifier; reload and try again.".to_string()
+    })?;
+
+    let updated_at = jiff::Timestamp::now();
+    client.name = name.clone();
+    client.updated_at = updated_at;
+    let body = serde_json::to_vec_pretty(&client).map_err(|error| error.to_string())?;
+    let key = claria_core::s3_keys::client(client_id);
+    claria_storage::objects::put_object_if_match(
+        s3,
+        bucket,
+        &key,
+        body,
+        Some("application/json"),
+        &etag,
+    )
+    .await
+    .map_err(|error| match error {
+        claria_storage::error::StorageError::PreconditionFailed { .. } => {
+            "This client record changed on another computer. Reload it before renaming.".to_string()
+        }
+        other => other.to_string(),
+    })?;
+
+    Ok(ClientNameUpdate {
+        id: client.id.to_string(),
+        name,
+        updated_at: updated_at.to_string(),
+    })
+}
+
+async fn load_client(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    client_id: uuid::Uuid,
+) -> Result<(claria_core::models::client::Client, Option<String>), String> {
+    let key = claria_core::s3_keys::client(client_id);
+    let output = claria_storage::objects::get_object(s3, bucket, &key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let client: claria_core::models::client::Client =
+        serde_json::from_slice(&output.body).map_err(|error| error.to_string())?;
+    if client.id != client_id {
+        return Err("Client record identifier does not match its storage key.".to_string());
+    }
+    Ok((client, output.etag))
 }
 
 /// Filenames of record files whose readable text contains `query`,
