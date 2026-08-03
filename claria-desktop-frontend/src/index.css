@@ -44,13 +44,13 @@
     transform: rotate(0deg);
   }
   22% {
-    transform: rotate(-15deg) translateY(1px);
+    transform: rotate(-8deg);
   }
   50% {
-    transform: rotate(13deg) translateY(-1px);
+    transform: rotate(7deg);
   }
   78% {
-    transform: rotate(-11deg);
+    transform: rotate(-6deg);
   }
 }
 

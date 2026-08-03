@@ -75,8 +75,8 @@ export default function SockDrop({
   const bowing = phase === "grab" || phase === "shake";
   const carrying = phase === "grab" || phase === "shake" || phase === "walk-off";
 
-  // Park Lucia's mouth on the sock at bottom-center. Her larger, layered
-  // sprite can grow without changing where the interaction lands.
+  // Park Lucia's mouth on the sock at bottom-center. Her layered sprite can
+  // change without moving where the interaction lands.
   const dogLeft =
     phase === "drop"
       ? `-${DOG_WIDTH + 24}px`
@@ -93,44 +93,32 @@ export default function SockDrop({
   const motionStyle: CSSProperties = walking
     ? { animation: `sock-dog-trot ${t.strideMs}ms ease-in-out infinite` }
     : {};
-  const poseTransition = `opacity ${Math.min(t.grabMs, 180)}ms ease-out`;
   const frameAStyle: CSSProperties = bowing
-    ? { opacity: 0, transition: poseTransition }
+    ? { opacity: 0 }
     : walking
-      ? {
-          animation: `sock-dog-frame-a ${t.strideMs}ms linear infinite`,
-          transition: poseTransition,
-        }
-      : { opacity: 1, transition: poseTransition };
+      ? { animation: `sock-dog-frame-a ${t.strideMs}ms linear infinite` }
+      : { opacity: 1 };
   const frameBStyle: CSSProperties = bowing
-    ? { opacity: 0, transition: poseTransition }
+    ? { opacity: 0 }
     : walking
-      ? {
-          animation: `sock-dog-frame-b ${t.strideMs}ms linear infinite`,
-          transition: poseTransition,
-        }
-      : { opacity: 0, transition: poseTransition };
-  const bowStyle: CSSProperties = {
-    opacity: bowing ? 1 : 0,
-    transition: poseTransition,
-  };
+      ? { animation: `sock-dog-frame-b ${t.strideMs}ms linear infinite` }
+      : { opacity: 0 };
+  const bowStyle: CSSProperties = { opacity: bowing ? 1 : 0 };
   const headAnchorStyle: CSSProperties = {
     width: DOG_HEAD_WIDTH,
     height: DOG_HEAD_HEIGHT,
     left: DOG_LAYOUT.headLeft,
-    top: bowing ? DOG_LAYOUT.headBowTop : DOG_LAYOUT.headStandingTop,
-    transition: `top ${t.grabMs}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+    top: DOG_LAYOUT.headTop,
+    transformOrigin: "10% 50%",
+    transform: bowing
+      ? `translate(${DOG_LAYOUT.headBowOffsetX}px, ${DOG_LAYOUT.headBowOffsetY}px) rotate(4deg)`
+      : "translate(0, 0) rotate(0deg)",
+    transition: `transform ${t.grabMs}ms cubic-bezier(0.22, 1, 0.36, 1)`,
   };
   const neckStyle: CSSProperties = {
     width: DOG_HEAD_WIDTH,
     height: DOG_HEAD_HEIGHT,
-    transformOrigin: "18% 48%",
-    ...(phase === "grab"
-      ? {
-          transform: "rotate(6deg)",
-          transition: `transform ${t.grabMs}ms ease-out`,
-        }
-      : {}),
+    transformOrigin: "12% 50%",
     ...(phase === "shake"
       ? {
           animation: `sock-dog-neck-shake ${t.shakeMsPerShake}ms ease-in-out ${shakes}`,
@@ -243,10 +231,10 @@ export default function SockDrop({
                   palette={SOCK_PALETTE}
                   className="absolute"
                   style={{
-                    width: 38,
-                    height: 35,
-                    left: DOG_HEAD_WIDTH - 20,
-                    top: DOG_HEAD_HEIGHT * 0.49,
+                    width: 32,
+                    height: 29,
+                    left: DOG_HEAD_WIDTH - 14,
+                    top: DOG_HEAD_HEIGHT * 0.43,
                     transform: "rotate(105deg)",
                   }}
                   data-testid="sock-carried"

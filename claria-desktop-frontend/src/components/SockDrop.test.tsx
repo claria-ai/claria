@@ -160,15 +160,21 @@ describe("pixel sprites", () => {
     expect(DOG_FRAME_A.slice(20)).not.toEqual(DOG_FRAME_B.slice(20));
   });
 
-  it("uses a detailed, graduated palette with a strong white moustache", () => {
+  it("uses a compact head with restrained silvering and no white muzzle", () => {
     const paintedHead = DOG_HEAD.join("").replaceAll(".", "");
     const usedDogColors = new Set(
       [...DOG_FRAME_A, ...DOG_PLAY_BOW, ...DOG_HEAD]
         .join("")
         .replaceAll(".", "")
     );
-    expect(paintedHead.length).toBeGreaterThan(250);
-    expect(usedDogColors.size).toBeGreaterThanOrEqual(14);
-    expect((paintedHead.match(/W/g) ?? []).length).toBeGreaterThan(30);
+    const silverPixels = (paintedHead.match(/[HS]/g) ?? []).length;
+    expect(paintedHead.length).toBeGreaterThan(180);
+    expect(paintedHead.length).toBeLessThan(300);
+    expect(usedDogColors.size).toBeGreaterThanOrEqual(10);
+    expect(silverPixels).toBeGreaterThan(5);
+    expect(silverPixels).toBeLessThan(20);
+    expect(paintedHead).not.toContain("W");
+    expect(paintedHead).not.toContain("R");
+    expect(DOG_PALETTE.E).toBe("#111820");
   });
 });

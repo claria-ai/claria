@@ -51,30 +51,26 @@ export const SOCK_MAP: PixelMap = [
   "..DDDDDDDD..",
 ];
 
-// Lucia is based on the greying black schnauzer from the Claria website:
-// layered blue-charcoal fur, silver brows, a warm eye, red collar and tag,
-// and the strong ivory moustache that gives her face its character.
+// Lucia follows the greying black schnauzer from the Claria landing page:
+// a compact dark silhouette, restrained charcoal-to-silver highlights, one
+// calm dark eye, and the familiar red collar and brass tag.
 export const DOG_PALETTE: PixelPalette = {
   O: "#0b0f17", // near-black outline
   K: "#151a23", // deepest fur
   D: "#202834", // dark charcoal
   C: "#2c3745", // charcoal
-  G: "#3f4c5c", // mid-grey fur
-  H: "#59697b", // cool highlight
-  S: "#8493a5", // silver fur
-  L: "#cbd5e1", // light silver
-  I: "#e2e8f0", // cool ivory shadow
-  W: "#f7f3e8", // warm white moustache
-  E: "#d2a85a", // amber eye
+  G: "#465260", // muted grey fur
+  H: "#667382", // cool highlight
+  S: "#8b96a3", // mild silvering
+  E: "#111820", // dark cool-grey eye
   N: "#030508", // nose
   R: "#a9343a", // collar
-  A: "#e06a67", // collar/tongue highlight
+  A: "#e06a67", // collar highlight
   T: "#d5a13e", // brass tag
-  P: "#ef8f9f", // tongue
 };
 
 // Side-on standing body. The second frame changes the legs for the trot;
-// the detailed torso and raised tail remain stable between frames.
+// the torso and raised tail remain stable between frames.
 export const DOG_FRAME_A: PixelMap = [
   ".......OO.......................................",
   ".....OOHHO......................................",
@@ -182,33 +178,27 @@ export const DOG_PLAY_BOW: PixelMap = [
   "................................................",
 ];
 
-// Separate head-and-neck sprite. Keeping this apart from the body lets the
-// sock shake come from Lucia's neck while her play-bow stance stays planted.
+// Compact side-profile head and neck. It overlaps the shoulder so the bowing
+// movement reads as one connected dog rather than a head floating below her.
 export const DOG_HEAD: PixelMap = [
-  "............................",
-  "..........OOOOOO............",
-  "........OOODDDDOOOO.........",
-  "...OO..OODGGGDDDDKKOOO......",
-  "..OOKOOOGGGGGGGGDDKKKOO.....",
-  ".OOKCKOGGCCCCGGGLWKCKKO.....",
-  "OOKCCCKDCLWCCCCSGGSCGKOO....",
-  "OOKCCCKCSCCWCCCCCWGCCKKOO...",
-  "OOKCHCCCGCOEHGCCOEGCCHKOO...",
-  "OOKCCKGGGCCCCCHCGGGCCCCOO...",
-  ".OOCCGGGGHCCCSSSSSGHGCCCOO..",
-  ".OOKCGGGGGSSSSLLLLSSSSCCCOO.",
-  ".OOKGGGGGSSLWWWWWLLLLLSSCOHO",
-  ".OOOKGGGSSLWWWWWLLWWWLLSCNNO",
-  "..OOOKGHCSLLWWWLSSSLLLSCCOO.",
-  "...OOOOOCLLSLLSLLLOOSSCCOOO.",
-  "....OOOOLSLWLLLWWLPPLOOOOOO.",
-  ".....O.OLLWWWWWWWWALSOO.....",
-  "........OLSWWWWWWWWLOO......",
-  "........OOLWIWWWWWLLOO......",
-  ".........OOLLLWWWLLOOO......",
-  "..........OOOLIWWLOOO.......",
-  "............OOOOLOOO........",
-  "................OOO.........",
+  "......................",
+  ".......OOOO...........",
+  ".....OOOOOOOOK........",
+  "...KKKKDDDDDDKKK......",
+  "..KKKKDCCHSCDDKKK.....",
+  ".KKKKDCCGCCGCDDCK.....",
+  ".KKCKDDCCCCSEDDKKK....",
+  ".KKKDDDDDCCCCGDKGKO...",
+  ".OKDGDDCCCCCGGHGGGOO..",
+  ".OKDDDCCCCCGGGGGHGGOO.",
+  ".OKDDDDCCCCGGGGGGGGGNN",
+  ".OODDDDDDOOOHGGGGOGOO.",
+  ".OODCDDGDDDDDOGGHOOOO.",
+  ".OODDDDDHDDDDOOOOOOO..",
+  ".OOOOOGDDDGDDGOO......",
+  "..OOOOOODDDHDOO.......",
+  "....O...OODDOO........",
+  "...........OO.........",
 ];
 
 const DOG_SCALE = 4;
@@ -222,8 +212,9 @@ export const DOG_HEIGHT = 34 * DOG_SCALE;
 export const DOG_LAYOUT = {
   bodyLeft: DOG_SCALE,
   bodyTop: DOG_SCALE,
-  headLeft: 34 * DOG_SCALE,
-  headStandingTop: DOG_SCALE,
-  headBowTop: 9 * DOG_SCALE,
-  mouthX: 60 * DOG_SCALE,
+  headLeft: 37 * DOG_SCALE,
+  headTop: 3 * DOG_SCALE,
+  headBowOffsetX: DOG_SCALE,
+  headBowOffsetY: 5 * DOG_SCALE,
+  mouthX: 59 * DOG_SCALE,
 } as const;
