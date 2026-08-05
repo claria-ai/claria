@@ -4,6 +4,14 @@ version = "0.19.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+metal = ["transcribe-cpp/metal"]
+vulkan = ["transcribe-cpp/vulkan"]
+cuda = ["transcribe-cpp/cuda"]
+rocm = ["transcribe-cpp/rocm"]
+openmp = ["transcribe-cpp/openmp"]
+
 [dependencies]
 aws-config = "=1.8.18"
 aws-sdk-s3 = "=1.137.0"
@@ -16,6 +24,7 @@ serde_json = "=1.0.150"
 thiserror = "=2.0.18"
 tokio = { version = "=1.52.3", features = ["full"] }
 tracing = "=0.1.44"
+transcribe-cpp = { git = "https://github.com/handy-computer/transcribe.cpp", rev = "553f1099a2b3a5bc4421894be171f09960fc0f3a", default-features = false }
 uuid = { version = "=1.23.4", features = ["v4"] }
 
 [dev-dependencies]

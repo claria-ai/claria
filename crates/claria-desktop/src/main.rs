@@ -10,6 +10,7 @@ use tracing_subscriber::prelude::*;
 use claria_desktop::console;
 
 mod commands;
+mod local_transcription;
 mod report_template_commands;
 mod state;
 
@@ -110,12 +111,12 @@ fn main() -> Result<()> {
             commands::restore_deleted_file,
             commands::list_deleted_clients,
             commands::restore_client,
-            commands::get_whisper_models,
-            commands::download_whisper_model,
-            commands::delete_whisper_model,
-            commands::delete_whisper_model_dir,
-            commands::set_active_whisper_model,
-            commands::transcribe_memo,
+            local_transcription::get_local_transcription_status,
+            local_transcription::save_local_transcription_settings,
+            local_transcription::download_local_model,
+            local_transcription::delete_local_model,
+            local_transcription::delete_legacy_transcription_models,
+            local_transcription::transcribe_memo,
             commands::check_for_updates,
             commands::get_cost_and_usage,
             commands::probe_cost_explorer,

@@ -4,6 +4,10 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Record Memo transcription now runs locally through transcribe.cpp with verified, downloadable GGUF models
+- Preferences expose machine-local model management, compute backends and devices, CPU/K/V controls, and advanced Whisper decoding settings
+- Imported audio recordings continue to use Amazon Transcribe with speaker, language, medical, and translation options
+- Removed the legacy Candle-based Whisper crate and safetensors model runtime
 - Client record settings can rename a record and show file counts, current and historical storage, creation dates, and name history
 - The client record page is split into components and hooks, with each feature owning its own state
 - The voice memo capture engine is a reusable hook rather than a page component's internals

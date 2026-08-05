@@ -36,7 +36,10 @@ vi.mock("../lib/tauri", () => ({
   restoreFileVersion: vi.fn(),
   listDeletedFiles: vi.fn().mockResolvedValue([]),
   restoreDeletedFile: vi.fn(),
-  getWhisperModels: vi.fn().mockResolvedValue([]),
+  getLocalTranscriptionStatus: vi.fn().mockResolvedValue({
+    accelerated: false,
+    models: [],
+  }),
   transcribeMemo: vi.fn(),
   loadConfig: vi.fn().mockRejectedValue(new Error("not configured in test")),
   getPrompt: mocks.getPrompt,

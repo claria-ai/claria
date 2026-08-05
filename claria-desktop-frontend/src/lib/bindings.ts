@@ -834,69 +834,46 @@ async restoreClient(clientId: string, versionId: string) : Promise<Result<null, 
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * List all Whisper model tiers with their download/active status.
- */
-async getWhisperModels() : Promise<Result<WhisperModelInfo[], string>> {
+async getLocalTranscriptionStatus() : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_whisper_models") };
+    return { status: "ok", data: await TAURI_INVOKE("get_local_transcription_status") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Download a specific Whisper model tier from Hugging Face.
- */
-async downloadWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
+async saveLocalTranscriptionSettings(settings: LocalTranscriptionSettings) : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("download_whisper_model", { tier }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_local_transcription_settings", { settings }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Delete a specific Whisper model tier and clear the in-memory cache if needed.
- */
-async deleteWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
+async downloadLocalModel(modelId: LocalModelId, onProgress: TAURI_CHANNEL<ModelDownloadProgress>) : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_whisper_model", { tier }) };
+    return { status: "ok", data: await TAURI_INVOKE("download_local_model", { modelId, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Delete a model directory by name. Used for orphan directories that don't
- * match any known tier. Also works for known tiers as a fallback.
- */
-async deleteWhisperModelDir(dirName: string) : Promise<Result<WhisperModelInfo[], string>> {
+async deleteLocalModel(modelId: LocalModelId) : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_whisper_model_dir", { dirName }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_local_model", { modelId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Set the active Whisper model tier. The tier must be downloaded.
- */
-async setActiveWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
+async deleteLegacyTranscriptionModels() : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_active_whisper_model", { tier }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_legacy_transcription_models") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Transcribe PCM audio using the active Whisper model.
- * 
- * Accepts base64-encoded f32 PCM samples at 16 kHz mono. Returns the
- * transcript text and detected language. The model is loaded on first call
- * and cached in memory for subsequent calls.
- */
 async transcribeMemo(audioPcmBase64: string) : Promise<Result<TranscribeMemoResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("transcribe_memo", { audioPcmBase64 }) };
@@ -1243,6 +1220,15 @@ export type FileVersion = { version_id: string; size: number; last_modified: str
 export type InfraChatResponse = { content: string; usage: TurnUsage }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type Lifecycle = "data" | "managed"
+export type LocalBackend = "auto" | "cpu" | "cpu_accel" | "metal" | "vulkan" | "cuda" | "rocm"
+export type LocalBackendInfo = { backend: LocalBackend; label: string; available: boolean }
+export type LocalComputeDevice = { name: string; description: string; kind: string; device_type: string; device_id: string | null; memory_total: number; memory_free: number; index: number | null }
+export type LocalKvPrecision = "auto" | "f32" | "f16"
+export type LocalModelId = "whisper_base_en_q8" | "whisper_small_q8" | "whisper_turbo_q8"
+export type LocalModelInfo = { id: LocalModelId; label: string; description: string; filename: string; quantization: string; languages: string[]; download_size_bytes: number; downloaded: boolean; model_size_bytes: number | null; model_path: string | null; active: boolean }
+export type LocalTranscriptionSettings = { settings_version: number; speech_model: LocalModelId; backend: LocalBackend; gpu_device: number; cpu_threads: number; kv_precision: LocalKvPrecision; initial_prompt: string; condition_on_previous_text: boolean; max_previous_context_tokens: number; temperature: number; temperature_increment: number; compression_ratio_threshold: number; log_probability_threshold: number; no_speech_threshold: number; seed: number }
+export type LocalTranscriptionStatus = { runtime_version: string; settings: LocalTranscriptionSettings; models: LocalModelInfo[]; backends: LocalBackendInfo[]; devices: LocalComputeDevice[]; legacy_model_bytes: number; accelerated: boolean }
+export type ModelDownloadProgress = { model_id: LocalModelId; downloaded_bytes: number; total_bytes: number }
 /**
  * Pricing per million tokens for a Bedrock model.
  * 
@@ -1406,10 +1392,7 @@ export type SpeakerMode = "none" | "diarize" | "channels"
  */
 export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
 export type TAURI_CHANNEL<TSend> = null
-/**
- * Result from transcription, including detected language.
- */
-export type TranscribeMemoResult = { text: string; language: string | null }
+export type TranscribeMemoResult = { text: string; language: string | null; model_id: LocalModelId; backend: string }
 /**
  * Per-file overrides for the wizard flow. Each field is optional so the
  * frontend only sends what the user actually changed; everything else falls
@@ -1495,20 +1478,6 @@ pricing_version: number }
  * Result of checking for a newer release on GitHub.
  */
 export type UpdateCheck = { current_version: string; latest_version: string; update_available: boolean; release_url: string }
-/**
- * Info about a Whisper model tier (status, size, path, whether active).
- * Known tiers have `tier: Some(...)`. Orphan directories on disk that don't
- * match any known tier have `tier: None`.
- */
-export type WhisperModelInfo = { tier: WhisperModelTier | null; dir_name: string; label: string; description: string; download_size: string; downloaded: boolean; model_size_bytes: number | null; model_path: string | null; active: boolean; 
-/**
- * Whether inference will use GPU acceleration (Metal on macOS).
- */
-gpu_accelerated: boolean }
-/**
- * Available Whisper model tiers.
- */
-export type WhisperModelTier = "base_en" | "small" | "turbo"
 
 /** tauri-specta globals **/
 

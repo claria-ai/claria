@@ -11,7 +11,7 @@ import type { MemoState } from "../lib/useMemoRecorder";
  * modal's job and `idle` has no bar at all.
  *
  * While paused the transcript becomes an editable textarea. That is the one
- * point in the flow where the user can correct Whisper before the next pass
+ * point in the flow where the user can correct local inference before the next pass
  * overwrites the text, so the edit target must be a real input, not a `<pre>`.
  */
 export default function MemoRecorderBar({
@@ -80,7 +80,7 @@ export default function MemoRecorderBar({
           </span>
           {modelLabel && (
             <span
-              title={`Model: ${modelLabel}${gpu ? " (Metal GPU)" : " (CPU)"}`}
+              title={`Local model: ${modelLabel}${gpu ? " (accelerated)" : " (CPU)"}`}
               className="inline-flex items-center justify-center w-4 h-4 text-xs text-gray-400 border border-gray-300 rounded-full cursor-help hover:text-gray-600 hover:border-gray-400 transition-colors"
             >
               ?

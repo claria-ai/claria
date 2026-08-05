@@ -104,6 +104,10 @@ describe("basename", () => {
     expect(basename("/Users/x/Documents/session.m4a")).toBe("session.m4a");
   });
 
+  it("handles Windows paths", () => {
+    expect(basename("C:\\Users\\x\\Documents\\session.m4a")).toBe("session.m4a");
+  });
+
   it("returns a bare filename unchanged", () => {
     expect(basename("session.m4a")).toBe("session.m4a");
   });
