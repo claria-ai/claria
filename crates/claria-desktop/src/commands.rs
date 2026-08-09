@@ -1930,6 +1930,35 @@ const EXTRACTION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-20250514-v1:0";
 /// rather than exposing yet another preference knob.
 const TRANSLATION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-6";
 
+fn record_upload_content_type(extension: &str, bytes: &[u8]) -> Option<&'static str> {
+    match extension {
+        "pdf" => Some("application/pdf"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "doc" => Some("application/msword"),
+        "json" => Some("application/json"),
+        "jsonl" | "ndjson" => Some("application/x-ndjson"),
+        "md" | "markdown" => Some("text/markdown; charset=utf-8"),
+        "csv" => Some("text/csv; charset=utf-8"),
+        "html" | "htm" => Some("text/html; charset=utf-8"),
+        "xml" => Some("application/xml"),
+        "yaml" | "yml" => Some("application/yaml"),
+        "toml" => Some("application/toml"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "mp3" => Some("audio/mpeg"),
+        "mp4" | "m4a" => Some("audio/mp4"),
+        "wav" => Some("audio/wav"),
+        "flac" => Some("audio/flac"),
+        "ogg" => Some("audio/ogg"),
+        "amr" => Some("audio/amr"),
+        "webm" => Some("audio/webm"),
+        _ if claria_core::record_text::decode_record_text(bytes).is_some() => {
+            Some("text/plain; charset=utf-8")
+        }
+        _ => None,
+    }
+}
+
 /// List files in a client's record, excluding sidecar `.text` files.
 ///
 /// `prefix` narrows the listing to filenames starting with it, mapped to the
@@ -2015,8 +2044,9 @@ pub async fn search_record_contents(
 
 /// Upload a file to a client's record from a local file path.
 ///
-/// If the file is a PDF or DOCX, a sidecar `.text` file is generated
-/// via Bedrock document text extraction and uploaded alongside.
+/// Printable UTF-8 files remain directly readable under their original names.
+/// PDF and DOCX files receive a structured-Markdown `.text` sidecar via
+/// Bedrock; audio files receive a transcript sidecar.
 #[tauri::command]
 #[specta::specta]
 #[tracing::instrument(
@@ -2052,30 +2082,12 @@ pub async fn upload_record_file(
     span.record("filename", filename);
     span.record("bytes", bytes.len() as u64);
 
-    // Determine content type from extension.
     let extension = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let content_type = match extension.as_str() {
-        "pdf" => Some("application/pdf"),
-        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-        "doc" => Some("application/msword"),
-        "txt" => Some("text/plain"),
-        "csv" => Some("text/csv"),
-        "html" | "htm" => Some("text/html"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "mp3" => Some("audio/mpeg"),
-        "mp4" | "m4a" => Some("audio/mp4"),
-        "wav" => Some("audio/wav"),
-        "flac" => Some("audio/flac"),
-        "ogg" => Some("audio/ogg"),
-        "amr" => Some("audio/amr"),
-        "webm" => Some("audio/webm"),
-        _ => None,
-    };
+    let content_type = record_upload_content_type(&extension, &bytes);
 
     // Upload the original file.
     let key = claria_core::s3_keys::client_record_file(id, filename);
@@ -2105,7 +2117,7 @@ pub async fn upload_record_file(
                     &bucket,
                     &sidecar_key,
                     text.into_bytes(),
-                    Some("text/plain"),
+                    Some("text/markdown; charset=utf-8"),
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -2495,7 +2507,8 @@ pub async fn save_transcript_edits(
     Ok(())
 }
 
-/// Delete a file from a client's record, including its sidecar if present.
+/// Delete a file from a client's record, including its generated sidecar
+/// when present.
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_record_file(
@@ -2516,13 +2529,33 @@ pub async fn delete_record_file(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Best-effort delete of the sidecar — but only for file types that
-    // produce one (PDF, DOCX, audio). Plain text files never have a sidecar,
-    // and deleting a non-existent key on a versioned bucket creates a phantom
-    // delete marker.
-    if !filename.ends_with(".txt") {
-        let sidecar_key = format!("{key}.text");
-        let _ = claria_storage::objects::delete_object(&s3, &bucket, &sidecar_key).await;
+    // Deleting a missing key in a versioned bucket creates a phantom delete
+    // marker, so discover the optional sidecar before deleting it. This is
+    // content-model agnostic: text files need no sidecar, while document and
+    // audio derivatives are cleaned up without an extension allow-list.
+    let sidecar_key = format!("{key}.text");
+    match claria_storage::objects::list_objects(&s3, &bucket, &sidecar_key).await {
+        Ok(keys) if keys.iter().any(|candidate| candidate == &sidecar_key) => {
+            if let Err(error) =
+                claria_storage::objects::delete_object(&s3, &bucket, &sidecar_key).await
+            {
+                tracing::warn!(
+                    client_id = %id,
+                    filename,
+                    %error,
+                    "failed to delete record text sidecar"
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                client_id = %id,
+                filename,
+                %error,
+                "failed to discover record text sidecar during delete"
+            );
+        }
     }
 
     tracing::info!(client_id = %id, filename, "record file deleted");
@@ -2530,10 +2563,11 @@ pub async fn delete_record_file(
     Ok(())
 }
 
-/// Get the text content for a record file.
+/// Get the readable text for a record file.
 ///
-/// For plain text files (`.txt`), returns the file content directly.
-/// For other files, returns the `.text` sidecar content if available.
+/// Generated document/transcript sidecars take precedence. Otherwise any
+/// printable UTF-8 original—including JSON, Markdown, CSV, and extensionless
+/// text—is returned unchanged.
 #[tauri::command]
 #[specta::specta]
 #[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, filename = %filename))]
@@ -2548,26 +2582,18 @@ pub async fn get_record_file_text(
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let key = claria_core::s3_keys::client_record_file(id, &filename);
-
-    // Plain text files: return the file content directly.
-    if filename.ends_with(".txt") {
-        return match claria_storage::objects::get_object(&s3, &bucket, &key).await {
-            Ok(output) => String::from_utf8(output.body).map_err(|e| e.to_string()),
-            Err(e) => Err(e.to_string()),
-        };
-    }
-
-    // Other files: look for the `.text` sidecar.
-    let sidecar_key = format!("{key}.text");
-
-    match claria_storage::objects::get_object(&s3, &bucket, &sidecar_key).await {
-        Ok(output) => String::from_utf8(output.body).map_err(|e| e.to_string()),
-        Err(claria_storage::error::StorageError::NotFound { .. }) => {
-            Ok("No text extraction available for this file.".to_string())
-        }
-        Err(e) => Err(e.to_string()),
-    }
+    claria_desktop::records::fetch_record_text(
+        &s3,
+        &bucket,
+        id,
+        &filename,
+        &state.record_cache,
+    )
+    .await?
+    .ok_or_else(|| {
+        "No readable text is available. Upload printable UTF-8 text or extract a supported document or recording."
+            .to_string()
+    })
 }
 
 /// Create a plain text file in a client's record.
@@ -2656,9 +2682,9 @@ pub struct RecordContext {
 
 /// Load text content for all record files belonging to a client.
 ///
-/// For `.txt` files, returns the file content directly. For PDF/DOCX,
-/// returns the `.text` sidecar content if available. Files with no
-/// readable text are omitted.
+/// Printable UTF-8 originals are returned unchanged, regardless of extension.
+/// PDF, DOCX, and audio files use their generated `.text` sidecars. Files with
+/// no safe readable representation are omitted.
 #[tauri::command]
 #[specta::specta]
 #[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, files = tracing::field::Empty))]
@@ -2690,11 +2716,10 @@ pub async fn list_record_context(
     Ok(context_files)
 }
 
-/// Re-run text extraction for a single record file.
+/// Resolve readable text for a single record file.
 ///
-/// Downloads the original file from S3, runs Bedrock document extraction
-/// (or audio transcription for audio files), uploads the `.text` sidecar,
-/// and returns the updated `RecordContext` with the extracted text.
+/// PDF and DOCX files are re-extracted through Bedrock, audio is
+/// retranscribed, and printable UTF-8 originals are returned unchanged.
 #[tauri::command]
 #[specta::specta]
 pub async fn extract_record_file(
@@ -2741,7 +2766,7 @@ pub async fn extract_record_file(
             &bucket,
             &sidecar_key,
             text.clone().into_bytes(),
-            Some("text/plain"),
+            Some("text/markdown; charset=utf-8"),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -2802,10 +2827,24 @@ pub async fn extract_record_file(
 
         text
     } else {
-        return Err(format!("unsupported file type for extraction: {filename}"));
+        let output = claria_storage::objects::get_object_bounded(
+            &s3,
+            &bucket,
+            &key,
+            claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        claria_core::record_text::decode_record_text(&output.body)
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                format!(
+                    "{filename} is not printable UTF-8 text and has no supported extraction format"
+                )
+            })?
     };
 
-    tracing::info!(client_id = %id, filename, "re-extracted text for record file");
+    tracing::info!(client_id = %id, filename, "resolved text for record file");
 
     Ok(RecordContext { filename, text })
 }

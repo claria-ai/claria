@@ -127,7 +127,7 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `_state/preferences.json` | Synced user preferences |
 
 ### Sidecar Pattern
-Binary uploads (PDF, DOCX, audio) generate a `.text` sidecar file containing extracted text. The file list hides sidecars when the base file exists. New extraction formats (e.g. audio transcription) follow this same pattern: upload the original, generate a `{key}.text` sidecar alongside it.
+Binary uploads generate a `.text` sidecar alongside the original: PDF and DOCX sidecars contain structured Markdown, while audio sidecars contain transcripts. The file list hides sidecars when the base file exists. Printable UTF-8 originals—including Markdown, JSON, CSV, source files, and extensionless notes—are read directly without renaming or conversion; content validation, not the filename extension, determines whether an original is text.
 
 ## IAM Action Names
 

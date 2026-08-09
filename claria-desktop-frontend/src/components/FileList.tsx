@@ -7,10 +7,10 @@ import type { RecordFile } from "../lib/tauri";
 /**
  * The record's regular files, one row each.
  *
- * `.txt` files open the editor and everything else opens the preview — the
- * backend only round-trips text we wrote ourselves, and extracted sidecars
- * are derived output that editing would silently desynchronise from its
- * source document.
+ * `.txt` files open the editor and everything else opens the read-only text
+ * preview. Uploaded structured text keeps its original format, while generated
+ * document and transcript sidecars remain derived output that must not be
+ * edited independently of the source file.
  */
 export default function FileList({
   files,

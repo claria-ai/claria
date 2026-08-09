@@ -460,7 +460,7 @@ async deleteWriterTemplate(templateId: string) : Promise<Result<null, string>> {
 }
 },
 /**
- * Parse a managed template into the existing review-before-apply preview.
+ * Parse a managed template into an in-memory candidate for direct application.
  */
 async previewWriterTemplate(clientId: string, templateId: string) : Promise<Result<ReportTemplatePreview, string>> {
     try {
@@ -471,7 +471,7 @@ async previewWriterTemplate(clientId: string, templateId: string) : Promise<Resu
 }
 },
 /**
- * Apply an already previewed DOCX candidate as a new accepted revision.
+ * Apply a parsed managed DOCX candidate as a new accepted revision.
  */
 async applyReportTemplate(clientId: string, expectedRevision: number, importId: string) : Promise<Result<ReportWorkspaceView, string>> {
     try {
@@ -542,8 +542,9 @@ async searchRecordContents(clientId: string, query: string) : Promise<Result<str
 /**
  * Upload a file to a client's record from a local file path.
  * 
- * If the file is a PDF or DOCX, a sidecar `.text` file is generated
- * via Bedrock document text extraction and uploaded alongside.
+ * Printable UTF-8 files remain directly readable under their original names.
+ * PDF and DOCX files receive a structured-Markdown `.text` sidecar via
+ * Bedrock; audio files receive a transcript sidecar.
  */
 async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<RecordFile, string>> {
     try {
@@ -554,7 +555,8 @@ async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<Reco
 }
 },
 /**
- * Delete a file from a client's record, including its sidecar if present.
+ * Delete a file from a client's record, including its generated sidecar
+ * when present.
  */
 async deleteRecordFile(clientId: string, filename: string) : Promise<Result<null, string>> {
     try {
@@ -565,10 +567,11 @@ async deleteRecordFile(clientId: string, filename: string) : Promise<Result<null
 }
 },
 /**
- * Get the text content for a record file.
+ * Get the readable text for a record file.
  * 
- * For plain text files (`.txt`), returns the file content directly.
- * For other files, returns the `.text` sidecar content if available.
+ * Generated document/transcript sidecars take precedence. Otherwise any
+ * printable UTF-8 original—including JSON, Markdown, CSV, and extensionless
+ * text—is returned unchanged.
  */
 async getRecordFileText(clientId: string, filename: string) : Promise<Result<string, string>> {
     try {
@@ -606,9 +609,9 @@ async updateTextRecordFile(clientId: string, filename: string, content: string) 
 /**
  * Load text content for all record files belonging to a client.
  * 
- * For `.txt` files, returns the file content directly. For PDF/DOCX,
- * returns the `.text` sidecar content if available. Files with no
- * readable text are omitted.
+ * Printable UTF-8 originals are returned unchanged, regardless of extension.
+ * PDF, DOCX, and audio files use their generated `.text` sidecars. Files with
+ * no safe readable representation are omitted.
  */
 async listRecordContext(clientId: string) : Promise<Result<RecordContext[], string>> {
     try {
@@ -619,11 +622,10 @@ async listRecordContext(clientId: string) : Promise<Result<RecordContext[], stri
 }
 },
 /**
- * Re-run text extraction for a single record file.
+ * Resolve readable text for a single record file.
  * 
- * Downloads the original file from S3, runs Bedrock document extraction
- * (or audio transcription for audio files), uploads the `.text` sidecar,
- * and returns the updated `RecordContext` with the extracted text.
+ * PDF and DOCX files are re-extracted through Bedrock, audio is
+ * retranscribed, and printable UTF-8 originals are returned unchanged.
  */
 async extractRecordFile(clientId: string, filename: string) : Promise<Result<RecordContext, string>> {
     try {

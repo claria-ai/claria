@@ -119,7 +119,7 @@ export default function Preferences({
         <PromptEditor
           promptName="pdf-extraction"
           label="PDF Extraction Prompt"
-          description="Instructions used when extracting text from uploaded PDF and DOCX files."
+          description="Instructions used when converting uploaded PDF and DOCX files to structured Markdown."
         />
 
         {/* Machine-local transcribe.cpp models and inference controls */}

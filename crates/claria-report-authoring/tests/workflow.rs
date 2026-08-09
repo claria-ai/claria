@@ -588,6 +588,109 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
 }
 
 #[tokio::test]
+async fn writer_reads_printable_text_regardless_of_extension() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "referral.md"),
+        "# Referral\n\nNarrative history",
+    )
+    .await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "scores.json"),
+        r#"{"instrument":"ADOS-2","score":12}"#,
+    )
+    .await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "notes.custom"),
+        "extension-independent text",
+    )
+    .await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "scan.pdf"),
+        "%PDF-1.7 binary container",
+    )
+    .await;
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "list", "name": "list_record_files", "input": {}}},
+                    {"toolUse": {"toolUseId": "read-md", "name": "read_record_file", "input": {"filename": "referral.md"}}},
+                    {"toolUse": {"toolUseId": "read-json", "name": "read_record_file", "input": {"filename": "scores.json"}}},
+                    {"toolUse": {"toolUseId": "read-custom", "name": "read_record_file", "input": {"filename": "notes.custom"}}},
+                    {"toolUse": {"toolUseId": "read-binary", "name": "read_record_file", "input": {"filename": "scan.pdf"}}}
+                ]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 10, "outputTokens": 2}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "I read the available record text."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 20, "outputTokens": 3}
+            }),
+        ],
+    )
+    .await;
+
+    let response = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Review every source."),
+    )
+    .await
+    .expect("report turn");
+    assert_eq!(response.attempt.tool_uses, 5);
+
+    let state = server.state.read().await;
+    let results = state.bedrock_tool_requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .last()
+        .expect("tool result message")["content"]
+        .as_array()
+        .expect("tool results");
+    let listed = results[0]["toolResult"]["content"][0]["json"]["files"]
+        .as_array()
+        .expect("listed files");
+    for filename in ["referral.md", "scores.json", "notes.custom"] {
+        let entry = listed
+            .iter()
+            .find(|entry| entry["filename"] == filename)
+            .expect("structured text in inventory");
+        assert_eq!(entry["readable"], true);
+    }
+    assert_eq!(
+        results[1]["toolResult"]["content"][0]["json"]["text"],
+        "# Referral\n\nNarrative history"
+    );
+    assert_eq!(
+        results[2]["toolResult"]["content"][0]["json"]["text"],
+        r#"{"instrument":"ADOS-2","score":12}"#
+    );
+    assert_eq!(
+        results[3]["toolResult"]["content"][0]["json"]["text"],
+        "extension-independent text"
+    );
+    assert_eq!(results[4]["toolResult"]["status"], "error");
+    assert_eq!(
+        results[4]["toolResult"]["content"][0]["json"]["error"]["code"],
+        "record_not_text"
+    );
+}
+
+#[tokio::test]
 async fn rejecting_a_persisted_proposal_leaves_the_draft_unchanged() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();

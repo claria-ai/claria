@@ -656,12 +656,12 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
     let tools = vec![
         tool(
             LIST_RECORD_FILES_TOOL,
-            "List the current client's record filenames and whether readable text is available.",
+            "List the current client's record filenames and whether each file fits Claria's bounded text reader. Printable UTF-8 originals are readable regardless of extension; documents and recordings use generated text sidecars.",
             list_schema,
         )?,
         tool(
             READ_RECORD_FILE_TOOL,
-            "Read a bounded Unicode-character range from one filename returned by list_record_files.",
+            "Read a bounded Unicode-character range from one filename returned by list_record_files. The read safely rejects binary originals without a generated text sidecar.",
             read_schema,
         )?,
         tool(

@@ -352,8 +352,10 @@ pub async fn search_record_contents(
 }
 
 /// Fetch readable text for every record file under a client, in listing
-/// order. `.text` sidecars are read via their parent file; chat-history
-/// entries are skipped. `None` means the file has no readable text.
+/// order. Generated `.text` sidecars take precedence; otherwise the original
+/// object is used when its bytes are printable UTF-8, regardless of extension.
+/// Chat-history entries are skipped. `None` means the file is binary, too
+/// large, missing, or has no readable extraction.
 pub async fn fetch_record_texts(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
@@ -361,72 +363,110 @@ pub async fn fetch_record_texts(
     cache: &RecordCache,
 ) -> Result<Vec<(String, Option<String>)>, String> {
     let prefix = claria_core::s3_keys::client_records_prefix(client_id);
-
-    let entries = claria_storage::objects::list_object_etags(s3, bucket, &prefix)
+    let objects = claria_storage::objects::list_objects_with_metadata(s3, bucket, &prefix)
         .await
-        .map_err(|e| e.to_string())?;
-
-    // Collect all keys into a set so we can identify sidecar files, and a
-    // key→etag map so each fetched key can be revalidated against the ETag the
-    // listing reported for *that* key (the `.text` sidecar, not the base file).
+        .map_err(|error| error.to_string())?;
     let all_keys: std::collections::HashSet<&str> =
-        entries.iter().map(|(k, _)| k.as_str()).collect();
-    let etags: std::collections::HashMap<&str, &str> = entries
+        objects.iter().map(|object| object.key.as_str()).collect();
+    let by_key: std::collections::HashMap<&str, &claria_storage::objects::ObjectMeta> = objects
         .iter()
-        .map(|(k, e)| (k.as_str(), e.as_str()))
+        .map(|object| (object.key.as_str(), object))
         .collect();
 
-    // Resolve (filename, key to GET) pairs up front, before going concurrent.
-    let targets: Vec<(String, String)> = entries
+    // Resolve each visible file to its generated extraction when one exists,
+    // or to the original object otherwise. Content validation after the GET is
+    // authoritative; filenames never decide whether structured text is usable.
+    let targets: Vec<_> = objects
         .iter()
-        .filter_map(|(key, _etag)| {
-            // Skip sidecar `.text` files — we read them via their parent.
-            if let Some(base) = key.strip_suffix(".text")
-                && all_keys.contains(base)
-            {
+        .filter_map(|object| {
+            if claria_core::s3_keys::is_hidden_sidecar(&object.key, &all_keys) {
+                return None;
+            }
+            let filename = object.key.strip_prefix(&prefix)?;
+            if filename.is_empty() || filename.starts_with("chat-history/") {
                 return None;
             }
 
-            let filename = match key.strip_prefix(&prefix) {
-                Some(f) if !f.is_empty() => f,
-                _ => return None,
-            };
+            let sidecar_key = format!("{}.text", object.key);
+            let source = by_key.get(sidecar_key.as_str()).copied().unwrap_or(object);
+            Some((
+                filename.to_string(),
+                source.key.clone(),
+                source.etag.clone().unwrap_or_default(),
+                u64::try_from(source.size).unwrap_or(u64::MAX),
+            ))
+        })
+        .collect();
 
-            // Skip chat-history entries — they're not record context.
-            if filename.starts_with("chat-history/") {
-                return None;
-            }
-
-            // Plain text is read directly; other files via their `.text` sidecar.
-            let fetch_key = if filename.ends_with(".txt") {
-                key.clone()
+    let fetches = targets
+        .into_iter()
+        .map(|(filename, source_key, etag, source_size)| async move {
+            let text = if source_size > claria_core::record_text::MAX_RECORD_TEXT_BYTES {
+                None
             } else {
-                format!("{key}.text")
+                match cache.get_or_fetch(s3, bucket, &source_key, &etag).await {
+                    Ok(body)
+                        if u64::try_from(body.len()).unwrap_or(u64::MAX)
+                            <= claria_core::record_text::MAX_RECORD_TEXT_BYTES =>
+                    {
+                        claria_core::record_text::decode_record_text(body.as_ref())
+                            .map(ToString::to_string)
+                    }
+                    Ok(_) | Err(_) => None,
+                }
             };
+            (filename, text)
+        });
 
-            Some((filename.to_string(), fetch_key))
-        })
-        .collect();
-
-    let fetches: Vec<_> = targets
-        .iter()
-        .map(|(filename, fetch_key)| {
-            // Empty when the sidecar isn't in the listing → safe miss (the GET
-            // then 404s and the file resolves to no text, as before).
-            let etag = etags.get(fetch_key.as_str()).copied().unwrap_or("");
-            async move {
-                let text = match cache.get_or_fetch(s3, bucket, fetch_key, etag).await {
-                    Ok(body) => String::from_utf8(body.to_vec()).ok(),
-                    Err(_) => None,
-                };
-                (filename.clone(), text)
-            }
-        })
-        .collect();
-    let results = futures::stream::iter(fetches)
+    Ok(futures::stream::iter(fetches)
         .buffered(S3_FETCH_CONCURRENCY)
         .collect()
-        .await;
+        .await)
+}
 
-    Ok(results)
+/// Fetch one record file's readable representation.
+///
+/// A generated extraction/transcript sidecar wins when present. Files without
+/// sidecars are read directly and accepted based on their bytes, which keeps
+/// JSON, Markdown, CSV, and extensionless text in their original formats.
+pub async fn fetch_record_text(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    client_id: uuid::Uuid,
+    filename: &str,
+    cache: &RecordCache,
+) -> Result<Option<String>, String> {
+    let base_key = claria_core::s3_keys::client_record_file(client_id, filename);
+    let sidecar_key = format!("{base_key}.text");
+    let objects = claria_storage::objects::list_objects_with_metadata(s3, bucket, &base_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let source = objects
+        .iter()
+        .find(|object| object.key == sidecar_key)
+        .or_else(|| objects.iter().find(|object| object.key == base_key));
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    if u64::try_from(source.size).unwrap_or(u64::MAX)
+        > claria_core::record_text::MAX_RECORD_TEXT_BYTES
+    {
+        return Ok(None);
+    }
+
+    let body = cache
+        .get_or_fetch(
+            s3,
+            bucket,
+            &source.key,
+            source.etag.as_deref().unwrap_or(""),
+        )
+        .await?;
+    if u64::try_from(body.len()).unwrap_or(u64::MAX)
+        > claria_core::record_text::MAX_RECORD_TEXT_BYTES
+    {
+        return Ok(None);
+    }
+
+    Ok(claria_core::record_text::decode_record_text(body.as_ref()).map(ToString::to_string))
 }

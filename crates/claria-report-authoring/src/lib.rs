@@ -38,7 +38,6 @@ use uuid::Uuid;
 const DEFAULT_READ_LIMIT: u32 = 8_000;
 const MAX_READ_LIMIT: u32 = 12_000;
 const MAX_READ_CHARACTERS_PER_TURN: u32 = 48_000;
-const MAX_RECORD_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_LISTED_FILES: usize = 500;
 const MAX_LIST_RESULT_BYTES: usize = 64 * 1024;
 pub const DEFAULT_MAX_TOOL_ROUNDS: u32 = 40;
@@ -1360,8 +1359,8 @@ fn ensure_revision(
 #[derive(Debug, Clone)]
 struct RecordInventoryEntry {
     filename: String,
-    read_key: Option<String>,
-    source_bytes: Option<u64>,
+    read_key: String,
+    source_bytes: u64,
 }
 
 async fn load_record_inventory(
@@ -1390,15 +1389,12 @@ async fn load_record_inventory(
             continue;
         }
 
-        let readable = if filename.ends_with(".txt") {
-            Some(object)
-        } else {
-            by_key.get(format!("{}.text", object.key).as_str()).copied()
-        };
+        let sidecar_key = format!("{}.text", object.key);
+        let source = by_key.get(sidecar_key.as_str()).copied().unwrap_or(object);
         inventory.push(RecordInventoryEntry {
             filename: filename.to_string(),
-            read_key: readable.map(|object| object.key.clone()),
-            source_bytes: readable.map(|object| u64::try_from(object.size).unwrap_or(u64::MAX)),
+            read_key: source.key.clone(),
+            source_bytes: u64::try_from(source.size).unwrap_or(u64::MAX),
         });
     }
     Ok(inventory)
@@ -1489,16 +1485,8 @@ impl ToolExecutionContext<'_> {
                 "The filename is not in this client's safe record inventory.",
             ));
         };
-        let Some(read_key) = &entry.read_key else {
-            return Ok(tool_error(
-                "file_not_readable",
-                "No existing readable text is available for this file.",
-            ));
-        };
-        if entry
-            .source_bytes
-            .is_some_and(|bytes| bytes > MAX_RECORD_SOURCE_BYTES)
-        {
+        let read_key = &entry.read_key;
+        if entry.source_bytes > claria_core::record_text::MAX_RECORD_TEXT_BYTES {
             return Ok(tool_error(
                 "record_too_large",
                 "The readable record exceeds Claria's 2 MiB source limit.",
@@ -1526,7 +1514,7 @@ impl ToolExecutionContext<'_> {
                 self.s3,
                 self.bucket,
                 read_key,
-                MAX_RECORD_SOURCE_BYTES,
+                claria_core::record_text::MAX_RECORD_TEXT_BYTES,
             )
             .await
             {
@@ -1545,16 +1533,13 @@ impl ToolExecutionContext<'_> {
                     .with_internal(error));
                 }
             };
-            let text = match String::from_utf8(output.body) {
-                Ok(text) => text,
-                Err(_) => {
-                    return Ok(tool_error(
-                        "record_text_not_utf8",
-                        "The approved record text is not valid UTF-8.",
-                    ));
-                }
+            let Some(text) = claria_core::record_text::decode_record_text(&output.body) else {
+                return Ok(tool_error(
+                    "record_not_text",
+                    "The record is not printable UTF-8 text and has no readable extraction.",
+                ));
             };
-            self.read_cache.insert(read_key.clone(), text);
+            self.read_cache.insert(read_key.clone(), text.to_string());
         }
         let Some(text) = self.read_cache.get(read_key) else {
             return Err(TurnRunFailure::new(
@@ -1614,9 +1599,8 @@ fn list_record_files_result(inventory: &[RecordInventoryEntry]) -> ExecutedTool 
         .map(|entry| {
             serde_json::json!({
                 "filename": entry.filename,
-                "readable": entry.read_key.is_some()
-                    && entry.source_bytes.is_some_and(|bytes| bytes <= MAX_RECORD_SOURCE_BYTES),
-                "source_too_large": entry.source_bytes.is_some_and(|bytes| bytes > MAX_RECORD_SOURCE_BYTES)
+                "readable": entry.source_bytes <= claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+                "source_too_large": entry.source_bytes > claria_core::record_text::MAX_RECORD_TEXT_BYTES
             })
         })
         .collect();
