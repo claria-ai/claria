@@ -27,6 +27,9 @@ tracing = "=0.1.44"
 transcribe-cpp = { git = "https://github.com/handy-computer/transcribe.cpp", rev = "553f1099a2b3a5bc4421894be171f09960fc0f3a", default-features = false }
 uuid = { version = "=1.23.4", features = ["v4"] }
 
+[build-dependencies]
+cc = "=1.2.66"
+
 [dev-dependencies]
 aws-credential-types = "=1.2.14"
 claria-mock-aws = { path = "../claria-mock-aws" }
