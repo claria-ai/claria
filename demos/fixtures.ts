@@ -186,6 +186,19 @@ export const savedConfig = {
   preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
   cost_explorer_enabled: true,
   hourly_cost_data: false,
+  prompt_caching_enabled: true,
+  transcription: {
+    default_language: "english",
+    default_speaker_count: 2,
+    use_medical_for_english: false,
+    translate_to_english: false,
+  },
+  report_authoring: {
+    max_tool_rounds: 40,
+    max_converse_calls: 50,
+    max_tool_uses_per_response: 80,
+    max_retained_turns: 200,
+  },
 };
 
 export const chatModels = [

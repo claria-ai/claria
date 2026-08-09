@@ -488,6 +488,20 @@ fn history_pruning_removes_whole_oldest_turns() {
 }
 
 #[test]
+fn configured_history_pruning_uses_the_lower_runtime_limit() {
+    let mut workspace = workspace();
+    for index in 0..5 {
+        workspace
+            .push_turn(complete_turn(index, 10))
+            .expect("push turn");
+    }
+    workspace.prune_turns(3).expect("lower retention limit");
+    assert_eq!(workspace.session.turns.len(), 3);
+    let oldest_json = serde_json::to_string(&workspace.session.turns[0]).unwrap();
+    assert!(oldest_json.contains("tool-2"));
+}
+
+#[test]
 fn byte_pruning_keeps_newest_complete_turn() {
     let mut workspace = workspace();
     for index in 0..5 {

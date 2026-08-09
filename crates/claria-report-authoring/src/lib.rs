@@ -20,8 +20,8 @@ use claria_bedrock::{
 use claria_core::models::{
     client::Client,
     report::{
-        ReportAuthoringTurn, ReportBlock, ReportContent, ReportDraft, ReportExport,
-        ReportExportStatus, ReportOperation, ReportProposal, ReportProposalDecision,
+        MAX_REPORT_TURNS, ReportAuthoringTurn, ReportBlock, ReportContent, ReportDraft,
+        ReportExport, ReportExportStatus, ReportOperation, ReportProposal, ReportProposalDecision,
         ReportProposalResolution, ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole,
         ReportSection, ReportTemplateImport, ReportTemplateWarning, ReportToolResultStatus,
         ReportWorkspace, decode_report_workspace, validate_report_summary,
@@ -40,8 +40,16 @@ const MAX_READ_CHARACTERS_PER_TURN: u32 = 48_000;
 const MAX_RECORD_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_LISTED_FILES: usize = 500;
 const MAX_LIST_RESULT_BYTES: usize = 64 * 1024;
-const MAX_TOOL_ROUNDS: u32 = 4;
-const MAX_CONVERSE_CALLS: u32 = 5;
+pub const DEFAULT_MAX_TOOL_ROUNDS: u32 = 40;
+pub const DEFAULT_MAX_CONVERSE_CALLS: u32 = 50;
+pub const DEFAULT_MAX_TOOL_USES_PER_RESPONSE: u32 =
+    claria_bedrock::report::DEFAULT_MAX_TOOL_USES_PER_RESPONSE as u32;
+pub const DEFAULT_MAX_RETAINED_TURNS: u32 = MAX_REPORT_TURNS as u32;
+pub const MAX_CONFIGURABLE_TOOL_ROUNDS: u32 = 100;
+pub const MAX_CONFIGURABLE_CONVERSE_CALLS: u32 = 101;
+pub const MAX_CONFIGURABLE_TOOL_USES_PER_RESPONSE: u32 =
+    claria_bedrock::report::MAX_TOOL_USES_PER_RESPONSE as u32;
+pub const MAX_CONFIGURABLE_RETAINED_TURNS: u32 = MAX_REPORT_TURNS as u32;
 const MAX_INSTRUCTION_CHARACTERS: usize = 20_000;
 const MAX_REPORT_REFERENCES: usize = 10;
 const MAX_RESOLUTIONS: usize = 100;
@@ -49,6 +57,81 @@ const ATTEMPT_SCHEMA_VERSION: u32 = 1;
 
 pub const REPORT_CONFLICT_MESSAGE: &str =
     "The report changed on another computer. Reload it before continuing.";
+
+/// User-configurable guardrails for one report-writing request and its retained
+/// conversation context.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReportTurnLimits {
+    max_tool_rounds: u32,
+    max_converse_calls: u32,
+    max_tool_uses_per_response: u32,
+    max_retained_turns: u32,
+}
+
+impl ReportTurnLimits {
+    pub fn try_new(
+        max_tool_rounds: u32,
+        max_converse_calls: u32,
+        max_tool_uses_per_response: u32,
+        max_retained_turns: u32,
+    ) -> Result<Self, ReportAuthoringError> {
+        if max_tool_rounds == 0 || max_tool_rounds > MAX_CONFIGURABLE_TOOL_ROUNDS {
+            return Err(ReportAuthoringError::InvalidInput(format!(
+                "Writer tool rounds must be between 1 and {MAX_CONFIGURABLE_TOOL_ROUNDS}."
+            )));
+        }
+        if max_converse_calls == 0 || max_converse_calls > MAX_CONFIGURABLE_CONVERSE_CALLS {
+            return Err(ReportAuthoringError::InvalidInput(format!(
+                "Writer Bedrock calls must be between 1 and {MAX_CONFIGURABLE_CONVERSE_CALLS}."
+            )));
+        }
+        if max_tool_uses_per_response == 0
+            || max_tool_uses_per_response > MAX_CONFIGURABLE_TOOL_USES_PER_RESPONSE
+        {
+            return Err(ReportAuthoringError::InvalidInput(format!(
+                "Writer tools per response must be between 1 and {MAX_CONFIGURABLE_TOOL_USES_PER_RESPONSE}."
+            )));
+        }
+        if max_retained_turns == 0 || max_retained_turns > MAX_CONFIGURABLE_RETAINED_TURNS {
+            return Err(ReportAuthoringError::InvalidInput(format!(
+                "Retained writer turns must be between 1 and {MAX_CONFIGURABLE_RETAINED_TURNS}."
+            )));
+        }
+        Ok(Self {
+            max_tool_rounds,
+            max_converse_calls,
+            max_tool_uses_per_response,
+            max_retained_turns,
+        })
+    }
+
+    pub const fn max_tool_rounds(self) -> u32 {
+        self.max_tool_rounds
+    }
+
+    pub const fn max_converse_calls(self) -> u32 {
+        self.max_converse_calls
+    }
+
+    pub const fn max_tool_uses_per_response(self) -> u32 {
+        self.max_tool_uses_per_response
+    }
+
+    pub const fn max_retained_turns(self) -> u32 {
+        self.max_retained_turns
+    }
+}
+
+impl Default for ReportTurnLimits {
+    fn default() -> Self {
+        Self {
+            max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
+            max_converse_calls: DEFAULT_MAX_CONVERSE_CALLS,
+            max_tool_uses_per_response: DEFAULT_MAX_TOOL_USES_PER_RESPONSE,
+            max_retained_turns: DEFAULT_MAX_RETAINED_TURNS,
+        }
+    }
+}
 
 /// Immutable policy only. Accepted report text and resolution history are
 /// supplied as explicitly untrusted user context on each turn.
@@ -113,6 +196,7 @@ pub struct ReportBlockReference {
 pub struct ReportMessageRequest<'a> {
     pub instruction: &'a str,
     pub references: &'a [ReportBlockReference],
+    pub limits: ReportTurnLimits,
 }
 
 impl<'a> ReportMessageRequest<'a> {
@@ -120,11 +204,17 @@ impl<'a> ReportMessageRequest<'a> {
         Self {
             instruction,
             references: &[],
+            limits: ReportTurnLimits::default(),
         }
     }
 
     pub fn with_references(mut self, references: &'a [ReportBlockReference]) -> Self {
         self.references = references;
+        self
+    }
+
+    pub fn with_limits(mut self, limits: ReportTurnLimits) -> Self {
+        self.limits = limits;
         self
     }
 }
@@ -296,8 +386,11 @@ pub async fn send_report_message(
         sdk_config,
         s3,
         bucket,
-        instruction,
-        references,
+        ReportMessageRequest {
+            instruction,
+            references,
+            limits: message.limits,
+        },
         &mut loaded,
         &mut progress,
     )
@@ -636,11 +729,21 @@ async fn run_turn(
     sdk_config: &aws_config::SdkConfig,
     s3: &S3Client,
     bucket: &str,
-    instruction: &str,
-    references: &[ReportBlockReference],
+    request: ReportMessageRequest<'_>,
     loaded: &mut LoadedWorkspace,
     progress: &mut AttemptProgress,
 ) -> Result<ReportTurnOutcome, TurnRunFailure> {
+    let ReportMessageRequest {
+        instruction,
+        references,
+        limits,
+    } = request;
+    loaded
+        .workspace
+        .prune_turns(limits.max_retained_turns as usize)
+        .map_err(|error| {
+            TurnRunFailure::new(ReportFailureCode::InvalidProtocol, error.to_string())
+        })?;
     let inventory = load_record_inventory(s3, bucket, loaded.workspace.client_id)
         .await
         .map_err(|error| {
@@ -687,18 +790,19 @@ async fn run_turn(
     let terminal_text: String;
 
     loop {
-        if progress.converse_calls >= MAX_CONVERSE_CALLS {
+        if progress.converse_calls >= limits.max_converse_calls {
             return Err(TurnRunFailure::new(
                 ReportFailureCode::ToolRoundLimit,
                 "The report assistant exceeded the safe Converse call limit without finishing.",
             ));
         }
         let call_number = progress.converse_calls.saturating_add(1);
-        let output = report::converse_report(
+        let output = report::converse_report_with_tool_limit(
             sdk_config,
             &progress.model_id,
             REPORT_SYSTEM_PROMPT,
             &protocol,
+            limits.max_tool_uses_per_response as usize,
         )
         .await
         .map_err(map_bedrock_failure)?;
@@ -739,7 +843,9 @@ async fn run_turn(
 
         match output.stop_reason {
             ReportStopReason::ToolUse => {
-                if rounds >= MAX_TOOL_ROUNDS || progress.converse_calls >= MAX_CONVERSE_CALLS {
+                if rounds >= limits.max_tool_rounds
+                    || progress.converse_calls >= limits.max_converse_calls
+                {
                     return Err(TurnRunFailure::new(
                         ReportFailureCode::ToolRoundLimit,
                         "The report assistant exceeded the safe tool-use round limit.",
@@ -800,9 +906,12 @@ async fn run_turn(
     let proposal_id = staged_proposal.as_ref().map(|proposal| proposal.id);
     loaded.workspace.session.pending_proposal = staged_proposal;
     loaded.workspace.session.last_agent_revision = Some(loaded.workspace.draft.revision);
-    loaded.workspace.push_turn(turn).map_err(|error| {
-        TurnRunFailure::new(ReportFailureCode::InvalidProtocol, error.to_string())
-    })?;
+    loaded
+        .workspace
+        .push_turn_with_limit(turn, limits.max_retained_turns as usize)
+        .map_err(|error| {
+            TurnRunFailure::new(ReportFailureCode::InvalidProtocol, error.to_string())
+        })?;
     loaded.workspace.updated_at = completed_at;
     save_loaded(s3, bucket, loaded).await.map_err(|error| match error {
         ReportAuthoringError::Conflict => TurnRunFailure::new(

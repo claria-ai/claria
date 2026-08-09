@@ -5,12 +5,12 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 7;
+const CURRENT_VERSION: u32 = 8;
 
 /// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
 /// because the synced subset lives in S3 and may be read by other machines'
 /// builds.
-pub const PREFERENCES_VERSION: u32 = 1;
+pub const PREFERENCES_VERSION: u32 = 2;
 
 fn default_prompt_caching_enabled() -> bool {
     true
@@ -47,6 +47,67 @@ pub struct ClariaConfig {
     /// wizard's pre-filled values. Added in v6.
     #[serde(default)]
     pub transcription: TranscriptionPreferences,
+    /// Guardrails for the agentic document-writing loop. Added in v8.
+    #[serde(default)]
+    pub report_authoring: ReportAuthoringPreferences,
+}
+
+/// Per-clinician guardrails for agentic document writing. These values sync
+/// across machines. The report-authoring crate validates the
+/// relationship between the limits before they are saved or used.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
+pub struct ReportAuthoringPreferences {
+    #[serde(default = "default_max_tool_rounds")]
+    pub max_tool_rounds: u32,
+    #[serde(default = "default_max_converse_calls")]
+    pub max_converse_calls: u32,
+    #[serde(default = "default_max_tool_uses_per_response")]
+    pub max_tool_uses_per_response: u32,
+    #[serde(default = "default_max_retained_turns")]
+    pub max_retained_turns: u32,
+}
+
+impl ReportAuthoringPreferences {
+    pub fn limits(&self) -> Result<claria_report_authoring::ReportTurnLimits, String> {
+        claria_report_authoring::ReportTurnLimits::try_new(
+            self.max_tool_rounds,
+            self.max_converse_calls,
+            self.max_tool_uses_per_response,
+            self.max_retained_turns,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.limits().map(|_| ())
+    }
+}
+
+impl Default for ReportAuthoringPreferences {
+    fn default() -> Self {
+        Self {
+            max_tool_rounds: default_max_tool_rounds(),
+            max_converse_calls: default_max_converse_calls(),
+            max_tool_uses_per_response: default_max_tool_uses_per_response(),
+            max_retained_turns: default_max_retained_turns(),
+        }
+    }
+}
+
+fn default_max_tool_rounds() -> u32 {
+    claria_report_authoring::DEFAULT_MAX_TOOL_ROUNDS
+}
+
+fn default_max_converse_calls() -> u32 {
+    claria_report_authoring::DEFAULT_MAX_CONVERSE_CALLS
+}
+
+fn default_max_tool_uses_per_response() -> u32 {
+    claria_report_authoring::DEFAULT_MAX_TOOL_USES_PER_RESPONSE
+}
+
+fn default_max_retained_turns() -> u32 {
+    claria_report_authoring::DEFAULT_MAX_RETAINED_TURNS
 }
 
 /// Per-clinician defaults for the transcription pipeline.
@@ -122,6 +183,8 @@ pub struct SyncedPreferences {
     pub prompt_caching_enabled: bool,
     #[serde(default)]
     pub transcription: TranscriptionPreferences,
+    #[serde(default)]
+    pub report_authoring: ReportAuthoringPreferences,
 }
 
 impl SyncedPreferences {
@@ -134,6 +197,7 @@ impl SyncedPreferences {
             hourly_cost_data: config.hourly_cost_data,
             prompt_caching_enabled: config.prompt_caching_enabled,
             transcription: config.transcription.clone(),
+            report_authoring: config.report_authoring.clone(),
         }
     }
 
@@ -145,6 +209,7 @@ impl SyncedPreferences {
         config.hourly_cost_data = self.hourly_cost_data;
         config.prompt_caching_enabled = self.prompt_caching_enabled;
         config.transcription = self.transcription.clone();
+        config.report_authoring = self.report_authoring.clone();
     }
 }
 
@@ -178,6 +243,7 @@ pub struct ConfigInfo {
     pub hourly_cost_data: bool,
     pub prompt_caching_enabled: bool,
     pub transcription: TranscriptionPreferences,
+    pub report_authoring: ReportAuthoringPreferences,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -207,6 +273,10 @@ pub fn load_config() -> eyre::Result<ClariaConfig> {
 
     let migrated = migrate(json, on_disk_version)?;
     let config: ClariaConfig = serde_json::from_value(migrated)?;
+    config
+        .report_authoring
+        .validate()
+        .map_err(|error| eyre::eyre!(error))?;
 
     // Persist the migrated config so subsequent loads don't re-run migrations.
     if on_disk_version < CURRENT_VERSION {
@@ -336,10 +406,33 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v6 → v7 (added translate_to_english)");
     }
 
+    // v7 → v8: add configurable report-authoring guardrails at ten times the
+    // original fixed limits.
+    if from_version < 8 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("report_authoring").or_insert(serde_json::json!({
+            "max_tool_rounds": default_max_tool_rounds(),
+            "max_converse_calls": default_max_converse_calls(),
+            "max_tool_uses_per_response": default_max_tool_uses_per_response(),
+            "max_retained_turns": default_max_retained_turns(),
+        }));
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(8.into()),
+        );
+        tracing::info!("migrated config v7 → v8 (added report authoring preferences)");
+    }
+
     Ok(json)
 }
 
 pub fn save_config(config: &ClariaConfig) -> eyre::Result<()> {
+    config
+        .report_authoring
+        .validate()
+        .map_err(|error| eyre::eyre!(error))?;
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir)?;
 
@@ -410,6 +503,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         hourly_cost_data: config.hourly_cost_data,
         prompt_caching_enabled: config.prompt_caching_enabled,
         transcription: config.transcription.clone(),
+        report_authoring: config.report_authoring.clone(),
     }
 }
 

@@ -23,6 +23,7 @@ import {
   type LocalTranscriptionSettings,
   type LocalTranscriptionStatus,
   type ModelDownloadProgress,
+  type ReportAuthoringPreferences,
   type TranscriptionLanguage,
   type TranscriptionPreferences,
 } from "../lib/tauri";
@@ -89,6 +90,9 @@ export default function Preferences({
       <div className="space-y-4">
         {/* Transcription preferences section */}
         <TranscriptionSection />
+
+        {/* Agentic document-writer guardrails */}
+        <ReportAuthoringSection />
 
         {/* System Prompt section */}
         <PromptEditor
@@ -976,6 +980,290 @@ function CostExplorerSection() {
 }
 
 // ---------------------------------------------------------------------------
+// Document writer: configurable agentic-loop guardrails
+// ---------------------------------------------------------------------------
+
+type WriterLimits = Required<ReportAuthoringPreferences>;
+type WriterLimitField = keyof WriterLimits;
+
+const WRITER_LIMIT_DEFAULTS: WriterLimits = {
+  max_tool_rounds: 40,
+  max_converse_calls: 50,
+  max_tool_uses_per_response: 80,
+  max_retained_turns: 200,
+};
+
+const WRITER_LIMIT_FIELDS: Array<{
+  key: WriterLimitField;
+  label: string;
+  description: string;
+  min: number;
+  max: number;
+}> = [
+  {
+    key: "max_tool_rounds",
+    label: "Tool-use rounds per request",
+    description:
+      "How many times the writer may request tools and receive their results before it must finish.",
+    min: 1,
+    max: 100,
+  },
+  {
+    key: "max_converse_calls",
+    label: "Bedrock calls per request",
+    description:
+      "Total billed model-call ceiling. Whichever call or tool-round guardrail is reached first stops the request.",
+    min: 1,
+    max: 101,
+  },
+  {
+    key: "max_tool_uses_per_response",
+    label: "Tool calls per response",
+    description:
+      "Maximum list, read, and proposal calls accepted from one model response.",
+    min: 1,
+    max: 100,
+  },
+  {
+    key: "max_retained_turns",
+    label: "Conversation turns retained",
+    description:
+      "Completed writer turns kept as context. The 512 KiB context-history ceiling may prune older turns sooner.",
+    min: 1,
+    max: 200,
+  },
+];
+
+function normalizeWriterPreferences(
+  value: ReportAuthoringPreferences | null | undefined
+): WriterLimits {
+  return {
+    max_tool_rounds:
+      value?.max_tool_rounds ?? WRITER_LIMIT_DEFAULTS.max_tool_rounds,
+    max_converse_calls:
+      value?.max_converse_calls ?? WRITER_LIMIT_DEFAULTS.max_converse_calls,
+    max_tool_uses_per_response:
+      value?.max_tool_uses_per_response ??
+      WRITER_LIMIT_DEFAULTS.max_tool_uses_per_response,
+    max_retained_turns:
+      value?.max_retained_turns ?? WRITER_LIMIT_DEFAULTS.max_retained_turns,
+  };
+}
+
+function writerLimitsError(value: WriterLimits): string | null {
+  for (const field of WRITER_LIMIT_FIELDS) {
+    const input = value[field.key];
+    if (!Number.isInteger(input) || input < field.min || input > field.max) {
+      return `${field.label} must be a whole number from ${field.min} to ${field.max}.`;
+    }
+  }
+  return null;
+}
+
+function ReportAuthoringSection() {
+  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
+  const [draft, setDraft] = useState<WriterLimits | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const info = await fetchCloudPreferences();
+      setSnapshot(info);
+      setDraft(normalizeWriterPreferences(info.report_authoring));
+    } catch (e) {
+      try {
+        const info = await loadConfig();
+        setSnapshot(info);
+        setDraft(normalizeWriterPreferences(info.report_authoring));
+      } catch (fallbackError) {
+        setLoadError(String(fallbackError ?? e));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const original = snapshot
+    ? normalizeWriterPreferences(snapshot.report_authoring)
+    : null;
+  const dirty =
+    original != null &&
+    draft != null &&
+    JSON.stringify(original) !== JSON.stringify(draft);
+  const validationError = draft ? writerLimitsError(draft) : null;
+  const effectiveToolRounds = draft
+    ? Math.min(
+        draft.max_tool_rounds,
+        Math.max(0, draft.max_converse_calls - 1)
+      )
+    : 0;
+  const effectiveModelCalls = draft
+    ? Math.min(draft.max_converse_calls, draft.max_tool_rounds + 1)
+    : 0;
+  const theoreticalToolCalls = draft
+    ? effectiveToolRounds * draft.max_tool_uses_per_response
+    : 0;
+
+  async function save() {
+    if (!snapshot || !draft || validationError) return;
+    setSaving(true);
+    setSaveError(null);
+    setSaved(false);
+    try {
+      // Refresh sibling preferences immediately before the full-subset write,
+      // so this section cannot roll back a model, cost, or transcription edit.
+      const current = await loadConfig().catch(() => snapshot);
+      const updated = await savePreferences(
+        current.preferred_model_id,
+        current.cost_explorer_enabled,
+        current.hourly_cost_data,
+        current.prompt_caching_enabled,
+        current.transcription,
+        draft
+      );
+      setSnapshot(updated);
+      setDraft(normalizeWriterPreferences(updated.report_authoring));
+      setSaved(true);
+    } catch (e) {
+      setSaveError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <details className="border border-gray-200 rounded-lg group">
+      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-gray-900">Document Writer Limits</span>
+          {draft && (
+            <span className="text-xs text-gray-400">
+              {draft.max_tool_rounds} rounds · {draft.max_converse_calls} calls
+            </span>
+          )}
+        </div>
+        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
+          &#9656;
+        </span>
+      </summary>
+      <div className="border-t border-gray-100 p-4 space-y-4">
+        {loading ? (
+          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+            <Spinner />
+            <span>Loading document writer limits...</span>
+          </div>
+        ) : !draft ? (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+            <p className="text-red-800 text-sm">
+              {loadError ?? "Could not load document writer limits."}
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-1.5">
+              <p className="text-sm font-medium text-amber-950">
+                Higher limits increase cost and runaway-loop exposure
+              </p>
+              <p className="text-xs text-amber-900">
+                These are spend and runtime guardrails, not targets. With this
+                combination, one request may make up to {effectiveModelCalls} billed
+                Bedrock calls and theoretically issue{" "}
+                {theoreticalToolCalls.toLocaleString()} tool calls. It can run much
+                longer, repeatedly read client records, and cost substantially more.
+              </p>
+              <p className="text-xs text-amber-900">
+                Opus is generally reliable, but no model is guaranteed not to
+                repeat tools or fail to finish. Writer changes still remain
+                proposals until you explicitly accept them.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {WRITER_LIMIT_FIELDS.map((field) => (
+                <label key={field.key} className="block">
+                  <span className="text-sm font-medium text-gray-700">
+                    {field.label}
+                  </span>
+                  <input
+                    type="number"
+                    min={field.min}
+                    max={field.max}
+                    step={1}
+                    value={draft[field.key]}
+                    onChange={(event) => {
+                      const next = event.currentTarget.valueAsNumber;
+                      setDraft({
+                        ...draft,
+                        [field.key]: Number.isFinite(next) ? next : 0,
+                      });
+                      setSaved(false);
+                    }}
+                    className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <span className="block text-xs text-gray-500 mt-1">
+                    {field.description}
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            {validationError && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-red-800 text-sm">{validationError}</p>
+              </div>
+            )}
+            {saveError && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-red-800 text-sm">
+                  Could not save document writer limits: {saveError}
+                </p>
+              </div>
+            )}
+
+            <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft(WRITER_LIMIT_DEFAULTS);
+                  setSaved(false);
+                }}
+                disabled={saving}
+                className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >
+                Restore recommended defaults
+              </button>
+              <div className="flex items-center gap-2">
+                {saved && !dirty && (
+                  <span className="text-xs text-green-700">Saved</span>
+                )}
+                <button
+                  type="button"
+                  onClick={save}
+                  disabled={saving || !dirty || validationError != null}
+                  className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  {saving ? "Saving..." : "Save limits"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Transcription section: language / speaker count / engine / translation
 // ---------------------------------------------------------------------------
 
@@ -1027,7 +1315,8 @@ function TranscriptionSection() {
           current.cost_explorer_enabled,
           current.hourly_cost_data,
           current.prompt_caching_enabled,
-          next
+          next,
+          normalizeWriterPreferences(current.report_authoring)
         );
         // Advancing the snapshot clears `dirty` and stops the debounce.
         setSnapshot({ ...current, transcription: next });
@@ -1079,7 +1368,8 @@ function TranscriptionSection() {
             current.cost_explorer_enabled,
             current.hourly_cost_data,
             current.prompt_caching_enabled,
-            pending.next
+            pending.next,
+            normalizeWriterPreferences(current.report_authoring)
           )
         )
         .catch((e) => console.error("preferences sync on leave failed:", e));

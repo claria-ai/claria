@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use claria_desktop::config::{
-    self, ClariaConfig, ConfigInfo, CredentialSource, SyncedPreferences, TranscriptionPreferences,
+    self, ClariaConfig, ConfigInfo, CredentialSource, ReportAuthoringPreferences,
+    SyncedPreferences, TranscriptionPreferences,
 };
 use claria_provisioner::account_setup::{
     AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
@@ -194,6 +195,7 @@ async fn read_cloud_preferences(
         Ok(output) => {
             let synced: SyncedPreferences =
                 serde_json::from_slice(&output.body).map_err(|e| e.to_string())?;
+            synced.report_authoring.validate()?;
             Ok(Some(synced))
         }
         Err(claria_storage::error::StorageError::NotFound { .. }) => Ok(None),
@@ -264,6 +266,7 @@ pub async fn save_preferences(
     hourly_cost_data: bool,
     prompt_caching_enabled: bool,
     transcription: TranscriptionPreferences,
+    report_authoring: ReportAuthoringPreferences,
 ) -> Result<ConfigInfo, String> {
     let (mut cfg, sdk_config) = load_sdk_config(&state).await?;
 
@@ -272,6 +275,8 @@ pub async fn save_preferences(
     cfg.hourly_cost_data = hourly_cost_data;
     cfg.prompt_caching_enabled = prompt_caching_enabled;
     cfg.transcription = transcription;
+    report_authoring.validate()?;
+    cfg.report_authoring = report_authoring;
 
     // Persist locally first so we don't lose the user's edit if S3 is down.
     config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -327,6 +332,7 @@ pub async fn save_config(
         hourly_cost_data: false,
         prompt_caching_enabled: true,
         transcription: Default::default(),
+        report_authoring: Default::default(),
     };
 
     config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -533,6 +539,7 @@ pub async fn bootstrap_iam_user(
                 hourly_cost_data: false,
                 prompt_caching_enabled: true,
                 transcription: Default::default(),
+                report_authoring: Default::default(),
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -1288,6 +1295,7 @@ pub async fn provision_apply(
             hourly_cost_data: false,
             prompt_caching_enabled: true,
             transcription: Default::default(),
+            report_authoring: Default::default(),
         };
 
         config::save_config(&cfg).map_err(|e| e.to_string())?;
@@ -1619,6 +1627,7 @@ pub async fn send_report_message(
         .into_iter()
         .map(ReportBlockReferenceInput::into_domain)
         .collect::<Result<Vec<_>, _>>()?;
+    let limits = cfg.report_authoring.limits()?;
     let result = claria_report_authoring::send_report_message(
         &sdk_config,
         &s3,
@@ -1627,7 +1636,8 @@ pub async fn send_report_message(
         expected_revision,
         &model_id,
         claria_report_authoring::ReportMessageRequest::new(&instruction)
-            .with_references(&references),
+            .with_references(&references)
+            .with_limits(limits),
     )
     .await;
 

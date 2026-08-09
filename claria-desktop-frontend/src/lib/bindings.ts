@@ -43,9 +43,9 @@ async deleteConfig() : Promise<Result<null, string>> {
  * file and `_state/preferences.json` in S3. Bubbles S3-write failures so the
  * frontend can show a partial-save warning.
  */
-async savePreferences(preferredModelId: string | null, costExplorerEnabled: boolean, hourlyCostData: boolean, promptCachingEnabled: boolean, transcription: TranscriptionPreferences) : Promise<Result<ConfigInfo, string>> {
+async savePreferences(preferredModelId: string | null, costExplorerEnabled: boolean, hourlyCostData: boolean, promptCachingEnabled: boolean, transcription: TranscriptionPreferences, reportAuthoring: ReportAuthoringPreferences) : Promise<Result<ConfigInfo, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_preferences", { preferredModelId, costExplorerEnabled, hourlyCostData, promptCachingEnabled, transcription }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_preferences", { preferredModelId, costExplorerEnabled, hourlyCostData, promptCachingEnabled, transcription, reportAuthoring }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1124,7 +1124,7 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences }
 /**
  * A single log entry captured by the console ring buffer.
  */
@@ -1298,6 +1298,12 @@ export type RecordContext = { filename: string; text: string }
  * A file in a client's record (S3 object metadata).
  */
 export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
+/**
+ * Per-clinician guardrails for agentic document writing. These values sync
+ * across machines. The report-authoring crate validates the
+ * relationship between the limits before they are saved or used.
+ */
+export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
 export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
 export type ReportBlockReferenceInput = { section_id: string; block_index: number }
 export type ReportBlockView = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | { kind: "table"; rows: string[][]; has_header: boolean; column_widths: number[] | null }

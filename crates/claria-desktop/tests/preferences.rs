@@ -1,8 +1,8 @@
-//! Tests for [`SyncedPreferences`] + the v5→v6 transcription migration.
+//! Tests for synced workflow preferences and their backward-compatible defaults.
 
 use claria_desktop::config::{
-    ClariaConfig, CredentialSource, SyncedPreferences, TranscriptionLanguage,
-    TranscriptionPreferences,
+    ClariaConfig, CredentialSource, ReportAuthoringPreferences, SyncedPreferences,
+    TranscriptionLanguage, TranscriptionPreferences,
 };
 
 fn sample_config() -> ClariaConfig {
@@ -23,6 +23,7 @@ fn sample_config() -> ClariaConfig {
             use_medical_for_english: true,
             translate_to_english: true,
         },
+        report_authoring: ReportAuthoringPreferences::default(),
     }
 }
 
@@ -60,6 +61,12 @@ fn apply_to_config_leaves_machine_local_fields_alone() {
         hourly_cost_data: true,
         prompt_caching_enabled: false,
         transcription: TranscriptionPreferences::default(),
+        report_authoring: ReportAuthoringPreferences {
+            max_tool_rounds: 12,
+            max_converse_calls: 13,
+            max_tool_uses_per_response: 16,
+            max_retained_turns: 30,
+        },
     };
 
     synced.apply_to_config(&mut cfg);
@@ -81,6 +88,8 @@ fn apply_to_config_leaves_machine_local_fields_alone() {
         cfg.transcription.default_language,
         TranscriptionLanguage::English
     );
+    assert_eq!(cfg.report_authoring.max_tool_rounds, 12);
+    assert_eq!(cfg.report_authoring.max_converse_calls, 13);
 }
 
 #[test]
@@ -90,7 +99,8 @@ fn synced_preferences_serialize_snake_case() {
 
     assert!(json.contains("\"default_language\":\"mixed\""));
     assert!(json.contains("\"use_medical_for_english\":true"));
-    assert!(json.contains("\"preferences_version\":1"));
+    assert!(json.contains("\"max_tool_rounds\":40"));
+    assert!(json.contains("\"preferences_version\":2"));
 }
 
 #[test]
@@ -118,4 +128,18 @@ fn legacy_v5_config_migrates_to_v6_with_default_transcription() {
     );
     assert_eq!(cfg.transcription.default_speaker_count, 2);
     assert!(!cfg.transcription.use_medical_for_english);
+    assert_eq!(cfg.report_authoring.max_tool_rounds, 40);
+    assert_eq!(cfg.report_authoring.max_converse_calls, 50);
+    assert_eq!(cfg.report_authoring.max_tool_uses_per_response, 80);
+    assert_eq!(cfg.report_authoring.max_retained_turns, 200);
+}
+
+#[test]
+fn invalid_report_authoring_preferences_are_rejected() {
+    let invalid = ReportAuthoringPreferences {
+        max_converse_calls: 0,
+        ..ReportAuthoringPreferences::default()
+    };
+
+    assert!(invalid.validate().is_err());
 }
