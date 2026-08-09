@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.20.0] — 2026-08-09
 
 - Record Memo transcription now runs locally through transcribe.cpp with verified, downloadable GGUF models
 - Preferences expose machine-local model management, compute backends and devices, CPU/K/V controls, and advanced Whisper decoding settings
