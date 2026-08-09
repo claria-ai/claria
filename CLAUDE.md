@@ -135,7 +135,7 @@ Common gotchas:
 
 ## Config Versioning
 
-`config.json` carries a `config_version` field (u32). Current version: **7**.
+`config.json` carries a `config_version` field (u32). Current version: **8**.
 
 ### Rules
 - Every schema change to `ClariaConfig` (new field, renamed field, changed type) bumps `CURRENT_VERSION` in `config.rs`

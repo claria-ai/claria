@@ -23,7 +23,7 @@ pub const MAX_REPORT_TABLE_CELLS: usize = 20_000;
 pub const TABLE_WIDTH_BASIS_POINTS: u32 = 10_000;
 pub const MAX_REPORT_TEXT_CHARACTERS: usize = 500_000;
 pub const MAX_PROPOSAL_OPERATIONS: usize = 25;
-pub const MAX_REPORT_TURNS: usize = 20;
+pub const MAX_REPORT_TURNS: usize = 200;
 pub const MAX_REPORT_PROTOCOL_BYTES: usize = 512 * 1024;
 
 const MAX_TITLE_CHARACTERS: usize = 200;
@@ -320,13 +320,40 @@ impl ReportWorkspace {
         Ok(())
     }
 
-    /// Add a complete turn and prune only complete, oldest turns to the
-    /// retention limits. The newest turn is retained even if it alone exceeds
-    /// the byte ceiling, so tool-use/result correlation is never split.
+    /// Add a complete turn using the default retention limit.
     pub fn push_turn(&mut self, turn: ReportAuthoringTurn) -> Result<(), CoreError> {
+        self.push_turn_with_limit(turn, MAX_REPORT_TURNS)
+    }
+
+    /// Add a complete turn and prune only complete, oldest turns to the
+    /// configured retention limit. The newest turn is retained even if it
+    /// alone exceeds the byte ceiling, so tool-use/result correlation is never
+    /// split.
+    pub fn push_turn_with_limit(
+        &mut self,
+        turn: ReportAuthoringTurn,
+        max_retained_turns: usize,
+    ) -> Result<(), CoreError> {
+        if max_retained_turns == 0 || max_retained_turns > MAX_REPORT_TURNS {
+            return Err(invalid(format!(
+                "report turn retention must be between 1 and {MAX_REPORT_TURNS}"
+            )));
+        }
         validate_turn(&turn)?;
         self.session.turns.push(turn);
-        while self.session.turns.len() > MAX_REPORT_TURNS {
+        self.prune_turns(max_retained_turns)
+    }
+
+    /// Prune complete oldest turns to a configured count and the protocol byte
+    /// ceiling. This can be applied before a model call when the user lowers
+    /// their retention preference.
+    pub fn prune_turns(&mut self, max_retained_turns: usize) -> Result<(), CoreError> {
+        if max_retained_turns == 0 || max_retained_turns > MAX_REPORT_TURNS {
+            return Err(invalid(format!(
+                "report turn retention must be between 1 and {MAX_REPORT_TURNS}"
+            )));
+        }
+        while self.session.turns.len() > max_retained_turns {
             self.session.turns.remove(0);
         }
         while self.session.turns.len() > 1

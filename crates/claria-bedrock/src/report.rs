@@ -31,7 +31,8 @@ use crate::{error::BedrockError, tokens};
 pub const LIST_RECORD_FILES_TOOL: &str = "list_record_files";
 pub const READ_RECORD_FILE_TOOL: &str = "read_record_file";
 pub const PROPOSE_REPORT_CHANGES_TOOL: &str = "propose_report_changes";
-pub const MAX_TOOL_USES_PER_RESPONSE: usize = 8;
+pub const DEFAULT_MAX_TOOL_USES_PER_RESPONSE: usize = 80;
+pub const MAX_TOOL_USES_PER_RESPONSE: usize = 100;
 pub const REPORT_OUTPUT_TOKEN_RESERVE: u32 = 8_192;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -154,7 +155,26 @@ pub fn decode_tool_request(call: &ReportToolCall) -> Result<ReportToolRequest, B
     }
 }
 
-/// Send one report-protocol Converse request with all three report tools.
+/// Send one report-protocol Converse request with all three report tools using
+/// the default per-response tool-use limit.
+pub async fn converse_report(
+    config: &aws_config::SdkConfig,
+    model_id: &str,
+    system_prompt: &str,
+    messages: &[ReportProtocolMessage],
+) -> Result<ReportConverseOutput, BedrockError> {
+    converse_report_with_tool_limit(
+        config,
+        model_id,
+        system_prompt,
+        messages,
+        DEFAULT_MAX_TOOL_USES_PER_RESPONSE,
+    )
+    .await
+}
+
+/// Send one report-protocol Converse request with a caller-selected tool-use
+/// limit.
 ///
 /// The caller owns the bounded tool loop and persistence. This function owns
 /// the exact Bedrock wire shape, validates safe tool correlation, and returns
@@ -162,14 +182,24 @@ pub fn decode_tool_request(call: &ReportToolCall) -> Result<ReportToolRequest, B
 #[tracing::instrument(
     level = "trace",
     skip_all,
-    fields(model_id = %model_id, messages = messages.len())
+    fields(
+        model_id = %model_id,
+        messages = messages.len(),
+        max_tool_uses_per_response
+    )
 )]
-pub async fn converse_report(
+pub async fn converse_report_with_tool_limit(
     config: &aws_config::SdkConfig,
     model_id: &str,
     system_prompt: &str,
     messages: &[ReportProtocolMessage],
+    max_tool_uses_per_response: usize,
 ) -> Result<ReportConverseOutput, BedrockError> {
+    if max_tool_uses_per_response == 0 || max_tool_uses_per_response > MAX_TOOL_USES_PER_RESPONSE {
+        return Err(BedrockError::SchemaViolation(format!(
+            "report tool-use limit must be between 1 and {MAX_TOOL_USES_PER_RESPONSE}"
+        )));
+    }
     if !model_supports_report_tools(model_id) {
         return Err(BedrockError::UnsupportedModel(format!(
             "{model_id} is not a verified tool-capable Claude model"
@@ -380,9 +410,9 @@ pub async fn converse_report(
             "report response had no visible text or tool use".to_string(),
         ));
     }
-    if tool_calls.len() > MAX_TOOL_USES_PER_RESPONSE {
+    if tool_calls.len() > max_tool_uses_per_response {
         return Err(BedrockError::ResponseParse(format!(
-            "report response requested {} tools; maximum is {MAX_TOOL_USES_PER_RESPONSE}",
+            "report response requested {} tools; configured maximum is {max_tool_uses_per_response}",
             tool_calls.len()
         )));
     }

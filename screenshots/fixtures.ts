@@ -98,6 +98,12 @@ export const fixtures: Record<string, unknown> = {
       use_medical_for_english: false,
       translate_to_english: false,
     },
+    report_authoring: {
+      max_tool_rounds: 40,
+      max_converse_calls: 50,
+      max_tool_uses_per_response: 80,
+      max_retained_turns: 200,
+    },
   },
 
   // `fetch_cloud_preferences` returns the same shape as `load_config` —
@@ -119,6 +125,12 @@ export const fixtures: Record<string, unknown> = {
       default_speaker_count: 2,
       use_medical_for_english: false,
       translate_to_english: false,
+    },
+    report_authoring: {
+      max_tool_rounds: 40,
+      max_converse_calls: 50,
+      max_tool_uses_per_response: 80,
+      max_retained_turns: 200,
     },
   },
 

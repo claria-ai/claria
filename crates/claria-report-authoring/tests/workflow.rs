@@ -686,6 +686,8 @@ async fn fifth_tool_round_fails_without_persisting_an_incomplete_turn() {
         .collect();
     script(&server, responses).await;
 
+    let limits =
+        report_authoring::ReportTurnLimits::try_new(4, 5, 8, 20).expect("legacy-sized test limits");
     let error = report_authoring::send_report_message(
         &sdk,
         &s3,
@@ -693,7 +695,7 @@ async fn fifth_tool_round_fails_without_persisting_an_incomplete_turn() {
         client_id,
         0,
         MODEL_ID,
-        report_authoring::ReportMessageRequest::new("Keep listing forever"),
+        report_authoring::ReportMessageRequest::new("Keep listing forever").with_limits(limits),
     )
     .await
     .unwrap_err();

@@ -2,6 +2,10 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Document writer loop and history limits are configurable in Preferences with ten-times-higher defaults and explicit cost and runaway-loop warnings
+
 ## [0.20.0] — 2026-08-09
 
 - Record Memo transcription now runs locally through transcribe.cpp with verified, downloadable GGUF models

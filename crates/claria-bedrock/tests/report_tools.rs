@@ -4,7 +4,7 @@ use claria_bedrock::{
     error::BedrockError,
     report::{
         PROPOSE_REPORT_CHANGES_TOOL, ReportStopReason, ReportToolRequest, converse_report,
-        decode_tool_request,
+        converse_report_with_tool_limit, decode_tool_request,
     },
 };
 use claria_core::models::report::{
@@ -175,6 +175,35 @@ async fn nested_tool_input_round_trips_from_smithy_document() {
             ..
         } if widths == &[7_000, 3_000]
     ));
+}
+
+#[tokio::test]
+async fn configured_tool_limit_rejects_oversized_model_responses() {
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [
+                {"toolUse": {"toolUseId": "list-1", "name": "list_record_files", "input": {}}},
+                {"toolUse": {"toolUseId": "list-2", "name": "list_record_files", "input": {}}}
+            ]}},
+            "stopReason": "tool_use"
+        })],
+    )
+    .await;
+
+    let error = converse_report_with_tool_limit(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System",
+        &[user_message("Draft")],
+        1,
+    )
+    .await
+    .expect_err("configured tool limit");
+    assert!(
+        matches!(error, BedrockError::ResponseParse(ref message) if message.contains("configured maximum is 1"))
+    );
 }
 
 #[tokio::test]

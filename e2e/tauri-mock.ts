@@ -41,6 +41,12 @@ export function buildInitScript(
           use_medical_for_english: false,
           translate_to_english: false,
         },
+        report_authoring: {
+          max_tool_rounds: 40,
+          max_converse_calls: 50,
+          max_tool_uses_per_response: 80,
+          max_retained_turns: 200,
+        },
       }` : "null"};
       window.__REPORT_COMMANDS__ = [];
       window.__REPORT_INVOCATIONS__ = [];
@@ -203,6 +209,19 @@ export function buildInitScript(
               preferred_model_id: null,
               cost_explorer_enabled: false,
               hourly_cost_data: false,
+              prompt_caching_enabled: true,
+              transcription: {
+                default_language: "english",
+                default_speaker_count: 2,
+                use_medical_for_english: false,
+                translate_to_english: false,
+              },
+              report_authoring: {
+                max_tool_rounds: 40,
+                max_converse_calls: 50,
+                max_tool_uses_per_response: 80,
+                max_retained_turns: 200,
+              },
             };
             configSaved = true;
             return null;
@@ -252,6 +271,19 @@ export function buildInitScript(
               preferred_model_id: null,
               cost_explorer_enabled: false,
               hourly_cost_data: false,
+              prompt_caching_enabled: true,
+              transcription: {
+                default_language: "english",
+                default_speaker_count: 2,
+                use_medical_for_english: false,
+                translate_to_english: false,
+              },
+              report_authoring: {
+                max_tool_rounds: 40,
+                max_converse_calls: 50,
+                max_tool_uses_per_response: 80,
+                max_retained_turns: 200,
+              },
             };
             configSaved = true;
             return { entries: freshPlanEntries(), access_key_limit: null };

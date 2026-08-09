@@ -38,6 +38,7 @@ import type {
   ReportDraftEdit,
   ReportExportResult,
   ReportProposalDecision,
+  ReportAuthoringPreferences,
   ReportTemplatePreview,
   ReportTurnResponse,
   ReportWorkspaceView,
@@ -97,6 +98,7 @@ export type {
   ProvisionerProgress,
   RecordContext,
   RecordFile,
+  ReportAuthoringPreferences,
   ReportAuthoringTurnView,
   ReportBlockReferenceInput,
   ReportBlockView,
@@ -175,7 +177,8 @@ export async function savePreferences(
   costExplorerEnabled: boolean,
   hourlyCostData: boolean,
   promptCachingEnabled: boolean,
-  transcription: TranscriptionPreferences
+  transcription: TranscriptionPreferences,
+  reportAuthoring: ReportAuthoringPreferences
 ) {
   return unwrap(
     await commands.savePreferences(
@@ -183,7 +186,8 @@ export async function savePreferences(
       costExplorerEnabled,
       hourlyCostData,
       promptCachingEnabled,
-      transcription
+      transcription,
+      reportAuthoring
     )
   );
 }
