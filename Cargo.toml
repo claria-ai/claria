@@ -7,7 +7,6 @@ members = [
     "crates/claria-audit",
     "crates/claria-provisioner",
     "crates/claria-transcribe",
-    "crates/claria-whisper",
     "crates/claria-billing",
     "crates/claria-client-lifecycle",
     "crates/claria-report-authoring",

@@ -23,6 +23,10 @@ import type {
   EditorHistoryEntry,
   FileVersion,
   InfraChatResponse,
+  LocalModelId,
+  LocalTranscriptionSettings,
+  LocalTranscriptionStatus,
+  ModelDownloadProgress,
   ModelPricing,
   PlanEntry,
   ProvisionApplyOutcome,
@@ -41,8 +45,6 @@ import type {
   TranscribeOptionsOverrides,
   TranscriptionPreferences,
   UpdateCheck,
-  WhisperModelInfo,
-  WhisperModelTier,
 } from "./bindings";
 
 export { commands };
@@ -78,6 +80,15 @@ export type {
   FileVersion,
   InfraChatResponse,
   Lifecycle,
+  LocalBackend,
+  LocalBackendInfo,
+  LocalComputeDevice,
+  LocalKvPrecision,
+  LocalModelId,
+  LocalModelInfo,
+  LocalTranscriptionSettings,
+  LocalTranscriptionStatus,
+  ModelDownloadProgress,
   ModelPricing,
   NewCredentials,
   PlanEntry,
@@ -637,29 +648,38 @@ export async function restoreClient(clientId: string, versionId: string): Promis
 }
 
 // ---------------------------------------------------------------------------
-// Whisper model management + local transcription
+// transcribe.cpp model management + local transcription
 // ---------------------------------------------------------------------------
 
-export type { WhisperModelInfo, WhisperModelTier, TranscribeMemoResult, UpdateCheck } from "./bindings";
+export type { TranscribeMemoResult, UpdateCheck } from "./bindings";
 
-export async function getWhisperModels(): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.getWhisperModels());
+export async function getLocalTranscriptionStatus(): Promise<LocalTranscriptionStatus> {
+  return unwrap(await commands.getLocalTranscriptionStatus());
 }
 
-export async function downloadWhisperModel(tier: WhisperModelTier): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.downloadWhisperModel(tier));
+export async function saveLocalTranscriptionSettings(
+  settings: LocalTranscriptionSettings
+): Promise<LocalTranscriptionStatus> {
+  return unwrap(await commands.saveLocalTranscriptionSettings(settings));
 }
 
-export async function deleteWhisperModel(tier: WhisperModelTier): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.deleteWhisperModel(tier));
+export async function downloadLocalModel(
+  modelId: LocalModelId,
+  onProgress?: (progress: ModelDownloadProgress) => void
+): Promise<LocalTranscriptionStatus> {
+  const channel = new Channel<ModelDownloadProgress>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(await commands.downloadLocalModel(modelId, channel));
 }
 
-export async function deleteWhisperModelDir(dirName: string): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.deleteWhisperModelDir(dirName));
+export async function deleteLocalModel(
+  modelId: LocalModelId
+): Promise<LocalTranscriptionStatus> {
+  return unwrap(await commands.deleteLocalModel(modelId));
 }
 
-export async function setActiveWhisperModel(tier: WhisperModelTier): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.setActiveWhisperModel(tier));
+export async function deleteLegacyTranscriptionModels(): Promise<LocalTranscriptionStatus> {
+  return unwrap(await commands.deleteLegacyTranscriptionModels());
 }
 
 export async function transcribeMemo(audioPcmBase64: string): Promise<TranscribeMemoResult> {

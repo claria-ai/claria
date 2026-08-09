@@ -24,7 +24,7 @@ pub(crate) struct PendingReportTemplate {
 pub struct DesktopState {
     pub config: Arc<Mutex<Option<ClariaConfig>>>,
     pub sdk_config: Arc<Mutex<Option<CachedSdkConfig>>>,
-    pub whisper: Arc<std::sync::Mutex<Option<claria_whisper::WhisperModel>>>,
+    pub local_transcriber: Arc<std::sync::Mutex<claria_transcribe::LocalTranscriber>>,
     pub record_cache: Arc<RecordCache>,
     /// Parsed DOCX previews waiting for explicit user acceptance. Source bytes,
     /// filenames, and local paths are never retained.
@@ -36,7 +36,9 @@ impl Default for DesktopState {
         Self {
             config: Arc::new(Mutex::new(None)),
             sdk_config: Arc::new(Mutex::new(None)),
-            whisper: Arc::new(std::sync::Mutex::new(None)),
+            local_transcriber: Arc::new(std::sync::Mutex::new(
+                claria_transcribe::LocalTranscriber::default(),
+            )),
             record_cache: Arc::new(RecordCache::new()),
             pending_report_templates: Arc::new(Mutex::new(HashMap::new())),
         }

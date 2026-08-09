@@ -579,8 +579,34 @@ export function buildInitScript(
           // ── Provisioner state reset ──────────────────────────────────
           if (cmd === "reset_provisioner_state") return null;
 
-          // ── Whisper ──────────────────────────────────────────────────
-          if (cmd === "get_whisper_models") return [];
+          // ── Local transcription ──────────────────────────────────────
+          if (cmd === "get_local_transcription_status") {
+            return {
+              runtime_version: "0.2.0",
+              accelerated: false,
+              legacy_model_bytes: 0,
+              settings: {
+                settings_version: 1,
+                speech_model: "whisper_small_q8",
+                backend: "auto",
+                gpu_device: 0,
+                cpu_threads: 0,
+                kv_precision: "auto",
+                initial_prompt: "",
+                condition_on_previous_text: true,
+                max_previous_context_tokens: 223,
+                temperature: 0,
+                temperature_increment: 0.2,
+                compression_ratio_threshold: 2.4,
+                log_probability_threshold: -1,
+                no_speech_threshold: 0.6,
+                seed: 0,
+              },
+              models: [],
+              backends: [{ backend: "auto", label: "Automatic", available: true }],
+              devices: [],
+            };
+          }
 
           // ── Prompts ──────────────────────────────────────────────────
           if (cmd === "get_prompt") return "";

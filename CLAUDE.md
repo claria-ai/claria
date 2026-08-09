@@ -80,13 +80,10 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - `PRICING_VERSION` is stamped onto every captured `TurnUsage` so historical costs never shift
 
 **`claria-transcribe` — Audio transcription**
-- Wraps Amazon Transcribe API (start job, poll, fetch transcript)
-- Accepts `&SdkConfig` and an S3 URI, returns transcript text
-
-**`claria-whisper` — Local Whisper inference**
-- Pure-Rust inference via `candle` (candle-core, candle-nn, candle-transformers)
-- Loads HuggingFace-format models (`model.safetensors`, `config.json`, `tokenizer.json`)
-- Metal GPU acceleration via `metal` feature flag; CPU fallback at runtime
+- Runs imported recordings through Amazon Transcribe (standard or medical), including speaker and language options
+- Runs Record Memo locally through `transcribe.cpp` and curated GGUF Whisper models
+- Processes Record Memo PCM on-device and supports Metal acceleration with CPU fallback
+- Owns the stable transcript sidecar parser and renderer
 
 **`claria-audit` — Audit trail**
 - Structured audit event logging
@@ -138,7 +135,7 @@ Common gotchas:
 
 ## Config Versioning
 
-`config.json` carries a `config_version` field (u32). Current version: **1**.
+`config.json` carries a `config_version` field (u32). Current version: **7**.
 
 ### Rules
 - Every schema change to `ClariaConfig` (new field, renamed field, changed type) bumps `CURRENT_VERSION` in `config.rs`
@@ -199,7 +196,7 @@ It must match the `tauri = "=X.Y.Z"` pin in `crates/claria-desktop/Cargo.toml`. 
 Machine-local, configured in the user-level `~/.cargo/config.toml` — not committed, and CI does its own setup (`.github/workflows/ci.yml`). A fresh machine hits both of these from zero.
 
 - **sccache** is expected as the `rustc-wrapper` locally. Workspace crates reported as "non-cacheable, reason: incremental" in `sccache --show-stats` are healthy — sccache caches dependencies, not your own crates. Don't chase it.
-- **macOS `<cstdint>`**: `claria-whisper` fails to build via `esaxx-rs`/`tokenizers` when clang can't find `<cstdint>`. The fix is an `[env]` entry setting `CXXFLAGS = "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -I/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1"`. This is a Command Line Tools SDK quirk, not breakage you caused.
+- **transcribe.cpp toolchain**: local transcription is compiled from C/C++ source by Cargo and requires CMake plus a C++17 compiler. Metal is compiled only when the desktop's `metal` feature is enabled.
 - Remove your worktree once its PR merges: `git worktree remove <path>` then `git worktree prune`. Never bare `rm -rf` — it strands the admin entry in `.git/worktrees/`.
 - Don't `cargo clean` before switching worktrees. Each worktree owns its `target/` and cargo's fingerprinting handles staleness.
 

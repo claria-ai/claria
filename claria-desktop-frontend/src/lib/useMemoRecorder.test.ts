@@ -3,17 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   createTextRecordFile: vi.fn(),
-  getWhisperModels: vi.fn(),
+  getLocalTranscriptionStatus: vi.fn(),
   transcribeMemo: vi.fn(),
 }));
 
 vi.mock("./tauri", () => ({
   createTextRecordFile: mocks.createTextRecordFile,
-  getWhisperModels: mocks.getWhisperModels,
+  getLocalTranscriptionStatus: mocks.getLocalTranscriptionStatus,
   transcribeMemo: mocks.transcribeMemo,
 }));
 
-import { defaultMemoStamp, useMemoRecorder } from "./useMemoRecorder";
+import {
+  defaultMemoStamp,
+  isGpuBackend,
+  useMemoRecorder,
+} from "./useMemoRecorder";
 
 function installAudioHarness() {
   const stop = vi.fn();
@@ -63,17 +67,22 @@ function installAudioHarness() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.getWhisperModels.mockResolvedValue([
-    {
-      active: true,
-      tier: "large_v3_turbo",
-      gpu_accelerated: true,
-      dir_name: "whisper-large-v3-turbo",
-    },
-  ]);
+  mocks.getLocalTranscriptionStatus.mockResolvedValue({
+    accelerated: true,
+    models: [
+      {
+        active: true,
+        downloaded: true,
+        languages: ["multilingual", "en", "es"],
+        label: "Whisper Large v3 Turbo",
+      },
+    ],
+  });
   mocks.transcribeMemo.mockResolvedValue({
     text: "Captured memo",
     language: "en",
+    model_id: "whisper_small_q8",
+    backend: "MTL0",
   });
   mocks.createTextRecordFile.mockResolvedValue(undefined);
 });
@@ -108,6 +117,7 @@ describe("useMemoRecorder", () => {
     expect(mocks.transcribeMemo).toHaveBeenCalledOnce();
     expect(hook.result.current.transcript).toBe("Captured memo");
     expect(hook.result.current.detectedLanguage).toBe("en");
+    expect(hook.result.current.gpu).toBe(true);
   });
 
   it("releases the microphone and audio graph when its tab unmounts", async () => {
@@ -128,6 +138,17 @@ describe("useMemoRecorder", () => {
     expect(audio.source.disconnect).toHaveBeenCalledOnce();
     expect(audio.context.close).toHaveBeenCalledOnce();
     expect(audio.processor.onaudioprocess).toBeNull();
+  });
+});
+
+describe("isGpuBackend", () => {
+  it.each(["metal", "MTL0", "Vulkan0", "CUDA:0", "ROCm", "HIP0"])(
+    "recognizes %s",
+    (backend) => expect(isGpuBackend(backend)).toBe(true),
+  );
+
+  it.each(["CPU", "cpu_accel", "Accelerate"])("rejects %s", (backend) => {
+    expect(isGpuBackend(backend)).toBe(false);
   });
 });
 

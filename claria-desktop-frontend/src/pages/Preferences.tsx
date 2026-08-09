@@ -4,11 +4,11 @@ import {
   savePrompt,
   deletePrompt,
   setPreferredModel,
-  getWhisperModels,
-  downloadWhisperModel,
-  deleteWhisperModel,
-  deleteWhisperModelDir,
-  setActiveWhisperModel,
+  getLocalTranscriptionStatus,
+  downloadLocalModel,
+  deleteLocalModel,
+  deleteLegacyTranscriptionModels,
+  saveLocalTranscriptionSettings,
   loadConfig,
   setHourlyCostData,
   getCostAndUsage,
@@ -16,10 +16,15 @@ import {
   fetchCloudPreferences,
   type ChatModel,
   type ConfigInfo,
+  type LocalBackend,
+  type LocalKvPrecision,
+  type LocalModelId,
+  type LocalModelInfo,
+  type LocalTranscriptionSettings,
+  type LocalTranscriptionStatus,
+  type ModelDownloadProgress,
   type TranscriptionLanguage,
   type TranscriptionPreferences,
-  type WhisperModelInfo,
-  type WhisperModelTier,
 } from "../lib/tauri";
 import { costErrorMessage } from "../lib/costErrors";
 import { formatFileSize } from "../lib/format";
@@ -75,9 +80,9 @@ export default function Preferences({
          changes until restart. */}
       <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
         <p className="text-sm text-blue-900">
-          Preferences are stored in your S3 bucket so they sync across
-          computers. If you have Claria open on another machine, restart it to
-          pick up changes you save here.
+          Workflow defaults are stored in your S3 bucket so they sync across
+          computers. Local memo models, decoder controls, and hardware choices
+          are machine-local.
         </p>
       </div>
 
@@ -100,8 +105,8 @@ export default function Preferences({
           description="Instructions used when extracting text from uploaded PDF and DOCX files."
         />
 
-        {/* Memo Transcription section */}
-        <MemoTranscriptionSection />
+        {/* Machine-local transcribe.cpp models and inference controls */}
+        <LocalTranscriptionSection />
 
         {/* Cost Explorer section */}
         <CostExplorerSection />
@@ -319,236 +324,531 @@ function PromptEditor({
 }
 
 // ---------------------------------------------------------------------------
-// Memo Transcription model management
+// transcribe.cpp model management and machine-local inference settings
 // ---------------------------------------------------------------------------
 
-function MemoTranscriptionSection() {
-  const [models, setModels] = useState<WhisperModelInfo[]>([]);
+function LocalTranscriptionSection() {
+  const [status, setStatus] = useState<LocalTranscriptionStatus | null>(null);
+  const [draft, setDraft] = useState<LocalTranscriptionSettings | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busyTier, setBusyTier] = useState<WhisperModelTier | null>(null);
-  const [busyDir, setBusyDir] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [busyModel, setBusyModel] = useState<LocalModelId | null>(null);
+  const [removingLegacy, setRemovingLegacy] = useState(false);
+  const [progress, setProgress] = useState<ModelDownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const applyStatus = useCallback((next: LocalTranscriptionStatus) => {
+    setStatus(next);
+    setDraft(next.settings);
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setModels(await getWhisperModels());
+      applyStatus(await getLocalTranscriptionStatus());
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyStatus]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, [refresh]);
 
-  async function handleDownload(tier: WhisperModelTier) {
-    setBusyTier(tier);
+  async function persist(next: LocalTranscriptionSettings) {
+    setSaving(true);
     setError(null);
     try {
-      setModels(await downloadWhisperModel(tier));
+      applyStatus(await saveLocalTranscriptionSettings(next));
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusyTier(null);
+      setSaving(false);
     }
   }
 
-  async function handleDelete(tier: WhisperModelTier) {
-    setBusyTier(tier);
+  async function handleDownload(modelId: LocalModelId) {
+    setBusyModel(modelId);
+    setProgress(null);
     setError(null);
     try {
-      setModels(await deleteWhisperModel(tier));
+      applyStatus(
+        await downloadLocalModel(modelId, (next) => setProgress(next)),
+      );
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusyTier(null);
+      setBusyModel(null);
+      setProgress(null);
     }
   }
 
-  async function handleDeleteDir(dirName: string) {
-    setBusyDir(dirName);
+  async function handleDelete(modelId: LocalModelId) {
+    setBusyModel(modelId);
     setError(null);
     try {
-      setModels(await deleteWhisperModelDir(dirName));
+      applyStatus(await deleteLocalModel(modelId));
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusyDir(null);
+      setBusyModel(null);
     }
   }
 
-  async function handleActivate(tier: WhisperModelTier) {
+  async function handleLegacyDelete() {
+    setRemovingLegacy(true);
     setError(null);
     try {
-      setModels(await setActiveWhisperModel(tier));
+      applyStatus(await deleteLegacyTranscriptionModels());
     } catch (e) {
       setError(String(e));
+    } finally {
+      setRemovingLegacy(false);
     }
   }
 
-  const isBusy = busyTier !== null || busyDir !== null;
-  const knownModels = models.filter((m) => m.tier !== null);
-  const orphanModels = models.filter((m) => m.tier === null);
-  const hasActive = models.some((m) => m.active);
+  function activate(model: LocalModelInfo) {
+    if (!draft) return;
+    void persist({ ...draft, speech_model: model.id });
+  }
+
+  const dirty =
+    status != null &&
+    draft != null &&
+    JSON.stringify(status.settings) !== JSON.stringify(draft);
+  const ready =
+    status?.models.some((model) => model.active && model.downloaded) ?? false;
+  const selectedBackendKind =
+    draft?.backend === "cpu_accel" ? "accel" : draft?.backend;
+  const selectedDevice =
+    status && draft
+      ? draft.gpu_device > 0
+        ? status.devices.find((device) => device.index === draft.gpu_device)
+        : status.devices.find((device) =>
+            selectedBackendKind === "auto"
+              ? !["cpu", "accel"].includes(device.kind)
+              : device.kind === selectedBackendKind,
+          )
+      : undefined;
+  const maxDeviceIndex = Math.max(
+    0,
+    ...(status?.devices.map((device) => device.index ?? 0) ?? []),
+  );
 
   return (
-    <details className="border border-gray-200 rounded-lg group">
+    <details className="border border-gray-200 rounded-lg group" open>
       <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Memo Transcription</span>
-          {hasActive && (
-            <span className="text-xs text-green-600">Ready</span>
-          )}
+          <span className="font-medium text-gray-900">On-device Memo Transcription</span>
+          {ready && <span className="text-xs text-green-600">Ready</span>}
         </div>
         <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
           &#9656;
         </span>
       </summary>
-      <div className="border-t border-gray-100 p-4">
-        <p className="text-xs text-gray-400 mb-3">
-          Record audio memos and transcribe them to text notes using a local AI
-          model. No audio data leaves your computer. Download one or more models
-          below and activate the one you want to use.
+      <div className="border-t border-gray-100 p-4 space-y-5">
+        <p className="text-xs text-gray-500">
+          Record Memo uses transcribe.cpp and local GGUF models, so microphone
+          audio stays on this computer. Imported audio recordings continue to
+          use Amazon Transcribe. These model and hardware settings are
+          machine-local.
         </p>
 
         {loading ? (
           <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-            <Spinner />
-            <span>Checking model status...</span>
+            <Spinner /> <span>Checking local runtime and models...</span>
           </div>
-        ) : (
-          <div className="space-y-3">
-            {knownModels.map((m) => (
-              <div
-                key={m.dir_name}
-                className={`border rounded-lg p-3 ${
-                  m.active
-                    ? "border-green-300 bg-green-50/50"
-                    : "border-gray-200"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-sm text-gray-900">
-                        {m.label}
-                      </span>
-                      {m.active && (
-                        <span className="px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">
-                          Active
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      {m.description}
-                    </p>
-                    {m.downloaded && (
-                      <div className="text-xs text-gray-400 mt-1 space-y-0.5">
-                        {m.model_size_bytes != null && (
-                          <p>Size on disk: {formatFileSize(m.model_size_bytes)}</p>
-                        )}
-                        {m.model_path && (
-                          <p className="break-all">Location: {m.model_path}</p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {m.downloaded ? (
-                      <>
-                        {!m.active && m.tier && (
-                          <button
-                            onClick={() => handleActivate(m.tier!)}
-                            disabled={isBusy}
-                            className="px-2.5 py-1 text-xs text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
-                          >
-                            Activate
-                          </button>
-                        )}
-                        {m.tier && (
-                          <button
-                            onClick={() => handleDelete(m.tier!)}
-                            disabled={isBusy}
-                            className="px-2.5 py-1 text-xs text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
-                          >
-                            {busyTier === m.tier ? "Removing..." : "Remove"}
-                          </button>
-                        )}
-                      </>
-                    ) : m.tier ? (
-                      <button
-                        onClick={() => handleDownload(m.tier!)}
-                        disabled={isBusy}
-                        className="px-2.5 py-1 text-xs text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+        ) : status && draft ? (
+          <>
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 space-y-1">
+              <p>
+                transcribe.cpp {status.runtime_version} · {status.accelerated ? "GPU accelerated" : "CPU"}
+              </p>
+              {selectedDevice && (
+                <p>
+                  {selectedDevice.description || selectedDevice.name}
+                  {selectedDevice.memory_total > 0
+                    ? ` · ${formatFileSize(selectedDevice.memory_total)} memory`
+                    : ""}
+                </p>
+              )}
+            </div>
+
+            <ModelGroup
+              title="Memo speech model"
+              description="Used only for on-device Record Memo transcription."
+              models={status.models}
+              busyModel={busyModel}
+              progress={progress}
+              disabled={saving || removingLegacy || dirty}
+              onActivate={activate}
+              onDownload={handleDownload}
+              onDelete={handleDelete}
+            />
+
+            <div className="pt-1 border-t border-gray-100 space-y-3">
+              <h4 className="text-sm font-medium text-gray-700">Compute</h4>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs text-gray-600">
+                  Backend
+                  <select
+                    value={draft.backend}
+                    onChange={(event) =>
+                      setDraft({ ...draft, backend: event.target.value as LocalBackend })
+                    }
+                    className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg bg-white"
+                  >
+                    {status.backends.map((backend) => (
+                      <option
+                        key={backend.backend}
+                        value={backend.backend}
+                        disabled={!backend.available}
                       >
-                        {busyTier === m.tier ? (
-                          <>
-                            <Spinner />
-                            <span>Downloading...</span>
-                          </>
-                        ) : (
-                          `Download (${m.download_size})`
-                        )}
-                      </button>
-                    ) : null}
-                  </div>
+                        {backend.label}{backend.available ? "" : " (unavailable)"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-gray-600">
+                  Compute device index (0 = automatic)
+                  <input
+                    type="number"
+                    min={0}
+                    max={maxDeviceIndex}
+                    value={draft.gpu_device}
+                    onChange={(event) =>
+                      setDraft({ ...draft, gpu_device: Number(event.target.value) })
+                    }
+                    className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
+                  />
+                </label>
+                <label className="text-xs text-gray-600">
+                  CPU threads (0 = automatic)
+                  <input
+                    type="number"
+                    min={0}
+                    max={256}
+                    value={draft.cpu_threads}
+                    onChange={(event) =>
+                      setDraft({ ...draft, cpu_threads: Number(event.target.value) })
+                    }
+                    className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
+                  />
+                </label>
+                <label className="text-xs text-gray-600">
+                  K/V cache precision
+                  <select
+                    value={draft.kv_precision}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        kv_precision: event.target.value as LocalKvPrecision,
+                      })
+                    }
+                    className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg bg-white"
+                  >
+                    <option value="auto">Automatic</option>
+                    <option value="f16">F16 (lower memory)</option>
+                    <option value="f32">F32 (higher precision)</option>
+                  </select>
+                </label>
+                {status.devices.length > 0 && (
+                  <p className="col-span-2 text-xs text-gray-400">
+                    Runtime devices: {status.devices.map((device) =>
+                      `${device.index ?? "?"}: ${device.description || device.name}`,
+                    ).join(" · ")}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <details className="border border-gray-200 rounded-lg">
+              <summary className="p-3 cursor-pointer text-sm font-medium text-gray-700">
+                Advanced Whisper decoding
+              </summary>
+              <div className="border-t border-gray-100 p-3 space-y-3">
+                <label className="block text-xs text-gray-600">
+                  Initial prompt / vocabulary hint
+                  <textarea
+                    value={draft.initial_prompt}
+                    onChange={(event) =>
+                      setDraft({ ...draft, initial_prompt: event.target.value })
+                    }
+                    placeholder="Optional clinical terms, names, or context"
+                    className="mt-1 w-full min-h-20 px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
+                  />
+                </label>
+                <label className="flex items-start gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={draft.condition_on_previous_text}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        condition_on_previous_text: event.target.checked,
+                      })
+                    }
+                    className="mt-0.5"
+                  />
+                  Carry accepted text into each following 30-second window
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <NumberSetting
+                    label="Previous-context tokens"
+                    value={draft.max_previous_context_tokens}
+                    min={0}
+                    max={448}
+                    step={1}
+                    onChange={(value) =>
+                      setDraft({ ...draft, max_previous_context_tokens: value })
+                    }
+                  />
+                  <NumberSetting
+                    label="Temperature"
+                    value={draft.temperature}
+                    min={0}
+                    max={1}
+                    step={0.1}
+                    onChange={(value) => setDraft({ ...draft, temperature: value })}
+                  />
+                  <NumberSetting
+                    label="Temperature increment"
+                    value={draft.temperature_increment}
+                    min={0}
+                    max={1}
+                    step={0.1}
+                    onChange={(value) =>
+                      setDraft({ ...draft, temperature_increment: value })
+                    }
+                  />
+                  <NumberSetting
+                    label="Compression-ratio threshold"
+                    value={draft.compression_ratio_threshold}
+                    min={0.1}
+                    max={100}
+                    step={0.1}
+                    onChange={(value) =>
+                      setDraft({ ...draft, compression_ratio_threshold: value })
+                    }
+                  />
+                  <NumberSetting
+                    label="Log-probability threshold"
+                    value={draft.log_probability_threshold}
+                    min={-100}
+                    max={0}
+                    step={0.1}
+                    onChange={(value) =>
+                      setDraft({ ...draft, log_probability_threshold: value })
+                    }
+                  />
+                  <NumberSetting
+                    label="No-speech threshold"
+                    value={draft.no_speech_threshold}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={(value) =>
+                      setDraft({ ...draft, no_speech_threshold: value })
+                    }
+                  />
+                  <NumberSetting
+                    label="Sampling seed (0 = random)"
+                    value={draft.seed}
+                    min={0}
+                    max={4294967295}
+                    step={1}
+                    onChange={(value) => setDraft({ ...draft, seed: value })}
+                  />
                 </div>
               </div>
-            ))}
+            </details>
 
-            {orphanModels.length > 0 && (
-              <>
-                <p className="text-xs text-gray-500 mt-2 pt-2 border-t border-gray-100">
-                  Other models on disk
-                </p>
-                {orphanModels.map((m) => (
-                  <div
-                    key={m.dir_name}
-                    className="border border-amber-200 bg-amber-50/50 rounded-lg p-3"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex-1 min-w-0">
-                        <span className="font-medium text-sm text-gray-900">
-                          {m.label}
-                        </span>
-                        <p className="text-xs text-gray-500 mt-0.5">
-                          {m.description}
-                        </p>
-                        <div className="text-xs text-gray-400 mt-1 space-y-0.5">
-                          {m.model_size_bytes != null && (
-                            <p>Size on disk: {formatFileSize(m.model_size_bytes)}</p>
-                          )}
-                          {m.model_path && (
-                            <p className="break-all">Location: {m.model_path}</p>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => handleDeleteDir(m.dir_name)}
-                        disabled={isBusy}
-                        className="px-2.5 py-1 text-xs text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50 shrink-0"
-                      >
-                        {busyDir === m.dir_name ? "Removing..." : "Remove"}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </>
+            <div className="flex justify-end">
+              <button
+                onClick={() => void persist(draft)}
+                disabled={!dirty || saving || busyModel !== null}
+                className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              >
+                {saving ? "Saving..." : "Save local engine settings"}
+              </button>
+            </div>
+
+            {status.legacy_model_bytes > 0 && (
+              <div className="border border-amber-200 bg-amber-50 rounded-lg p-3 flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm text-amber-900">Legacy Candle model files</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    {formatFileSize(status.legacy_model_bytes)} from the previous
+                    safetensors engine is no longer used.
+                  </p>
+                </div>
+                <button
+                  onClick={() => void handleLegacyDelete()}
+                  disabled={removingLegacy || busyModel !== null || dirty}
+                  className="px-2.5 py-1 text-xs text-red-700 border border-red-300 rounded-lg hover:bg-red-50 disabled:opacity-50"
+                >
+                  {removingLegacy ? "Removing..." : "Remove legacy files"}
+                </button>
+              </div>
             )}
-          </div>
-        )}
+          </>
+        ) : null}
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
             <p className="text-red-800 text-sm">{error}</p>
+            <button
+              onClick={() => void refresh()}
+              className="mt-2 px-2.5 py-1 text-xs text-red-700 border border-red-300 rounded"
+            >
+              Try again
+            </button>
           </div>
         )}
       </div>
     </details>
+  );
+}
+
+function ModelGroup({
+  title,
+  description,
+  models,
+  busyModel,
+  progress,
+  disabled,
+  onActivate,
+  onDownload,
+  onDelete,
+}: {
+  title: string;
+  description: string;
+  models: LocalModelInfo[];
+  busyModel: LocalModelId | null;
+  progress: ModelDownloadProgress | null;
+  disabled: boolean;
+  onActivate: (model: LocalModelInfo) => void;
+  onDownload: (modelId: LocalModelId) => void;
+  onDelete: (modelId: LocalModelId) => void;
+}) {
+  return (
+    <div>
+      <h4 className="text-sm font-medium text-gray-700">{title}</h4>
+      <p className="text-xs text-gray-500 mt-0.5 mb-2">{description}</p>
+      <div className="space-y-2">
+        {models.map((model) => {
+          const modelProgress = progress?.model_id === model.id ? progress : null;
+          const percent = modelProgress
+            ? Math.min(
+                100,
+                Math.round(
+                  (modelProgress.downloaded_bytes / modelProgress.total_bytes) * 100,
+                ),
+              )
+            : 0;
+          return (
+            <div
+              key={model.id}
+              className={`border rounded-lg p-3 ${
+                model.active ? "border-green-300 bg-green-50/40" : "border-gray-200"
+              }`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-900">{model.label}</span>
+                    {model.active && (
+                      <span className="px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">
+                        Active
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5">{model.description}</p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {model.quantization} · {formatFileSize(model.download_size_bytes)} · {model.languages.join(", ")}
+                  </p>
+                  {model.model_path && (
+                    <p className="text-xs text-gray-400 mt-0.5 break-all">{model.model_path}</p>
+                  )}
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  {model.downloaded ? (
+                    <>
+                      {!model.active && (
+                        <button
+                          onClick={() => onActivate(model)}
+                          disabled={disabled || busyModel !== null}
+                          className="px-2.5 py-1 text-xs text-blue-600 border border-blue-300 rounded-lg disabled:opacity-50"
+                        >
+                          Activate
+                        </button>
+                      )}
+                      <button
+                        onClick={() => onDelete(model.id)}
+                        disabled={disabled || busyModel !== null}
+                        className="px-2.5 py-1 text-xs text-red-600 border border-red-300 rounded-lg disabled:opacity-50"
+                      >
+                        {busyModel === model.id ? "Removing..." : "Remove"}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => onDownload(model.id)}
+                      disabled={disabled || busyModel !== null}
+                      className="px-2.5 py-1 text-xs text-white bg-blue-600 rounded-lg disabled:opacity-50"
+                    >
+                      {busyModel === model.id ? `Downloading ${percent}%` : "Download"}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {modelProgress && (
+                <div className="mt-2 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-600 transition-[width]"
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function NumberSetting({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="text-xs text-gray-600">
+      {label}
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
+      />
+    </label>
   );
 }
 
@@ -836,7 +1136,7 @@ function TranscriptionSection() {
     <details className="border border-gray-200 rounded-lg group" open>
       <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Transcription</span>
+          <span className="font-medium text-gray-900">Imported Audio Transcription</span>
           {draft && (
             <span className="text-xs text-gray-400">
               {labelForLanguage(draft.default_language ?? "english")} ·{" "}
