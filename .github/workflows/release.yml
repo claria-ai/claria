@@ -56,12 +56,12 @@ jobs:
       # Must produce the same cargo fingerprints as tauri-action's `tauri build` below, or tag
       # builds recompile instead of hitting this cache: `tauri build` always enables
       # tauri/custom-protocol and, on macOS, exports MACOSX_DEPLOYMENT_TARGET from
-      # bundle.macOS.minimumSystemVersion (default 10.13) — cc-rs build scripts track that env
-      # var, so a mismatch rebuilds every native dep and its dependents (~60 crates, ~4 min).
+      # bundle.macOS.minimumSystemVersion — cc-rs build scripts track that env var, so a mismatch
+      # rebuilds every native dep and its dependents (~60 crates, ~4 min).
       - name: Build (warm cache)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         env:
-          MACOSX_DEPLOYMENT_TARGET: "10.13" # inert on Windows
+          MACOSX_DEPLOYMENT_TARGET: "11.0" # matches tauri.conf.json; inert on Windows
         run: cargo build --release -p claria-desktop --features tauri/custom-protocol ${{ matrix.args }}
 
       # --- Build & Release (tags only) ---
