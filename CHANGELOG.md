@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.21.0] — 2026-08-09
 
 - Document writer loop and history limits are configurable in Preferences with ten-times-higher defaults and explicit cost and runaway-loop warnings
 
