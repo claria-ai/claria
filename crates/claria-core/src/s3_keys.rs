@@ -84,6 +84,27 @@ pub fn report_call_usage(client_id: Uuid, attempt_id: Uuid, call_number: u32) ->
     )
 }
 
+pub fn report_template_source(client_id: Uuid, source_sha256: &str) -> String {
+    format!(
+        "{}templates/{source_sha256}.docx",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
+pub const WRITER_TEMPLATES_PREFIX: &str = "writer_templates/";
+
+pub fn writer_template_docx(template_id: Uuid) -> String {
+    format!("{WRITER_TEMPLATES_PREFIX}{template_id}.docx")
+}
+
+pub fn writer_template_metadata(template_id: Uuid) -> String {
+    format!("{WRITER_TEMPLATES_PREFIX}{template_id}.json")
+}
+
+pub fn writer_template_usage(template_id: Uuid) -> String {
+    format!("{WRITER_TEMPLATES_PREFIX}{template_id}.usage.json")
+}
+
 pub fn client_lifecycle(client_id: Uuid) -> String {
     format!("_state/client-lifecycle/{client_id}.json")
 }

@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{error::CoreError, models::turn_usage::TurnUsage};
 
-pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 2;
+pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 3;
 pub const MAX_REPORT_SECTIONS: usize = 100;
 pub const MAX_SECTION_BLOCKS: usize = 200;
 pub const MAX_TABLE_ROWS: usize = 200;
@@ -25,6 +25,7 @@ pub const MAX_REPORT_TEXT_CHARACTERS: usize = 500_000;
 pub const MAX_PROPOSAL_OPERATIONS: usize = 25;
 pub const MAX_REPORT_TURNS: usize = 200;
 pub const MAX_REPORT_PROTOCOL_BYTES: usize = 512 * 1024;
+pub const MAX_REPORT_SESSION_NAME_CHARACTERS: usize = 120;
 
 const MAX_TITLE_CHARACTERS: usize = 200;
 const MAX_HEADING_CHARACTERS: usize = 200;
@@ -38,10 +39,13 @@ pub struct ReportWorkspace {
     pub schema_version: u32,
     pub report_id: Uuid,
     pub client_id: Uuid,
+    #[serde(default = "default_report_session_name")]
+    pub session_name: String,
     pub draft: ReportDraft,
     pub session: ReportSession,
     /// Provenance and review state for the most recently imported DOCX
-    /// template. The original file, filename, and local path are never stored.
+    /// template. The source's bytes and local path are never copied into the
+    /// client workspace; managed template sources live under `writer_templates/`.
     #[serde(default)]
     pub template_import: Option<ReportTemplateImport>,
     pub created_at: Timestamp,
@@ -276,6 +280,7 @@ impl ReportWorkspace {
             schema_version: REPORT_WORKSPACE_SCHEMA_VERSION,
             report_id: Uuid::new_v4(),
             client_id,
+            session_name: default_report_session_name(),
             draft: ReportDraft {
                 revision: 0,
                 content: ReportContent {
@@ -312,11 +317,28 @@ impl ReportWorkspace {
         if self.created_at > self.updated_at {
             return Err(invalid("workspace updated_at precedes created_at"));
         }
+        validate_nonempty_text(
+            "writer session name",
+            &self.session_name,
+            MAX_REPORT_SESSION_NAME_CHARACTERS,
+        )?;
         self.draft.validate()?;
         self.session.validate(self)?;
         if let Some(template) = &self.template_import {
             validate_template_import(template, self)?;
         }
+        Ok(())
+    }
+
+    pub fn rename_session(&mut self, name: &str, now: Timestamp) -> Result<(), CoreError> {
+        let name = name.trim();
+        validate_nonempty_text(
+            "writer session name",
+            name,
+            MAX_REPORT_SESSION_NAME_CHARACTERS,
+        )?;
+        self.session_name = name.to_string();
+        self.updated_at = now;
         Ok(())
     }
 
@@ -549,23 +571,25 @@ impl ReportSession {
 /// presented as accepted state.
 pub fn decode_report_workspace(bytes: &[u8]) -> Result<ReportWorkspace, CoreError> {
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
-    // Version 1 predates DOCX-template provenance and structured table blocks.
-    // The new field is optional and the old report variants remain unchanged,
-    // so migration is a deterministic schema stamp rather than a content
-    // rewrite.
-    if value
+    let schema_version = value
         .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        == Some(1)
-    {
+        .and_then(serde_json::Value::as_u64);
+    // Version 1 predates DOCX-template provenance and structured table blocks.
+    if schema_version == Some(1) && value.get("template_import").is_none() {
+        value["template_import"] = serde_json::Value::Null;
+    }
+    // Versions 1 and 2 predate user-facing writer session names.
+    if schema_version.is_some_and(|version| version <= 2) {
+        value["session_name"] = serde_json::json!(default_report_session_name());
         value["schema_version"] = serde_json::json!(REPORT_WORKSPACE_SCHEMA_VERSION);
-        if value.get("template_import").is_none() {
-            value["template_import"] = serde_json::Value::Null;
-        }
     }
     let workspace: ReportWorkspace = serde_json::from_value(value)?;
     workspace.validate()?;
     Ok(workspace)
+}
+
+fn default_report_session_name() -> String {
+    "Writer Session (1)".to_string()
 }
 
 pub fn validate_report_content(content: &ReportContent) -> Result<(), CoreError> {

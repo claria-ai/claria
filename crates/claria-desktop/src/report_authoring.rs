@@ -25,6 +25,7 @@ pub struct ReportWorkspaceView {
     pub schema_version: u32,
     pub report_id: String,
     pub client_id: String,
+    pub session_name: String,
     pub draft: ReportDraftView,
     pub turns: Vec<ReportAuthoringTurnView>,
     pub pending_proposal: Option<ReportProposalView>,
@@ -64,6 +65,7 @@ impl From<ReportExportStatus> for ReportExportStatusView {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct EditorHistoryEntry {
     pub report_id: String,
+    pub name: String,
     pub title: String,
     pub revision: u64,
     pub turn_count: u32,
@@ -145,6 +147,27 @@ pub struct ReportTemplateStatsView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct WriterTemplateView {
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    pub uploaded_at: String,
+    pub use_count: u64,
+}
+
+pub fn writer_template_view(
+    template: claria_report_authoring::writer_templates::WriterTemplateSummary,
+) -> WriterTemplateView {
+    WriterTemplateView {
+        id: template.metadata.id.to_string(),
+        name: template.metadata.name,
+        size: template.metadata.size,
+        uploaded_at: template.metadata.uploaded_at.to_string(),
+        use_count: template.use_count,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ReportAuthoringTurnView {
     pub id: String,
     pub model_id: String,
@@ -165,6 +188,48 @@ pub struct ReportContextReadView {
     pub returned_characters: u64,
     pub total_characters: Option<u64>,
     pub read_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReportTurnProgressView {
+    ModelCallStarted {
+        call_number: u32,
+    },
+    ToolStarted {
+        name: String,
+        context: Option<String>,
+    },
+    ToolFinished {
+        name: String,
+        context: Option<String>,
+        status: ReportToolActivityStatus,
+    },
+}
+
+impl From<claria_report_authoring::ReportTurnProgress> for ReportTurnProgressView {
+    fn from(value: claria_report_authoring::ReportTurnProgress) -> Self {
+        match value {
+            claria_report_authoring::ReportTurnProgress::ModelCallStarted { call_number } => {
+                Self::ModelCallStarted { call_number }
+            }
+            claria_report_authoring::ReportTurnProgress::ToolStarted { name, context } => {
+                Self::ToolStarted { name, context }
+            }
+            claria_report_authoring::ReportTurnProgress::ToolFinished {
+                name,
+                context,
+                status,
+            } => Self::ToolFinished {
+                name,
+                context,
+                status: match status {
+                    ReportToolResultStatus::Success => ReportToolActivityStatus::Succeeded,
+                    ReportToolResultStatus::Error => ReportToolActivityStatus::Failed,
+                },
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -374,6 +439,7 @@ pub fn workspace_view(workspace: &ReportWorkspace) -> ReportWorkspaceView {
         schema_version: workspace.schema_version,
         report_id: workspace.report_id.to_string(),
         client_id: workspace.client_id.to_string(),
+        session_name: workspace.session_name.clone(),
         draft: draft_view(&workspace.draft),
         turns: workspace.session.turns.iter().map(turn_view).collect(),
         pending_proposal: workspace
@@ -622,6 +688,7 @@ fn resolution_view(resolution: &ReportProposalResolution) -> ReportProposalResol
 pub fn editor_history_entry(workspace: &ReportWorkspace) -> EditorHistoryEntry {
     EditorHistoryEntry {
         report_id: workspace.report_id.to_string(),
+        name: workspace.session_name.clone(),
         title: workspace.draft.content.title.clone(),
         revision: workspace.draft.revision,
         turn_count: u32::try_from(workspace.session.turns.len()).unwrap_or(u32::MAX),

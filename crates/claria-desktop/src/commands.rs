@@ -6,11 +6,13 @@ use claria_desktop::config::{
     self, ClariaConfig, ConfigInfo, CredentialSource, ReportAuthoringPreferences,
     SyncedPreferences, TranscriptionPreferences,
 };
-use claria_provisioner::account_setup::{
+use claria_provisioner::{
+    Action, CredentialScope, PlanEntry,
+    account_setup::{
     AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
     StepStatus,
+    },
 };
-use claria_provisioner::{Action, CredentialScope, PlanEntry};
 
 use claria_desktop::console::{ConsoleBuffer, ConsoleEntry};
 
@@ -59,7 +61,8 @@ pub use claria_desktop::{
     records::{ClientNameUpdate, ClientRecordDetails, ClientSummary},
     report_authoring::{
         EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportExportResult,
-        ReportExportStatusView, ReportProposalDecision, ReportTurnResponse, ReportWorkspaceView,
+        ReportExportStatusView, ReportProposalDecision, ReportTurnProgressView, ReportTurnResponse,
+        ReportWorkspaceView,
     },
 };
 
@@ -81,6 +84,7 @@ pub enum ChatRole {
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ChatResponse {
     pub chat_id: String,
+    pub chat_name: String,
     pub content: String,
     pub usage: claria_core::models::turn_usage::TurnUsage,
 }
@@ -109,9 +113,21 @@ pub struct ChatHistoryDetailMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ChatHistoryDetail {
     pub chat_id: String,
+    pub name: String,
     pub model_id: String,
     pub messages: Vec<ChatHistoryDetailMessage>,
     pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Lightweight persisted-chat row for the Record screen history folder.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ChatHistorySummary {
+    pub chat_id: String,
+    pub filename: String,
+    pub name: String,
+    pub size: u64,
+    pub updated_at: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -126,9 +142,7 @@ pub async fn has_config() -> Result<bool, String> {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn load_config(
-    state: State<'_, DesktopState>,
-) -> Result<ConfigInfo, String> {
+pub async fn load_config(state: State<'_, DesktopState>) -> Result<ConfigInfo, String> {
     let mut cfg = config::load_config().map_err(|e| e.to_string())?;
 
     // Backfill account_id for configs saved before this field existed.
@@ -297,9 +311,7 @@ pub async fn save_preferences(
 /// the latest cloud state without an app restart.
 #[tauri::command]
 #[specta::specta]
-pub async fn fetch_cloud_preferences(
-    state: State<'_, DesktopState>,
-) -> Result<ConfigInfo, String> {
+pub async fn fetch_cloud_preferences(state: State<'_, DesktopState>) -> Result<ConfigInfo, String> {
     let (mut cfg, sdk_config) = load_sdk_config(&state).await?;
     if let Some(synced) = read_cloud_preferences(&sdk_config, &cfg).await? {
         synced.apply_to_config(&mut cfg);
@@ -345,9 +357,7 @@ pub async fn save_config(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn delete_config(
-    state: State<'_, DesktopState>,
-) -> Result<(), String> {
+pub async fn delete_config(state: State<'_, DesktopState>) -> Result<(), String> {
     config::delete_config().map_err(|e| e.to_string())?;
 
     let mut guard = state.config.lock().await;
@@ -392,8 +402,7 @@ pub async fn assess_credentials(
     region: String,
     credentials: CredentialSource,
 ) -> Result<CredentialAssessment, String> {
-    let sdk_config =
-        claria_desktop::aws::build_aws_config(&region, &credentials).await;
+    let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
     claria_provisioner::assess_credentials(&sdk_config)
         .await
         .map_err(|e| e.to_string())
@@ -419,8 +428,7 @@ pub async fn assume_role(
     account_id: String,
     role_name: String,
 ) -> Result<AssumeRoleResult, String> {
-    let sdk_config =
-        claria_desktop::aws::build_aws_config(&region, &credentials).await;
+    let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
 
     let role_arn = claria_provisioner::build_role_arn(&account_id, &role_name);
 
@@ -450,8 +458,7 @@ pub async fn list_user_access_keys(
     region: String,
     credentials: CredentialSource,
 ) -> Result<Vec<AccessKeyInfo>, String> {
-    let sdk_config =
-        claria_desktop::aws::build_aws_config(&region, &credentials).await;
+    let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
     claria_provisioner::list_user_access_keys(&sdk_config)
         .await
         .map_err(|e| e.to_string())
@@ -468,8 +475,7 @@ pub async fn delete_user_access_key(
     credentials: CredentialSource,
     access_key_id: String,
 ) -> Result<(), String> {
-    let sdk_config =
-        claria_desktop::aws::build_aws_config(&region, &credentials).await;
+    let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
     claria_provisioner::delete_user_access_key(&sdk_config, &access_key_id)
         .await
         .map_err(|e| e.to_string())
@@ -588,7 +594,10 @@ pub async fn bootstrap_iam_user(
                     } else {
                         let mut parts = Vec::new();
                         if !summary.newly_accepted.is_empty() {
-                            parts.push(format!("Accepted {} model(s)", summary.newly_accepted.len()));
+                        parts.push(format!(
+                            "Accepted {} model(s)",
+                            summary.newly_accepted.len()
+                        ));
                         }
                         if !summary.failed.is_empty() {
                             parts.push(format!("{} failed", summary.failed.len()));
@@ -596,7 +605,10 @@ pub async fn bootstrap_iam_user(
                         parts.join(", ")
                     };
 
-                    let step = result.steps.iter_mut().rfind(|s| s.name == "accept_model_agreements");
+                let step = result
+                    .steps
+                    .iter_mut()
+                    .rfind(|s| s.name == "accept_model_agreements");
                     if let Some(s) = step {
                         s.status = if summary.failed.is_empty() {
                             StepStatus::Succeeded
@@ -610,10 +622,15 @@ pub async fn bootstrap_iam_user(
                 Err(e) => {
                     // Non-fatal: agreement acceptance failure shouldn't block
                     // the user from proceeding. They can accept later from chat.
-                    let step = result.steps.iter_mut().rfind(|s| s.name == "accept_model_agreements");
+                let step = result
+                    .steps
+                    .iter_mut()
+                    .rfind(|s| s.name == "accept_model_agreements");
                     if let Some(s) = step {
                         s.status = StepStatus::Failed;
-                        s.detail = Some(format!("Non-fatal: {e}. You can accept model agreements later from the chat screen."));
+                    s.detail = Some(format!(
+                        "Non-fatal: {e}. You can accept model agreements later from the chat screen."
+                    ));
                     }
                 }
             }
@@ -666,11 +683,7 @@ pub async fn escalate_iam_policy(
         status: "in_progress".into(),
     });
 
-    claria_provisioner::update_iam_policy(
-        &elevated_config,
-        &cfg.system_name,
-        &cfg.account_id,
-    )
+    claria_provisioner::update_iam_policy(&elevated_config, &cfg.system_name, &cfg.account_id)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -732,8 +745,7 @@ async fn cached_sdk_config(
         return cached.sdk_config.clone();
     }
 
-    let sdk_config =
-        claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
+    let sdk_config = claria_desktop::aws::build_aws_config(&cfg.region, &cfg.credentials).await;
     *sdk_guard = Some(crate::state::CachedSdkConfig {
         region: cfg.region.clone(),
         credentials: cfg.credentials.clone(),
@@ -904,17 +916,11 @@ pub async fn plan(
     on_progress: tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<Vec<PlanEntry>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let manifest = claria_provisioner::build_manifest(
-        &cfg.account_id,
-        &cfg.system_name,
-        &cfg.region,
-    );
+    let manifest =
+        claria_provisioner::build_manifest(&cfg.account_id, &cfg.system_name, &cfg.region);
     let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
-    let persistence = claria_provisioner::build_persistence(
-        &sdk_config,
-        &cfg.system_name,
-        &cfg.account_id,
-    )
+    let persistence =
+        claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
     .map_err(|e| e.to_string())?;
     let prov_state = persistence.load().await.map_err(|e| e.to_string())?;
 
@@ -933,27 +939,26 @@ pub async fn apply(
     on_progress: tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<Vec<PlanEntry>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let manifest = claria_provisioner::build_manifest(
-        &cfg.account_id,
-        &cfg.system_name,
-        &cfg.region,
-    );
+    let manifest =
+        claria_provisioner::build_manifest(&cfg.account_id, &cfg.system_name, &cfg.region);
     let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
-    let persistence = claria_provisioner::build_persistence(
-        &sdk_config,
-        &cfg.system_name,
-        &cfg.account_id,
-    )
+    let persistence =
+        claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
     .map_err(|e| e.to_string())?;
 
     let mut prov_state = persistence.load().await.map_err(|e| e.to_string())?;
 
     // Scan first (with progress).
-    let entries =
-        scan_with_progress(&syncers, &prov_state, &on_progress).await?;
+    let entries = scan_with_progress(&syncers, &prov_state, &on_progress).await?;
 
     // Execute (with progress).
-    execute_with_progress(&entries, &syncers, &mut prov_state, &persistence, &on_progress)
+    execute_with_progress(
+        &entries,
+        &syncers,
+        &mut prov_state,
+        &persistence,
+        &on_progress,
+    )
         .await?;
 
     // Re-scan to show updated state (with progress).
@@ -963,21 +968,13 @@ pub async fn apply(
 /// Destroy all managed resources. Returns nothing on success.
 #[tauri::command]
 #[specta::specta]
-pub async fn destroy(
-    state: State<'_, DesktopState>,
-) -> Result<(), String> {
+pub async fn destroy(state: State<'_, DesktopState>) -> Result<(), String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let manifest = claria_provisioner::build_manifest(
-        &cfg.account_id,
-        &cfg.system_name,
-        &cfg.region,
-    );
+    let manifest =
+        claria_provisioner::build_manifest(&cfg.account_id, &cfg.system_name, &cfg.region);
     let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
-    let persistence = claria_provisioner::build_persistence(
-        &sdk_config,
-        &cfg.system_name,
-        &cfg.account_id,
-    )
+    let persistence =
+        claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
     .map_err(|e| e.to_string())?;
 
     let mut prov_state = persistence.load().await.map_err(|e| e.to_string())?;
@@ -993,15 +990,10 @@ pub async fn destroy(
 /// AWS resources are not affected — the next scan will re-discover them.
 #[tauri::command]
 #[specta::specta]
-pub async fn reset_provisioner_state(
-    state: State<'_, DesktopState>,
-) -> Result<(), String> {
+pub async fn reset_provisioner_state(state: State<'_, DesktopState>) -> Result<(), String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
-    let persistence = claria_provisioner::build_persistence(
-        &sdk_config,
-        &cfg.system_name,
-        &cfg.account_id,
-    )
+    let persistence =
+        claria_provisioner::build_persistence(&sdk_config, &cfg.system_name, &cfg.account_id)
     .map_err(|e| e.to_string())?;
     persistence.delete().await.map_err(|e| e.to_string())
 }
@@ -1067,19 +1059,14 @@ pub async fn provision_scan(
     credentials: CredentialSource,
     on_progress: tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<ProvisionScanResult, String> {
-    let sdk_config =
-        claria_desktop::aws::build_aws_config(&region, &credentials).await;
+    let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
 
     // Resolve account ID via STS.
     let identity = claria_provisioner::account_setup::get_caller_identity(&sdk_config)
         .await
         .map_err(|e| e.to_string())?;
 
-    let manifest = claria_provisioner::build_manifest(
-        &identity.account_id,
-        &system_name,
-        &region,
-    );
+    let manifest = claria_provisioner::build_manifest(&identity.account_id, &system_name, &region);
     let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
 
     // Try to load state; fall back to empty state if persistence isn't set up yet.
@@ -1139,43 +1126,36 @@ pub async fn provision_apply(
     elevated_credentials: Option<CredentialSource>,
     on_progress: tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<ProvisionApplyOutcome, String> {
-    let sdk_config =
-        claria_desktop::aws::build_aws_config(&region, &credentials).await;
+    let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
 
     let identity = claria_provisioner::account_setup::get_caller_identity(&sdk_config)
         .await
         .map_err(|e| e.to_string())?;
 
-    let manifest = claria_provisioner::build_manifest(
-        &identity.account_id,
-        &system_name,
-        &region,
-    );
+    let manifest = claria_provisioner::build_manifest(&identity.account_id, &system_name, &region);
 
     // We need persistence that can work even before the S3 bucket exists.
     // For local-only state during bootstrap, build persistence with the
     // elevated config (which can at least do local writes).
-    let persistence = claria_provisioner::build_persistence(
-        &sdk_config,
-        &system_name,
-        &identity.account_id,
-    )
+    let persistence =
+        claria_provisioner::build_persistence(&sdk_config, &system_name, &identity.account_id)
     .map_err(|e| e.to_string())?;
 
-    let mut prov_state = persistence.load().await.unwrap_or_else(|_| {
-        claria_provisioner::ProvisionerState {
+    let mut prov_state =
+        persistence
+            .load()
+            .await
+            .unwrap_or_else(|_| claria_provisioner::ProvisionerState {
             resources: Default::default(),
             region: region.clone(),
             bucket: claria_core::s3_keys::bucket_name(&identity.account_id, &system_name),
-        }
     });
 
     // ── Phase 1: Elevated resources ──────────────────────────────────────
     // If we have elevated credentials, build elevated syncers and execute.
 
     if let Some(ref elevated_creds) = elevated_credentials {
-        let elevated_config =
-            claria_desktop::aws::build_aws_config(&region, elevated_creds).await;
+        let elevated_config = claria_desktop::aws::build_aws_config(&region, elevated_creds).await;
 
         let elevated_syncers = claria_provisioner::build_syncers(
             &elevated_config,
@@ -1184,12 +1164,8 @@ pub async fn provision_apply(
         );
 
         // Scan elevated resources.
-        let elevated_entries = scan_with_progress(
-            &elevated_syncers,
-            &prov_state,
-            &on_progress,
-        )
-        .await?;
+        let elevated_entries =
+            scan_with_progress(&elevated_syncers, &prov_state, &on_progress).await?;
 
         let has_elevated_work = elevated_entries
             .iter()
@@ -1216,8 +1192,7 @@ pub async fn provision_apply(
         let elevated_creds = elevated_credentials
             .as_ref()
             .ok_or("Elevated credentials required to create access key for new IAM user")?;
-        let elevated_config =
-            claria_desktop::aws::build_aws_config(&region, elevated_creds).await;
+        let elevated_config = claria_desktop::aws::build_aws_config(&region, elevated_creds).await;
 
         let _ = on_progress.send(ProvisionerProgress::EscalationStep {
             label: "Creating access key for claria-admin".into(),
@@ -1328,16 +1303,11 @@ pub async fn provision_apply(
         Some(CredentialScope::Regular),
     );
 
-    let regular_entries = scan_with_progress(
-        &regular_syncers,
-        &prov_state,
-        &on_progress,
-    )
-    .await?;
+    let regular_entries = scan_with_progress(&regular_syncers, &prov_state, &on_progress).await?;
 
-    let has_regular_work = regular_entries
-        .iter()
-        .any(|e| e.action == Action::Create || e.action == Action::Modify || e.action == Action::Delete);
+    let has_regular_work = regular_entries.iter().any(|e| {
+        e.action == Action::Create || e.action == Action::Modify || e.action == Action::Delete
+    });
 
     if has_regular_work {
         // Rebuild persistence with regular config (S3 bucket should exist now
@@ -1362,11 +1332,7 @@ pub async fn provision_apply(
     // ── Final re-scan ────────────────────────────────────────────────────
     // Build all syncers with regular config for the final scan.
 
-    let all_syncers = claria_provisioner::build_syncers(
-        &regular_config,
-        &manifest,
-        None,
-    );
+    let all_syncers = claria_provisioner::build_syncers(&regular_config, &manifest, None);
 
     let entries = scan_with_progress(&all_syncers, &prov_state, &on_progress).await?;
 
@@ -1403,9 +1369,7 @@ pub(crate) async fn record_audit(
 #[tauri::command]
 #[specta::specta]
 #[tracing::instrument(level = "trace", skip_all, fields(count = tracing::field::Empty))]
-pub async fn list_clients(
-    state: State<'_, DesktopState>,
-) -> Result<Vec<ClientSummary>, String> {
+pub async fn list_clients(state: State<'_, DesktopState>) -> Result<Vec<ClientSummary>, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
@@ -1562,6 +1526,45 @@ pub async fn list_editor_history(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn rename_report_session(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+    name: String,
+) -> Result<ReportWorkspaceView, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let report_id = report_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let workspace =
+        claria_report_authoring::rename_report_session(&s3, &bucket, client_id, report_id, &name)
+            .await
+            .map_err(|error| error.to_string())?;
+    let workspace = claria_desktop::report_authoring::workspace_view(&workspace);
+
+    record_audit(
+        &sdk_config,
+        &cfg,
+        claria_audit::events::AuditEvent::new(
+            "report_session_renamed",
+            "report",
+            workspace.report_id.clone(),
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({ "client_id": client_id.to_string() })),
+    )
+    .await;
+
+    Ok(workspace)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn save_report_draft(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -1616,6 +1619,7 @@ pub async fn send_report_message(
     model_id: String,
     instruction: String,
     references: Vec<ReportBlockReferenceInput>,
+    on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
 ) -> Result<ReportTurnResponse, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
@@ -1628,6 +1632,9 @@ pub async fn send_report_message(
         .map(ReportBlockReferenceInput::into_domain)
         .collect::<Result<Vec<_>, _>>()?;
     let limits = cfg.report_authoring.limits()?;
+    let progress = |event: claria_report_authoring::ReportTurnProgress| {
+        let _ = on_progress.send(event.into());
+    };
     let result = claria_report_authoring::send_report_message(
         &sdk_config,
         &s3,
@@ -1637,7 +1644,8 @@ pub async fn send_report_message(
         &model_id,
         claria_report_authoring::ReportMessageRequest::new(&instruction)
             .with_references(&references)
-            .with_limits(limits),
+            .with_limits(limits)
+            .with_progress(&progress),
     )
     .await;
 
@@ -1787,7 +1795,7 @@ pub async fn export_report_docx(
     let report_id = report_id
         .parse::<uuid::Uuid>()
         .map_err(|error| error.to_string())?;
-    let draft = claria_report_authoring::load_export_snapshot(
+    let snapshot = claria_report_authoring::load_export_snapshot(
         &s3,
         &bucket,
         client_id,
@@ -1796,7 +1804,13 @@ pub async fn export_report_docx(
     )
     .await
     .map_err(|error| error.to_string())?;
-    let bytes = claria_docx::render_report(&draft).map_err(|error| error.to_string())?;
+    let bytes = if let Some(template) = snapshot.template_source.as_deref() {
+        claria_docx::render_report_with_template(template, &snapshot.draft)
+    } else {
+        claria_docx::render_report(&snapshot.draft)
+    }
+    .map_err(|error| error.to_string())?;
+    let draft = snapshot.draft;
     let filename = claria_report_authoring::suggested_docx_filename(&draft.content.title);
     // Use the asynchronous dialog implementation. In particular, macOS must
     // schedule NSSavePanel work on the main thread; opening the synchronous
@@ -2130,9 +2144,7 @@ pub async fn upload_record_file(
                 );
             }
         }
-    } else if let Some(media_format) =
-        claria_transcribe::media_format_for_extension(&extension)
-    {
+    } else if let Some(media_format) = claria_transcribe::media_format_for_extension(&extension) {
         let sidecar_key = format!("{key}.text");
         // Drag-drop uses saved preferences as-is. The wizard's separate
         // command (`upload_record_file_with_options`) is the override path.
@@ -2383,8 +2395,13 @@ pub async fn upload_record_file_with_options(
     let options = build_transcribe_options(&cfg.transcription, overrides);
 
     let sidecar_key = format!("{key}.text");
-    let mut result =
-        claria_transcribe::transcribe_audio_with_options(&sdk_config, &bucket, &key, media_format, &options)
+    let mut result = claria_transcribe::transcribe_audio_with_options(
+        &sdk_config,
+        &bucket,
+        &key,
+        media_format,
+        &options,
+    )
             .await
             .map_err(|e| e.to_string())?;
 
@@ -2611,7 +2628,13 @@ pub async fn update_text_record_file(
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     let key = claria_core::s3_keys::client_record_file(id, &filename);
-    claria_storage::objects::put_object(&s3, &bucket, &key, content.into_bytes(), Some("text/plain"))
+    claria_storage::objects::put_object(
+        &s3,
+        &bucket,
+        &key,
+        content.into_bytes(),
+        Some("text/plain"),
+    )
         .await
         .map_err(|e| e.to_string())?;
 
@@ -2746,9 +2769,7 @@ pub async fn extract_record_file(
         .await;
 
         text
-    } else if let Some(media_format) =
-        claria_transcribe::media_format_for_extension(&extension)
-    {
+    } else if let Some(media_format) = claria_transcribe::media_format_for_extension(&extension) {
         // Audio transcription using saved preferences (re-extract path).
         let options = build_transcribe_options(&cfg.transcription, None);
         let mut result = claria_transcribe::transcribe_audio_with_options(
@@ -2781,17 +2802,12 @@ pub async fn extract_record_file(
 
         text
     } else {
-        return Err(format!(
-            "unsupported file type for extraction: {filename}"
-        ));
+        return Err(format!("unsupported file type for extraction: {filename}"));
     };
 
     tracing::info!(client_id = %id, filename, "re-extracted text for record file");
 
-    Ok(RecordContext {
-        filename,
-        text,
-    })
+    Ok(RecordContext { filename, text })
 }
 
 /// Helper: load all record context for a client, converting to bedrock types.
@@ -2837,7 +2853,9 @@ organize and document the intake information.";
 ///
 /// Returns `(s3_key, legacy_key, default_text)`. The `legacy_key` is `Some`
 /// only for the system prompt which was previously stored at the bucket root.
-fn resolve_prompt(name: &str) -> Result<(&'static str, Option<&'static str>, &'static str), String> {
+fn resolve_prompt(
+    name: &str,
+) -> Result<(&'static str, Option<&'static str>, &'static str), String> {
     match name {
         "system-prompt" => Ok((
             claria_core::s3_keys::SYSTEM_PROMPT,
@@ -2891,9 +2909,7 @@ async fn load_prompt(
                 }
 
                 // Remove the legacy key.
-                if let Err(e) =
-                    claria_storage::objects::delete_object(s3, bucket, legacy).await
-                {
+                if let Err(e) = claria_storage::objects::delete_object(s3, bucket, legacy).await {
                     tracing::warn!(legacy, error = %e, "failed to delete legacy prompt after migration");
                 }
 
@@ -2914,9 +2930,7 @@ async fn load_prompt(
 /// those matching Anthropic Claude models.
 #[tauri::command]
 #[specta::specta]
-pub async fn list_chat_models(
-    state: State<'_, DesktopState>,
-) -> Result<Vec<ChatModel>, String> {
+pub async fn list_chat_models(state: State<'_, DesktopState>) -> Result<Vec<ChatModel>, String> {
     let (_cfg, sdk_config) = load_sdk_config(&state).await?;
     let models = claria_bedrock::chat::list_chat_models(&sdk_config)
         .await
@@ -2929,6 +2943,149 @@ pub async fn list_chat_models(
             name: m.name,
         })
         .collect())
+}
+
+const MAX_CHAT_HISTORY_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_CHAT_NAME_CHARACTERS: usize = 120;
+
+fn normalized_chat_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Enter a chat name.".to_string());
+    }
+    if name.chars().count() > MAX_CHAT_NAME_CHARACTERS {
+        return Err(format!(
+            "Chat names may contain at most {MAX_CHAT_NAME_CHARACTERS} characters."
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return Err("Chat names cannot contain control characters.".to_string());
+    }
+    Ok(name.to_string())
+}
+
+async fn chat_history_rows(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    client_id: uuid::Uuid,
+) -> Result<Vec<(claria_core::models::chat_history::ChatHistory, u64)>, String> {
+    let prefix = claria_core::s3_keys::chat_history_prefix(client_id);
+    let objects = claria_storage::objects::list_objects_with_metadata(s3, bucket, &prefix)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut rows = Vec::new();
+    for object in objects {
+        if !object.key.ends_with(".json") {
+            continue;
+        }
+        let output = claria_storage::objects::get_object_bounded(
+            s3,
+            bucket,
+            &object.key,
+            MAX_CHAT_HISTORY_BYTES,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        let history: claria_core::models::chat_history::ChatHistory =
+            serde_json::from_slice(&output.body).map_err(|error| error.to_string())?;
+        if history.client_id != client_id {
+            return Err("A stored chat history belongs to another client.".to_string());
+        }
+        rows.push((history, u64::try_from(object.size).unwrap_or(0)));
+    }
+    rows.sort_by_key(|(history, _)| history.created_at);
+    Ok(rows)
+}
+
+async fn stored_chat_history(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    client_id: uuid::Uuid,
+    chat_id: uuid::Uuid,
+) -> Result<(claria_core::models::chat_history::ChatHistory, String), String> {
+    let key = claria_core::s3_keys::chat_history(client_id, chat_id);
+    let output =
+        claria_storage::objects::get_object_bounded(s3, bucket, &key, MAX_CHAT_HISTORY_BYTES)
+            .await
+            .map_err(|error| error.to_string())?;
+    let history: claria_core::models::chat_history::ChatHistory =
+        serde_json::from_slice(&output.body).map_err(|error| error.to_string())?;
+    if history.client_id != client_id || history.id != chat_id {
+        return Err("The stored chat history has mismatched identifiers.".to_string());
+    }
+    let etag = output
+        .etag
+        .filter(|etag| !etag.trim().is_empty())
+        .ok_or_else(|| "The stored chat history is missing a concurrency token.".to_string())?;
+    Ok((history, etag))
+}
+
+fn chat_history_summary(
+    history: &claria_core::models::chat_history::ChatHistory,
+    size: u64,
+    ordinal: usize,
+) -> ChatHistorySummary {
+    ChatHistorySummary {
+        chat_id: history.id.to_string(),
+        filename: format!("chat-history/{}.json", history.id),
+        name: if history.name.trim().is_empty() {
+            format!("Chat ({ordinal})")
+        } else {
+            history.name.clone()
+        },
+        size,
+        updated_at: history.updated_at.to_string(),
+    }
+}
+
+fn next_chat_history_name(
+    rows: &[(claria_core::models::chat_history::ChatHistory, u64)],
+) -> String {
+    (1..)
+        .map(|ordinal| format!("Chat ({ordinal})"))
+        .find(|candidate| {
+            rows.iter().enumerate().all(|(index, (history, _))| {
+                let existing = if history.name.trim().is_empty() {
+                    format!("Chat ({})", index + 1)
+                } else {
+                    history.name.clone()
+                };
+                existing != *candidate
+            })
+        })
+        .expect("an unused chat ordinal exists")
+}
+
+fn chat_history_detail(
+    history: claria_core::models::chat_history::ChatHistory,
+    fallback_name: String,
+) -> ChatHistoryDetail {
+    let name = if history.name.trim().is_empty() {
+        fallback_name
+    } else {
+        history.name.clone()
+    };
+    ChatHistoryDetail {
+        chat_id: history.id.to_string(),
+        name,
+        model_id: history.model_id,
+        messages: history
+            .messages
+            .into_iter()
+            .map(|message| ChatHistoryDetailMessage {
+                role: match message.role {
+                    claria_core::models::chat_history::ChatHistoryRole::User => ChatRole::User,
+                    claria_core::models::chat_history::ChatHistoryRole::Assistant => {
+                        ChatRole::Assistant
+                    }
+                },
+                content: message.content,
+                usage: message.usage,
+            })
+            .collect(),
+        created_at: history.created_at.to_string(),
+        updated_at: history.updated_at.to_string(),
+    }
 }
 
 /// Send a chat message to Bedrock and return the assistant's response.
@@ -2957,11 +3114,42 @@ pub async fn chat_message(
     model_id: String,
     messages: Vec<ChatMessage>,
     chat_id: Option<String>,
+    chat_name: Option<String>,
     context_filenames: Vec<String>,
 ) -> Result<ChatResponse, String> {
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
+    let client_uuid: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
+    let now = jiff::Timestamp::now();
+    let (chat_uuid, chat_name, created_at, expected_etag) = match &chat_id {
+        Some(id) => {
+            let chat_uuid = id.parse().map_err(|e: uuid::Error| e.to_string())?;
+            let (history, etag) = stored_chat_history(&s3, &bucket, client_uuid, chat_uuid).await?;
+            let name = if history.name.trim().is_empty() {
+                let rows = chat_history_rows(&s3, &bucket, client_uuid).await?;
+                rows.iter()
+                    .position(|(candidate, _)| candidate.id == chat_uuid)
+                    .map_or_else(
+                        || "Chat (1)".to_string(),
+                        |index| format!("Chat ({})", index + 1),
+                    )
+            } else {
+                history.name
+            };
+            (chat_uuid, name, history.created_at, Some(etag))
+        }
+        None => {
+            let name = match chat_name {
+                Some(name) => normalized_chat_name(&name)?,
+                None => {
+                    let rows = chat_history_rows(&s3, &bucket, client_uuid).await?;
+                    next_chat_history_name(&rows)
+                }
+            };
+            (uuid::Uuid::new_v4(), name, now, None)
+        }
+    };
 
     let system_prompt = load_prompt(&s3, &bucket, "system-prompt").await?;
 
@@ -3007,13 +3195,6 @@ pub async fn chat_message(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Resolve or generate the chat session ID.
-    let chat_uuid: uuid::Uuid = match &chat_id {
-        Some(id) => id.parse().map_err(|e: uuid::Error| e.to_string())?,
-        None => uuid::Uuid::new_v4(),
-    };
-    let client_uuid: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-
     // Emit a per-turn audit event with token usage in details. UUIDs only;
     // never the message content.
     record_audit(
@@ -3039,7 +3220,7 @@ pub async fn chat_message(
     .await;
 
     // Build the full message history including the new assistant response.
-    let now = jiff::Timestamp::now();
+    let updated_at = jiff::Timestamp::now();
     let mut history_messages: Vec<claria_core::models::chat_history::ChatHistoryMessage> = messages
         .iter()
         .map(|m| claria_core::models::chat_history::ChatHistoryMessage {
@@ -3050,34 +3231,52 @@ pub async fn chat_message(
                 }
             },
             content: m.content.clone(),
-            timestamp: now,
+            timestamp: updated_at,
             usage: None,
         })
         .collect();
     history_messages.push(claria_core::models::chat_history::ChatHistoryMessage {
         role: claria_core::models::chat_history::ChatHistoryRole::Assistant,
         content: response_text.clone(),
-        timestamp: now,
+        timestamp: updated_at,
         usage: Some(usage.clone()),
     });
 
     let history = claria_core::models::chat_history::ChatHistory {
         id: chat_uuid,
         client_id: client_uuid,
+        name: chat_name.clone(),
         model_id: model_id.clone(),
         messages: history_messages,
-        created_at: now,
-        updated_at: now,
+        created_at,
+        updated_at,
     };
 
     // Best-effort upload — don't fail the chat if persistence fails.
     let key = claria_core::s3_keys::chat_history(client_uuid, chat_uuid);
     match serde_json::to_vec_pretty(&history) {
         Ok(body) => {
-            if let Err(e) =
-                claria_storage::objects::put_object(&s3, &bucket, &key, body, Some("application/json"))
-                    .await
-            {
+            let persisted = if let Some(etag) = expected_etag.as_deref() {
+                claria_storage::objects::put_object_if_match(
+                    &s3,
+                    &bucket,
+                    &key,
+                    body,
+                    Some("application/json"),
+                    etag,
+                )
+                .await
+            } else {
+                claria_storage::objects::put_object_if_none_match(
+                    &s3,
+                    &bucket,
+                    &key,
+                    body,
+                    Some("application/json"),
+                )
+                .await
+            };
+            if let Err(e) = persisted {
                 tracing::warn!(
                     chat_id = %chat_uuid,
                     client_id = %client_uuid,
@@ -3103,6 +3302,7 @@ pub async fn chat_message(
 
     Ok(ChatResponse {
         chat_id: chat_uuid.to_string(),
+        chat_name,
         content: response_text,
         usage,
     })
@@ -3182,10 +3382,7 @@ pub async fn infra_chat(
 /// Caching is honoured for Claude Sonnet 4 and Opus 4 (5-min TTL — Sonnet
 /// 4.5 / Opus 4.5 with 1h TTL is a future Phase). Haiku 3.5 also supports
 /// it. Models we don't recognise default to no cache.
-fn build_cache_strategy(
-    cfg: &ClariaConfig,
-    model_id: &str,
-) -> claria_bedrock::chat::CacheStrategy {
+fn build_cache_strategy(cfg: &ClariaConfig, model_id: &str) -> claria_bedrock::chat::CacheStrategy {
     if !cfg.prompt_caching_enabled {
         return claria_bedrock::chat::CacheStrategy::disabled();
     }
@@ -3214,7 +3411,10 @@ fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {
             "<resource label=\"{}\" type=\"{}\" name=\"{}\">\n",
             entry.spec.label, entry.spec.resource_type, entry.spec.resource_name
         ));
-        context.push_str(&format!("  <description>{}</description>\n", entry.spec.description));
+        context.push_str(&format!(
+            "  <description>{}</description>\n",
+            entry.spec.description
+        ));
         context.push_str(&format!(
             "  <desired_state>{}</desired_state>\n",
             serde_json::to_string_pretty(&entry.spec.desired).unwrap_or_default()
@@ -3284,6 +3484,84 @@ the actual state and note any drift. Be concise and direct.
     )
 }
 
+/// List named chat sessions for the Record screen history folder.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_chat_histories(
+    state: State<'_, DesktopState>,
+    client_id: String,
+) -> Result<Vec<ChatHistorySummary>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let rows = chat_history_rows(&s3, &bucket, client_id).await?;
+    let mut summaries: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, (history, size))| chat_history_summary(history, *size, index + 1))
+        .collect();
+    summaries.reverse();
+    Ok(summaries)
+}
+
+/// Rename a persisted chat session without changing its stable UUID key.
+#[tauri::command]
+#[specta::specta]
+pub async fn rename_chat_history(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    chat_id: String,
+    name: String,
+) -> Result<ChatHistoryDetail, String> {
+    let name = normalized_chat_name(&name)?;
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let chat_id = chat_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let (mut history, etag) = stored_chat_history(&s3, &bucket, client_id, chat_id).await?;
+    history.name = name;
+    history.updated_at = jiff::Timestamp::now();
+    let body = serde_json::to_vec_pretty(&history).map_err(|error| error.to_string())?;
+    claria_storage::objects::put_object_if_match(
+        &s3,
+        &bucket,
+        &claria_core::s3_keys::chat_history(client_id, chat_id),
+        body,
+        Some("application/json"),
+        &etag,
+    )
+    .await
+    .map_err(|error| match error {
+        claria_storage::error::StorageError::PreconditionFailed { .. } => {
+            "The chat changed on another computer. Reload it before renaming.".to_string()
+        }
+        other => other.to_string(),
+    })?;
+
+    record_audit(
+        &sdk_config,
+        &cfg,
+        claria_audit::events::AuditEvent::new(
+            "chat_history_renamed",
+            "client",
+            client_id.to_string(),
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({ "chat_id": chat_id.to_string() })),
+    )
+    .await;
+
+    Ok(chat_history_detail(history, "Chat (1)".to_string()))
+}
+
 /// Load a chat history session from S3.
 ///
 /// Returns the full conversation with model ID so the frontend can
@@ -3302,33 +3580,20 @@ pub async fn load_chat_history(
     let client_uuid: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let chat_uuid: uuid::Uuid = chat_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let key = claria_core::s3_keys::chat_history(client_uuid, chat_uuid);
-    let output = claria_storage::objects::get_object(&s3, &bucket, &key)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (history, _) = stored_chat_history(&s3, &bucket, client_uuid, chat_uuid).await?;
+    let fallback_name = if history.name.trim().is_empty() {
+        let rows = chat_history_rows(&s3, &bucket, client_uuid).await?;
+        rows.iter()
+            .position(|(candidate, _)| candidate.id == chat_uuid)
+            .map_or_else(
+                || "Chat (1)".to_string(),
+                |index| format!("Chat ({})", index + 1),
+            )
+    } else {
+        history.name.clone()
+    };
 
-    let history: claria_core::models::chat_history::ChatHistory =
-        serde_json::from_slice(&output.body).map_err(|e| e.to_string())?;
-
-    let messages = history
-        .messages
-        .into_iter()
-        .map(|m| ChatHistoryDetailMessage {
-            role: match m.role {
-                claria_core::models::chat_history::ChatHistoryRole::User => ChatRole::User,
-                claria_core::models::chat_history::ChatHistoryRole::Assistant => ChatRole::Assistant,
-            },
-            content: m.content,
-            usage: m.usage,
-        })
-        .collect();
-
-    Ok(ChatHistoryDetail {
-        chat_id: history.id.to_string(),
-        model_id: history.model_id,
-        messages,
-        created_at: history.created_at.to_string(),
-    })
+    Ok(chat_history_detail(history, fallback_name))
 }
 
 /// Accept the Marketplace agreement for a Bedrock foundation model.
@@ -3651,8 +3916,7 @@ pub async fn list_deleted_files(
             Some(filename.to_string())
         })
         .collect();
-    let all_deleted: std::collections::HashSet<&str> =
-        entries.iter().map(|s| s.as_str()).collect();
+    let all_deleted: std::collections::HashSet<&str> = entries.iter().map(|s| s.as_str()).collect();
 
     Ok(deleted
         .into_iter()
@@ -3707,8 +3971,7 @@ pub async fn restore_deleted_file(
         .ok_or_else(|| format!("no restorable version found for {key}"))?;
 
     // Fetch that version's content and write it back as a new current version.
-    let output =
-        claria_storage::objects::get_object_version(&s3, &bucket, &key, &real.version_id)
+    let output = claria_storage::objects::get_object_version(&s3, &bucket, &key, &real.version_id)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -3912,9 +4175,7 @@ pub async fn check_for_updates() -> Result<UpdateCheck, String> {
             let body: serde_json::Value =
                 serde_json::from_str(&body_str).map_err(|e| e.to_string())?;
 
-            let tag = body["tag_name"]
-                .as_str()
-                .ok_or("missing tag_name")?;
+            let tag = body["tag_name"].as_str().ok_or("missing tag_name")?;
             let latest = tag.strip_prefix('v').unwrap_or(tag).to_string();
             let release_url = body["html_url"]
                 .as_str()
@@ -3970,9 +4231,7 @@ pub async fn get_cost_and_usage(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn probe_cost_explorer(
-    state: State<'_, DesktopState>,
-) -> Result<(), String> {
+pub async fn probe_cost_explorer(state: State<'_, DesktopState>) -> Result<(), String> {
     let (_cfg, sdk_config) = load_sdk_config(&state).await?;
     claria_billing::probe_cost_explorer(&sdk_config)
         .await
@@ -3981,9 +4240,7 @@ pub async fn probe_cost_explorer(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn enable_cost_explorer(
-    state: State<'_, DesktopState>,
-) -> Result<(), String> {
+pub async fn enable_cost_explorer(state: State<'_, DesktopState>) -> Result<(), String> {
     let (mut cfg, sdk_config) = load_sdk_config(&state).await?;
     cfg.cost_explorer_enabled = true;
     save_config_synced(&state, &sdk_config, cfg, "Cost Explorer setting").await
@@ -4125,9 +4382,7 @@ pub fn get_console_logs_text(console: State<'_, ConsoleBuffer>) -> String {
 #[specta::specta]
 pub fn save_console_logs(console: State<'_, ConsoleBuffer>) -> Result<bool, String> {
     let text = console.to_text();
-    let date = jiff::Timestamp::now()
-        .strftime("%Y-%m-%d")
-        .to_string();
+    let date = jiff::Timestamp::now().strftime("%Y-%m-%d").to_string();
 
     let path = rfd::FileDialog::new()
         .set_file_name(format!("claria-console-{date}.log"))

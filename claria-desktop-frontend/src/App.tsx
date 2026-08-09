@@ -33,6 +33,9 @@ export default function App() {
   const [configExists, setConfigExists] = useState(false);
   const [activeClientId, setActiveClientId] = useState<string | null>(null);
   const [activeClientName, setActiveClientName] = useState<string | null>(null);
+  const [openWriterTemplates, setOpenWriterTemplates] = useState(false);
+  const [preferencesReturnPage, setPreferencesReturnPage] =
+    useState<Page>("start");
 
   // Chat models loaded once on app startup
   const [chatModels, setChatModels] = useState<ChatModel[]>([]);
@@ -88,6 +91,10 @@ export default function App() {
       ) {
         refreshChatModels();
       }
+      if (target === "preferences") {
+        setOpenWriterTemplates(false);
+        setPreferencesReturnPage("start");
+      }
       setPage(target);
     },
     [refreshConfig, refreshChatModels, chatModels.length],
@@ -131,6 +138,11 @@ export default function App() {
           preferredModelId={preferredModelId}
           onRetryChatModels={() => void refreshChatModels()}
           onClientNameChanged={setActiveClientName}
+          onManageWriterTemplates={() => {
+            setOpenWriterTemplates(true);
+            setPreferencesReturnPage("client-record");
+            setPage("preferences");
+          }}
         />
       )}
       {page === "client-chat" && activeClientId && (
@@ -161,6 +173,8 @@ export default function App() {
           chatModelsError={chatModelsError}
           preferredModelId={preferredModelId}
           onPreferredModelChanged={setPreferredModelId}
+          openWriterTemplates={openWriterTemplates}
+          backPage={preferencesReturnPage}
         />
       )}
       {page === "cost-explorer" && <CostExplorer navigate={navigate} />}

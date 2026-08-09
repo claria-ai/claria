@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  listChatHistories,
   listDeletedFiles,
   restoreDeletedFile,
   type ChatHistoryDetail,
+  type ChatHistorySummary,
   type DeletedFile,
 } from "../lib/tauri";
 import ChatHistoryFolder from "../components/ChatHistoryFolder";
@@ -88,6 +90,28 @@ export default function RecordTab({
   const chatHistoryFiles = files
     .filter((f) => isChatHistory(f.filename))
     .sort((a, b) => (b.uploaded_at ?? "").localeCompare(a.uploaded_at ?? ""));
+  const chatHistorySignature = useMemo(
+    () => chatHistoryFiles.map((file) => `${file.filename}:${file.uploaded_at}`).join("|"),
+    [chatHistoryFiles]
+  );
+  const [chatHistories, setChatHistories] = useState<ChatHistorySummary[]>([]);
+  useEffect(() => {
+    if (chatHistorySignature === "") return;
+    let cancelled = false;
+    listChatHistories(clientId)
+      .then((entries) => {
+        if (!cancelled) setChatHistories(entries);
+      })
+      .catch((reason) => {
+        if (!cancelled) setError(String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId, chatHistorySignature]);
+  const visibleChatHistories =
+    chatHistorySignature === "" ? [] : chatHistories;
+
   const regularFiles = files.filter(
     (f) =>
       !isChatHistory(f.filename) &&
@@ -144,10 +168,10 @@ export default function RecordTab({
             </div>
           )}
 
-          {!loading && chatHistoryFiles.length > 0 && (
+          {!loading && visibleChatHistories.length > 0 && (
             <ChatHistoryFolder
               clientId={clientId}
-              files={chatHistoryFiles}
+              entries={visibleChatHistories}
               onResume={onResumeChat}
               onDelete={fileDialog.openDelete}
               onError={setError}

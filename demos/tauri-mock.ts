@@ -174,6 +174,8 @@ export function buildInitScript(config: ScenarioConfig): string {
           }
 
           if (cmd === "list_editor_history") return [];
+          if (cmd === "list_chat_histories") return [];
+          if (cmd === "list_writer_templates") return [];
 
           if (cmd === "create_text_record_file") {
             const filename = args.filename.endsWith(".txt") ? args.filename : args.filename + ".txt";
@@ -200,6 +202,7 @@ export function buildInitScript(config: ScenarioConfig): string {
           if (cmd === "chat_message") {
             return {
               chat_id: "demo-chat-" + Date.now(),
+              chat_name: "Chat (1)",
               content: ${chatResponseJson},
             };
           }

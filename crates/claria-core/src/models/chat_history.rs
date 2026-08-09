@@ -11,6 +11,10 @@ use crate::models::turn_usage::TurnUsage;
 pub struct ChatHistory {
     pub id: Uuid,
     pub client_id: Uuid,
+    /// User-facing session name. Empty only for histories written before
+    /// named chats were introduced; callers assign a numbered fallback.
+    #[serde(default)]
+    pub name: String,
     pub model_id: String,
     pub messages: Vec<ChatHistoryMessage>,
     pub created_at: jiff::Timestamp,

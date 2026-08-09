@@ -12,6 +12,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { commands } from "./bindings";
 import type {
   ChatHistoryDetail,
+  ChatHistorySummary,
   ChatMessage,
   ConsoleEntry,
   CostAndUsageResult,
@@ -40,12 +41,14 @@ import type {
   ReportProposalDecision,
   ReportAuthoringPreferences,
   ReportTemplatePreview,
+  ReportTurnProgressView,
   ReportTurnResponse,
   ReportWorkspaceView,
   TranscribeMemoResult,
   TranscribeOptionsOverrides,
   TranscriptionPreferences,
   UpdateCheck,
+  WriterTemplateView,
 } from "./bindings";
 
 export { commands };
@@ -61,6 +64,7 @@ export type {
   CredentialScope,
   ChatHistoryDetail,
   ChatHistoryDetailMessage,
+  ChatHistorySummary,
   ChatMessage,
   ChatModel,
   ChatResponse,
@@ -123,6 +127,7 @@ export type {
   ReportTimelineItemView,
   ReportTimelineRole,
   ReportToolActivityStatus,
+  ReportTurnProgressView,
   ReportTurnResponse,
   ReportWorkspaceView,
   ResourceSpec,
@@ -133,6 +138,7 @@ export type {
   TranscriptionLanguage,
   TranscriptionPreferences,
   TurnUsage,
+  WriterTemplateView,
 } from "./bindings";
 export type { Result } from "./bindings";
 
@@ -431,6 +437,14 @@ export async function listEditorHistory(
   return unwrap(await commands.listEditorHistory(clientId));
 }
 
+export async function renameReportSession(
+  clientId: string,
+  reportId: string,
+  name: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.renameReportSession(clientId, reportId, name));
+}
+
 export async function saveReportDraft(
   clientId: string,
   expectedRevision: number,
@@ -441,10 +455,30 @@ export async function saveReportDraft(
   );
 }
 
-export async function pickReportTemplateDocx(
-  clientId: string
-): Promise<ReportTemplatePreview | null> {
-  return unwrap(await commands.pickReportTemplateDocx(clientId));
+export async function listWriterTemplates(): Promise<WriterTemplateView[]> {
+  return unwrap(await commands.listWriterTemplates());
+}
+
+export async function uploadWriterTemplate(): Promise<WriterTemplateView | null> {
+  return unwrap(await commands.uploadWriterTemplate());
+}
+
+export async function renameWriterTemplate(
+  templateId: string,
+  name: string
+): Promise<WriterTemplateView> {
+  return unwrap(await commands.renameWriterTemplate(templateId, name));
+}
+
+export async function deleteWriterTemplate(templateId: string): Promise<void> {
+  unwrap(await commands.deleteWriterTemplate(templateId));
+}
+
+export async function previewWriterTemplate(
+  clientId: string,
+  templateId: string
+): Promise<ReportTemplatePreview> {
+  return unwrap(await commands.previewWriterTemplate(clientId, templateId));
 }
 
 export async function applyReportTemplate(
@@ -463,34 +497,24 @@ export async function discardReportTemplatePreview(
   unwrap(await commands.discardReportTemplatePreview(importId));
 }
 
-export async function acknowledgeReportTemplateReview(
-  clientId: string,
-  reportId: string,
-  expectedRevision: number
-): Promise<ReportWorkspaceView> {
-  return unwrap(
-    await commands.acknowledgeReportTemplateReview(
-      clientId,
-      reportId,
-      expectedRevision
-    )
-  );
-}
-
 export async function sendReportMessage(
   clientId: string,
   expectedRevision: number,
   modelId: string,
   instruction: string,
-  references: ReportBlockReferenceInput[] = []
+  references: ReportBlockReferenceInput[] = [],
+  onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<ReportTurnResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
   return unwrap(
     await commands.sendReportMessage(
       clientId,
       expectedRevision,
       modelId,
       instruction,
-      references
+      references,
+      channel
     )
   );
 }
@@ -563,8 +587,24 @@ export async function listChatModels() {
   return unwrap(await commands.listChatModels());
 }
 
-export async function chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId?: string | null, contextFilenames?: string[]) {
-  return unwrap(await commands.chatMessage(clientId, modelId, messages, chatId ?? null, contextFilenames ?? []));
+export async function chatMessage(
+  clientId: string,
+  modelId: string,
+  messages: ChatMessage[],
+  chatId?: string | null,
+  contextFilenames?: string[],
+  chatName?: string | null
+) {
+  return unwrap(
+    await commands.chatMessage(
+      clientId,
+      modelId,
+      messages,
+      chatId ?? null,
+      chatName ?? null,
+      contextFilenames ?? []
+    )
+  );
 }
 
 export async function infraChat(
@@ -579,8 +619,22 @@ export async function acceptModelAgreement(modelId: string): Promise<void> {
   unwrap(await commands.acceptModelAgreement(modelId));
 }
 
+export async function listChatHistories(
+  clientId: string
+): Promise<ChatHistorySummary[]> {
+  return unwrap(await commands.listChatHistories(clientId));
+}
+
 export async function loadChatHistory(clientId: string, chatId: string): Promise<ChatHistoryDetail> {
   return unwrap(await commands.loadChatHistory(clientId, chatId));
+}
+
+export async function renameChatHistory(
+  clientId: string,
+  chatId: string,
+  name: string
+): Promise<ChatHistoryDetail> {
+  return unwrap(await commands.renameChatHistory(clientId, chatId, name));
 }
 
 // ---------------------------------------------------------------------------

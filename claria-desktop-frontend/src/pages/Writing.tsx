@@ -2,21 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  acknowledgeReportTemplateReview,
   applyReportTemplate,
   discardReportTemplatePreview,
   exportReportDocx,
+  listWriterTemplates,
   loadReportWorkspace,
-  pickReportTemplateDocx,
+  previewWriterTemplate,
+  renameReportSession,
   resolveReportProposal,
   saveReportDraft,
   sendReportMessage,
   type ChatModel,
   type ReportContextReadView,
   type ReportDraftEdit,
-  type ReportTemplatePreview,
   type ReportTimelineItemView,
+  type ReportTurnProgressView,
   type ReportWorkspaceView,
+  type WriterTemplateView,
 } from "../lib/tauri";
 import {
   countReportEdits,
@@ -24,20 +26,16 @@ import {
   reportEditsEqual,
   validateReportEdit,
 } from "../lib/writingWorkspace";
+import EditableName from "../components/EditableName";
 import WritingCanvas from "../components/WritingCanvas";
 import WritingProposalCard from "../components/WritingProposalCard";
-import WritingTemplateImportModal from "../components/WritingTemplateImportModal";
 import Spinner from "../components/Spinner";
-import { CloseIcon } from "../components/icons";
-import { dismissNotice, isNoticeDismissed } from "../lib/localPreference";
 import {
   readWritingComposerDraft,
   reportBlockReferencePreview,
   writeWritingComposerDraft,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
-
-const INTRO_NOTICE_KEY = "claria.writing.hide_intro_notice";
 
 export type WritingLeaveState = {
   /** Any work that would be lost when the desktop app closes. */
@@ -56,6 +54,7 @@ export default function Writing({
   preferredModelId,
   onLeaveStateChange,
   onRetryModels,
+  onManageTemplates,
 }: {
   clientId: string;
   expectedReportId?: string | null;
@@ -65,6 +64,7 @@ export default function Writing({
   preferredModelId?: string | null;
   onLeaveStateChange?: (state: WritingLeaveState) => void;
   onRetryModels?: () => void;
+  onManageTemplates: () => void;
 }) {
   const generationRef = useRef(0);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -79,9 +79,7 @@ export default function Writing({
     | "sending"
     | "resolving"
     | "exporting"
-    | "picking_template"
     | "applying_template"
-    | "reviewing_template"
   >(null);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [instruction, setInstruction] = useState(
@@ -99,12 +97,16 @@ export default function Writing({
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
-  const [templatePreview, setTemplatePreview] =
-    useState<ReportTemplatePreview | null>(null);
-  const templatePreviewRef = useRef<ReportTemplatePreview | null>(null);
-  const [showIntroNotice, setShowIntroNotice] = useState(
-    () => !isNoticeDismissed(INTRO_NOTICE_KEY)
-  );
+  const [agentActivity, setAgentActivity] = useState<{
+    label: string;
+    detail?: string;
+  } | null>(null);
+  const [liveContext, setLiveContext] = useState<
+    Array<{ key: string; label: string; status: "loading" | "ready" | "failed" }>
+  >([]);
+  const [writerTemplates, setWriterTemplates] = useState<WriterTemplateView[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const proposalStartRef = useRef<HTMLDivElement | null>(null);
 
@@ -139,18 +141,28 @@ export default function Writing({
     };
   }, [clientId, expectedReportId, load]);
 
+  const loadTemplates = useCallback(async () => {
+    try {
+      const templates = await listWriterTemplates();
+      setWriterTemplates(templates);
+      setSelectedTemplateId((current) =>
+        templates.some((template) => template.id === current)
+          ? current
+          : (templates[0]?.id ?? "")
+      );
+      setTemplatesError(null);
+    } catch (error) {
+      setTemplatesError(String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadTemplates();
+  }, [loadTemplates]);
+
   useEffect(() => {
     writeWritingComposerDraft(clientId, { instruction, references });
   }, [clientId, instruction, references]);
-
-  templatePreviewRef.current = templatePreview;
-  useEffect(
-    () => () => {
-      const importId = templatePreviewRef.current?.import_id;
-      if (importId) void discardReportTemplatePreview(importId).catch(() => undefined);
-    },
-    [clientId]
-  );
 
   useEffect(() => {
     if (
@@ -307,12 +319,51 @@ export default function Writing({
     }
   }
 
+  function handleAgentProgress(progress: ReportTurnProgressView) {
+    if (progress.kind === "model_call_started") {
+      setAgentActivity({
+        label: progress.call_number === 1 ? "Claude is planning" : "Claude is continuing",
+        detail: `Model call ${progress.call_number}`,
+      });
+      return;
+    }
+
+    const context = progress.context;
+    if (progress.kind === "tool_started") {
+      setAgentActivity(agentActivityForTool(progress.name, context));
+      if (context) {
+        setLiveContext((current) => upsertLiveContext(current, context, "loading"));
+      }
+      return;
+    }
+
+    setAgentActivity(
+      progress.name === "propose_report_changes"
+        ? { label: "Claude is reviewing its proposal" }
+        : {
+            label: progress.status === "succeeded" ? "Context ready" : "Context unavailable",
+            detail: context ?? progress.name,
+          }
+    );
+    if (context) {
+      setLiveContext((current) =>
+        upsertLiveContext(
+          current,
+          context,
+          progress.status === "succeeded" ? "ready" : "failed"
+        )
+      );
+    }
+  }
+
   async function handleSend() {
     const value = instruction.trim();
     if (!workspace || !value || composerDisabled) return;
     const generation = generationRef.current;
     setBusy("sending");
     setActionError(null);
+    setLiveContext([]);
+    setAgentActivity({ label: "Preparing the writer", detail: "Loading approved context" });
     setSaveStatus(
       dirty
         ? "Saving your report edits before Claude reads the next message…"
@@ -329,7 +380,10 @@ export default function Writing({
         references.map((reference) => ({
           section_id: reference.sectionId,
           block_index: reference.blockIndex,
-        }))
+        })),
+        (progress) => {
+          if (generation === generationRef.current) handleAgentProgress(progress);
+        }
       );
       if (generation !== generationRef.current) return;
       setWorkspace(result.workspace);
@@ -342,13 +396,18 @@ export default function Writing({
           ? "Proposal ready for your review. The accepted draft is unchanged."
           : "Writing assistant turn complete."
       );
+      setLiveContext([]);
     } catch (error) {
       if (generation !== generationRef.current) return;
       // Keep the instruction, references, and local edit for an exact retry.
       showActionError(error);
       setSaveStatus(null);
+      setLiveContext([]);
     } finally {
-      if (generation === generationRef.current) setBusy(null);
+      if (generation === generationRef.current) {
+        setAgentActivity(null);
+        setBusy(null);
+      }
     }
   }
 
@@ -386,114 +445,55 @@ export default function Writing({
     }
   }
 
-  async function handlePickTemplate() {
-    if (controlsBusy || dirty || editing || workspace?.pending_proposal) return;
-    const generation = generationRef.current;
-    setBusy("picking_template");
-    setActionError(null);
-    setSaveStatus("Choose a .docx template to inspect locally…");
-    try {
-      const preview = await pickReportTemplateDocx(clientId);
-      if (generation !== generationRef.current) {
-        if (preview) await discardReportTemplatePreview(preview.import_id);
-        return;
-      }
-      setTemplatePreview(preview);
-      setSaveStatus(
-        preview
-          ? "Template parsed locally. Review the structured import before applying it."
-          : "Template import canceled."
-      );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
-    }
-  }
-
-  async function handleDiscardTemplatePreview() {
-    const preview = templatePreviewRef.current;
-    setTemplatePreview(null);
-    if (!preview) return;
-    try {
-      await discardReportTemplatePreview(preview.import_id);
-    } catch (error) {
-      showActionError(error);
-    }
-  }
-
   async function handleApplyTemplate() {
-    if (!workspace || !templatePreview || controlsBusy) return;
+    const currentWorkspace = workspace;
+    if (
+      !currentWorkspace ||
+      !selectedTemplateId ||
+      controlsBusy ||
+      dirty ||
+      editing ||
+      currentWorkspace.pending_proposal
+    ) {
+      return;
+    }
     const generation = generationRef.current;
+    let importId: string | null = null;
     setBusy("applying_template");
     setActionError(null);
-    setSaveStatus("Importing the reviewed template as a new accepted revision…");
+    setSaveStatus("Applying the managed Word template…");
     try {
+      const preview = await previewWriterTemplate(clientId, selectedTemplateId);
+      importId = preview.import_id;
+      if (generation !== generationRef.current) return;
       const result = await applyReportTemplate(
         clientId,
-        workspace.draft.revision,
-        templatePreview.import_id
+        currentWorkspace.draft.revision,
+        preview.import_id
       );
       if (generation !== generationRef.current) return;
       setWorkspace(result);
       setEdit(draftToEdit(result.draft));
       setEditing(false);
-      setTemplatePreview(null);
       setConflict(false);
       setSaveStatus(
-        `Imported DOCX content as revision ${result.draft.revision}. Review all carryover before export.`
+        `Applied the Word template as revision ${result.draft.revision}. Its layout and formatting will be retained on export.`
       );
+      void loadTemplates();
     } catch (error) {
       if (generation !== generationRef.current) return;
       showActionError(error);
       setSaveStatus(null);
     } finally {
-      if (generation === generationRef.current) setBusy(null);
-    }
-  }
-
-  async function handleReviewTemplate() {
-    if (!workspace?.template_import?.review_required || controlsBusy) return;
-    if (
-      !window.confirm(
-        "Confirm that you reviewed this revision for carried-over names, dates, pronouns, diagnoses, scores, placeholders, and other client-specific facts."
-      )
-    ) {
-      return;
-    }
-    const generation = generationRef.current;
-    setBusy("reviewing_template");
-    setActionError(null);
-    setSaveStatus("Recording template carryover review…");
-    try {
-      const result = await acknowledgeReportTemplateReview(
-        clientId,
-        workspace.report_id,
-        workspace.draft.revision
-      );
-      if (generation !== generationRef.current) return;
-      setWorkspace(result);
-      setEdit(draftToEdit(result.draft));
-      setConflict(false);
-      setSaveStatus(`Template carryover reviewed for revision ${result.draft.revision}.`);
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
+      if (importId) {
+        await discardReportTemplatePreview(importId).catch(() => undefined);
+      }
       if (generation === generationRef.current) setBusy(null);
     }
   }
 
   async function handleExport() {
-    if (
-      dirty ||
-      controlsBusy ||
-      !workspace ||
-      workspace.template_import?.review_required
-    ) {
+    if (dirty || controlsBusy || !workspace) {
       return;
     }
     const generation = generationRef.current;
@@ -579,41 +579,76 @@ export default function Writing({
     requestAnimationFrame(() => composerRef.current?.focus());
   }
 
-  function dismissIntroNotice() {
-    dismissNotice(INTRO_NOTICE_KEY);
-    setShowIntroNotice(false);
+  async function handleRenameSession(name: string) {
+    const currentWorkspace = workspace;
+    if (!currentWorkspace) return;
+    const result = await renameReportSession(
+      clientId,
+      currentWorkspace.report_id,
+      name
+    );
+    setWorkspace(result);
   }
 
   const contextReads = workspace.turns.flatMap((turn) => turn.context_reads);
+  const contextPills: Array<{
+    key: string;
+    label: string;
+    status: "loading" | "ready" | "failed";
+  }> = [
+    {
+      key: "accepted-report",
+      label: `Accepted report · r${workspace.draft.revision}`,
+      status: "ready",
+    },
+  ];
+  if (workspace.turns.length > 0) {
+    contextPills.push({
+      key: "session-history",
+      label: `${workspace.turns.length} prior turn${workspace.turns.length === 1 ? "" : "s"}`,
+      status: "ready",
+    });
+  }
+  if (workspace.template_import) {
+    contextPills.push({ key: "template", label: "Template provenance", status: "ready" });
+  }
+  if (
+    workspace.turns.some((turn) =>
+      turn.timeline.some(
+        (item) => item.kind === "tool_activity" && item.name === "list_record_files"
+      )
+    )
+  ) {
+    contextPills.push({ key: "record-list", label: "Record file list", status: "ready" });
+  }
+  for (const filename of new Set(contextReads.map((read) => read.filename))) {
+    contextPills.push({ key: `record:${filename}`, label: filename, status: "ready" });
+  }
+  for (const reference of references) {
+    contextPills.push({
+      key: `reference:${reference.sectionId}:${reference.blockIndex}`,
+      label: `${reference.sectionHeading} · ${reference.kind}`,
+      status: "ready",
+    });
+  }
+  for (const live of liveContext) {
+    const existing = contextPills.find((pill) => pill.label === live.label);
+    if (existing) existing.status = live.status;
+    else contextPills.push(live);
+  }
 
   return (
     <>
       <div className="flex-1 min-h-0 grid grid-cols-1 min-[800px]:grid-cols-[minmax(340px,42%)_minmax(0,58%)] overflow-y-auto min-[800px]:overflow-hidden">
       <section className="min-h-[32rem] min-[800px]:min-h-0 flex flex-col bg-white">
         <div className="px-5 py-4 border-b border-gray-200 space-y-3">
-          {showIntroNotice && (
-            <div className="relative rounded-md border border-blue-200 bg-blue-50 p-3 pr-9">
-              <p className="text-xs font-semibold text-blue-900">
-                Writing assistant
-              </p>
-              <p className="text-xs leading-5 text-blue-800 mt-1">
-                Claude can list and read bounded text from this client&apos;s record.
-                It cannot change the report directly: every AI write is a proposal
-                you must accept. Your own report edits are included automatically
-                with your next message.
-              </p>
-              <button
-                type="button"
-                aria-label="Hide Writing assistant notice"
-                title="Hide this notice"
-                onClick={dismissIntroNotice}
-                className="absolute right-2 top-2 text-blue-500 hover:text-blue-900"
-              >
-                <CloseIcon className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-
+          <EditableName
+            value={workspace.session_name}
+            label="writer session"
+            onSave={handleRenameSession}
+            disabled={controlsBusy}
+            className="w-full"
+          />
           <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
             <label className="block">
               <span className="text-xs font-medium text-gray-600">Model</span>
@@ -646,6 +681,57 @@ export default function Writing({
               Context · {contextReads.length + 1}
             </button>
           </div>
+
+          <ContextPills pills={contextPills} />
+
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-end gap-2">
+            <label className="block min-w-0">
+              <span className="text-xs font-medium text-gray-600">Writer template</span>
+              <select
+                aria-label="Writer template"
+                value={selectedTemplateId}
+                onChange={(event) => setSelectedTemplateId(event.target.value)}
+                disabled={controlsBusy || pending !== null || writerTemplates.length === 0}
+                className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+              >
+                {writerTemplates.length === 0 && (
+                  <option value="">No saved templates</option>
+                )}
+                {writerTemplates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={() => void handleApplyTemplate()}
+              disabled={
+                controlsBusy ||
+                pending !== null ||
+                dirty ||
+                editing ||
+                selectedTemplateId === ""
+              }
+              className="mb-px rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+            >
+              {busy === "applying_template" ? "Applying…" : "Apply template"}
+            </button>
+            <button
+              type="button"
+              onClick={onManageTemplates}
+              disabled={controlsBusy}
+              className="mb-px px-2 py-2 text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
+            >
+              Manage in Preferences
+            </button>
+          </div>
+          {templatesError && (
+            <p role="alert" className="text-xs text-red-600">
+              Could not load writer templates: {templatesError}
+            </p>
+          )}
 
           {contextOpen && (
             <ContextControl
@@ -685,8 +771,8 @@ export default function Writing({
                 Build the report interactively.
               </p>
               <p className="text-xs text-gray-500 mt-1">
-                Ask Claude to inspect records, answer a question, or propose
-                specific sections, or import a DOCX content template.
+                Ask Claude to inspect records, answer a question, propose
+                specific sections, or apply a managed Word template.
               </p>
             </div>
           )}
@@ -847,27 +933,87 @@ export default function Writing({
         onChange={setEdit}
         onSave={() => void handleSave()}
         onExport={() => void handleExport()}
-        onImportTemplate={() => void handlePickTemplate()}
-        onReviewTemplate={() => void handleReviewTemplate()}
         onReference={addReference}
         saveStatus={null}
         exportStatus={exportStatus}
         validationErrors={validationErrors}
+        agentActivity={agentActivity}
       />
       </div>
-      {templatePreview && (
-        <WritingTemplateImportModal
-          key={templatePreview.import_id}
-          preview={templatePreview}
-          currentRevision={workspace.draft.revision}
-          busy={busy === "applying_template"}
-          error={actionError}
-          onCancel={() => void handleDiscardTemplatePreview()}
-          onApply={() => void handleApplyTemplate()}
-        />
-      )}
     </>
   );
+}
+
+function ContextPills({
+  pills,
+}: {
+  pills: Array<{
+    key: string;
+    label: string;
+    status: "loading" | "ready" | "failed";
+  }>;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" aria-label="Writer context">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+        Context
+      </span>
+      {pills.map((pill) => (
+        <span
+          key={pill.key}
+          className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium ${
+            pill.status === "failed"
+              ? "border-red-200 bg-red-50 text-red-700"
+              : pill.status === "loading"
+                ? "border-blue-200 bg-blue-50 text-blue-700"
+                : "border-emerald-200 bg-emerald-50 text-emerald-700"
+          }`}
+        >
+          <span
+            aria-hidden="true"
+            className={`h-1.5 w-1.5 rounded-full ${
+              pill.status === "failed"
+                ? "bg-red-500"
+                : pill.status === "loading"
+                  ? "bg-blue-500 animate-pulse"
+                  : "bg-emerald-500"
+            }`}
+          />
+          {pill.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function agentActivityForTool(name: string, context: string | null) {
+  if (name === "list_record_files") {
+    return { label: "Checking available records", detail: context ?? undefined };
+  }
+  if (name === "read_record_file") {
+    return { label: "Reading client context", detail: context ?? undefined };
+  }
+  if (name === "propose_report_changes") {
+    return { label: "Drafting a reviewable proposal" };
+  }
+  return { label: "Using an approved tool", detail: name };
+}
+
+function upsertLiveContext(
+  current: Array<{
+    key: string;
+    label: string;
+    status: "loading" | "ready" | "failed";
+  }>,
+  label: string,
+  status: "loading" | "ready" | "failed"
+) {
+  const key = `live:${label}`;
+  const existing = current.find((item) => item.key === key);
+  if (existing) {
+    return current.map((item) => (item.key === key ? { ...item, status } : item));
+  }
+  return [...current, { key, label, status }];
 }
 
 function ContextControl({

@@ -54,6 +54,7 @@ fn proposal(workspace: &ReportWorkspace, operations: Vec<ReportOperation>) -> Re
 fn new_workspace_has_versioned_empty_accepted_draft() {
     let workspace = workspace();
     assert_eq!(workspace.schema_version, REPORT_WORKSPACE_SCHEMA_VERSION);
+    assert_eq!(workspace.session_name, "Writer Session (1)");
     assert_eq!(workspace.draft.revision, 0);
     assert_eq!(workspace.draft.content.title, "Untitled report");
     assert!(workspace.draft.content.sections.is_empty());
@@ -72,6 +73,10 @@ fn legacy_workspace_defaults_writing_queue_and_export_status() {
         .as_object_mut()
         .expect("workspace object")
         .remove("template_import");
+    value
+        .as_object_mut()
+        .expect("workspace object")
+        .remove("session_name");
     let session = value["session"].as_object_mut().expect("session object");
     session.remove("last_agent_revision");
     session.remove("last_export");
@@ -82,6 +87,21 @@ fn legacy_workspace_defaults_writing_queue_and_export_status() {
     assert_eq!(decoded.session.last_agent_revision, None);
     assert_eq!(decoded.session.last_export, None);
     assert_eq!(decoded.template_import, None);
+    assert_eq!(decoded.session_name, "Writer Session (1)");
+}
+
+#[test]
+fn writer_session_name_is_trimmed_and_validated() {
+    let mut workspace = workspace();
+    workspace
+        .rename_session("  Intake report  ", timestamp("2026-08-01T12:05:00Z"))
+        .expect("rename");
+    assert_eq!(workspace.session_name, "Intake report");
+    assert!(
+        workspace
+            .rename_session("   ", timestamp("2026-08-01T12:06:00Z"))
+            .is_err()
+    );
 }
 
 #[test]

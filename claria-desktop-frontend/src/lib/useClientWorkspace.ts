@@ -21,7 +21,10 @@ const cleanWritingState: WritingLeaveState = {
  * only the state needed to cross those boundaries: persisted sessions being
  * resumed, the Writing instance identity, and guards against losing work.
  */
-export function useClientWorkspace(onBack: () => void) {
+export function useClientWorkspace(
+  onBack: () => void,
+  onManageWriterTemplates: () => void
+) {
   const [activeView, setActiveView] =
     useState<ClientWorkspaceView>("record");
   const [pendingChat, setPendingChat] = useState<ResumeChat | null>(null);
@@ -33,13 +36,14 @@ export function useClientWorkspace(onBack: () => void) {
   function openChat(detail: ChatHistoryDetail) {
     setPendingChat({
       chatId: detail.chat_id,
+      name: detail.name,
       modelId: detail.model_id,
       messages: detail.messages.map((message) => ({
         role: message.role,
         content: message.content,
       })),
       usageByIndex: detail.messages.map((message) => message.usage),
-      lastActivityIso: detail.created_at,
+      lastActivityIso: detail.updated_at,
     });
     setActiveView("chat");
   }
@@ -86,6 +90,10 @@ export function useClientWorkspace(onBack: () => void) {
 
   function back() {
     if (mayLeaveWriting()) onBack();
+  }
+
+  function manageWriterTemplates() {
+    if (mayLeaveWriting()) onManageWriterTemplates();
   }
 
   useEffect(() => {
@@ -139,6 +147,7 @@ export function useClientWorkspace(onBack: () => void) {
     openSettings,
     selectTab,
     back,
+    manageWriterTemplates,
     clearPendingChat: () => setPendingChat(null),
     updateWritingLeaveState: setWritingLeaveState,
   };

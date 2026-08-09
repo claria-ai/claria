@@ -72,7 +72,8 @@ export function buildInitScript(
         created_at: new Date().toISOString(),
       });
       let reportWorkspace = {
-        schema_version: 2,
+        schema_version: 3,
+        session_name: "Writer Session (1)",
         report_id: "99999999-9999-4999-8999-999999999999",
         client_id: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb",
         draft: {
@@ -365,22 +366,32 @@ export function buildInitScript(
           if (cmd === "list_record_context") return [];
           if (cmd === "list_deleted_files") return [];
           if (cmd === "list_deleted_clients") return [];
+          if (cmd === "list_chat_histories") return [{
+            chat_id: "77777777-7777-4777-8777-777777777777",
+            filename: "chat-history/77777777-7777-4777-8777-777777777777.json",
+            name: "Chat (1)",
+            size: 842,
+            updated_at: "2026-08-01T12:00:00Z",
+          }];
           if (cmd === "load_chat_history") {
             window.__CHAT_COMMANDS__.push({ cmd, args: structuredClone(args) });
             return {
               chat_id: args.chatId,
+              name: "Chat (1)",
               model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
               messages: [
                 { role: "user", content: "Earlier question", usage: null },
                 { role: "assistant", content: "Earlier answer", usage: { model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0", input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cost_usd: 0.0001, pricing_version: 4 } },
               ],
               created_at: "2026-08-01T12:00:00Z",
+              updated_at: "2026-08-01T12:00:00Z",
             };
           }
           if (cmd === "chat_message") {
             window.__CHAT_COMMANDS__.push({ cmd, args: structuredClone(args) });
             return {
               chat_id: args.chatId || "77777777-7777-4777-8777-777777777777",
+              chat_name: "Chat (1)",
               content: "Unchanged Chat response",
               usage: { model_id: args.modelId, input_tokens: 30, output_tokens: 8, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cost_usd: 0.0002, pricing_version: 4 },
             };
@@ -392,6 +403,7 @@ export function buildInitScript(
               ? []
               : [{
                   report_id: reportWorkspace.report_id,
+                  name: reportWorkspace.session_name,
                   title: reportWorkspace.draft.content.title,
                   revision: reportWorkspace.draft.revision,
                   turn_count: reportWorkspace.turns.length,
@@ -424,12 +436,19 @@ export function buildInitScript(
                 updated_at: new Date().toISOString(),
               },
               template_import: reportWorkspace.template_import
-                ? { ...reportWorkspace.template_import, reviewed_revision: null, review_required: true }
+                ? { ...reportWorkspace.template_import, reviewed_revision: reportWorkspace.draft.revision + 1, review_required: false }
                 : null,
             };
             return reportWorkspace;
           }
-          if (cmd === "pick_report_template_docx") {
+          if (cmd === "list_writer_templates") return [{
+            id: "55555555-5555-4555-8555-555555555555",
+            name: "Imported Evaluation Template",
+            size: 24576,
+            uploaded_at: "2026-08-01T12:00:00Z",
+            use_count: 0,
+          }];
+          if (cmd === "preview_writer_template") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
             return structuredClone(reportTemplatePreview);
@@ -437,7 +456,7 @@ export function buildInitScript(
           if (cmd === "apply_report_template") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
-            if (args.importId !== reportTemplatePreview.import_id) throw "That template preview expired. Choose the DOCX again.";
+            if (args.importId !== reportTemplatePreview.import_id) throw "That template preview expired. Select the template again.";
             if (args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
             reportWorkspace = {
               ...reportWorkspace,
@@ -451,8 +470,8 @@ export function buildInitScript(
                 imported_revision: reportWorkspace.draft.revision + 1,
                 imported_at: new Date().toISOString(),
                 warnings: structuredClone(reportTemplatePreview.warnings),
-                reviewed_revision: null,
-                review_required: true,
+                reviewed_revision: reportWorkspace.draft.revision + 1,
+                review_required: false,
                 placeholder_count: reportTemplatePreview.stats.placeholder_count,
               },
             };
@@ -461,21 +480,6 @@ export function buildInitScript(
           if (cmd === "discard_report_template_preview") {
             window.__REPORT_COMMANDS__.push(cmd);
             return null;
-          }
-          if (cmd === "acknowledge_report_template_review") {
-            window.__REPORT_COMMANDS__.push(cmd);
-            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
-            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
-            if (!reportWorkspace.template_import) throw "This report was not initialized from a DOCX template.";
-            reportWorkspace = {
-              ...reportWorkspace,
-              template_import: {
-                ...reportWorkspace.template_import,
-                reviewed_revision: reportWorkspace.draft.revision,
-                review_required: false,
-              },
-            };
-            return structuredClone(reportWorkspace);
           }
           if (cmd === "send_report_message") {
             window.__REPORT_COMMANDS__.push(cmd);
@@ -566,7 +570,7 @@ export function buildInitScript(
                 pending_proposal: null,
                 last_agent_revision: reportWorkspace.draft.revision + 1,
                 template_import: reportWorkspace.template_import
-                  ? { ...reportWorkspace.template_import, reviewed_revision: null, review_required: true }
+                  ? { ...reportWorkspace.template_import, reviewed_revision: reportWorkspace.draft.revision + 1, review_required: false }
                   : null,
               };
             } else {
@@ -578,7 +582,6 @@ export function buildInitScript(
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
             if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
-            if (reportWorkspace.template_import?.review_required) throw "Review template carryover for this revision before exporting to Word.";
             const attemptedAt = new Date().toISOString();
             reportWorkspace = {
               ...reportWorkspace,

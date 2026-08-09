@@ -18,6 +18,8 @@ pub struct CachedSdkConfig {
 
 pub(crate) struct PendingReportTemplate {
     pub(crate) client_id: uuid::Uuid,
+    pub(crate) writer_template_id: Option<uuid::Uuid>,
+    pub(crate) source_docx: Vec<u8>,
     pub(crate) imported: claria_docx::ImportedTemplate,
 }
 
@@ -26,8 +28,9 @@ pub struct DesktopState {
     pub sdk_config: Arc<Mutex<Option<CachedSdkConfig>>>,
     pub local_transcriber: Arc<std::sync::Mutex<claria_transcribe::LocalTranscriber>>,
     pub record_cache: Arc<RecordCache>,
-    /// Parsed DOCX previews waiting for explicit user acceptance. Source bytes,
-    /// filenames, and local paths are never retained.
+    /// Parsed managed-template candidates. Validated source bytes stay only
+    /// long enough to write the immutable formatting snapshot; local paths are
+    /// never retained.
     pub(crate) pending_report_templates: Arc<Mutex<HashMap<uuid::Uuid, PendingReportTemplate>>>,
 }
 

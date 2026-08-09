@@ -1,14 +1,12 @@
-import { useEffect, useRef, useState, type ElementType } from "react";
+import { useEffect, useRef, type ElementType } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
   ReportBlockView,
   ReportDraftEdit,
   ReportSectionEdit,
-  ReportTemplateImportView,
   ReportWorkspaceView,
 } from "../lib/tauri";
-import { dismissNotice, isNoticeDismissed } from "../lib/localPreference";
 import {
   moveItem,
   newReportSection,
@@ -18,9 +16,7 @@ import {
   reportBlockReferencePreview,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
-import { CloseIcon } from "./icons";
-
-const EXPORT_NOTICE_KEY = "claria.writing.hide_export_notice";
+import AgentThrobber from "./AgentThrobber";
 
 export default function WritingCanvas({
   workspace,
@@ -33,12 +29,11 @@ export default function WritingCanvas({
   onChange,
   onSave,
   onExport,
-  onImportTemplate,
-  onReviewTemplate,
   onReference,
   saveStatus,
   exportStatus,
   validationErrors,
+  agentActivity,
 }: {
   workspace: ReportWorkspaceView;
   edit: ReportDraftEdit;
@@ -50,23 +45,13 @@ export default function WritingCanvas({
   onChange: (edit: ReportDraftEdit) => void;
   onSave: () => void;
   onExport: () => void;
-  onImportTemplate: () => void;
-  onReviewTemplate: () => void;
   onReference: (reference: WritingBlockReference) => void;
   saveStatus: string | null;
   exportStatus: string | null;
   validationErrors: string[];
+  agentActivity?: { label: string; detail?: string } | null;
 }) {
   const pending = workspace.pending_proposal !== null;
-  const templateReviewRequired = workspace.template_import?.review_required === true;
-  const [showExportNotice, setShowExportNotice] = useState(
-    () => !isNoticeDismissed(EXPORT_NOTICE_KEY)
-  );
-
-  function dismissExportNotice() {
-    dismissNotice(EXPORT_NOTICE_KEY);
-    setShowExportNotice(false);
-  }
 
   function updateSection(index: number, section: ReportSectionEdit) {
     const sections = [...edit.sections];
@@ -110,21 +95,6 @@ export default function WritingCanvas({
             {dirty ? " · Unsaved changes" : " · Saved"}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onImportTemplate}
-          disabled={busy || pending || dirty || editing}
-          title={
-            dirty || editing
-              ? "Save or discard edits before importing a template"
-              : pending
-                ? "Resolve the pending proposal before importing a template"
-                : "Import DOCX content as a new accepted revision"
-          }
-          className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50"
-        >
-          Import .docx
-        </button>
         {!editing ? (
           <button
             type="button"
@@ -157,14 +127,8 @@ export default function WritingCanvas({
         <button
           type="button"
           onClick={onExport}
-          disabled={busy || dirty || templateReviewRequired}
-          title={
-            dirty
-              ? "Save or discard edits before exporting"
-              : templateReviewRequired
-                ? "Review template carryover for this revision before exporting"
-                : undefined
-          }
+          disabled={busy || dirty}
+          title={dirty ? "Save or discard edits before exporting" : undefined}
           className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 rounded-md hover:bg-emerald-700 disabled:opacity-50"
         >
           Export .docx
@@ -172,30 +136,10 @@ export default function WritingCanvas({
       </div>
 
       <div className="px-5 pt-3 space-y-2">
-        {showExportNotice && (
-          <div className="relative text-[11px] leading-4 text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2 pr-9">
-            <p>
-              Local exports may contain PHI and are not encrypted or managed by
-              Claria. Store and share the .docx according to your organization&apos;s
-              privacy and security requirements.
-            </p>
-            <button
-              type="button"
-              aria-label="Hide local export notice"
-              title="Hide this notice"
-              onClick={dismissExportNotice}
-              className="absolute right-2 top-2 text-amber-600 hover:text-amber-900"
-            >
-              <CloseIcon className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-        {workspace.template_import && (
-          <TemplateSafetyPanel
-            template={workspace.template_import}
-            revision={workspace.draft.revision}
-            busy={busy}
-            onReview={onReviewTemplate}
+        {agentActivity && (
+          <AgentThrobber
+            label={agentActivity.label}
+            detail={agentActivity.detail}
           />
         )}
         {(saveStatus || exportStatus || persistedExportStatus) && (
@@ -240,76 +184,6 @@ export default function WritingCanvas({
         </div>
       </div>
     </section>
-  );
-}
-
-function TemplateSafetyPanel({
-  template,
-  revision,
-  busy,
-  onReview,
-}: {
-  template: ReportTemplateImportView;
-  revision: number;
-  busy: boolean;
-  onReview: () => void;
-}) {
-  return (
-    <div
-      className={`rounded border px-3 py-2 text-[11px] leading-4 ${
-        template.review_required
-          ? "border-amber-300 bg-amber-50 text-amber-900"
-          : "border-emerald-200 bg-emerald-50 text-emerald-800"
-      }`}
-      data-testid="template-safety-panel"
-    >
-      <div className="flex items-start gap-3">
-        <div className="flex-1">
-          <p className="font-semibold">
-            DOCX template · {template.review_required ? "carryover review required" : `revision ${revision} reviewed`}
-          </p>
-          {template.review_required ? (
-            <p className="mt-0.5">
-              Check every name, date, pronoun, diagnosis, score, and client-specific
-              fact before exporting.
-              {template.placeholder_count > 0
-                ? ` ${template.placeholder_count} possible unresolved template marker${template.placeholder_count === 1 ? "" : "s"} remain.`
-                : " No common unresolved template markers were detected."}
-            </p>
-          ) : (
-            <p className="mt-0.5">
-              A later manual edit or accepted Claude proposal will require another
-              carryover review.
-            </p>
-          )}
-        </div>
-        {template.review_required && (
-          <button
-            type="button"
-            onClick={onReview}
-            disabled={busy}
-            className="shrink-0 px-2.5 py-1.5 font-semibold text-white bg-amber-700 rounded hover:bg-amber-800 disabled:opacity-50"
-          >
-            Mark reviewed
-          </button>
-        )}
-      </div>
-      {template.warnings.length > 0 && (
-        <details className="mt-1.5">
-          <summary className="cursor-pointer font-medium">
-            Import notes · {template.warnings.length}
-          </summary>
-          <ul className="mt-1 list-disc pl-4 space-y-0.5">
-            {template.warnings.map((warning) => (
-              <li key={warning.code}>
-                {warning.message}
-                {warning.count > 1 ? ` (${warning.count})` : ""}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-    </div>
   );
 }
 

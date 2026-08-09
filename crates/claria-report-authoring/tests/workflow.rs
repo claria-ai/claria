@@ -6,6 +6,7 @@ use claria_core::models::report::{
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 use claria_report_authoring::{self as report_authoring, REPORT_CONFLICT_MESSAGE};
 use claria_storage::client;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const BUCKET: &str = "claria-report-authoring-test";
@@ -208,13 +209,37 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
 }
 
 #[tokio::test]
-async fn template_import_is_previewed_content_with_revision_bound_export_review() {
+async fn template_import_exports_without_confirmation_and_keeps_its_source_package() {
     let (_server, _sdk, s3) = setup().await;
+    s3.put_bucket_versioning()
+        .bucket(BUCKET)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
     let client_id = Uuid::new_v4();
     put_client(&s3, client_id).await;
     let initial = report_authoring::load_report_workspace(&s3, BUCKET, client_id)
         .await
         .expect("workspace");
+    let template_source = b"validated redacted template package".to_vec();
+    let source_sha256 = Sha256::digest(&template_source)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    report_authoring::store_report_template_source(
+        &s3,
+        BUCKET,
+        client_id,
+        &source_sha256,
+        template_source.clone(),
+    )
+    .await
+    .expect("store source package");
     let imported = report_authoring::apply_report_template(
         &s3,
         BUCKET,
@@ -235,7 +260,7 @@ async fn template_import_is_previewed_content_with_revision_bound_export_review(
                 }],
             }],
         },
-        "a".repeat(64),
+        source_sha256,
         vec![ReportTemplateWarning {
             code: ReportTemplateWarningCode::HeadersFootersOmitted,
             count: 2,
@@ -249,33 +274,14 @@ async fn template_import_is_previewed_content_with_revision_bound_export_review(
         .as_ref()
         .expect("template metadata");
     assert_eq!(metadata.imported_revision, 1);
-    assert_eq!(metadata.reviewed_revision, None);
+    assert_eq!(metadata.reviewed_revision, Some(1));
 
-    let blocked =
+    let snapshot =
         report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 1)
             .await
-            .expect_err("unreviewed import must not export");
-    assert!(blocked.to_string().contains("Review template carryover"));
-
-    let reviewed = report_authoring::acknowledge_report_template_review(
-        &s3,
-        BUCKET,
-        client_id,
-        initial.report_id,
-        1,
-    )
-    .await
-    .expect("review template");
-    assert_eq!(
-        reviewed
-            .template_import
-            .as_ref()
-            .and_then(|template| template.reviewed_revision),
-        Some(1)
-    );
-    report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 1)
-        .await
-        .expect("reviewed export snapshot");
+            .expect("export without confirmation");
+    assert_eq!(snapshot.draft.revision, 1);
+    assert_eq!(snapshot.template_source, Some(template_source.clone()));
 
     let edited = report_authoring::save_report_draft(
         &s3,
@@ -284,7 +290,7 @@ async fn template_import_is_previewed_content_with_revision_bound_export_review(
         1,
         ReportContent {
             title: "Imported template revised".to_string(),
-            sections: reviewed.draft.content.sections,
+            sections: imported.draft.content.sections,
         },
     )
     .await
@@ -295,12 +301,15 @@ async fn template_import_is_previewed_content_with_revision_bound_export_review(
             .template_import
             .as_ref()
             .and_then(|template| template.reviewed_revision),
-        None
+        Some(2)
     );
-    assert!(
-        report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 2,)
+    assert_eq!(
+        report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 2)
             .await
-            .is_err()
+            .expect("edited template export")
+            .draft
+            .revision,
+        2
     );
 
     let persisted = claria_storage::objects::get_object(
@@ -313,6 +322,20 @@ async fn template_import_is_previewed_content_with_revision_bound_export_review(
     let json = String::from_utf8(persisted.body).expect("workspace JSON");
     assert!(!json.contains("local_path"));
     assert!(!json.contains("source_filename"));
+
+    report_authoring::delete_report_workspace_for_client(&s3, BUCKET, client_id)
+        .await
+        .expect("delete report objects");
+    assert!(
+        report_authoring::restore_report_workspace_for_client(&s3, BUCKET, client_id)
+            .await
+            .expect("restore report")
+    );
+    let restored =
+        report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 2)
+            .await
+            .expect("restored export snapshot");
+    assert_eq!(restored.template_source, Some(template_source));
 }
 
 #[tokio::test]
@@ -400,6 +423,8 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
     )
     .await;
 
+    let progress = std::sync::Mutex::new(Vec::new());
+    let emit_progress = |event| progress.lock().expect("progress lock").push(event);
     let response = report_authoring::send_report_message(
         &sdk,
         &s3,
@@ -407,10 +432,34 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
         client_id,
         0,
         MODEL_ID,
-        report_authoring::ReportMessageRequest::new("Draft an initial report from the intake."),
+        report_authoring::ReportMessageRequest::new("Draft an initial report from the intake.")
+            .with_progress(&emit_progress),
     )
     .await
     .expect("report turn");
+
+    let progress = progress.into_inner().expect("progress values");
+    assert!(matches!(
+        progress.first(),
+        Some(report_authoring::ReportTurnProgress::ModelCallStarted { call_number: 1 })
+    ));
+    assert!(progress.iter().any(|event| matches!(
+        event,
+        report_authoring::ReportTurnProgress::ToolStarted { name, context }
+            if name == "read_record_file" && context.as_deref() == Some("intake.txt")
+    )));
+    assert!(progress.iter().any(|event| matches!(
+        event,
+        report_authoring::ReportTurnProgress::ToolFinished {
+            name,
+            context,
+            status: claria_core::models::report::ReportToolResultStatus::Error,
+        } if name == "read_record_file" && context.as_deref() == Some("../secret.txt")
+    )));
+    assert!(matches!(
+        progress.last(),
+        Some(report_authoring::ReportTurnProgress::ModelCallStarted { call_number: 3 })
+    ));
 
     assert_eq!(response.attempt.converse_calls, 3);
     assert_eq!(response.attempt.tool_uses, 4);
@@ -535,7 +584,7 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
     )
     .await
     .expect("export draft");
-    assert_eq!(export_draft.content.title, "Initial Assessment");
+    assert_eq!(export_draft.draft.content.title, "Initial Assessment");
 }
 
 #[tokio::test]
