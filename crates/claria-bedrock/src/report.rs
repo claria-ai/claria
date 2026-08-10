@@ -8,9 +8,9 @@
 use std::collections::{HashMap, HashSet};
 
 use aws_sdk_bedrockruntime::types::{
-    ContentBlock, ConversationRole, ConverseTokensRequest, Message, ReasoningContentBlock,
-    ReasoningTextBlock, SystemContentBlock, Tool, ToolConfiguration, ToolInputSchema,
-    ToolResultBlock, ToolResultContentBlock, ToolResultStatus, ToolSpecification,
+    ContentBlock, ConversationRole, ConverseTokensRequest, InferenceConfiguration, Message,
+    ReasoningContentBlock, ReasoningTextBlock, SystemContentBlock, Tool, ToolConfiguration,
+    ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolResultStatus, ToolSpecification,
 };
 use aws_smithy_types::{Blob, Document, Number};
 use claria_core::models::{
@@ -29,7 +29,21 @@ pub const READ_RECORD_FILE_TOOL: &str = "read_record_file";
 pub const PROPOSE_REPORT_CHANGES_TOOL: &str = "propose_report_changes";
 pub const DEFAULT_MAX_TOOL_USES_PER_RESPONSE: usize = 80;
 pub const MAX_TOOL_USES_PER_RESPONSE: usize = 100;
+
+/// Output-token reserve for one report Converse call. This is both the
+/// `max_tokens` sent on the wire and the amount subtracted from the model's
+/// context window to form the input budget — the reserve is enforced, not
+/// aspirational.
 pub const REPORT_OUTPUT_TOKEN_RESERVE: u32 = 8_192;
+
+/// Proposal schema ceilings, derived from [`REPORT_OUTPUT_TOKEN_RESERVE`]:
+/// one response of ≈8k tokens (≈32k characters) must be able to carry a
+/// maximal well-formed proposal, so per-call size limits stay small and the
+/// tool description tells the model to split large rewrites across turns.
+pub const MAX_PROPOSAL_OPERATIONS: u32 = 10;
+/// Maximum blocks per proposed section — sized so a full section fits in
+/// one [`REPORT_OUTPUT_TOKEN_RESERVE`]-bounded response.
+pub const MAX_SECTION_BLOCKS: u32 = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReportConverseOutput {
@@ -286,6 +300,11 @@ pub async fn converse_report_with_tool_limit(
         .system(system)
         .set_messages(Some(sdk_messages))
         .tool_config(tools)
+        .inference_config(
+            InferenceConfiguration::builder()
+                .max_tokens(REPORT_OUTPUT_TOKEN_RESERVE as i32)
+                .build(),
+        )
         .send()
         .await
         .map_err(|error| converse::classify_error("report Converse", error))?;
@@ -510,7 +529,7 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
             "operations": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 25,
+                "maxItems": MAX_PROPOSAL_OPERATIONS,
                 "items": {
                     "oneOf": [
                         {
@@ -530,7 +549,7 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                                 "kind": {"enum": ["add_section"]},
                                 "position": {"type": "integer", "minimum": 0, "maximum": 100},
                                 "heading": {"type": "string", "minLength": 1, "maxLength": 200},
-                                "blocks": {"type": "array", "maxItems": 200, "items": block_schema.clone()}
+                                "blocks": {"type": "array", "maxItems": MAX_SECTION_BLOCKS, "items": block_schema.clone()}
                             }
                         },
                         {
@@ -541,7 +560,7 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                                 "kind": {"enum": ["replace_section"]},
                                 "section_id": {"type": "string", "minLength": 36, "maxLength": 36},
                                 "heading": {"type": "string", "minLength": 1, "maxLength": 200},
-                                "blocks": {"type": "array", "maxItems": 200, "items": block_schema.clone()}
+                                "blocks": {"type": "array", "maxItems": MAX_SECTION_BLOCKS, "items": block_schema.clone()}
                             }
                         },
                         {

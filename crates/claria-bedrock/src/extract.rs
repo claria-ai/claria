@@ -5,13 +5,19 @@
 //! handles parsing the document format natively.
 
 use aws_sdk_bedrockruntime::types::{
-    ContentBlock, ConversationRole, DocumentBlock, DocumentFormat, DocumentSource, Message,
-    SystemContentBlock,
+    ContentBlock, ConversationRole, DocumentBlock, DocumentFormat, DocumentSource,
+    InferenceConfiguration, Message, SystemContentBlock,
 };
 use claria_core::models::turn_usage::TurnUsage;
 use tracing::info;
 
 use crate::{converse, error::BedrockError};
+
+/// Output-token ceiling for one extraction Converse call. A `max_tokens`
+/// stop is a hard error — a truncated extraction must never be persisted as
+/// a sidecar, because it would silently hide document content from every
+/// later chat and report turn.
+pub const EXTRACT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 
 /// Default prompt used for document text extraction when no custom prompt
 /// has been saved to S3.
@@ -62,9 +68,18 @@ pub async fn extract_document_text(
         .model_id(model_id)
         .system(SystemContentBlock::Text(system_prompt.to_string()))
         .messages(message)
+        .inference_config(
+            InferenceConfiguration::builder()
+                .max_tokens(EXTRACT_MAX_OUTPUT_TOKENS as i32)
+                .build(),
+        )
         .send()
         .await
         .map_err(|error| converse::classify_error("document extraction Converse", error))?;
+
+    // Truncation ⇒ Err. The caller persists this text as the document's
+    // sidecar; an incomplete extraction must fail loudly instead.
+    converse::ensure_complete_text_response(response.stop_reason(), EXTRACT_MAX_OUTPUT_TOKENS)?;
 
     let output_message = response
         .output()

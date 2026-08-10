@@ -235,8 +235,18 @@ async fn count_tokens(path: &str, body: Value, state: SharedState) -> Response {
         .pointer("/input/converse")
         .or_else(|| body.get("converse"))
         .unwrap_or(&body);
-    if let Err(message) = validate_report_request(converse) {
-        return validation_error(message);
+    // Tool-configured (report) counting requests get the full report-shape
+    // validation; plain chat counting requests only need messages.
+    if converse.get("toolConfig").is_some() {
+        if let Err(message) = validate_report_request(converse) {
+            return validation_error(message);
+        }
+    } else if converse
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return validation_error("messages must be a non-empty array");
     }
     let model_id = path
         .strip_prefix("/model/")
@@ -390,6 +400,28 @@ async fn converse(path: &str, body: Value, state: SharedState) -> Response {
             )
                 .into_response(),
         };
+    }
+
+    // Plain Converse requests are captured and may be scripted; otherwise
+    // the canned response below keeps existing flows deterministic.
+    let scripted = {
+        let mut st = state.write().await;
+        st.bedrock_text_requests.push(body.clone());
+        if st.bedrock_text_responses.is_empty() {
+            None
+        } else {
+            Some(st.bedrock_text_responses.remove(0))
+        }
+    };
+    if let Some(scripted) = scripted {
+        let status =
+            StatusCode::from_u16(scripted.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return (
+            status,
+            [("content-type", "application/json")],
+            scripted.body.to_string(),
+        )
+            .into_response();
     }
 
     // Return the existing canned response for ordinary Converse requests.

@@ -88,7 +88,7 @@ use aws_sdk_bedrock::types::{
 };
 use aws_sdk_bedrockruntime::types::{
     CachePointBlock, CachePointType, ContentBlock, ConversationRole, ConverseTokensRequest,
-    Message, SystemContentBlock,
+    InferenceConfiguration, Message, SystemContentBlock,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -274,6 +274,18 @@ async fn fetch_us_inference_profiles(
 
 // ── Chat conversation ────────────────────────────────────────────────────────
 
+/// Output-token ceiling for every chat Converse call. The input budget below
+/// is derived from this reserve — the two must move together.
+pub const CHAT_MAX_OUTPUT_TOKENS: u32 = 8_192;
+
+/// Input-token budget for a chat request against `model_id`: the model's
+/// context window minus the [`CHAT_MAX_OUTPUT_TOKENS`] output reserve.
+pub fn chat_input_token_budget(model_id: &str) -> u32 {
+    claria_core::model_id::ModelCapabilities::for_id(model_id)
+        .context_window_tokens
+        .saturating_sub(CHAT_MAX_OUTPUT_TOKENS)
+}
+
 /// Strategy for placing a Bedrock prompt-cache `cachePoint` block on the
 /// system prefix.
 ///
@@ -385,14 +397,47 @@ pub async fn chat_converse(
             vec![SystemContentBlock::Text(system_prompt.to_string())]
         };
 
+    // Input budget: the same estimate-then-verify logic as the report path.
+    // The conversation is estimated at ~4 chars/token; a real CountTokens
+    // call runs only once the estimate comes within ~10% of the budget, and
+    // overflow surfaces as the friendly context-window error instead of a
+    // raw AWS string.
+    let current_chars = system_prompt.len() as u64
+        + messages
+            .iter()
+            .map(|message| message.content.len() as u64)
+            .sum::<u64>();
+    let mut budget = crate::converse::InputTokenBudget::estimated(chat_input_token_budget(model_id));
+    budget
+        .ensure_within(
+            current_chars,
+            || async {
+                let bare_model_id = counting_model(config).await?;
+                let request = ConverseTokensRequest::builder()
+                    .set_messages(Some(converse_messages.clone()))
+                    .system(SystemContentBlock::Text(system_prompt.to_string()))
+                    .build();
+                crate::converse::count_input_tokens(&client, bare_model_id, request).await
+            },
+            |_, _| BedrockError::ContextWindowExceeded,
+        )
+        .await?;
+
     let response = client
         .converse()
         .model_id(model_id)
         .set_system(Some(system_blocks))
         .set_messages(Some(converse_messages))
+        .inference_config(
+            InferenceConfiguration::builder()
+                .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
+                .build(),
+        )
         .send()
         .await
         .map_err(|error| crate::converse::classify_error("chat Converse", error))?;
+
+    crate::converse::ensure_complete_text_response(response.stop_reason(), CHAT_MAX_OUTPUT_TOKENS)?;
 
     let output_message = response
         .output()

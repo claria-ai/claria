@@ -9,7 +9,7 @@
 use aws_sdk_bedrockruntime::{
     error::{DisplayErrorContext, ProvideErrorMetadata, SdkError},
     operation::RequestId,
-    types::{ContentBlock, ConverseTokensRequest, CountTokensInput, Message, TokenUsage},
+    types::{ContentBlock, ConverseTokensRequest, CountTokensInput, Message, StopReason, TokenUsage},
 };
 use claria_core::models::turn_usage::TurnUsage;
 
@@ -91,6 +91,90 @@ pub(crate) fn optional_usage(usage: Option<&TokenUsage>, model_id: &str) -> Opti
             || extracted.cache_write_input_tokens > 0)
             .then_some(extracted)
     })
+}
+
+/// Enforce a complete text response.
+///
+/// `EndTurn` and `StopSequence` are complete; `MaxTokens` and
+/// `ModelContextWindowExceeded` become typed errors so no caller can
+/// persist silently truncated output as success. Any other stop reason is a
+/// protocol surprise for a text-only flow.
+pub(crate) fn ensure_complete_text_response(
+    stop_reason: &StopReason,
+    max_output_tokens: u32,
+) -> Result<(), BedrockError> {
+    match stop_reason {
+        StopReason::EndTurn | StopReason::StopSequence => Ok(()),
+        StopReason::MaxTokens => Err(BedrockError::ResponseTruncated { max_output_tokens }),
+        StopReason::ModelContextWindowExceeded => Err(BedrockError::ContextWindowExceeded),
+        other => Err(BedrockError::ResponseParse(format!(
+            "unexpected stop reason {other:?} for a text-only response"
+        ))),
+    }
+}
+
+/// Incremental input-token budget shared by the chat and report flows.
+///
+/// Token counts and character measures are kept together so a request is
+/// counted with a real `CountTokens` call only when needed: appended content
+/// is estimated at ~4 characters per token, and the estimate is re-verified
+/// against the service only once it comes within ~10% of the budget.
+pub(crate) struct InputTokenBudget {
+    budget: u32,
+    /// `(verified_tokens, chars_at_verification)` from the last real count.
+    verified: Option<(u32, u64)>,
+    /// Whether the first check must run a real count (report semantics:
+    /// count once per turn) or may trust the character estimate until it
+    /// nears the budget (chat semantics).
+    verify_first: bool,
+}
+
+impl InputTokenBudget {
+    /// A budget that trusts the character estimate until it comes within
+    /// ~10% of the budget, only then verifying with a real count.
+    pub(crate) fn estimated(budget: u32) -> Self {
+        Self {
+            budget,
+            verified: None,
+            verify_first: false,
+        }
+    }
+
+    /// Check a request of `current_chars` characters against the budget.
+    ///
+    /// `count` runs a real `CountTokens` for the current request shape;
+    /// `over_budget` builds the caller's typed error from
+    /// `(input_tokens, budget)`.
+    pub(crate) async fn ensure_within<F, Fut, E>(
+        &mut self,
+        current_chars: u64,
+        count: F,
+        over_budget: E,
+    ) -> Result<(), BedrockError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<u32, BedrockError>>,
+        E: FnOnce(u32, u32) -> BedrockError,
+    {
+        let estimate = match self.verified {
+            Some((tokens, chars)) => tokens.saturating_add(
+                u32::try_from(current_chars.saturating_sub(chars) / 4).unwrap_or(u32::MAX),
+            ),
+            None if self.verify_first => u32::MAX,
+            None => u32::try_from(current_chars / 4).unwrap_or(u32::MAX),
+        };
+        // Within 90% of the budget (or a mandatory first check): verify.
+        if u64::from(estimate) * 10 < u64::from(self.budget) * 9 {
+            return Ok(());
+        }
+        let tokens = count().await?;
+        self.verified = Some((tokens, current_chars));
+        if tokens > self.budget {
+            Err(over_budget(tokens, self.budget))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Count the input tokens of one Converse-shaped request against a bare

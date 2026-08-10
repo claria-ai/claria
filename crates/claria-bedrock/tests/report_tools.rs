@@ -99,7 +99,15 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
         assert_eq!(tool["toolSpec"]["inputSchema"]["json"]["type"], "object");
     }
     let proposal = &tools[2]["toolSpec"]["inputSchema"]["json"];
-    assert_eq!(proposal["properties"]["operations"]["maxItems"], 25);
+    assert_eq!(
+        proposal["properties"]["operations"]["maxItems"],
+        claria_bedrock::report::MAX_PROPOSAL_OPERATIONS
+    );
+    // Every billed call reserves its enforced output budget on the wire.
+    assert_eq!(
+        request["inferenceConfig"]["maxTokens"],
+        claria_bedrock::report::REPORT_OUTPUT_TOKEN_RESERVE
+    );
 }
 
 #[tokio::test]

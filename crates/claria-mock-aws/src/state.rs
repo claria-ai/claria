@@ -61,6 +61,11 @@ pub struct MockState {
     /// `toolConfig`. Ordinary chat/extraction requests keep their existing
     /// canned behavior.
     pub bedrock_tool_responses: Vec<ScriptedBedrockResponse>,
+    /// FIFO responses for plain (no `toolConfig`) Converse requests. When
+    /// empty, the canned chat/extraction response is returned.
+    pub bedrock_text_responses: Vec<ScriptedBedrockResponse>,
+    /// Raw plain Converse request bodies, in wire order.
+    pub bedrock_text_requests: Vec<serde_json::Value>,
     /// Raw tool-configured Converse request bodies, in wire order.
     pub bedrock_tool_requests: Vec<serde_json::Value>,
     /// Decoded model IDs for the captured tool-configured requests.

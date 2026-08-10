@@ -36,6 +36,10 @@ pub struct TranslationOutput {
     pub translation: String,
 }
 
+/// Output-token ceiling for one translation Converse call. Batches are
+/// per-segment utterances, so translations fit comfortably below this.
+pub const TRANSLATE_MAX_OUTPUT_TOKENS: u32 = 8_192;
+
 const SYSTEM_PROMPT: &str = "\
 You translate short clinical-conversation utterances into English. \
 You return JSON only: {\"translations\":[{\"index\":N,\"translation\":\"...\"}, ...]} \
@@ -97,11 +101,14 @@ pub async fn translate_segments(
         .inference_config(
             InferenceConfiguration::builder()
                 .temperature(0.0)
+                .max_tokens(TRANSLATE_MAX_OUTPUT_TOKENS as i32)
                 .build(),
         )
         .send()
         .await
         .map_err(|error| converse::classify_error("translation Converse", error))?;
+
+    converse::ensure_complete_text_response(response.stop_reason(), TRANSLATE_MAX_OUTPUT_TOKENS)?;
 
     let output_message = response
         .output()
