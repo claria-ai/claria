@@ -13,6 +13,7 @@ All notable changes to Claria are documented here.
 - The exported console log is written with owner-only file permissions
 - Logs also roll to bounded daily files on disk, and the console gains a button that opens the log folder
 - Log filter directives for all workspace crates are built from one shared list
+- Creating, renaming, deleting, and restoring clients, uploading, editing, deleting, and restoring record files, and saving prompts now all write durable audit events
 - Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
 - Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
 - Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed

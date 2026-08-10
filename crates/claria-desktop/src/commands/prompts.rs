@@ -137,6 +137,9 @@ pub async fn save_prompt(
         )
         .await?;
 
+        ctx.record_audit(ctx.audit_event("prompt_saved", "prompt", &prompt_name))
+            .await;
+
         Ok(())
     })
     .await
@@ -243,6 +246,12 @@ pub async fn restore_prompt_version(
         .await?;
 
         tracing::info!(prompt_name, version_id, "prompt version restored");
+
+        ctx.record_audit(
+            ctx.audit_event("prompt_version_restored", "prompt", &prompt_name)
+                .with_details(serde_json::json!({ "version_id": version_id })),
+        )
+        .await;
 
         Ok(())
     })

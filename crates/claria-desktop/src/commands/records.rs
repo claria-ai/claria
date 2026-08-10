@@ -193,6 +193,17 @@ pub async fn upload_record_file(
 
         tracing::info!(client_id = %id, extension, "record file uploaded");
 
+        // The durable audit trail may carry the filename; it lives only in
+        // access-controlled S3.
+        ctx.record_audit(
+            ctx.audit_event("record_file_uploaded", "record_file", filename)
+                .with_details(serde_json::json!({
+                    "client_id": id.to_string(),
+                    "bytes": file_size,
+                })),
+        )
+        .await;
+
         // Generate sidecar text extraction for supported document types.
         if let Some(format) = claria_bedrock::extract::document_format_for_extension(&extension) {
             let sidecar_key = format!("{key}.text");
@@ -331,6 +342,15 @@ pub async fn upload_record_file_with_options(
             .await?;
         tracing::info!(client_id = %id, extension, "record file uploaded (wizard path)");
 
+        ctx.record_audit(
+            ctx.audit_event("record_file_uploaded", "record_file", filename)
+                .with_details(serde_json::json!({
+                    "client_id": id.to_string(),
+                    "bytes": file_size,
+                })),
+        )
+        .await;
+
         let translate = overrides
             .as_ref()
             .and_then(|o| o.translate_to_english)
@@ -460,6 +480,12 @@ pub async fn delete_record_file(
 
         tracing::info!(client_id = %id, "record file deleted");
 
+        ctx.record_audit(
+            ctx.audit_event("record_file_deleted", "record_file", &filename)
+                .with_details(serde_json::json!({ "client_id": id.to_string() })),
+        )
+        .await;
+
         Ok(())
     })
     .await
@@ -528,6 +554,15 @@ pub async fn create_text_record_file(
 
         tracing::info!(client_id = %id, "text record file created");
 
+        ctx.record_audit(
+            ctx.audit_event("record_file_created", "record_file", &filename)
+                .with_details(serde_json::json!({
+                    "client_id": id.to_string(),
+                    "bytes": file_size,
+                })),
+        )
+        .await;
+
         Ok(RecordFile {
             filename,
             size: file_size,
@@ -562,6 +597,12 @@ pub async fn update_text_record_file(
         .await?;
 
         tracing::info!(client_id = %id, "text record file updated");
+
+        ctx.record_audit(
+            ctx.audit_event("record_file_updated", "record_file", &filename)
+                .with_details(serde_json::json!({ "client_id": id.to_string() })),
+        )
+        .await;
 
         Ok(())
     })

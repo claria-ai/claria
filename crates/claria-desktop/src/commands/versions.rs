@@ -121,6 +121,17 @@ pub async fn restore_file_version(
 
         tracing::info!(client_id = %id, version_id, "file version restored");
 
+        // The durable audit trail may carry the filename; it lives only in
+        // access-controlled S3.
+        ctx.record_audit(
+            ctx.audit_event("record_file_version_restored", "record_file", &filename)
+                .with_details(serde_json::json!({
+                    "client_id": id.to_string(),
+                    "version_id": version_id,
+                })),
+        )
+        .await;
+
         Ok(())
     })
     .await
@@ -226,6 +237,12 @@ pub async fn restore_deleted_file(
         .await?;
 
         tracing::info!(client_id = %id, "deleted file restored");
+
+        ctx.record_audit(
+            ctx.audit_event("record_file_restored", "record_file", &filename)
+                .with_details(serde_json::json!({ "client_id": id.to_string() })),
+        )
+        .await;
 
         Ok(())
     })
@@ -363,6 +380,14 @@ pub async fn restore_client(
             report_restored = outcome.report_restored,
             "deleted client restored"
         );
+
+        ctx.record_audit(
+            ctx.audit_event("client_restored", "client", id.to_string())
+                .with_details(serde_json::json!({
+                    "report_restored": outcome.report_restored,
+                })),
+        )
+        .await;
 
         Ok(())
     })

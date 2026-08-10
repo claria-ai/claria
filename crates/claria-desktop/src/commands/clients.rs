@@ -58,6 +58,9 @@ pub async fn create_client(
         // The client's name is PHI and never logged.
         tracing::info!(client_id = %id, "client record created");
 
+        ctx.record_audit(ctx.audit_event("client_created", "client", id.to_string()))
+            .await;
+
         Ok(ClientSummary {
             id: id.to_string(),
             name,
@@ -95,6 +98,8 @@ pub async fn update_client_name(
         let id = parse_uuid(&client_id)?;
         let update = claria_records::update_client_name(&ctx.s3, &ctx.bucket, id, &name).await?;
         tracing::info!(client_id = %id, "client record renamed");
+        ctx.record_audit(ctx.audit_event("client_renamed", "client", id.to_string()))
+            .await;
         Ok(update)
     })
     .await
@@ -118,6 +123,14 @@ pub async fn delete_client(
             deleted_report_objects = outcome.deleted_report_objects,
             "client deleted"
         );
+        ctx.record_audit(
+            ctx.audit_event("client_deleted", "client", id.to_string())
+                .with_details(serde_json::json!({
+                    "deleted_records": outcome.deleted_records,
+                    "deleted_report_objects": outcome.deleted_report_objects,
+                })),
+        )
+        .await;
         Ok(())
     })
     .await
