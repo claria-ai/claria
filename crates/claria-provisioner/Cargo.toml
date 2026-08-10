@@ -19,7 +19,6 @@ backon.workspace = true
 serde.workspace = true
 specta = { workspace = true, features = ["serde_json"] }
 serde_json.workspace = true
-dirs.workspace = true
 thiserror.workspace = true
 percent-encoding.workspace = true
 tracing.workspace = true

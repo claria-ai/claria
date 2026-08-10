@@ -677,6 +677,7 @@ pub async fn plan(
             &ctx.sdk_config,
             &cfg.system_name,
             &cfg.account_id,
+            &config::provisioner_state_dir(&cfg.system_name)?,
         )?;
         let prov_state = persistence.load().await?;
 
@@ -706,6 +707,7 @@ pub async fn apply(
             &ctx.sdk_config,
             &cfg.system_name,
             &cfg.account_id,
+            &config::provisioner_state_dir(&cfg.system_name)?,
         )?;
 
         let mut prov_state = persistence.load().await?;
@@ -743,6 +745,7 @@ pub async fn destroy(state: State<'_, DesktopState>) -> Result<(), String> {
             &ctx.sdk_config,
             &cfg.system_name,
             &cfg.account_id,
+            &config::provisioner_state_dir(&cfg.system_name)?,
         )?;
 
         let mut prov_state = persistence.load().await?;
@@ -765,6 +768,7 @@ pub async fn reset_provisioner_state(state: State<'_, DesktopState>) -> Result<(
             &ctx.sdk_config,
             &ctx.cfg.system_name,
             &ctx.cfg.account_id,
+            &config::provisioner_state_dir(&ctx.cfg.system_name)?,
         )?;
         Ok(persistence.delete().await?)
     })
@@ -846,10 +850,12 @@ pub async fn provision_scan(
         let syncers = claria_provisioner::build_syncers(&sdk_config, &manifest, None);
 
         // Try to load state; fall back to empty state if persistence isn't set up yet.
+        let state_dir = config::provisioner_state_dir(&system_name)?;
         let prov_state = match claria_provisioner::build_persistence(
             &sdk_config,
             &system_name,
             &identity.account_id,
+            &state_dir,
         ) {
             Ok(p) => p.load().await.unwrap_or_else(|_| {
                 claria_provisioner::ProvisionerState::new(
@@ -925,6 +931,7 @@ pub async fn provision_apply(
             &sdk_config,
             &system_name,
             &identity.account_id,
+            &config::provisioner_state_dir(&system_name)?,
         )?;
 
         let mut prov_state =
@@ -1109,6 +1116,7 @@ pub async fn provision_apply(
                 &regular_config,
                 &system_name,
                 &identity.account_id,
+                &config::provisioner_state_dir(&system_name)?,
             )?;
 
             execute_with_progress(

@@ -19,6 +19,7 @@ All notable changes to Claria are documented here.
 - Opening a URL on Windows goes through the platform API instead of a shell command, and URLs with whitespace or control characters are rejected
 - Creating the IAM policy without a resolved account ID now fails instead of silently widening resource scopes to a wildcard
 - The plaintext-with-file-permissions credential storage model is documented, with keychain migration tracked
+- The provisioner receives its local state directory from the desktop instead of deriving app paths itself
 - Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
 - Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
 - Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed

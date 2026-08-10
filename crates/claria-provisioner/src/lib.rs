@@ -8,13 +8,12 @@
 //! - `bootstrap_account()` — create least-privilege IAM user from root or admin credentials
 //! - `build_manifest()` — construct the resource manifest from config
 //! - `build_syncers()` — construct all ResourceSyncer impls from an SdkConfig and manifest
-//! - `build_persistence()` — construct StatePersistence from an SdkConfig
+//! - `build_persistence()` — construct StatePersistence from an SdkConfig and a caller-provided state directory
 //! - `plan()` — scan all resources and produce an annotated plan
 //! - `execute()` — apply a plan, flushing state after each action
 //! - `destroy_all()` — tear down all managed resources
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 pub mod account_setup;
 pub mod addr;
@@ -151,22 +150,23 @@ pub fn build_syncers(
         .collect()
 }
 
-/// Construct a [`StatePersistence`] from an SDK config and system name.
+/// Construct a [`StatePersistence`] from an SDK config, system name, and the
+/// caller-provided local state directory.
+///
+/// The desktop app owns every local path decision — this crate never derives
+/// one. `local_state_dir` is the directory the safety-net copy of the state
+/// lives in; the file name within it is this crate's concern.
 pub fn build_persistence(
     config: &aws_config::SdkConfig,
     system_name: &str,
     account_id: &str,
+    local_state_dir: &std::path::Path,
 ) -> Result<StatePersistence, ProvisionerError> {
     let s3_client = claria_storage::client::from_config(config);
     let bucket = claria_core::s3_keys::bucket_name(account_id, system_name);
     let s3_key = claria_core::s3_keys::PROVISIONER_STATE.to_string();
 
-    let local_dir = dirs::config_dir()
-        .ok_or_else(|| ProvisionerError::State("no OS config directory found".into()))?
-        .join("com.claria.desktop")
-        .join(system_name);
-
-    let local_path = local_dir.join("provisioner-state.json");
+    let local_path = local_state_dir.join("provisioner-state.json");
 
     Ok(StatePersistence {
         s3: s3_client,
@@ -174,9 +174,4 @@ pub fn build_persistence(
         s3_key,
         local_path,
     })
-}
-
-/// Resolve the local state directory for a given system name.
-pub fn local_state_dir(system_name: &str) -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("com.claria.desktop").join(system_name))
 }

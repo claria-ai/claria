@@ -104,8 +104,8 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 ### Boundary Rules
 - Library crates accept `&aws_config::SdkConfig` — they never build their own SDK configs
 - Library crates return `Result<T, CrateError>` — the caller decides how to present errors
-- Library crates never do I/O to the local filesystem
-- `claria-desktop` is the only crate that reads/writes local config files
+- Library crates never do I/O to the local filesystem. Blessed exception: the provisioner's dual-write state persistence keeps a local safety-net copy — but it receives the state directory from the desktop caller (`build_persistence` parameter) and never derives a path itself
+- `claria-desktop` is the only crate that reads/writes local config files (and the only crate that knows where local app directories live)
 - Crates communicate through well-defined public APIs, not shared mutable state
 
 ## S3 Key Layout

@@ -1360,7 +1360,6 @@ dependencies = [
  "claria-core",
  "claria-mock-aws",
  "claria-storage",
- "dirs",
  "percent-encoding",
  "serde",
  "serde_json",

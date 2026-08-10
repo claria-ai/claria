@@ -262,6 +262,15 @@ fn config_path() -> eyre::Result<PathBuf> {
     Ok(config_dir()?.join("config.json"))
 }
 
+/// Machine-local directory for the provisioner's safety-net state copy.
+///
+/// Library crates never derive local paths (boundary rule): the desktop
+/// resolves this directory and passes it into
+/// `claria_provisioner::build_persistence`.
+pub fn provisioner_state_dir(system_name: &str) -> eyre::Result<PathBuf> {
+    Ok(config_dir()?.join(system_name))
+}
+
 pub fn has_config() -> bool {
     config_path().map(|p| p.exists()).unwrap_or(false)
 }
