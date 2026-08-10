@@ -4,46 +4,11 @@ use aws_sdk_s3::Client as S3Client;
 use claria_core::models::client::Client;
 use claria_storage::error::StorageError;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use uuid::Uuid;
 
+use crate::error::{RecordsError, storage};
+
 const LIFECYCLE_SCHEMA_VERSION: u32 = 1;
-
-#[derive(Debug, Error)]
-pub enum ClientLifecycleError {
-    #[error("The client record does not match its storage key.")]
-    InvalidClient,
-
-    #[error("The client deletion recovery state is invalid.")]
-    InvalidRecoveryState,
-
-    #[error("Client storage is unavailable while {operation}.")]
-    Storage {
-        operation: &'static str,
-        #[source]
-        source: StorageError,
-    },
-
-    #[error("The report workspace could not be restored safely.")]
-    ReportRestore {
-        #[source]
-        source: claria_report_authoring::ReportAuthoringError,
-    },
-
-    #[error("Client deletion failed and was rolled back safely.")]
-    DeletionRolledBack {
-        #[source]
-        source: Box<ClientLifecycleError>,
-    },
-
-    #[error(
-        "Client deletion stopped and automatic recovery is incomplete. Retry the deletion before editing this client."
-    )]
-    RecoveryIncomplete {
-        #[source]
-        source: Box<ClientLifecycleError>,
-    },
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientDeletionOutcome {
@@ -77,7 +42,7 @@ pub async fn delete_client(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<ClientDeletionOutcome, ClientLifecycleError> {
+) -> Result<ClientDeletionOutcome, RecordsError> {
     let lifecycle_key = claria_core::s3_keys::client_lifecycle(client_id);
     let client_key = claria_core::s3_keys::client(client_id);
     let records_prefix = claria_core::s3_keys::client_records_prefix(client_id);
@@ -141,15 +106,15 @@ pub async fn delete_client(
             .await;
             if client_restore.is_ok() && records_restore.is_ok() && report_restore.is_ok() {
                 match delete_if_exists(s3, bucket, &lifecycle_key).await {
-                    Ok(()) => Err(ClientLifecycleError::DeletionRolledBack {
+                    Ok(()) => Err(RecordsError::DeletionRolledBack {
                         source: Box::new(original_error),
                     }),
-                    Err(_) => Err(ClientLifecycleError::RecoveryIncomplete {
+                    Err(_) => Err(RecordsError::RecoveryIncomplete {
                         source: Box::new(original_error),
                     }),
                 }
             } else {
-                Err(ClientLifecycleError::RecoveryIncomplete {
+                Err(RecordsError::RecoveryIncomplete {
                     source: Box::new(original_error),
                 })
             }
@@ -161,7 +126,7 @@ pub async fn restore_client(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<ClientRestoreOutcome, ClientLifecycleError> {
+) -> Result<ClientRestoreOutcome, RecordsError> {
     let client_key = claria_core::s3_keys::client(client_id);
     let versions = claria_storage::objects::list_object_versions(s3, bucket, &client_key)
         .await
@@ -169,7 +134,7 @@ pub async fn restore_client(
     let real = versions
         .iter()
         .find(|version| !version.is_delete_marker)
-        .ok_or(ClientLifecycleError::InvalidClient)?;
+        .ok_or(RecordsError::InvalidClient)?;
     let output =
         claria_storage::objects::get_object_version(s3, bucket, &client_key, &real.version_id)
             .await
@@ -206,7 +171,7 @@ pub async fn restore_client(
     let report_restored =
         claria_report_authoring::restore_report_workspace_for_client(s3, bucket, client_id)
             .await
-            .map_err(|source| ClientLifecycleError::ReportRestore { source })?;
+            .map_err(|source| RecordsError::ReportRestore { source })?;
     delete_if_exists(
         s3,
         bucket,
@@ -223,10 +188,10 @@ async fn load_or_start_deletion(
     client_id: Uuid,
     client_key: &str,
     lifecycle_key: &str,
-) -> Result<ClientDeletionState, ClientLifecycleError> {
+) -> Result<ClientDeletionState, RecordsError> {
     let lifecycle = match load_recovery_state(s3, bucket, lifecycle_key, client_id).await {
         Ok(existing) => existing,
-        Err(ClientLifecycleError::Storage {
+        Err(RecordsError::Storage {
             source: StorageError::NotFound { .. },
             ..
         }) => {
@@ -266,7 +231,7 @@ async fn load_recovery_state(
     bucket: &str,
     lifecycle_key: &str,
     client_id: Uuid,
-) -> Result<ClientDeletionState, ClientLifecycleError> {
+) -> Result<ClientDeletionState, RecordsError> {
     claria_storage::state::load_state_checked(
         s3,
         bucket,
@@ -282,7 +247,7 @@ async fn load_recovery_state(
     .await
     .map(|(state, _)| state)
     .map_err(|source| match source {
-        StorageError::InvalidState { .. } => ClientLifecycleError::InvalidRecoveryState,
+        StorageError::InvalidState { .. } => RecordsError::InvalidRecoveryState,
         other => storage("loading deletion recovery state", other),
     })
 }
@@ -290,7 +255,7 @@ async fn load_recovery_state(
 /// The identity rule shared by every read of a client record: the stored ID
 /// must match the storage key it was read from, and the nil UUID never names
 /// a real client.
-fn check_client_identity(client: &Client, expected_id: Uuid) -> Result<(), String> {
+pub(crate) fn check_client_identity(client: &Client, expected_id: Uuid) -> Result<(), String> {
     if client.id != expected_id || expected_id.is_nil() {
         return Err("The client record does not match its storage key.".to_string());
     }
@@ -304,7 +269,7 @@ async fn load_checked_client(
     key: &str,
     client_id: Uuid,
     operation: &'static str,
-) -> Result<Client, ClientLifecycleError> {
+) -> Result<Client, RecordsError> {
     claria_storage::state::load_state_checked(s3, bucket, key, None, |client: &Client| {
         check_client_identity(client, client_id)
     })
@@ -312,7 +277,7 @@ async fn load_checked_client(
     .map(|(client, _)| client)
     .map_err(|source| match source {
         StorageError::Serialization(_) | StorageError::InvalidState { .. } => {
-            ClientLifecycleError::InvalidClient
+            RecordsError::InvalidClient
         }
         other => storage(operation, other),
     })
@@ -320,17 +285,12 @@ async fn load_checked_client(
 
 /// Validate raw client bytes (e.g. a historical S3 version) against the
 /// identity rule.
-fn validate_client_body(body: &[u8], expected_id: Uuid) -> Result<(), ClientLifecycleError> {
-    let client: Client =
-        serde_json::from_slice(body).map_err(|_| ClientLifecycleError::InvalidClient)?;
-    check_client_identity(&client, expected_id).map_err(|_| ClientLifecycleError::InvalidClient)
+fn validate_client_body(body: &[u8], expected_id: Uuid) -> Result<(), RecordsError> {
+    let client: Client = serde_json::from_slice(body).map_err(|_| RecordsError::InvalidClient)?;
+    check_client_identity(&client, expected_id).map_err(|_| RecordsError::InvalidClient)
 }
 
-async fn delete_if_exists(
-    s3: &S3Client,
-    bucket: &str,
-    key: &str,
-) -> Result<(), ClientLifecycleError> {
+async fn delete_if_exists(s3: &S3Client, bucket: &str, key: &str) -> Result<(), RecordsError> {
     match claria_storage::objects::get_object(s3, bucket, key).await {
         Ok(_) => claria_storage::objects::delete_object(s3, bucket, key)
             .await
@@ -338,8 +298,4 @@ async fn delete_if_exists(
         Err(StorageError::NotFound { .. }) => Ok(()),
         Err(source) => Err(storage("checking lifecycle recovery state", source)),
     }
-}
-
-fn storage(operation: &'static str, source: StorageError) -> ClientLifecycleError {
-    ClientLifecycleError::Storage { operation, source }
 }

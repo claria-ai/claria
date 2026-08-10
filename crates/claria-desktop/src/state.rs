@@ -2,10 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::Mutex;
 
-use claria_desktop::{
-    config::{ClariaConfig, CredentialSource},
-    record_cache::RecordCache,
-};
+use claria_desktop::config::{ClariaConfig, CredentialSource};
+use claria_records::RecordCache;
 
 /// An `SdkConfig` cached with the inputs it was built from. The SDK's pooled
 /// HTTP connector lives inside the `SdkConfig`, so reusing it across commands

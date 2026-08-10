@@ -1,12 +1,11 @@
-//! Tests for the concurrent S3 listing helpers in `claria_desktop::records`,
+//! Tests for the concurrent S3 listing helpers in `claria_records`,
 //! driven end-to-end against `claria-mock-aws`.
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use aws_sdk_s3::primitives::ByteStream;
 
-use claria_desktop::record_cache::RecordCache;
-use claria_desktop::records::{
-    ClientSummary, fetch_record_text, fetch_record_texts, get_client_record_details,
+use claria_records::{
+    ClientSummary, RecordCache, fetch_record_text, fetch_record_texts, get_client_record_details,
     list_client_summaries, search_record_contents, update_client_name, validate_client_name,
 };
 use claria_mock_aws::testing::MockServer;
@@ -243,11 +242,15 @@ async fn client_record_details_include_distinct_name_changes_newest_first() {
 #[test]
 fn client_name_validation_rejects_blank_and_oversized_names() {
     assert_eq!(
-        validate_client_name("   ").expect_err("blank name"),
+        validate_client_name("   ")
+            .expect_err("blank name")
+            .to_string(),
         "Client name cannot be empty."
     );
     assert_eq!(
-        validate_client_name(&"x".repeat(201)).expect_err("oversized name"),
+        validate_client_name(&"x".repeat(201))
+            .expect_err("oversized name")
+            .to_string(),
         "Client name cannot exceed 200 characters."
     );
 }

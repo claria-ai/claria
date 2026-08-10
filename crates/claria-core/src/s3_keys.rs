@@ -3,6 +3,7 @@
 //! Pure string functions — no AWS SDK dependency. These define the canonical
 //! layout of objects in the Claria S3 bucket.
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// The one bucket Claria stores everything in, for a given AWS account and
@@ -40,6 +41,64 @@ pub fn client_records_search_prefix(id: Uuid, filename_prefix: &str) -> String {
 pub fn is_hidden_sidecar(key: &str, keys: &std::collections::HashSet<&str>) -> bool {
     key.strip_suffix(".text")
         .is_some_and(|base| keys.contains(base))
+}
+
+/// A user-visible record file resolved against the sidecar rules, produced by
+/// [`visible_record_files`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisibleRecordFile {
+    /// Path relative to the `records/{uuid}/` prefix.
+    pub filename: String,
+    /// Index into the input `keys` slice of the file itself.
+    pub base_index: usize,
+    /// Index into the input `keys` slice of the object holding the file's
+    /// readable text: its `.text` sidecar when one exists, otherwise the file
+    /// itself.
+    pub source_index: usize,
+}
+
+/// The one implementation of the record visibility rules, applied to a
+/// complete `records/{uuid}/` listing:
+///
+/// - Chat history under `chat-history/` is not a record file.
+/// - A `.text` sidecar is hidden while its base file exists (and is a visible
+///   file of its own when the base is gone) — see [`is_hidden_sidecar`].
+/// - Each visible file's readable text comes from its `.text` sidecar when
+///   one exists, otherwise from the file itself.
+///
+/// `keys` must be the full listing under `prefix`; callers with S3 access
+/// should go through `claria_records::record_inventory`, which walks the
+/// bucket and applies this rule.
+pub fn visible_record_files(prefix: &str, keys: &[&str]) -> Vec<VisibleRecordFile> {
+    let index_by_key: std::collections::HashMap<&str, usize> = keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| (*key, index))
+        .collect();
+    let key_set: std::collections::HashSet<&str> = keys.iter().copied().collect();
+
+    keys.iter()
+        .enumerate()
+        .filter_map(|(base_index, key)| {
+            let filename = key.strip_prefix(prefix)?;
+            if filename.is_empty() || filename.starts_with("chat-history/") {
+                return None;
+            }
+            if is_hidden_sidecar(key, &key_set) {
+                return None;
+            }
+            let sidecar_key = format!("{key}.text");
+            let source_index = index_by_key
+                .get(sidecar_key.as_str())
+                .copied()
+                .unwrap_or(base_index);
+            Some(VisibleRecordFile {
+                filename: filename.to_string(),
+                base_index,
+                source_index,
+            })
+        })
+        .collect()
 }
 
 pub fn client_record_file(id: Uuid, filename: &str) -> String {

@@ -8,7 +8,7 @@ members = [
     "crates/claria-provisioner",
     "crates/claria-transcribe",
     "crates/claria-billing",
-    "crates/claria-client-lifecycle",
+    "crates/claria-records",
     "crates/claria-report-authoring",
     "crates/claria-docx",
     "crates/claria-desktop",
@@ -24,11 +24,11 @@ license = "GPL-3.0-only"
 claria-audit = { path = "crates/claria-audit" }
 claria-bedrock = { path = "crates/claria-bedrock" }
 claria-billing = { path = "crates/claria-billing" }
-claria-client-lifecycle = { path = "crates/claria-client-lifecycle" }
 claria-core = { path = "crates/claria-core" }
 claria-docx = { path = "crates/claria-docx" }
 claria-mock-aws = { path = "crates/claria-mock-aws" }
 claria-provisioner = { path = "crates/claria-provisioner" }
+claria-records = { path = "crates/claria-records" }
 claria-report-authoring = { path = "crates/claria-report-authoring" }
 claria-storage = { path = "crates/claria-storage" }
 claria-transcribe = { path = "crates/claria-transcribe" }
@@ -57,6 +57,7 @@ dirs = "=6.0.0"
 eyre = "=0.6.12"
 futures = "=0.3.32"
 jiff = { version = "=0.2.31", features = ["serde"] }
+lru = "=0.18.0"
 percent-encoding = "=2.3.2"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"

@@ -10,7 +10,5 @@ pub mod config;
 pub mod console;
 pub mod http;
 pub mod local_export;
-pub mod record_cache;
-pub mod records;
 pub mod report_authoring;
 pub mod update;

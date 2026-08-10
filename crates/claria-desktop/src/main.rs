@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     // the info baseline, so a log a user sends in carries durations with zero
     // configuration, while SDK/hyper trace noise stays out.
     let console_filter = tracing_subscriber::EnvFilter::new(
-        "info,claria_storage=trace,claria_bedrock=trace,claria_desktop=trace",
+        "info,claria_storage=trace,claria_bedrock=trace,claria_desktop=trace,claria_records=trace",
     );
 
     tracing_subscriber::registry()

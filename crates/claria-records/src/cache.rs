@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use lru::LruCache;
 
+use crate::error::{RecordsError, storage};
+
 /// Bounded number of record objects held in memory.
 const CAPACITY: usize = 5000;
 
@@ -52,10 +54,13 @@ impl RecordCache {
         bucket: &str,
         key: &str,
         etag: &str,
-    ) -> Result<Arc<[u8]>, String> {
+    ) -> Result<Arc<[u8]>, RecordsError> {
         // Hit path: matching, non-empty ETag serves cached bytes.
         if !etag.is_empty() {
-            let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| RecordsError::CacheUnavailable)?;
             if let Some(entry) = guard.get(key)
                 && entry.etag == etag
             {
@@ -66,11 +71,14 @@ impl RecordCache {
         // Miss: fetch and repopulate. Guard is dropped before this await.
         let output = claria_storage::objects::get_object(s3, bucket, key)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|source| storage("reading a record object", source))?;
         let body: Arc<[u8]> = Arc::from(output.body);
 
         if let Some(fetched_etag) = output.etag {
-            let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| RecordsError::CacheUnavailable)?;
             guard.put(
                 key.to_string(),
                 CachedObject {

@@ -1267,25 +1267,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "claria-client-lifecycle"
-version = "0.22.0"
-dependencies = [
- "aws-config",
- "aws-credential-types",
- "aws-sdk-s3",
- "claria-core",
- "claria-mock-aws",
- "claria-report-authoring",
- "claria-storage",
- "jiff",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "claria-core"
 version = "0.22.0"
 dependencies = [
@@ -1310,11 +1291,11 @@ dependencies = [
  "claria-audit",
  "claria-bedrock",
  "claria-billing",
- "claria-client-lifecycle",
  "claria-core",
  "claria-docx",
  "claria-mock-aws",
  "claria-provisioner",
+ "claria-records",
  "claria-report-authoring",
  "claria-storage",
  "claria-transcribe",
@@ -1323,7 +1304,6 @@ dependencies = [
  "eyre",
  "futures",
  "jiff",
- "lru 0.18.0",
  "rfd",
  "rustls",
  "semver",
@@ -1405,6 +1385,29 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "claria-records"
+version = "0.22.0"
+dependencies = [
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
+ "claria-core",
+ "claria-mock-aws",
+ "claria-report-authoring",
+ "claria-storage",
+ "futures",
+ "jiff",
+ "lru 0.18.0",
+ "serde",
+ "serde_json",
+ "specta",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

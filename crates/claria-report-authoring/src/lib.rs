@@ -1625,6 +1625,11 @@ struct RecordInventoryEntry {
     source_bytes: u64,
 }
 
+/// The sidecar-visibility rules live in
+/// `claria_core::s3_keys::visible_record_files`; this walk only feeds them the
+/// listing. (`claria-records` owns the general S3-walking inventory, but this
+/// crate cannot depend on it — the client lifecycle in `claria-records`
+/// depends on this crate to restore report workspaces.)
 async fn load_record_inventory(
     s3: &S3Client,
     bucket: &str,
@@ -1632,34 +1637,19 @@ async fn load_record_inventory(
 ) -> Result<Vec<RecordInventoryEntry>, StorageError> {
     let prefix = claria_core::s3_keys::client_records_prefix(client_id);
     let objects = claria_storage::objects::list_objects_with_metadata(s3, bucket, &prefix).await?;
-    let by_key: HashMap<&str, &claria_storage::objects::ObjectMeta> = objects
-        .iter()
-        .map(|object| (object.key.as_str(), object))
-        .collect();
-    let mut inventory = Vec::new();
+    let keys: Vec<&str> = objects.iter().map(|object| object.key.as_str()).collect();
 
-    for object in &objects {
-        let Some(filename) = object.key.strip_prefix(&prefix) else {
-            continue;
-        };
-        if filename.is_empty() || filename.starts_with("chat-history/") {
-            continue;
-        }
-        if let Some(base) = object.key.strip_suffix(".text")
-            && by_key.contains_key(base)
-        {
-            continue;
-        }
-
-        let sidecar_key = format!("{}.text", object.key);
-        let source = by_key.get(sidecar_key.as_str()).copied().unwrap_or(object);
-        inventory.push(RecordInventoryEntry {
-            filename: filename.to_string(),
-            read_key: source.key.clone(),
-            source_bytes: u64::try_from(source.size).unwrap_or(u64::MAX),
-        });
-    }
-    Ok(inventory)
+    Ok(claria_core::s3_keys::visible_record_files(&prefix, &keys)
+        .into_iter()
+        .map(|file| {
+            let source = &objects[file.source_index];
+            RecordInventoryEntry {
+                filename: file.filename,
+                read_key: source.key.clone(),
+                source_bytes: u64::try_from(source.size).unwrap_or(u64::MAX),
+            }
+        })
+        .collect())
 }
 
 struct ExecutedTool {

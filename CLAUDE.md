@@ -72,6 +72,13 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - CRUD for objects in S3 (get, put, delete, list)
 - No knowledge of what the objects represent (cases, reports, etc.)
 
+**`claria-records` — Client records**
+- Client CRUD, name history, optimistic-concurrency rename, and record content search
+- Record inventory: the S3 walk behind the sidecar-visibility rules (the pure rule itself lives in `claria-core`'s `s3_keys.rs`)
+- ETag-revalidated read-through cache for record objects
+- Retryable, compensating client delete/restore lifecycle
+- Depends on `claria-report-authoring` (lifecycle restores report workspaces), so report authoring must never depend on this crate
+
 **`claria-bedrock` — LLM interactions**
 - Bedrock API calls for chat, text extraction, and translation
 

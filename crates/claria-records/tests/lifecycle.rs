@@ -1,5 +1,5 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
-use claria_client_lifecycle::{ClientLifecycleError, delete_client, restore_client};
+use claria_records::{RecordsError, delete_client, restore_client};
 use claria_core::models::{
     client::Client,
     report::{ReportContent, ReportWorkspace},
@@ -123,10 +123,7 @@ async fn partial_child_deletion_is_compensated_before_the_client_remains_visible
     let error = delete_client(&s3, BUCKET, client_id)
         .await
         .expect_err("injected partial deletion");
-    assert!(matches!(
-        error,
-        ClientLifecycleError::DeletionRolledBack { .. }
-    ));
+    assert!(matches!(error, RecordsError::DeletionRolledBack { .. }));
     assert_current(&s3, &claria_core::s3_keys::client(client_id)).await;
     assert_current(&s3, &first).await;
     assert_current(&s3, &second).await;

@@ -16,10 +16,10 @@ openmp = ["claria-transcribe/openmp"]
 claria-audit.workspace = true
 claria-bedrock.workspace = true
 claria-billing.workspace = true
-claria-client-lifecycle.workspace = true
 claria-core.workspace = true
 claria-docx.workspace = true
 claria-provisioner.workspace = true
+claria-records.workspace = true
 claria-report-authoring.workspace = true
 claria-storage.workspace = true
 claria-transcribe.workspace = true
@@ -34,7 +34,6 @@ eyre.workspace = true
 futures.workspace = true
 rfd = "=0.17.2"
 jiff.workspace = true
-lru = "=0.18.0"
 semver = "=1.0.28"
 serde.workspace = true
 serde_json.workspace = true

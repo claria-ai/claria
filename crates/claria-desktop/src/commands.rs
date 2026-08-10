@@ -57,14 +57,12 @@ pub enum ProvisionerProgress {
 // Client + Chat types
 // ---------------------------------------------------------------------------
 
-pub use claria_desktop::{
-    records::{ClientNameUpdate, ClientRecordDetails, ClientSummary},
-    report_authoring::{
-        EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportDraftView,
-        ReportExportResult, ReportExportStatusView, ReportProposalDecision, ReportRevisionView,
-        ReportTurnProgressView, ReportTurnResponse, ReportWorkspaceView,
-    },
+pub use claria_desktop::report_authoring::{
+    EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportDraftView,
+    ReportExportResult, ReportExportStatusView, ReportProposalDecision, ReportRevisionView,
+    ReportTurnProgressView, ReportTurnResponse, ReportWorkspaceView,
 };
+pub use claria_records::{ClientNameUpdate, ClientRecordDetails, ClientSummary};
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ChatMessage {
@@ -1377,7 +1375,9 @@ pub async fn list_clients(state: State<'_, DesktopState>) -> Result<Vec<ClientSu
     let bucket = bucket_name(&cfg);
 
     let clients =
-        claria_desktop::records::list_client_summaries(&s3, &bucket, &state.record_cache).await?;
+        claria_records::list_client_summaries(&s3, &bucket, &state.record_cache)
+            .await
+            .map_err(|error| error.to_string())?;
 
     tracing::Span::current().record("count", clients.len() as u64);
 
@@ -1391,7 +1391,7 @@ pub async fn create_client(
     state: State<'_, DesktopState>,
     name: String,
 ) -> Result<ClientSummary, String> {
-    let name = claria_desktop::records::validate_client_name(&name)?;
+    let name = claria_records::validate_client_name(&name).map_err(|error| error.to_string())?;
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
@@ -1434,7 +1434,9 @@ pub async fn get_client_record_details(
     let id = client_id
         .parse::<uuid::Uuid>()
         .map_err(|error| error.to_string())?;
-    claria_desktop::records::get_client_record_details(&s3, &bucket, id).await
+    claria_records::get_client_record_details(&s3, &bucket, id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Update a client's display name with optimistic concurrency control.
@@ -1451,7 +1453,9 @@ pub async fn update_client_name(
     let id = client_id
         .parse::<uuid::Uuid>()
         .map_err(|error| error.to_string())?;
-    let update = claria_desktop::records::update_client_name(&s3, &bucket, id, &name).await?;
+    let update = claria_records::update_client_name(&s3, &bucket, id, &name)
+        .await
+        .map_err(|error| error.to_string())?;
     tracing::info!(client_id = %id, "client record renamed");
     Ok(update)
 }
@@ -1468,7 +1472,7 @@ pub async fn delete_client(
     let s3 = claria_storage::client::from_config(&sdk_config);
     let bucket = bucket_name(&cfg);
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let outcome = claria_client_lifecycle::delete_client(&s3, &bucket, id)
+    let outcome = claria_records::delete_client(&s3, &bucket, id)
         .await
         .map_err(|error| error.to_string())?;
     tracing::info!(
@@ -2140,14 +2144,15 @@ pub async fn search_record_contents(
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let matches = claria_desktop::records::search_record_contents(
+    let matches = claria_records::search_record_contents(
         &s3,
         &bucket,
         id,
         &state.record_cache,
         &query,
     )
-    .await?;
+    .await
+    .map_err(|error| error.to_string())?;
 
     tracing::Span::current().record("count", matches.len() as u64);
 
@@ -2683,14 +2688,15 @@ pub async fn get_record_file_text(
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    claria_desktop::records::fetch_record_text(
+    claria_records::fetch_record_text(
         &s3,
         &bucket,
         id,
         &filename,
         &state.record_cache,
     )
-    .await?
+    .await
+    .map_err(|error| error.to_string())?
     .ok_or_else(|| {
         "No readable text is available. Upload printable UTF-8 text or extract a supported document or recording."
             .to_string()
@@ -2800,7 +2806,9 @@ pub async fn list_record_context(
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
     let texts =
-        claria_desktop::records::fetch_record_texts(&s3, &bucket, id, &state.record_cache).await?;
+        claria_records::fetch_record_texts(&s3, &bucket, id, &state.record_cache)
+            .await
+            .map_err(|error| error.to_string())?;
 
     // Include all files — those without extracted text get an empty string
     // so the frontend can show them as context pills and offer re-extraction.
@@ -2948,11 +2956,13 @@ async fn load_record_context(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
     client_id: &str,
-    cache: &claria_desktop::record_cache::RecordCache,
+    cache: &claria_records::RecordCache,
 ) -> Result<Vec<claria_bedrock::context::ContextFile>, String> {
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
 
-    let texts = claria_desktop::records::fetch_record_texts(s3, bucket, id, cache).await?;
+    let texts = claria_records::fetch_record_texts(s3, bucket, id, cache)
+        .await
+        .map_err(|error| error.to_string())?;
 
     Ok(texts
         .into_iter()
@@ -4084,11 +4094,10 @@ pub async fn list_deleted_files(
             if filename.is_empty() {
                 return None;
             }
-            // Hide sidecar files: keys ending in `.text` where the base file
-            // also has a delete marker (same logic as list_record_files).
-            if let Some(base) = filename.strip_suffix(".text")
-                && all_deleted.contains(base)
-            {
+            // Hide sidecar files whose base file also has a delete marker —
+            // the same rule the live listing applies via `is_hidden_sidecar`,
+            // evaluated here over delete markers instead of current objects.
+            if claria_core::s3_keys::is_hidden_sidecar(&filename, &all_deleted) {
                 return None;
             }
             Some(DeletedFile {
@@ -4179,7 +4188,7 @@ pub async fn list_deleted_clients(
         .map(|d| deleted_client_name(&s3, &bucket, &d.key))
         .collect();
     let names: Vec<Result<String, String>> = futures::stream::iter(lookups)
-        .buffered(claria_desktop::records::S3_FETCH_CONCURRENCY)
+        .buffered(claria_records::S3_FETCH_CONCURRENCY)
         .collect()
         .await;
 
@@ -4276,7 +4285,7 @@ pub async fn restore_client(
     let bucket = bucket_name(&cfg);
 
     let id: uuid::Uuid = client_id.parse().map_err(|e: uuid::Error| e.to_string())?;
-    let outcome = claria_client_lifecycle::restore_client(&s3, &bucket, id)
+    let outcome = claria_records::restore_client(&s3, &bucket, id)
         .await
         .map_err(|error| error.to_string())?;
 
