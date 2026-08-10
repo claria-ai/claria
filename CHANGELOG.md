@@ -6,6 +6,8 @@ All notable changes to Claria are documented here.
 
 - Desktop commands are split into per-domain modules sharing one command context and one rich error type, with every error logged and stringified exactly once at the command boundary with its operation name
 - The S3 client is cached alongside the SDK config and invalidated with it, instead of being rebuilt on every command
+- S3 failures now keep their full connection-level error context instead of collapsing to "unhandled error", and storage no longer double-logs errors it already returns
+- S3 timing spans log a scrubbed key class instead of client-chosen filenames, which are PHI
 - Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
 - Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
 - Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed

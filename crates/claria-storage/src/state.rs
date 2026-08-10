@@ -36,10 +36,7 @@ where
         Some(limit) => objects::get_object_bounded(client, bucket, key, limit).await?,
         None => objects::get_object(client, bucket, key).await?,
     };
-    let value: T = serde_json::from_slice(&output.body).map_err(|e| {
-        tracing::error!(bucket, key, error = %e, "failed to deserialize state from S3");
-        StorageError::from(e)
-    })?;
+    let value: T = serde_json::from_slice(&output.body).map_err(StorageError::from)?;
     validate(&value).map_err(|reason| StorageError::InvalidState {
         key: key.to_string(),
         reason,

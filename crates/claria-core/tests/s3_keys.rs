@@ -165,3 +165,41 @@ fn audit_day_and_month_prefixes_bracket_the_event_key() {
     assert!(key.starts_with(&s3_keys::audit_month_prefix(2026, 7)));
     assert!(key.starts_with(s3_keys::AUDIT_PREFIX));
 }
+
+#[test]
+fn log_safe_key_scrubs_record_filenames_only() {
+    let id = uuid::Uuid::nil();
+    let uuid = id.to_string();
+
+    // Client-chosen filenames (and their sidecars) are collapsed.
+    assert_eq!(
+        s3_keys::log_safe_key(&s3_keys::client_record_file(id, "Jane Doe intake.pdf")),
+        format!("records/{uuid}/<file>")
+    );
+    assert_eq!(
+        s3_keys::log_safe_key(&format!(
+            "{}.text",
+            s3_keys::client_record_file(id, "Jane Doe intake.pdf")
+        )),
+        format!("records/{uuid}/<file>.text")
+    );
+    // A filename-search prefix is still a partial filename.
+    assert_eq!(
+        s3_keys::log_safe_key(&s3_keys::client_records_search_prefix(id, "Jane")),
+        format!("records/{uuid}/<file>")
+    );
+
+    // App-generated layouts pass through unchanged.
+    for key in [
+        s3_keys::client(id),
+        s3_keys::client_records_prefix(id),
+        s3_keys::chat_history_prefix(id),
+        s3_keys::chat_history(id, id),
+        s3_keys::report_workspace(id),
+        s3_keys::writer_template_docx(id),
+        s3_keys::SYSTEM_PROMPT.to_string(),
+        s3_keys::PREFERENCES.to_string(),
+    ] {
+        assert_eq!(s3_keys::log_safe_key(&key), key);
+    }
+}

@@ -72,15 +72,21 @@ async fn instrumented_s3_calls_export_elapsed_ms() {
     assert_eq!(keys, vec![KEY.to_string()]);
 
     // The exported plain-text log (what a user sends to the developer) must
-    // carry per-call spans with elapsed_ms, keys, and byte counts.
+    // carry per-call spans with elapsed_ms, scrubbed key classes, and byte
+    // counts. The client-chosen filename is PHI and must never appear.
     let text = export_buffer.to_text();
     let timing_lines: Vec<&str> = text.lines().filter(|l| l.contains("elapsed_ms=")).collect();
 
     assert!(
-        timing_lines
-            .iter()
-            .any(|l| l.contains("put_object") && l.contains(&format!("key={KEY}"))),
-        "missing put_object timing in export:\n{text}"
+        timing_lines.iter().any(|l| {
+            l.contains("put_object")
+                && l.contains("key=records/00000000-0000-0000-0000-000000000000/<file>")
+        }),
+        "missing put_object timing with scrubbed key in export:\n{text}"
+    );
+    assert!(
+        !text.contains("note.txt"),
+        "record filename leaked into the exported log:\n{text}"
     );
     assert!(
         timing_lines

@@ -188,6 +188,29 @@ pub fn transcribe_output(job_name: &str) -> String {
 
 pub const PREFERENCES: &str = "_state/preferences.json";
 
+/// A PHI-safe rendering of an S3 key (or listing prefix) for log fields.
+///
+/// Client-chosen record filenames can identify a person, so anything after
+/// `records/{uuid}/` collapses to `<file>` (keeping a `.text` sidecar suffix
+/// for debuggability) — except the `chat-history/` folder, whose entries are
+/// UUID-named and therefore safe. Every other layout in the bucket is
+/// app-generated (UUIDs, hashes, fixed names) and passes through unchanged.
+pub fn log_safe_key(key: &str) -> String {
+    let mut parts = key.splitn(3, '/');
+    if parts.next() == Some("records")
+        && let Some(client_segment) = parts.next()
+        && let Some(rest) = parts.next()
+        && !rest.is_empty()
+        && !rest.starts_with("chat-history/")
+    {
+        if rest.ends_with(".text") {
+            return format!("records/{client_segment}/<file>.text");
+        }
+        return format!("records/{client_segment}/<file>");
+    }
+    key.to_string()
+}
+
 // ── Application audit trail ─────────────────────────────────────────────────
 
 /// Root of the application audit trail. Everything below it is written once
