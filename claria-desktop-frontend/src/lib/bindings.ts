@@ -68,9 +68,9 @@ async fetchCloudPreferences() : Promise<Result<ConfigInfo, string>> {
 /**
  * Upload an audio file and transcribe with the wizard's per-file options.
  * 
- * Mirrors `upload_record_file` but skips the legacy single-language path —
- * always goes through the new structured transcribe + optional Bedrock
- * translation. The `.text` sidecar contains the rendered headered body.
+ * Same skeleton as [`upload_record_file`], but restricted to audio and with
+ * a fatal sidecar: the wizard exists to produce a transcript, so a failed
+ * transcription fails the command instead of degrading to a warning.
  */
 async uploadRecordFileWithOptions(clientId: string, filePath: string, overrides: TranscribeOptionsOverrides | null) : Promise<Result<RecordFile, string>> {
     try {
@@ -150,11 +150,10 @@ async assessCredentials(region: string, credentials: CredentialInput) : Promise<
  * Assume a role in an AWS sub-account using parent-account credentials.
  * 
  * The operator provides their parent-account credentials and the sub-account
- * details. We call STS AssumeRole and return temporary credentials that can
- * be used with `assess_credentials` and `bootstrap_iam_user` to set up a
- * dedicated IAM user in the sub-account.
- * 
- * The temporary credentials are never persisted to disk.
+ * details. We call STS AssumeRole, hold the temporary credentials in memory,
+ * and return an [`AssumedRoleSession`] whose handle later provisioning
+ * commands exchange for them. Neither the secret access key nor the session
+ * token ever reaches the frontend, and nothing is persisted to disk.
  */
 async assumeRole(region: string, credentials: CredentialInput, accountId: string, roleName: string) : Promise<Result<AssumedRoleSession, string>> {
     try {
@@ -569,7 +568,8 @@ async searchRecordContents(clientId: string, query: string) : Promise<Result<str
  * 
  * Printable UTF-8 files remain directly readable under their original names.
  * PDF and DOCX files receive a structured-Markdown `.text` sidecar via
- * Bedrock; audio files receive a transcript sidecar.
+ * Bedrock; audio files receive a transcript sidecar. Sidecar generation
+ * failure degrades to a warning — the original upload has already succeeded.
  */
 async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<RecordFile, string>> {
     try {
@@ -883,6 +883,8 @@ async listDeletedFiles(clientId: string) : Promise<Result<DeletedFile[], string>
  * 
  * This preserves the full version history (including the delete marker) for
  * HIPAA audit-trail compliance, instead of removing the delete marker.
+ * Delegates to the storage crate's conditional restore, so a concurrent
+ * re-upload of the same filename is never overwritten.
  */
 async restoreDeletedFile(clientId: string, filename: string) : Promise<Result<null, string>> {
     try {
@@ -1033,6 +1035,10 @@ async openUrl(url: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Open the application's log folder in the OS file manager, creating it if
+ * file logging has not produced anything yet.
+ */
 async revealLogFolder() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reveal_log_folder") };
@@ -1077,7 +1083,7 @@ async saveConsoleLogs() : Promise<Result<boolean, string>> {
 },
 /**
  * Record a frontend-reported event into the shared tracing stack.
- *
+ * 
  * The `claria_desktop::frontend` target is admitted by the console and file
  * layers via the shared crate-list filter, so webview failures land in the
  * ring buffer and the rolling on-disk logs. Messages are length-capped and
@@ -1176,7 +1182,7 @@ assumed_role_arn: string;
  */
 account_id: string }
 /**
- * Redacted bootstrap outcome for the frontend: the minted secret access
+ * Redacted [`BootstrapResult`] for the frontend: the minted secret access
  * key is persisted to the local config Rust-side and never returned.
  */
 export type BootstrapOutcome = { success: boolean; steps: BootstrapStep[]; account_id: string | null; 
@@ -1212,6 +1218,10 @@ usage: TurnUsage | null }
  * Lightweight persisted-chat row for the Record screen history folder.
  */
 export type ChatHistorySummary = { chat_id: string; filename: string; name: string; size: number; updated_at: string }
+/**
+ * One conversation turn — role plus text content. Shared by the Bedrock
+ * chat call and the desktop IPC surface so the two cannot drift.
+ */
 export type ChatMessage = { role: ChatRole; content: string }
 /**
  * Specta type mirroring `claria_bedrock::chat::ChatModel`.
@@ -1219,14 +1229,14 @@ export type ChatMessage = { role: ChatRole; content: string }
 export type ChatModel = { model_id: string; name: string }
 /**
  * Response from a chat message, including the persisted chat session ID
- * and per-turn token usage.
+ * and per-turn token usage. Usage is `None` when Bedrock omitted the usage
+ * block — the UI renders absence instead of a fabricated zero.
  */
-export type ChatResponse = { chat_id: string; chat_name: string; content: string; 
+export type ChatResponse = { chat_id: string; chat_name: string; content: string; usage: TurnUsage | null }
 /**
- * Per-turn token usage, or null when Bedrock omitted the usage block —
- * the UI renders absence instead of a fabricated zero.
+ * Role of a chat message — the one role enum shared by persisted history,
+ * the Bedrock chat calls, and the desktop IPC surface.
  */
-usage: TurnUsage | null }
 export type ChatRole = "user" | "assistant"
 /**
  * One increment of a streaming chat response, sent over the command's
@@ -1234,7 +1244,15 @@ export type ChatRole = "user" | "assistant"
  * response, so a caller that ignores the channel (tests, mocks) loses
  * nothing but the incremental render.
  */
-export type ChatStreamEvent = { kind: "delta"; text: string } | { kind: "done"; stop_reason: string; usage: TurnUsage | null }
+export type ChatStreamEvent = 
+/**
+ * Incremental assistant text.
+ */
+{ kind: "delta"; text: string } | 
+/**
+ * Terminal event: the model finished; usage and stop reason are final.
+ */
+{ kind: "done"; stop_reason: string; usage: TurnUsage | null }
 export type ClientNameHistoryEntry = { name: string; changed_at: string }
 export type ClientNameUpdate = { id: string; name: string; updated_at: string }
 export type ClientRecordDetails = { id: string; name: string; created_at: string; updated_at: string; file_count: number; storage_bytes: number; storage_bytes_with_history: number; name_history: ClientNameHistoryEntry[] }
@@ -1244,24 +1262,24 @@ export type ClientSummary = { id: string; name: string; created_at: string }
  */
 export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences }
 /**
- * A single log entry captured by the console ring buffer.
- */
-export type ConsoleEntry = { timestamp: string; level: string; target: string; message: string }
-/**
  * One poll's worth of new console entries, addressed by a monotonic
  * sequence cursor so the 500ms UI poll ships only new lines.
  */
-export type ConsoleDelta = { entries: ConsoleEntry[];
+export type ConsoleDelta = { entries: ConsoleEntry[]; 
 /**
  * Cursor to pass on the next poll.
  */
-next_seq: number;
+next_seq: number; 
 /**
  * True when `entries` is the full buffer and must replace, not append —
  * the requested cursor predates the buffer (lines rotated out unseen)
  * or came from a previous app run.
  */
 reset: boolean }
+/**
+ * A single log entry captured by the console ring buffer.
+ */
+export type ConsoleEntry = { timestamp: string; level: string; target: string; message: string }
 export type CostAndUsageResult = { periods: CostTimePeriod[] }
 export type CostGranularity = "hourly" | "daily" | "monthly"
 export type CostResultGroup = { key: string; amount: string; unit: string }
@@ -1299,6 +1317,15 @@ export type CredentialClass =
  * IAM permissions required to self-bootstrap.
  */
 "insufficient"
+/**
+ * Credentials as the frontend supplies them to provisioning commands.
+ * 
+ * Mirrors [`CredentialSource`] for the user-typed variants and adds
+ * `AssumedRole`, an opaque handle to temporary STS credentials held in
+ * [`DesktopState`] — the secret access key and session token from an
+ * `assume_role` call never cross the IPC boundary.
+ */
+export type CredentialInput = { type: "inline"; access_key_id: string; secret_access_key: string; session_token?: string | null } | { type: "profile"; profile_name: string } | { type: "default_chain" } | { type: "assumed_role"; handle: string }
 export type CredentialScope = 
 /**
  * Requires elevated credentials (root/admin) to create or modify.
@@ -1310,15 +1337,6 @@ export type CredentialScope =
  */
 "regular"
 export type CredentialSource = { type: "inline"; access_key_id: string; secret_access_key: string; session_token?: string | null } | { type: "profile"; profile_name: string } | { type: "default_chain" }
-/**
- * Credentials as the frontend supplies them to provisioning commands.
- * 
- * Mirrors `CredentialSource` for the user-typed variants and adds
- * `AssumedRole`, an opaque handle to temporary STS credentials held in
- * `DesktopState` — the secret access key and session token from an
- * `assume_role` call never cross the IPC boundary.
- */
-export type CredentialInput = { type: "inline"; access_key_id: string; secret_access_key: string; session_token?: string | null } | { type: "profile"; profile_name: string } | { type: "default_chain" } | { type: "assumed_role"; handle: string }
 /**
  * A client that has been deleted (has a delete marker on the client JSON).
  */
@@ -1362,12 +1380,9 @@ export type FrontendLogLevel = "error" | "warn" | "info"
 /**
  * Response from an infrastructure chat turn. Infra chat does not persist
  * history, but we still return token usage so the UI can display cost.
+ * Usage is `None` when Bedrock omitted the usage block.
  */
-export type InfraChatResponse = { content: string; 
-/**
- * Per-turn token usage, or null when Bedrock omitted the usage block.
- */
-usage: TurnUsage | null }
+export type InfraChatResponse = { content: string; usage: TurnUsage | null }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type Lifecycle = "data" | "managed"
 export type LocalBackend = "auto" | "cpu" | "cpu_accel" | "metal" | "vulkan" | "cuda" | "rocm"
@@ -1389,7 +1404,7 @@ export type ModelDownloadProgress = { model_id: LocalModelId; downloaded_bytes: 
  */
 export type ModelPricing = { input_per_million: number; output_per_million: number; cache_read_per_million: number; cache_write_per_million: number }
 /**
- * Fresh credentials created during the bootstrap flow.
+ * The non-secret half of freshly minted credentials.
  */
 export type NewCredentialsInfo = { access_key_id: string; iam_user_arn: string }
 /**
@@ -1400,17 +1415,23 @@ export type NewCredentialsInfo = { access_key_id: string; iam_user_arn: string }
  * has everything it needs (label, description, severity, desired state)
  * without a separate lookup.
  */
+export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drift: FieldDrift[]; 
+/**
+ * Live state read from AWS (if the resource exists).
+ */
+actual: JsonValue | null }
 /**
  * Named-field patch for the synced preferences. Absent fields are left
  * untouched, so a UI section (or a single-setting command) saves only what
  * it owns and can never roll back a sibling section's edit.
  */
-export type PreferencesPatch = { preferred_model_id?: string | null; cost_explorer_enabled?: boolean; hourly_cost_data?: boolean; prompt_caching_enabled?: boolean; transcription?: TranscriptionPreferences; report_authoring?: ReportAuthoringPreferences }
-export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drift: FieldDrift[];
+export type PreferencesPatch = { 
 /**
- * Live state read from AWS (if the resource exists).
+ * `Some(Some(id))` sets the preferred model, `Some(None)` clears it
+ * (only expressible in-process — over IPC use `set_preferred_model`),
+ * `None` leaves it unchanged.
  */
-actual: JsonValue | null }
+preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null }
 /**
  * What `provision_apply` did.
  * 
@@ -1461,23 +1482,38 @@ export type RecordFile = { filename: string; size: number; uploaded_at: string |
  */
 export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
 export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
+export type ReportBlock = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | 
+/**
+ * A rectangular, plain-text table. The first row is rendered as a
+ * semantic header when `has_header` is true. Optional widths are basis
+ * points whose sum is exactly 10,000 (100%).
+ */
+{ kind: "table"; rows: string[][]; has_header: boolean; column_widths?: number[] | null }
 export type ReportBlockReferenceInput = { section_id: string; block_index: number }
-export type ReportBlock = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | { kind: "table"; rows: string[][]; has_header: boolean; column_widths: number[] | null }
 export type ReportContent = { title: string; sections: ReportSection[] }
 export type ReportContextReadView = { filename: string; offset: number; returned_characters: number; total_characters: number | null; read_at: string }
-export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }
 export type ReportDraft = { revision: number; content: ReportContent; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
+export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }
+export type ReportExport = { revision: number; status: ReportExportStatus; attempted_at: string }
 export type ReportExportResult = { exported: boolean; report_id: string; revision: number; status: ReportExportStatus; attempted_at: string; status_persisted: boolean }
 export type ReportExportStatus = "exported" | "canceled" | "failed"
-export type ReportExport = { revision: number; status: ReportExportStatus; attempted_at: string }
 export type ReportOperation = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSection } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlock[] } | { kind: "remove_section"; section_id: string }
+/**
+ * Earns its life next to `ReportProposalDecision`: this is the imperative
+ * request wire shape (`accept`/`reject`), not the stored past-tense
+ * resolution (`accepted`/`rejected`).
+ */
 export type ReportProposalChoice = "accept" | "reject"
 export type ReportProposalDecision = "accepted" | "rejected"
 export type ReportProposalResolution = { proposal_id: string; decision: ReportProposalDecision; resulting_revision: number; resolved_at: string }
+/**
+ * Earns its life over `ReportProposal`: omits `tool_use_id`, the internal
+ * Bedrock correlation handle the frontend has no business seeing.
+ */
 export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperation[]; proposed_content: ReportContent; created_at: string }
 export type ReportRevisionView = { revision: number; title: string; updated_at: string }
-export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlock[] }
 export type ReportSection = { id: string; heading: string; blocks: ReportBlock[] }
+export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlock[] }
 export type ReportTemplateImportView = { writer_template_id: string | null; writer_template_name: string | null; imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
 export type ReportTemplatePreview = { import_id: string; content: ReportContent; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
 export type ReportTemplateStatsView = { sections: number; paragraphs: number; bullet_lists: number; tables: number; table_cells: number; placeholder_count: number }
@@ -1487,6 +1523,10 @@ export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
 export type ReportTurnProgressView = { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus }
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
+/**
+ * Earns its life over `ReportWorkspace`: flattens the session container and
+ * replaces raw turns with derived timeline/context views.
+ */
 export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; session_name: string; draft: ReportDraft; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolution[]; last_agent_revision: number | null; last_export: ReportExport | null; template_import: ReportTemplateImportView | null; created_at: string; updated_at: string }
 /**
  * Every resource in the system is declared as a `ResourceSpec`.

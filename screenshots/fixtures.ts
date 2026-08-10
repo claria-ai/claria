@@ -710,6 +710,7 @@ The formal assessment (PDF, 2/18/2026) includes WISC-V, BASC-3 parent and teache
 ---
 
 *Would you like me to draft a diagnostic summary or begin organizing this into a report template?*`,
+    usage: null,
   },
 
   plan: planEntries,

@@ -126,9 +126,11 @@ export function buildInitScript(config: ScenarioConfig): string {
               success: true,
               steps,
               account_id: "185735714230",
+              // NewCredentialsInfo is the non-secret half: the minted secret
+              // access key stays Rust-side and never crosses the IPC boundary.
               new_credentials: {
                 access_key_id: "AKIAMOCKKEY00000001",
-                secret_access_key: "mock-secret-key-00000001",
+                iam_user_arn: "arn:aws:iam::185735714230:user/claria-admin",
               },
               error: null,
             };
@@ -204,6 +206,7 @@ export function buildInitScript(config: ScenarioConfig): string {
               chat_id: "demo-chat-" + Date.now(),
               chat_name: "Chat (1)",
               content: ${chatResponseJson},
+              usage: null,
             };
           }
 
