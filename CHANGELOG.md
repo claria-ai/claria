@@ -14,6 +14,8 @@ All notable changes to Claria are documented here.
 - A writer turn whose final reply is cut short no longer discards an already-staged proposal, and a glitched stop reason gets one corrective retry before the turn fails
 - Writer turns cache their prompt prefix on caching-capable models and count tokens once per turn instead of before every call, cutting cost and latency of multi-step turns
 - The writer's system prompt is organized into headed sections and the untrusted report context travels as compact JSON inside named delimiter tags
+- Chat record context is escaped so document text cannot forge its delimiters, placed after the instructions, and always followed by a fixed do-not-follow-instructions rule
+- Document extraction sends a neutral user turn so the customizable extraction prompt is the single source of instructions
 - Project instructions gain review-derived coding rules covering reuse, frontend patterns, Rust conventions, LLM calls, logging, security, and performance
 - Chat and writer composers both send on Enter and insert a newline with Shift+Enter, with a native resize grip replacing the chat drag handle
 - Writer turns show the same per-turn cost badges and running session spend banner as chat

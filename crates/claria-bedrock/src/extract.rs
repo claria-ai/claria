@@ -52,11 +52,14 @@ pub async fn extract_document_text(
         .build()
         .map_err(|e| BedrockError::Invocation(e.to_string()))?;
 
+    // The user turn is deliberately neutral: the extraction behavior is
+    // defined by the (S3-customizable) system prompt, and a hardcoded
+    // instruction here could contradict it.
     let message = Message::builder()
         .role(ConversationRole::User)
         .content(ContentBlock::Document(doc_block))
         .content(ContentBlock::Text(
-            "Extract the complete document as structured Markdown.".to_string(),
+            "Process the attached document according to your instructions.".to_string(),
         ))
         .build()
         .map_err(|e| BedrockError::Invocation(e.to_string()))?;
