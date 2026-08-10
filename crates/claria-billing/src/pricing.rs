@@ -15,7 +15,7 @@
 //! 4/4.1, Haiku 3.x) are special-cased ahead of the tier match. A model
 //! that matches no tier returns `None` and the UI omits cost entirely.
 
-use claria_core::models::cost::ModelPricing;
+use claria_core::{model_id::strip_scope_prefix, models::cost::ModelPricing};
 
 /// Bumped on every edit to the pricing table. Stamped onto
 /// `TurnUsage.pricing_version` at capture time so historical totals do not
@@ -96,14 +96,4 @@ fn family_matches(stem: &str, family: &str) -> bool {
         return leading_digits >= 4;
     }
     false
-}
-
-fn strip_scope_prefix(model_id: &str) -> &str {
-    if let Some((prefix, rest)) = model_id.split_once('.') {
-        let is_scope = prefix.len() <= 6 && prefix.chars().all(|c| c.is_ascii_lowercase());
-        if is_scope && rest.contains('.') {
-            return rest;
-        }
-    }
-    model_id
 }

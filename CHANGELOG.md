@@ -4,6 +4,7 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Model capabilities (tool support, context window, prompt caching, token-counting model) resolve through one central table, so new Claude generations get modern behavior — including prompt caching — by default
 - Project instructions gain review-derived coding rules covering reuse, frontend patterns, Rust conventions, LLM calls, logging, security, and performance
 - Chat and writer composers both send on Enter and insert a newline with Shift+Enter, with a native resize grip replacing the chat drag handle
 - Writer turns show the same per-turn cost badges and running session spend banner as chat

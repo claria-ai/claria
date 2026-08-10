@@ -3526,11 +3526,8 @@ pub async fn infra_chat(
 
 /// Build the full system prompt for infrastructure chat from plan entries.
 /// Derive a [`claria_bedrock::chat::CacheStrategy`] from config + the
-/// inference profile we're about to invoke.
-///
-/// Caching is honoured for Claude Sonnet 4 and Opus 4 (5-min TTL — Sonnet
-/// 4.5 / Opus 4.5 with 1h TTL is a future Phase). Haiku 3.5 also supports
-/// it. Models we don't recognise default to no cache.
+/// inference profile we're about to invoke. Model support comes from the
+/// central capability table in `claria-core`.
 fn build_cache_strategy(cfg: &ClariaConfig, model_id: &str) -> claria_bedrock::chat::CacheStrategy {
     if !cfg.prompt_caching_enabled {
         return claria_bedrock::chat::CacheStrategy::disabled();
@@ -3540,17 +3537,11 @@ fn build_cache_strategy(cfg: &ClariaConfig, model_id: &str) -> claria_bedrock::c
     strategy
 }
 
-/// True if the model_id (inference profile or bare foundation id) is a
-/// Claude family known to honour Bedrock prompt-caching `cachePoint`
-/// blocks at the time of writing.
+/// True if the model_id (inference profile or bare foundation id) honours
+/// Bedrock prompt-caching `cachePoint` blocks, per the central capability
+/// table in `claria-core`.
 fn model_supports_prompt_caching(model_id: &str) -> bool {
-    let lower = model_id.to_lowercase();
-    // Claude 4 (Opus / Sonnet) and 3.5+ Haiku honour prompt caching with
-    // 5-min TTL on Bedrock as of 2026-05-08.
-    lower.contains("claude-opus-4")
-        || lower.contains("claude-sonnet-4")
-        || lower.contains("claude-3-5-haiku")
-        || lower.contains("claude-haiku")
+    claria_core::model_id::ModelCapabilities::for_id(model_id).prompt_caching
 }
 
 fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {

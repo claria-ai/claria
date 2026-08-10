@@ -227,7 +227,7 @@ pub async fn converse_report_with_tool_limit(
     // while CountTokens requires the underlying foundation model identifier.
     // Keep the exact selected-model tokenizer by removing only a known
     // cross-region scope prefix.
-    let counting_model_id = report_counting_model_id(model_id);
+    let counting_model_id = claria_core::model_id::strip_scope_prefix(model_id);
     let input_tokens = match count_report_input_tokens(
         &client,
         counting_model_id,
@@ -453,31 +453,17 @@ pub async fn converse_report_with_tool_limit(
 }
 
 /// True only for Claude model IDs whose Bedrock families support Converse
-/// tool use. Capability is determined before invocation; a generic AWS
-/// `ValidationException` is never guessed to mean "tools unsupported".
+/// tool use. Capability is determined before invocation via the central
+/// capability table; a generic AWS `ValidationException` is never guessed to
+/// mean "tools unsupported".
 pub fn model_supports_report_tools(model_id: &str) -> bool {
-    let model_id = model_id.to_ascii_lowercase();
-    model_id.contains("anthropic.claude")
-        && !model_id.contains("claude-v2")
-        && !model_id.contains("claude-instant")
+    claria_core::model_id::ModelCapabilities::for_id(model_id).report_tools
 }
 
-/// Conservative context window for the selected Bedrock model/profile.
-/// Explicit context variants take precedence; current Claude 3/4 profiles
-/// otherwise have a 200k-token window. Unknown IDs get a safe 32k ceiling.
+/// Conservative context window for the selected Bedrock model/profile, from
+/// the central capability table.
 pub fn report_model_context_tokens(model_id: &str) -> u32 {
-    let model_id = model_id.to_ascii_lowercase();
-    if model_id.contains(":48k") {
-        48_000
-    } else if model_id.contains(":200k") {
-        200_000
-    } else if model_id.contains(":1m") || model_id.contains(":1000k") {
-        1_000_000
-    } else if model_id.contains("anthropic.claude") {
-        200_000
-    } else {
-        32_000
-    }
+    claria_core::model_id::ModelCapabilities::for_id(model_id).context_window_tokens
 }
 
 pub fn report_input_token_budget(model_id: &str) -> u32 {
@@ -513,17 +499,6 @@ async fn count_report_input_tokens(
             }
         })?;
     Ok(u32::try_from(response.input_tokens()).unwrap_or(u32::MAX))
-}
-
-fn report_counting_model_id(model_id: &str) -> &str {
-    let Some((scope, foundation_model_id)) = model_id.split_once('.') else {
-        return model_id;
-    };
-    if matches!(scope, "us" | "eu" | "apac" | "global") {
-        foundation_model_id
-    } else {
-        model_id
-    }
 }
 
 fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {

@@ -272,23 +272,6 @@ async fn fetch_us_inference_profiles(
     Ok(map)
 }
 
-/// Strip a scope prefix (e.g. `us.`, `global.`, `eu.`) from an inference
-/// profile ID to get the bare foundation model ID. If the ID is already a bare
-/// foundation model ID (starts with a provider like `anthropic.`), returns it
-/// unchanged.
-fn strip_scope_prefix(id: &str) -> &str {
-    if let Some((prefix, rest)) = id.split_once('.') {
-        // Scope prefixes are short region tags; provider names contain letters
-        // and are longer. A simple heuristic: scope prefixes are ≤6 chars and
-        // all-lowercase-alpha (e.g. "us", "eu", "global").
-        let is_scope = prefix.len() <= 6 && prefix.chars().all(|c| c.is_ascii_lowercase());
-        if is_scope && rest.contains('.') {
-            return rest;
-        }
-    }
-    id
-}
-
 // ── Chat conversation ────────────────────────────────────────────────────────
 
 /// Strategy for placing a Bedrock prompt-cache `cachePoint` block on the
@@ -466,14 +449,13 @@ pub async fn chat_converse(
 /// Model ID used for the `CountTokens` API, resolved once per process.
 static COUNTING_MODEL: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
 
-/// Resolve the model to count tokens against: the newest available Haiku.
+/// Resolve the model to count tokens against: the newest available Haiku,
+/// chosen by `claria_core::model_id::preferred_counting_model` (release-date
+/// stamp ordering across both naming shapes).
 ///
 /// Not every model supports `CountTokens` (e.g. Fable rejects it with a
 /// ValidationException), so counting never uses the chat model. Haiku has
-/// reliably supported the API across generations; "newest" is decided by
-/// the release date stamp embedded in the model ID, which orders correctly
-/// across both naming shapes (`claude-3-5-haiku-20241022`,
-/// `claude-haiku-4-5-20251001`).
+/// reliably supported the API across generations.
 pub(crate) async fn counting_model(
     config: &aws_config::SdkConfig,
 ) -> Result<&'static str, BedrockError> {
@@ -481,39 +463,15 @@ pub(crate) async fn counting_model(
         .get_or_try_init(|| async {
             let client = aws_sdk_bedrock::Client::new(config);
             let models = fetch_active_foundation_models(&client).await?;
-            models
-                .into_iter()
-                .map(|(model_id, _)| model_id)
-                .filter(|id| id.contains("haiku"))
-                .max_by_key(|id| release_date_stamp(id))
-                .ok_or_else(|| {
-                    BedrockError::Invocation(
-                        "no Haiku model available for token counting".to_string(),
-                    )
-                })
+            claria_core::model_id::preferred_counting_model(
+                models.into_iter().map(|(model_id, _)| model_id),
+            )
+            .ok_or_else(|| {
+                BedrockError::Invocation("no Haiku model available for token counting".to_string())
+            })
         })
         .await
         .map(String::as_str)
-}
-
-/// The 8-digit release date stamp embedded in a foundation model ID
-/// (`anthropic.claude-haiku-4-5-20251001-v1:0` → 20251001), or 0 if absent.
-fn release_date_stamp(model_id: &str) -> u32 {
-    let bytes = model_id.as_bytes();
-    let mut run = 0;
-    // Iterate one past the end so a trailing digit run is still checked.
-    for i in 0..=bytes.len() {
-        if i < bytes.len() && bytes[i].is_ascii_digit() {
-            run += 1;
-        } else {
-            // Exactly 8 digits is a date stamp; shorter runs are version numbers.
-            if run == 8 {
-                return model_id[i - 8..i].parse().unwrap_or(0);
-            }
-            run = 0;
-        }
-    }
-    0
 }
 
 /// Count the input tokens for a context (system prompt) before the user sends
@@ -655,7 +613,7 @@ pub async fn accept_all_model_agreements(
     let mut seen_bare_ids = std::collections::HashSet::new();
 
     for model in &models {
-        let bare_id = strip_scope_prefix(&model.model_id);
+        let bare_id = claria_core::model_id::strip_scope_prefix(&model.model_id);
 
         if !seen_bare_ids.insert(bare_id.to_string()) {
             continue;
