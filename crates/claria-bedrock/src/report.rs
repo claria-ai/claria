@@ -462,9 +462,18 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
         "required": ["filename"],
         "additionalProperties": false,
         "properties": {
-            "filename": {"type": "string", "minLength": 1, "maxLength": 1024},
-            "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 12000}
+            "filename": {
+                "type": "string", "minLength": 1, "maxLength": 1024,
+                "description": "A filename copied exactly from a list_record_files result. Paths and invented names fail."
+            },
+            "offset": {
+                "type": "integer", "minimum": 0,
+                "description": "0-based start position in Unicode characters (not bytes). Defaults to 0. To continue a paginated read, pass the previous result's next_offset."
+            },
+            "limit": {
+                "type": "integer", "minimum": 1, "maximum": 12000,
+                "description": "Maximum Unicode characters to return (default 8000, maximum 12000). Reads also draw down the shared 48000-character per-turn budget."
+            }
         }
     });
     let block_schema = serde_json::json!({
@@ -475,7 +484,10 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                 "additionalProperties": false,
                 "properties": {
                     "kind": {"enum": ["paragraph"]},
-                    "text": {"type": "string", "minLength": 1, "maxLength": 20000}
+                    "text": {
+                        "type": "string", "minLength": 1, "maxLength": 20000,
+                        "description": "Plain paragraph text, at most 20000 characters. No markdown markup is rendered."
+                    }
                 }
             },
             {
@@ -488,7 +500,8 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                         "type": "array",
                         "minItems": 1,
                         "maxItems": 100,
-                        "items": {"type": "string", "minLength": 1, "maxLength": 2000}
+                        "items": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        "description": "One plain-text string per bullet, in display order."
                     }
                 }
             },
@@ -507,29 +520,46 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "minItems": 1,
                             "maxItems": 20,
                             "items": {"type": "string", "maxLength": 5000}
-                        }
+                        },
+                        "description": "Rows in display order; each row is an array of plain-text cells. Every row must have the same number of cells. Leave unknown cells as empty strings rather than inventing values."
                     },
-                    "has_header": {"type": "boolean"},
+                    "has_header": {
+                        "type": "boolean",
+                        "description": "true when rows[0] is a header row (rendered bold and shaded on export)."
+                    },
                     "column_widths": {
                         "type": "array",
                         "minItems": 1,
                         "maxItems": 20,
-                        "items": {"type": "integer", "minimum": 1, "maximum": 10000}
+                        "items": {"type": "integer", "minimum": 1, "maximum": 10000},
+                        "description": "Optional relative column widths (proportions of total table width, not absolute units); one entry per column. Omit for equal widths."
                     }
                 }
             }
         ]
+    });
+    let section_id_schema = serde_json::json!({
+        "type": "string", "minLength": 36, "maxLength": 36,
+        "description": "The 36-character section UUID copied exactly from the accepted_report in the untrusted context. Never invent or modify an ID."
+    });
+    let heading_schema = serde_json::json!({
+        "type": "string", "minLength": 1, "maxLength": 200,
+        "description": "The section's full heading text."
     });
     let proposal_schema = serde_json::json!({
         "type": "object",
         "required": ["summary", "operations"],
         "additionalProperties": false,
         "properties": {
-            "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+            "summary": {
+                "type": "string", "minLength": 1, "maxLength": 500,
+                "description": "One or two plain sentences telling the user what the proposal changes."
+            },
             "operations": {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": MAX_PROPOSAL_OPERATIONS,
+                "description": "Operations applied in order against the accepted report shown in the untrusted context.",
                 "items": {
                     "oneOf": [
                         {
@@ -538,7 +568,10 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"enum": ["set_title"]},
-                                "title": {"type": "string", "minLength": 1, "maxLength": 200}
+                                "title": {
+                                    "type": "string", "minLength": 1, "maxLength": 200,
+                                    "description": "The new report title."
+                                }
                             }
                         },
                         {
@@ -547,9 +580,13 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"enum": ["add_section"]},
-                                "position": {"type": "integer", "minimum": 0, "maximum": 100},
-                                "heading": {"type": "string", "minLength": 1, "maxLength": 200},
-                                "blocks": {"type": "array", "maxItems": MAX_SECTION_BLOCKS, "items": block_schema.clone()}
+                                "position": {
+                                    "type": "integer", "minimum": 0, "maximum": 100,
+                                    "description": "0-based insertion index in the report's current section list; 0 inserts before the first section, the current section count appends at the end."
+                                },
+                                "heading": heading_schema.clone(),
+                                "blocks": {"type": "array", "maxItems": MAX_SECTION_BLOCKS, "items": block_schema.clone(),
+                                    "description": "The new section's content blocks in display order."}
                             }
                         },
                         {
@@ -558,9 +595,10 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"enum": ["replace_section"]},
-                                "section_id": {"type": "string", "minLength": 36, "maxLength": 36},
-                                "heading": {"type": "string", "minLength": 1, "maxLength": 200},
-                                "blocks": {"type": "array", "maxItems": MAX_SECTION_BLOCKS, "items": block_schema.clone()}
+                                "section_id": section_id_schema.clone(),
+                                "heading": heading_schema,
+                                "blocks": {"type": "array", "maxItems": MAX_SECTION_BLOCKS, "items": block_schema.clone(),
+                                    "description": "The complete replacement content. The whole section — heading included — is replaced; unchanged blocks must be restated."}
                             }
                         },
                         {
@@ -569,7 +607,7 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"enum": ["remove_section"]},
-                                "section_id": {"type": "string", "minLength": 36, "maxLength": 36}
+                                "section_id": section_id_schema
                             }
                         }
                     ]
@@ -581,17 +619,28 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
     let tools = vec![
         tool(
             LIST_RECORD_FILES_TOOL,
-            "List the current client's record filenames and whether each file fits Claria's bounded text reader. Printable UTF-8 originals are readable regardless of extension; documents and recordings use generated text sidecars.",
+            "List the current client's record filenames and whether each file fits Claria's bounded \
+             text reader. Printable UTF-8 originals are readable regardless of extension; documents \
+             and recordings use generated text sidecars. Call this before any read_record_file call \
+             — only listed filenames are readable.",
             list_schema,
         )?,
         tool(
             READ_RECORD_FILE_TOOL,
-            "Read a bounded Unicode-character range from one filename returned by list_record_files. The read safely rejects binary originals without a generated text sidecar.",
+            "Read a bounded range from one filename returned by list_record_files. offset and limit \
+             are Unicode characters, not bytes. All reads in a turn share a 48000-character budget; \
+             when a result includes next_offset, pass it as offset to continue reading from there. \
+             Binary originals without a generated text sidecar are safely rejected.",
             read_schema,
         )?,
         tool(
             PROPOSE_REPORT_CHANGES_TOOL,
-            "Stage typed changes for user review. This never saves or applies the report.",
+            "Stage typed report changes for user review. Copy each section_id exactly from the \
+             accepted_report in the untrusted context; positions are 0-based; replace_section \
+             replaces the entire section including its heading. At most one call per turn — a \
+             second call fails. Nothing is saved or applied until the user accepts the proposal, so \
+             never claim a change was saved. Responses are limited to 8192 output tokens: keep one \
+             proposal small and split large rewrites across multiple turns.",
             proposal_schema,
         )?,
     ];

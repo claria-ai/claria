@@ -1597,10 +1597,18 @@ impl ToolExecutionContext<'_> {
     async fn execute(&mut self, call: &ReportToolCall) -> Result<ExecutedTool, TurnRunFailure> {
         let request = match report::decode_tool_request(call) {
             Ok(request) => request,
-            Err(_) => {
+            Err(error) => {
+                // Carry the decode diagnostic verbatim: these messages
+                // describe JSON structure (field names, types, positions),
+                // never report or record content, and a generic sentence
+                // wastes the model's repair round.
+                let diagnostic = match &error {
+                    BedrockError::SchemaViolation(message) => message.clone(),
+                    other => other.to_string(),
+                };
                 return Ok(tool_error(
                     "invalid_tool_input",
-                    "The tool input did not match the configured schema.",
+                    &format!("The tool input did not match the configured schema: {diagnostic}"),
                 ));
             }
         };
@@ -1631,9 +1639,11 @@ impl ToolExecutionContext<'_> {
                         self.staged_proposal = Some(proposal);
                         Ok(result)
                     }
-                    Err(_) => Ok(tool_error(
+                    Err(reason) => Ok(tool_error(
                         "invalid_proposal",
-                        "The proposed operations were not valid for the accepted report.",
+                        &format!(
+                            "The proposed operations were not valid for the accepted report: {reason}"
+                        ),
                     )),
                 }
             }

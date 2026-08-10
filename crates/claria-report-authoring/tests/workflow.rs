@@ -749,6 +749,91 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
 }
 
 #[tokio::test]
+async fn schema_and_proposal_failures_return_verbatim_diagnostics() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let missing_section = Uuid::new_v4();
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "bad-1", "name": "read_record_file",
+                        "input": {"filename": "intake.txt", "invented_field": true}}},
+                    {"toolUse": {"toolUseId": "bad-2", "name": "propose_report_changes",
+                        "input": {"summary": "Replace a section", "operations": [
+                            {"kind": "replace_section", "section_id": missing_section.to_string(),
+                             "heading": "H", "blocks": [{"kind": "paragraph", "text": "text"}]}
+                        ]}}}
+                ]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 10, "outputTokens": 2}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "Understood."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 12, "outputTokens": 2}
+            }),
+        ],
+    )
+    .await;
+
+    report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Update the report."),
+    )
+    .await
+    .expect("turn completes with error tool results");
+
+    // The error tool_results must carry the concrete structural diagnostic —
+    // the serde decode message and the specific proposal-validation reason —
+    // so the model's repair round is not wasted on a generic sentence.
+    let state = server.state.read().await;
+    let results = state.bedrock_tool_requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["content"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(results.len(), 2);
+    let decode = &results[0]["toolResult"];
+    assert_eq!(decode["status"], "error");
+    assert_eq!(
+        decode["content"][0]["json"]["error"]["code"],
+        "invalid_tool_input"
+    );
+    let decode_message = decode["content"][0]["json"]["error"]["message"]
+        .as_str()
+        .unwrap();
+    assert!(
+        decode_message.contains("invented_field"),
+        "decode diagnostic must name the offending field: {decode_message}"
+    );
+    let proposal = &results[1]["toolResult"];
+    assert_eq!(proposal["status"], "error");
+    assert_eq!(
+        proposal["content"][0]["json"]["error"]["code"],
+        "invalid_proposal"
+    );
+    let proposal_message = proposal["content"][0]["json"]["error"]["message"]
+        .as_str()
+        .unwrap();
+    assert!(
+        proposal_message.contains(&missing_section.to_string()),
+        "proposal diagnostic must carry the specific failure: {proposal_message}"
+    );
+}
+
+#[tokio::test]
 async fn writer_reads_printable_text_regardless_of_extension() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();
