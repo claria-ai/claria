@@ -8,10 +8,13 @@ use claria_records::RecordCache;
 /// An `SdkConfig` cached with the inputs it was built from. The SDK's pooled
 /// HTTP connector lives inside the `SdkConfig`, so reusing it across commands
 /// keeps connections warm instead of paying DNS/TCP/TLS setup per call.
+/// The S3 client built from that config rides along and is invalidated with
+/// it, so commands never rebuild a client per call.
 pub struct CachedSdkConfig {
     pub region: String,
     pub credentials: CredentialSource,
     pub sdk_config: aws_config::SdkConfig,
+    pub s3: aws_sdk_s3::Client,
 }
 
 pub(crate) struct PendingReportTemplate {
