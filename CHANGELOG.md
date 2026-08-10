@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.22.0] — 2026-08-10
 
 - Chat and writer sessions receive numbered names that can be edited directly in their panes and are shown in history
 - Writing shows live and persisted context in one collapsible pill list, opens record contents from those pills, and uses a reusable activity throbber while the report agent plans, reads records, and drafts proposals
