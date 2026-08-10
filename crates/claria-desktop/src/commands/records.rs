@@ -23,7 +23,10 @@ pub struct RecordFile {
 /// Uses a Claude Sonnet inference profile — good quality at lower cost.
 pub(crate) const EXTRACTION_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-20250514-v1:0";
 
-fn record_upload_content_type(extension: &str, bytes: &[u8]) -> Option<&'static str> {
+/// Content type for a known upload extension. Unknown extensions fall back
+/// to content validation in [`upload_record_file_inner`] — printable UTF-8
+/// gets `text/plain`, anything else no content type.
+fn content_type_for_extension(extension: &str) -> Option<&'static str> {
     match extension {
         "pdf" => Some("application/pdf"),
         "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
@@ -45,9 +48,6 @@ fn record_upload_content_type(extension: &str, bytes: &[u8]) -> Option<&'static 
         "ogg" => Some("audio/ogg"),
         "amr" => Some("audio/amr"),
         "webm" => Some("audio/webm"),
-        _ if claria_core::record_text::decode_record_text(bytes).is_some() => {
-            Some("text/plain; charset=utf-8")
-        }
         _ => None,
     }
 }
@@ -222,21 +222,46 @@ async fn upload_record_file_inner(
         .and_then(|n| n.to_str())
         .ok_or_else(|| CommandError::Msg("Invalid file path".to_string()))?;
 
-    let bytes = std::fs::read(path)
+    let metadata = tokio::fs::metadata(path)
+        .await
         .map_err(|e| CommandError::Msg(format!("Failed to read file: {e}")))?;
-    let file_size = bytes.len() as i32;
+    let file_size = i32::try_from(metadata.len()).unwrap_or(i32::MAX);
 
     let extension = file_extension(path);
 
     let span = tracing::Span::current();
     span.record("extension", extension.as_str());
-    span.record("bytes", bytes.len() as u64);
+    span.record("bytes", metadata.len());
 
-    let content_type = record_upload_content_type(&extension, &bytes);
+    // Only two cases need file bytes in memory: documents (Bedrock extraction
+    // consumes them) and unknown extensions (printable-UTF-8 validation
+    // decides the content type, bounded by the text-read ceiling). Everything
+    // else streams straight from disk.
+    let known_content_type = content_type_for_extension(&extension);
+    let is_document = claria_bedrock::extract::document_format_for_extension(&extension).is_some();
+    let mut document_bytes: Option<Vec<u8>> = None;
+    let content_type = if is_document {
+        document_bytes = Some(
+            tokio::fs::read(path)
+                .await
+                .map_err(|e| CommandError::Msg(format!("Failed to read file: {e}")))?,
+        );
+        known_content_type
+    } else if known_content_type.is_some() {
+        known_content_type
+    } else if metadata.len() <= claria_core::record_text::MAX_RECORD_TEXT_BYTES {
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| CommandError::Msg(format!("Failed to read file: {e}")))?;
+        claria_core::record_text::decode_record_text(&bytes)
+            .map(|_| "text/plain; charset=utf-8")
+    } else {
+        None
+    };
 
-    // Upload the original file.
+    // Upload the original file, streaming its body from disk.
     let key = claria_core::s3_keys::client_record_file(id, filename);
-    claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, bytes.clone(), content_type)
+    claria_storage::objects::put_object_from_path(&ctx.s3, &ctx.bucket, &key, path, content_type)
         .await?;
 
     tracing::info!(client_id = %id, extension, "record file uploaded");
@@ -253,8 +278,16 @@ async fn upload_record_file_inner(
     .await;
 
     // Generate the sidecar for supported document and audio types.
-    let sidecar = generate_upload_sidecar(ctx, id, filename, &extension, &key, &bytes, overrides)
-        .await;
+    let sidecar = generate_upload_sidecar(
+        ctx,
+        id,
+        filename,
+        &extension,
+        &key,
+        document_bytes.as_deref(),
+        overrides,
+    )
+    .await;
     if let Err(e) = sidecar {
         if sidecar_failure_fatal {
             return Err(e);
@@ -279,12 +312,15 @@ async fn generate_upload_sidecar(
     filename: &str,
     extension: &str,
     key: &str,
-    bytes: &[u8],
+    document_bytes: Option<&[u8]>,
     overrides: Option<TranscribeOptionsOverrides>,
 ) -> Result<(), CommandError> {
     let sidecar_key = format!("{key}.text");
 
     if let Some(format) = claria_bedrock::extract::document_format_for_extension(extension) {
+        let bytes = document_bytes.ok_or_else(|| {
+            CommandError::Msg("document bytes were not read before extraction".to_string())
+        })?;
         let extraction_prompt = load_prompt(&ctx.s3, &ctx.bucket, "pdf-extraction").await?;
         let (text, usage) = claria_bedrock::extract::extract_document_text(
             &ctx.sdk_config,

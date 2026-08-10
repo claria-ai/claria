@@ -354,6 +354,7 @@ pub async fn list_report_revisions(
     bucket: &str,
     client_id: Uuid,
     report_id: Uuid,
+    cache: &RevisionCache,
 ) -> Result<Vec<ReportRevisionSummary>, ReportAuthoringError> {
     let current = load_or_create(s3, bucket, client_id).await?;
     if current.workspace.report_id != report_id {
@@ -362,12 +363,12 @@ pub async fn list_report_revisions(
 
     let mut seen = HashSet::new();
     let mut revisions = Vec::new();
-    for workspace in load_workspace_versions(s3, bucket, client_id).await? {
-        if workspace.report_id == report_id && seen.insert(workspace.draft.revision) {
+    for (_, summary) in load_revision_summaries(s3, bucket, client_id, cache).await? {
+        if summary.report_id == report_id && seen.insert(summary.revision) {
             revisions.push(ReportRevisionSummary {
-                revision: workspace.draft.revision,
-                title: workspace.draft.content.title,
-                updated_at: workspace.draft.updated_at,
+                revision: summary.revision,
+                title: summary.title,
+                updated_at: summary.updated_at,
             });
         }
     }
@@ -381,13 +382,14 @@ pub async fn load_report_revision(
     client_id: Uuid,
     report_id: Uuid,
     revision: u64,
+    cache: &RevisionCache,
 ) -> Result<ReportDraft, ReportAuthoringError> {
     let current = load_or_create(s3, bucket, client_id).await?;
     if current.workspace.report_id != report_id {
         return Err(ReportAuthoringError::Conflict);
     }
     Ok(
-        load_workspace_revision(s3, bucket, client_id, report_id, revision)
+        load_workspace_revision(s3, bucket, client_id, report_id, revision, cache)
             .await?
             .draft,
     )
@@ -400,6 +402,7 @@ pub async fn revert_report_revision(
     report_id: Uuid,
     expected_revision: u64,
     revision: u64,
+    cache: &RevisionCache,
 ) -> Result<ReportWorkspace, ReportAuthoringError> {
     let mut loaded = load_or_create(s3, bucket, client_id).await?;
     if loaded.workspace.report_id != report_id {
@@ -416,7 +419,8 @@ pub async fn revert_report_revision(
             "Accept or reject the pending proposal before restoring a report revision.".to_string(),
         ));
     }
-    let historical = load_workspace_revision(s3, bucket, client_id, report_id, revision).await?;
+    let historical =
+        load_workspace_revision(s3, bucket, client_id, report_id, revision, cache).await?;
 
     let now = jiff::Timestamp::now();
     loaded.workspace.draft = loaded
@@ -1503,26 +1507,104 @@ async fn load_existing(
     Ok(LoadedWorkspace { workspace, etag })
 }
 
-async fn load_workspace_versions(
+/// What the revision surfaces need to know about one immutable stored
+/// version of the workspace object.
+#[derive(Debug, Clone)]
+struct RevisionSummary {
+    report_id: Uuid,
+    revision: u64,
+    title: String,
+    updated_at: jiff::Timestamp,
+}
+
+/// Bounded number of per-version summaries held in memory.
+const REVISION_CACHE_CAPACITY: usize = 1024;
+
+/// LRU cache of workspace-version summaries keyed by S3 version ID.
+///
+/// A version ID names an immutable body, so a cached summary can never go
+/// stale — no ETag revalidation is needed, unlike the record cache. This is
+/// what turns the revision list from N full-body GETs into GETs for only the
+/// versions this process has never seen.
+pub struct RevisionCache {
+    inner: std::sync::Mutex<lru::LruCache<String, RevisionSummary>>,
+}
+
+impl Default for RevisionCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RevisionCache {
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(REVISION_CACHE_CAPACITY).expect("nonzero"),
+            )),
+        }
+    }
+
+    fn get(&self, version_id: &str) -> Option<RevisionSummary> {
+        self.inner
+            .lock()
+            .expect("revision cache lock poisoned")
+            .get(version_id)
+            .cloned()
+    }
+
+    fn insert(&self, version_id: String, summary: RevisionSummary) {
+        self.inner
+            .lock()
+            .expect("revision cache lock poisoned")
+            .put(version_id, summary);
+    }
+}
+
+/// Summaries for every non-delete-marker version of the workspace object, in
+/// listing order (newest first). Uncached versions are fetched with bounded
+/// concurrency; cached ones cost no GET.
+async fn load_revision_summaries(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<Vec<ReportWorkspace>, ReportAuthoringError> {
+    cache: &RevisionCache,
+) -> Result<Vec<(String, RevisionSummary)>, ReportAuthoringError> {
+    use futures::stream::StreamExt;
+
     let key = claria_core::s3_keys::report_workspace(client_id);
     let versions = claria_storage::objects::list_object_versions(s3, bucket, &key)
         .await
         .map_err(|source| ReportAuthoringError::storage("listing report revisions", source))?;
-    let mut workspaces = Vec::new();
-    for version in versions
+
+    let key = &key;
+    let lookups = versions
         .into_iter()
         .filter(|version| !version.is_delete_marker)
-    {
-        workspaces.push(
-            load_workspace_object_version(s3, bucket, &key, client_id, &version.version_id)
-                .await?,
-        );
-    }
-    Ok(workspaces)
+        .map(|version| async move {
+            if let Some(summary) = cache.get(&version.version_id) {
+                return Ok((version.version_id, summary));
+            }
+            let workspace =
+                load_workspace_object_version(s3, bucket, key, client_id, &version.version_id)
+                    .await?;
+            let summary = RevisionSummary {
+                report_id: workspace.report_id,
+                revision: workspace.draft.revision,
+                title: workspace.draft.content.title,
+                updated_at: workspace.draft.updated_at,
+            };
+            cache.insert(version.version_id.clone(), summary.clone());
+            Ok::<_, ReportAuthoringError>((version.version_id, summary))
+        })
+        .collect::<Vec<_>>();
+
+    futures::stream::iter(lookups)
+        .buffered(claria_storage::objects::S3_FETCH_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect()
 }
 
 async fn load_workspace_revision(
@@ -1531,19 +1613,15 @@ async fn load_workspace_revision(
     client_id: Uuid,
     report_id: Uuid,
     revision: u64,
+    cache: &RevisionCache,
 ) -> Result<ReportWorkspace, ReportAuthoringError> {
     let key = claria_core::s3_keys::report_workspace(client_id);
-    let versions = claria_storage::objects::list_object_versions(s3, bucket, &key)
-        .await
-        .map_err(|source| ReportAuthoringError::storage("listing report revisions", source))?;
-    for version in versions
-        .into_iter()
-        .filter(|version| !version.is_delete_marker)
-    {
-        let workspace =
-            load_workspace_object_version(s3, bucket, &key, client_id, &version.version_id).await?;
-        if workspace.report_id == report_id && workspace.draft.revision == revision {
-            return Ok(workspace);
+    // The summaries name which immutable version holds the wanted revision,
+    // so only that one body is fetched.
+    let summaries = load_revision_summaries(s3, bucket, client_id, cache).await?;
+    for (version_id, summary) in summaries {
+        if summary.report_id == report_id && summary.revision == revision {
+            return load_workspace_object_version(s3, bucket, &key, client_id, &version_id).await;
         }
     }
     Err(ReportAuthoringError::InvalidInput(format!(

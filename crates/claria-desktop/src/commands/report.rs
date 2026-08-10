@@ -103,7 +103,11 @@ pub async fn list_report_revisions(
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let revisions = claria_report_authoring::list_report_revisions(
-            &ctx.s3, &ctx.bucket, client_id, report_id,
+            &ctx.s3,
+            &ctx.bucket,
+            client_id,
+            report_id,
+            &state.revision_cache,
         )
         .await?;
         Ok(revisions
@@ -131,7 +135,12 @@ pub async fn load_report_revision(
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let draft = claria_report_authoring::load_report_revision(
-            &ctx.s3, &ctx.bucket, client_id, report_id, revision,
+            &ctx.s3,
+            &ctx.bucket,
+            client_id,
+            report_id,
+            revision,
+            &state.revision_cache,
         )
         .await?;
         Ok(claria_desktop::report_authoring::report_draft_view(&draft))
@@ -159,6 +168,7 @@ pub async fn revert_report_revision(
             report_id,
             expected_revision,
             revision,
+            &state.revision_cache,
         )
         .await?;
         let workspace = claria_desktop::report_authoring::workspace_view(&workspace);

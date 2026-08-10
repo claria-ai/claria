@@ -30,6 +30,9 @@ pub struct DesktopState {
     pub sdk_config: Arc<Mutex<Option<CachedSdkConfig>>>,
     pub local_transcriber: Arc<std::sync::Mutex<claria_transcribe::LocalTranscriber>>,
     pub record_cache: Arc<RecordCache>,
+    /// Per-version report-revision summaries; version IDs are immutable so
+    /// entries never go stale.
+    pub revision_cache: Arc<claria_report_authoring::RevisionCache>,
     /// Parsed managed-template candidates. Validated source bytes stay only
     /// long enough to write the immutable formatting snapshot; local paths are
     /// never retained.
@@ -50,6 +53,7 @@ impl Default for DesktopState {
                 claria_transcribe::LocalTranscriber::default(),
             )),
             record_cache: Arc::new(RecordCache::new()),
+            revision_cache: Arc::new(claria_report_authoring::RevisionCache::new()),
             pending_report_templates: Arc::new(Mutex::new(HashMap::new())),
             assumed_role_credentials: Arc::new(Mutex::new(HashMap::new())),
         }

@@ -129,34 +129,52 @@ fn normalized_chat_name(name: &str) -> Result<String, CommandError> {
     Ok(name.to_string())
 }
 
+/// Load every persisted chat history for a client.
+///
+/// The listing's ETags feed the record cache, so unchanged histories cost no
+/// GET, and the misses fan out with bounded concurrency instead of one
+/// serial GET per chat. The listing's size stands in for the per-object
+/// read bound the cache path does not enforce.
 async fn chat_history_rows(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
     client_id: uuid::Uuid,
+    cache: &claria_records::RecordCache,
 ) -> Result<Vec<(claria_core::models::chat_history::ChatHistory, u64)>, CommandError> {
+    use futures::stream::StreamExt;
+
     let prefix = claria_core::s3_keys::chat_history_prefix(client_id);
     let objects = claria_storage::objects::list_objects_with_metadata(s3, bucket, &prefix).await?;
-    let mut rows = Vec::new();
-    for object in objects {
-        if !object.key.ends_with(".json") {
-            continue;
-        }
-        let output = claria_storage::objects::get_object_bounded(
-            s3,
-            bucket,
-            &object.key,
-            MAX_CHAT_HISTORY_BYTES,
-        )
-        .await?;
-        let history: claria_core::models::chat_history::ChatHistory =
-            serde_json::from_slice(&output.body)?;
-        if history.client_id != client_id {
-            return Err(CommandError::Msg(
-                "A stored chat history belongs to another client.".to_string(),
-            ));
-        }
-        rows.push((history, u64::try_from(object.size).unwrap_or(0)));
-    }
+
+    let fetches: Vec<_> = objects
+        .into_iter()
+        .filter(|object| object.key.ends_with(".json"))
+        .map(|object| async move {
+            let size = u64::try_from(object.size).unwrap_or(0);
+            if size > MAX_CHAT_HISTORY_BYTES {
+                return Err(CommandError::Msg(format!(
+                    "A stored chat history exceeds the {MAX_CHAT_HISTORY_BYTES}-byte limit."
+                )));
+            }
+            let etag = object.etag.as_deref().unwrap_or("");
+            let body = cache.get_or_fetch(s3, bucket, &object.key, etag).await?;
+            let history: claria_core::models::chat_history::ChatHistory =
+                serde_json::from_slice(&body)?;
+            if history.client_id != client_id {
+                return Err(CommandError::Msg(
+                    "A stored chat history belongs to another client.".to_string(),
+                ));
+            }
+            Ok((history, size))
+        })
+        .collect();
+
+    let mut rows = futures::stream::iter(fetches)
+        .buffered(claria_records::S3_FETCH_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, CommandError>>()?;
     rows.sort_by_key(|(history, _)| history.created_at);
     Ok(rows)
 }
@@ -303,7 +321,7 @@ pub async fn chat_message(
                 let (history, etag) =
                     stored_chat_history(&ctx.s3, &ctx.bucket, client_uuid, chat_uuid).await?;
                 let name = if history.name.trim().is_empty() {
-                    let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid).await?;
+                    let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid, &state.record_cache).await?;
                     rows.iter()
                         .position(|(candidate, _)| candidate.id == chat_uuid)
                         .map_or_else(
@@ -319,7 +337,7 @@ pub async fn chat_message(
                 let name = match chat_name {
                     Some(name) => normalized_chat_name(&name)?,
                     None => {
-                        let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid).await?;
+                        let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid, &state.record_cache).await?;
                         next_chat_history_name(&rows)
                     }
                 };
@@ -651,7 +669,7 @@ pub async fn list_chat_histories(
     run("list_chat_histories", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
-        let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_id).await?;
+        let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_id, &state.record_cache).await?;
         let mut summaries: Vec<_> = rows
             .iter()
             .enumerate()
@@ -728,7 +746,7 @@ pub async fn load_chat_history(
 
         let (history, _) = stored_chat_history(&ctx.s3, &ctx.bucket, client_uuid, chat_uuid).await?;
         let fallback_name = if history.name.trim().is_empty() {
-            let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid).await?;
+            let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid, &state.record_cache).await?;
             rows.iter()
                 .position(|(candidate, _)| candidate.id == chat_uuid)
                 .map_or_else(

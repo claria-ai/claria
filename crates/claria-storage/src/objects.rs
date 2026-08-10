@@ -156,6 +156,41 @@ pub async fn put_object(
     Ok(resp.e_tag().unwrap_or_default().to_string())
 }
 
+/// Put an object streaming its body from a local file, so a user-sized
+/// upload is never buffered whole in memory. Returns the new ETag.
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(bucket = %bucket, key = %log_safe_key(key), bytes = tracing::field::Empty)
+)]
+pub async fn put_object_from_path(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    path: &std::path::Path,
+    content_type: Option<&str>,
+) -> Result<String, StorageError> {
+    let body = ByteStream::from_path(path)
+        .await
+        .map_err(|e| StorageError::PutObject(format!("failed to open the file to upload: {e}")))?;
+    if let Ok(metadata) = tokio::fs::metadata(path).await {
+        tracing::Span::current().record("bytes", metadata.len());
+    }
+
+    let mut req = client.put_object().bucket(bucket).key(key).body(body);
+
+    if let Some(ct) = content_type {
+        req = req.content_type(ct);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| StorageError::PutObject(sdk_error_message(&e)))?;
+
+    Ok(resp.e_tag().unwrap_or_default().to_string())
+}
+
 /// The precondition attached to a conditional PUT.
 enum PutCondition<'a> {
     /// `If-None-Match: *` — succeed only when the key has no current object.

@@ -261,10 +261,16 @@ async fn report_revisions_can_be_previewed_and_restored_without_removing_history
     .await
     .expect("save another object version at the same draft revision");
 
-    let revisions =
-        report_authoring::list_report_revisions(&s3, BUCKET, client_id, initial.report_id)
-            .await
-            .expect("list revisions");
+    let cache = report_authoring::RevisionCache::new();
+    let revisions = report_authoring::list_report_revisions(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        &cache,
+    )
+    .await
+    .expect("list revisions");
     assert_eq!(
         revisions
             .iter()
@@ -280,6 +286,7 @@ async fn report_revisions_can_be_previewed_and_restored_without_removing_history
         client_id,
         initial.report_id,
         first.draft.revision,
+        &cache,
     )
     .await
     .expect("load first revision");
@@ -292,16 +299,22 @@ async fn report_revisions_can_be_previewed_and_restored_without_removing_history
         initial.report_id,
         second.draft.revision,
         first.draft.revision,
+        &cache,
     )
     .await
     .expect("restore first revision");
     assert_eq!(restored.draft.revision, 3);
     assert_eq!(restored.draft.content.title, "First version");
 
-    let revisions_after_restore =
-        report_authoring::list_report_revisions(&s3, BUCKET, client_id, initial.report_id)
-            .await
-            .expect("list revisions after restore");
+    let revisions_after_restore = report_authoring::list_report_revisions(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        &cache,
+    )
+    .await
+    .expect("list revisions after restore");
     assert_eq!(
         revisions_after_restore
             .iter()
@@ -315,6 +328,7 @@ async fn report_revisions_can_be_previewed_and_restored_without_removing_history
         client_id,
         initial.report_id,
         second.draft.revision,
+        &cache,
     )
     .await
     .expect("load revision that preceded restore");
@@ -327,6 +341,7 @@ async fn report_revisions_can_be_previewed_and_restored_without_removing_history
         initial.report_id,
         restored.draft.revision,
         restored.draft.revision,
+        &cache,
     )
     .await
     .expect_err("current revision cannot be restored");

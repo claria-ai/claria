@@ -25,6 +25,9 @@ All notable changes to Claria are documented here.
 - Report writer turn audit events build their usage fields through the shared helper and no longer claim complete usage when no attempt ran
 - Numbered default names share one generator, the prompt-cache settings shrink to the fields actually used, and the writer call ceiling is derived from the round ceiling
 - Restore commands no longer take an ignored version parameter
+- Report revision listings fetch uncached versions concurrently and remember per-version summaries, so revisits cost no reads
+- Chat history listings revalidate against the record cache and fan out concurrently instead of one serial read per chat
+- Record uploads stream file bodies from disk instead of buffering whole files in memory, reading bytes only when extraction or text validation needs them
 - Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
 - Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
 - Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed
