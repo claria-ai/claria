@@ -1,6 +1,8 @@
-//! `AuditEvent::emit` must put the `details` payload on the wire. It used to
-//! log the action, resource and user and silently drop the payload that every
-//! call site went to the trouble of building.
+//! `AuditEvent::emit` is a one-line tracing mirror of the durable S3 event.
+//! It must never carry the details payload or a non-UUID resource id — the
+//! console export is a support artifact in a HIPAA app, and record filenames
+//! or per-event detail JSON do not belong in it. The full payload lives only
+//! in the S3 object.
 
 use std::{
     fmt,
@@ -11,12 +13,12 @@ use claria_storage::audit::AuditEvent;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::{Layer, layer::Context, prelude::*};
 
-type Fields = Arc<Mutex<Vec<(String, String)>>>;
+type Captured = Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>;
 
 /// Mirrors how `claria-desktop`'s console layer reads events: fields arrive
 /// through `record_str`/`record_debug` and are rendered verbatim, so anything
 /// asserted here is what actually reaches the exported log.
-struct CaptureLayer(Fields);
+struct CaptureLayer(Captured);
 
 struct FieldCollector<'a>(&'a mut Vec<(String, String)>);
 
@@ -33,16 +35,22 @@ impl Visit for FieldCollector<'_> {
 
 impl<S: tracing::Subscriber> Layer<S> for CaptureLayer {
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-        let mut captured = self.0.lock().expect("capture lock");
-        event.record(&mut FieldCollector(&mut captured));
+        let mut fields = Vec::new();
+        event.record(&mut FieldCollector(&mut fields));
+        self.0
+            .lock()
+            .expect("capture lock")
+            .push((event.metadata().target().to_string(), fields));
     }
 }
 
-fn capture(event: &AuditEvent) -> Vec<(String, String)> {
-    let fields: Fields = Arc::new(Mutex::new(Vec::new()));
-    let subscriber = tracing_subscriber::registry().with(CaptureLayer(fields.clone()));
+fn capture(event: &AuditEvent) -> (String, Vec<(String, String)>) {
+    let captured: Captured = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(CaptureLayer(captured.clone()));
     tracing::subscriber::with_default(subscriber, || event.emit());
-    fields.lock().expect("capture lock").clone()
+    let mut events = captured.lock().expect("capture lock").clone();
+    assert_eq!(events.len(), 1, "emit produced {events:?}");
+    events.remove(0)
 }
 
 fn field<'a>(fields: &'a [(String, String)], name: &str) -> &'a str {
@@ -54,46 +62,55 @@ fn field<'a>(fields: &'a [(String, String)], name: &str) -> &'a str {
 }
 
 #[test]
-fn emit_records_the_details_payload_as_json() {
-    let event = AuditEvent::new("chat_message", "client", "abc", "123456789012").with_details(
-        serde_json::json!({
+fn emit_is_a_summary_without_the_details_payload() {
+    let event = AuditEvent::new(
+        "chat_message",
+        "client",
+        uuid::Uuid::nil().to_string(),
+        "123456789012",
+    )
+        .with_details(serde_json::json!({
             "input_tokens": 1234,
             "cost_usd": 0.0042,
             "model_id": "anthropic.claude-sonnet-4",
-        }),
-    );
+        }));
 
-    let fields = capture(&event);
-    let details = field(&fields, "audit.details");
+    let (target, fields) = capture(&event);
 
-    // Real JSON, not a Rust debug rendering — an auditor grepping the exported
-    // log can parse this line.
-    let parsed: serde_json::Value = serde_json::from_str(details).expect("details parse as JSON");
-    assert_eq!(parsed["input_tokens"], 1234);
-    assert_eq!(parsed["cost_usd"], 0.0042);
-    assert_eq!(parsed["model_id"], "anthropic.claude-sonnet-4");
-}
-
-#[test]
-fn emit_records_identity_timestamp_and_the_original_fields() {
-    let event = AuditEvent::new("extract_document_text", "record_file", "scan.pdf", "acct");
-    let fields = capture(&event);
-
-    assert_eq!(field(&fields, "audit.action"), "extract_document_text");
-    assert_eq!(field(&fields, "audit.resource_type"), "record_file");
-    assert_eq!(field(&fields, "audit.resource_id"), "scan.pdf");
-    assert_eq!(field(&fields, "audit.user_sub"), "acct");
+    assert_eq!(target, "claria_storage::audit::trail");
+    assert_eq!(field(&fields, "audit.action"), "chat_message");
+    assert_eq!(field(&fields, "audit.resource_type"), "client");
     assert_eq!(field(&fields, "audit.event_id"), event.event_id.to_string());
-    assert_eq!(
-        field(&fields, "audit.timestamp"),
-        event.timestamp.to_string()
+    assert!(
+        !fields.iter().any(|(k, _)| k == "audit.details"),
+        "details payload leaked into the tracing mirror: {fields:?}"
+    );
+    assert!(
+        !fields.iter().any(|(_, v)| v.contains("1234")),
+        "details values leaked into the tracing mirror: {fields:?}"
     );
 }
 
 #[test]
-fn emit_records_an_empty_object_when_there_are_no_details() {
-    let event = AuditEvent::new("infra_chat", "infrastructure", "infra", "acct");
-    assert_eq!(field(&capture(&event), "audit.details"), "{}");
+fn emit_keeps_uuid_resource_ids_and_redacts_the_rest() {
+    let id = uuid::Uuid::new_v4();
+    let (_, fields) = capture(&AuditEvent::new(
+        "delete_client",
+        "client",
+        id.to_string(),
+        "acct",
+    ));
+    assert_eq!(field(&fields, "audit.resource_id"), id.to_string());
+
+    // A filename resource_id (legitimate in the durable trail) must not
+    // reach the log line.
+    let (_, fields) = capture(&AuditEvent::new(
+        "extract_document_text",
+        "record_file",
+        "Jane Doe scan.pdf",
+        "acct",
+    ));
+    assert_eq!(field(&fields, "audit.resource_id"), "<redacted>");
 }
 
 #[test]

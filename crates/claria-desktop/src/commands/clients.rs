@@ -55,7 +55,8 @@ pub async fn create_client(
         claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, body, Some("application/json"))
             .await?;
 
-        tracing::info!(client_id = %id, name = %name, "client record created");
+        // The client's name is PHI and never logged.
+        tracing::info!(client_id = %id, "client record created");
 
         Ok(ClientSummary {
             id: id.to_string(),

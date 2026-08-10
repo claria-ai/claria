@@ -119,7 +119,7 @@ pub async fn restore_file_version(
         )
         .await?;
 
-        tracing::info!(client_id = %id, filename, version_id, "file version restored");
+        tracing::info!(client_id = %id, version_id, "file version restored");
 
         Ok(())
     })
@@ -225,7 +225,7 @@ pub async fn restore_deleted_file(
         )
         .await?;
 
-        tracing::info!(client_id = %id, filename, "deleted file restored");
+        tracing::info!(client_id = %id, "deleted file restored");
 
         Ok(())
     })

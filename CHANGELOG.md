@@ -8,6 +8,9 @@ All notable changes to Claria are documented here.
 - The S3 client is cached alongside the SDK config and invalidated with it, instead of being rebuilt on every command
 - S3 failures now keep their full connection-level error context instead of collapsing to "unhandled error", and storage no longer double-logs errors it already returns
 - S3 timing spans log a scrubbed key class instead of client-chosen filenames, which are PHI
+- Client names and record filenames no longer appear in application logs; the durable audit trail in S3 keeps the full identifiers
+- The audit event's console mirror is now a one-line summary without the details payload, under a dedicated log target
+- The exported console log is written with owner-only file permissions
 - Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
 - Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
 - Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed

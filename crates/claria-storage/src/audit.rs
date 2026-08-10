@@ -14,7 +14,6 @@ use aws_config::SdkConfig;
 use claria_core::s3_keys;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use tracing::info;
 use uuid::Uuid;
 
 use crate::error::StorageError;
@@ -59,26 +58,30 @@ impl AuditEvent {
         self
     }
 
-    /// Emit this audit event via tracing.
+    /// Mirror this audit event into the tracing stream as a one-line summary.
     ///
-    /// `details` is rendered as compact JSON and recorded as its own field.
-    /// The desktop console layer flattens fields into the log line verbatim,
-    /// so the payload survives as readable, greppable JSON rather than a
-    /// `Some(Object {...})` debug rendering.
+    /// Deliberately terse: the durable S3 object carries the full payload —
+    /// the details JSON and resource identifiers that may be client-chosen
+    /// filenames. The tracing mirror only records that the event happened,
+    /// because the console export is a support artifact in a HIPAA app: a
+    /// `resource_id` is logged only when it is UUID-shaped, and `details`
+    /// never is. The dedicated target keeps the trail greppable.
     pub fn emit(&self) {
-        let details = match &self.details {
-            Some(value) => value.to_string(),
-            None => "{}".to_string(),
+        let resource_id = if self.resource_id.parse::<Uuid>().is_ok() {
+            self.resource_id.as_str()
+        } else {
+            "<redacted>"
         };
 
-        info!(
+        // `event!` rather than `info!`: tracing 0.1.44's `info!` macro cannot
+        // parse `target:` together with dotted field names.
+        tracing::event!(
+            target: "claria_storage::audit::trail",
+            tracing::Level::INFO,
             audit.event_id = %self.event_id,
-            audit.timestamp = %self.timestamp,
             audit.action = %self.action,
             audit.resource_type = %self.resource_type,
-            audit.resource_id = %self.resource_id,
-            audit.user_sub = %self.user_sub,
-            audit.details = %details,
+            audit.resource_id = resource_id,
             "audit event"
         );
     }

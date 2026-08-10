@@ -143,12 +143,14 @@ pub async fn search_record_contents(
 /// Bedrock; audio files receive a transcript sidecar.
 #[tauri::command]
 #[specta::specta]
+// Spans and log lines carry the client UUID, extension, and byte count —
+// never the client-chosen filename, which is PHI.
 #[tracing::instrument(
     level = "trace",
     skip_all,
     fields(
         client_id = %client_id,
-        filename = tracing::field::Empty,
+        extension = tracing::field::Empty,
         bytes = tracing::field::Empty
     )
 )]
@@ -172,15 +174,16 @@ pub async fn upload_record_file(
             .map_err(|e| CommandError::Msg(format!("Failed to read file: {e}")))?;
         let file_size = bytes.len() as i32;
 
-        let span = tracing::Span::current();
-        span.record("filename", filename);
-        span.record("bytes", bytes.len() as u64);
-
         let extension = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
+
+        let span = tracing::Span::current();
+        span.record("extension", extension.as_str());
+        span.record("bytes", bytes.len() as u64);
+
         let content_type = record_upload_content_type(&extension, &bytes);
 
         // Upload the original file.
@@ -188,7 +191,7 @@ pub async fn upload_record_file(
         claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, bytes.clone(), content_type)
             .await?;
 
-        tracing::info!(client_id = %id, filename, "record file uploaded");
+        tracing::info!(client_id = %id, extension, "record file uploaded");
 
         // Generate sidecar text extraction for supported document types.
         if let Some(format) = claria_bedrock::extract::document_format_for_extension(&extension) {
@@ -223,13 +226,12 @@ pub async fn upload_record_file(
                     )
                     .await;
 
-                    tracing::info!(client_id = %id, filename, "sidecar text extraction uploaded");
+                    tracing::info!(client_id = %id, "sidecar text extraction uploaded");
                 }
                 Err(e) => {
                     // Non-fatal: the original file is already uploaded.
                     tracing::warn!(
                         client_id = %id,
-                        filename,
                         error = %e,
                         "sidecar text extraction failed"
                     );
@@ -264,13 +266,12 @@ pub async fn upload_record_file(
                     )
                     .await?;
 
-                    tracing::info!(client_id = %id, filename, "sidecar audio transcription uploaded");
+                    tracing::info!(client_id = %id, "sidecar audio transcription uploaded");
                 }
                 Err(e) => {
                     // Non-fatal: the original file is already uploaded.
                     tracing::warn!(
                         client_id = %id,
-                        filename,
                         error = %e,
                         "sidecar audio transcription failed"
                     );
@@ -328,7 +329,7 @@ pub async fn upload_record_file_with_options(
         let key = claria_core::s3_keys::client_record_file(id, filename);
         claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, bytes, content_type)
             .await?;
-        tracing::info!(client_id = %id, filename, "record file uploaded (wizard path)");
+        tracing::info!(client_id = %id, extension, "record file uploaded (wizard path)");
 
         let translate = overrides
             .as_ref()
@@ -358,7 +359,7 @@ pub async fn upload_record_file_with_options(
         )
         .await?;
 
-        tracing::info!(client_id = %id, filename, "wizard transcription complete");
+        tracing::info!(client_id = %id, "wizard transcription complete");
 
         Ok(RecordFile {
             filename: filename.to_string(),
@@ -442,7 +443,6 @@ pub async fn delete_record_file(
                 {
                     tracing::warn!(
                         client_id = %id,
-                        filename,
                         %error,
                         "failed to delete record text sidecar"
                     );
@@ -452,14 +452,13 @@ pub async fn delete_record_file(
             Err(error) => {
                 tracing::warn!(
                     client_id = %id,
-                    filename,
                     %error,
                     "failed to discover record text sidecar during delete"
                 );
             }
         }
 
-        tracing::info!(client_id = %id, filename, "record file deleted");
+        tracing::info!(client_id = %id, "record file deleted");
 
         Ok(())
     })
@@ -473,7 +472,7 @@ pub async fn delete_record_file(
 /// text—is returned unchanged.
 #[tauri::command]
 #[specta::specta]
-#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id, filename = %filename))]
+#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id))]
 pub async fn get_record_file_text(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -527,7 +526,7 @@ pub async fn create_text_record_file(
         claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, bytes, Some("text/plain"))
             .await?;
 
-        tracing::info!(client_id = %id, filename, "text record file created");
+        tracing::info!(client_id = %id, "text record file created");
 
         Ok(RecordFile {
             filename,
@@ -562,7 +561,7 @@ pub async fn update_text_record_file(
         )
         .await?;
 
-        tracing::info!(client_id = %id, filename, "text record file updated");
+        tracing::info!(client_id = %id, "text record file updated");
 
         Ok(())
     })
@@ -720,7 +719,7 @@ pub async fn extract_record_file(
                 })?
         };
 
-        tracing::info!(client_id = %id, filename, "resolved text for record file");
+        tracing::info!(client_id = %id, "resolved text for record file");
 
         Ok(RecordContext { filename, text })
     })

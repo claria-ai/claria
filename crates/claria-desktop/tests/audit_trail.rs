@@ -28,13 +28,17 @@ fn build_sdk_config(endpoint: &str) -> aws_config::SdkConfig {
 }
 
 fn chat_turn_event() -> AuditEvent {
-    AuditEvent::new("chat_message", "client", "abc", "123456789012").with_details(
-        serde_json::json!({
-            "input_tokens": 1234,
-            "output_tokens": 88,
-            "cost_usd": 0.0042,
-        }),
+    AuditEvent::new(
+        "chat_message",
+        "client",
+        uuid::Uuid::nil().to_string(),
+        "123456789012",
     )
+    .with_details(serde_json::json!({
+        "input_tokens": 1234,
+        "output_tokens": 88,
+        "cost_usd": 0.0042,
+    }))
 }
 
 fn today() -> jiff::civil::Date {
@@ -75,14 +79,20 @@ async fn a_recorded_event_reaches_s3_and_carries_its_details_into_the_exported_l
         1234
     );
 
+    // The console mirror is a one-line summary: action and UUID reference,
+    // never the details payload — that lives only in the durable S3 object.
     let text = buffer.to_text();
     let line = text
         .lines()
         .find(|l| l.contains("audit event"))
         .unwrap_or_else(|| panic!("no audit line in export:\n{text}"));
     assert!(line.contains("audit.action=chat_message"), "{line}");
-    assert!(line.contains("\"input_tokens\":1234"), "{line}");
-    assert!(line.contains("\"cost_usd\":0.0042"), "{line}");
+    assert!(
+        line.contains(&format!("audit.resource_id={}", uuid::Uuid::nil())),
+        "{line}"
+    );
+    assert!(!text.contains("input_tokens"), "{text}");
+    assert!(!text.contains("cost_usd"), "{text}");
 }
 
 #[tokio::test]
@@ -112,11 +122,11 @@ async fn an_unwritable_sink_surfaces_an_error_without_failing_the_caller() {
         "the failed audit write was swallowed instead of surfaced:\n{text}"
     );
 
-    // The event itself is still on the record in the exported log, payload and
-    // all, even though it never reached S3.
+    // The summary line still records that the event happened, even though it
+    // never reached S3.
     assert!(
         text.lines()
-            .any(|l| l.contains("audit event") && l.contains("\"input_tokens\":1234")),
-        "the event payload was lost along with the write:\n{text}"
+            .any(|l| l.contains("audit event") && l.contains("audit.action=chat_message")),
+        "the event summary was lost along with the write:\n{text}"
     );
 }

@@ -35,7 +35,9 @@ fn save_console_logs_inner(console: &ConsoleBuffer) -> Result<bool, CommandError
 
     match path {
         Some(p) => {
-            std::fs::write(&p, text).map_err(|e| CommandError::Msg(e.to_string()))?;
+            // The console export can carry sensitive operational detail, so it
+            // gets the same private-atomic write as every user-exported file.
+            claria_desktop::local_export::write_private_atomic(&p, text.as_bytes())?;
             Ok(true)
         }
         None => Ok(false),
