@@ -39,9 +39,9 @@ import type {
   RecordFile,
   ReportBlockReferenceInput,
   ReportDraftEdit,
-  ReportDraftView,
+  ReportDraft,
   ReportExportResult,
-  ReportProposalDecision,
+  ReportProposalChoice,
   ReportRevisionView,
   ReportTemplatePreview,
   ReportTurnProgressView,
@@ -110,18 +110,18 @@ export type {
   ReportAuthoringPreferences,
   ReportAuthoringTurnView,
   ReportBlockReferenceInput,
-  ReportBlockView,
-  ReportContentView,
+  ReportBlock,
+  ReportContent,
   ReportContextReadView,
   ReportDraftEdit,
-  ReportDraftView,
+  ReportDraft,
   ReportExportResult,
-  ReportExportStatusView,
-  ReportExportView,
-  ReportOperationView,
+  ReportExportStatus,
+  ReportExport,
+  ReportOperation,
+  ReportProposalChoice,
   ReportProposalDecision,
-  ReportProposalResolutionDecision,
-  ReportProposalResolutionView,
+  ReportProposalResolution,
   ReportProposalView,
   ReportRevisionView,
   ReportSectionEdit,
@@ -129,7 +129,7 @@ export type {
   ReportTemplatePreview,
   ReportTemplateStatsView,
   ReportTemplateWarningView,
-  ReportSectionView,
+  ReportSection,
   ReportTimelineItemView,
   ReportTimelineRole,
   ReportToolActivityStatus,
@@ -447,7 +447,7 @@ export async function loadReportRevision(
   clientId: string,
   reportId: string,
   revision: number
-): Promise<ReportDraftView> {
+): Promise<ReportDraft> {
   return unwrap(await commands.loadReportRevision(clientId, reportId, revision));
 }
 
@@ -544,7 +544,7 @@ export async function sendReportMessage(
 export async function resolveReportProposal(
   clientId: string,
   proposalId: string,
-  decision: ReportProposalDecision
+  decision: ReportProposalChoice
 ): Promise<ReportWorkspaceView> {
   return unwrap(
     await commands.resolveReportProposal(clientId, proposalId, decision)

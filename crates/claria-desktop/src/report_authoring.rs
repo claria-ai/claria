@@ -1,18 +1,21 @@
 //! Tauri-facing report-authoring view models.
 //!
 //! Workflow policy and AWS orchestration live in `claria-report-authoring`.
-//! This desktop module only normalizes IPC edits and maps domain values into
-//! Specta-safe strings and timeline summaries for the view.
+//! The report domain types (`ReportDraft`, `ReportContent`, blocks,
+//! operations, exports, resolutions) derive `specta::Type` in `claria-core`
+//! and cross the IPC boundary as-is; this module keeps only the views that
+//! genuinely differ from their domain type — flattening, redaction, derived
+//! timelines — each carrying a comment saying why it earns its life.
 
 use std::collections::{HashMap, HashSet};
 
 use claria_core::models::{
     report::{
-        ReportBlock, ReportContent, ReportDraft, ReportExportStatus, ReportOperation,
-        ReportProposal, ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
-        ReportProtocolBlock, ReportProtocolRole, ReportSection, ReportTemplateImport,
-        ReportTemplateWarning, ReportTemplateWarningCode, ReportToolResultStatus, ReportWorkspace,
-        report_template_placeholder_count,
+        ReportBlock, ReportContent, ReportDraft, ReportExport, ReportExportStatus,
+        ReportOperation, ReportProposal, ReportProposalDecision as CoreProposalDecision,
+        ReportProposalResolution, ReportProtocolBlock, ReportProtocolRole, ReportSection,
+        ReportTemplateImport, ReportTemplateWarning, ReportTemplateWarningCode,
+        ReportToolResultStatus, ReportWorkspace, report_template_placeholder_count,
     },
     turn_usage::TurnUsage,
 };
@@ -20,46 +23,23 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use uuid::Uuid;
 
+/// Earns its life over `ReportWorkspace`: flattens the session container and
+/// replaces raw turns with derived timeline/context views.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ReportWorkspaceView {
     pub schema_version: u32,
     pub report_id: String,
     pub client_id: String,
     pub session_name: String,
-    pub draft: ReportDraftView,
+    pub draft: ReportDraft,
     pub turns: Vec<ReportAuthoringTurnView>,
     pub pending_proposal: Option<ReportProposalView>,
-    pub resolutions: Vec<ReportProposalResolutionView>,
+    pub resolutions: Vec<ReportProposalResolution>,
     pub last_agent_revision: Option<u64>,
-    pub last_export: Option<ReportExportView>,
+    pub last_export: Option<ReportExport>,
     pub template_import: Option<ReportTemplateImportView>,
     pub created_at: String,
     pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct ReportExportView {
-    pub revision: u64,
-    pub status: ReportExportStatusView,
-    pub attempted_at: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
-#[serde(rename_all = "snake_case")]
-pub enum ReportExportStatusView {
-    Exported,
-    Canceled,
-    Failed,
-}
-
-impl From<ReportExportStatus> for ReportExportStatusView {
-    fn from(value: ReportExportStatus) -> Self {
-        match value {
-            ReportExportStatus::Exported => Self::Exported,
-            ReportExportStatus::Canceled => Self::Canceled,
-            ReportExportStatus::Failed => Self::Failed,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -70,16 +50,7 @@ pub struct EditorHistoryEntry {
     pub revision: u64,
     pub turn_count: u32,
     pub updated_at: String,
-    pub last_export: Option<ReportExportView>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct ReportDraftView {
-    pub revision: u64,
-    pub content: ReportContentView,
-    pub created_at: String,
-    pub updated_at: String,
-    pub last_applied_proposal_id: Option<String>,
+    pub last_export: Option<ReportExport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -87,35 +58,6 @@ pub struct ReportRevisionView {
     pub revision: u64,
     pub title: String,
     pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
-pub struct ReportContentView {
-    pub title: String,
-    pub sections: Vec<ReportSectionView>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
-pub struct ReportSectionView {
-    pub id: String,
-    pub heading: String,
-    pub blocks: Vec<ReportBlockView>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ReportBlockView {
-    Paragraph {
-        text: String,
-    },
-    BulletList {
-        items: Vec<String>,
-    },
-    Table {
-        rows: Vec<Vec<String>>,
-        has_header: bool,
-        column_widths: Option<Vec<u16>>,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -140,7 +82,7 @@ pub struct ReportTemplateWarningView {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ReportTemplatePreview {
     pub import_id: String,
-    pub content: ReportContentView,
+    pub content: ReportContent,
     pub warnings: Vec<ReportTemplateWarningView>,
     pub stats: ReportTemplateStatsView,
 }
@@ -278,6 +220,8 @@ pub enum ReportToolActivityStatus {
     Failed,
 }
 
+/// Earns its life over `ReportProposal`: omits `tool_use_id`, the internal
+/// Bedrock correlation handle the frontend has no business seeing.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ReportProposalView {
     pub id: String,
@@ -285,58 +229,26 @@ pub struct ReportProposalView {
     pub base_revision: u64,
     pub model_id: String,
     pub summary: String,
-    pub operations: Vec<ReportOperationView>,
-    pub proposed_content: ReportContentView,
+    pub operations: Vec<ReportOperation>,
+    pub proposed_content: ReportContent,
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ReportOperationView {
-    SetTitle {
-        title: String,
-    },
-    AddSection {
-        position: u32,
-        section: ReportSectionView,
-    },
-    ReplaceSection {
-        section_id: String,
-        heading: String,
-        blocks: Vec<ReportBlockView>,
-    },
-    RemoveSection {
-        section_id: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct ReportProposalResolutionView {
-    pub proposal_id: String,
-    pub decision: ReportProposalResolutionDecision,
-    pub resulting_revision: u64,
-    pub resolved_at: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
-#[serde(rename_all = "snake_case")]
-pub enum ReportProposalResolutionDecision {
-    Accepted,
-    Rejected,
-}
-
+/// Earns its life next to `ReportProposalDecision`: this is the imperative
+/// request wire shape (`accept`/`reject`), not the stored past-tense
+/// resolution (`accepted`/`rejected`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ReportProposalDecision {
+pub enum ReportProposalChoice {
     Accept,
     Reject,
 }
 
-impl From<ReportProposalDecision> for CoreProposalDecision {
-    fn from(value: ReportProposalDecision) -> Self {
+impl From<ReportProposalChoice> for CoreProposalDecision {
+    fn from(value: ReportProposalChoice) -> Self {
         match value {
-            ReportProposalDecision::Accept => Self::Accepted,
-            ReportProposalDecision::Reject => Self::Rejected,
+            ReportProposalChoice::Accept => Self::Accepted,
+            ReportProposalChoice::Reject => Self::Rejected,
         }
     }
 }
@@ -369,7 +281,7 @@ impl ReportBlockReferenceInput {
 pub struct ReportSectionEdit {
     pub id: Option<String>,
     pub heading: String,
-    pub blocks: Vec<ReportBlockView>,
+    pub blocks: Vec<ReportBlock>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -390,7 +302,7 @@ pub struct ReportExportResult {
     pub exported: bool,
     pub report_id: String,
     pub revision: u64,
-    pub status: ReportExportStatusView,
+    pub status: ReportExportStatus,
     pub attempted_at: String,
     pub status_persisted: bool,
 }
@@ -413,11 +325,7 @@ pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String>
             Ok(ReportSection {
                 id,
                 heading: section.heading,
-                blocks: section
-                    .blocks
-                    .into_iter()
-                    .map(core_block_from_view)
-                    .collect(),
+                blocks: section.blocks,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -449,29 +357,16 @@ pub fn workspace_view(workspace: &ReportWorkspace) -> ReportWorkspaceView {
         report_id: workspace.report_id.to_string(),
         client_id: workspace.client_id.to_string(),
         session_name: workspace.session_name.clone(),
-        draft: report_draft_view(&workspace.draft),
+        draft: workspace.draft.clone(),
         turns: workspace.session.turns.iter().map(turn_view).collect(),
         pending_proposal: workspace
             .session
             .pending_proposal
             .as_ref()
             .map(proposal_view),
-        resolutions: workspace
-            .session
-            .resolutions
-            .iter()
-            .map(resolution_view)
-            .collect(),
+        resolutions: workspace.session.resolutions.clone(),
         last_agent_revision: workspace.session.last_agent_revision,
-        last_export: workspace
-            .session
-            .last_export
-            .as_ref()
-            .map(|export| ReportExportView {
-                revision: export.revision,
-                status: export.status.into(),
-                attempted_at: export.attempted_at.to_string(),
-            }),
+        last_export: workspace.session.last_export.clone(),
         template_import: workspace
             .template_import
             .as_ref()
@@ -487,7 +382,7 @@ pub fn template_preview_view(
 ) -> ReportTemplatePreview {
     ReportTemplatePreview {
         import_id: import_id.to_string(),
-        content: content_view(&imported.content),
+        content: imported.content.clone(),
         warnings: imported
             .warnings
             .iter()
@@ -588,65 +483,6 @@ fn template_warning_message(code: ReportTemplateWarningCode) -> &'static str {
     }
 }
 
-pub fn report_draft_view(draft: &ReportDraft) -> ReportDraftView {
-    ReportDraftView {
-        revision: draft.revision,
-        content: content_view(&draft.content),
-        created_at: draft.created_at.to_string(),
-        updated_at: draft.updated_at.to_string(),
-        last_applied_proposal_id: draft.last_applied_proposal_id.map(|id| id.to_string()),
-    }
-}
-
-fn content_view(content: &ReportContent) -> ReportContentView {
-    ReportContentView {
-        title: content.title.clone(),
-        sections: content.sections.iter().map(section_view).collect(),
-    }
-}
-
-fn section_view(section: &ReportSection) -> ReportSectionView {
-    ReportSectionView {
-        id: section.id.to_string(),
-        heading: section.heading.clone(),
-        blocks: section.blocks.iter().map(block_view).collect(),
-    }
-}
-
-fn block_view(block: &ReportBlock) -> ReportBlockView {
-    match block {
-        ReportBlock::Paragraph { text } => ReportBlockView::Paragraph { text: text.clone() },
-        ReportBlock::BulletList { items } => ReportBlockView::BulletList {
-            items: items.clone(),
-        },
-        ReportBlock::Table {
-            rows,
-            has_header,
-            column_widths,
-        } => ReportBlockView::Table {
-            rows: rows.clone(),
-            has_header: *has_header,
-            column_widths: column_widths.clone(),
-        },
-    }
-}
-
-fn core_block_from_view(block: ReportBlockView) -> ReportBlock {
-    match block {
-        ReportBlockView::Paragraph { text } => ReportBlock::Paragraph { text },
-        ReportBlockView::BulletList { items } => ReportBlock::BulletList { items },
-        ReportBlockView::Table {
-            rows,
-            has_header,
-            column_widths,
-        } => ReportBlock::Table {
-            rows,
-            has_header,
-            column_widths,
-        },
-    }
-}
-
 fn proposal_view(proposal: &ReportProposal) -> ReportProposalView {
     ReportProposalView {
         id: proposal.id.to_string(),
@@ -654,45 +490,9 @@ fn proposal_view(proposal: &ReportProposal) -> ReportProposalView {
         base_revision: proposal.base_revision,
         model_id: proposal.model_id.clone(),
         summary: proposal.summary.clone(),
-        operations: proposal.operations.iter().map(operation_view).collect(),
-        proposed_content: content_view(&proposal.proposed_content),
+        operations: proposal.operations.clone(),
+        proposed_content: proposal.proposed_content.clone(),
         created_at: proposal.created_at.to_string(),
-    }
-}
-
-fn operation_view(operation: &ReportOperation) -> ReportOperationView {
-    match operation {
-        ReportOperation::SetTitle { title } => ReportOperationView::SetTitle {
-            title: title.clone(),
-        },
-        ReportOperation::AddSection { position, section } => ReportOperationView::AddSection {
-            position: *position,
-            section: section_view(section),
-        },
-        ReportOperation::ReplaceSection {
-            section_id,
-            heading,
-            blocks,
-        } => ReportOperationView::ReplaceSection {
-            section_id: section_id.to_string(),
-            heading: heading.clone(),
-            blocks: blocks.iter().map(block_view).collect(),
-        },
-        ReportOperation::RemoveSection { section_id } => ReportOperationView::RemoveSection {
-            section_id: section_id.to_string(),
-        },
-    }
-}
-
-fn resolution_view(resolution: &ReportProposalResolution) -> ReportProposalResolutionView {
-    ReportProposalResolutionView {
-        proposal_id: resolution.proposal_id.to_string(),
-        decision: match resolution.decision {
-            CoreProposalDecision::Accepted => ReportProposalResolutionDecision::Accepted,
-            CoreProposalDecision::Rejected => ReportProposalResolutionDecision::Rejected,
-        },
-        resulting_revision: resolution.resulting_revision,
-        resolved_at: resolution.resolved_at.to_string(),
     }
 }
 
@@ -704,15 +504,7 @@ pub fn editor_history_entry(workspace: &ReportWorkspace) -> EditorHistoryEntry {
         revision: workspace.draft.revision,
         turn_count: u32::try_from(workspace.session.turns.len()).unwrap_or(u32::MAX),
         updated_at: workspace.updated_at.to_string(),
-        last_export: workspace
-            .session
-            .last_export
-            .as_ref()
-            .map(|export| ReportExportView {
-                revision: export.revision,
-                status: export.status.into(),
-                attempted_at: export.attempted_at.to_string(),
-            }),
+        last_export: workspace.session.last_export.clone(),
     }
 }
 

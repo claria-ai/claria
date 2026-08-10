@@ -3,10 +3,12 @@
 use tauri::State;
 
 pub use claria_desktop::report_authoring::{
-    EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportDraftView,
-    ReportExportResult, ReportExportStatusView, ReportProposalDecision, ReportRevisionView,
-    ReportTurnProgressView, ReportTurnResponse, ReportWorkspaceView,
+    EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportExportResult,
+    ReportProposalChoice, ReportRevisionView, ReportTurnProgressView, ReportTurnResponse,
+    ReportWorkspaceView,
 };
+
+use claria_core::models::report::{ReportDraft, ReportExportStatus};
 
 use super::{CommandContext, parse_uuid, run, usage_audit_details};
 use crate::state::DesktopState;
@@ -129,7 +131,7 @@ pub async fn load_report_revision(
     client_id: String,
     report_id: String,
     revision: u64,
-) -> Result<ReportDraftView, String> {
+) -> Result<ReportDraft, String> {
     run("load_report_revision", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
@@ -143,7 +145,7 @@ pub async fn load_report_revision(
             &state.revision_cache,
         )
         .await?;
-        Ok(claria_desktop::report_authoring::report_draft_view(&draft))
+        Ok(draft)
     })
     .await
 }
@@ -342,15 +344,15 @@ pub async fn resolve_report_proposal(
     state: State<'_, DesktopState>,
     client_id: String,
     proposal_id: String,
-    decision: ReportProposalDecision,
+    decision: ReportProposalChoice,
 ) -> Result<ReportWorkspaceView, String> {
     run("resolve_report_proposal", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let proposal_id = parse_uuid(&proposal_id)?;
         let action = match decision {
-            ReportProposalDecision::Accept => "report_proposal_accepted",
-            ReportProposalDecision::Reject => "report_proposal_rejected",
+            ReportProposalChoice::Accept => "report_proposal_accepted",
+            ReportProposalChoice::Reject => "report_proposal_rejected",
         };
         let workspace = claria_report_authoring::resolve_report_proposal(
             &ctx.s3,
@@ -431,7 +433,7 @@ pub async fn export_report_docx(
                 exported: false,
                 report_id: report_id.to_string(),
                 revision: draft.revision,
-                status: ReportExportStatusView::Canceled,
+                status: ReportExportStatus::Canceled,
                 attempted_at: attempted_at.to_string(),
                 status_persisted,
             });
@@ -485,7 +487,7 @@ pub async fn export_report_docx(
             exported: true,
             report_id: report_id.to_string(),
             revision: draft.revision,
-            status: ReportExportStatusView::Exported,
+            status: ReportExportStatus::Exported,
             attempted_at: attempted_at.to_string(),
             status_persisted,
         })

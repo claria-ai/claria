@@ -24,7 +24,7 @@ pub struct ChatHistory {
 /// A single message in a persisted chat history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatHistoryMessage {
-    pub role: ChatHistoryRole,
+    pub role: ChatRole,
     pub content: String,
     pub timestamp: jiff::Timestamp,
     /// `Some` on assistant turns whose Converse response carried a usage
@@ -35,10 +35,19 @@ pub struct ChatHistoryMessage {
     pub usage: Option<TurnUsage>,
 }
 
-/// Role of a chat history message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Role of a chat message — the one role enum shared by persisted history,
+/// the Bedrock chat calls, and the desktop IPC surface.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "snake_case")]
-pub enum ChatHistoryRole {
+pub enum ChatRole {
     User,
     Assistant,
+}
+
+/// One conversation turn — role plus text content. Shared by the Bedrock
+/// chat call and the desktop IPC surface so the two cannot drift.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ChatMessage {
+    pub role: ChatRole,
+    pub content: String,
 }

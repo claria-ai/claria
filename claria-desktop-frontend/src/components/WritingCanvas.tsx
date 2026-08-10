@@ -1,8 +1,8 @@
 import { memo, useEffect, useRef, type ElementType } from "react";
 import { InlineMarkdown, MarkdownBlock } from "./Markdown";
 import type {
-  ReportBlockView,
-  ReportContentView,
+  ReportBlock,
+  ReportContent,
   ReportDraftEdit,
   ReportSectionEdit,
   ReportWorkspaceView,
@@ -71,7 +71,7 @@ function WritingCanvas({
   function updateBlock(
     sectionIndex: number,
     blockIndex: number,
-    block: ReportBlockView
+    block: ReportBlock
   ) {
     const section = edit.sections[sectionIndex];
     const blocks = [...section.blocks];
@@ -212,7 +212,7 @@ export function ReportDocument({
   onReference,
   testId = "accepted-report-canvas",
 }: {
-  content: ReportContentView;
+  content: ReportContent;
   onReference?: (reference: WritingBlockReference) => void;
   testId?: string;
 }) {
@@ -303,7 +303,7 @@ function ReportTable({
   referenceLabel,
   onReference,
 }: {
-  table: Extract<ReportBlockView, { kind: "table" }>;
+  table: Extract<ReportBlock, { kind: "table" }>;
   referenceLabel: string;
   onReference?: () => void;
 }) {
@@ -366,7 +366,7 @@ function ReportTable({
 function TableColumns({
   table,
 }: {
-  table: Extract<ReportBlockView, { kind: "table" }>;
+  table: Extract<ReportBlock, { kind: "table" }>;
 }) {
   if (!table.column_widths) return null;
   return (
@@ -421,7 +421,7 @@ function EditableReport({
   updateBlock: (
     sectionIndex: number,
     blockIndex: number,
-    block: ReportBlockView
+    block: ReportBlock
   ) => void;
   removeBlock: (sectionIndex: number, blockIndex: number) => void;
   onReference: (reference: WritingBlockReference) => void;
@@ -658,11 +658,11 @@ function EditableTable({
   disabled,
   onChange,
 }: {
-  table: Extract<ReportBlockView, { kind: "table" }>;
+  table: Extract<ReportBlock, { kind: "table" }>;
   sectionIndex: number;
   blockIndex: number;
   disabled: boolean;
-  onChange: (table: Extract<ReportBlockView, { kind: "table" }>) => void;
+  onChange: (table: Extract<ReportBlock, { kind: "table" }>) => void;
 }) {
   const columns = table.rows[0]?.length ?? 0;
 

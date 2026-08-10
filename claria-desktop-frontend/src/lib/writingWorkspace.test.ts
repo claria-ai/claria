@@ -8,9 +8,9 @@ import {
   reportEditsEqual,
   validateReportEdit,
 } from "./writingWorkspace";
-import type { ReportDraftView } from "./tauri";
+import type { ReportDraft } from "./tauri";
 
-const draft: ReportDraftView = {
+const draft: ReportDraft = {
   revision: 2,
   content: {
     title: "Report",

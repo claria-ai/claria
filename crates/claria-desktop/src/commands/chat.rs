@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use claria_core::models::chat_history::{ChatMessage, ChatRole};
 use claria_desktop::config::ClariaConfig;
 use claria_provisioner::PlanEntry;
 
@@ -12,19 +13,6 @@ use super::{
     records::load_record_context, run, usage_audit_details,
 };
 use crate::state::DesktopState;
-
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct ChatMessage {
-    pub role: ChatRole,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatRole {
-    User,
-    Assistant,
-}
 
 /// Response from a chat message, including the persisted chat session ID
 /// and per-turn token usage. Usage is `None` when Bedrock omitted the usage
@@ -267,12 +255,7 @@ fn chat_history_detail(
             .messages
             .into_iter()
             .map(|message| ChatHistoryDetailMessage {
-                role: match message.role {
-                    claria_core::models::chat_history::ChatHistoryRole::User => ChatRole::User,
-                    claria_core::models::chat_history::ChatHistoryRole::Assistant => {
-                        ChatRole::Assistant
-                    }
-                },
+                role: message.role,
                 content: message.content,
                 usage: message.usage,
             })
@@ -353,24 +336,13 @@ pub async fn chat_message(
             load_record_context(&ctx.s3, &ctx.bucket, &client_id, &state.record_cache).await?;
         let full_prompt = assemble_chat_prompt(system_prompt, all_files, &context_filenames);
 
-        let bedrock_messages: Vec<claria_bedrock::chat::ChatMessage> = messages
-            .iter()
-            .map(|m| claria_bedrock::chat::ChatMessage {
-                role: match m.role {
-                    ChatRole::User => claria_bedrock::chat::ChatRole::User,
-                    ChatRole::Assistant => claria_bedrock::chat::ChatRole::Assistant,
-                },
-                content: m.content.clone(),
-            })
-            .collect();
-
         let cache_strategy = build_cache_strategy(&ctx.cfg, &model_id);
 
         let (response_text, usage) = claria_bedrock::chat::chat_converse(
             &ctx.sdk_config,
             &model_id,
             &full_prompt,
-            &bedrock_messages,
+            &messages,
             cache_strategy,
         )
         .await?;
@@ -391,19 +363,14 @@ pub async fn chat_message(
             messages
                 .iter()
                 .map(|m| claria_core::models::chat_history::ChatHistoryMessage {
-                    role: match m.role {
-                        ChatRole::User => claria_core::models::chat_history::ChatHistoryRole::User,
-                        ChatRole::Assistant => {
-                            claria_core::models::chat_history::ChatHistoryRole::Assistant
-                        }
-                    },
+                    role: m.role,
                     content: m.content.clone(),
                     timestamp: updated_at,
                     usage: None,
                 })
                 .collect();
         history_messages.push(claria_core::models::chat_history::ChatHistoryMessage {
-            role: claria_core::models::chat_history::ChatHistoryRole::Assistant,
+            role: ChatRole::Assistant,
             content: response_text.clone(),
             timestamp: updated_at,
             usage: usage.clone(),
@@ -496,24 +463,13 @@ pub async fn infra_chat(
 
         let system_prompt = build_infra_system_prompt(&plan_entries);
 
-        let bedrock_messages: Vec<claria_bedrock::chat::ChatMessage> = messages
-            .iter()
-            .map(|m| claria_bedrock::chat::ChatMessage {
-                role: match m.role {
-                    ChatRole::User => claria_bedrock::chat::ChatRole::User,
-                    ChatRole::Assistant => claria_bedrock::chat::ChatRole::Assistant,
-                },
-                content: m.content.clone(),
-            })
-            .collect();
-
         let cache_strategy = build_cache_strategy(&ctx.cfg, &model_id);
 
         let (content, usage) = claria_bedrock::chat::chat_converse(
             &ctx.sdk_config,
             &model_id,
             &system_prompt,
-            &bedrock_messages,
+            &messages,
             cache_strategy,
         )
         .await?;

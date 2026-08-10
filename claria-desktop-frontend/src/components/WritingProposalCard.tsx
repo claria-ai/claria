@@ -6,10 +6,10 @@ import {
   type BlockChange,
 } from "../lib/writingWorkspace";
 import type {
-  ReportBlockView,
-  ReportContentView,
+  ReportBlock,
+  ReportContent,
   ReportProposalView,
-  ReportSectionView,
+  ReportSection,
 } from "../lib/tauri";
 
 export default function WritingProposalCard({
@@ -20,7 +20,7 @@ export default function WritingProposalCard({
   onReject,
 }: {
   proposal: ReportProposalView;
-  accepted: ReportContentView;
+  accepted: ReportContent;
   busy: boolean;
   onAccept: () => void;
   onReject: () => void;
@@ -75,8 +75,8 @@ function ProposalChanges({
   accepted,
   proposed,
 }: {
-  accepted: ReportContentView;
-  proposed: ReportContentView;
+  accepted: ReportContent;
+  proposed: ReportContent;
 }) {
   const currentSections = new Map(
     accepted.sections.map((section) => [section.id, section])
@@ -140,8 +140,8 @@ function ChangedSection({
   current,
   proposed,
 }: {
-  current: ReportSectionView;
-  proposed: ReportSectionView;
+  current: ReportSection;
+  proposed: ReportSection;
 }) {
   const headingChanged = current.heading !== proposed.heading;
   const blockChanges = diffBlocks(current.blocks, proposed.blocks);
@@ -203,7 +203,7 @@ function ChangedSection({
   );
 }
 
-type TableBlock = Extract<ReportBlockView, { kind: "table" }>;
+type TableBlock = Extract<ReportBlock, { kind: "table" }>;
 
 function pairedTableChange(
   change: BlockChange
@@ -283,7 +283,7 @@ function SectionPreview({
   section,
   tone = "proposed",
 }: {
-  section: ReportSectionView;
+  section: ReportSection;
   tone?: "proposed" | "removed";
 }) {
   return (
@@ -300,7 +300,7 @@ function SectionPreview({
   );
 }
 
-function Blocks({ blocks }: { blocks: ReportBlockView[] }) {
+function Blocks({ blocks }: { blocks: ReportBlock[] }) {
   return (
     <div className="border border-gray-200 rounded p-2 bg-white mt-1.5 space-y-1 text-xs leading-5 text-gray-700">
       {blocks.map((block, index) => {

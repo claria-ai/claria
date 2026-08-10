@@ -108,20 +108,9 @@ pub struct ChatModel {
     pub name: String,
 }
 
-/// A single message in a conversation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: ChatRole,
-    pub content: String,
-}
-
-/// Role of a chat message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatRole {
-    User,
-    Assistant,
-}
+// The conversation-turn types are claria-core domain types; re-exported here
+// so Bedrock callers keep their `chat::ChatMessage` paths.
+pub use claria_core::models::chat_history::{ChatMessage, ChatRole};
 
 // ── Model discovery ──────────────────────────────────────────────────────────
 

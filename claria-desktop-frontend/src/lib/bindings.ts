@@ -424,7 +424,7 @@ async listReportRevisions(clientId: string, reportId: string) : Promise<Result<R
     else return { status: "error", error: e  as any };
 }
 },
-async loadReportRevision(clientId: string, reportId: string, revision: number) : Promise<Result<ReportDraftView, string>> {
+async loadReportRevision(clientId: string, reportId: string, revision: number) : Promise<Result<ReportDraft, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("load_report_revision", { clientId, reportId, revision }) };
 } catch (e) {
@@ -522,7 +522,7 @@ async sendReportMessage(clientId: string, expectedRevision: number, modelId: str
     else return { status: "error", error: e  as any };
 }
 },
-async resolveReportProposal(clientId: string, proposalId: string, decision: ReportProposalDecision) : Promise<Result<ReportWorkspaceView, string>> {
+async resolveReportProposal(clientId: string, proposalId: string, decision: ReportProposalChoice) : Promise<Result<ReportWorkspaceView, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resolve_report_proposal", { clientId, proposalId, decision }) };
 } catch (e) {
@@ -1320,7 +1320,7 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  * A file that has been deleted (has a delete marker as the latest version).
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
-export type EditorHistoryEntry = { report_id: string; name: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExportView | null }
+export type EditorHistoryEntry = { report_id: string; name: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExport | null }
 /**
  * Structured before/after for a single field that doesn't match desired state.
  * 
@@ -1455,24 +1455,24 @@ export type RecordFile = { filename: string; size: number; uploaded_at: string |
 export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
 export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
 export type ReportBlockReferenceInput = { section_id: string; block_index: number }
-export type ReportBlockView = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | { kind: "table"; rows: string[][]; has_header: boolean; column_widths: number[] | null }
-export type ReportContentView = { title: string; sections: ReportSectionView[] }
+export type ReportBlock = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | { kind: "table"; rows: string[][]; has_header: boolean; column_widths: number[] | null }
+export type ReportContent = { title: string; sections: ReportSection[] }
 export type ReportContextReadView = { filename: string; offset: number; returned_characters: number; total_characters: number | null; read_at: string }
 export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }
-export type ReportDraftView = { revision: number; content: ReportContentView; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
-export type ReportExportResult = { exported: boolean; report_id: string; revision: number; status: ReportExportStatusView; attempted_at: string; status_persisted: boolean }
-export type ReportExportStatusView = "exported" | "canceled" | "failed"
-export type ReportExportView = { revision: number; status: ReportExportStatusView; attempted_at: string }
-export type ReportOperationView = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSectionView } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlockView[] } | { kind: "remove_section"; section_id: string }
-export type ReportProposalDecision = "accept" | "reject"
-export type ReportProposalResolutionDecision = "accepted" | "rejected"
-export type ReportProposalResolutionView = { proposal_id: string; decision: ReportProposalResolutionDecision; resulting_revision: number; resolved_at: string }
-export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperationView[]; proposed_content: ReportContentView; created_at: string }
+export type ReportDraft = { revision: number; content: ReportContent; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
+export type ReportExportResult = { exported: boolean; report_id: string; revision: number; status: ReportExportStatus; attempted_at: string; status_persisted: boolean }
+export type ReportExportStatus = "exported" | "canceled" | "failed"
+export type ReportExport = { revision: number; status: ReportExportStatus; attempted_at: string }
+export type ReportOperation = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSection } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlock[] } | { kind: "remove_section"; section_id: string }
+export type ReportProposalChoice = "accept" | "reject"
+export type ReportProposalDecision = "accepted" | "rejected"
+export type ReportProposalResolution = { proposal_id: string; decision: ReportProposalDecision; resulting_revision: number; resolved_at: string }
+export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperation[]; proposed_content: ReportContent; created_at: string }
 export type ReportRevisionView = { revision: number; title: string; updated_at: string }
-export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlockView[] }
-export type ReportSectionView = { id: string; heading: string; blocks: ReportBlockView[] }
+export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlock[] }
+export type ReportSection = { id: string; heading: string; blocks: ReportBlock[] }
 export type ReportTemplateImportView = { writer_template_id: string | null; writer_template_name: string | null; imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
-export type ReportTemplatePreview = { import_id: string; content: ReportContentView; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
+export type ReportTemplatePreview = { import_id: string; content: ReportContent; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
 export type ReportTemplateStatsView = { sections: number; paragraphs: number; bullet_lists: number; tables: number; table_cells: number; placeholder_count: number }
 export type ReportTemplateWarningView = { code: string; message: string; count: number }
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
@@ -1480,7 +1480,7 @@ export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
 export type ReportTurnProgressView = { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus }
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
-export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; session_name: string; draft: ReportDraftView; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolutionView[]; last_agent_revision: number | null; last_export: ReportExportView | null; template_import: ReportTemplateImportView | null; created_at: string; updated_at: string }
+export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; session_name: string; draft: ReportDraft; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolution[]; last_agent_revision: number | null; last_export: ReportExport | null; template_import: ReportTemplateImportView | null; created_at: string; updated_at: string }
 /**
  * Every resource in the system is declared as a `ResourceSpec`.
  * 

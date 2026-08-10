@@ -4920,6 +4920,7 @@ dependencies = [
  "serde_json",
  "specta-macros",
  "thiserror 1.0.69",
+ "uuid",
 ]
 
 [[package]]

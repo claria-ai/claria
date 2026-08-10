@@ -1,9 +1,9 @@
 import type {
-  ReportBlockView,
+  ReportBlock,
   ReportDraftEdit,
-  ReportDraftView,
+  ReportDraft,
   ReportSectionEdit,
-  ReportSectionView,
+  ReportSection,
 } from "./tauri";
 
 // ---------------------------------------------------------------------------
@@ -13,16 +13,16 @@ import type {
 
 /** Deep structural equality for two report blocks (either may be missing). */
 export function blocksEqual(
-  left: ReportBlockView | undefined,
-  right: ReportBlockView | undefined
+  left: ReportBlock | undefined,
+  right: ReportBlock | undefined
 ): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
 /** Structural equality for a section's heading and blocks. */
 export function sectionsEqual(
-  current: ReportSectionView,
-  proposed: ReportSectionView
+  current: ReportSection,
+  proposed: ReportSection
 ): boolean {
   return (
     current.heading === proposed.heading &&
@@ -34,8 +34,8 @@ export function sectionsEqual(
 }
 
 export type BlockChange = {
-  current: ReportBlockView[];
-  proposed: ReportBlockView[];
+  current: ReportBlock[];
+  proposed: ReportBlock[];
   currentStart: number;
   proposedStart: number;
 };
@@ -45,8 +45,8 @@ export type BlockChange = {
  * aligned with an LCS and omitted entirely.
  */
 export function diffBlocks(
-  current: ReportBlockView[],
-  proposed: ReportBlockView[]
+  current: ReportBlock[],
+  proposed: ReportBlock[]
 ): BlockChange[] {
   const rows = current.length + 1;
   const columns = proposed.length + 1;
@@ -118,7 +118,7 @@ export function diffBlocks(
   return changes;
 }
 
-export function draftToEdit(draft: ReportDraftView): ReportDraftEdit {
+export function draftToEdit(draft: ReportDraft): ReportDraftEdit {
   return {
     title: draft.content.title,
     sections: draft.content.sections.map((section) => ({
@@ -172,7 +172,7 @@ export function countReportEdits(
   return count;
 }
 
-export function newReportTable(): ReportBlockView {
+export function newReportTable(): ReportBlock {
   return {
     kind: "table",
     rows: [
@@ -237,7 +237,7 @@ export function validateReportEdit(edit: ReportDraftEdit): string[] {
 function validateTable(
   errors: string[],
   label: string,
-  table: Extract<ReportBlockView, { kind: "table" }>
+  table: Extract<ReportBlock, { kind: "table" }>
 ) {
   if (table.rows.length === 0 || table.rows.length > 200) {
     errors.push(`${label} must contain 1 to 200 table rows.`);
@@ -324,7 +324,7 @@ function containsInvalidWordCharacter(value: string): boolean {
   });
 }
 
-export function cloneBlock(block: ReportBlockView): ReportBlockView {
+export function cloneBlock(block: ReportBlock): ReportBlock {
   if (block.kind === "paragraph") {
     return { kind: "paragraph", text: block.text };
   }
