@@ -1032,6 +1032,14 @@ async openUrl(url: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async revealLogFolder() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reveal_log_folder") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async countClientContextTokens(clientId: string, contextFilenames: string[]) : Promise<Result<number, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("count_client_context_tokens", { clientId, contextFilenames }) };

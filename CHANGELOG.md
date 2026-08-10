@@ -11,6 +11,8 @@ All notable changes to Claria are documented here.
 - Client names and record filenames no longer appear in application logs; the durable audit trail in S3 keeps the full identifiers
 - The audit event's console mirror is now a one-line summary without the details payload, under a dedicated log target
 - The exported console log is written with owner-only file permissions
+- Logs also roll to bounded daily files on disk, and the console gains a button that opens the log folder
+- Log filter directives for all workspace crates are built from one shared list
 - Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
 - Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
 - Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed

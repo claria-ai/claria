@@ -10,5 +10,6 @@ pub mod config;
 pub mod console;
 pub mod http;
 pub mod local_export;
+pub mod logging;
 pub mod report_authoring;
 pub mod update;

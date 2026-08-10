@@ -65,6 +65,7 @@ tempfile = "=3.27.0"
 thiserror = "=2.0.18"
 tokio = "=1.52.3"
 tracing = "=0.1.44"
+tracing-appender = "=0.2.3"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 uuid = "=1.23.4"
 

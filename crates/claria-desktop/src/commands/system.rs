@@ -73,6 +73,33 @@ pub async fn check_for_updates() -> Result<UpdateCheck, String> {
     .await
 }
 
+/// Open the application's log folder in the OS file manager, creating it if
+/// file logging has not produced anything yet.
+#[tauri::command]
+#[specta::specta]
+pub async fn reveal_log_folder() -> Result<(), String> {
+    run("reveal_log_folder", async {
+        let dir = claria_desktop::logging::app_log_dir().ok_or_else(|| {
+            CommandError::Msg("This platform has no application log directory.".to_string())
+        })?;
+        std::fs::create_dir_all(&dir).map_err(|e| CommandError::Msg(e.to_string()))?;
+
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(target_os = "windows")]
+        let opener = "explorer";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let opener = "xdg-open";
+
+        std::process::Command::new(opener)
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| CommandError::Msg(e.to_string()))?;
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn open_url(url: String) -> Result<(), String> {

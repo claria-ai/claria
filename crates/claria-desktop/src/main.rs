@@ -32,10 +32,24 @@ fn main() -> Result<()> {
 
     // The exported console log always admits the claria_* timing spans on top of
     // the info baseline, so a log a user sends in carries durations with zero
-    // configuration, while SDK/hyper trace noise stays out.
-    let console_filter = tracing_subscriber::EnvFilter::new(
-        "info,claria_storage=trace,claria_bedrock=trace,claria_desktop=trace,claria_records=trace",
-    );
+    // configuration, while SDK/hyper trace noise stays out. The directive list
+    // is built from the one shared crate list in `logging`.
+    let console_filter =
+        tracing_subscriber::EnvFilter::new(claria_desktop::logging::claria_trace_filter("info"));
+
+    // A rolling on-disk log with the same filter as the console layer, so a
+    // support request can be answered from files that survive an app crash or
+    // restart. Daily rotation, bounded file count, PHI-scrubbed like every
+    // other layer.
+    let file_layer = claria_desktop::logging::rolling_file_appender().map(|appender| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+            .with_writer(appender)
+            .with_filter(tracing_subscriber::EnvFilter::new(
+                claria_desktop::logging::claria_trace_filter("info"),
+            ))
+    });
 
     tracing_subscriber::registry()
         .with(
@@ -44,6 +58,7 @@ fn main() -> Result<()> {
                 .with_filter(fmt_filter),
         )
         .with(console_layer.with_filter(console_filter))
+        .with(file_layer)
         .init();
 
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
@@ -134,6 +149,7 @@ fn main() -> Result<()> {
             commands::set_hourly_cost_data,
             commands::lookup_model_pricing,
             commands::open_url,
+            commands::reveal_log_folder,
             commands::count_client_context_tokens,
             commands::count_infra_context_tokens,
             commands::get_console_logs,

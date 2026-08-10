@@ -866,3 +866,7 @@ export async function getConsoleLogsText(): Promise<string> {
 export async function saveConsoleLogs(): Promise<boolean> {
   return unwrap(await commands.saveConsoleLogs());
 }
+
+export async function revealLogFolder(): Promise<void> {
+  unwrap(await commands.revealLogFolder());
+}

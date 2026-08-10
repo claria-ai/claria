@@ -1,5 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
-import { getConsoleLogs, getConsoleLogsText, saveConsoleLogs } from "../lib/tauri";
+import {
+  getConsoleLogs,
+  getConsoleLogsText,
+  revealLogFolder,
+  saveConsoleLogs,
+} from "../lib/tauri";
 import type { ConsoleEntry } from "../lib/tauri";
 
 const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
@@ -182,6 +187,14 @@ export default function Console() {
     }
   };
 
+  const handleRevealLogFolder = async () => {
+    try {
+      await revealLogFolder();
+    } catch {
+      // Backend logs the failure; the console window has no better surface
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       {/* Header */}
@@ -205,6 +218,13 @@ export default function Console() {
             className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded transition-colors"
           >
             {copied ? "Copied!" : "Copy"}
+          </button>
+          {/* Reveal on-disk log folder */}
+          <button
+            onClick={handleRevealLogFolder}
+            className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+          >
+            Log Folder
           </button>
           {/* Save As */}
           <button
