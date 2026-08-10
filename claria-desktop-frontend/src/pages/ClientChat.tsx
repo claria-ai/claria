@@ -1,6 +1,4 @@
 import { useState, useCallback, useMemo, useRef } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   chatMessage,
   countClientContextTokens,
@@ -17,8 +15,8 @@ import ChatHistoryHeader from "../components/ChatHistoryHeader";
 import EditableName from "../components/EditableName";
 import { CloseIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
+import TextPreviewModal from "../components/TextPreviewModal";
 import TokenCountBadge from "../components/TokenCountBadge";
-import Modal from "../components/Modal";
 import { summarizeHistory } from "../lib/cost";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useContextTokens } from "../lib/useContextTokens";
@@ -298,50 +296,21 @@ export default function ClientChat({
 
       {/* System prompt modal (read-only) */}
       {showPromptModal && systemPrompt && (
-        <Modal
-          open
+        <TextPreviewModal
+          filename="System Prompt"
+          text={systemPrompt}
+          markdown
           onClose={() => setShowPromptModal(false)}
-          title="System Prompt"
-          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
-        >
-          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-            <div className="prose prose-sm max-w-none">
-              <Markdown remarkPlugins={[remarkGfm]}>{systemPrompt}</Markdown>
-            </div>
-          </div>
-          <div className="flex justify-end mt-4">
-            <button
-              onClick={() => setShowPromptModal(false)}
-              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-            >
-              Close
-            </button>
-          </div>
-        </Modal>
+        />
       )}
 
       {/* Context file preview modal */}
       {previewContext && (
-        <Modal
-          open
+        <TextPreviewModal
+          filename={previewContext.filename}
+          text={previewContext.text}
           onClose={() => setPreviewContext(null)}
-          title={previewContext.filename}
-          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
-        >
-          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-              {previewContext.text}
-            </pre>
-          </div>
-          <div className="flex justify-end mt-4">
-            <button
-              onClick={() => setPreviewContext(null)}
-              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-            >
-              Close
-            </button>
-          </div>
-        </Modal>
+        />
       )}
     </div>
   );

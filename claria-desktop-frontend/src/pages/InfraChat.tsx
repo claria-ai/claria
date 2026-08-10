@@ -9,8 +9,8 @@ import {
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
 import { BackButton } from "../components/icons";
+import TextPreviewModal from "../components/TextPreviewModal";
 import TokenCountBadge from "../components/TokenCountBadge";
-import Modal from "../components/Modal";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useContextTokens } from "../lib/useContextTokens";
 
@@ -170,26 +170,11 @@ export default function InfraChat({
 
       {/* Preview modal */}
       {previewModal != null && (
-        <Modal
-          open
+        <TextPreviewModal
+          filename={previewModal.title}
+          text={previewModal.content}
           onClose={() => setPreviewModal(null)}
-          title={previewModal.title}
-          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
-        >
-          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-              {previewModal.content}
-            </pre>
-          </div>
-          <div className="flex justify-end mt-4">
-            <button
-              onClick={() => setPreviewModal(null)}
-              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-            >
-              Close
-            </button>
-          </div>
-        </Modal>
+        />
       )}
     </div>
   );

@@ -21,7 +21,6 @@ import {
   type AssumeRoleResult,
   type PlanEntry,
   type ConfigInfo,
-  type ProvisionScanResult,
 } from "../lib/tauri";
 import AccessKeyLimitPanel from "../components/AccessKeyLimitPanel";
 import InfraState from "../components/InfraState";
@@ -83,11 +82,27 @@ export default function Provision({
   // ── Reconciliation state ─────────────────────────────────────────────
   const [phase, setPhase] = useState<Phase>("loading");
   const [entries, setEntries] = useState<PlanEntry[] | null>(null);
-  const [, setScanResult] = useState<ProvisionScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { scanItems, applyItems, progressHandler, resetProgress } =
     useProvisionerProgress();
   const [resettingState, setResettingState] = useState(false);
+
+  /**
+   * Run one AWS phase transition: enter `during`, clear stale error and
+   * progress, and land in "error" if `fn` throws. `fn` sets its own success
+   * phase — different flows finish in "planned", "done", or "key_limit".
+   */
+  async function runPhase(during: Phase, fn: () => Promise<void>) {
+    setPhase(during);
+    setError(null);
+    resetProgress();
+    try {
+      await fn();
+    } catch (e) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }
 
   // ── Access-key limit recovery ────────────────────────────────────────
   const [keyLimit, setKeyLimit] = useState<AccessKeyLimitReached | null>(null);
@@ -129,35 +144,28 @@ export default function Provision({
       const exists = await hasConfig().catch(() => false);
       setConfigExists(exists);
       if (exists) {
-        try {
+        // Day-2: auto-scan using saved credentials.
+        await runPhase("scanning", async () => {
           const info = await loadConfig();
           setConfig(info);
-          // Day-2: auto-scan using saved credentials.
-          setPhase("scanning");
-          resetProgress();
           const result = await plan(progressHandler);
           setEntries(result);
           setPhase("planned");
-        } catch (e) {
-          setError(String(e));
-          setPhase("error");
-        }
+        });
       } else {
         setPhase("input");
         listAwsProfiles().then(setProfiles).catch(() => {});
       }
     })();
+    // runPhase is a plain closure over stable setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [progressHandler, resetProgress]);
 
   // ── First-run: scan with provided creds ──────────────────────────────
   async function handleInitialScan() {
-    setPhase("scanning");
-    setError(null);
-    resetProgress();
-
-    // If sub-account mode and not yet assumed role, do that first.
-    if (credMode === "sub_account" && !assumeRoleResult) {
-      try {
+    await runPhase("scanning", async () => {
+      // If sub-account mode and not yet assumed role, do that first.
+      if (credMode === "sub_account" && !assumeRoleResult) {
         const creds: CredentialSource = {
           type: "inline", access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null,
         };
@@ -171,50 +179,32 @@ export default function Provision({
           session_token: result.session_token,
         };
         const scanRes = await provisionScan(region, systemName, assumedCreds, progressHandler);
-        setScanResult(scanRes);
         setEntries(scanRes.entries);
         setPhase("planned");
-      } catch (e) {
-        setError(String(e));
-        setPhase("error");
+        return;
       }
-      return;
-    }
 
-    try {
       const creds = buildCredentials();
       const scanRes = await provisionScan(region, systemName, creds, progressHandler);
-      setScanResult(scanRes);
       setEntries(scanRes.entries);
       setPhase("planned");
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+    });
   }
 
   // ── Apply changes ────────────────────────────────────────────────────
   async function handleApply() {
     if (configExists) {
       // Day-2 flow: use existing plan/apply commands.
-      setPhase("applying");
-      resetProgress();
-      try {
+      await runPhase("applying", async () => {
         const result = await apply(progressHandler);
         setEntries(result);
         setPhase("done");
-      } catch (e) {
-        setError(String(e));
-        setPhase("error");
-      }
+      });
       return;
     }
 
     // First-run flow: use unified provision_apply.
-    setPhase("applying");
-    resetProgress();
-
-    try {
+    await runPhase("applying", async () => {
       const creds = buildCredentials();
 
       // Determine if we need to pass elevated credentials.
@@ -244,10 +234,7 @@ export default function Provision({
       setEntries(outcome.entries);
       setConfigExists(true);
       setPhase("done");
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+    });
   }
 
   // ── Access-key limit recovery ────────────────────────────────────────
@@ -292,10 +279,7 @@ export default function Provision({
 
   // ── Escalation apply (day-2 with elevated creds) ─────────────────────
   async function handleEscalationApply() {
-    setPhase("applying");
-    resetProgress();
-
-    try {
+    await runPhase("applying", async () => {
       // Load the saved scoped creds from config for regular resources.
       const savedCreds = await loadConfig();
       // The escalation creds are from the inline form.
@@ -320,38 +304,25 @@ export default function Provision({
       // true here — this machine is already configured.
       setEntries(outcome.entries);
       setPhase("done");
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+    });
   }
 
   // ── Day-2 re-scan ────────────────────────────────────────────────────
   async function handleRescan() {
-    setPhase("scanning");
-    setError(null);
-    resetProgress();
-    try {
+    await runPhase("scanning", async () => {
       const result = await plan(progressHandler);
       setEntries(result);
       setPhase("planned");
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+    });
   }
 
   // ── Destroy all resources ────────────────────────────────────────────
   async function handleDestroy() {
     setShowDestroyConfirm(false);
-    setPhase("applying");
-    try {
+    await runPhase("applying", async () => {
       await destroy();
-      handleRescan();
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+      await handleRescan();
+    });
   }
 
   // ── Delete system ────────────────────────────────────────────────────

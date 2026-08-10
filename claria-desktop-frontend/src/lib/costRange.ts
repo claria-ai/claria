@@ -7,6 +7,29 @@
 
 import type { CostGranularity } from "./tauri";
 
+/** Format a date as the YYYY-MM-DD string the Cost Explorer API expects. */
+export function fmtDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** The date `n` days before today. */
+export function daysAgo(n: number): Date {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d;
+}
+
+/** The first of the month `n` months before this one. */
+export function monthsAgo(n: number): Date {
+  const d = new Date();
+  d.setMonth(d.getMonth() - n);
+  d.setDate(1);
+  return d;
+}
+
 /** Compute the number of days between two date strings. */
 export function daysBetween(a: string, b: string): number {
   const da = new Date(a);

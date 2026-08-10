@@ -3,7 +3,120 @@ import type {
   ReportDraftEdit,
   ReportDraftView,
   ReportSectionEdit,
+  ReportSectionView,
 } from "./tauri";
+
+// ---------------------------------------------------------------------------
+// Structural equality and block-level diffing — the one owner for "did this
+// report content change", consumed by the edit counter and the proposal card.
+// ---------------------------------------------------------------------------
+
+/** Deep structural equality for two report blocks (either may be missing). */
+export function blocksEqual(
+  left: ReportBlockView | undefined,
+  right: ReportBlockView | undefined
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Structural equality for a section's heading and blocks. */
+export function sectionsEqual(
+  current: ReportSectionView,
+  proposed: ReportSectionView
+): boolean {
+  return (
+    current.heading === proposed.heading &&
+    current.blocks.length === proposed.blocks.length &&
+    current.blocks.every((block, index) =>
+      blocksEqual(block, proposed.blocks[index])
+    )
+  );
+}
+
+export type BlockChange = {
+  current: ReportBlockView[];
+  proposed: ReportBlockView[];
+  currentStart: number;
+  proposedStart: number;
+};
+
+/**
+ * Return only changed block runs. Exact unchanged paragraphs and lists are
+ * aligned with an LCS and omitted entirely.
+ */
+export function diffBlocks(
+  current: ReportBlockView[],
+  proposed: ReportBlockView[]
+): BlockChange[] {
+  const rows = current.length + 1;
+  const columns = proposed.length + 1;
+  // Tables can contain thousands of cells. Serialize each block once rather
+  // than repeating that work at every cell in the LCS matrix.
+  const currentKeys = current.map((block) => JSON.stringify(block));
+  const proposedKeys = proposed.map((block) => JSON.stringify(block));
+  const lcs = Array.from({ length: rows }, () =>
+    Array<number>(columns).fill(0)
+  );
+
+  for (let currentIndex = current.length - 1; currentIndex >= 0; currentIndex -= 1) {
+    for (
+      let proposedIndex = proposed.length - 1;
+      proposedIndex >= 0;
+      proposedIndex -= 1
+    ) {
+      lcs[currentIndex][proposedIndex] =
+        currentKeys[currentIndex] === proposedKeys[proposedIndex]
+        ? 1 + lcs[currentIndex + 1][proposedIndex + 1]
+        : Math.max(
+            lcs[currentIndex + 1][proposedIndex],
+            lcs[currentIndex][proposedIndex + 1]
+          );
+    }
+  }
+
+  const changes: BlockChange[] = [];
+  let currentIndex = 0;
+  let proposedIndex = 0;
+  let pending: BlockChange | null = null;
+  const pendingChange = () => {
+    pending ??= {
+      current: [],
+      proposed: [],
+      currentStart: currentIndex,
+      proposedStart: proposedIndex,
+    };
+    return pending;
+  };
+  const flush = () => {
+    if (pending) changes.push(pending);
+    pending = null;
+  };
+
+  while (currentIndex < current.length || proposedIndex < proposed.length) {
+    if (
+      currentIndex < current.length &&
+      proposedIndex < proposed.length &&
+      currentKeys[currentIndex] === proposedKeys[proposedIndex]
+    ) {
+      flush();
+      currentIndex += 1;
+      proposedIndex += 1;
+    } else if (
+      proposedIndex < proposed.length &&
+      (currentIndex === current.length ||
+        lcs[currentIndex][proposedIndex + 1] >=
+          lcs[currentIndex + 1][proposedIndex])
+    ) {
+      pendingChange().proposed.push(proposed[proposedIndex]);
+      proposedIndex += 1;
+    } else {
+      pendingChange().current.push(current[currentIndex]);
+      currentIndex += 1;
+    }
+  }
+  flush();
+  return changes;
+}
 
 export function draftToEdit(draft: ReportDraftView): ReportDraftEdit {
   return {
@@ -51,10 +164,7 @@ export function countReportEdits(
     if (before.id !== after.id || before.heading !== after.heading) count += 1;
     const blockCount = Math.max(before.blocks.length, after.blocks.length);
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
-      if (
-        JSON.stringify(before.blocks[blockIndex]) !==
-        JSON.stringify(after.blocks[blockIndex])
-      ) {
+      if (!blocksEqual(before.blocks[blockIndex], after.blocks[blockIndex])) {
         count += 1;
       }
     }

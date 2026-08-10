@@ -10,7 +10,13 @@ import {
   type CostResultGroup,
 } from "../lib/tauri";
 import { costErrorMessage } from "../lib/costErrors";
-import { daysBetween, defaultGranularity } from "../lib/costRange";
+import {
+  daysAgo,
+  daysBetween,
+  defaultGranularity,
+  fmtDate,
+  monthsAgo,
+} from "../lib/costRange";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { BackButton, CloseIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
@@ -58,26 +64,6 @@ const BAR_COLORS = [
 // ---------------------------------------------------------------------------
 // Date helpers
 // ---------------------------------------------------------------------------
-
-function fmtDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function daysAgo(n: number): Date {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d;
-}
-
-function monthsAgo(n: number): Date {
-  const d = new Date();
-  d.setMonth(d.getMonth() - n);
-  d.setDate(1);
-  return d;
-}
 
 function firstOfMonth(): Date {
   const d = new Date();
@@ -397,40 +383,33 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
   const days = daysBetween(startDate, endDate);
   const canHourly = days <= 14;
 
-  // Filter groups within a period based on the active service filter
-  const filteredGroups = useCallback(
-    (period: CostTimePeriod) => {
-      if (!serviceFilter) return period.groups;
-      return period.groups.filter((g) => g.key === serviceFilter);
-    },
-    [serviceFilter]
-  );
-
-  const filteredTotal = useCallback(
-    (period: CostTimePeriod) => {
-      return filteredGroups(period).reduce(
-        (sum: number, g: CostResultGroup) => sum + parseFloat(g.amount || "0"),
+  // Apply the service filter once per fetch/filter change; every consumer
+  // (chart bars, totals, max) reads these precomputed rows.
+  const filteredPeriods = useMemo<FilteredPeriod[]>(() => {
+    if (!result) return [];
+    return result.periods.map((period) => {
+      const groups = serviceFilter
+        ? period.groups.filter((g) => g.key === serviceFilter)
+        : period.groups;
+      const total = groups.reduce(
+        (sum, g) => sum + parseFloat(g.amount || "0"),
         0
       );
-    },
-    [filteredGroups]
-  );
+      return { period, groups, total };
+    });
+  }, [result, serviceFilter]);
 
-  // Compute chart data
   const { maxTotal, allServices } = useMemo(() => {
-    if (!result) return { maxTotal: 0, allServices: [] as string[] };
     let max = 0;
     const svcSet = new Set<string>();
-    for (const p of result.periods) {
-      const total = filteredTotal(p);
+    for (const { period, total } of filteredPeriods) {
       if (total > max) max = total;
-      for (const g of p.groups) {
+      for (const g of period.groups) {
         if (g.key !== "Total") svcSet.add(g.key);
       }
     }
-    const sorted = Array.from(svcSet).sort();
-    return { maxTotal: max, allServices: sorted };
-  }, [result, filteredTotal]);
+    return { maxTotal: max, allServices: Array.from(svcSet).sort() };
+  }, [filteredPeriods]);
 
   const serviceColors = useMemo(() => {
     const map: Record<string, string> = {};
@@ -441,10 +420,10 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
   }, [allServices]);
 
   // Total cost across all periods (respects service filter)
-  const grandTotal = useMemo(() => {
-    if (!result) return 0;
-    return result.periods.reduce((sum, p) => sum + filteredTotal(p), 0);
-  }, [result, filteredTotal]);
+  const grandTotal = useMemo(
+    () => filteredPeriods.reduce((sum, p) => sum + p.total, 0),
+    [filteredPeriods]
+  );
 
   return (
     <div className="space-y-4">
@@ -601,14 +580,12 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
           ) : (
             <div className="bg-white border border-gray-200 rounded-lg p-4">
               <BarChart
-                periods={result.periods}
+                periods={filteredPeriods}
                 granularity={granularity}
                 maxTotal={maxTotal}
                 groupByService={groupByService}
                 serviceColors={serviceColors}
                 serviceFilter={serviceFilter}
-                filteredGroups={filteredGroups}
-                filteredTotal={filteredTotal}
               />
 
               {/* Legend */}
@@ -647,6 +624,13 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
 // Bar chart
 // ---------------------------------------------------------------------------
 
+/** One chart bar's precomputed data: the period plus its filtered view. */
+interface FilteredPeriod {
+  period: CostTimePeriod;
+  groups: CostResultGroup[];
+  total: number;
+}
+
 function BarChart({
   periods,
   granularity,
@@ -654,27 +638,21 @@ function BarChart({
   groupByService,
   serviceColors,
   serviceFilter,
-  filteredGroups,
-  filteredTotal,
 }: {
-  periods: CostTimePeriod[];
+  periods: FilteredPeriod[];
   granularity: CostGranularity;
   maxTotal: number;
   groupByService: boolean;
   serviceColors: Record<string, string>;
   serviceFilter: string | null;
-  filteredGroups: (period: CostTimePeriod) => CostResultGroup[];
-  filteredTotal: (period: CostTimePeriod) => number;
 }) {
   const chartHeight = 200;
 
   return (
     <div className="flex items-end gap-px" style={{ height: chartHeight }}>
-      {periods.map((period, i) => {
-        const total = filteredTotal(period);
+      {periods.map(({ period, groups, total }, i) => {
         const heightPct = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
         const label = periodLabel(period, granularity);
-        const groups = filteredGroups(period);
 
         return (
           <div

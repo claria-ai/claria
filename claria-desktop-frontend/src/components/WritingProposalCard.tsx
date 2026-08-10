@@ -1,5 +1,10 @@
 import type { ReactNode } from "react";
 import { InlineMarkdown, MarkdownBlock } from "./Markdown";
+import {
+  diffBlocks,
+  sectionsEqual,
+  type BlockChange,
+} from "../lib/writingWorkspace";
 import type {
   ReportBlockView,
   ReportContentView,
@@ -200,91 +205,6 @@ function ChangedSection({
 
 type TableBlock = Extract<ReportBlockView, { kind: "table" }>;
 
-type BlockChange = {
-  current: ReportBlockView[];
-  proposed: ReportBlockView[];
-  currentStart: number;
-  proposedStart: number;
-};
-
-/**
- * Return only changed block runs. Exact unchanged paragraphs and lists are
- * aligned with an LCS and omitted from the proposal card entirely.
- */
-function diffBlocks(
-  current: ReportBlockView[],
-  proposed: ReportBlockView[]
-): BlockChange[] {
-  const rows = current.length + 1;
-  const columns = proposed.length + 1;
-  // Tables can contain thousands of cells. Serialize each block once rather
-  // than repeating that work at every cell in the LCS matrix.
-  const currentKeys = current.map((block) => JSON.stringify(block));
-  const proposedKeys = proposed.map((block) => JSON.stringify(block));
-  const lcs = Array.from({ length: rows }, () =>
-    Array<number>(columns).fill(0)
-  );
-
-  for (let currentIndex = current.length - 1; currentIndex >= 0; currentIndex -= 1) {
-    for (
-      let proposedIndex = proposed.length - 1;
-      proposedIndex >= 0;
-      proposedIndex -= 1
-    ) {
-      lcs[currentIndex][proposedIndex] =
-        currentKeys[currentIndex] === proposedKeys[proposedIndex]
-        ? 1 + lcs[currentIndex + 1][proposedIndex + 1]
-        : Math.max(
-            lcs[currentIndex + 1][proposedIndex],
-            lcs[currentIndex][proposedIndex + 1]
-          );
-    }
-  }
-
-  const changes: BlockChange[] = [];
-  let currentIndex = 0;
-  let proposedIndex = 0;
-  let pending: BlockChange | null = null;
-  const pendingChange = () => {
-    pending ??= {
-      current: [],
-      proposed: [],
-      currentStart: currentIndex,
-      proposedStart: proposedIndex,
-    };
-    return pending;
-  };
-  const flush = () => {
-    if (pending) changes.push(pending);
-    pending = null;
-  };
-
-  while (currentIndex < current.length || proposedIndex < proposed.length) {
-    if (
-      currentIndex < current.length &&
-      proposedIndex < proposed.length &&
-      currentKeys[currentIndex] === proposedKeys[proposedIndex]
-    ) {
-      flush();
-      currentIndex += 1;
-      proposedIndex += 1;
-    } else if (
-      proposedIndex < proposed.length &&
-      (currentIndex === current.length ||
-        lcs[currentIndex][proposedIndex + 1] >=
-          lcs[currentIndex + 1][proposedIndex])
-    ) {
-      pendingChange().proposed.push(proposed[proposedIndex]);
-      proposedIndex += 1;
-    } else {
-      pendingChange().current.push(current[currentIndex]);
-      currentIndex += 1;
-    }
-  }
-  flush();
-  return changes;
-}
-
 function pairedTableChange(
   change: BlockChange
 ): { current: TableBlock; proposed: TableBlock } | null {
@@ -321,26 +241,6 @@ function blockChangeLabel(change: BlockChange): string {
 
 function formatBlockCount(count: number): string {
   return `${count} block${count === 1 ? "" : "s"}`;
-}
-
-function sectionsEqual(
-  current: ReportSectionView,
-  proposed: ReportSectionView
-): boolean {
-  return (
-    current.heading === proposed.heading &&
-    current.blocks.length === proposed.blocks.length &&
-    current.blocks.every((block, index) =>
-      blocksEqual(block, proposed.blocks[index])
-    )
-  );
-}
-
-function blocksEqual(
-  current: ReportBlockView,
-  proposed: ReportBlockView
-): boolean {
-  return JSON.stringify(current) === JSON.stringify(proposed);
 }
 
 function Change({

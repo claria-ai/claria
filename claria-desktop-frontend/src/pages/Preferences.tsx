@@ -37,6 +37,7 @@ import { useWriterTemplates } from "../lib/useWriterTemplates";
 import { formatDateTime, formatFileSize } from "../lib/format";
 import { promptVersions } from "../lib/versions";
 import EditableName from "../components/EditableName";
+import PreferencesSection from "../components/PreferencesSection";
 import { BackButton, TrashIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import VersionHistoryModal from "../components/VersionHistoryModal";
@@ -128,22 +129,17 @@ export default function Preferences({
         <CostExplorerSection />
 
         {/* Preferred Model section */}
-        <details className="border border-gray-200 rounded-lg group">
-          <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-gray-900">Preferred Model</span>
-              {preferredModelId && chatModels.length > 0 && (
-                <span className="text-xs text-gray-400">
-                  {chatModels.find((m) => m.model_id === preferredModelId)
-                    ?.name ?? preferredModelId}
-                </span>
-              )}
-            </div>
-            <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-              &#9656;
-            </span>
-          </summary>
-          <div className="border-t border-gray-100 p-4">
+        <PreferencesSection
+          title="Preferred Model"
+          summary={
+            preferredModelId && chatModels.length > 0 ? (
+              <span className="text-xs text-gray-400">
+                {chatModels.find((m) => m.model_id === preferredModelId)
+                  ?.name ?? preferredModelId}
+              </span>
+            ) : undefined
+          }
+        >
             {chatModelsLoading ? (
               <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
                 <Spinner />
@@ -179,8 +175,7 @@ export default function Preferences({
                 </p>
               </>
             )}
-          </div>
-        </details>
+        </PreferencesSection>
       </div>
     </div>
   );
@@ -254,17 +249,7 @@ function PromptEditor({
 
   return (
     <>
-      <details
-        className="border border-gray-200 rounded-lg group"
-        open={defaultOpen}
-      >
-        <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-          <span className="font-medium text-gray-900">{label}</span>
-          <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-            &#9656;
-          </span>
-        </summary>
-        <div className="border-t border-gray-100 p-4">
+      <PreferencesSection title={label} defaultOpen={defaultOpen}>
           {description && (
             <p className="text-xs text-gray-400 mb-3">{description}</p>
           )}
@@ -320,8 +305,7 @@ function PromptEditor({
               </div>
             </>
           )}
-        </div>
-      </details>
+      </PreferencesSection>
 
       {showVersions && (
         <VersionHistoryModal
@@ -452,17 +436,12 @@ function LocalTranscriptionSection() {
   );
 
   return (
-    <details className="border border-gray-200 rounded-lg group" open>
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">On-device Memo Transcription</span>
-          {ready && <span className="text-xs text-green-600">Ready</span>}
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4 space-y-5">
+    <PreferencesSection
+      title="On-device Memo Transcription"
+      summary={ready ? <span className="text-xs text-green-600">Ready</span> : undefined}
+      defaultOpen
+      contentClassName="border-t border-gray-100 p-4 space-y-5"
+    >
         <p className="text-xs text-gray-500">
           Record Memo uses transcribe.cpp and local GGUF models, so microphone
           audio stays on this computer. Imported audio recordings continue to
@@ -721,8 +700,7 @@ function LocalTranscriptionSection() {
             </button>
           </div>
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 
@@ -928,19 +906,14 @@ function CostExplorerSection() {
   }
 
   return (
-    <details className="border border-gray-200 rounded-lg group">
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Cost Explorer</span>
-          {hourlyEnabled && (
-            <span className="text-xs text-gray-400">Hourly enabled</span>
-          )}
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4">
+    <PreferencesSection
+      title="Cost Explorer"
+      summary={
+        hourlyEnabled ? (
+          <span className="text-xs text-gray-400">Hourly enabled</span>
+        ) : undefined
+      }
+    >
         <p className="text-xs text-gray-400 mb-3">
           AWS Cost Explorer charges $0.01 per API request. Hourly-resolution data
           requires separate enablement in the AWS Console and incurs additional
@@ -983,8 +956,7 @@ function CostExplorerSection() {
             <p className="text-red-800 text-sm">{error}</p>
           </div>
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 
@@ -1050,24 +1022,16 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
   }
 
   return (
-    <details
-      className="border border-gray-200 rounded-lg group"
+    <PreferencesSection
+      title="Writer Templates"
+      summary={
+        <span className="text-xs text-gray-400">{templates.length} saved</span>
+      }
       open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-      data-testid="writer-template-manager"
+      onToggle={setOpen}
+      testId="writer-template-manager"
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Writer Templates</span>
-          <span className="text-xs text-gray-400">
-            {templates.length} saved
-          </span>
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-sm text-gray-700">
@@ -1148,8 +1112,7 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
             </button>
           </div>
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 
@@ -1316,21 +1279,17 @@ function ReportAuthoringSection() {
   }
 
   return (
-    <details className="border border-gray-200 rounded-lg group">
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Document Writer Limits</span>
-          {draft && (
-            <span className="text-xs text-gray-400">
-              {draft.max_tool_rounds} rounds · {draft.max_converse_calls} calls
-            </span>
-          )}
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4 space-y-4">
+    <PreferencesSection
+      title="Document Writer Limits"
+      summary={
+        draft ? (
+          <span className="text-xs text-gray-400">
+            {draft.max_tool_rounds} rounds · {draft.max_converse_calls} calls
+          </span>
+        ) : undefined
+      }
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    >
         {loading ? (
           <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
             <Spinner />
@@ -1432,8 +1391,7 @@ function ReportAuthoringSection() {
             </div>
           </>
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 
@@ -1597,25 +1555,22 @@ function TranscriptionSection() {
   }
 
   return (
-    <details className="border border-gray-200 rounded-lg group" open>
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Imported Audio Transcription</span>
-          {draft && (
-            <span className="text-xs text-gray-400">
-              {labelForLanguage(draft.default_language ?? "english")} ·{" "}
-              {draft.default_speaker_count ?? 2}{" "}
-              {(draft.default_speaker_count ?? 2) === 1 ? "speaker" : "speakers"}
-              {draft.use_medical_for_english ? " · Medical" : ""}
-              {draft.translate_to_english ? " · translate" : ""}
-            </span>
-          )}
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4 space-y-4">
+    <PreferencesSection
+      title="Imported Audio Transcription"
+      summary={
+        draft ? (
+          <span className="text-xs text-gray-400">
+            {labelForLanguage(draft.default_language ?? "english")} ·{" "}
+            {draft.default_speaker_count ?? 2}{" "}
+            {(draft.default_speaker_count ?? 2) === 1 ? "speaker" : "speakers"}
+            {draft.use_medical_for_english ? " · Medical" : ""}
+            {draft.translate_to_english ? " · translate" : ""}
+          </span>
+        ) : undefined
+      }
+      defaultOpen
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    >
         {loading ? (
           <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
             <Spinner />
@@ -1757,8 +1712,7 @@ function TranscriptionSection() {
             ) : null}
           </>
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 
