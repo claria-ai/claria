@@ -1203,7 +1203,12 @@ export type ChatModel = { model_id: string; name: string }
  * Response from a chat message, including the persisted chat session ID
  * and per-turn token usage.
  */
-export type ChatResponse = { chat_id: string; chat_name: string; content: string; usage: TurnUsage }
+export type ChatResponse = { chat_id: string; chat_name: string; content: string; 
+/**
+ * Per-turn token usage, or null when Bedrock omitted the usage block —
+ * the UI renders absence instead of a fabricated zero.
+ */
+usage: TurnUsage | null }
 export type ChatRole = "user" | "assistant"
 export type ClientNameHistoryEntry = { name: string; changed_at: string }
 export type ClientNameUpdate = { id: string; name: string; updated_at: string }
@@ -1314,7 +1319,11 @@ export type FileVersion = { version_id: string; size: number; last_modified: str
  * Response from an infrastructure chat turn. Infra chat does not persist
  * history, but we still return token usage so the UI can display cost.
  */
-export type InfraChatResponse = { content: string; usage: TurnUsage }
+export type InfraChatResponse = { content: string; 
+/**
+ * Per-turn token usage, or null when Bedrock omitted the usage block.
+ */
+usage: TurnUsage | null }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type Lifecycle = "data" | "managed"
 export type LocalBackend = "auto" | "cpu" | "cpu_accel" | "metal" | "vulkan" | "cuda" | "rocm"
