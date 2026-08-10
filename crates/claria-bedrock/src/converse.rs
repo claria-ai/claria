@@ -255,11 +255,7 @@ impl StreamCollector {
 /// input tokens served from cache; `cache_ttl` names the write tier so a
 /// console export answers "did caching hit, and at which TTL?". Fields are
 /// model IDs, counts, and rates — never prompt or response content.
-pub(crate) fn log_turn_usage(
-    operation: &'static str,
-    model_id: &str,
-    usage: Option<&TurnUsage>,
-) {
+pub(crate) fn log_turn_usage(operation: &'static str, model_id: &str, usage: Option<&TurnUsage>) {
     if let Some(usage) = usage {
         let total_input =
             usage.input_tokens + usage.cache_read_input_tokens + usage.cache_write_input_tokens;

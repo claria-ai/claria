@@ -83,7 +83,9 @@ fn collector_accumulates_deltas_and_captures_usage() {
     assert!(collector.absorb(stop_event(StopReason::EndTurn)).is_none());
     assert!(collector.absorb(metadata_event(120, 7)).is_none());
 
-    let outcome = collector.finish(MODEL_ID, 8_192, None).expect("complete stream");
+    let outcome = collector
+        .finish(MODEL_ID, 8_192, None)
+        .expect("complete stream");
     assert_eq!(outcome.text, "Hello, world.");
     assert_eq!(outcome.stop_reason, "end_turn");
     let usage = outcome.usage.expect("usage captured");
@@ -97,7 +99,9 @@ fn collector_surfaces_truncation_as_a_typed_error() {
     collector.absorb(delta_event("partial out"));
     collector.absorb(stop_event(StopReason::MaxTokens));
 
-    let error = collector.finish(MODEL_ID, 8_192, None).expect_err("truncated");
+    let error = collector
+        .finish(MODEL_ID, 8_192, None)
+        .expect_err("truncated");
     assert!(matches!(
         error,
         BedrockError::ResponseTruncated {
@@ -111,7 +115,9 @@ fn collector_rejects_a_stream_that_never_stopped() {
     let mut collector = StreamCollector::new();
     collector.absorb(delta_event("cut off mid-"));
 
-    let error = collector.finish(MODEL_ID, 8_192, None).expect_err("no stop");
+    let error = collector
+        .finish(MODEL_ID, 8_192, None)
+        .expect_err("no stop");
     assert!(matches!(error, BedrockError::ResponseParse(message)
         if message.contains("messageStop")));
 }

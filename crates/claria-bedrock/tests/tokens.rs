@@ -28,7 +28,11 @@ fn build_usage(
 #[test]
 fn extract_turn_usage_no_cache_active() {
     let sdk_usage = build_usage(1000, 200, None, None);
-    let usage = extract_turn_usage(&sdk_usage, "us.anthropic.claude-sonnet-4-20250514-v1:0", None);
+    let usage = extract_turn_usage(
+        &sdk_usage,
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        None,
+    );
 
     assert_eq!(usage.input_tokens, 1000);
     assert_eq!(usage.output_tokens, 200);
@@ -46,7 +50,11 @@ fn extract_turn_usage_no_cache_active() {
 #[test]
 fn extract_turn_usage_with_cache_active() {
     let sdk_usage = build_usage(100, 50, Some(900), Some(0));
-    let usage = extract_turn_usage(&sdk_usage, "us.anthropic.claude-sonnet-4-20250514-v1:0", None);
+    let usage = extract_turn_usage(
+        &sdk_usage,
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        None,
+    );
 
     assert_eq!(usage.input_tokens, 100);
     assert_eq!(usage.cache_read_input_tokens, 900);
@@ -85,7 +93,11 @@ fn extract_turn_usage_unknown_model_zero_cost_zero_version() {
 #[test]
 fn turn_usage_total_input_tokens_sums_all_three() {
     let sdk_usage = build_usage(100, 50, Some(900), Some(50));
-    let usage = extract_turn_usage(&sdk_usage, "us.anthropic.claude-sonnet-4-20250514-v1:0", None);
+    let usage = extract_turn_usage(
+        &sdk_usage,
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        None,
+    );
 
     assert_eq!(usage.total_input_tokens(), 1050);
 }

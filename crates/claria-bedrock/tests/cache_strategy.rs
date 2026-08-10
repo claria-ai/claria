@@ -15,20 +15,14 @@ fn message(role: ChatRole, chars: usize) -> ChatMessage {
 fn disabled_strategy_never_caches() {
     let s = CacheStrategy::disabled();
     assert!(!s.cache_system_prefix(&"x".repeat(10_000)));
-    assert!(!s.cache_conversation_tail(
-        &"x".repeat(10_000),
-        &[message(ChatRole::User, 10_000)]
-    ));
+    assert!(!s.cache_conversation_tail(&"x".repeat(10_000), &[message(ChatRole::User, 10_000)]));
 }
 
 #[test]
 fn enabled_but_unsupported_model_does_not_cache() {
     let s = CacheStrategy::enabled_for_model(false, CacheTtlChoice::OneHour);
     assert!(!s.cache_system_prefix(&"x".repeat(10_000)));
-    assert!(!s.cache_conversation_tail(
-        &"x".repeat(10_000),
-        &[message(ChatRole::User, 10_000)]
-    ));
+    assert!(!s.cache_conversation_tail(&"x".repeat(10_000), &[message(ChatRole::User, 10_000)]));
 }
 
 #[test]

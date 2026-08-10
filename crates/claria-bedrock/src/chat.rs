@@ -441,7 +441,14 @@ async fn prepare_chat_request(
     system_prompt: &str,
     messages: &[ChatMessage],
     cache_strategy: CacheStrategy,
-) -> Result<(Vec<Message>, Vec<SystemContentBlock>, Option<CacheTtlChoice>), BedrockError> {
+) -> Result<
+    (
+        Vec<Message>,
+        Vec<SystemContentBlock>,
+        Option<CacheTtlChoice>,
+    ),
+    BedrockError,
+> {
     let mut converse_messages: Vec<Message> = Vec::new();
 
     for msg in messages {

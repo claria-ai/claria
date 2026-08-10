@@ -4,6 +4,9 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Chat requests now end with a cache point on the conversation tail, so each turn re-reads the whole history from cache instead of paying full input rates
+- Chat cache entries last an hour on models that support the extended TTL, surviving the pauses of a real conversation; older families fall back to the five-minute default
+- Costs now price hour-long cache writes at their real 2× rate, and each turn records the cache TTL it used so historical totals stay honest
 - Desktop commands are split into per-domain modules sharing one command context and one rich error type, with every error logged and stringified exactly once at the command boundary with its operation name
 - The S3 client is cached alongside the SDK config and invalidated with it, instead of being rebuilt on every command
 - S3 failures now keep their full connection-level error context instead of collapsing to "unhandled error", and storage no longer double-logs errors it already returns

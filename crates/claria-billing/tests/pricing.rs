@@ -108,8 +108,7 @@ fn estimate_selects_cache_write_rate_by_ttl() {
         input: 0,
         output: 0,
     };
-    let million_writes =
-        |ttl| sonnet.estimate_cost_with_cache(zero, 0, 1_000_000, ttl);
+    let million_writes = |ttl| sonnet.estimate_cost_with_cache(zero, 0, 1_000_000, ttl);
 
     assert!((million_writes(None) - 3.75).abs() < 1e-9);
     assert!((million_writes(Some(CacheTtlChoice::FiveMinutes)) - 3.75).abs() < 1e-9);
