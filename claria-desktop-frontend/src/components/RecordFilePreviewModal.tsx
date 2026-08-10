@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { getRecordFileText } from "../lib/tauri";
 import { isAudioSidecar } from "../lib/recordFiles";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import Modal from "./Modal";
 import Spinner from "./Spinner";
 import TextPreviewModal from "./TextPreviewModal";
@@ -33,25 +34,15 @@ function RecordFilePreviewContent({
   filename: string;
   onClose: () => void;
 }) {
-  const [text, setText] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { data, loading, error } = useAsyncLoad(
+    () => getRecordFileText(clientId, filename),
+    [clientId, filename]
+  );
+  // Saved transcript edits replace the fetched text without a refetch.
+  const [savedText, setSavedText] = useState<string | null>(null);
+  const text = savedText ?? data;
 
-  useEffect(() => {
-    let current = true;
-    void getRecordFileText(clientId, filename).then(
-      (value) => {
-        if (current) setText(value);
-      },
-      (reason) => {
-        if (current) setError(String(reason));
-      }
-    );
-    return () => {
-      current = false;
-    };
-  }, [clientId, filename]);
-
-  if (text === null && error === null) {
+  if (loading) {
     return (
       <Modal
         open
@@ -83,7 +74,7 @@ function RecordFilePreviewContent({
       filename={filename}
       initialBody={text ?? ""}
       onClose={onClose}
-      onSaved={setText}
+      onSaved={setSavedText}
     />
   ) : (
     <TextPreviewModal filename={filename} text={text ?? ""} onClose={onClose} />

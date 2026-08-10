@@ -1,13 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   listReportRevisions,
   loadReportRevision,
   revertReportRevision,
-  type ReportDraftView,
-  type ReportRevisionView,
   type ReportWorkspaceView,
 } from "../lib/tauri";
 import { formatDateTime } from "../lib/format";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import Modal from "./Modal";
 import Spinner from "./Spinner";
 import { ReportDocument } from "./WritingCanvas";
@@ -26,69 +25,47 @@ export default function ReportRevisionModal({
   onClose: () => void;
   onReverted: (workspace: ReportWorkspaceView) => void;
 }) {
-  const [revisions, setRevisions] = useState<ReportRevisionView[]>([]);
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
-  const [draft, setDraft] = useState<ReportDraftView | null>(null);
-  const [loadingList, setLoadingList] = useState(true);
-  const [loadingDraft, setLoadingDraft] = useState(false);
   const [reverting, setReverting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [revertError, setRevertError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let current = true;
-    setLoadingList(true);
-    setError(null);
-    void listReportRevisions(clientId, workspace.report_id).then(
-      (values) => {
-        if (!current) return;
-        const previous = values.filter(
-          (value) => value.revision < workspace.draft.revision
-        );
-        setRevisions(previous);
-        setSelectedRevision(previous[0]?.revision ?? null);
-        setLoadingList(false);
-      },
-      (reason) => {
-        if (!current) return;
-        setError(String(reason));
-        setLoadingList(false);
-      }
-    );
-    return () => {
-      current = false;
-    };
-  }, [clientId, workspace.draft.revision, workspace.report_id]);
+  const list = useAsyncLoad(
+    () => listReportRevisions(clientId, workspace.report_id),
+    [clientId, workspace.report_id]
+  );
+  const revisions = useMemo(
+    () =>
+      (list.data ?? []).filter(
+        (value) => value.revision < workspace.draft.revision
+      ),
+    [list.data, workspace.draft.revision]
+  );
 
+  // Default the selection to the newest previous revision once the list is
+  // in, keeping a still-valid explicit choice.
   useEffect(() => {
-    if (selectedRevision === null) return;
-    let current = true;
-    setLoadingDraft(true);
-    setError(null);
-    void loadReportRevision(
-      clientId,
-      workspace.report_id,
-      selectedRevision
-    ).then(
-      (value) => {
-        if (!current) return;
-        setDraft(value);
-        setLoadingDraft(false);
-      },
-      (reason) => {
-        if (!current) return;
-        setError(String(reason));
-        setLoadingDraft(false);
-      }
+    setSelectedRevision((current) =>
+      current !== null && revisions.some((value) => value.revision === current)
+        ? current
+        : (revisions[0]?.revision ?? null)
     );
-    return () => {
-      current = false;
-    };
-  }, [clientId, selectedRevision, workspace.report_id]);
+  }, [revisions]);
+
+  const draftLoad = useAsyncLoad(
+    selectedRevision === null
+      ? null
+      : () => loadReportRevision(clientId, workspace.report_id, selectedRevision),
+    [clientId, workspace.report_id, selectedRevision]
+  );
+  const draft = draftLoad.data;
+  const loadingList = list.loading;
+  const loadingDraft = draftLoad.loading;
+  const error = revertError ?? list.error ?? draftLoad.error;
 
   async function revert() {
     if (selectedRevision === null || reverting || !canRevert) return;
     setReverting(true);
-    setError(null);
+    setRevertError(null);
     try {
       const updated = await revertReportRevision(
         clientId,
@@ -99,7 +76,7 @@ export default function ReportRevisionModal({
       onReverted(updated);
       onClose();
     } catch (reason) {
-      setError(String(reason));
+      setRevertError(String(reason));
     } finally {
       setReverting(false);
     }

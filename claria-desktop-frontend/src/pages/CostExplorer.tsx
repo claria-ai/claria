@@ -11,6 +11,7 @@ import {
 } from "../lib/tauri";
 import { costErrorMessage } from "../lib/costErrors";
 import { daysBetween, defaultGranularity } from "../lib/costRange";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { BackButton, CloseIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import type { Page } from "../App";
@@ -179,23 +180,13 @@ export default function CostExplorer({
 }: {
   navigate: (page: Page) => void;
 }) {
-  const [costExplorerEnabled, setCostExplorerEnabled] = useState<
-    boolean | null
-  >(null);
-  const [hourlyAvailable, setHourlyAvailable] = useState(false);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    loadConfig()
-      .then((info) => {
-        setCostExplorerEnabled(info.cost_explorer_enabled);
-        setHourlyAvailable(info.hourly_cost_data);
-      })
-      .catch(() => {
-        setCostExplorerEnabled(false);
-      })
-      .finally(() => setLoading(false));
-  }, []);
+  const configLoad = useAsyncLoad(() => loadConfig(), []);
+  const loading = configLoad.loading;
+  // Set once the user completes onboarding in this session.
+  const [justEnabled, setJustEnabled] = useState(false);
+  const costExplorerEnabled =
+    justEnabled || (configLoad.data?.cost_explorer_enabled ?? false);
+  const hourlyAvailable = configLoad.data?.hourly_cost_data ?? false;
 
   if (loading) {
     return (
@@ -216,9 +207,7 @@ export default function CostExplorer({
       {costExplorerEnabled ? (
         <CostChart hourlyAvailable={hourlyAvailable} />
       ) : (
-        <Onboarding
-          onEnabled={() => setCostExplorerEnabled(true)}
-        />
+        <Onboarding onEnabled={() => setJustEnabled(true)} />
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -20,6 +20,7 @@ import Spinner from "../components/Spinner";
 import TokenCountBadge from "../components/TokenCountBadge";
 import Modal from "../components/Modal";
 import { summarizeHistory } from "../lib/cost";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useContextTokens } from "../lib/useContextTokens";
 
 export type ResumeChat = {
@@ -51,14 +52,31 @@ export default function ClientChat({
   const [chatName, setChatName] = useState(resumeChat?.name ?? "New chat");
   const [hasPersistedChat, setHasPersistedChat] = useState(resumeChat != null);
 
-  // System prompt state
-  const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
+  // System prompt (read-only; missing prompt hides the button).
+  const { data: systemPrompt } = useAsyncLoad(
+    () => getPrompt("system-prompt"),
+    []
+  );
   const [showPromptModal, setShowPromptModal] = useState(false);
 
-  // Record context state
-  const [contextFiles, setContextFiles] = useState<RecordContext[]>([]);
-  const [contextLoading, setContextLoading] = useState(true);
-  const [contextError, setContextError] = useState<string | null>(null);
+  // Record context: the fetched list plus local remove/extract overlays,
+  // so user edits never mirror server data into duplicate state.
+  const contextLoad = useAsyncLoad(() => listRecordContext(clientId), [clientId]);
+  const contextLoading = contextLoad.loading;
+  const contextError = contextLoad.error;
+  const [removedContext, setRemovedContext] = useState<ReadonlySet<string>>(
+    new Set()
+  );
+  const [extractedContext, setExtractedContext] = useState<
+    ReadonlyMap<string, RecordContext>
+  >(new Map());
+  const contextFiles = useMemo(
+    () =>
+      (contextLoad.data ?? [])
+        .filter((file) => !removedContext.has(file.filename))
+        .map((file) => extractedContext.get(file.filename) ?? file),
+    [contextLoad.data, removedContext, extractedContext]
+  );
   const [previewContext, setPreviewContext] = useState<RecordContext | null>(
     null
   );
@@ -74,16 +92,6 @@ export default function ClientChat({
   const initialModelId = resumeChat?.modelId;
   const initialUsageByIndex = resumeChat?.usageByIndex;
   const lastActivityIso = resumeChat?.lastActivityIso ?? null;
-
-  useEffect(() => {
-    getPrompt("system-prompt")
-      .then(setSystemPrompt)
-      .catch(() => {});
-    listRecordContext(clientId)
-      .then(setContextFiles)
-      .catch((e) => setContextError(String(e)))
-      .finally(() => setContextLoading(false));
-  }, [clientId]);
 
   // Count context tokens once context is loaded. Only files with extracted
   // text are counted — the rest contribute nothing to the prompt.
@@ -104,7 +112,7 @@ export default function ClientChat({
   );
 
   function handleRemoveContext(filename: string) {
-    setContextFiles((prev) => prev.filter((f) => f.filename !== filename));
+    setRemovedContext((prev) => new Set(prev).add(filename));
   }
 
   async function handleExtract(filename: string) {
@@ -112,9 +120,7 @@ export default function ClientChat({
     setExtractError(null);
     try {
       const updated = await extractRecordFile(clientId, filename);
-      setContextFiles((prev) =>
-        prev.map((f) => (f.filename === filename ? updated : f))
-      );
+      setExtractedContext((prev) => new Map(prev).set(filename, updated));
     } catch (e) {
       // The pill stays dimmed so the user can retry from the same button.
       setExtractError({ filename, message: String(e) });

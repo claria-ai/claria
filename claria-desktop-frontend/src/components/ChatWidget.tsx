@@ -13,6 +13,7 @@ import {
   type SessionUsage,
 } from "../lib/cost";
 import { lookupModelPricing, type ModelPricing } from "../lib/tauri";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { usePreferredModel } from "../lib/usePreferredModel";
 import ChatComposer from "./ChatComposer";
 import ChatEmptyState from "./ChatEmptyState";
@@ -81,10 +82,6 @@ export default function ChatWidget({
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
 
-  // Per-model pricing for pre-flight estimates. Looked up once per
-  // selected model and cached.
-  const [pricing, setPricing] = useState<ModelPricing | null>(null);
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -99,24 +96,13 @@ export default function ChatWidget({
     initialModelId
   );
 
-  // Resolve pricing for the selected model. `null` when unknown.
-  useEffect(() => {
-    if (!selectedModelId) {
-      setPricing(null);
-      return;
-    }
-    let cancelled = false;
-    lookupModelPricing(selectedModelId)
-      .then((p) => {
-        if (!cancelled) setPricing(p);
-      })
-      .catch(() => {
-        if (!cancelled) setPricing(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedModelId]);
+  // Per-model pricing for pre-flight estimates, `null` when unknown.
+  // Looked up once per selected model.
+  const pricingLoad = useAsyncLoad<ModelPricing | null>(
+    selectedModelId ? () => lookupModelPricing(selectedModelId) : null,
+    [selectedModelId]
+  );
+  const pricing = pricingLoad.loading || pricingLoad.error ? null : pricingLoad.data;
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {

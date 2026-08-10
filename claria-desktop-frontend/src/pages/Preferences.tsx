@@ -32,6 +32,7 @@ import {
 } from "../lib/tauri";
 import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
 import { formatDateTime, formatFileSize } from "../lib/format";
 import { promptVersions } from "../lib/versions";
@@ -201,39 +202,36 @@ function PromptEditor({
   defaultOpen?: boolean;
 }) {
   const [content, setContent] = useState("");
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
   const [showVersions, setShowVersions] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const text = await getPrompt(promptName);
-      setContent(text);
-      setDirty(false);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [promptName]);
+  const {
+    data: loadedContent,
+    loading,
+    error: loadError,
+    reload,
+  } = useAsyncLoad(() => getPrompt(promptName), [promptName]);
+  const error = loadError ?? actionError;
 
+  // Adopt each freshly loaded prompt as the editable copy.
   useEffect(() => {
-    load();
-  }, [load]);
+    if (loadedContent != null) {
+      setContent(loadedContent);
+      setDirty(false);
+    }
+  }, [loadedContent]);
 
   async function handleSave() {
     setSaving(true);
-    setError(null);
+    setActionError(null);
     try {
       await savePrompt(promptName, content);
       setDirty(false);
     } catch (e) {
-      setError(String(e));
+      setActionError(String(e));
     } finally {
       setSaving(false);
     }
@@ -241,14 +239,14 @@ function PromptEditor({
 
   async function handleReset() {
     setSaving(true);
-    setError(null);
+    setActionError(null);
     try {
       await deletePrompt(promptName);
       const text = await getPrompt(promptName);
       setContent(text);
       setDirty(false);
     } catch (e) {
-      setError(String(e));
+      setActionError(String(e));
     } finally {
       setSaving(false);
     }
@@ -330,8 +328,8 @@ function PromptEditor({
           title={`${label} Versions`}
           source={promptVersions(promptName)}
           onClose={() => setShowVersions(false)}
-          onRestored={load}
-          onError={setError}
+          onRestored={reload}
+          onError={setActionError}
         />
       )}
     </>

@@ -3,7 +3,7 @@ import Modal from "./Modal";
 import Spinner from "./Spinner";
 import { formatDateTime, formatFileSize } from "../lib/format";
 import { diffLines, type DiffLine } from "../lib/diff";
-import type { FileVersion } from "../lib/tauri";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import type { VersionSource } from "../lib/versions";
 
 /**
@@ -37,8 +37,6 @@ export default function VersionHistoryModal({
   /** Card sizing classes for the underlying modal. */
   className?: string;
 }) {
-  const [versions, setVersions] = useState<FileVersion[]>([]);
-  const [loading, setLoading] = useState(true);
   const [preview, setPreview] = useState<{
     versionId: string;
     text: string;
@@ -57,25 +55,16 @@ export default function VersionHistoryModal({
     onErrorRef.current = onError;
   });
 
-  // Fetch once per open. `cancelled` keeps a list that arrives after the user
-  // has already closed the modal from writing into a dead component.
+  // Fetch once per open — the modal is conditionally rendered, so opening it
+  // is a mount. Stale results after close are dropped by the hook.
+  const { data, loading, error: listError } = useAsyncLoad(
+    () => sourceRef.current.list(),
+    []
+  );
+  const versions = data ?? [];
   useEffect(() => {
-    let cancelled = false;
-    sourceRef.current
-      .list()
-      .then((result) => {
-        if (!cancelled) setVersions(result);
-      })
-      .catch((e) => {
-        if (!cancelled) onErrorRef.current(String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (listError) onErrorRef.current(listError);
+  }, [listError]);
 
   async function handleView(versionId: string) {
     if (preview?.versionId === versionId) {

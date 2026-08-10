@@ -4,7 +4,6 @@ import {
   listDeletedFiles,
   restoreDeletedFile,
   type ChatHistoryDetail,
-  type ChatHistorySummary,
   type DeletedFile,
 } from "../lib/tauri";
 import ChatHistoryFolder from "../components/ChatHistoryFolder";
@@ -23,6 +22,7 @@ import { ErrorBanner } from "../components/StateCards";
 import { formatDateTime } from "../lib/format";
 import { isChatHistory } from "../lib/recordFiles";
 import { searchMatches } from "../lib/search";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useEditorHistory } from "../lib/useEditorHistory";
 import { useMemoRecorder } from "../lib/useMemoRecorder";
 import { useMoreMode } from "../lib/useMoreMode";
@@ -94,23 +94,15 @@ export default function RecordTab({
     () => chatHistoryFiles.map((file) => `${file.filename}:${file.uploaded_at}`).join("|"),
     [chatHistoryFiles]
   );
-  const [chatHistories, setChatHistories] = useState<ChatHistorySummary[]>([]);
+  const chatHistoriesLoad = useAsyncLoad(
+    chatHistorySignature === "" ? null : () => listChatHistories(clientId),
+    [clientId, chatHistorySignature]
+  );
   useEffect(() => {
-    if (chatHistorySignature === "") return;
-    let cancelled = false;
-    listChatHistories(clientId)
-      .then((entries) => {
-        if (!cancelled) setChatHistories(entries);
-      })
-      .catch((reason) => {
-        if (!cancelled) setError(String(reason));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [clientId, chatHistorySignature]);
+    if (chatHistoriesLoad.error) setError(chatHistoriesLoad.error);
+  }, [chatHistoriesLoad.error]);
   const visibleChatHistories =
-    chatHistorySignature === "" ? [] : chatHistories;
+    chatHistorySignature === "" ? [] : (chatHistoriesLoad.data ?? []);
 
   const regularFiles = files.filter(
     (f) =>

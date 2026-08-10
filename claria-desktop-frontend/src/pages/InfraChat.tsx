@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   plan,
   infraChat,
@@ -11,6 +11,7 @@ import ChatWidget from "../components/ChatWidget";
 import { BackButton } from "../components/icons";
 import TokenCountBadge from "../components/TokenCountBadge";
 import Modal from "../components/Modal";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useContextTokens } from "../lib/useContextTokens";
 
 const SYSTEM_PROMPT = `You are Claria's infrastructure assistant. Claria is a desktop application for
@@ -78,21 +79,15 @@ export default function InfraChat({
 }: {
   navigate: (page: Page) => void;
 }) {
-  const [scanning, setScanning] = useState(true);
-  const [scanError, setScanError] = useState<string | null>(null);
-  const [planEntries, setPlanEntries] = useState<PlanEntry[]>([]);
+  const planLoad = useAsyncLoad(() => plan(), []);
+  const scanning = planLoad.loading;
+  const scanError = planLoad.error;
+  const planEntries = useMemo(() => planLoad.data ?? [], [planLoad.data]);
 
   const [previewModal, setPreviewModal] = useState<{
     title: string;
     content: string;
   } | null>(null);
-
-  useEffect(() => {
-    plan()
-      .then(setPlanEntries)
-      .catch((e) => setScanError(String(e)))
-      .finally(() => setScanning(false));
-  }, []);
 
   // Count context tokens once the scan has produced a plan.
   const countContext = useCallback(
