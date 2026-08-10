@@ -19,6 +19,44 @@ members = [
 edition = "2024"
 license = "GPL-3.0-only"
 
+[workspace.dependencies]
+# Internal crates
+claria-audit = { path = "crates/claria-audit" }
+claria-bedrock = { path = "crates/claria-bedrock" }
+claria-billing = { path = "crates/claria-billing" }
+claria-client-lifecycle = { path = "crates/claria-client-lifecycle" }
+claria-core = { path = "crates/claria-core" }
+claria-docx = { path = "crates/claria-docx" }
+claria-mock-aws = { path = "crates/claria-mock-aws" }
+claria-provisioner = { path = "crates/claria-provisioner" }
+claria-report-authoring = { path = "crates/claria-report-authoring" }
+claria-storage = { path = "crates/claria-storage" }
+claria-transcribe = { path = "crates/claria-transcribe" }
+
+# Shared external pins — versions live here only; crates add features they need
+aws-config = "=1.8.18"
+aws-credential-types = "=1.2.14"
+aws-sdk-bedrock = "=1.147.0"
+aws-sdk-s3 = "=1.137.0"
+aws-sdk-sts = "=1.107.0"
+aws-smithy-types = "=1.5.0"
+backon = "=1.6.0"
+bytes = "=1.12.0"
+dirs = "=6.0.0"
+eyre = "=0.6.12"
+jiff = { version = "=0.2.31", features = ["serde"] }
+percent-encoding = "=2.3.2"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+sha2 = "=0.10.9"
+specta = { version = "=2.0.0-rc.22", features = ["derive"] }
+tempfile = "=3.27.0"
+thiserror = "=2.0.18"
+tokio = "=1.52.3"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
+uuid = "=1.23.4"
+
 [workspace.metadata.release]
 shared-version = true
 tag-name = "v{{version}}"
