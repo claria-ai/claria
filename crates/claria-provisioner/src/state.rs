@@ -15,7 +15,6 @@ pub struct ProvisionerState {
 
     /// S3 bucket name.
     pub bucket: String,
-
 }
 
 impl ProvisionerState {

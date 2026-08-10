@@ -2,6 +2,62 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Desktop commands are split into per-domain modules sharing one command context and one rich error type, with every error logged and stringified exactly once at the command boundary with its operation name
+- The S3 client is cached alongside the SDK config and invalidated with it, instead of being rebuilt on every command
+- S3 failures now keep their full connection-level error context instead of collapsing to "unhandled error", and storage no longer double-logs errors it already returns
+- S3 timing spans log a scrubbed key class instead of client-chosen filenames, which are PHI
+- Client names and record filenames no longer appear in application logs; the durable audit trail in S3 keeps the full identifiers
+- The audit event's console mirror is now a one-line summary without the details payload, under a dedicated log target
+- The exported console log is written with owner-only file permissions
+- Logs also roll to bounded daily files on disk, and the console gains a button that opens the log folder
+- Log filter directives for all workspace crates are built from one shared list
+- Creating, renaming, deleting, and restoring clients, uploading, editing, deleting, and restoring record files, and saving prompts now all write durable audit events
+- The app window enforces a strict content security policy allowing only bundled resources
+- Assumed-role secrets and freshly minted access-key secrets no longer cross the IPC boundary; the frontend holds an opaque handle and the backend keeps the credentials
+- Opening a URL on Windows goes through the platform API instead of a shell command, and URLs with whitespace or control characters are rejected
+- Creating the IAM policy without a resolved account ID now fails instead of silently widening resource scopes to a wildcard
+- The plaintext-with-file-permissions credential storage model is documented, with keychain migration tracked
+- The provisioner receives its local state directory from the desktop instead of deriving app paths itself
+- Both upload paths share one skeleton and one content-type map, differing only in whether a failed sidecar fails the command
+- Restoring a deleted file uses the race-safe conditional restore, and record-file and prompt version listings, reads, and restores share one implementation
+- Report writer turn audit events build their usage fields through the shared helper and no longer claim complete usage when no attempt ran
+- Numbered default names share one generator, the prompt-cache settings shrink to the fields actually used, and the writer call ceiling is derived from the round ceiling
+- Restore commands no longer take an ignored version parameter
+- Report revision listings fetch uncached versions concurrently and remember per-version summaries, so revisits cost no reads
+- Chat history listings revalidate against the record cache and fan out concurrently instead of one serial read per chat
+- Record uploads stream file bodies from disk instead of buffering whole files in memory, reading bytes only when extraction or text validation needs them
+- Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
+- Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
+- Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed
+- Client CRUD, record inventory, content search, the record cache, and the delete/restore lifecycle move into one records crate with structured errors, and the sidecar-visibility rules are implemented exactly once
+- The audit-trail events and S3 sink fold into the storage crate, and reading a day of audit events fetches concurrently instead of one object at a time
+- Model capabilities (tool support, context window, prompt caching, token-counting model) resolve through one central table, so new Claude generations get modern behavior — including prompt caching — by default
+- All AI calls share one plumbing layer with structured error reporting, and turns whose token usage the service omitted are recorded as unmetered instead of zero-cost
+- Every AI call now enforces an output-token ceiling: a cut-off chat, writer, translation, or document-extraction response fails with a clear error instead of silently saving truncated text
+- Chat checks the conversation against the model's context window before sending and reports overflow with the same guidance the writer gives, instead of a raw AWS error
+- Writer proposals are capped to sizes that fit one response, with large rewrites split across turns
+- Writer tool errors now tell the model exactly what was malformed, and tool descriptions spell out ID copying, 0-based positions, character units, per-turn limits, and pagination
+- Transcript translation receives its results through a forced structured tool call, verifies every segment came back, and no longer pins sampling temperature
+- A writer turn whose final reply is cut short no longer discards an already-staged proposal, and a glitched stop reason gets one corrective retry before the turn fails
+- Writer turns cache their prompt prefix on caching-capable models and count tokens once per turn instead of before every call, cutting cost and latency of multi-step turns
+- The writer's system prompt is organized into headed sections and the untrusted report context travels as compact JSON inside named delimiter tags
+- Chat record context is escaped so document text cannot forge its delimiters, placed after the instructions, and always followed by a fixed do-not-follow-instructions rule
+- Document extraction sends a neutral user turn so the customizable extraction prompt is the single source of instructions
+- Project instructions gain review-derived coding rules covering reuse, frontend patterns, Rust conventions, LLM calls, logging, security, and performance
+- Chat and writer composers both send on Enter and insert a newline with Shift+Enter, with a native resize grip replacing the chat drag handle
+- Writer turns show the same per-turn cost badges and running session spend banner as chat
+- Report bullet lists render with the intended compact spacing
+- An unexpected interface crash shows the error with a reload button instead of a blank window
+- Chat, writer, preferences, cost, and provisioning screens share one set of interface primitives, async-load handling, and state hooks without behavior changes
+- The app ships a single modern TLS stack, verifies update checks and model downloads against the operating system's certificate store, and builds a smaller release binary
+- Background interface failures are forwarded to the backend log stack instead of being silently swallowed, so they appear in the console window, saved log exports, and the on-disk log files
+- The console window renders only the newest lines by default and polls with a sequence cursor that receives only new lines, instead of re-shipping the whole buffer twice a second
+- Preference saves send only the changed section's fields and merge into the cloud copy under an ETag precondition, so sections and machines can no longer clobber each other's settings
+- The report domain types cross the IPC boundary directly instead of through a field-for-field mirror layer, and one chat role enum replaces the three that existed
+- Chat responses stream into the conversation as the model writes them, in both record chat and infrastructure chat, with truncation still surfacing as an error instead of silently saved partial text
+
 ## [0.22.0] — 2026-08-10
 
 - Chat and writer sessions receive numbered names that can be edited directly in their panes and are shown in history

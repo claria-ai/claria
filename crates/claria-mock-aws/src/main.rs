@@ -30,8 +30,7 @@ async fn main() -> eyre::Result<()> {
 
     if let Some(scenario) = &cli.scenario {
         let mut st = shared_state.write().await;
-        scenarios::load(scenario, &mut st)
-            .map_err(|e| eyre::eyre!("Unknown scenario: {e}"))?;
+        scenarios::load(scenario, &mut st).map_err(|e| eyre::eyre!("Unknown scenario: {e}"))?;
         info!("Loaded scenario: {scenario}");
     }
 

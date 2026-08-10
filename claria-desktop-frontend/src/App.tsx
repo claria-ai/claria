@@ -1,12 +1,13 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { hasConfig, loadConfig, listChatModels, type ChatModel } from "./lib/tauri";
+import { ChatModelsContext, type ChatModelsState } from "./lib/chatModels";
+import { logFrontendEvent } from "./lib/logBridge";
 import StartScreen from "./pages/StartScreen";
 import AwsAccountGuide from "./pages/AwsAccountGuide";
 import MfaSetupGuide from "./pages/MfaSetupGuide";
 import AccessKeyGuide from "./pages/AccessKeyGuide";
 import Provision from "./pages/Provision";
 import ClientList from "./pages/ClientList";
-import ClientChat from "./pages/ClientChat";
 import ClientRecord from "./pages/ClientRecord";
 import About from "./pages/About";
 import Preferences from "./pages/Preferences";
@@ -22,7 +23,6 @@ export type Page =
   | "provision"
   | "clients"
   | "client-record"
-  | "client-chat"
   | "infra-chat"
   | "cost-explorer"
   | "preferences"
@@ -46,7 +46,11 @@ export default function App() {
   const [preferredModelId, setPreferredModelId] = useState<string | null>(null);
 
   const refreshConfig = useCallback(async () => {
-    const exists = await hasConfig().catch(() => false);
+    const exists = await hasConfig().catch((reason) => {
+      // Treat an unreadable config as absent, but say so.
+      logFrontendEvent("warn", `hasConfig failed: ${reason}`);
+      return false;
+    });
     setConfigExists(exists);
     if (exists) {
       try {
@@ -86,7 +90,7 @@ export default function App() {
       }
       // Retry loading models if they haven't loaded yet
       if (
-        (target === "clients" || target === "client-record" || target === "client-chat" || target === "infra-chat" || target === "preferences") &&
+        (target === "clients" || target === "client-record" || target === "infra-chat" || target === "preferences") &&
         chatModels.length === 0
       ) {
         refreshChatModels();
@@ -100,6 +104,24 @@ export default function App() {
     [refreshConfig, refreshChatModels, chatModels.length],
   );
 
+  const chatModelsState = useMemo<ChatModelsState>(
+    () => ({
+      models: chatModels,
+      loading: chatModelsLoading,
+      error: chatModelsError,
+      preferredModelId,
+      retry: () => void refreshChatModels(),
+      setPreferredModelId,
+    }),
+    [
+      chatModels,
+      chatModelsLoading,
+      chatModelsError,
+      preferredModelId,
+      refreshChatModels,
+    ]
+  );
+
   if (page === "loading") {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -109,6 +131,7 @@ export default function App() {
   }
 
   return (
+    <ChatModelsContext.Provider value={chatModelsState}>
     <div className="min-h-screen bg-gray-50 text-gray-900">
       {page === "start" && (
         <StartScreen navigate={navigate} configExists={configExists} />
@@ -132,11 +155,6 @@ export default function App() {
           navigate={navigate}
           clientId={activeClientId}
           clientName={activeClientName ?? "Client"}
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
-          onRetryChatModels={() => void refreshChatModels()}
           onClientNameChanged={setActiveClientName}
           onManageWriterTemplates={() => {
             setOpenWriterTemplates(true);
@@ -145,34 +163,10 @@ export default function App() {
           }}
         />
       )}
-      {page === "client-chat" && activeClientId && (
-        <ClientChat
-          navigate={navigate}
-          clientId={activeClientId}
-          clientName={activeClientName ?? "Client"}
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
-        />
-      )}
-      {page === "infra-chat" && (
-        <InfraChat
-          navigate={navigate}
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
-        />
-      )}
+      {page === "infra-chat" && <InfraChat navigate={navigate} />}
       {page === "preferences" && (
         <Preferences
           navigate={navigate}
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
-          onPreferredModelChanged={setPreferredModelId}
           openWriterTemplates={openWriterTemplates}
           backPage={preferencesReturnPage}
         />
@@ -180,5 +174,6 @@ export default function App() {
       {page === "cost-explorer" && <CostExplorer navigate={navigate} />}
       {page === "about" && <About navigate={navigate} />}
     </div>
+    </ChatModelsContext.Provider>
   );
 }

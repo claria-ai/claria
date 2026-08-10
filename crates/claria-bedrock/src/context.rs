@@ -15,8 +15,13 @@ pub struct ContextFile {
 
 /// Build a structured context block from record files.
 ///
-/// Returns an XML-style block that can be prepended to the system prompt.
-/// If `files` is empty, returns an empty string (no context to inject).
+/// Returns an XML-style block appended after the system prompt. If `files`
+/// is empty, returns an empty string (no context to inject).
+///
+/// Embedded document text is escaped (`&` and `<`) so file content can
+/// never forge a closing `</file>` or `</record_context>` delimiter and
+/// break out of the untrusted-data block; `"` in filenames is escaped so a
+/// name cannot terminate the `name` attribute.
 pub fn build_context_block(files: &[ContextFile]) -> String {
     if files.is_empty() {
         return String::new();
@@ -25,9 +30,13 @@ pub fn build_context_block(files: &[ContextFile]) -> String {
     let mut block = String::from("<record_context>\n");
 
     for file in files {
-        block.push_str(&format!("<file name=\"{}\">\n", file.filename));
-        block.push_str(&file.text);
-        if !file.text.ends_with('\n') {
+        let text = escape_text(&file.text);
+        block.push_str(&format!(
+            "<file name=\"{}\">\n",
+            escape_attribute(&file.filename)
+        ));
+        block.push_str(&text);
+        if !text.ends_with('\n') {
             block.push('\n');
         }
         block.push_str("</file>\n");
@@ -35,4 +44,15 @@ pub fn build_context_block(files: &[ContextFile]) -> String {
 
     block.push_str("</record_context>");
     block
+}
+
+/// Escape embedded document text: `&` first, then `<`, so no sequence in the
+/// original text can produce a delimiter tag.
+fn escape_text(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;")
+}
+
+/// Escape a value used inside a double-quoted XML attribute.
+fn escape_attribute(value: &str) -> String {
+    escape_text(value).replace('"', "&quot;")
 }

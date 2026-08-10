@@ -52,29 +52,35 @@ pub struct ReportWorkspace {
     pub updated_at: Timestamp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+// `specta::Type` is derived directly on the report domain types the frontend
+// renders, so the desktop crate never mirrors them field-for-field. `jiff`
+// timestamps serialize as RFC 3339 strings, which specta has no impl for —
+// the `#[specta(type = String)]` overrides state that wire fact.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
 pub struct ReportDraft {
     pub revision: u64,
     pub content: ReportContent,
+    #[specta(type = String)]
     pub created_at: Timestamp,
+    #[specta(type = String)]
     pub updated_at: Timestamp,
     pub last_applied_proposal_id: Option<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 pub struct ReportContent {
     pub title: String,
     pub sections: Vec<ReportSection>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 pub struct ReportSection {
     pub id: Uuid,
     pub heading: String,
     pub blocks: Vec<ReportBlock>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReportBlock {
     Paragraph {
@@ -154,14 +160,15 @@ pub struct ReportSession {
     pub last_export: Option<ReportExport>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
 pub struct ReportExport {
     pub revision: u64,
     pub status: ReportExportStatus,
+    #[specta(type = String)]
     pub attempted_at: Timestamp,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportExportStatus {
     Exported,
@@ -246,7 +253,7 @@ pub struct ReportProposal {
     pub created_at: Timestamp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReportOperation {
     SetTitle {
@@ -266,15 +273,16 @@ pub enum ReportOperation {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 pub struct ReportProposalResolution {
     pub proposal_id: Uuid,
     pub decision: ReportProposalDecision,
     pub resulting_revision: u64,
+    #[specta(type = String)]
     pub resolved_at: Timestamp,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportProposalDecision {
     Accepted,

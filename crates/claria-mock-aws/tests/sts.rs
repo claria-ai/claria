@@ -4,7 +4,11 @@ use axum::http::{Method, StatusCode};
 
 use helpers::{app, request};
 
-async fn sts_request(app: &axum::Router, action: &str, extra_params: &str) -> helpers::TestResponse {
+async fn sts_request(
+    app: &axum::Router,
+    action: &str,
+    extra_params: &str,
+) -> helpers::TestResponse {
     let body = if extra_params.is_empty() {
         format!("Action={action}")
     } else {
@@ -25,7 +29,8 @@ async fn get_caller_identity_returns_default_root() {
 #[tokio::test]
 async fn assume_role_returns_temporary_credentials() {
     let app = app();
-    let params = "RoleArn=arn%3Aaws%3Aiam%3A%3A123456789012%3Arole%2FTestRole&RoleSessionName=test-session";
+    let params =
+        "RoleArn=arn%3Aaws%3Aiam%3A%3A123456789012%3Arole%2FTestRole&RoleSessionName=test-session";
     let r = sts_request(&app, "AssumeRole", params).await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("<AccessKeyId>"));

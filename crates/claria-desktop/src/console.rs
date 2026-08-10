@@ -7,11 +7,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tracing::{
+    Event, Subscriber,
     field::Visit,
     span::{Attributes, Id, Record},
-    Event, Subscriber,
 };
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 /// Maximum approximate byte size of the ring buffer (10 MB).
 const MAX_BYTES: usize = 10 * 1024 * 1024;
@@ -34,8 +34,25 @@ impl ConsoleEntry {
 
 impl fmt::Display for ConsoleEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} {}: {}", self.timestamp, self.level, self.target, self.message)
+        write!(
+            f,
+            "{} {} {}: {}",
+            self.timestamp, self.level, self.target, self.message
+        )
     }
+}
+
+/// One poll's worth of new console entries, addressed by a monotonic
+/// sequence cursor so the 500ms UI poll ships only new lines.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ConsoleDelta {
+    pub entries: Vec<ConsoleEntry>,
+    /// Cursor to pass on the next poll.
+    pub next_seq: u64,
+    /// True when `entries` is the full buffer and must replace, not append —
+    /// the requested cursor predates the buffer (lines rotated out unseen)
+    /// or came from a previous app run.
+    pub reset: bool,
 }
 
 /// Thread-safe, size-capped ring buffer of log entries.
@@ -48,6 +65,16 @@ pub struct ConsoleBuffer {
 struct BufferInner {
     entries: VecDeque<ConsoleEntry>,
     total_bytes: usize,
+    /// Sequence number of the entry at the front of `entries`. Every pushed
+    /// entry gets the next number; rotation advances this.
+    first_seq: u64,
+}
+
+impl BufferInner {
+    /// Sequence number the next pushed entry will receive.
+    fn next_seq(&self) -> u64 {
+        self.first_seq + self.entries.len() as u64
+    }
 }
 
 impl Default for ConsoleBuffer {
@@ -62,6 +89,7 @@ impl ConsoleBuffer {
             inner: Arc::new(Mutex::new(BufferInner {
                 entries: VecDeque::new(),
                 total_bytes: 0,
+                first_seq: 0,
             })),
         }
     }
@@ -75,16 +103,35 @@ impl ConsoleBuffer {
         while buf.total_bytes > MAX_BYTES {
             if let Some(removed) = buf.entries.pop_front() {
                 buf.total_bytes = buf.total_bytes.saturating_sub(removed.byte_size());
+                buf.first_seq += 1;
             } else {
                 break;
             }
         }
     }
 
-    /// Returns a clone of all buffered entries.
-    pub fn entries(&self) -> Vec<ConsoleEntry> {
+    /// Entries at or after the sequence cursor `seq`.
+    ///
+    /// A cursor inside the buffered range appends (`reset: false`). A cursor
+    /// older than the buffer start (entries rotated out between polls) or
+    /// newer than the buffer end (cursor from a previous run) returns the
+    /// full buffer with `reset: true` so the client replaces its copy.
+    pub fn entries_since(&self, seq: u64) -> ConsoleDelta {
         let buf = self.inner.lock().expect("console buffer lock poisoned");
-        buf.entries.iter().cloned().collect()
+        let next_seq = buf.next_seq();
+        if seq < buf.first_seq || seq > next_seq {
+            return ConsoleDelta {
+                entries: buf.entries.iter().cloned().collect(),
+                next_seq,
+                reset: true,
+            };
+        }
+        let skip = usize::try_from(seq - buf.first_seq).unwrap_or(usize::MAX);
+        ConsoleDelta {
+            entries: buf.entries.iter().skip(skip).cloned().collect(),
+            next_seq,
+            reset: false,
+        }
     }
 
     /// Formats all buffered entries as a plain-text string, one line per entry.

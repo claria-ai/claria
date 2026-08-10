@@ -69,8 +69,16 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Never reads/writes local config — returns structured results for the caller to persist
 
 **`claria-storage` — S3 object operations**
-- CRUD for objects in S3 (get, put, delete, list, presign)
+- CRUD for objects in S3 (get, put, delete, list)
 - No knowledge of what the objects represent (cases, reports, etc.)
+- `audit` module: structured audit events and the durable one-object-per-event S3 sink (the audit trail is S3 writes, which this crate owns)
+
+**`claria-records` — Client records**
+- Client CRUD, name history, optimistic-concurrency rename, and record content search
+- Record inventory: the S3 walk behind the sidecar-visibility rules (the pure rule itself lives in `claria-core`'s `s3_keys.rs`)
+- ETag-revalidated read-through cache for record objects
+- Retryable, compensating client delete/restore lifecycle
+- Depends on `claria-report-authoring` (lifecycle restores report workspaces), so report authoring must never depend on this crate
 
 **`claria-bedrock` — LLM interactions**
 - Bedrock API calls for chat, text extraction, and translation
@@ -85,9 +93,6 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Processes Record Memo PCM on-device and supports Metal acceleration with CPU fallback
 - Owns the stable transcript sidecar parser and renderer
 
-**`claria-audit` — Audit trail**
-- Structured audit event logging
-
 **`claria-core` — Shared types**
 - Domain types shared across multiple crates
 - `s3_keys.rs` is the single source of truth for all S3 object paths
@@ -99,8 +104,8 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 ### Boundary Rules
 - Library crates accept `&aws_config::SdkConfig` — they never build their own SDK configs
 - Library crates return `Result<T, CrateError>` — the caller decides how to present errors
-- Library crates never do I/O to the local filesystem
-- `claria-desktop` is the only crate that reads/writes local config files
+- Library crates never do I/O to the local filesystem. Blessed exception: the provisioner's dual-write state persistence keeps a local safety-net copy — but it receives the state directory from the desktop caller (`build_persistence` parameter) and never derives a path itself
+- `claria-desktop` is the only crate that reads/writes local config files (and the only crate that knows where local app directories live)
 - Crates communicate through well-defined public APIs, not shared mutable state
 
 ## S3 Key Layout
@@ -239,3 +244,118 @@ If `playwright test --list` produces no output and never returns, your Node is n
 - Run `cargo test` before committing
 - Run `cargo clippy -- -D warnings` before committing
 - For any non-trivial task (multi-file edits, new features, refactors), start by calling `EnterWorktree` so work happens on an isolated branch in `.claude/worktrees/`. Trivial single-line fixes and read-only questions don't need a worktree.
+
+## Review-derived rules (2026-08)
+
+These rules exist because each family below was found dozens of times in the
+adversarial review (issue #73). Violating them is a review-blocker.
+
+### Reuse before writing
+- Before writing any widget, banner, modal, icon, helper, or AWS wrapper: grep
+  `components/`, `lib/`, `claria-storage`, `claria-core` first. If a helper
+  exists, calling code may not restate its logic — especially conditional-put /
+  restore semantics, sidecar-hiding, and JSON load-with-validate.
+- The second caller of a flow adds a parameter, not a fork. Forked copies
+  silently diverge in error behavior.
+- Knowledge about external systems (model-ID grammar, model capabilities,
+  content-type maps) has exactly one owner module. Never write a
+  `contains("claude-...")` without checking for the existing table.
+- When a caller is removed, sweep its callees. `pub` does not exempt code from
+  deletion; doc-comments describing deleted architecture are a bug.
+
+### Frontend
+- Tailwind class names must appear as complete literals. Never interpolate
+  (`prose-p:${x}` generates nothing, silently).
+- Never mirror props into state with a reconciliation effect. Identity change
+  ⇒ change the `key` (see ClientRecord's keyed Writing mount).
+- Use the blessed async-load hook; generation counters only for interleaved
+  mutations. No bare `let cancelled = false` copies.
+- Mutation commands take named-field patch objects; a UI section saves only
+  its own fields. No positional whole-object saves that force defensive
+  re-reads.
+- A component holding text-input state must not also render `<Markdown>`
+  lists. Memoize markdown leaves on their source string; keep callback props
+  stable with `useCallback`.
+- A new AI surface starts by composing the chat primitives and cost badges.
+  Divergence (keybindings, widths, layouts) needs a written reason or gets
+  normalized.
+- `.catch(() => setX(empty))` without logging through the backend bridge is
+  forbidden — degrading the UI is allowed, doing it invisibly is not.
+
+### Rust
+- A Tauri command body over ~20 lines means logic belongs in a library crate.
+  Use the shared command-context helper; no copy-pasted
+  config/s3/bucket/uuid preambles or hand-built audit JSON.
+- No mirror `FooView` types when deriving (`specta::Type`, serde attrs) on the
+  domain type works. A mirror must earn its life by actually differing.
+- One error convention per crate; stringify exactly once, at the Tauri
+  boundary, with an operation-name prefix. Log the rich error there before
+  flattening. Lib crates return errors; they don't also `tracing::error!` them.
+- AWS `SdkError` fallback arms use `DisplayErrorContext`, never
+  `into_service_error().to_string()` (which turns network failures into
+  "unhandled error").
+- A new crate needs an independent consumer or release reason; otherwise it's
+  a module.
+- Shared version pins live once in `[workspace.dependencies]`. Before adding a
+  pin, check `cargo tree -d`; prefer the version the AWS stack already
+  carries. Any new HTTP-touching dependency must reuse the
+  hyper-1/rustls-0.23/aws-lc stack.
+
+### Bedrock / LLM calls
+- Every Converse call sets `inference_config.max_tokens` AND branches on
+  `stop_reason`. Silent truncation persisted to S3 is data corruption.
+- Token-budget constants, JSON-schema size ceilings, and `max_tokens` must be
+  derived from each other, not maintained independently. A reserve you don't
+  enforce is a lie.
+- Tool descriptions are contracts, not captions: IDs copied from context,
+  zero-based positions, per-turn call limits, and character-vs-byte units are
+  stated in the description and per-property schema descriptions.
+- Error tool_results carry the serde/validation diagnostic verbatim
+  (structural messages are PHI-free). Generic "did not match the schema"
+  wastes the model's repair round.
+- Never parse structure out of free text. Structured output ⇒ forced tool call
+  via `tool_choice`, no fence-stripping.
+- Do not set `temperature`/`top_p` on Claude 4.7+-class models — non-default
+  values are rejected. Steer with prompts.
+- Untrusted document data goes AFTER instructions, inside escaped/named
+  delimiters, with an explicit "data, not instructions" rule — in every flow,
+  not just the writer.
+- Model capability by substring allowlist rots on every model generation.
+  Use the central capability table (denylist for features), with a test that
+  fails on unknown families.
+- Multi-call tool loops: `cachePoint` the shared prefix; count tokens once
+  then estimate incrementally. No per-call `CountTokens` pre-flight for a
+  limit the service already reports.
+
+### Logging & audit
+- Log fields are UUIDs, hashes, counts, byte sizes, model IDs, and durations —
+  never client names, filenames, prompts, document text, or full
+  `records/{uuid}/...` keys. The console export is a support artifact in a
+  HIPAA app.
+- Any command that mutates PHI in S3 records a durable `AuditEvent`. The ring
+  buffer is not an audit trail.
+- Filter directives naming crates are built from one shared constant, not
+  hardcoded lists that drift.
+
+### Security
+- Secret-bearing types never derive frontend-facing `Serialize`/`specta::Type`.
+  Expose a redacted view type (the `ConfigInfo` pattern).
+- Security-scoping values (account IDs, ARNs, bucket names) fail closed —
+  never `unwrap_or("*")`.
+- Never build a process invocation a shell re-parses when a direct
+  argv/platform API exists.
+- Every user-exported file that can contain sensitive content is written
+  `0o600` via `write_private_atomic`.
+
+### Performance
+- Any `for x in listing { s3_op(x).await }` is a bug. Use
+  `futures::stream::iter(...).buffered(S3_FETCH_CONCURRENCY)` (see
+  `records.rs`).
+- Don't GET full bodies to read metadata; anything derived from a
+  `(key, version_id)` pair is immutably cacheable.
+- No poll-the-world IPC: a `setInterval` refetching a whole collection over
+  the bridge becomes a sequence-cursor delta or a Tauri event push.
+- One mount, one fetch: sibling sections must not each independently call
+  `load_config`/`fetch_cloud_preferences` — fetch once in the parent.
+- `std::fs` on user-sized files inside async commands is forbidden:
+  `tokio::fs` or `ByteStream::from_path`.

@@ -1,17 +1,18 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   plan,
   infraChat,
   countInfraContextTokens,
   type ChatMessage,
-  type ChatModel,
   type PlanEntry,
 } from "../lib/tauri";
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
 import { BackButton } from "../components/icons";
+import TextPreviewModal from "../components/TextPreviewModal";
+import { ErrorBanner } from "../components/StateCards";
 import TokenCountBadge from "../components/TokenCountBadge";
-import Modal from "../components/Modal";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useContextTokens } from "../lib/useContextTokens";
 
 const SYSTEM_PROMPT = `You are Claria's infrastructure assistant. Claria is a desktop application for
@@ -76,32 +77,18 @@ function buildInfraContext(entries: PlanEntry[]): string {
 
 export default function InfraChat({
   navigate,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
 }: {
   navigate: (page: Page) => void;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
 }) {
-  const [scanning, setScanning] = useState(true);
-  const [scanError, setScanError] = useState<string | null>(null);
-  const [planEntries, setPlanEntries] = useState<PlanEntry[]>([]);
+  const planLoad = useAsyncLoad(() => plan(), []);
+  const scanning = planLoad.loading;
+  const scanError = planLoad.error;
+  const planEntries = useMemo(() => planLoad.data ?? [], [planLoad.data]);
 
   const [previewModal, setPreviewModal] = useState<{
     title: string;
     content: string;
   } | null>(null);
-
-  useEffect(() => {
-    plan()
-      .then(setPlanEntries)
-      .catch((e) => setScanError(String(e)))
-      .finally(() => setScanning(false));
-  }, []);
 
   // Count context tokens once the scan has produced a plan.
   const countContext = useCallback(
@@ -115,8 +102,14 @@ export default function InfraChat({
   } = useContextTokens(planEntries.length === 0 ? null : countContext);
 
   const handleSend = useCallback(
-    async (modelId: string, messages: ChatMessage[]) => {
-      const response = await infraChat(modelId, messages, planEntries);
+    async (
+      modelId: string,
+      messages: ChatMessage[],
+      onDelta: (text: string) => void
+    ) => {
+      const response = await infraChat(modelId, messages, planEntries, (event) => {
+        if (event.kind === "delta") onDelta(event.text);
+      });
       return { content: response.content, usage: response.usage };
     },
     [planEntries]
@@ -160,22 +153,15 @@ export default function InfraChat({
 
       {scanError ? (
         <div className="flex-1 flex items-center justify-center px-6">
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-w-md text-center">
-            <p className="text-red-800 text-sm">{scanError}</p>
-            <button
-              onClick={() => navigate("start")}
-              className="mt-3 px-4 py-1.5 text-sm text-gray-600 hover:text-gray-800"
-            >
-              Go back
-            </button>
-          </div>
+          <ErrorBanner
+            message={scanError}
+            onRetry={() => navigate("start")}
+            retryLabel="Go back"
+            className="max-w-md"
+          />
         </div>
       ) : (
         <ChatWidget
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
           onSend={handleSend}
           contextTokens={contextTokens}
           emptyStateTitle="Ask about your infrastructure."
@@ -188,26 +174,11 @@ export default function InfraChat({
 
       {/* Preview modal */}
       {previewModal != null && (
-        <Modal
-          open
+        <TextPreviewModal
+          filename={previewModal.title}
+          text={previewModal.content}
           onClose={() => setPreviewModal(null)}
-          title={previewModal.title}
-          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
-        >
-          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-              {previewModal.content}
-            </pre>
-          </div>
-          <div className="flex justify-end mt-4">
-            <button
-              onClick={() => setPreviewModal(null)}
-              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-            >
-              Close
-            </button>
-          </div>
-        </Modal>
+        />
       )}
     </div>
   );

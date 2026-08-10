@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getPrompt,
-  listWriterTemplates,
   savePrompt,
   deletePrompt,
   setPreferredModel,
@@ -13,12 +12,11 @@ import {
   loadConfig,
   setHourlyCostData,
   getCostAndUsage,
-  savePreferences,
+  savePreferencesPatch,
   fetchCloudPreferences,
   uploadWriterTemplate,
   renameWriterTemplate,
   deleteWriterTemplate,
-  type ChatModel,
   type ConfigInfo,
   type LocalBackend,
   type LocalKvPrecision,
@@ -32,34 +30,38 @@ import {
   type TranscriptionPreferences,
   type WriterTemplateView,
 } from "../lib/tauri";
+import { logFrontendEvent } from "../lib/logBridge";
+import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
+import { useWriterTemplates } from "../lib/useWriterTemplates";
 import { formatDateTime, formatFileSize } from "../lib/format";
 import { promptVersions } from "../lib/versions";
 import EditableName from "../components/EditableName";
+import PreferencesSection from "../components/PreferencesSection";
 import { BackButton, TrashIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
+import { ErrorBanner, LoadingCard } from "../components/StateCards";
 import VersionHistoryModal from "../components/VersionHistoryModal";
 import type { Page } from "../App";
 
 export default function Preferences({
   navigate,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
-  onPreferredModelChanged,
   openWriterTemplates = false,
   backPage = "start",
 }: {
   navigate: (page: Page) => void;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId: string | null;
-  onPreferredModelChanged: (id: string | null) => void;
   openWriterTemplates?: boolean;
   backPage?: Page;
 }) {
+  const {
+    models: chatModels,
+    loading: chatModelsLoading,
+    error: chatModelsError,
+    preferredModelId,
+    setPreferredModelId,
+  } = useChatModels();
+
   // Model preference state
   const [modelSaving, setModelSaving] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -70,7 +72,7 @@ export default function Preferences({
     setModelError(null);
     try {
       await setPreferredModel(value);
-      onPreferredModelChanged(value);
+      setPreferredModelId(value);
     } catch (e) {
       setModelError(String(e));
     } finally {
@@ -129,31 +131,24 @@ export default function Preferences({
         <CostExplorerSection />
 
         {/* Preferred Model section */}
-        <details className="border border-gray-200 rounded-lg group">
-          <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-gray-900">Preferred Model</span>
-              {preferredModelId && chatModels.length > 0 && (
-                <span className="text-xs text-gray-400">
-                  {chatModels.find((m) => m.model_id === preferredModelId)
-                    ?.name ?? preferredModelId}
-                </span>
-              )}
-            </div>
-            <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-              &#9656;
-            </span>
-          </summary>
-          <div className="border-t border-gray-100 p-4">
+        <PreferencesSection
+          title="Preferred Model"
+          summary={
+            preferredModelId && chatModels.length > 0 ? (
+              <span className="text-xs text-gray-400">
+                {chatModels.find((m) => m.model_id === preferredModelId)
+                  ?.name ?? preferredModelId}
+              </span>
+            ) : undefined
+          }
+        >
             {chatModelsLoading ? (
               <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
                 <Spinner />
                 <span>Loading models...</span>
               </div>
             ) : chatModelsError ? (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">{chatModelsError}</p>
-              </div>
+              <ErrorBanner message={chatModelsError} className="" />
             ) : (
               <>
                 <select
@@ -170,9 +165,7 @@ export default function Preferences({
                   ))}
                 </select>
                 {modelError && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
-                    <p className="text-red-800 text-sm">{modelError}</p>
-                  </div>
+                  <ErrorBanner message={modelError} className="mt-3" />
                 )}
                 <p className="text-xs text-gray-400 mt-2">
                   Applies to new chat sessions. Existing chats keep the model
@@ -180,8 +173,7 @@ export default function Preferences({
                 </p>
               </>
             )}
-          </div>
-        </details>
+        </PreferencesSection>
       </div>
     </div>
   );
@@ -203,39 +195,36 @@ function PromptEditor({
   defaultOpen?: boolean;
 }) {
   const [content, setContent] = useState("");
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
   const [showVersions, setShowVersions] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const text = await getPrompt(promptName);
-      setContent(text);
-      setDirty(false);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [promptName]);
+  const {
+    data: loadedContent,
+    loading,
+    error: loadError,
+    reload,
+  } = useAsyncLoad(() => getPrompt(promptName), [promptName]);
+  const error = loadError ?? actionError;
 
+  // Adopt each freshly loaded prompt as the editable copy.
   useEffect(() => {
-    load();
-  }, [load]);
+    if (loadedContent != null) {
+      setContent(loadedContent);
+      setDirty(false);
+    }
+  }, [loadedContent]);
 
   async function handleSave() {
     setSaving(true);
-    setError(null);
+    setActionError(null);
     try {
       await savePrompt(promptName, content);
       setDirty(false);
     } catch (e) {
-      setError(String(e));
+      setActionError(String(e));
     } finally {
       setSaving(false);
     }
@@ -243,14 +232,14 @@ function PromptEditor({
 
   async function handleReset() {
     setSaving(true);
-    setError(null);
+    setActionError(null);
     try {
       await deletePrompt(promptName);
       const text = await getPrompt(promptName);
       setContent(text);
       setDirty(false);
     } catch (e) {
-      setError(String(e));
+      setActionError(String(e));
     } finally {
       setSaving(false);
     }
@@ -258,27 +247,12 @@ function PromptEditor({
 
   return (
     <>
-      <details
-        className="border border-gray-200 rounded-lg group"
-        open={defaultOpen}
-      >
-        <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-          <span className="font-medium text-gray-900">{label}</span>
-          <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-            &#9656;
-          </span>
-        </summary>
-        <div className="border-t border-gray-100 p-4">
+      <PreferencesSection title={label} defaultOpen={defaultOpen}>
           {description && (
             <p className="text-xs text-gray-400 mb-3">{description}</p>
           )}
           {loading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="flex items-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Loading prompt...</span>
-              </div>
-            </div>
+            <LoadingCard>Loading prompt...</LoadingCard>
           ) : (
             <>
               <textarea
@@ -292,9 +266,7 @@ function PromptEditor({
               />
 
               {error && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
-                  <p className="text-red-800 text-sm">{error}</p>
-                </div>
+                <ErrorBanner message={error} className="mt-3" />
               )}
 
               <div className="flex justify-between mt-3">
@@ -324,16 +296,15 @@ function PromptEditor({
               </div>
             </>
           )}
-        </div>
-      </details>
+      </PreferencesSection>
 
       {showVersions && (
         <VersionHistoryModal
           title={`${label} Versions`}
           source={promptVersions(promptName)}
           onClose={() => setShowVersions(false)}
-          onRestored={load}
-          onError={setError}
+          onRestored={reload}
+          onError={setActionError}
         />
       )}
     </>
@@ -456,17 +427,12 @@ function LocalTranscriptionSection() {
   );
 
   return (
-    <details className="border border-gray-200 rounded-lg group" open>
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">On-device Memo Transcription</span>
-          {ready && <span className="text-xs text-green-600">Ready</span>}
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4 space-y-5">
+    <PreferencesSection
+      title="On-device Memo Transcription"
+      summary={ready ? <span className="text-xs text-green-600">Ready</span> : undefined}
+      defaultOpen
+      contentClassName="border-t border-gray-100 p-4 space-y-5"
+    >
         <p className="text-xs text-gray-500">
           Record Memo uses transcribe.cpp and local GGUF models, so microphone
           audio stays on this computer. Imported audio recordings continue to
@@ -715,18 +681,13 @@ function LocalTranscriptionSection() {
         ) : null}
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error}</p>
-            <button
-              onClick={() => void refresh()}
-              className="mt-2 px-2.5 py-1 text-xs text-red-700 border border-red-300 rounded"
-            >
-              Try again
-            </button>
-          </div>
+          <ErrorBanner
+            message={error}
+            onRetry={() => void refresh()}
+            className=""
+          />
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 
@@ -932,19 +893,14 @@ function CostExplorerSection() {
   }
 
   return (
-    <details className="border border-gray-200 rounded-lg group">
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Cost Explorer</span>
-          {hourlyEnabled && (
-            <span className="text-xs text-gray-400">Hourly enabled</span>
-          )}
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4">
+    <PreferencesSection
+      title="Cost Explorer"
+      summary={
+        hourlyEnabled ? (
+          <span className="text-xs text-gray-400">Hourly enabled</span>
+        ) : undefined
+      }
+    >
         <p className="text-xs text-gray-400 mb-3">
           AWS Cost Explorer charges $0.01 per API request. Hourly-resolution data
           requires separate enablement in the AWS Console and incurs additional
@@ -983,12 +939,9 @@ function CostExplorerSection() {
         )}
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
-            <p className="text-red-800 text-sm">{error}</p>
-          </div>
+          <ErrorBanner message={error} className="mt-3" />
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 
@@ -998,26 +951,16 @@ function CostExplorerSection() {
 
 function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
-  const [templates, setTemplates] = useState<WriterTemplateView[]>([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    templates,
+    setTemplates,
+    loading,
+    error: loadError,
+    reload,
+  } = useWriterTemplates();
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setTemplates(await listWriterTemplates());
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error = loadError ?? actionError;
 
   useEffect(() => {
     if (defaultOpen) setOpen(true);
@@ -1025,14 +968,14 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
 
   async function upload() {
     setBusy("upload");
-    setError(null);
+    setActionError(null);
     try {
       const uploaded = await uploadWriterTemplate();
       if (uploaded) {
         setTemplates((current) => [uploaded, ...current]);
       }
     } catch (reason) {
-      setError(String(reason));
+      setActionError(String(reason));
     } finally {
       setBusy(null);
     }
@@ -1050,38 +993,30 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
       return;
     }
     setBusy(template.id);
-    setError(null);
+    setActionError(null);
     try {
       await deleteWriterTemplate(template.id);
       setTemplates((current) =>
         current.filter((candidate) => candidate.id !== template.id)
       );
     } catch (reason) {
-      setError(String(reason));
+      setActionError(String(reason));
     } finally {
       setBusy(null);
     }
   }
 
   return (
-    <details
-      className="border border-gray-200 rounded-lg group"
+    <PreferencesSection
+      title="Writer Templates"
+      summary={
+        <span className="text-xs text-gray-400">{templates.length} saved</span>
+      }
       open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-      data-testid="writer-template-manager"
+      onToggle={setOpen}
+      testId="writer-template-manager"
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Writer Templates</span>
-          <span className="text-xs text-gray-400">
-            {templates.length} saved
-          </span>
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-sm text-gray-700">
@@ -1148,19 +1083,16 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
         )}
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-3">
-            <p className="text-sm text-red-800">{error}</p>
-            <button
-              type="button"
-              onClick={() => void load()}
-              className="mt-2 text-xs font-semibold text-red-700"
-            >
-              Try again
-            </button>
-          </div>
+          <ErrorBanner
+            message={error}
+            onRetry={() => {
+              setActionError(null);
+              void reload();
+            }}
+            className=""
+          />
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 
@@ -1305,17 +1237,9 @@ function ReportAuthoringSection() {
     setSaveError(null);
     setSaved(false);
     try {
-      // Refresh sibling preferences immediately before the full-subset write,
-      // so this section cannot roll back a model, cost, or transcription edit.
-      const current = await loadConfig().catch(() => snapshot);
-      const updated = await savePreferences(
-        current.preferred_model_id,
-        current.cost_explorer_enabled,
-        current.hourly_cost_data,
-        current.prompt_caching_enabled,
-        current.transcription,
-        draft
-      );
+      // Patch-save: only the writer limits travel, so this section cannot
+      // roll back a model, cost, or transcription edit.
+      const updated = await savePreferencesPatch({ report_authoring: draft });
       setSnapshot(updated);
       setDraft(normalizeWriterPreferences(updated.report_authoring));
       setSaved(true);
@@ -1327,32 +1251,27 @@ function ReportAuthoringSection() {
   }
 
   return (
-    <details className="border border-gray-200 rounded-lg group">
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Document Writer Limits</span>
-          {draft && (
-            <span className="text-xs text-gray-400">
-              {draft.max_tool_rounds} rounds · {draft.max_converse_calls} calls
-            </span>
-          )}
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4 space-y-4">
+    <PreferencesSection
+      title="Document Writer Limits"
+      summary={
+        draft ? (
+          <span className="text-xs text-gray-400">
+            {draft.max_tool_rounds} rounds · {draft.max_converse_calls} calls
+          </span>
+        ) : undefined
+      }
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    >
         {loading ? (
           <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
             <Spinner />
             <span>Loading document writer limits...</span>
           </div>
         ) : !draft ? (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">
-              {loadError ?? "Could not load document writer limits."}
-            </p>
-          </div>
+          <ErrorBanner
+            message={loadError ?? "Could not load document writer limits."}
+            className=""
+          />
         ) : (
           <>
             <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-1.5">
@@ -1403,16 +1322,13 @@ function ReportAuthoringSection() {
             </div>
 
             {validationError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">{validationError}</p>
-              </div>
+              <ErrorBanner message={validationError} className="" />
             )}
             {saveError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">
-                  Could not save document writer limits: {saveError}
-                </p>
-              </div>
+              <ErrorBanner
+                message={`Could not save document writer limits: ${saveError}`}
+                className=""
+              />
             )}
 
             <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-3">
@@ -1443,8 +1359,7 @@ function ReportAuthoringSection() {
             </div>
           </>
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 
@@ -1461,10 +1376,10 @@ const TRANSCRIPTION_SYNC_DEBOUNCE_MS = 600;
  *
  * Cross-machine sync: on mount we call `fetchCloudPreferences` to pull the
  * latest values from S3 (so the editing machine sees its own recent changes
- * without an app restart). Edits accumulate in a draft and are pushed to local
- * config and S3 via `savePreferences` shortly after the user stops changing
- * things. We stash the full synced subset so saving only the transcription
- * fields doesn't clobber the others.
+ * without an app restart). Edits accumulate in a draft and are patch-saved to
+ * local config and S3 via `savePreferencesPatch` shortly after the user stops
+ * changing things — only this section's fields travel, so sibling sections
+ * are never clobbered.
  */
 function TranscriptionSection() {
   // The full set of synced fields, fetched on mount.
@@ -1484,53 +1399,37 @@ function TranscriptionSection() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncedOnce, setSyncedOnce] = useState(false);
 
-  const sync = useCallback(
-    async (base: ConfigInfo, next: TranscriptionPreferences) => {
-      setSyncing(true);
-      setSyncError(null);
-      try {
-        // `savePreferences` rewrites every synced field, so the sibling values
-        // have to be current — not whatever was true when this section
-        // mounted. The model dropdown and the Cost Explorer section write them
-        // independently, and a stale snapshot here would push the old values
-        // back over both the local config and S3.
-        const current = await loadConfig().catch(() => base);
-        await savePreferences(
-          current.preferred_model_id,
-          current.cost_explorer_enabled,
-          current.hourly_cost_data,
-          current.prompt_caching_enabled,
-          next,
-          normalizeWriterPreferences(current.report_authoring)
-        );
-        // Advancing the snapshot clears `dirty` and stops the debounce.
-        setSnapshot({ ...current, transcription: next });
-        setSyncedOnce(true);
-      } catch (e) {
-        setSyncError(String(e));
-      } finally {
-        setSyncing(false);
-      }
-    },
-    []
-  );
+  const sync = useCallback(async (next: TranscriptionPreferences) => {
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      // Patch-save: only this section's fields travel, so the model
+      // dropdown and Cost Explorer sections can never be rolled back by a
+      // stale snapshot here.
+      const updated = await savePreferencesPatch({ transcription: next });
+      // Advancing the snapshot clears `dirty` and stops the debounce.
+      setSnapshot(updated);
+      setSyncedOnce(true);
+    } catch (e) {
+      setSyncError(String(e));
+    } finally {
+      setSyncing(false);
+    }
+  }, []);
 
   // Debounced save-on-change. Saving while the screen is still mounted is what
   // makes the edit survive a quit or a window close — an unmount cleanup never
   // runs in either case, so edits used to be lost silently.
-  const pendingRef = useRef<{
-    base: ConfigInfo;
-    next: TranscriptionPreferences;
-  } | null>(null);
+  const pendingRef = useRef<TranscriptionPreferences | null>(null);
   useEffect(() => {
     if (!dirty || !snapshot || !draft) {
       pendingRef.current = null;
       return;
     }
-    pendingRef.current = { base: snapshot, next: draft };
+    pendingRef.current = draft;
     const id = setTimeout(() => {
       pendingRef.current = null;
-      void sync(snapshot, draft);
+      void sync(draft);
     }, TRANSCRIPTION_SYNC_DEBOUNCE_MS);
     return () => clearTimeout(id);
   }, [dirty, snapshot, draft, sync]);
@@ -1543,21 +1442,9 @@ function TranscriptionSection() {
     return () => {
       const pending = pendingRef.current;
       if (!pending) return;
-      // Same freshness requirement as `sync` above — the component is gone but
-      // the write still rewrites every synced field.
-      loadConfig()
-        .catch(() => pending.base)
-        .then((current) =>
-          savePreferences(
-            current.preferred_model_id,
-            current.cost_explorer_enabled,
-            current.hourly_cost_data,
-            current.prompt_caching_enabled,
-            pending.next,
-            normalizeWriterPreferences(current.report_authoring)
-          )
-        )
-        .catch((e) => console.error("preferences sync on leave failed:", e));
+      savePreferencesPatch({ transcription: pending }).catch((e) =>
+        logFrontendEvent("error", `preferences sync on leave failed: ${e}`)
+      );
     };
   }, []);
 
@@ -1608,34 +1495,32 @@ function TranscriptionSection() {
   }
 
   return (
-    <details className="border border-gray-200 rounded-lg group" open>
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">Imported Audio Transcription</span>
-          {draft && (
-            <span className="text-xs text-gray-400">
-              {labelForLanguage(draft.default_language ?? "english")} ·{" "}
-              {draft.default_speaker_count ?? 2}{" "}
-              {(draft.default_speaker_count ?? 2) === 1 ? "speaker" : "speakers"}
-              {draft.use_medical_for_english ? " · Medical" : ""}
-              {draft.translate_to_english ? " · translate" : ""}
-            </span>
-          )}
-        </div>
-        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
-          &#9656;
-        </span>
-      </summary>
-      <div className="border-t border-gray-100 p-4 space-y-4">
+    <PreferencesSection
+      title="Imported Audio Transcription"
+      summary={
+        draft ? (
+          <span className="text-xs text-gray-400">
+            {labelForLanguage(draft.default_language ?? "english")} ·{" "}
+            {draft.default_speaker_count ?? 2}{" "}
+            {(draft.default_speaker_count ?? 2) === 1 ? "speaker" : "speakers"}
+            {draft.use_medical_for_english ? " · Medical" : ""}
+            {draft.translate_to_english ? " · translate" : ""}
+          </span>
+        ) : undefined
+      }
+      defaultOpen
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    >
         {loading ? (
           <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
             <Spinner />
             <span>Loading transcription preferences...</span>
           </div>
         ) : !draft ? (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error ?? "Could not load preferences."}</p>
-          </div>
+          <ErrorBanner
+            message={error ?? "Could not load preferences."}
+            className=""
+          />
         ) : (
           <>
             <p className="text-xs text-gray-500">
@@ -1739,20 +1624,13 @@ function TranscriptionSection() {
             </label>
 
             {syncError ? (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">
-                  Could not save transcription preferences: {syncError}
-                </p>
-                <button
-                  onClick={() => {
-                    if (snapshot && draft) sync(snapshot, draft);
-                  }}
-                  disabled={syncing || !snapshot || !draft}
-                  className="mt-2 px-3 py-1.5 text-sm text-red-700 border border-red-300 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
-                >
-                  Try again
-                </button>
-              </div>
+              <ErrorBanner
+                message={`Could not save transcription preferences: ${syncError}`}
+                onRetry={() => {
+                  if (draft) void sync(draft);
+                }}
+                className=""
+              />
             ) : syncing ? (
               <p className="text-xs text-gray-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
                 <Spinner /> Saving...
@@ -1768,8 +1646,7 @@ function TranscriptionSection() {
             ) : null}
           </>
         )}
-      </div>
-    </details>
+    </PreferencesSection>
   );
 }
 

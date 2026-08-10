@@ -1,9 +1,8 @@
-import { useEffect, useRef, type ElementType } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { memo, useEffect, useRef, type ElementType } from "react";
+import { InlineMarkdown, MarkdownBlock } from "./Markdown";
 import type {
-  ReportBlockView,
-  ReportContentView,
+  ReportBlock,
+  ReportContent,
   ReportDraftEdit,
   ReportSectionEdit,
   ReportWorkspaceView,
@@ -19,7 +18,14 @@ import {
 } from "../lib/writingComposerDraft";
 import AgentThrobber from "./AgentThrobber";
 
-export default function WritingCanvas({
+/**
+ * The accepted-report canvas. Memoized — the writer page re-renders on every
+ * composer keystroke, and the canvas only depends on the workspace, the edit
+ * buffer, and stable callbacks.
+ */
+export default memo(WritingCanvas);
+
+function WritingCanvas({
   workspace,
   edit,
   editing,
@@ -32,8 +38,7 @@ export default function WritingCanvas({
   onExport,
   onOpenRevisions,
   onReference,
-  saveStatus,
-  exportStatus,
+  status,
   validationErrors,
   agentActivity,
 }: {
@@ -49,8 +54,9 @@ export default function WritingCanvas({
   onExport: () => void;
   onOpenRevisions: () => void;
   onReference: (reference: WritingBlockReference) => void;
-  saveStatus: string | null;
-  exportStatus: string | null;
+  /** One transient status line (e.g. export progress); falls back to the
+   *  persisted last-export line from the workspace. */
+  status: string | null;
   validationErrors: string[];
   agentActivity?: { label: string; detail?: string } | null;
 }) {
@@ -65,7 +71,7 @@ export default function WritingCanvas({
   function updateBlock(
     sectionIndex: number,
     blockIndex: number,
-    block: ReportBlockView
+    block: ReportBlock
   ) {
     const section = edit.sections[sectionIndex];
     const blocks = [...section.blocks];
@@ -153,9 +159,9 @@ export default function WritingCanvas({
             detail={agentActivity.detail}
           />
         )}
-        {(saveStatus || exportStatus || persistedExportStatus) && (
+        {(status || persistedExportStatus) && (
           <p role="status" aria-live="polite" className="text-xs text-gray-600">
-            {saveStatus ?? exportStatus ?? persistedExportStatus}
+            {status ?? persistedExportStatus}
           </p>
         )}
       </div>
@@ -206,7 +212,7 @@ export function ReportDocument({
   onReference,
   testId = "accepted-report-canvas",
 }: {
-  content: ReportContentView;
+  content: ReportContent;
   onReference?: (reference: WritingBlockReference) => void;
   testId?: string;
 }) {
@@ -257,7 +263,7 @@ export function ReportDocument({
                       <ul key={blockIndex} className="list-disc pl-6 space-y-1">
                         {block.items.map((item, itemIndex) => (
                           <li key={itemIndex}>
-                            <MarkdownContent text={item} compact />
+                            <MarkdownBlock source={item} variant="document-compact" />
                           </li>
                         ))}
                       </ul>
@@ -297,7 +303,7 @@ function ReportTable({
   referenceLabel,
   onReference,
 }: {
-  table: Extract<ReportBlockView, { kind: "table" }>;
+  table: Extract<ReportBlock, { kind: "table" }>;
   referenceLabel: string;
   onReference?: () => void;
 }) {
@@ -360,7 +366,7 @@ function ReportTable({
 function TableColumns({
   table,
 }: {
-  table: Extract<ReportBlockView, { kind: "table" }>;
+  table: Extract<ReportBlock, { kind: "table" }>;
 }) {
   if (!table.column_widths) return null;
   return (
@@ -383,7 +389,7 @@ function ParagraphDisplay({
 }) {
   return (
     <div className="group/paragraph relative rounded px-1 -mx-1 hover:bg-blue-50/40 focus-within:bg-blue-50/40">
-      <MarkdownContent text={text} />
+      <MarkdownBlock source={text} variant="document" />
       {onReference && (
         <button
           type="button"
@@ -415,7 +421,7 @@ function EditableReport({
   updateBlock: (
     sectionIndex: number,
     blockIndex: number,
-    block: ReportBlockView
+    block: ReportBlock
   ) => void;
   removeBlock: (sectionIndex: number, blockIndex: number) => void;
   onReference: (reference: WritingBlockReference) => void;
@@ -652,11 +658,11 @@ function EditableTable({
   disabled,
   onChange,
 }: {
-  table: Extract<ReportBlockView, { kind: "table" }>;
+  table: Extract<ReportBlock, { kind: "table" }>;
   sectionIndex: number;
   blockIndex: number;
   disabled: boolean;
-  onChange: (table: Extract<ReportBlockView, { kind: "table" }>) => void;
+  onChange: (table: Extract<ReportBlock, { kind: "table" }>) => void;
 }) {
   const columns = table.rows[0]?.length ?? 0;
 
@@ -828,27 +834,6 @@ function EditableText({
         disabled ? "opacity-60" : ""
       }`}
     />
-  );
-}
-
-function MarkdownContent({ text, compact = false }: { text: string; compact?: boolean }) {
-  return (
-    <div
-      className={`prose prose-sm max-w-none prose-headings:my-2 prose-p:${compact ? "my-0" : "my-2"} prose-ul:my-2 prose-ol:my-2 prose-li:my-0 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none`}
-    >
-      <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
-    </div>
-  );
-}
-
-function InlineMarkdown({ text }: { text: string }) {
-  return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      components={{ p: ({ children }) => <>{children}</> }}
-    >
-      {text}
-    </Markdown>
   );
 }
 

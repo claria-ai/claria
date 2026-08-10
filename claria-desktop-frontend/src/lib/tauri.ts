@@ -14,10 +14,12 @@ import type {
   ChatHistoryDetail,
   ChatHistorySummary,
   ChatMessage,
-  ConsoleEntry,
+  ChatStreamEvent,
+  ConsoleDelta,
   CostAndUsageResult,
   CostGranularity,
   CredentialClass,
+  CredentialInput,
   CredentialSource,
   DeletedClient,
   DeletedFile,
@@ -30,6 +32,7 @@ import type {
   ModelDownloadProgress,
   ModelPricing,
   PlanEntry,
+  PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
   ProvisionerProgress,
@@ -37,18 +40,16 @@ import type {
   RecordFile,
   ReportBlockReferenceInput,
   ReportDraftEdit,
-  ReportDraftView,
+  ReportDraft,
   ReportExportResult,
-  ReportProposalDecision,
+  ReportProposalChoice,
   ReportRevisionView,
-  ReportAuthoringPreferences,
   ReportTemplatePreview,
   ReportTurnProgressView,
   ReportTurnResponse,
   ReportWorkspaceView,
   TranscribeMemoResult,
   TranscribeOptionsOverrides,
-  TranscriptionPreferences,
   UpdateCheck,
   WriterTemplateView,
 } from "./bindings";
@@ -58,8 +59,8 @@ export type {
   AccessKeyInfo,
   AccessKeyLimitReached,
   Action,
-  AssumeRoleResult,
-  BootstrapResult,
+  AssumedRoleSession,
+  BootstrapOutcome,
   BootstrapStep,
   CallerIdentity,
   Cause,
@@ -71,14 +72,17 @@ export type {
   ChatModel,
   ChatResponse,
   ChatRole,
+  ChatStreamEvent,
   ClientNameHistoryEntry,
   ClientNameUpdate,
   ClientRecordDetails,
   ClientSummary,
   ConfigInfo,
+  ConsoleDelta,
   ConsoleEntry,
   CredentialAssessment,
   CredentialClass,
+  CredentialInput,
   CredentialSource,
   DeletedClient,
   DeletedFile,
@@ -97,8 +101,9 @@ export type {
   LocalTranscriptionStatus,
   ModelDownloadProgress,
   ModelPricing,
-  NewCredentials,
+  NewCredentialsInfo,
   PlanEntry,
+  PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
   ProvisionerProgress,
@@ -107,18 +112,18 @@ export type {
   ReportAuthoringPreferences,
   ReportAuthoringTurnView,
   ReportBlockReferenceInput,
-  ReportBlockView,
-  ReportContentView,
+  ReportBlock,
+  ReportContent,
   ReportContextReadView,
   ReportDraftEdit,
-  ReportDraftView,
+  ReportDraft,
   ReportExportResult,
-  ReportExportStatusView,
-  ReportExportView,
-  ReportOperationView,
+  ReportExportStatus,
+  ReportExport,
+  ReportOperation,
+  ReportProposalChoice,
   ReportProposalDecision,
-  ReportProposalResolutionDecision,
-  ReportProposalResolutionView,
+  ReportProposalResolution,
   ReportProposalView,
   ReportRevisionView,
   ReportSectionEdit,
@@ -126,7 +131,7 @@ export type {
   ReportTemplatePreview,
   ReportTemplateStatsView,
   ReportTemplateWarningView,
-  ReportSectionView,
+  ReportSection,
   ReportTimelineItemView,
   ReportTimelineRole,
   ReportToolActivityStatus,
@@ -176,29 +181,13 @@ export async function loadConfig() {
 }
 
 /**
- * Save the synced subset of preferences to both the local config file and
- * `_state/preferences.json` in S3. Throws on S3 write failure with the
- * "saved locally but cloud sync failed" prefix so callers can show a
- * partial-save state.
+ * Save one preferences section's fields. Absent patch fields are left
+ * untouched locally and in `_state/preferences.json`, so sections can't
+ * clobber each other. Throws on S3 write failure with the "saved locally
+ * but cloud sync failed" prefix so callers can show a partial-save state.
  */
-export async function savePreferences(
-  preferredModelId: string | null,
-  costExplorerEnabled: boolean,
-  hourlyCostData: boolean,
-  promptCachingEnabled: boolean,
-  transcription: TranscriptionPreferences,
-  reportAuthoring: ReportAuthoringPreferences
-) {
-  return unwrap(
-    await commands.savePreferences(
-      preferredModelId,
-      costExplorerEnabled,
-      hourlyCostData,
-      promptCachingEnabled,
-      transcription,
-      reportAuthoring
-    )
-  );
+export async function savePreferencesPatch(patch: PreferencesPatch) {
+  return unwrap(await commands.savePreferencesPatch(patch));
 }
 
 /**
@@ -258,7 +247,7 @@ export async function deleteConfig(): Promise<void> {
 
 export async function assessCredentials(
   region: string,
-  credentials: CredentialSource
+  credentials: CredentialInput
 ) {
   return unwrap(await commands.assessCredentials(region, credentials));
 }
@@ -266,13 +255,14 @@ export async function assessCredentials(
 /**
  * Assume a role in an AWS sub-account using parent-account credentials.
  *
- * Returns temporary credentials (with session token) that can be fed into
- * `assessCredentials` and `bootstrapIamUser` to set up a dedicated IAM user
- * in the sub-account.
+ * Returns an `AssumedRoleSession`: the session's metadata plus an opaque
+ * handle that later provisioning calls pass as
+ * `{ type: "assumed_role", handle }` — the temporary secrets stay in the
+ * Rust backend and never reach the frontend.
  */
 export async function assumeRole(
   region: string,
-  credentials: CredentialSource,
+  credentials: CredentialInput,
   accountId: string,
   roleName: string
 ) {
@@ -307,7 +297,7 @@ export async function listAwsProfiles(): Promise<string[]> {
 
 export async function listUserAccessKeys(
   region: string,
-  credentials: CredentialSource
+  credentials: CredentialInput
 ) {
   return unwrap(
     await commands.listUserAccessKeys(region, credentials)
@@ -316,7 +306,7 @@ export async function listUserAccessKeys(
 
 export async function deleteUserAccessKey(
   region: string,
-  credentials: CredentialSource,
+  credentials: CredentialInput,
   accessKeyId: string
 ): Promise<void> {
   unwrap(
@@ -346,7 +336,7 @@ function progressChannel(
 export async function provisionScan(
   region: string,
   systemName: string,
-  credentials: CredentialSource,
+  credentials: CredentialInput,
   onProgress?: (p: ProvisionerProgress) => void
 ): Promise<ProvisionScanResult> {
   return unwrap(
@@ -362,8 +352,8 @@ export async function provisionScan(
 export async function provisionApply(
   region: string,
   systemName: string,
-  credentials: CredentialSource,
-  elevatedCredentials: CredentialSource | null,
+  credentials: CredentialInput,
+  elevatedCredentials: CredentialInput | null,
   onProgress?: (p: ProvisionerProgress) => void
 ): Promise<ProvisionApplyOutcome> {
   return unwrap(
@@ -459,7 +449,7 @@ export async function loadReportRevision(
   clientId: string,
   reportId: string,
   revision: number
-): Promise<ReportDraftView> {
+): Promise<ReportDraft> {
   return unwrap(await commands.loadReportRevision(clientId, reportId, revision));
 }
 
@@ -556,7 +546,7 @@ export async function sendReportMessage(
 export async function resolveReportProposal(
   clientId: string,
   proposalId: string,
-  decision: ReportProposalDecision
+  decision: ReportProposalChoice
 ): Promise<ReportWorkspaceView> {
   return unwrap(
     await commands.resolveReportProposal(clientId, proposalId, decision)
@@ -621,13 +611,29 @@ export async function listChatModels() {
   return unwrap(await commands.listChatModels());
 }
 
+/**
+ * Streamed-response channel shared by the chat commands. Wire `onEvent` to
+ * receive incremental deltas; callers that omit it (tests, scripts) still
+ * get the complete response from the command's return value.
+ */
+function chatStreamChannel(
+  onEvent?: (event: ChatStreamEvent) => void
+): Channel<ChatStreamEvent> {
+  const channel = new Channel<ChatStreamEvent>();
+  if (onEvent) {
+    channel.onmessage = onEvent;
+  }
+  return channel;
+}
+
 export async function chatMessage(
   clientId: string,
   modelId: string,
   messages: ChatMessage[],
   chatId?: string | null,
   contextFilenames?: string[],
-  chatName?: string | null
+  chatName?: string | null,
+  onEvent?: (event: ChatStreamEvent) => void
 ) {
   return unwrap(
     await commands.chatMessage(
@@ -636,7 +642,8 @@ export async function chatMessage(
       messages,
       chatId ?? null,
       chatName ?? null,
-      contextFilenames ?? []
+      contextFilenames ?? [],
+      chatStreamChannel(onEvent)
     )
   );
 }
@@ -644,9 +651,17 @@ export async function chatMessage(
 export async function infraChat(
   modelId: string,
   messages: ChatMessage[],
-  planEntries: PlanEntry[]
+  planEntries: PlanEntry[],
+  onEvent?: (event: ChatStreamEvent) => void
 ): Promise<InfraChatResponse> {
-  return unwrap(await commands.infraChat(modelId, messages, planEntries));
+  return unwrap(
+    await commands.infraChat(
+      modelId,
+      messages,
+      planEntries,
+      chatStreamChannel(onEvent)
+    )
+  );
 }
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {
@@ -727,16 +742,16 @@ export async function listDeletedFiles(clientId: string): Promise<DeletedFile[]>
   return unwrap(await commands.listDeletedFiles(clientId));
 }
 
-export async function restoreDeletedFile(clientId: string, filename: string, versionId: string): Promise<void> {
-  unwrap(await commands.restoreDeletedFile(clientId, filename, versionId));
+export async function restoreDeletedFile(clientId: string, filename: string): Promise<void> {
+  unwrap(await commands.restoreDeletedFile(clientId, filename));
 }
 
 export async function listDeletedClients(): Promise<DeletedClient[]> {
   return unwrap(await commands.listDeletedClients());
 }
 
-export async function restoreClient(clientId: string, versionId: string): Promise<void> {
-  unwrap(await commands.restoreClient(clientId, versionId));
+export async function restoreClient(clientId: string): Promise<void> {
+  unwrap(await commands.restoreClient(clientId));
 }
 
 // ---------------------------------------------------------------------------
@@ -855,8 +870,8 @@ export async function countInfraContextTokens(planEntries: PlanEntry[]): Promise
 // The console commands are infallible on the Rust side, so the bindings return
 // the value directly rather than a `Result` — nothing to unwrap.
 
-export async function getConsoleLogs(): Promise<ConsoleEntry[]> {
-  return await commands.getConsoleLogs();
+export async function getConsoleLogsSince(seq: number): Promise<ConsoleDelta> {
+  return await commands.getConsoleLogsSince(seq);
 }
 
 export async function getConsoleLogsText(): Promise<string> {
@@ -865,4 +880,8 @@ export async function getConsoleLogsText(): Promise<string> {
 
 export async function saveConsoleLogs(): Promise<boolean> {
   return unwrap(await commands.saveConsoleLogs());
+}
+
+export async function revealLogFolder(): Promise<void> {
+  unwrap(await commands.revealLogFolder());
 }

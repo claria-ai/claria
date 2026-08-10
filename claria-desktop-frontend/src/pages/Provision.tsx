@@ -14,14 +14,13 @@ import {
   resetProvisionerState,
   plan,
   apply,
-  type CredentialSource,
+  type CredentialInput,
 
   type AccessKeyInfo,
   type AccessKeyLimitReached,
-  type AssumeRoleResult,
+  type AssumedRoleSession,
   type PlanEntry,
   type ConfigInfo,
-  type ProvisionScanResult,
 } from "../lib/tauri";
 import AccessKeyLimitPanel from "../components/AccessKeyLimitPanel";
 import InfraState from "../components/InfraState";
@@ -73,7 +72,7 @@ export default function Provision({
   // Sub-account fields
   const [subAccountId, setSubAccountId] = useState("");
   const [roleName, setRoleName] = useState(DEFAULT_ROLE_NAME);
-  const [assumeRoleResult, setAssumeRoleResult] = useState<AssumeRoleResult | null>(null);
+  const [assumedRoleSession, setAssumedRoleSession] = useState<AssumedRoleSession | null>(null);
 
   // ── Escalation (inline elevated creds) ───────────────────────────────
   const [escAccessKeyId, setEscAccessKeyId] = useState("");
@@ -83,11 +82,27 @@ export default function Provision({
   // ── Reconciliation state ─────────────────────────────────────────────
   const [phase, setPhase] = useState<Phase>("loading");
   const [entries, setEntries] = useState<PlanEntry[] | null>(null);
-  const [, setScanResult] = useState<ProvisionScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { scanItems, applyItems, progressHandler, resetProgress } =
     useProvisionerProgress();
   const [resettingState, setResettingState] = useState(false);
+
+  /**
+   * Run one AWS phase transition: enter `during`, clear stale error and
+   * progress, and land in "error" if `fn` throws. `fn` sets its own success
+   * phase — different flows finish in "planned", "done", or "key_limit".
+   */
+  async function runPhase(during: Phase, fn: () => Promise<void>) {
+    setPhase(during);
+    setError(null);
+    resetProgress();
+    try {
+      await fn();
+    } catch (e) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }
 
   // ── Access-key limit recovery ────────────────────────────────────────
   const [keyLimit, setKeyLimit] = useState<AccessKeyLimitReached | null>(null);
@@ -101,15 +116,11 @@ export default function Provision({
   const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  // Build credentials from form state.
-  const buildCredentials = useCallback((): CredentialSource => {
-    if (assumeRoleResult) {
-      return {
-        type: "inline",
-        access_key_id: assumeRoleResult.access_key_id,
-        secret_access_key: assumeRoleResult.secret_access_key,
-        session_token: assumeRoleResult.session_token,
-      };
+  // Build credentials from form state. An assumed-role session is referenced
+  // by its opaque handle — the temporary secrets never leave the backend.
+  const buildCredentials = useCallback((): CredentialInput => {
+    if (assumedRoleSession) {
+      return { type: "assumed_role", handle: assumedRoleSession.handle };
     }
     switch (credMode) {
       case "inline":
@@ -121,7 +132,7 @@ export default function Provision({
       case "sub_account":
         return { type: "inline", access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null };
     }
-  }, [credMode, accessKeyId, secretAccessKey, profileName, assumeRoleResult]);
+  }, [credMode, accessKeyId, secretAccessKey, profileName, assumedRoleSession]);
 
   // ── Initialization ───────────────────────────────────────────────────
   useEffect(() => {
@@ -129,92 +140,66 @@ export default function Provision({
       const exists = await hasConfig().catch(() => false);
       setConfigExists(exists);
       if (exists) {
-        try {
+        // Day-2: auto-scan using saved credentials.
+        await runPhase("scanning", async () => {
           const info = await loadConfig();
           setConfig(info);
-          // Day-2: auto-scan using saved credentials.
-          setPhase("scanning");
-          resetProgress();
           const result = await plan(progressHandler);
           setEntries(result);
           setPhase("planned");
-        } catch (e) {
-          setError(String(e));
-          setPhase("error");
-        }
+        });
       } else {
         setPhase("input");
         listAwsProfiles().then(setProfiles).catch(() => {});
       }
     })();
+    // runPhase is a plain closure over stable setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [progressHandler, resetProgress]);
 
   // ── First-run: scan with provided creds ──────────────────────────────
   async function handleInitialScan() {
-    setPhase("scanning");
-    setError(null);
-    resetProgress();
-
-    // If sub-account mode and not yet assumed role, do that first.
-    if (credMode === "sub_account" && !assumeRoleResult) {
-      try {
-        const creds: CredentialSource = {
+    await runPhase("scanning", async () => {
+      // If sub-account mode and not yet assumed role, do that first.
+      if (credMode === "sub_account" && !assumedRoleSession) {
+        const creds: CredentialInput = {
           type: "inline", access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null,
         };
-        const result = await assumeRole(region, creds, subAccountId, roleName);
-        setAssumeRoleResult(result);
-        // Now scan with assumed-role creds.
-        const assumedCreds: CredentialSource = {
-          type: "inline",
-          access_key_id: result.access_key_id,
-          secret_access_key: result.secret_access_key,
-          session_token: result.session_token,
-        };
-        const scanRes = await provisionScan(region, systemName, assumedCreds, progressHandler);
-        setScanResult(scanRes);
+        const session = await assumeRole(region, creds, subAccountId, roleName);
+        setAssumedRoleSession(session);
+        // Now scan with the assumed-role handle.
+        const scanRes = await provisionScan(
+          region,
+          systemName,
+          { type: "assumed_role", handle: session.handle },
+          progressHandler,
+        );
         setEntries(scanRes.entries);
         setPhase("planned");
-      } catch (e) {
-        setError(String(e));
-        setPhase("error");
+        return;
       }
-      return;
-    }
 
-    try {
       const creds = buildCredentials();
       const scanRes = await provisionScan(region, systemName, creds, progressHandler);
-      setScanResult(scanRes);
       setEntries(scanRes.entries);
       setPhase("planned");
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+    });
   }
 
   // ── Apply changes ────────────────────────────────────────────────────
   async function handleApply() {
     if (configExists) {
       // Day-2 flow: use existing plan/apply commands.
-      setPhase("applying");
-      resetProgress();
-      try {
+      await runPhase("applying", async () => {
         const result = await apply(progressHandler);
         setEntries(result);
         setPhase("done");
-      } catch (e) {
-        setError(String(e));
-        setPhase("error");
-      }
+      });
       return;
     }
 
     // First-run flow: use unified provision_apply.
-    setPhase("applying");
-    resetProgress();
-
-    try {
+    await runPhase("applying", async () => {
       const creds = buildCredentials();
 
       // Determine if we need to pass elevated credentials.
@@ -244,15 +229,12 @@ export default function Provision({
       setEntries(outcome.entries);
       setConfigExists(true);
       setPhase("done");
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+    });
   }
 
   // ── Access-key limit recovery ────────────────────────────────────────
 
-  async function loadExistingKeys(creds: CredentialSource) {
+  async function loadExistingKeys(creds: CredentialInput) {
     setLoadingKeys(true);
     setKeysError(null);
     try {
@@ -292,14 +274,11 @@ export default function Provision({
 
   // ── Escalation apply (day-2 with elevated creds) ─────────────────────
   async function handleEscalationApply() {
-    setPhase("applying");
-    resetProgress();
-
-    try {
+    await runPhase("applying", async () => {
       // Load the saved scoped creds from config for regular resources.
       const savedCreds = await loadConfig();
       // The escalation creds are from the inline form.
-      const elevatedCreds: CredentialSource = {
+      const elevatedCreds: CredentialInput = {
         type: "inline",
         access_key_id: escAccessKeyId,
         secret_access_key: escSecretAccessKey,
@@ -320,38 +299,25 @@ export default function Provision({
       // true here — this machine is already configured.
       setEntries(outcome.entries);
       setPhase("done");
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+    });
   }
 
   // ── Day-2 re-scan ────────────────────────────────────────────────────
   async function handleRescan() {
-    setPhase("scanning");
-    setError(null);
-    resetProgress();
-    try {
+    await runPhase("scanning", async () => {
       const result = await plan(progressHandler);
       setEntries(result);
       setPhase("planned");
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+    });
   }
 
   // ── Destroy all resources ────────────────────────────────────────────
   async function handleDestroy() {
     setShowDestroyConfirm(false);
-    setPhase("applying");
-    try {
+    await runPhase("applying", async () => {
       await destroy();
-      handleRescan();
-    } catch (e) {
-      setError(String(e));
-      setPhase("error");
-    }
+      await handleRescan();
+    });
   }
 
   // ── Delete system ────────────────────────────────────────────────────
@@ -397,7 +363,7 @@ export default function Provision({
     }
     // First run: return to the credential form without unmounting.
     if (configExists === false && (phase === "planned" || phase === "error")) {
-      setAssumeRoleResult(null);
+      setAssumedRoleSession(null);
       setError(null);
       setPhase("input");
       return;
@@ -570,7 +536,7 @@ export default function Provision({
             ] as [CredMode, string][]).map(([mode, label]) => (
               <button
                 key={mode}
-                onClick={() => { setCredMode(mode); setAssumeRoleResult(null); }}
+                onClick={() => { setCredMode(mode); setAssumedRoleSession(null); }}
                 className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   credMode === mode
                     ? "bg-white shadow-sm text-gray-900"

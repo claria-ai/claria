@@ -54,6 +54,26 @@ export function BackIcon({ className = "w-5 h-5" }: IconProps) {
   );
 }
 
+/** Right-pointing chevron that rotates open on folder rows. */
+export function ChevronRightIcon({ className = "w-4 h-4" }: IconProps) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M9 5l7 7-7 7"
+      />
+    </svg>
+  );
+}
+
 /** Trash can for destructive row actions. */
 export function TrashIcon({ className = "w-4 h-4" }: IconProps) {
   return (

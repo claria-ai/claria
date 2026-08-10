@@ -1,4 +1,4 @@
-import type { ReportBlockView } from "./tauri";
+import type { ReportBlock } from "./tauri";
 
 export type WritingBlockReference = {
   kind: "paragraph" | "table";
@@ -41,8 +41,8 @@ export function clearWritingComposerDrafts(): void {
 }
 
 type ReferenceableReportBlock =
-  | Extract<ReportBlockView, { kind: "paragraph" }>
-  | Extract<ReportBlockView, { kind: "table" }>;
+  | Extract<ReportBlock, { kind: "paragraph" }>
+  | Extract<ReportBlock, { kind: "table" }>;
 
 export function reportBlockReferencePreview(
   block: ReferenceableReportBlock

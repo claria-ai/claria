@@ -1,30 +1,24 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
-import { getConsoleLogs, getConsoleLogsText, saveConsoleLogs } from "../lib/tauri";
-import type { ConsoleEntry } from "../lib/tauri";
+import {
+  getConsoleLogsSince,
+  getConsoleLogsText,
+  revealLogFolder,
+  saveConsoleLogs,
+} from "../lib/tauri";
+import type { ConsoleDelta, ConsoleEntry } from "../lib/tauri";
 
 const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
 
 const POLL_INTERVAL_MS = 500;
 
+/** Rows rendered by default; older lines sit behind a "show all" toggle. */
+const MAX_RENDERED_ENTRIES = 500;
+
 /**
- * Cheap identity for a log snapshot, used to skip re-rendering an unchanged
- * buffer. Length alone misses the case that matters most here: the backend
- * buffer is bounded, so once it is full every new line rotates one out and the
- * length stops changing. Both ends go into the fingerprint, and either moves
- * on rotation.
+ * Client-side mirror cap. The backend ring buffer is byte-bounded; appending
+ * deltas forever would let the mirror outgrow it, so trim to the newest lines.
  */
-function fingerprint(entries: ConsoleEntry[]): string {
-  if (entries.length === 0) return "0";
-  const first = entries[0];
-  const last = entries[entries.length - 1];
-  return [
-    entries.length,
-    first.timestamp,
-    first.message,
-    last.timestamp,
-    last.message,
-  ].join("\u001f");
-}
+const MAX_CLIENT_ENTRIES = 10_000;
 
 function levelColor(level: string): string {
   switch (level) {
@@ -73,10 +67,31 @@ export default function Console() {
   const logRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // Delta cursor: the `next_seq` from the last poll. Each poll ships only
+  // lines the window has not seen yet instead of the whole bounded buffer.
+  const seqRef = useRef(0);
+
+  const applyDelta = useCallback((delta: ConsoleDelta) => {
+    seqRef.current = delta.next_seq;
+    if (delta.reset) {
+      setEntries(delta.entries);
+    } else if (delta.entries.length > 0) {
+      setEntries((prev) => {
+        const merged = [...prev, ...delta.entries];
+        return merged.length > MAX_CLIENT_ENTRIES
+          ? merged.slice(-MAX_CLIENT_ENTRIES)
+          : merged;
+      });
+    }
+  }, []);
+
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
-      setEntries(await getConsoleLogs());
+      // Cursor 0 refetches the full buffer; replace regardless of `reset`.
+      const delta = await getConsoleLogsSince(0);
+      seqRef.current = delta.next_seq;
+      setEntries(delta.entries);
     } catch {
       // If fetch fails, keep existing entries
     } finally {
@@ -93,16 +108,13 @@ export default function Console() {
   useEffect(() => {
     const id = setInterval(async () => {
       try {
-        const latest = await getConsoleLogs();
-        setEntries((prev) =>
-          fingerprint(latest) === fingerprint(prev) ? prev : latest
-        );
+        applyDelta(await getConsoleLogsSince(seqRef.current));
       } catch {
         // Ignore poll failures
       }
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [applyDelta]);
 
   // Auto-scroll to bottom when new entries arrive (if user hasn't scrolled up).
   useEffect(() => {
@@ -142,6 +154,12 @@ export default function Console() {
     });
   }, [entries, search, enabledLevels]);
 
+  // Render only the newest lines by default — the buffer can hold thousands
+  // of rows, and re-rendering them all twice a second is wasted work.
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? filtered : filtered.slice(-MAX_RENDERED_ENTRIES);
+  const hiddenCount = filtered.length - visible.length;
+
   const toggleLevel = (level: string) => {
     setEnabledLevels((prev) => {
       const next = new Set(prev);
@@ -170,6 +188,14 @@ export default function Console() {
     }
   };
 
+  const handleRevealLogFolder = async () => {
+    try {
+      await revealLogFolder();
+    } catch {
+      // Backend logs the failure; the console window has no better surface
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       {/* Header */}
@@ -193,6 +219,13 @@ export default function Console() {
             className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded transition-colors"
           >
             {copied ? "Copied!" : "Copy"}
+          </button>
+          {/* Reveal on-disk log folder */}
+          <button
+            onClick={handleRevealLogFolder}
+            className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+          >
+            Log Folder
           </button>
           {/* Save As */}
           <button
@@ -252,14 +285,25 @@ export default function Console() {
             {entries.length === 0 ? "No log entries yet." : "No matching entries."}
           </p>
         ) : (
-          filtered.map((entry, i) => {
-            const line = `${entry.timestamp} ${entry.level} ${entry.target}: ${entry.message}`;
-            return (
-              <div key={i} className={`${levelColor(entry.level)} whitespace-pre-wrap break-all`}>
-                {search ? highlightMatch(line, search) : line}
-              </div>
-            );
-          })
+          <>
+            {hiddenCount > 0 && (
+              <button
+                onClick={() => setShowAll(true)}
+                className="block w-full py-1.5 mb-1 text-center text-xs text-blue-600 bg-blue-50 hover:bg-blue-100 rounded transition-colors"
+              >
+                Show all {filtered.length.toLocaleString()} entries (
+                {hiddenCount.toLocaleString()} older hidden)
+              </button>
+            )}
+            {visible.map((entry, i) => {
+              const line = `${entry.timestamp} ${entry.level} ${entry.target}: ${entry.message}`;
+              return (
+                <div key={i} className={`${levelColor(entry.level)} whitespace-pre-wrap break-all`}>
+                  {search ? highlightMatch(line, search) : line}
+                </div>
+              );
+            })}
+          </>
         )}
       </div>
     </div>

@@ -18,15 +18,6 @@ pub struct ModelPricing {
 }
 
 impl ModelPricing {
-    /// Estimate cost for non-cached token usage. Cache-aware cost lives
-    /// in the per-turn capture path; this helper is kept for the legacy
-    /// transaction surface.
-    pub fn estimate_cost(&self, tokens: TokenCount) -> f64 {
-        let input_cost = (tokens.input as f64 / 1_000_000.0) * self.input_per_million;
-        let output_cost = (tokens.output as f64 / 1_000_000.0) * self.output_per_million;
-        input_cost + output_cost
-    }
-
     /// Cache-aware cost computation. `cache_read` and `cache_write` are
     /// counts of input tokens billed against the cache tiers; `tokens.input`
     /// is the residual (non-cached) input. Output tokens bill at the

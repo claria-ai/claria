@@ -1,4 +1,7 @@
-use axum::{http::StatusCode, response::{IntoResponse, Response}};
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use uuid::Uuid;
 
 use crate::{params, state::SharedState, xml};
@@ -37,8 +40,8 @@ async fn get_caller_identity(state: SharedState) -> Response {
 async fn assume_role(params: &str, state: SharedState) -> Response {
     let st = state.read().await;
     let role_arn = extract_form_param(params, "RoleArn").unwrap_or_default();
-    let session_name = extract_form_param(params, "RoleSessionName")
-        .unwrap_or_else(|| "mock-session".to_string());
+    let session_name =
+        extract_form_param(params, "RoleSessionName").unwrap_or_else(|| "mock-session".to_string());
 
     // Extract account from role ARN: arn:aws:iam::ACCOUNT:role/NAME
     let account = role_arn
@@ -51,9 +54,7 @@ async fn assume_role(params: &str, state: SharedState) -> Response {
     let secret_key = Uuid::new_v4().to_string();
     let session_token = format!("FwoGZX...mock-session-token...{}", Uuid::new_v4());
     let expiration = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1)).to_string();
-    let assumed_arn = format!(
-        "arn:aws:sts::{account}:assumed-role/{session_name}"
-    );
+    let assumed_arn = format!("arn:aws:sts::{account}:assumed-role/{session_name}");
 
     let body = xml::xml_doc(&xml::wrap(
         "AssumeRoleResponse",
@@ -76,7 +77,13 @@ async fn assume_role(params: &str, state: SharedState) -> Response {
                     &format!(
                         "{}{}",
                         xml::el("Arn", &assumed_arn),
-                        xml::el("AssumedRoleId", &format!("AROA{}:{session_name}", Uuid::new_v4().to_string()[..16].to_uppercase())),
+                        xml::el(
+                            "AssumedRoleId",
+                            &format!(
+                                "AROA{}:{session_name}",
+                                Uuid::new_v4().to_string()[..16].to_uppercase()
+                            )
+                        ),
                     ),
                 ),
             ),

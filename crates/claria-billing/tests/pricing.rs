@@ -103,8 +103,14 @@ fn lookup_opus_4_5_through_4_8() {
         let p = lookup(id).unwrap_or_else(|| panic!("{id} should resolve"));
         assert!((p.input_per_million - 5.0).abs() < f64::EPSILON, "{id}");
         assert!((p.output_per_million - 25.0).abs() < f64::EPSILON, "{id}");
-        assert!((p.cache_read_per_million - 0.50).abs() < f64::EPSILON, "{id}");
-        assert!((p.cache_write_per_million - 6.25).abs() < f64::EPSILON, "{id}");
+        assert!(
+            (p.cache_read_per_million - 0.50).abs() < f64::EPSILON,
+            "{id}"
+        );
+        assert!(
+            (p.cache_write_per_million - 6.25).abs() < f64::EPSILON,
+            "{id}"
+        );
     }
 }
 

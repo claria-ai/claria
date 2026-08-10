@@ -5,20 +5,21 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-aws-config = "=1.8.18"
-aws-sdk-bedrock = "=1.147.0"
-aws-sdk-bedrockruntime = "=1.135.0"
-aws-smithy-types = "=1.5.0"
-claria-billing = { path = "../claria-billing" }
-claria-core = { path = "../claria-core" }
-jiff = { version = "=0.2.31", features = ["serde"] }
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.150"
-thiserror = "=2.0.18"
-tokio = { version = "=1.52.3", features = ["full"] }
-tracing = "=0.1.44"
-uuid = { version = "=1.23.4", features = ["v4"] }
+aws-config.workspace = true
+aws-sdk-bedrock.workspace = true
+aws-sdk-bedrockruntime = { version = "=1.135.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-smithy-types.workspace = true
+claria-billing.workspace = true
+claria-core.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-aws-credential-types = "=1.2.14"
-claria-mock-aws = { path = "../claria-mock-aws" }
+aws-credential-types.workspace = true
+claria-mock-aws.workspace = true
+tokio = { workspace = true, features = ["full"] }

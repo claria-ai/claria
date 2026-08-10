@@ -1,8 +1,12 @@
-use aws_sdk_costexplorer::types::{DateInterval, Granularity, GroupDefinition, GroupDefinitionType};
+use aws_sdk_costexplorer::types::{
+    DateInterval, Granularity, GroupDefinition, GroupDefinitionType,
+};
 
-use crate::error::BillingError;
-use crate::query::{parse_response, validate_query};
-use crate::types::{CostAndUsageResult, CostGranularity, CostQuery};
+use crate::{
+    error::BillingError,
+    query::{parse_response, validate_query},
+    types::{CostAndUsageResult, CostGranularity, CostQuery},
+};
 
 /// Fetch cost and usage data from AWS Cost Explorer.
 pub async fn get_cost_and_usage(
@@ -114,8 +118,8 @@ fn classify_sdk_error(
 
         // Extract the HTTP response body for better diagnostics.
         let raw = service_err.raw();
-        let body = std::str::from_utf8(raw.body().bytes().unwrap_or_default())
-            .unwrap_or("<non-utf8>");
+        let body =
+            std::str::from_utf8(raw.body().bytes().unwrap_or_default()).unwrap_or("<non-utf8>");
         let status = raw.status().as_u16();
         tracing::warn!(
             status,

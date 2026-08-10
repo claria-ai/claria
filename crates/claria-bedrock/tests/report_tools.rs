@@ -99,7 +99,15 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
         assert_eq!(tool["toolSpec"]["inputSchema"]["json"]["type"], "object");
     }
     let proposal = &tools[2]["toolSpec"]["inputSchema"]["json"];
-    assert_eq!(proposal["properties"]["operations"]["maxItems"], 25);
+    assert_eq!(
+        proposal["properties"]["operations"]["maxItems"],
+        claria_bedrock::report::MAX_PROPOSAL_OPERATIONS
+    );
+    // Every billed call reserves its enforced output budget on the wire.
+    assert_eq!(
+        request["inferenceConfig"]["maxTokens"],
+        claria_bedrock::report::REPORT_OUTPUT_TOKEN_RESERVE
+    );
 }
 
 #[tokio::test]
@@ -198,6 +206,7 @@ async fn configured_tool_limit_rejects_oversized_model_responses() {
         "System",
         &[user_message("Draft")],
         1,
+        &mut claria_bedrock::report::ReportInputBudget::new(MODEL_ID),
     )
     .await
     .expect_err("configured tool limit");
@@ -269,7 +278,7 @@ async fn tool_results_are_sent_as_correlated_json_blocks() {
 }
 
 #[tokio::test]
-async fn duplicate_empty_and_inconsistent_tool_ids_are_rejected() {
+async fn duplicate_and_empty_tool_ids_are_rejected() {
     for response in [
         serde_json::json!({
             "output": {"message": {"role": "assistant", "content": [
@@ -284,12 +293,6 @@ async fn duplicate_empty_and_inconsistent_tool_ids_are_rejected() {
             ]}},
             "stopReason": "tool_use"
         }),
-        serde_json::json!({
-            "output": {"message": {"role": "assistant", "content": [
-                {"toolUse": {"toolUseId": "id", "name": "list_record_files", "input": {}}}
-            ]}},
-            "stopReason": "end_turn"
-        }),
     ] {
         let server = MockServer::spawn().await;
         script(&server, vec![response]).await;
@@ -303,6 +306,34 @@ async fn duplicate_empty_and_inconsistent_tool_ids_are_rejected() {
         .unwrap_err();
         assert!(matches!(error, BedrockError::ResponseParse(_)));
     }
+}
+
+/// A stop reason that disagrees with tool presence is surfaced as data — the
+/// report loop owns the one corrective round — instead of aborting here.
+#[tokio::test]
+async fn stop_tool_mismatch_is_surfaced_not_rejected() {
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [
+                {"toolUse": {"toolUseId": "id", "name": "list_record_files", "input": {}}}
+            ]}},
+            "stopReason": "end_turn"
+        })],
+    )
+    .await;
+    let output = converse_report(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("mismatch passes through");
+    assert_eq!(output.stop_reason, ReportStopReason::EndTurn);
+    assert_eq!(output.tool_calls.len(), 1);
+    assert!(output.stop_tool_mismatch());
 }
 
 #[tokio::test]
@@ -361,7 +392,7 @@ async fn validation_errors_preserve_structured_service_metadata() {
     assert!(
         matches!(
             error,
-            BedrockError::ReportService {
+            BedrockError::Service {
                 status: Some(400),
                 ref code,
                 ..
@@ -470,6 +501,74 @@ async fn exact_count_tokens_budget_is_enforced_before_converse() {
     assert_eq!(state.bedrock_tool_responses.len(), 1);
 }
 
+#[tokio::test]
+async fn cache_points_follow_the_capability_table() {
+    // Caching-capable model: cache points at the system boundary and the
+    // conversation tail; the CountTokens request stays cache-free.
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Ready."}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 12, "outputTokens": 3}
+        })],
+    )
+    .await;
+    converse_report(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("converse");
+    {
+        let state = server.state.read().await;
+        let request = &state.bedrock_tool_requests[0];
+        assert_eq!(request["system"][1]["cachePoint"]["type"], "default");
+        let tail = request["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            tail.last().unwrap()["cachePoint"]["type"],
+            "default",
+            "conversation tail must end with a cache point"
+        );
+        assert!(
+            !state.bedrock_count_token_requests[0]
+                .to_string()
+                .contains("cachePoint")
+        );
+    }
+
+    // A Claude family on the caching denylist gets no cache points.
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Ready."}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 12, "outputTokens": 3}
+        })],
+    )
+    .await;
+    converse_report(
+        &sdk_config(&server.endpoint),
+        "us.anthropic.claude-3-sonnet-20240229-v1:0",
+        "System prompt",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("converse");
+    let state = server.state.read().await;
+    assert!(
+        !state.bedrock_tool_requests[0]
+            .to_string()
+            .contains("cachePoint")
+    );
+}
+
 #[test]
 fn tool_capability_and_context_limits_are_model_specific() {
     assert!(claria_bedrock::report::model_supports_report_tools(
@@ -495,16 +594,17 @@ async fn ordinary_chat_still_sends_no_tool_configuration() {
         role: ChatRole::User,
         content: "Hello".to_string(),
     }];
-    let (text, _) = claria_bedrock::chat::chat_converse(
+    let outcome = claria_bedrock::chat::chat_converse_stream(
         &sdk_config(&server.endpoint),
         MODEL_ID,
         "System",
         &messages,
         CacheStrategy::disabled(),
+        |_| {},
     )
     .await
     .expect("ordinary chat");
-    assert!(!text.is_empty());
+    assert!(!outcome.text.is_empty());
 
     let state = server.state.read().await;
     assert!(state.bedrock_tool_requests.is_empty());

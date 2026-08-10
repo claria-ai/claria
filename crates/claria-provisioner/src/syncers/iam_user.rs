@@ -1,10 +1,12 @@
 use aws_sdk_iam::Client;
 use serde_json::json;
 
-use crate::account_setup::{self, IAM_USER_NAME};
-use crate::error::ProvisionerError;
-use crate::manifest::ResourceSpec;
-use crate::syncer::{BoxFuture, ResourceSyncer};
+use crate::{
+    account_setup::{self, IAM_USER_NAME},
+    error::ProvisionerError,
+    manifest::ResourceSpec,
+    syncer::{BoxFuture, ResourceSyncer},
+};
 
 pub struct IamUserSyncer {
     spec: ResourceSpec,
@@ -24,18 +26,9 @@ impl ResourceSyncer for IamUserSyncer {
 
     fn read(&self) -> BoxFuture<'_, Result<Option<serde_json::Value>, ProvisionerError>> {
         Box::pin(async {
-            match self
-                .client
-                .get_user()
-                .user_name(IAM_USER_NAME)
-                .send()
-                .await
-            {
+            match self.client.get_user().user_name(IAM_USER_NAME).send().await {
                 Ok(resp) => {
-                    let arn = resp
-                        .user()
-                        .map(|u| u.arn().to_string())
-                        .unwrap_or_default();
+                    let arn = resp.user().map(|u| u.arn().to_string()).unwrap_or_default();
                     Ok(Some(json!({"exists": true, "user_arn": arn})))
                 }
                 Err(e) => {
@@ -55,9 +48,7 @@ impl ResourceSyncer for IamUserSyncer {
                     if is_access_denied {
                         return Ok(None);
                     }
-                    Err(ProvisionerError::Aws(format!(
-                        "iam:GetUser failed: {e}"
-                    )))
+                    Err(ProvisionerError::Aws(format!("iam:GetUser failed: {e}")))
                 }
             }
         })
@@ -91,9 +82,7 @@ impl ResourceSyncer for IamUserSyncer {
                 .user_name(IAM_USER_NAME)
                 .send()
                 .await
-                .map_err(|e| {
-                    ProvisionerError::Aws(format!("iam:ListAccessKeys failed: {e}"))
-                })?;
+                .map_err(|e| ProvisionerError::Aws(format!("iam:ListAccessKeys failed: {e}")))?;
 
             for meta in keys.access_key_metadata() {
                 if let Some(key_id) = meta.access_key_id() {
@@ -104,9 +93,7 @@ impl ResourceSyncer for IamUserSyncer {
                         .send()
                         .await
                         .map_err(|e| {
-                            ProvisionerError::Aws(format!(
-                                "iam:DeleteAccessKey failed: {e}"
-                            ))
+                            ProvisionerError::Aws(format!("iam:DeleteAccessKey failed: {e}"))
                         })?;
                 }
             }
@@ -116,9 +103,7 @@ impl ResourceSyncer for IamUserSyncer {
                 .user_name(IAM_USER_NAME)
                 .send()
                 .await
-                .map_err(|e| {
-                    ProvisionerError::Aws(format!("iam:DeleteUser failed: {e}"))
-                })?;
+                .map_err(|e| ProvisionerError::Aws(format!("iam:DeleteUser failed: {e}")))?;
 
             tracing::info!("deleted IAM user {IAM_USER_NAME}");
             Ok(())

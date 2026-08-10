@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use claria_provisioner::{
-    orchestrate, Action, Cause, Manifest, PlanEntry, ProvisionerError, ProvisionerState,
-    ResourceSpec, ResourceSyncer,
+    Action, Cause, Manifest, PlanEntry, ProvisionerError, ProvisionerState, ResourceSpec,
+    ResourceSyncer, orchestrate,
+    state::{ResourceState, ResourceStatus},
+    syncer::BoxFuture,
 };
-use claria_provisioner::state::{ResourceState, ResourceStatus};
-use claria_provisioner::syncer::BoxFuture;
 
 // ── Constants ─────────────────────────────────────────────────────────
 
@@ -139,42 +139,42 @@ fn mock_syncers<S: AsRef<str>>(
 
             let (desired_override, current_fn): (Option<Value>, Option<CurrentStateFn>) =
                 match spec.resource_type.as_str() {
-                "iam_user" => {
-                    let desired = spec.desired.clone();
-                    (None, Some(Box::new(move |_| desired.clone())))
-                }
-                "iam_user_policy" => {
-                    let desired = json!({"actions": &required_actions});
-                    (
-                        Some(desired),
+                    "iam_user" => {
+                        let desired = spec.desired.clone();
+                        (None, Some(Box::new(move |_| desired.clone())))
+                    }
+                    "iam_user_policy" => {
+                        let desired = json!({"actions": &required_actions});
+                        (
+                            Some(desired),
+                            Some(Box::new(|actual: &Value| {
+                                let mut actions: Vec<String> = actual
+                                    .get("current_actions")
+                                    .and_then(|a| a.as_array())
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                actions.sort();
+                                json!({"actions": actions})
+                            })),
+                        )
+                    }
+                    "baa_agreement" => (
+                        None,
                         Some(Box::new(|actual: &Value| {
-                            let mut actions: Vec<String> = actual
-                                .get("current_actions")
-                                .and_then(|a| a.as_array())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_str().map(String::from))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            actions.sort();
-                            json!({"actions": actions})
+                            let state = actual.get("state").cloned().unwrap_or(json!("unknown"));
+                            json!({"state": state})
                         })),
-                    )
-                }
-                "baa_agreement" => (
-                    None,
-                    Some(Box::new(|actual: &Value| {
-                        let state = actual.get("state").cloned().unwrap_or(json!("unknown"));
-                        json!({"state": state})
-                    })),
-                ),
-                "s3_bucket_policy" => {
-                    let rendered = render_policy_document(spec);
-                    (Some(rendered), None)
-                }
-                _ => (None, None),
-            };
+                    ),
+                    "s3_bucket_policy" => {
+                        let rendered = render_policy_document(spec);
+                        (Some(rendered), None)
+                    }
+                    _ => (None, None),
+                };
 
             Box::new(MockSyncer {
                 spec: spec.clone(),
@@ -286,37 +286,99 @@ async fn plan_fresh_account() {
     let m = manifest();
     let state = ProvisionerState::new(REGION.into(), BUCKET.into());
 
-    let syncers = mock_syncers(&m, &[
-        ("iam_user.claria-admin", Some(json!({
-            "exists": true,
-            "user_arn": format!("arn:aws:iam::{ACCT}:user/claria-admin"),
-        }))),
-        ("iam_user_policy.claria-admin-policy", None),
-        ("baa_agreement.aws-baa", None),
-        ("bedrock_model_agreement.anthropic.claude", Some(json!({"agreement": "pending"}))),
-        ("transcribe_access.transcribe", Some(json!({"enabled": true}))),
-        ("cost_explorer_access.cost-explorer", Some(json!({"enabled": true}))),
-    ]);
+    let syncers = mock_syncers(
+        &m,
+        &[
+            (
+                "iam_user.claria-admin",
+                Some(json!({
+                    "exists": true,
+                    "user_arn": format!("arn:aws:iam::{ACCT}:user/claria-admin"),
+                })),
+            ),
+            ("iam_user_policy.claria-admin-policy", None),
+            ("baa_agreement.aws-baa", None),
+            (
+                "bedrock_model_agreement.anthropic.claude",
+                Some(json!({"agreement": "pending"})),
+            ),
+            (
+                "transcribe_access.transcribe",
+                Some(json!({"enabled": true})),
+            ),
+            (
+                "cost_explorer_access.cost-explorer",
+                Some(json!({"enabled": true})),
+            ),
+        ],
+    );
 
     let result = orchestrate::plan(&syncers, &state).await.unwrap();
 
     // Structural comparison: missing resources → Create/Missing,
     // drifted resources → Modify/Drift, in-sync → Ok/InSync.
-    assert_plan(&result, &[
-        e("iam_user.claria-admin",                             Action::Ok,                 Cause::InSync),
-        e("iam_user_policy.claria-admin-policy",               Action::Create,             Cause::Missing),
-        e("baa_agreement.aws-baa",                             Action::PreconditionFailed, Cause::Missing),
-        e(&format!("s3_bucket.{BUCKET}"),                      Action::Create,             Cause::Missing),
-        e(&format!("s3_bucket_versioning.{BUCKET}"),           Action::Create,             Cause::Missing),
-        e(&format!("s3_bucket_encryption.{BUCKET}"),           Action::Create,             Cause::Missing),
-        e(&format!("s3_bucket_public_access_block.{BUCKET}"),  Action::Create,             Cause::Missing),
-        e(&format!("s3_bucket_policy.{BUCKET}"),               Action::Create,             Cause::Missing),
-        e(&format!("cloudtrail_trail.{TRAIL}"),                Action::Create,             Cause::Missing),
-        e(&format!("cloudtrail_trail_logging.{TRAIL}"),        Action::Create,             Cause::Missing),
-        e("bedrock_model_agreement.anthropic.claude",          Action::Modify,             Cause::Drift),
-        e("transcribe_access.transcribe",                      Action::Ok,                 Cause::InSync),
-        e("cost_explorer_access.cost-explorer",                Action::Ok,                 Cause::InSync),
-    ]);
+    assert_plan(
+        &result,
+        &[
+            e("iam_user.claria-admin", Action::Ok, Cause::InSync),
+            e(
+                "iam_user_policy.claria-admin-policy",
+                Action::Create,
+                Cause::Missing,
+            ),
+            e(
+                "baa_agreement.aws-baa",
+                Action::PreconditionFailed,
+                Cause::Missing,
+            ),
+            e(
+                &format!("s3_bucket.{BUCKET}"),
+                Action::Create,
+                Cause::Missing,
+            ),
+            e(
+                &format!("s3_bucket_versioning.{BUCKET}"),
+                Action::Create,
+                Cause::Missing,
+            ),
+            e(
+                &format!("s3_bucket_encryption.{BUCKET}"),
+                Action::Create,
+                Cause::Missing,
+            ),
+            e(
+                &format!("s3_bucket_public_access_block.{BUCKET}"),
+                Action::Create,
+                Cause::Missing,
+            ),
+            e(
+                &format!("s3_bucket_policy.{BUCKET}"),
+                Action::Create,
+                Cause::Missing,
+            ),
+            e(
+                &format!("cloudtrail_trail.{TRAIL}"),
+                Action::Create,
+                Cause::Missing,
+            ),
+            e(
+                &format!("cloudtrail_trail_logging.{TRAIL}"),
+                Action::Create,
+                Cause::Missing,
+            ),
+            e(
+                "bedrock_model_agreement.anthropic.claude",
+                Action::Modify,
+                Cause::Drift,
+            ),
+            e("transcribe_access.transcribe", Action::Ok, Cause::InSync),
+            e(
+                "cost_explorer_access.cost-explorer",
+                Action::Ok,
+                Cause::InSync,
+            ),
+        ],
+    );
 }
 
 /// Happy path — everything provisioned and in sync, zero actions needed.

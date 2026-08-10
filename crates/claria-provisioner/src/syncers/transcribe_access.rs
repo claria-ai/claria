@@ -1,8 +1,10 @@
 use serde_json::json;
 
-use crate::error::ProvisionerError;
-use crate::manifest::ResourceSpec;
-use crate::syncer::{BoxFuture, ResourceSyncer};
+use crate::{
+    error::ProvisionerError,
+    manifest::ResourceSpec,
+    syncer::{BoxFuture, ResourceSyncer},
+};
 
 pub struct TranscribeAccessSyncer {
     spec: ResourceSpec,

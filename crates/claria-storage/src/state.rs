@@ -1,8 +1,7 @@
 use aws_sdk_s3::Client;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
-use crate::error::StorageError;
-use crate::objects;
+use crate::{error::StorageError, objects};
 
 /// Load a JSON state file from S3. Returns the deserialized value and its ETag.
 pub async fn load_state<T: DeserializeOwned>(
@@ -10,13 +9,38 @@ pub async fn load_state<T: DeserializeOwned>(
     bucket: &str,
     key: &str,
 ) -> Result<(T, String), StorageError> {
-    let output = objects::get_object(client, bucket, key).await?;
-    let value: T = serde_json::from_slice(&output.body).map_err(|e| {
-        tracing::error!(bucket, key, error = %e, "failed to deserialize state from S3");
-        StorageError::from(e)
+    load_state_checked(client, bucket, key, None, |_| Ok(())).await
+}
+
+/// Load a JSON state file from S3, enforce an optional size bound, and run the
+/// caller's domain validation over the decoded value before returning it with
+/// its ETag.
+///
+/// This is the one implementation of the get → deserialize → validate pattern;
+/// callers must not re-roll it. A validation failure maps to
+/// [`StorageError::InvalidState`] carrying the closure's message, so callers
+/// can surface it or translate it into their own error type.
+pub async fn load_state_checked<T, V>(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    max_bytes: Option<u64>,
+    validate: V,
+) -> Result<(T, String), StorageError>
+where
+    T: DeserializeOwned,
+    V: FnOnce(&T) -> Result<(), String>,
+{
+    let output = match max_bytes {
+        Some(limit) => objects::get_object_bounded(client, bucket, key, limit).await?,
+        None => objects::get_object(client, bucket, key).await?,
+    };
+    let value: T = serde_json::from_slice(&output.body).map_err(StorageError::from)?;
+    validate(&value).map_err(|reason| StorageError::InvalidState {
+        key: key.to_string(),
+        reason,
     })?;
-    let etag = output.etag.unwrap_or_default();
-    Ok((value, etag))
+    Ok((value, output.etag.unwrap_or_default()))
 }
 
 /// Save a JSON state file to S3. Returns the new ETag.

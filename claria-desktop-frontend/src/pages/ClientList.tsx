@@ -258,7 +258,7 @@ export default function ClientList({
             onRestore={(dc) =>
               restore(
                 dc.id,
-                () => restoreClient(dc.id, dc.version_id),
+                () => restoreClient(dc.id),
                 (c) => c.id === dc.id,
                 refresh,
               )

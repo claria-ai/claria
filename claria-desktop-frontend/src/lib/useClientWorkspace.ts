@@ -77,6 +77,11 @@ export function useClientWorkspace(
       setExpectedReportId(null);
       setWritingInstance((value) => value + 1);
     }
+    if (next === "chat") {
+      // Selecting the tab directly starts a fresh chat; resumed sessions
+      // enter through openChat, which sets the pending chat first.
+      setPendingChat(null);
+    }
     setActiveView(next);
     return true;
   }
@@ -148,7 +153,6 @@ export function useClientWorkspace(
     selectTab,
     back,
     manageWriterTemplates,
-    clearPendingChat: () => setPendingChat(null),
     updateWritingLeaveState: setWritingLeaveState,
   };
 }

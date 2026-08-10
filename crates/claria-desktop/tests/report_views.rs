@@ -7,7 +7,7 @@ use claria_core::models::{
     turn_usage::TurnUsage,
 };
 use claria_desktop::report_authoring::{
-    ReportBlockView, ReportTimelineItemView, ReportToolActivityStatus, workspace_view,
+    ReportTimelineItemView, ReportToolActivityStatus, workspace_view,
 };
 use uuid::Uuid;
 
@@ -240,7 +240,7 @@ fn table_and_template_review_metadata_are_exposed_without_source_identity() {
     let view = workspace_view(&workspace);
     assert!(matches!(
         &view.draft.content.sections[0].blocks[0],
-        ReportBlockView::Table {
+        ReportBlock::Table {
             has_header: true,
             column_widths: Some(widths),
             ..

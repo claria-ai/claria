@@ -15,10 +15,12 @@ fn metric(amount: &str, unit: &str) -> MetricValue {
 
 #[test]
 fn test_parse_ungrouped_single_period() {
-    let results = vec![ResultByTime::builder()
-        .time_period(date_interval("2025-03-01", "2025-03-02"))
-        .total("UnblendedCost", metric("12.34", "USD"))
-        .build()];
+    let results = vec![
+        ResultByTime::builder()
+            .time_period(date_interval("2025-03-01", "2025-03-02"))
+            .total("UnblendedCost", metric("12.34", "USD"))
+            .build(),
+    ];
 
     let parsed = parse_response(&results);
     assert_eq!(parsed.periods.len(), 1);
@@ -32,21 +34,23 @@ fn test_parse_ungrouped_single_period() {
 
 #[test]
 fn test_parse_grouped_by_service() {
-    let results = vec![ResultByTime::builder()
-        .time_period(date_interval("2025-03-01", "2025-03-02"))
-        .groups(
-            Group::builder()
-                .keys("Amazon Bedrock")
-                .metrics("UnblendedCost", metric("8.50", "USD"))
-                .build(),
-        )
-        .groups(
-            Group::builder()
-                .keys("Amazon S3")
-                .metrics("UnblendedCost", metric("1.20", "USD"))
-                .build(),
-        )
-        .build()];
+    let results = vec![
+        ResultByTime::builder()
+            .time_period(date_interval("2025-03-01", "2025-03-02"))
+            .groups(
+                Group::builder()
+                    .keys("Amazon Bedrock")
+                    .metrics("UnblendedCost", metric("8.50", "USD"))
+                    .build(),
+            )
+            .groups(
+                Group::builder()
+                    .keys("Amazon S3")
+                    .metrics("UnblendedCost", metric("1.20", "USD"))
+                    .build(),
+            )
+            .build(),
+    ];
 
     let parsed = parse_response(&results);
     assert_eq!(parsed.periods.len(), 1);
@@ -89,15 +93,17 @@ fn test_parse_empty_response() {
 
 #[test]
 fn test_parse_missing_amount_defaults_to_zero() {
-    let results = vec![ResultByTime::builder()
-        .time_period(date_interval("2025-03-01", "2025-03-02"))
-        .groups(
-            Group::builder()
-                .keys("Amazon Bedrock")
-                // No metrics set — should default to "0.00"
-                .build(),
-        )
-        .build()];
+    let results = vec![
+        ResultByTime::builder()
+            .time_period(date_interval("2025-03-01", "2025-03-02"))
+            .groups(
+                Group::builder()
+                    .keys("Amazon Bedrock")
+                    // No metrics set — should default to "0.00"
+                    .build(),
+            )
+            .build(),
+    ];
 
     let parsed = parse_response(&results);
     assert_eq!(parsed.periods[0].groups[0].amount, "0.00");

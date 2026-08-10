@@ -1,3 +1,10 @@
+//! Local configuration persistence for the desktop app.
+//!
+//! Credential storage: `config.json` holds the scoped IAM secret access key
+//! in plaintext, protected only by the owner-only (0o600) permissions
+//! [`save_config`] applies. Moving secrets into the OS keychain is tracked
+//! in issue #73.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -253,6 +260,15 @@ fn config_dir() -> eyre::Result<PathBuf> {
 
 fn config_path() -> eyre::Result<PathBuf> {
     Ok(config_dir()?.join("config.json"))
+}
+
+/// Machine-local directory for the provisioner's safety-net state copy.
+///
+/// Library crates never derive local paths (boundary rule): the desktop
+/// resolves this directory and passes it into
+/// `claria_provisioner::build_persistence`.
+pub fn provisioner_state_dir(system_name: &str) -> eyre::Result<PathBuf> {
+    Ok(config_dir()?.join(system_name))
 }
 
 pub fn has_config() -> bool {

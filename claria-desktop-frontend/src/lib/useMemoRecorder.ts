@@ -5,6 +5,7 @@ import {
   transcribeMemo,
 } from "./tauri";
 import { float32ToBase64, mergePcmChunks, resampleTo16kHz } from "./audio";
+import { logFrontendEvent } from "./logBridge";
 
 export type MemoState =
   | "idle"
@@ -136,7 +137,12 @@ export function useMemoRecorder({
         setGpu(status.accelerated);
         setModelLabel(active?.label ?? "");
       })
-      .catch(() => {
+      .catch((reason) => {
+        // Recording stays hidden, but the reason is reported.
+        logFrontendEvent(
+          "warn",
+          `Local transcription status unavailable: ${reason}`
+        );
         if (!cancelled) setReady(false);
       });
     return () => {

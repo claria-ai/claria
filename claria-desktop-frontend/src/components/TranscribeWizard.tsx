@@ -10,7 +10,9 @@ import {
   type TranscriptionLanguage,
 } from "../lib/tauri";
 import { transcribeEngineSummary } from "../lib/transcribe";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import Modal from "./Modal";
+import { ErrorBanner } from "./StateCards";
 
 /**
  * Per-file transcription wizard.
@@ -41,9 +43,17 @@ export default function TranscribeWizard({
   /** True while a drag-over is happening on the window. Used to highlight the file slot. */
   isDragging?: boolean;
 }) {
-  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
-  const [loadingPrefs, setLoadingPrefs] = useState(true);
-  const [prefsError, setPrefsError] = useState<string | null>(null);
+  // Pull the latest synced prefs on mount so the wizard's pre-filled values
+  // match what the user expects. `fetchCloudPreferences` requires a
+  // configured SDK; fall back to local config without one.
+  const {
+    data: snapshot,
+    loading: loadingPrefs,
+    error: prefsError,
+  } = useAsyncLoad<ConfigInfo>(
+    () => fetchCloudPreferences().catch(() => loadConfig()),
+    []
+  );
 
   // The wizard's editable per-file overrides. Each null means "use the
   // saved preference for this field." We send a fully-populated overrides
@@ -70,32 +80,6 @@ export default function TranscribeWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [droppedFilePath]);
 
-  // Pull the latest synced prefs on mount so the wizard's pre-filled values
-  // match what the user expects.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const info = await fetchCloudPreferences();
-        if (cancelled) return;
-        setSnapshot(info);
-      } catch {
-        try {
-          const info = await loadConfig();
-          if (cancelled) return;
-          setSnapshot(info);
-        } catch (e) {
-          if (cancelled) return;
-          setPrefsError(String(e));
-        }
-      } finally {
-        if (!cancelled) setLoadingPrefs(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const effectiveLanguage: TranscriptionLanguage =
     language ?? snapshot?.transcription.default_language ?? "english";
@@ -173,9 +157,7 @@ export default function TranscribeWizard({
         {loadingPrefs ? (
           <p className="text-sm text-gray-500">Loading your defaults...</p>
         ) : prefsError ? (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{prefsError}</p>
-          </div>
+          <ErrorBanner message={prefsError} className="" />
         ) : (
           <>
             {/* File picker / drop target */}
@@ -326,9 +308,7 @@ export default function TranscribeWizard({
             </div>
 
             {uploadError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">{uploadError}</p>
-              </div>
+              <ErrorBanner message={uploadError} className="" />
             )}
           </>
         )}

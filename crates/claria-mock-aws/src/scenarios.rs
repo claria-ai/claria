@@ -184,16 +184,12 @@ fn create_bucket_with_all_config(state: &mut MockState) {
 fn create_cloudtrail(state: &mut MockState) {
     let trail = Trail {
         name: "claria-audit-trail".to_string(),
-        trail_arn: format!(
-            "arn:aws:cloudtrail:us-east-1:{ACCOUNT_ID}:trail/claria-audit-trail"
-        ),
+        trail_arn: format!("arn:aws:cloudtrail:us-east-1:{ACCOUNT_ID}:trail/claria-audit-trail"),
         s3_bucket_name: bucket_name(),
         s3_key_prefix: Some("_cloudtrail".to_string()),
         is_multi_region: false,
     };
-    state
-        .trails
-        .insert("claria-audit-trail".to_string(), trail);
+    state.trails.insert("claria-audit-trail".to_string(), trail);
     state
         .trail_logging
         .insert("claria-audit-trail".to_string(), true);
@@ -229,9 +225,7 @@ fn load_bedrock_models(state: &mut MockState) {
             r#type: "SYSTEM_DEFINED".to_string(),
             status: "ACTIVE".to_string(),
             models: vec![InferenceProfileModel {
-                model_arn: format!(
-                    "arn:aws:bedrock:us-east-1::foundation-model/{id}"
-                ),
+                model_arn: format!("arn:aws:bedrock:us-east-1::foundation-model/{id}"),
             }],
         })
         .collect();
@@ -239,9 +233,7 @@ fn load_bedrock_models(state: &mut MockState) {
 
 fn accept_bedrock_models(state: &mut MockState) {
     for model in &state.foundation_models {
-        state
-            .model_agreements
-            .insert(model.model_id.clone());
+        state.model_agreements.insert(model.model_id.clone());
     }
 }
 
@@ -339,10 +331,11 @@ fn load_cost_data(state: &mut MockState) {
         let date = jiff::civil::date(2026, 3, 3)
             .checked_sub(jiff::SignedDuration::from_hours(24 * i))
             .unwrap();
-        let next = date.checked_add(jiff::SignedDuration::from_hours(24)).unwrap();
+        let next = date
+            .checked_add(jiff::SignedDuration::from_hours(24))
+            .unwrap();
         let day_of_week = date.weekday();
-        let is_weekend =
-            day_of_week == jiff::civil::Weekday::Saturday
+        let is_weekend = day_of_week == jiff::civil::Weekday::Saturday
             || day_of_week == jiff::civil::Weekday::Sunday;
         let weekend_factor = if is_weekend { 0.3 } else { 1.0 };
 

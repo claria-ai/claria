@@ -62,7 +62,17 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import { clearWritingComposerDrafts } from "../lib/writingComposerDraft";
+import { ChatModelsContext, type ChatModelsState } from "../lib/chatModels";
 import ClientRecord from "./ClientRecord";
+
+const modelsState: ChatModelsState = {
+  models: [{ model_id: "model-1", name: "Claude" }],
+  loading: false,
+  error: null,
+  preferredModelId: "model-1",
+  retry: () => {},
+  setPreferredModelId: () => {},
+};
 
 const workspace = {
   schema_version: 3,
@@ -88,17 +98,15 @@ const workspace = {
 
 function renderClient(navigate = vi.fn(), onNameChanged = vi.fn()) {
   return render(
-    <ClientRecord
-      navigate={navigate}
-      clientId="client-1"
-      clientName="Ada"
-      chatModels={[{ model_id: "model-1", name: "Claude" }]}
-      chatModelsLoading={false}
-      chatModelsError={null}
-      preferredModelId="model-1"
-      onClientNameChanged={onNameChanged}
-      onManageWriterTemplates={vi.fn()}
-    />
+    <ChatModelsContext.Provider value={modelsState}>
+      <ClientRecord
+        navigate={navigate}
+        clientId="client-1"
+        clientName="Ada"
+        onClientNameChanged={onNameChanged}
+        onManageWriterTemplates={vi.fn()}
+      />
+    </ChatModelsContext.Provider>
   );
 }
 

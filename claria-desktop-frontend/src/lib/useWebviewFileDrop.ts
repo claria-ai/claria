@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { logFrontendEvent } from "./logBridge";
 
 /**
  * Webview-level file drag-and-drop, reported as a `dragging` flag plus a drop
@@ -66,7 +67,10 @@ export function useWebviewFileDrop({
         }
       })
       .catch((err) => {
-        console.error("Failed to register drag-drop listener:", err);
+        logFrontendEvent(
+          "error",
+          `Failed to register drag-drop listener: ${err}`
+        );
       });
 
     return () => {

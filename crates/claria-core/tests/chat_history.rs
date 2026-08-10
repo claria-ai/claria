@@ -1,7 +1,7 @@
 //! Tests for `ChatHistoryMessage` — verifies legacy chat-history JSON
 //! (no `usage` key at all) still deserialises to `usage: None`.
 
-use claria_core::models::chat_history::{ChatHistory, ChatHistoryMessage, ChatHistoryRole};
+use claria_core::models::chat_history::{ChatHistory, ChatHistoryMessage, ChatRole};
 
 #[test]
 fn legacy_history_without_name_gets_an_empty_migration_sentinel() {
@@ -30,7 +30,7 @@ fn legacy_message_without_usage_key_deserialises_to_none() {
     let msg: ChatHistoryMessage =
         serde_json::from_str(legacy_json).expect("legacy message must deserialise");
 
-    assert!(matches!(msg.role, ChatHistoryRole::Assistant));
+    assert!(matches!(msg.role, ChatRole::Assistant));
     assert_eq!(msg.content, "Hello!");
     assert!(
         msg.usage.is_none(),
@@ -47,7 +47,7 @@ fn legacy_user_message_deserialises_to_none_usage() {
     }"#;
 
     let msg: ChatHistoryMessage = serde_json::from_str(legacy_json).unwrap();
-    assert!(matches!(msg.role, ChatHistoryRole::User));
+    assert!(matches!(msg.role, ChatRole::User));
     assert!(msg.usage.is_none());
 }
 
