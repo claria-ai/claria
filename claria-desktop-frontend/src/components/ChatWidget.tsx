@@ -46,7 +46,6 @@ export default function ChatWidget({
   extraLoadingText = "Loading...",
   toolbar,
   historyHeader,
-  embedded = false,
 }: {
   chatModels: ChatModel[];
   chatModelsLoading: boolean;
@@ -71,13 +70,20 @@ export default function ChatWidget({
   /// Optional content rendered between the session banner and the
   /// toolbar — typically a chat-history summary header on resume.
   historyHeader?: ReactNode;
-  embedded?: boolean;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
   const [usageByIndex, setUsageByIndex] = useState<Array<TurnUsage | null>>(
     initialUsageByIndex ?? []
   );
-  const [session, setSession] = useState<SessionUsage>(EMPTY_SESSION_USAGE);
+  // Roll up resumed usage so the session banner reflects historical spend
+  // on the chat being resumed. Initial props are plain initial state — a
+  // different chat identity remounts the widget via the caller's `key`.
+  const [session, setSession] = useState<SessionUsage>(() =>
+    (initialUsageByIndex ?? []).reduce<SessionUsage>(
+      (acc, usage) => accumulateUsage(acc, usage),
+      EMPTY_SESSION_USAGE
+    )
+  );
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,26 +119,6 @@ export default function ChatWidget({
       cancelled = true;
     };
   }, [selectedModelId]);
-
-  // Apply initial messages/model when they change (resume chat)
-  useEffect(() => {
-    if (initialMessages) setMessages(initialMessages);
-    if (initialModelId) setSelectedModelId(initialModelId);
-    if (initialUsageByIndex) {
-      setUsageByIndex(initialUsageByIndex);
-      // Roll up resumed usage so the session banner reflects historical
-      // spend on the chat being resumed.
-      const resumed = initialUsageByIndex.reduce<SessionUsage>(
-        (acc, u) => accumulateUsage(acc, u),
-        EMPTY_SESSION_USAGE
-      );
-      setSession(resumed);
-    } else if (initialMessages) {
-      // Reset session when initialMessages change without per-index usage.
-      setUsageByIndex([]);
-      setSession(EMPTY_SESSION_USAGE);
-    }
-  }, [initialMessages, initialModelId, initialUsageByIndex, setSelectedModelId]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -199,11 +185,9 @@ export default function ChatWidget({
         : "Type a message...");
 
   return (
-    <div className={`flex flex-col ${embedded ? "flex-1" : "flex-1"}`}>
+    <div className="flex flex-col flex-1">
       {/* Model selector bar */}
-      <div
-        className={`flex items-center gap-2 px-6 py-2 border-b ${embedded ? "border-gray-100 bg-gray-50" : "border-gray-100 bg-white"}`}
-      >
+      <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white">
         <div className="flex-1" />
         <ModelSelect
           models={chatModels}

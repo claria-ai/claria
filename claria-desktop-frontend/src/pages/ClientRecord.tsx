@@ -58,12 +58,10 @@ export default function ClientRecord({
         />
       ) : workspace.activeView === "chat" ? (
         <ClientChat
+          key={workspace.pendingChat?.chatId ?? "new"}
           navigate={navigate}
           clientId={clientId}
-          clientName={clientName}
-          embedded
           resumeChat={workspace.pendingChat}
-          onResumeChatConsumed={workspace.clearPendingChat}
           chatModels={chatModels}
           chatModelsLoading={chatModelsLoading}
           chatModelsError={chatModelsError}

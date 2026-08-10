@@ -921,8 +921,7 @@ export default function Writing({
         onExport={() => void handleExport()}
         onOpenRevisions={() => setRevisionsOpen(true)}
         onReference={addReference}
-        saveStatus={null}
-        exportStatus={exportStatus}
+        status={exportStatus}
         validationErrors={validationErrors}
         agentActivity={agentActivity}
       />

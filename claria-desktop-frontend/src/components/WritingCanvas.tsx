@@ -31,8 +31,7 @@ export default function WritingCanvas({
   onExport,
   onOpenRevisions,
   onReference,
-  saveStatus,
-  exportStatus,
+  status,
   validationErrors,
   agentActivity,
 }: {
@@ -48,8 +47,9 @@ export default function WritingCanvas({
   onExport: () => void;
   onOpenRevisions: () => void;
   onReference: (reference: WritingBlockReference) => void;
-  saveStatus: string | null;
-  exportStatus: string | null;
+  /** One transient status line (e.g. export progress); falls back to the
+   *  persisted last-export line from the workspace. */
+  status: string | null;
   validationErrors: string[];
   agentActivity?: { label: string; detail?: string } | null;
 }) {
@@ -152,9 +152,9 @@ export default function WritingCanvas({
             detail={agentActivity.detail}
           />
         )}
-        {(saveStatus || exportStatus || persistedExportStatus) && (
+        {(status || persistedExportStatus) && (
           <p role="status" aria-live="polite" className="text-xs text-gray-600">
-            {saveStatus ?? exportStatus ?? persistedExportStatus}
+            {status ?? persistedExportStatus}
           </p>
         )}
       </div>

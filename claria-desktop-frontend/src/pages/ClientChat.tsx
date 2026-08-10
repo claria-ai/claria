@@ -16,7 +16,7 @@ import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
 import ChatHistoryHeader from "../components/ChatHistoryHeader";
 import EditableName from "../components/EditableName";
-import { BackButton, CloseIcon } from "../components/icons";
+import { CloseIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import TokenCountBadge from "../components/TokenCountBadge";
 import Modal from "../components/Modal";
@@ -40,10 +40,7 @@ export type ResumeChat = {
 export default function ClientChat({
   navigate,
   clientId,
-  clientName,
-  embedded,
   resumeChat,
-  onResumeChatConsumed,
   chatModels,
   chatModelsLoading,
   chatModelsError,
@@ -51,18 +48,17 @@ export default function ClientChat({
 }: {
   navigate: (page: Page) => void;
   clientId: string;
-  clientName: string;
-  embedded?: boolean;
+  /// A persisted chat being resumed. Identity changes must remount this
+  /// component — the caller keys on `resumeChat?.chatId`.
   resumeChat?: ResumeChat | null;
-  onResumeChatConsumed?: () => void;
   chatModels: ChatModel[];
   chatModelsLoading: boolean;
   chatModelsError: string | null;
   preferredModelId?: string | null;
 }) {
-  const chatIdRef = useRef<string | null>(null);
-  const [chatName, setChatName] = useState("New chat");
-  const [hasPersistedChat, setHasPersistedChat] = useState(false);
+  const chatIdRef = useRef<string | null>(resumeChat?.chatId ?? null);
+  const [chatName, setChatName] = useState(resumeChat?.name ?? "New chat");
+  const [hasPersistedChat, setHasPersistedChat] = useState(resumeChat != null);
 
   // System prompt state
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
@@ -81,15 +77,12 @@ export default function ClientChat({
     message: string;
   } | null>(null);
 
-  // Resume chat state to pass to ChatWidget
-  const [initialMessages, setInitialMessages] = useState<
-    ChatMessage[] | undefined
-  >();
-  const [initialModelId, setInitialModelId] = useState<string | undefined>();
-  const [initialUsageByIndex, setInitialUsageByIndex] = useState<
-    Array<import("../lib/tauri").TurnUsage | null> | undefined
-  >();
-  const [lastActivityIso, setLastActivityIso] = useState<string | null>(null);
+  // Resumed-chat snapshot — plain initial state, valid for this mount's
+  // lifetime because the caller remounts on resume-identity change.
+  const initialMessages = resumeChat?.messages;
+  const initialModelId = resumeChat?.modelId;
+  const initialUsageByIndex = resumeChat?.usageByIndex;
+  const lastActivityIso = resumeChat?.lastActivityIso ?? null;
 
   useEffect(() => {
     getPrompt("system-prompt")
@@ -138,19 +131,6 @@ export default function ClientChat({
       setExtractingFile(null);
     }
   }
-
-  // Resume a previous chat session when resumeChat prop is set.
-  useEffect(() => {
-    if (!resumeChat) return;
-    setInitialMessages(resumeChat.messages);
-    setInitialModelId(resumeChat.modelId);
-    setChatName(resumeChat.name);
-    setHasPersistedChat(true);
-    setInitialUsageByIndex(resumeChat.usageByIndex);
-    setLastActivityIso(resumeChat.lastActivityIso ?? null);
-    chatIdRef.current = resumeChat.chatId;
-    onResumeChatConsumed?.();
-  }, [resumeChat, onResumeChatConsumed]);
 
   // Memo'd summary of resumed history for the chat header.
   const historyHeader = initialMessages
@@ -220,7 +200,7 @@ export default function ClientChat({
           </span>
         )}
       </div>
-      {embedded && systemPrompt && (
+      {systemPrompt && (
         <div className="flex items-center gap-2 px-6 py-1.5 border-b border-gray-100 bg-white">
           <button
             onClick={() => setShowPromptModal(true)}
@@ -304,26 +284,7 @@ export default function ClientChat({
   );
 
   return (
-    <div className={`flex flex-col ${embedded ? "flex-1" : "h-screen"}`}>
-      {/* Header — hidden when embedded in ClientRecord */}
-      {!embedded && (
-        <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
-          <BackButton onClick={() => navigate("clients")} />
-          <div className="flex-1">
-            <h2 className="text-lg font-semibold">{clientName}</h2>
-            <p className="text-xs text-gray-400">Chat</p>
-          </div>
-          {systemPrompt && (
-            <button
-              onClick={() => setShowPromptModal(true)}
-              className="px-2.5 py-1 text-xs font-medium text-gray-500 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
-            >
-              System Prompt
-            </button>
-          )}
-        </div>
-      )}
-
+    <div className="flex flex-col flex-1">
       <ChatWidget
         chatModels={chatModels}
         chatModelsLoading={chatModelsLoading}
@@ -340,7 +301,6 @@ export default function ClientChat({
         extraLoadingText="Building context..."
         toolbar={toolbar}
         historyHeader={historyHeader}
-        embedded={embedded}
       />
 
       {/* System prompt modal (read-only) */}

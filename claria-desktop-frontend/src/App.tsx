@@ -6,7 +6,6 @@ import MfaSetupGuide from "./pages/MfaSetupGuide";
 import AccessKeyGuide from "./pages/AccessKeyGuide";
 import Provision from "./pages/Provision";
 import ClientList from "./pages/ClientList";
-import ClientChat from "./pages/ClientChat";
 import ClientRecord from "./pages/ClientRecord";
 import About from "./pages/About";
 import Preferences from "./pages/Preferences";
@@ -22,7 +21,6 @@ export type Page =
   | "provision"
   | "clients"
   | "client-record"
-  | "client-chat"
   | "infra-chat"
   | "cost-explorer"
   | "preferences"
@@ -86,7 +84,7 @@ export default function App() {
       }
       // Retry loading models if they haven't loaded yet
       if (
-        (target === "clients" || target === "client-record" || target === "client-chat" || target === "infra-chat" || target === "preferences") &&
+        (target === "clients" || target === "client-record" || target === "infra-chat" || target === "preferences") &&
         chatModels.length === 0
       ) {
         refreshChatModels();
@@ -143,17 +141,6 @@ export default function App() {
             setPreferencesReturnPage("client-record");
             setPage("preferences");
           }}
-        />
-      )}
-      {page === "client-chat" && activeClientId && (
-        <ClientChat
-          navigate={navigate}
-          clientId={activeClientId}
-          clientName={activeClientName ?? "Client"}
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
         />
       )}
       {page === "infra-chat" && (
