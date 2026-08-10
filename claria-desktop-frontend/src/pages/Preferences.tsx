@@ -91,7 +91,7 @@ export default function Preferences({
          changes until restart. */}
       <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
         <p className="text-sm text-blue-900">
-          Workflow defaults are stored in your S3 bucket so they sync across
+          Shared defaults are stored in your S3 bucket so they sync across
           computers. Local memo models, decoder controls, and hardware choices
           are machine-local.
         </p>
