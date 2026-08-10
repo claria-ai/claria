@@ -109,6 +109,17 @@ pub async fn open_url(url: String) -> Result<(), String> {
                 "URL must start with http:// or https://".into(),
             ));
         }
+        // Belt-and-braces against argument smuggling into whatever handles
+        // the URL: a well-formed URL never contains whitespace or control
+        // characters (they must be percent-encoded).
+        if url
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err(CommandError::Msg(
+                "URL must not contain whitespace or control characters".into(),
+            ));
+        }
 
         #[cfg(target_os = "macos")]
         {
@@ -118,12 +129,32 @@ pub async fn open_url(url: String) -> Result<(), String> {
                 .map_err(|e| CommandError::Msg(e.to_string()))?;
         }
 
+        // Direct ShellExecuteW instead of `cmd /c start`: the URL reaches the
+        // platform API as one argument and is never re-parsed by a shell.
         #[cfg(target_os = "windows")]
         {
-            std::process::Command::new("cmd")
-                .args(["/c", "start", "", &url])
-                .spawn()
-                .map_err(|e| CommandError::Msg(e.to_string()))?;
+            use windows::{
+                Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+                core::{HSTRING, PCWSTR, w},
+            };
+            let wide_url = HSTRING::from(url.as_str());
+            let instance = unsafe {
+                ShellExecuteW(
+                    None,
+                    w!("open"),
+                    &wide_url,
+                    PCWSTR::null(),
+                    PCWSTR::null(),
+                    SW_SHOWNORMAL,
+                )
+            };
+            // Per the ShellExecuteW contract, values <= 32 are error codes.
+            if instance.0 as usize <= 32 {
+                return Err(CommandError::Msg(format!(
+                    "opening the URL failed (ShellExecuteW code {})",
+                    instance.0 as usize
+                )));
+            }
         }
 
         #[cfg(target_os = "linux")]

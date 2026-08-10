@@ -1,3 +1,10 @@
+//! Local configuration persistence for the desktop app.
+//!
+//! Credential storage: `config.json` holds the scoped IAM secret access key
+//! in plaintext, protected only by the owner-only (0o600) permissions
+//! [`save_config`] applies. Moving secrets into the OS keychain is tracked
+//! in issue #73.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
