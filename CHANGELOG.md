@@ -55,6 +55,7 @@ All notable changes to Claria are documented here.
 - The app ships a single modern TLS stack, verifies update checks and model downloads against the operating system's certificate store, and builds a smaller release binary
 - Frontend errors and warnings are forwarded to the backend log stack, so they appear in the console window, saved log exports, and the on-disk log files
 - The console window polls with a sequence cursor and receives only new lines instead of the whole buffer twice a second
+- Preference saves send only the changed section's fields and merge into the cloud copy under an ETag precondition, so sections and machines can no longer clobber each other's settings
 
 ## [0.22.0] — 2026-08-10
 

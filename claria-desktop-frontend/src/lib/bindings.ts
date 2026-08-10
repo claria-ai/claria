@@ -39,13 +39,14 @@ async deleteConfig() : Promise<Result<null, string>> {
 }
 },
 /**
- * Save the clinician's preferences (synced subset) to both the local config
- * file and `_state/preferences.json` in S3. Bubbles S3-write failures so the
+ * Save one UI section's preference fields. Absent patch fields are left
+ * untouched locally and in `_state/preferences.json`, so concurrent
+ * sections can't clobber each other. Bubbles S3-write failures so the
  * frontend can show a partial-save warning.
  */
-async savePreferences(preferredModelId: string | null, costExplorerEnabled: boolean, hourlyCostData: boolean, promptCachingEnabled: boolean, transcription: TranscriptionPreferences, reportAuthoring: ReportAuthoringPreferences) : Promise<Result<ConfigInfo, string>> {
+async savePreferencesPatch(patch: PreferencesPatch) : Promise<Result<ConfigInfo, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_preferences", { preferredModelId, costExplorerEnabled, hourlyCostData, promptCachingEnabled, transcription, reportAuthoring }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_preferences_patch", { patch }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1392,7 +1393,13 @@ export type NewCredentialsInfo = { access_key_id: string; iam_user_arn: string }
  * has everything it needs (label, description, severity, desired state)
  * without a separate lookup.
  */
-export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drift: FieldDrift[]; 
+/**
+ * Named-field patch for the synced preferences. Absent fields are left
+ * untouched, so a UI section (or a single-setting command) saves only what
+ * it owns and can never roll back a sibling section's edit.
+ */
+export type PreferencesPatch = { preferred_model_id?: string | null; cost_explorer_enabled?: boolean; hourly_cost_data?: boolean; prompt_caching_enabled?: boolean; transcription?: TranscriptionPreferences; report_authoring?: ReportAuthoringPreferences }
+export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drift: FieldDrift[];
 /**
  * Live state read from AWS (if the resource exists).
  */

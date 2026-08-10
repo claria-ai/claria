@@ -31,6 +31,7 @@ import type {
   ModelDownloadProgress,
   ModelPricing,
   PlanEntry,
+  PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
   ProvisionerProgress,
@@ -42,14 +43,12 @@ import type {
   ReportExportResult,
   ReportProposalDecision,
   ReportRevisionView,
-  ReportAuthoringPreferences,
   ReportTemplatePreview,
   ReportTurnProgressView,
   ReportTurnResponse,
   ReportWorkspaceView,
   TranscribeMemoResult,
   TranscribeOptionsOverrides,
-  TranscriptionPreferences,
   UpdateCheck,
   WriterTemplateView,
 } from "./bindings";
@@ -102,6 +101,7 @@ export type {
   ModelPricing,
   NewCredentialsInfo,
   PlanEntry,
+  PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
   ProvisionerProgress,
@@ -179,29 +179,13 @@ export async function loadConfig() {
 }
 
 /**
- * Save the synced subset of preferences to both the local config file and
- * `_state/preferences.json` in S3. Throws on S3 write failure with the
- * "saved locally but cloud sync failed" prefix so callers can show a
- * partial-save state.
+ * Save one preferences section's fields. Absent patch fields are left
+ * untouched locally and in `_state/preferences.json`, so sections can't
+ * clobber each other. Throws on S3 write failure with the "saved locally
+ * but cloud sync failed" prefix so callers can show a partial-save state.
  */
-export async function savePreferences(
-  preferredModelId: string | null,
-  costExplorerEnabled: boolean,
-  hourlyCostData: boolean,
-  promptCachingEnabled: boolean,
-  transcription: TranscriptionPreferences,
-  reportAuthoring: ReportAuthoringPreferences
-) {
-  return unwrap(
-    await commands.savePreferences(
-      preferredModelId,
-      costExplorerEnabled,
-      hourlyCostData,
-      promptCachingEnabled,
-      transcription,
-      reportAuthoring
-    )
-  );
+export async function savePreferencesPatch(patch: PreferencesPatch) {
+  return unwrap(await commands.savePreferencesPatch(patch));
 }
 
 /**

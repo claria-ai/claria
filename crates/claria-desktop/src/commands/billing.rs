@@ -2,7 +2,11 @@
 
 use tauri::State;
 
-use super::{CommandContext, config::save_config_synced, run};
+use super::{
+    CommandContext,
+    config::{PreferencesPatch, apply_preferences_patch},
+    run,
+};
 use crate::state::DesktopState;
 
 #[tauri::command]
@@ -42,9 +46,12 @@ pub async fn probe_cost_explorer(state: State<'_, DesktopState>) -> Result<(), S
 pub async fn enable_cost_explorer(state: State<'_, DesktopState>) -> Result<(), String> {
     run("enable_cost_explorer", async {
         let ctx = CommandContext::new(&state).await?;
-        let mut cfg = ctx.cfg.clone();
-        cfg.cost_explorer_enabled = true;
-        save_config_synced(&state, &ctx.s3, cfg, "Cost Explorer setting").await
+        let patch = PreferencesPatch {
+            cost_explorer_enabled: Some(true),
+            ..Default::default()
+        };
+        apply_preferences_patch(&state, &ctx.s3, ctx.cfg, &patch, "Cost Explorer setting").await?;
+        Ok(())
     })
     .await
 }
@@ -57,9 +64,13 @@ pub async fn set_hourly_cost_data(
 ) -> Result<(), String> {
     run("set_hourly_cost_data", async {
         let ctx = CommandContext::new(&state).await?;
-        let mut cfg = ctx.cfg.clone();
-        cfg.hourly_cost_data = enabled;
-        save_config_synced(&state, &ctx.s3, cfg, "hourly cost data setting").await
+        let patch = PreferencesPatch {
+            hourly_cost_data: Some(enabled),
+            ..Default::default()
+        };
+        apply_preferences_patch(&state, &ctx.s3, ctx.cfg, &patch, "hourly cost data setting")
+            .await?;
+        Ok(())
     })
     .await
 }

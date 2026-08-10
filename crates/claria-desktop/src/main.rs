@@ -66,7 +66,7 @@ fn main() -> Result<()> {
             commands::load_config,
             commands::save_config,
             commands::delete_config,
-            commands::save_preferences,
+            commands::save_preferences_patch,
             commands::fetch_cloud_preferences,
             commands::upload_record_file_with_options,
             commands::save_transcript_edits,

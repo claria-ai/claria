@@ -134,7 +134,33 @@ export const fixtures: Record<string, unknown> = {
     },
   },
 
-  save_preferences: null,
+  // `save_preferences_patch` echoes the resulting merged ConfigInfo; reuse
+  // the `load_config` shape.
+  save_preferences_patch: {
+    region: "us-east-1",
+    system_name: "claria",
+    account_id: "185735714230",
+    created_at: "2026-03-01T17:30:02.048518Z",
+    credential_type: "inline",
+    profile_name: null,
+    access_key_hint: "AKIA...GJEV",
+    preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+    cost_explorer_enabled: true,
+    hourly_cost_data: false,
+    prompt_caching_enabled: true,
+    transcription: {
+      default_language: "english",
+      default_speaker_count: 2,
+      use_medical_for_english: false,
+      translate_to_english: false,
+    },
+    report_authoring: {
+      max_tool_rounds: 40,
+      max_converse_calls: 50,
+      max_tool_uses_per_response: 80,
+      max_retained_turns: 200,
+    },
+  },
   save_transcript_edits: null,
   upload_record_file_with_options: {
     filename: "session-2026-03-15.m4a",

@@ -12,7 +12,7 @@ import {
   loadConfig,
   setHourlyCostData,
   getCostAndUsage,
-  savePreferences,
+  savePreferencesPatch,
   fetchCloudPreferences,
   uploadWriterTemplate,
   renameWriterTemplate,
@@ -30,6 +30,7 @@ import {
   type TranscriptionPreferences,
   type WriterTemplateView,
 } from "../lib/tauri";
+import { logFrontendEvent } from "../lib/logBridge";
 import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
@@ -1236,17 +1237,9 @@ function ReportAuthoringSection() {
     setSaveError(null);
     setSaved(false);
     try {
-      // Refresh sibling preferences immediately before the full-subset write,
-      // so this section cannot roll back a model, cost, or transcription edit.
-      const current = await loadConfig().catch(() => snapshot);
-      const updated = await savePreferences(
-        current.preferred_model_id,
-        current.cost_explorer_enabled,
-        current.hourly_cost_data,
-        current.prompt_caching_enabled,
-        current.transcription,
-        draft
-      );
+      // Patch-save: only the writer limits travel, so this section cannot
+      // roll back a model, cost, or transcription edit.
+      const updated = await savePreferencesPatch({ report_authoring: draft });
       setSnapshot(updated);
       setDraft(normalizeWriterPreferences(updated.report_authoring));
       setSaved(true);
@@ -1383,10 +1376,10 @@ const TRANSCRIPTION_SYNC_DEBOUNCE_MS = 600;
  *
  * Cross-machine sync: on mount we call `fetchCloudPreferences` to pull the
  * latest values from S3 (so the editing machine sees its own recent changes
- * without an app restart). Edits accumulate in a draft and are pushed to local
- * config and S3 via `savePreferences` shortly after the user stops changing
- * things. We stash the full synced subset so saving only the transcription
- * fields doesn't clobber the others.
+ * without an app restart). Edits accumulate in a draft and are patch-saved to
+ * local config and S3 via `savePreferencesPatch` shortly after the user stops
+ * changing things — only this section's fields travel, so sibling sections
+ * are never clobbered.
  */
 function TranscriptionSection() {
   // The full set of synced fields, fetched on mount.
@@ -1406,56 +1399,37 @@ function TranscriptionSection() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncedOnce, setSyncedOnce] = useState(false);
 
-  const sync = useCallback(
-    async (base: ConfigInfo, next: TranscriptionPreferences) => {
-      setSyncing(true);
-      setSyncError(null);
-      try {
-        // `savePreferences` rewrites every synced field, so the sibling values
-        // have to be current — not whatever was true when this section
-        // mounted. The model dropdown and the Cost Explorer section write them
-        // independently, and a stale snapshot here would push the old values
-        // back over both the local config and S3.
-        // TODO(#73 FE): switch to a named-field patch-save preferences
-        // command so this section writes only its own fields and the
-        // defensive re-read goes away.
-        const current = await loadConfig().catch(() => base);
-        await savePreferences(
-          current.preferred_model_id,
-          current.cost_explorer_enabled,
-          current.hourly_cost_data,
-          current.prompt_caching_enabled,
-          next,
-          normalizeWriterPreferences(current.report_authoring)
-        );
-        // Advancing the snapshot clears `dirty` and stops the debounce.
-        setSnapshot({ ...current, transcription: next });
-        setSyncedOnce(true);
-      } catch (e) {
-        setSyncError(String(e));
-      } finally {
-        setSyncing(false);
-      }
-    },
-    []
-  );
+  const sync = useCallback(async (next: TranscriptionPreferences) => {
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      // Patch-save: only this section's fields travel, so the model
+      // dropdown and Cost Explorer sections can never be rolled back by a
+      // stale snapshot here.
+      const updated = await savePreferencesPatch({ transcription: next });
+      // Advancing the snapshot clears `dirty` and stops the debounce.
+      setSnapshot(updated);
+      setSyncedOnce(true);
+    } catch (e) {
+      setSyncError(String(e));
+    } finally {
+      setSyncing(false);
+    }
+  }, []);
 
   // Debounced save-on-change. Saving while the screen is still mounted is what
   // makes the edit survive a quit or a window close — an unmount cleanup never
   // runs in either case, so edits used to be lost silently.
-  const pendingRef = useRef<{
-    base: ConfigInfo;
-    next: TranscriptionPreferences;
-  } | null>(null);
+  const pendingRef = useRef<TranscriptionPreferences | null>(null);
   useEffect(() => {
     if (!dirty || !snapshot || !draft) {
       pendingRef.current = null;
       return;
     }
-    pendingRef.current = { base: snapshot, next: draft };
+    pendingRef.current = draft;
     const id = setTimeout(() => {
       pendingRef.current = null;
-      void sync(snapshot, draft);
+      void sync(draft);
     }, TRANSCRIPTION_SYNC_DEBOUNCE_MS);
     return () => clearTimeout(id);
   }, [dirty, snapshot, draft, sync]);
@@ -1468,21 +1442,9 @@ function TranscriptionSection() {
     return () => {
       const pending = pendingRef.current;
       if (!pending) return;
-      // Same freshness requirement as `sync` above — the component is gone but
-      // the write still rewrites every synced field.
-      loadConfig()
-        .catch(() => pending.base)
-        .then((current) =>
-          savePreferences(
-            current.preferred_model_id,
-            current.cost_explorer_enabled,
-            current.hourly_cost_data,
-            current.prompt_caching_enabled,
-            pending.next,
-            normalizeWriterPreferences(current.report_authoring)
-          )
-        )
-        .catch((e) => console.error("preferences sync on leave failed:", e));
+      savePreferencesPatch({ transcription: pending }).catch((e) =>
+        logFrontendEvent("error", `preferences sync on leave failed: ${e}`)
+      );
     };
   }, []);
 
@@ -1665,7 +1627,7 @@ function TranscriptionSection() {
               <ErrorBanner
                 message={`Could not save transcription preferences: ${syncError}`}
                 onRetry={() => {
-                  if (snapshot && draft) void sync(snapshot, draft);
+                  if (draft) void sync(draft);
                 }}
                 className=""
               />
