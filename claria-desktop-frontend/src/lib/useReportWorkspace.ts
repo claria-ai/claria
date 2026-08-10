@@ -166,6 +166,9 @@ export function useReportWorkspace({
     if (errors.length > 0) {
       throw new Error("Fix the highlighted report fields before continuing.");
     }
+    // TODO(#73 FE): switch to a named-field patch-save command once the
+    // backend exposes one, so a section saves only its own fields instead of
+    // this positional whole-draft write.
     const result = await saveReportDraft(
       clientId,
       current.draft.revision,

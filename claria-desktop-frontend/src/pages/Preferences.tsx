@@ -1416,6 +1416,9 @@ function TranscriptionSection() {
         // mounted. The model dropdown and the Cost Explorer section write them
         // independently, and a stale snapshot here would push the old values
         // back over both the local config and S3.
+        // TODO(#73 FE): switch to a named-field patch-save preferences
+        // command so this section writes only its own fields and the
+        // defensive re-read goes away.
         const current = await loadConfig().catch(() => base);
         await savePreferences(
           current.preferred_model_id,
