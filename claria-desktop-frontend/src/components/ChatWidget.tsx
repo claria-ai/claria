@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ReactNode } from "react";
+import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
 import {
   acceptModelAgreement,
   type ChatMessage,
@@ -12,12 +12,15 @@ import {
   formatCost,
   type SessionUsage,
 } from "../lib/cost";
+import { buildCostLedger, positiveLedgerSavings } from "../lib/costLedger";
 import { lookupModelPricing, type ModelPricing } from "../lib/tauri";
 import { logFrontendEvent } from "../lib/logBridge";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { usePreferredModel } from "../lib/usePreferredModel";
+import { usePricingMap } from "../lib/usePricingMap";
 import ChatComposer from "./ChatComposer";
 import ChatEmptyState from "./ChatEmptyState";
+import CostExplanation from "./CostExplanation";
 import MessageBubble from "./MessageBubble";
 import ModelSelect from "./ModelSelect";
 import SessionTotalBanner from "./SessionTotalBanner";
@@ -131,6 +134,26 @@ export default function ChatWidget({
   );
   const pricing = pricingLoad.loading ? null : pricingLoad.data;
 
+  // Ordered assistant-turn usages for the cache-aware ledger. Only
+  // assistant turns are metered; a null slot is a legacy/unmetered turn.
+  const assistantTurnUsages = useMemo(
+    () =>
+      messages
+        .map((message, index) => ({ message, index }))
+        .filter(({ message }) => message.role === "assistant")
+        .map(({ index }) => usageByIndex[index] ?? null),
+    [messages, usageByIndex]
+  );
+  const turnModelIds = useMemo(
+    () => assistantTurnUsages.flatMap((usage) => (usage ? [usage.model_id] : [])),
+    [assistantTurnUsages]
+  );
+  const pricingByModel = usePricingMap(turnModelIds);
+  const ledger = useMemo(
+    () => buildCostLedger(assistantTurnUsages, pricingByModel),
+    [assistantTurnUsages, pricingByModel]
+  );
+
   // Auto-scroll to bottom when messages change or streamed text grows.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -215,7 +238,16 @@ export default function ChatWidget({
       </div>
 
       {/* Persistent session-cost banner — fuel-gauge style. */}
-      <SessionTotalBanner session={session} />
+      <SessionTotalBanner
+        session={session}
+        cacheSavings={positiveLedgerSavings(ledger)}
+      />
+
+      {/* Collapsed-by-default per-turn cost and cache explanation. */}
+      <CostExplanation
+        ledger={ledger}
+        className="px-6 py-2 border-b border-gray-100 bg-white"
+      />
 
       {/* Optional resumed-chat history header. */}
       {historyHeader}

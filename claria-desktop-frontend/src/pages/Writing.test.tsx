@@ -21,6 +21,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  // The ledger's pricing map resolves per-model pricing; `null` keeps the
+  // cost-explanation rows unpriced without hitting the bridge.
+  lookupModelPricing: vi.fn(async () => null),
   loadReportWorkspace: mocks.load,
   saveReportDraft: mocks.save,
   sendReportMessage: mocks.send,

@@ -7,8 +7,14 @@ import { formatCost, formatTokens } from "../lib/cost";
 
 export default function SessionTotalBanner({
   session,
+  cacheSavings,
 }: {
   session: SessionUsage;
+  /** Ledger-derived savings vs. the no-caching counterfactual (see
+   * `positiveLedgerSavings`). Callers pass `null` while the session is at
+   * break-even or net-invested in cache writes; absent, the banner renders
+   * exactly as it did before the ledger existed. */
+  cacheSavings?: { usd: number; pct: number } | null;
 }) {
   // Any turn without a pricing entry makes the dollar total understated —
   // omit the figure and let the token counts carry the banner.
@@ -32,6 +38,14 @@ export default function SessionTotalBanner({
           <span className="text-gray-400">·</span>
           <span className="text-emerald-600 font-medium">
             saved {formatCost(session.cacheSavedUsd)} via cache
+          </span>
+        </>
+      )}
+      {cacheSavings && cacheSavings.usd > 0 && (
+        <>
+          <span className="text-gray-400">·</span>
+          <span className="text-emerald-600 font-medium">
+            Caching saved {formatCost(cacheSavings.usd)} ({cacheSavings.pct}%)
           </span>
         </>
       )}

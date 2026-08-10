@@ -3,6 +3,7 @@ import { useChatModels } from "../lib/chatModels";
 import ChatComposer from "../components/ChatComposer";
 import ChatEmptyState from "../components/ChatEmptyState";
 import ContextPills from "../components/ContextPills";
+import CostExplanation from "../components/CostExplanation";
 import { buildContextPills } from "../lib/contextPills";
 import EditableName from "../components/EditableName";
 import ModelSelect from "../components/ModelSelect";
@@ -19,7 +20,9 @@ import {
   accumulateUsage,
   type SessionUsage,
 } from "../lib/cost";
+import { buildCostLedger, positiveLedgerSavings } from "../lib/costLedger";
 import { usePreferredModel } from "../lib/usePreferredModel";
+import { usePricingMap } from "../lib/usePricingMap";
 import { useReportWorkspace } from "../lib/useReportWorkspace";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
 import {
@@ -171,6 +174,22 @@ export default function Writing({
         EMPTY_SESSION_USAGE
       ),
     [workspace?.turns]
+  );
+
+  // Cache-aware ledger over the same turn stream, for the savings line and
+  // the expandable cost-explanation panel.
+  const turnUsages = useMemo(
+    () => (workspace?.turns ?? []).map((turn) => turn.usage),
+    [workspace?.turns]
+  );
+  const turnModelIds = useMemo(
+    () => turnUsages.flatMap((usage) => (usage ? [usage.model_id] : [])),
+    [turnUsages]
+  );
+  const pricingByModel = usePricingMap(turnModelIds);
+  const ledger = useMemo(
+    () => buildCostLedger(turnUsages, pricingByModel),
+    [turnUsages, pricingByModel]
   );
 
   const addReference = useCallback(
@@ -408,7 +427,18 @@ export default function Writing({
         </div>
 
         {/* Lifetime session spend, matching chat's banner. */}
-        {session.turnCount > 0 && <SessionTotalBanner session={session} />}
+        {session.turnCount > 0 && (
+          <SessionTotalBanner
+            session={session}
+            cacheSavings={positiveLedgerSavings(ledger)}
+          />
+        )}
+
+        {/* Collapsed-by-default per-turn cost and cache explanation. */}
+        <CostExplanation
+          ledger={ledger}
+          className="px-5 py-2 border-b border-gray-200 bg-white"
+        />
 
         <div
           aria-label="Writing timeline"
