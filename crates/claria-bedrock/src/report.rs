@@ -5,14 +5,14 @@
 //! blocks for a controller-managed agent loop. It never falls back to the
 //! text-only Chat path.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, ConverseTokensRequest, InferenceConfiguration, Message,
     ReasoningContentBlock, ReasoningTextBlock, SystemContentBlock, Tool, ToolConfiguration,
     ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolResultStatus, ToolSpecification,
 };
-use aws_smithy_types::{Blob, Document, Number};
+use aws_smithy_types::Blob;
 use claria_core::models::{
     report::{
         ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
@@ -371,7 +371,7 @@ pub async fn converse_report_with_tool_limit(
                         "tool use {tool_use_id} has an empty name"
                     )));
                 }
-                let input = document_to_json(tool.input())?;
+                let input = converse::document_to_json(tool.input())?;
                 let call = ReportToolCall {
                     tool_use_id: tool_use_id.clone(),
                     name: tool.name().to_string(),
@@ -655,7 +655,7 @@ fn tool(name: &str, description: &str, schema: serde_json::Value) -> Result<Tool
     let specification = ToolSpecification::builder()
         .name(name)
         .description(description)
-        .input_schema(ToolInputSchema::Json(json_to_document(&schema)?))
+        .input_schema(ToolInputSchema::Json(converse::json_to_document(&schema)?))
         // Deliberately omit `strict`; not every supported Claude profile
         // accepts that newer Bedrock field.
         .build()
@@ -704,7 +704,7 @@ fn protocol_block_to_sdk(block: &ReportProtocolBlock) -> Result<ContentBlock, Be
             let tool = aws_sdk_bedrockruntime::types::ToolUseBlock::builder()
                 .tool_use_id(tool_use_id)
                 .name(name)
-                .input(json_to_document(input)?)
+                .input(converse::json_to_document(input)?)
                 .build()
                 .map_err(|error| BedrockError::Invocation(error.to_string()))?;
             Ok(ContentBlock::ToolUse(tool))
@@ -720,7 +720,7 @@ fn protocol_block_to_sdk(block: &ReportProtocolBlock) -> Result<ContentBlock, Be
             };
             let result = ToolResultBlock::builder()
                 .tool_use_id(tool_use_id)
-                .content(ToolResultContentBlock::Json(json_to_document(content)?))
+                .content(ToolResultContentBlock::Json(converse::json_to_document(content)?))
                 .status(status)
                 .build()
                 .map_err(|error| BedrockError::Invocation(error.to_string()))?;
@@ -745,69 +745,3 @@ fn map_stop_reason(reason: &aws_sdk_bedrockruntime::types::StopReason) -> Report
     }
 }
 
-fn json_to_document(value: &serde_json::Value) -> Result<Document, BedrockError> {
-    match value {
-        serde_json::Value::Null => Ok(Document::Null),
-        serde_json::Value::Bool(value) => Ok(Document::Bool(*value)),
-        serde_json::Value::String(value) => Ok(Document::String(value.clone())),
-        serde_json::Value::Array(values) => values
-            .iter()
-            .map(json_to_document)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Document::Array),
-        serde_json::Value::Object(values) => values
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), json_to_document(value)?)))
-            .collect::<Result<HashMap<_, _>, BedrockError>>()
-            .map(Document::Object),
-        serde_json::Value::Number(value) => {
-            let number = if let Some(value) = value.as_u64() {
-                Number::PosInt(value)
-            } else if let Some(value) = value.as_i64() {
-                Number::NegInt(value)
-            } else if let Some(value) = value.as_f64() {
-                if !value.is_finite() {
-                    return Err(BedrockError::Serialization(serde_json::Error::io(
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "non-finite JSON number",
-                        ),
-                    )));
-                }
-                Number::Float(value)
-            } else {
-                return Err(BedrockError::SchemaViolation(
-                    "JSON number could not be represented for Bedrock".to_string(),
-                ));
-            };
-            Ok(Document::Number(number))
-        }
-    }
-}
-
-fn document_to_json(document: &Document) -> Result<serde_json::Value, BedrockError> {
-    match document {
-        Document::Null => Ok(serde_json::Value::Null),
-        Document::Bool(value) => Ok(serde_json::Value::Bool(*value)),
-        Document::String(value) => Ok(serde_json::Value::String(value.clone())),
-        Document::Array(values) => values
-            .iter()
-            .map(document_to_json)
-            .collect::<Result<Vec<_>, _>>()
-            .map(serde_json::Value::Array),
-        Document::Object(values) => values
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), document_to_json(value)?)))
-            .collect::<Result<serde_json::Map<_, _>, BedrockError>>()
-            .map(serde_json::Value::Object),
-        Document::Number(Number::PosInt(value)) => Ok(serde_json::Value::Number((*value).into())),
-        Document::Number(Number::NegInt(value)) => Ok(serde_json::Value::Number((*value).into())),
-        Document::Number(Number::Float(value)) => serde_json::Number::from_f64(*value)
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| {
-                BedrockError::ResponseParse(
-                    "Bedrock document contained a non-finite number".to_string(),
-                )
-            }),
-    }
-}

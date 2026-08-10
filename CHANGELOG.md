@@ -10,6 +10,7 @@ All notable changes to Claria are documented here.
 - Chat checks the conversation against the model's context window before sending and reports overflow with the same guidance the writer gives, instead of a raw AWS error
 - Writer proposals are capped to sizes that fit one response, with large rewrites split across turns
 - Writer tool errors now tell the model exactly what was malformed, and tool descriptions spell out ID copying, 0-based positions, character units, per-turn limits, and pagination
+- Transcript translation receives its results through a forced structured tool call, verifies every segment came back, and no longer pins sampling temperature
 - Project instructions gain review-derived coding rules covering reuse, frontend patterns, Rust conventions, LLM calls, logging, security, and performance
 - Chat and writer composers both send on Enter and insert a newline with Shift+Enter, with a native resize grip replacing the chat drag handle
 - Writer turns show the same per-turn cost badges and running session spend banner as chat

@@ -351,6 +351,18 @@ async fn create_model_agreement(body: Value, state: SharedState) -> Response {
 }
 
 async fn converse(path: &str, body: Value, state: SharedState) -> Response {
+    // Forced-tool calls (`toolChoice.tool`) — currently the translation flow —
+    // are honored separately from the report protocol: the mock responds with
+    // a toolUse block for the forced tool, synthesizing a translation
+    // envelope when no scripted response is queued.
+    if let Some(forced_tool) = body
+        .pointer("/toolConfig/toolChoice/tool/name")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+    {
+        return forced_tool_converse(&forced_tool, body, state).await;
+    }
+
     // Tool-configured report calls have their own FIFO script and capture
     // surface. Scripts are never consumed by ordinary Chat or extraction, so
     // the existing text-only path remains deterministic and unchanged.
@@ -402,6 +414,110 @@ async fn converse(path: &str, body: Value, state: SharedState) -> Response {
         };
     }
 
+    plain_converse(body, state).await
+}
+
+/// Respond to a Converse request whose `toolChoice` forces a specific tool.
+///
+/// The named tool must exist in the request's tool list. Scripted responses
+/// (the tool FIFO) win; otherwise a translation-shaped envelope is
+/// synthesized from the request's `segments` payload so SDK tests can drive
+/// the real client end to end.
+async fn forced_tool_converse(forced_tool: &str, body: Value, state: SharedState) -> Response {
+    let declared = body
+        .pointer("/toolConfig/tools")
+        .and_then(Value::as_array)
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool.pointer("/toolSpec/name").and_then(Value::as_str))
+                .any(|name| name == forced_tool)
+        })
+        .unwrap_or(false);
+    if !declared {
+        return validation_error("toolChoice names a tool absent from the tool list");
+    }
+    if body
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return validation_error("messages must be a non-empty array");
+    }
+
+    let (scripted, segments) = {
+        let mut st = state.write().await;
+        st.bedrock_tool_requests.push(body.clone());
+        let scripted = if st.bedrock_tool_responses.is_empty() {
+            None
+        } else {
+            Some(st.bedrock_tool_responses.remove(0))
+        };
+        // Pull the `segments` array out of the last user message's text so
+        // the default response translates exactly what was requested.
+        let segments = body["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .and_then(|message| message["content"].as_array())
+            .and_then(|content| {
+                content.iter().find_map(|block| {
+                    let text = block.get("text").and_then(Value::as_str)?;
+                    let json_start = text.find('{')?;
+                    serde_json::from_str::<Value>(&text[json_start..]).ok()
+                })
+            })
+            .and_then(|payload| payload.get("segments").cloned());
+        (scripted, segments)
+    };
+
+    if let Some(scripted) = scripted {
+        let status =
+            StatusCode::from_u16(scripted.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return (
+            status,
+            [("content-type", "application/json")],
+            scripted.body.to_string(),
+        )
+            .into_response();
+    }
+
+    let translations: Vec<Value> = segments
+        .and_then(|segments| segments.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|segment| {
+            json!({
+                "index": segment.get("index").cloned().unwrap_or(json!(0)),
+                "translation": format!(
+                    "[EN] {}",
+                    segment.get("source_text").and_then(Value::as_str).unwrap_or("")
+                ),
+            })
+        })
+        .collect();
+
+    json_response(json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "toolUse": {
+                        "toolUseId": "mock-forced-tool-1",
+                        "name": forced_tool,
+                        "input": {"translations": translations}
+                    }
+                }]
+            }
+        },
+        "stopReason": "tool_use",
+        "usage": {
+            "inputTokens": 120,
+            "outputTokens": 40,
+        }
+    }))
+}
+
+async fn plain_converse(body: Value, state: SharedState) -> Response {
     // Plain Converse requests are captured and may be scripted; otherwise
     // the canned response below keeps existing flows deterministic.
     let scripted = {
