@@ -9,7 +9,7 @@
 //   - cost ≥ $0.10     → "$0.XX"   (2 decimals — currency style)
 //   - NaN / unparseable → "cost unavailable"
 
-import type { TurnUsage } from "./tauri";
+import type { CacheTtlChoice, TurnUsage } from "./tauri";
 
 // ---------------------------------------------------------------------------
 // Cost formatting
@@ -131,9 +131,14 @@ export function accumulateUsage(
 ): SessionUsage {
   if (!usage) return prev;
   const pricing = pricingByModel.get(usage.model_id);
+  // Savings = reads billed at the cache-read discount, minus the write
+  // premium over plain input — writes cost 1.25× (5m TTL) or 2× (1h TTL)
+  // the input rate, selected by the TTL the turn actually used.
   const savedThisTurn = pricing
     ? (usage.cache_read_input_tokens / 1_000_000) *
-      (pricing.input_per_million - pricing.cache_read_per_million)
+        (pricing.input_per_million - pricing.cache_read_per_million) -
+      (usage.cache_write_input_tokens / 1_000_000) *
+        Math.max(0, cacheWriteRatePerMillion(pricing, usage.cache_ttl) - pricing.input_per_million)
     : 0;
   const costKnown = usage.pricing_version !== 0 && Number.isFinite(usage.cost_usd);
   return {
@@ -151,6 +156,27 @@ export function accumulateUsage(
 interface ModelPricingLike {
   input_per_million: number;
   cache_read_per_million: number;
+  /// Optional so pre-1h pricing shapes keep working; absent write rates
+  /// mean the write premium is treated as zero.
+  cache_write_per_million?: number;
+  cache_write_1h_per_million?: number;
+}
+
+/**
+ * The cache-write rate for a turn, selected by the TTL it used. Absent TTL
+ * means the 5-minute default; an absent (or zero) 1-hour rate falls back to
+ * the 5-minute rate so writes are never priced at zero. Mirrors
+ * `ModelPricing::cache_write_rate_per_million` in `claria-core`.
+ */
+export function cacheWriteRatePerMillion(
+  pricing: ModelPricingLike,
+  cacheTtl: CacheTtlChoice | null | undefined
+): number {
+  const fiveMinute = pricing.cache_write_per_million ?? 0;
+  if (cacheTtl === "one_hour" && (pricing.cache_write_1h_per_million ?? 0) > 0) {
+    return pricing.cache_write_1h_per_million ?? 0;
+  }
+  return fiveMinute;
 }
 
 // ---------------------------------------------------------------------------

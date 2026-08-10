@@ -1195,6 +1195,17 @@ new_credentials: NewCredentialsInfo | null; error: string | null }
  */
 export type BootstrapStep = { name: string; status: StepStatus; detail: string | null }
 /**
+ * Time-to-live for a Bedrock prompt-cache entry.
+ * 
+ * Lives next to the capability table because which TTLs a model accepts is
+ * model knowledge: `FiveMinutes` is the server default every caching model
+ * supports, while `OneHour` requires
+ * [`ModelCapabilities::supports_extended_cache_ttl`]. Persisted on
+ * `TurnUsage` so historical costs price cache writes at the rate that was
+ * actually in effect.
+ */
+export type CacheTtlChoice = "five_minutes" | "one_hour"
+/**
  * Identity information returned by STS `GetCallerIdentity`.
  */
 export type CallerIdentity = { account_id: string; arn: string; user_id: string; is_root: boolean }
@@ -1401,8 +1412,16 @@ export type ModelDownloadProgress = { model_id: LocalModelId; downloaded_bytes: 
  * - `cache_read_per_million` — typically ~10% of `input_per_million`.
  * - `cache_write_per_million` — typically ~125% of `input_per_million`
  * for the 5-minute TTL tier.
+ * - `cache_write_1h_per_million` — typically ~200% of `input_per_million`
+ * for the extended 1-hour TTL tier.
  */
-export type ModelPricing = { input_per_million: number; output_per_million: number; cache_read_per_million: number; cache_write_per_million: number }
+export type ModelPricing = { input_per_million: number; output_per_million: number; cache_read_per_million: number; cache_write_per_million: number; 
+/**
+ * `#[serde(default)]` so pricing serialized before the 1-hour tier
+ * existed still deserializes; an absent (0.0) rate falls back to the
+ * 5-minute write rate rather than pricing 1-hour writes at zero.
+ */
+cache_write_1h_per_million?: number }
 /**
  * The non-secret half of freshly minted credentials.
  */
@@ -1666,6 +1685,12 @@ cache_read_input_tokens: number;
  * `0` when prompt caching is not active.
  */
 cache_write_input_tokens: number; 
+/**
+ * TTL carried by the request's cache points. `None` means the
+ * 5-minute default or a legacy/uncached turn — either way cache
+ * writes billed at the 5-minute rate, so absence prices correctly.
+ */
+cache_ttl?: CacheTtlChoice | null; 
 /**
  * USD cost computed at the moment of the call against `pricing_version`.
  * Frozen — never recomputed on read. UI may recompute live for
