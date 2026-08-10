@@ -8,8 +8,17 @@ pub use claria_desktop::report_authoring::{
     ReportTurnProgressView, ReportTurnResponse, ReportWorkspaceView,
 };
 
-use super::{CommandContext, parse_uuid, run};
+use super::{CommandContext, parse_uuid, run, usage_audit_details};
 use crate::state::DesktopState;
+
+/// Overlay `extra`'s fields onto the shared usage details object.
+fn merge_details(base: &mut serde_json::Value, extra: serde_json::Value) {
+    if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
+        for (key, value) in extra {
+            base.insert(key.clone(), value.clone());
+        }
+    }
+}
 
 #[tauri::command]
 #[specta::specta]
@@ -251,13 +260,14 @@ pub async fn send_report_message(
             Ok(outcome) => {
                 let attempt = outcome.attempt.clone();
                 let response = claria_desktop::report_authoring::turn_response_view(outcome);
-                ctx.record_audit(
-                    ctx.audit_event(
-                        "report_tool_turn_succeeded",
-                        "report",
-                        attempt.report_id.to_string(),
-                    )
-                    .with_details(serde_json::json!({
+                // Usage fields come from the shared helper; `usage_complete`
+                // is then overridden with the attempt's own aggregate flag
+                // (per-call omissions can leave a partial sum).
+                let mut audit_details =
+                    usage_audit_details(&attempt.model_id, Some(&attempt.usage));
+                merge_details(
+                    &mut audit_details,
+                    serde_json::json!({
                         "status": "succeeded",
                         "client_id": attempt.client_id.to_string(),
                         "report_id": attempt.report_id.to_string(),
@@ -265,17 +275,18 @@ pub async fn send_report_message(
                         "turn_id": response.turn_id,
                         "proposal_id": response.proposal_id,
                         "revision": response.workspace.draft.revision,
-                        "model_id": attempt.model_id,
                         "converse_calls": attempt.converse_calls,
                         "tool_uses": attempt.tool_uses,
                         "usage_complete": attempt.usage_complete,
-                        "input_tokens": attempt.usage.input_tokens,
-                        "output_tokens": attempt.usage.output_tokens,
-                        "cache_read_input_tokens": attempt.usage.cache_read_input_tokens,
-                        "cache_write_input_tokens": attempt.usage.cache_write_input_tokens,
-                        "cost_usd": attempt.usage.cost_usd,
-                        "pricing_version": attempt.usage.pricing_version
-                    })),
+                    }),
+                );
+                ctx.record_audit(
+                    ctx.audit_event(
+                        "report_tool_turn_succeeded",
+                        "report",
+                        attempt.report_id.to_string(),
+                    )
+                    .with_details(audit_details),
                 )
                 .await;
                 Ok(response)
@@ -286,25 +297,26 @@ pub async fn send_report_message(
                     || client_id.to_string(),
                     |value| value.report_id.to_string(),
                 );
+                let mut audit_details = usage_audit_details(
+                    &model_id,
+                    attempt.as_ref().map(|value| &value.usage),
+                );
+                merge_details(
+                    &mut audit_details,
+                    serde_json::json!({
+                        "status": "failed",
+                        "client_id": client_id.to_string(),
+                        "report_id": attempt.as_ref().map(|value| value.report_id.to_string()),
+                        "attempt_id": attempt.as_ref().map(|value| value.attempt_id.to_string()),
+                        "failure_code": error.failure_code(),
+                        "converse_calls": attempt.as_ref().map_or(0, |value| value.converse_calls),
+                        "tool_uses": attempt.as_ref().map_or(0, |value| value.tool_uses),
+                        "usage_complete": attempt.as_ref().is_some_and(|value| value.usage_complete),
+                    }),
+                );
                 ctx.record_audit(
                     ctx.audit_event("report_tool_turn_failed", "report", resource_id)
-                        .with_details(serde_json::json!({
-                            "status": "failed",
-                            "client_id": client_id.to_string(),
-                            "report_id": attempt.as_ref().map(|value| value.report_id.to_string()),
-                            "attempt_id": attempt.as_ref().map(|value| value.attempt_id.to_string()),
-                            "model_id": model_id,
-                            "failure_code": error.failure_code(),
-                            "converse_calls": attempt.as_ref().map_or(0, |value| value.converse_calls),
-                            "tool_uses": attempt.as_ref().map_or(0, |value| value.tool_uses),
-                            "usage_complete": attempt.as_ref().is_none_or(|value| value.usage_complete),
-                            "input_tokens": attempt.as_ref().map_or(0, |value| value.usage.input_tokens),
-                            "output_tokens": attempt.as_ref().map_or(0, |value| value.usage.output_tokens),
-                            "cache_read_input_tokens": attempt.as_ref().map_or(0, |value| value.usage.cache_read_input_tokens),
-                            "cache_write_input_tokens": attempt.as_ref().map_or(0, |value| value.usage.cache_write_input_tokens),
-                            "cost_usd": attempt.as_ref().map_or(0.0, |value| value.usage.cost_usd),
-                            "pricing_version": attempt.as_ref().map_or(0, |value| value.usage.pricing_version)
-                        })),
+                        .with_details(audit_details),
                 )
                 .await;
                 Err(error.into())

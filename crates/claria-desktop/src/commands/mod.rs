@@ -119,6 +119,16 @@ pub(crate) fn parse_uuid(value: &str) -> Result<uuid::Uuid, CommandError> {
     Ok(value.parse::<uuid::Uuid>()?)
 }
 
+/// First `"{prefix} (N)"` (N = 1, 2, …) that does not collide with an
+/// existing name. Shared by every auto-numbered-name surface ("Chat (N)",
+/// "Writer Template (N)").
+pub(crate) fn next_ordinal_name(prefix: &str, existing: &[String]) -> String {
+    (1..)
+        .map(|ordinal| format!("{prefix} ({ordinal})"))
+        .find(|candidate| !existing.contains(candidate))
+        .expect("an unused ordinal exists")
+}
+
 // ---------------------------------------------------------------------------
 // CommandContext — config + AWS handles every S3-touching command needs
 // ---------------------------------------------------------------------------

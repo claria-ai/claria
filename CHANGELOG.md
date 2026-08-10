@@ -20,6 +20,11 @@ All notable changes to Claria are documented here.
 - Creating the IAM policy without a resolved account ID now fails instead of silently widening resource scopes to a wildcard
 - The plaintext-with-file-permissions credential storage model is documented, with keychain migration tracked
 - The provisioner receives its local state directory from the desktop instead of deriving app paths itself
+- Both upload paths share one skeleton and one content-type map, differing only in whether a failed sidecar fails the command
+- Restoring a deleted file uses the race-safe conditional restore, and record-file and prompt version listings, reads, and restores share one implementation
+- Report writer turn audit events build their usage fields through the shared helper and no longer claim complete usage when no attempt ran
+- Numbered default names share one generator, the prompt-cache settings shrink to the fields actually used, and the writer call ceiling is derived from the round ceiling
+- Restore commands no longer take an ignored version parameter
 - Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
 - Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
 - Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed

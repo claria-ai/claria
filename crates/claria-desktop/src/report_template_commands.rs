@@ -7,7 +7,7 @@ use claria_desktop::report_authoring::{
 };
 
 use crate::{
-    commands::{CommandContext, CommandError, parse_uuid, run},
+    commands::{CommandContext, CommandError, next_ordinal_name, parse_uuid, run},
     state::{DesktopState, PendingReportTemplate},
 };
 
@@ -72,20 +72,17 @@ pub async fn upload_writer_template(
         let ctx = CommandContext::new(&state).await?;
         let templates =
             claria_report_authoring::writer_templates::list(&ctx.s3, &ctx.bucket).await?;
-        let ordinal = (1..)
-            .find(|ordinal| {
-                let candidate = format!("Writer Template ({ordinal})");
-                templates
-                    .iter()
-                    .all(|template| template.metadata.name != candidate)
-            })
-            .expect("an unused writer template ordinal exists");
+        let existing: Vec<String> = templates
+            .iter()
+            .map(|template| template.metadata.name.clone())
+            .collect();
+        let name = next_ordinal_name("Writer Template", &existing);
         let id = uuid::Uuid::new_v4();
         let template = claria_report_authoring::writer_templates::create(
             &ctx.s3,
             &ctx.bucket,
             id,
-            &format!("Writer Template ({ordinal})"),
+            &name,
             bytes,
         )
         .await?;

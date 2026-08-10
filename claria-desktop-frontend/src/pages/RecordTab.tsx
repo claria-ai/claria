@@ -246,7 +246,7 @@ export default function RecordTab({
             onRestore={(df) =>
               restore(
                 df.filename,
-                () => restoreDeletedFile(clientId, df.filename, df.version_id),
+                () => restoreDeletedFile(clientId, df.filename),
                 (f) => f.filename === df.filename,
                 refresh,
               )

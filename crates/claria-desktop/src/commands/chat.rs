@@ -8,7 +8,7 @@ use claria_desktop::config::ClariaConfig;
 use claria_provisioner::PlanEntry;
 
 use super::{
-    CommandContext, CommandError, parse_uuid, prompts::load_prompt,
+    CommandContext, CommandError, next_ordinal_name, parse_uuid, prompts::load_prompt,
     records::load_record_context, run, usage_audit_details,
 };
 use crate::state::DesktopState;
@@ -216,19 +216,20 @@ fn chat_history_summary(
 fn next_chat_history_name(
     rows: &[(claria_core::models::chat_history::ChatHistory, u64)],
 ) -> String {
-    (1..)
-        .map(|ordinal| format!("Chat ({ordinal})"))
-        .find(|candidate| {
-            rows.iter().enumerate().all(|(index, (history, _))| {
-                let existing = if history.name.trim().is_empty() {
-                    format!("Chat ({})", index + 1)
-                } else {
-                    history.name.clone()
-                };
-                existing != *candidate
-            })
+    // Unnamed chats occupy their positional fallback name ("Chat (idx+1)"),
+    // so those count as taken too.
+    let existing: Vec<String> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, (history, _))| {
+            if history.name.trim().is_empty() {
+                format!("Chat ({})", index + 1)
+            } else {
+                history.name.clone()
+            }
         })
-        .expect("an unused chat ordinal exists")
+        .collect();
+    next_ordinal_name("Chat", &existing)
 }
 
 fn chat_history_detail(
@@ -550,9 +551,7 @@ fn build_cache_strategy(cfg: &ClariaConfig, model_id: &str) -> claria_bedrock::c
     if !cfg.prompt_caching_enabled {
         return claria_bedrock::chat::CacheStrategy::disabled();
     }
-    let mut strategy = claria_bedrock::chat::CacheStrategy::enabled();
-    strategy.model_supports_caching = model_supports_prompt_caching(model_id);
-    strategy
+    claria_bedrock::chat::CacheStrategy::enabled_for_model(model_supports_prompt_caching(model_id))
 }
 
 /// True if the model_id (inference profile or bare foundation id) honours

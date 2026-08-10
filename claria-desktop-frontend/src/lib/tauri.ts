@@ -730,16 +730,16 @@ export async function listDeletedFiles(clientId: string): Promise<DeletedFile[]>
   return unwrap(await commands.listDeletedFiles(clientId));
 }
 
-export async function restoreDeletedFile(clientId: string, filename: string, versionId: string): Promise<void> {
-  unwrap(await commands.restoreDeletedFile(clientId, filename, versionId));
+export async function restoreDeletedFile(clientId: string, filename: string): Promise<void> {
+  unwrap(await commands.restoreDeletedFile(clientId, filename));
 }
 
 export async function listDeletedClients(): Promise<DeletedClient[]> {
   return unwrap(await commands.listDeletedClients());
 }
 
-export async function restoreClient(clientId: string, versionId: string): Promise<void> {
-  unwrap(await commands.restoreClient(clientId, versionId));
+export async function restoreClient(clientId: string): Promise<void> {
+  unwrap(await commands.restoreClient(clientId));
 }
 
 // ---------------------------------------------------------------------------

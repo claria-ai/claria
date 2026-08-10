@@ -34,6 +34,64 @@ pub struct DeletedClient {
     pub version_id: String,
 }
 
+// ---------------------------------------------------------------------------
+// Generic version helpers — one implementation for every versioned key
+// (record files and prompts both route through these with a resolved key).
+// ---------------------------------------------------------------------------
+
+/// List the non-delete-marker versions of `key` as frontend rows.
+pub(crate) async fn list_versions_for_key(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+) -> Result<Vec<FileVersion>, CommandError> {
+    let versions = claria_storage::objects::list_object_versions(s3, bucket, key).await?;
+
+    Ok(versions
+        .into_iter()
+        .filter(|v| !v.is_delete_marker)
+        .map(|v| FileVersion {
+            version_id: v.version_id,
+            size: v.size as i32,
+            last_modified: v.last_modified,
+            is_latest: v.is_latest,
+        })
+        .collect())
+}
+
+/// Fetch one version of `key` and decode it as UTF-8 text.
+pub(crate) async fn get_version_text_for_key(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+    version_id: &str,
+) -> Result<String, CommandError> {
+    let output = claria_storage::objects::get_object_version(s3, bucket, key, version_id).await?;
+    String::from_utf8(output.body).map_err(|e| CommandError::Msg(e.to_string()))
+}
+
+/// Restore a previous version of `key` by re-putting its content as the new
+/// current version. `content_type` overrides the fetched version's own
+/// content type when given.
+pub(crate) async fn restore_version_for_key(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+    version_id: &str,
+    content_type: Option<&str>,
+) -> Result<(), CommandError> {
+    let output = claria_storage::objects::get_object_version(s3, bucket, key, version_id).await?;
+    claria_storage::objects::put_object(
+        s3,
+        bucket,
+        key,
+        output.body,
+        content_type.or(output.content_type.as_deref()),
+    )
+    .await?;
+    Ok(())
+}
+
 /// List all versions of a specific file in a client's record.
 #[tauri::command]
 #[specta::specta]
@@ -48,19 +106,7 @@ pub async fn list_file_versions(
         let id = parse_uuid(&client_id)?;
         let key = claria_core::s3_keys::client_record_file(id, &filename);
 
-        let versions =
-            claria_storage::objects::list_object_versions(&ctx.s3, &ctx.bucket, &key).await?;
-
-        Ok(versions
-            .into_iter()
-            .filter(|v| !v.is_delete_marker)
-            .map(|v| FileVersion {
-                version_id: v.version_id,
-                size: v.size as i32,
-                last_modified: v.last_modified,
-                is_latest: v.is_latest,
-            })
-            .collect())
+        list_versions_for_key(&ctx.s3, &ctx.bucket, &key).await
     })
     .await
 }
@@ -80,11 +126,7 @@ pub async fn get_file_version_text(
         let id = parse_uuid(&client_id)?;
         let key = claria_core::s3_keys::client_record_file(id, &filename);
 
-        let output =
-            claria_storage::objects::get_object_version(&ctx.s3, &ctx.bucket, &key, &version_id)
-                .await?;
-
-        String::from_utf8(output.body).map_err(|e| CommandError::Msg(e.to_string()))
+        get_version_text_for_key(&ctx.s3, &ctx.bucket, &key, &version_id).await
     })
     .await
 }
@@ -104,20 +146,7 @@ pub async fn restore_file_version(
         let id = parse_uuid(&client_id)?;
         let key = claria_core::s3_keys::client_record_file(id, &filename);
 
-        // Fetch the old version's content.
-        let output =
-            claria_storage::objects::get_object_version(&ctx.s3, &ctx.bucket, &key, &version_id)
-                .await?;
-
-        // Write it back as the current version.
-        claria_storage::objects::put_object(
-            &ctx.s3,
-            &ctx.bucket,
-            &key,
-            output.body,
-            output.content_type.as_deref(),
-        )
-        .await?;
+        restore_version_for_key(&ctx.s3, &ctx.bucket, &key, &version_id, None).await?;
 
         tracing::info!(client_id = %id, version_id, "file version restored");
 
@@ -195,46 +224,30 @@ pub async fn list_deleted_files(
 ///
 /// This preserves the full version history (including the delete marker) for
 /// HIPAA audit-trail compliance, instead of removing the delete marker.
+/// Delegates to the storage crate's conditional restore, so a concurrent
+/// re-upload of the same filename is never overwritten.
 #[tauri::command]
 #[specta::specta]
 pub async fn restore_deleted_file(
     state: State<'_, DesktopState>,
     client_id: String,
     filename: String,
-    version_id: String,
 ) -> Result<(), String> {
-    let _ = version_id; // kept for API compatibility; we find the latest real version ourselves
     run("restore_deleted_file", async {
         let ctx = CommandContext::new(&state).await?;
 
         let id = parse_uuid(&client_id)?;
         let key = claria_core::s3_keys::client_record_file(id, &filename);
 
-        // Find the most recent non-delete-marker version.
-        let versions =
-            claria_storage::objects::list_object_versions(&ctx.s3, &ctx.bucket, &key).await?;
-        let real = versions
-            .iter()
-            .find(|v| !v.is_delete_marker)
-            .ok_or_else(|| CommandError::Msg(format!("no restorable version found for {key}")))?;
-
-        // Fetch that version's content and write it back as a new current version.
-        let output = claria_storage::objects::get_object_version(
-            &ctx.s3,
-            &ctx.bucket,
-            &key,
-            &real.version_id,
-        )
-        .await?;
-
-        claria_storage::objects::put_object(
-            &ctx.s3,
-            &ctx.bucket,
-            &key,
-            output.body,
-            output.content_type.as_deref(),
-        )
-        .await?;
+        let restored =
+            claria_storage::objects::restore_deleted_object_if_absent(&ctx.s3, &ctx.bucket, &key)
+                .await?;
+        if !restored {
+            // Another writer recreated the file first; its current content
+            // stands and the user's goal — the file exists again — is met.
+            tracing::info!(client_id = %id, "deleted file already restored by another writer");
+            return Ok(());
+        }
 
         tracing::info!(client_id = %id, "deleted file restored");
 
@@ -366,9 +379,7 @@ async fn deleted_client_name(
 pub async fn restore_client(
     state: State<'_, DesktopState>,
     client_id: String,
-    version_id: String,
 ) -> Result<(), String> {
-    let _ = version_id; // kept for API compatibility; we find the latest real version ourselves
     run("restore_client", async {
         let ctx = CommandContext::new(&state).await?;
 

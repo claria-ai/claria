@@ -883,9 +883,9 @@ async listDeletedFiles(clientId: string) : Promise<Result<DeletedFile[], string>
  * This preserves the full version history (including the delete marker) for
  * HIPAA audit-trail compliance, instead of removing the delete marker.
  */
-async restoreDeletedFile(clientId: string, filename: string, versionId: string) : Promise<Result<null, string>> {
+async restoreDeletedFile(clientId: string, filename: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("restore_deleted_file", { clientId, filename, versionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("restore_deleted_file", { clientId, filename }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -908,9 +908,9 @@ async listDeletedClients() : Promise<Result<DeletedClient[], string>> {
  * This preserves the full version history (including the delete marker) for
  * HIPAA audit-trail compliance, instead of removing the delete marker.
  */
-async restoreClient(clientId: string, versionId: string) : Promise<Result<null, string>> {
+async restoreClient(clientId: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("restore_client", { clientId, versionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("restore_client", { clientId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

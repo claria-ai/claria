@@ -46,7 +46,10 @@ pub const DEFAULT_MAX_TOOL_USES_PER_RESPONSE: u32 =
     claria_bedrock::report::DEFAULT_MAX_TOOL_USES_PER_RESPONSE as u32;
 pub const DEFAULT_MAX_RETAINED_TURNS: u32 = MAX_REPORT_TURNS as u32;
 pub const MAX_CONFIGURABLE_TOOL_ROUNDS: u32 = 100;
-pub const MAX_CONFIGURABLE_CONVERSE_CALLS: u32 = 101;
+/// Every tool round costs one Converse call, and the turn always ends with
+/// one more call that produces the final reply — hence rounds + 1, derived
+/// so the two ceilings cannot drift apart.
+pub const MAX_CONFIGURABLE_CONVERSE_CALLS: u32 = MAX_CONFIGURABLE_TOOL_ROUNDS + 1;
 pub const MAX_CONFIGURABLE_TOOL_USES_PER_RESPONSE: u32 =
     claria_bedrock::report::MAX_TOOL_USES_PER_RESPONSE as u32;
 pub const MAX_CONFIGURABLE_RETAINED_TURNS: u32 = MAX_REPORT_TURNS as u32;

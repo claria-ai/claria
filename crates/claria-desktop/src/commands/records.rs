@@ -140,20 +140,10 @@ pub async fn search_record_contents(
 ///
 /// Printable UTF-8 files remain directly readable under their original names.
 /// PDF and DOCX files receive a structured-Markdown `.text` sidecar via
-/// Bedrock; audio files receive a transcript sidecar.
+/// Bedrock; audio files receive a transcript sidecar. Sidecar generation
+/// failure degrades to a warning — the original upload has already succeeded.
 #[tauri::command]
 #[specta::specta]
-// Spans and log lines carry the client UUID, extension, and byte count —
-// never the client-chosen filename, which is PHI.
-#[tracing::instrument(
-    level = "trace",
-    skip_all,
-    fields(
-        client_id = %client_id,
-        extension = tracing::field::Empty,
-        bytes = tracing::field::Empty
-    )
-)]
 pub async fn upload_record_file(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -161,152 +151,19 @@ pub async fn upload_record_file(
 ) -> Result<RecordFile, String> {
     run("upload_record_file", async {
         let ctx = CommandContext::new(&state).await?;
-
-        let id = parse_uuid(&client_id)?;
-
-        let path = std::path::Path::new(&file_path);
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| CommandError::Msg("Invalid file path".to_string()))?;
-
-        let bytes = std::fs::read(path)
-            .map_err(|e| CommandError::Msg(format!("Failed to read file: {e}")))?;
-        let file_size = bytes.len() as i32;
-
-        let extension = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let span = tracing::Span::current();
-        span.record("extension", extension.as_str());
-        span.record("bytes", bytes.len() as u64);
-
-        let content_type = record_upload_content_type(&extension, &bytes);
-
-        // Upload the original file.
-        let key = claria_core::s3_keys::client_record_file(id, filename);
-        claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, bytes.clone(), content_type)
-            .await?;
-
-        tracing::info!(client_id = %id, extension, "record file uploaded");
-
-        // The durable audit trail may carry the filename; it lives only in
-        // access-controlled S3.
-        ctx.record_audit(
-            ctx.audit_event("record_file_uploaded", "record_file", filename)
-                .with_details(serde_json::json!({
-                    "client_id": id.to_string(),
-                    "bytes": file_size,
-                })),
-        )
-        .await;
-
-        // Generate sidecar text extraction for supported document types.
-        if let Some(format) = claria_bedrock::extract::document_format_for_extension(&extension) {
-            let sidecar_key = format!("{key}.text");
-            let extraction_prompt = load_prompt(&ctx.s3, &ctx.bucket, "pdf-extraction").await?;
-            match claria_bedrock::extract::extract_document_text(
-                &ctx.sdk_config,
-                EXTRACTION_MODEL_ID,
-                &bytes,
-                filename,
-                format,
-                &extraction_prompt,
-            )
-            .await
-            {
-                Ok((text, usage)) => {
-                    claria_storage::objects::put_object(
-                        &ctx.s3,
-                        &ctx.bucket,
-                        &sidecar_key,
-                        text.into_bytes(),
-                        Some("text/markdown; charset=utf-8"),
-                    )
-                    .await?;
-
-                    let mut audit_details =
-                        usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref());
-                    audit_details["client_id"] = serde_json::json!(id.to_string());
-                    ctx.record_audit(
-                        ctx.audit_event("extract_document_text", "record_file", filename)
-                            .with_details(audit_details),
-                    )
-                    .await;
-
-                    tracing::info!(client_id = %id, "sidecar text extraction uploaded");
-                }
-                Err(e) => {
-                    // Non-fatal: the original file is already uploaded.
-                    tracing::warn!(
-                        client_id = %id,
-                        error = %e,
-                        "sidecar text extraction failed"
-                    );
-                }
-            }
-        } else if let Some(media_format) = claria_transcribe::media_format_for_extension(&extension)
-        {
-            let sidecar_key = format!("{key}.text");
-            // Drag-drop uses saved preferences as-is. The wizard's separate
-            // command (`upload_record_file_with_options`) is the override path.
-            let options = build_transcribe_options(&ctx.cfg.transcription, None);
-            let translate = ctx.cfg.transcription.translate_to_english;
-
-            match claria_transcribe::transcribe_audio_with_options(
-                &ctx.sdk_config,
-                &ctx.bucket,
-                &key,
-                media_format,
-                &options,
-            )
-            .await
-            {
-                Ok(mut result) => {
-                    maybe_translate(&ctx, &mut result, translate).await;
-                    let body = claria_transcribe::format_transcript_body(&result);
-                    claria_storage::objects::put_object(
-                        &ctx.s3,
-                        &ctx.bucket,
-                        &sidecar_key,
-                        body.into_bytes(),
-                        Some("text/plain"),
-                    )
-                    .await?;
-
-                    tracing::info!(client_id = %id, "sidecar audio transcription uploaded");
-                }
-                Err(e) => {
-                    // Non-fatal: the original file is already uploaded.
-                    tracing::warn!(
-                        client_id = %id,
-                        error = %e,
-                        "sidecar audio transcription failed"
-                    );
-                }
-            }
-        }
-
-        Ok(RecordFile {
-            filename: filename.to_string(),
-            size: file_size,
-            uploaded_at: Some(jiff::Timestamp::now().to_string()),
-        })
+        // Drag-drop path: saved transcription preferences as-is.
+        upload_record_file_inner(&ctx, &client_id, &file_path, None, false).await
     })
     .await
 }
 
 /// Upload an audio file and transcribe with the wizard's per-file options.
 ///
-/// Mirrors `upload_record_file` but skips the legacy single-language path —
-/// always goes through the new structured transcribe + optional Bedrock
-/// translation. The `.text` sidecar contains the rendered headered body.
+/// Same skeleton as [`upload_record_file`], but restricted to audio and with
+/// a fatal sidecar: the wizard exists to produce a transcript, so a failed
+/// transcription fails the command instead of degrading to a warning.
 #[tauri::command]
 #[specta::specta]
-#[tracing::instrument(level = "trace", skip_all, fields(client_id = %client_id))]
 pub async fn upload_record_file_with_options(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -315,60 +172,164 @@ pub async fn upload_record_file_with_options(
 ) -> Result<RecordFile, String> {
     run("upload_record_file_with_options", async {
         let ctx = CommandContext::new(&state).await?;
+        let extension = file_extension(std::path::Path::new(&file_path));
+        if claria_transcribe::media_format_for_extension(&extension).is_none() {
+            return Err(CommandError::Msg(format!(
+                "Unsupported audio format: .{extension}"
+            )));
+        }
+        upload_record_file_inner(&ctx, &client_id, &file_path, overrides, true).await
+    })
+    .await
+}
 
-        let id = parse_uuid(&client_id)?;
+fn file_extension(path: &std::path::Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+}
 
-        let path = std::path::Path::new(&file_path);
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| CommandError::Msg("Invalid file path".to_string()))?;
-        let extension = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        let media_format = claria_transcribe::media_format_for_extension(&extension)
-            .ok_or_else(|| CommandError::Msg(format!("Unsupported audio format: .{extension}")))?;
+/// The one upload skeleton behind both upload commands: read, upload, audit,
+/// then generate the appropriate `.text` sidecar.
+///
+/// `sidecar_failure_fatal` is the only behavioral fork: the wizard treats a
+/// failed sidecar as a failed command, drag-drop degrades it to a warning.
+// Spans and log lines carry the client UUID, extension, and byte count —
+// never the client-chosen filename, which is PHI.
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(
+        client_id = %client_id,
+        extension = tracing::field::Empty,
+        bytes = tracing::field::Empty,
+        sidecar_failure_fatal,
+    )
+)]
+async fn upload_record_file_inner(
+    ctx: &CommandContext,
+    client_id: &str,
+    file_path: &str,
+    overrides: Option<TranscribeOptionsOverrides>,
+    sidecar_failure_fatal: bool,
+) -> Result<RecordFile, CommandError> {
+    let id = parse_uuid(client_id)?;
 
-        let bytes = std::fs::read(path)
-            .map_err(|e| CommandError::Msg(format!("Failed to read file: {e}")))?;
-        let file_size = bytes.len() as i32;
+    let path = std::path::Path::new(file_path);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| CommandError::Msg("Invalid file path".to_string()))?;
 
-        let content_type = record_upload_content_type(&extension, &bytes);
+    let bytes = std::fs::read(path)
+        .map_err(|e| CommandError::Msg(format!("Failed to read file: {e}")))?;
+    let file_size = bytes.len() as i32;
 
-        let key = claria_core::s3_keys::client_record_file(id, filename);
-        claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, bytes, content_type)
-            .await?;
-        tracing::info!(client_id = %id, extension, "record file uploaded (wizard path)");
+    let extension = file_extension(path);
 
+    let span = tracing::Span::current();
+    span.record("extension", extension.as_str());
+    span.record("bytes", bytes.len() as u64);
+
+    let content_type = record_upload_content_type(&extension, &bytes);
+
+    // Upload the original file.
+    let key = claria_core::s3_keys::client_record_file(id, filename);
+    claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, bytes.clone(), content_type)
+        .await?;
+
+    tracing::info!(client_id = %id, extension, "record file uploaded");
+
+    // The durable audit trail may carry the filename; it lives only in
+    // access-controlled S3.
+    ctx.record_audit(
+        ctx.audit_event("record_file_uploaded", "record_file", filename)
+            .with_details(serde_json::json!({
+                "client_id": id.to_string(),
+                "bytes": file_size,
+            })),
+    )
+    .await;
+
+    // Generate the sidecar for supported document and audio types.
+    let sidecar = generate_upload_sidecar(ctx, id, filename, &extension, &key, &bytes, overrides)
+        .await;
+    if let Err(e) = sidecar {
+        if sidecar_failure_fatal {
+            return Err(e);
+        }
+        // Non-fatal: the original file is already uploaded.
+        tracing::warn!(client_id = %id, error = %e, "sidecar generation failed");
+    }
+
+    Ok(RecordFile {
+        filename: filename.to_string(),
+        size: file_size,
+        uploaded_at: Some(jiff::Timestamp::now().to_string()),
+    })
+}
+
+/// Write the `.text` sidecar for a just-uploaded record file: structured
+/// Markdown for documents, a rendered transcript for audio, nothing for
+/// directly readable files.
+async fn generate_upload_sidecar(
+    ctx: &CommandContext,
+    id: uuid::Uuid,
+    filename: &str,
+    extension: &str,
+    key: &str,
+    bytes: &[u8],
+    overrides: Option<TranscribeOptionsOverrides>,
+) -> Result<(), CommandError> {
+    let sidecar_key = format!("{key}.text");
+
+    if let Some(format) = claria_bedrock::extract::document_format_for_extension(extension) {
+        let extraction_prompt = load_prompt(&ctx.s3, &ctx.bucket, "pdf-extraction").await?;
+        let (text, usage) = claria_bedrock::extract::extract_document_text(
+            &ctx.sdk_config,
+            EXTRACTION_MODEL_ID,
+            bytes,
+            filename,
+            format,
+            &extraction_prompt,
+        )
+        .await?;
+
+        claria_storage::objects::put_object(
+            &ctx.s3,
+            &ctx.bucket,
+            &sidecar_key,
+            text.into_bytes(),
+            Some("text/markdown; charset=utf-8"),
+        )
+        .await?;
+
+        let mut audit_details = usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref());
+        audit_details["client_id"] = serde_json::json!(id.to_string());
         ctx.record_audit(
-            ctx.audit_event("record_file_uploaded", "record_file", filename)
-                .with_details(serde_json::json!({
-                    "client_id": id.to_string(),
-                    "bytes": file_size,
-                })),
+            ctx.audit_event("extract_document_text", "record_file", filename)
+                .with_details(audit_details),
         )
         .await;
 
+        tracing::info!(client_id = %id, "sidecar text extraction uploaded");
+    } else if let Some(media_format) = claria_transcribe::media_format_for_extension(extension) {
         let translate = overrides
             .as_ref()
             .and_then(|o| o.translate_to_english)
             .unwrap_or(ctx.cfg.transcription.translate_to_english);
         let options = build_transcribe_options(&ctx.cfg.transcription, overrides);
 
-        let sidecar_key = format!("{key}.text");
         let mut result = claria_transcribe::transcribe_audio_with_options(
             &ctx.sdk_config,
             &ctx.bucket,
-            &key,
+            key,
             media_format,
             &options,
         )
         .await?;
-
-        maybe_translate(&ctx, &mut result, translate).await;
-
+        maybe_translate(ctx, &mut result, translate).await;
         let body = claria_transcribe::format_transcript_body(&result);
         claria_storage::objects::put_object(
             &ctx.s3,
@@ -379,15 +340,10 @@ pub async fn upload_record_file_with_options(
         )
         .await?;
 
-        tracing::info!(client_id = %id, "wizard transcription complete");
+        tracing::info!(client_id = %id, "sidecar audio transcription uploaded");
+    }
 
-        Ok(RecordFile {
-            filename: filename.to_string(),
-            size: file_size,
-            uploaded_at: Some(jiff::Timestamp::now().to_string()),
-        })
-    })
-    .await
+    Ok(())
 }
 
 /// Save edits to the transcript sidecar. S3 versioning preserves every prior

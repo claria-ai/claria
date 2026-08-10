@@ -297,10 +297,6 @@ pub fn chat_input_token_budget(model_id: &str) -> u32 {
 pub struct CacheStrategy {
     /// Whether prompt caching is enabled at all (config-flag controlled).
     pub enabled: bool,
-    /// Minimum estimated prefix tokens before we emit a `cachePoint`.
-    /// Default `1200` — Bedrock's 1,024-token floor plus 18% slack for
-    /// tokenizer estimate error.
-    pub min_prefix_tokens: u32,
     /// Whether the model family is known to support prompt caching.
     /// `claria-bedrock` does not maintain this catalogue itself; the
     /// caller (claria-desktop) decides based on the configured model.
@@ -308,14 +304,17 @@ pub struct CacheStrategy {
 }
 
 impl CacheStrategy {
-    /// Default — caching ON with a 1,200-token floor. The caller still
-    /// has to set `model_supports_caching` to `true` for the model to
-    /// actually receive a cache point.
-    pub fn enabled() -> Self {
+    /// Minimum estimated prefix tokens before we emit a `cachePoint`:
+    /// Bedrock's 1,024-token floor plus 18% slack for tokenizer estimate
+    /// error.
+    pub const MIN_PREFIX_TOKENS: u32 = 1200;
+
+    /// Caching ON when `model_supports_caching`; the token floor still
+    /// applies per prompt.
+    pub fn enabled_for_model(model_supports_caching: bool) -> Self {
         Self {
             enabled: true,
-            min_prefix_tokens: 1200,
-            model_supports_caching: false,
+            model_supports_caching,
         }
     }
 
@@ -323,7 +322,6 @@ impl CacheStrategy {
     pub fn disabled() -> Self {
         Self {
             enabled: false,
-            min_prefix_tokens: 1200,
             model_supports_caching: false,
         }
     }
@@ -331,15 +329,15 @@ impl CacheStrategy {
     /// Whether to emit a `cachePoint` after the system prefix.
     ///
     /// Uses a cheap char-based estimate of `len/4 ≈ tokens` (English/code/
-    /// XML averages). If the estimate falls below `min_prefix_tokens` we
-    /// skip the marker — Bedrock would silently no-op anyway and the log
+    /// XML averages). If the estimate falls below [`Self::MIN_PREFIX_TOKENS`]
+    /// we skip the marker — Bedrock would silently no-op anyway and the log
     /// line is confusing.
     pub fn cache_system_prefix(&self, system_prompt: &str) -> bool {
         if !self.enabled || !self.model_supports_caching {
             return false;
         }
         let est_tokens = (system_prompt.len() / 4) as u32;
-        est_tokens >= self.min_prefix_tokens
+        est_tokens >= Self::MIN_PREFIX_TOKENS
     }
 }
 

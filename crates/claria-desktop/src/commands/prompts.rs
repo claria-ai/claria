@@ -3,7 +3,12 @@
 
 use tauri::State;
 
-use super::{CommandContext, CommandError, run, versions::FileVersion};
+use super::{
+    CommandContext, CommandError, run,
+    versions::{
+        FileVersion, get_version_text_for_key, list_versions_for_key, restore_version_for_key,
+    },
+};
 use crate::state::DesktopState;
 
 /// Default system prompt, used when no custom prompt has been saved to S3.
@@ -180,19 +185,7 @@ pub async fn list_prompt_versions(
 
         let ctx = CommandContext::new(&state).await?;
 
-        let versions =
-            claria_storage::objects::list_object_versions(&ctx.s3, &ctx.bucket, key).await?;
-
-        Ok(versions
-            .into_iter()
-            .filter(|v| !v.is_delete_marker)
-            .map(|v| FileVersion {
-                version_id: v.version_id,
-                size: v.size as i32,
-                last_modified: v.last_modified,
-                is_latest: v.is_latest,
-            })
-            .collect())
+        list_versions_for_key(&ctx.s3, &ctx.bucket, key).await
     })
     .await
 }
@@ -210,11 +203,7 @@ pub async fn get_prompt_version(
 
         let ctx = CommandContext::new(&state).await?;
 
-        let output =
-            claria_storage::objects::get_object_version(&ctx.s3, &ctx.bucket, key, &version_id)
-                .await?;
-
-        String::from_utf8(output.body).map_err(|e| CommandError::Msg(e.to_string()))
+        get_version_text_for_key(&ctx.s3, &ctx.bucket, key, &version_id).await
     })
     .await
 }
@@ -232,18 +221,8 @@ pub async fn restore_prompt_version(
 
         let ctx = CommandContext::new(&state).await?;
 
-        let output =
-            claria_storage::objects::get_object_version(&ctx.s3, &ctx.bucket, key, &version_id)
-                .await?;
-
-        claria_storage::objects::put_object(
-            &ctx.s3,
-            &ctx.bucket,
-            key,
-            output.body,
-            Some("text/markdown"),
-        )
-        .await?;
+        restore_version_for_key(&ctx.s3, &ctx.bucket, key, &version_id, Some("text/markdown"))
+            .await?;
 
         tracing::info!(prompt_name, version_id, "prompt version restored");
 
