@@ -9,7 +9,6 @@ import {
   listRecordContext,
   renameChatHistory,
   type ChatMessage,
-  type ChatModel,
   type RecordContext,
 } from "../lib/tauri";
 import type { Page } from "../App";
@@ -41,20 +40,12 @@ export default function ClientChat({
   navigate,
   clientId,
   resumeChat,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
   /// A persisted chat being resumed. Identity changes must remount this
   /// component — the caller keys on `resumeChat?.chatId`.
   resumeChat?: ResumeChat | null;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
 }) {
   const chatIdRef = useRef<string | null>(resumeChat?.chatId ?? null);
   const [chatName, setChatName] = useState(resumeChat?.name ?? "New chat");
@@ -286,10 +277,6 @@ export default function ClientChat({
   return (
     <div className="flex flex-col flex-1">
       <ChatWidget
-        chatModels={chatModels}
-        chatModelsLoading={chatModelsLoading}
-        chatModelsError={chatModelsError}
-        preferredModelId={preferredModelId}
         onSend={handleSend}
         initialMessages={initialMessages}
         initialModelId={initialModelId}

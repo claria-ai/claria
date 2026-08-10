@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type ChatModel } from "../lib/tauri";
+import { useChatModels } from "../lib/chatModels";
 import ChatComposer from "../components/ChatComposer";
 import ChatEmptyState from "../components/ChatEmptyState";
 import ContextPills, { buildContextPills } from "../components/ContextPills";
@@ -40,24 +40,21 @@ export type WritingLeaveState = {
 export default function Writing({
   clientId,
   expectedReportId,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
   onLeaveStateChange,
-  onRetryModels,
   onManageTemplates,
 }: {
   clientId: string;
   expectedReportId?: string | null;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
   onLeaveStateChange?: (state: WritingLeaveState) => void;
-  onRetryModels?: () => void;
   onManageTemplates: () => void;
 }) {
+  const {
+    models: chatModels,
+    loading: chatModelsLoading,
+    error: chatModelsError,
+    preferredModelId,
+    retry: onRetryModels,
+  } = useChatModels();
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const initialComposerDraft = useRef(readWritingComposerDraft(clientId)).current;
   const [selectedModelId, setSelectedModelId] = usePreferredModel(

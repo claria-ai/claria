@@ -1,4 +1,3 @@
-import { type ChatModel } from "../lib/tauri";
 import { useClientWorkspace } from "../lib/useClientWorkspace";
 import ClientWorkspaceTabs from "../components/ClientWorkspaceTabs";
 import ClientChat from "./ClientChat";
@@ -12,22 +11,12 @@ export default function ClientRecord({
   navigate,
   clientId,
   clientName,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
-  onRetryChatModels,
   onClientNameChanged,
   onManageWriterTemplates,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
   clientName: string;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
-  onRetryChatModels?: () => void;
   onClientNameChanged: (name: string) => void;
   onManageWriterTemplates: () => void;
 }) {
@@ -62,22 +51,13 @@ export default function ClientRecord({
           navigate={navigate}
           clientId={clientId}
           resumeChat={workspace.pendingChat}
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
         />
       ) : (
         <Writing
           key={`${clientId}:${workspace.expectedReportId ?? "current"}:${workspace.writingInstance}`}
           clientId={clientId}
           expectedReportId={workspace.expectedReportId}
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
           onLeaveStateChange={workspace.updateWritingLeaveState}
-          onRetryModels={onRetryChatModels}
           onManageTemplates={workspace.manageWriterTemplates}
         />
       )}

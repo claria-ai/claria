@@ -17,7 +17,6 @@ import {
   uploadWriterTemplate,
   renameWriterTemplate,
   deleteWriterTemplate,
-  type ChatModel,
   type ConfigInfo,
   type LocalBackend,
   type LocalKvPrecision,
@@ -31,6 +30,7 @@ import {
   type TranscriptionPreferences,
   type WriterTemplateView,
 } from "../lib/tauri";
+import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
 import { formatDateTime, formatFileSize } from "../lib/format";
@@ -43,23 +43,21 @@ import type { Page } from "../App";
 
 export default function Preferences({
   navigate,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
-  onPreferredModelChanged,
   openWriterTemplates = false,
   backPage = "start",
 }: {
   navigate: (page: Page) => void;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId: string | null;
-  onPreferredModelChanged: (id: string | null) => void;
   openWriterTemplates?: boolean;
   backPage?: Page;
 }) {
+  const {
+    models: chatModels,
+    loading: chatModelsLoading,
+    error: chatModelsError,
+    preferredModelId,
+    setPreferredModelId,
+  } = useChatModels();
+
   // Model preference state
   const [modelSaving, setModelSaving] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -70,7 +68,7 @@ export default function Preferences({
     setModelError(null);
     try {
       await setPreferredModel(value);
-      onPreferredModelChanged(value);
+      setPreferredModelId(value);
     } catch (e) {
       setModelError(String(e));
     } finally {

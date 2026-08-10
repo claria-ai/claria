@@ -2,9 +2,9 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import {
   acceptModelAgreement,
   type ChatMessage,
-  type ChatModel,
   type TurnUsage,
 } from "../lib/tauri";
+import { useChatModels } from "../lib/chatModels";
 import {
   EMPTY_SESSION_USAGE,
   accumulateUsage,
@@ -30,10 +30,6 @@ function isMarketplaceError(error: string): boolean {
 export type SendResult = { content: string; usage: TurnUsage | null };
 
 export default function ChatWidget({
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
   onSend,
   initialMessages,
   initialModelId,
@@ -47,10 +43,6 @@ export default function ChatWidget({
   toolbar,
   historyHeader,
 }: {
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
   onSend: (modelId: string, messages: ChatMessage[]) => Promise<SendResult>;
   initialMessages?: ChatMessage[];
   initialModelId?: string;
@@ -95,6 +87,12 @@ export default function ChatWidget({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const {
+    models: chatModels,
+    loading: chatModelsLoading,
+    error: chatModelsError,
+    preferredModelId,
+  } = useChatModels();
   const [selectedModelId, setSelectedModelId] = usePreferredModel(
     chatModels,
     preferredModelId,

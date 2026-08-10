@@ -37,8 +37,17 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import Writing from "./Writing";
+import { ChatModelsProvider, type ChatModelsState } from "../lib/chatModels";
 
 const models = [{ model_id: "model-1", name: "Claude Sonnet" }];
+const modelsState: ChatModelsState = {
+  models,
+  loading: false,
+  error: null,
+  preferredModelId: "model-1",
+  retry: () => {},
+  setPreferredModelId: () => {},
+};
 const SECTION_ID = "11111111-1111-4111-8111-111111111111";
 
 function workspace({
@@ -174,15 +183,13 @@ function turnResponse(value: ReportWorkspaceView) {
 
 function renderWriting(clientId = "client-1", expectedReportId?: string) {
   return render(
-    <Writing
-      clientId={clientId}
-      expectedReportId={expectedReportId}
-      chatModels={models}
-      chatModelsLoading={false}
-      chatModelsError={null}
-      preferredModelId="model-1"
-      onManageTemplates={vi.fn()}
-    />
+    <ChatModelsProvider value={modelsState}>
+      <Writing
+        clientId={clientId}
+        expectedReportId={expectedReportId}
+        onManageTemplates={vi.fn()}
+      />
+    </ChatModelsProvider>
   );
 }
 
@@ -847,14 +854,9 @@ describe("Writing", () => {
     );
     const rendered = renderWriting("client-a");
     rendered.rerender(
-      <Writing
-        clientId="client-b"
-        chatModels={models}
-        chatModelsLoading={false}
-        chatModelsError={null}
-        preferredModelId="model-1"
-        onManageTemplates={vi.fn()}
-      />
+      <ChatModelsProvider value={modelsState}>
+        <Writing clientId="client-b" onManageTemplates={vi.fn()} />
+      </ChatModelsProvider>
     );
 
     await act(async () => {

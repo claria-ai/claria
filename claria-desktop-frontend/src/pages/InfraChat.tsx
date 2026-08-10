@@ -4,7 +4,6 @@ import {
   infraChat,
   countInfraContextTokens,
   type ChatMessage,
-  type ChatModel,
   type PlanEntry,
 } from "../lib/tauri";
 import type { Page } from "../App";
@@ -76,16 +75,8 @@ function buildInfraContext(entries: PlanEntry[]): string {
 
 export default function InfraChat({
   navigate,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
 }: {
   navigate: (page: Page) => void;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
 }) {
   const [scanning, setScanning] = useState(true);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -172,10 +163,6 @@ export default function InfraChat({
         </div>
       ) : (
         <ChatWidget
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
           onSend={handleSend}
           contextTokens={contextTokens}
           emptyStateTitle="Ask about your infrastructure."
