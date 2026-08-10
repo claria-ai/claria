@@ -77,6 +77,7 @@ export type {
   ClientNameUpdate,
   ClientRecordDetails,
   ClientSummary,
+  CacheTtlChoice,
   ConfigInfo,
   ConsoleDelta,
   ConsoleEntry,

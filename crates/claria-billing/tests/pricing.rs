@@ -70,20 +70,49 @@ fn opus_legacy_rate_does_not_leak_to_newer_minors() {
 }
 
 /// Cache prices follow the standard multipliers: 0.1× input for reads,
-/// 1.25× input for writes.
+/// 1.25× input for 5-minute writes, 2× input for 1-hour writes.
 #[test]
 fn cache_prices_follow_standard_multipliers() {
     let sonnet = lookup("us.anthropic.claude-sonnet-4-20250514-v1:0").unwrap();
     assert!((sonnet.cache_read_per_million - 0.30).abs() < f64::EPSILON);
     assert!((sonnet.cache_write_per_million - 3.75).abs() < f64::EPSILON);
+    assert!((sonnet.cache_write_1h_per_million - 6.0).abs() < f64::EPSILON);
 
     let opus = lookup("us.anthropic.claude-opus-4-20250514-v1:0").unwrap();
     assert!((opus.cache_read_per_million - 1.50).abs() < f64::EPSILON);
     assert!((opus.cache_write_per_million - 18.75).abs() < f64::EPSILON);
+    assert!((opus.cache_write_1h_per_million - 30.0).abs() < f64::EPSILON);
 
     let haiku = lookup("us.anthropic.claude-3-5-haiku-20241022-v1:0").unwrap();
     assert!((haiku.cache_read_per_million - 0.08).abs() < f64::EPSILON);
     assert!((haiku.cache_write_per_million - 1.00).abs() < f64::EPSILON);
+    assert!((haiku.cache_write_1h_per_million - 1.60).abs() < f64::EPSILON);
+}
+
+/// The 1-hour write tier is a pricing-table edit, so it rides a version
+/// bump — historical `TurnUsage` costs stamped with earlier versions must
+/// not shift.
+#[test]
+fn one_hour_write_tier_bumped_the_pricing_version() {
+    const _CHECK: () = assert!(PRICING_VERSION >= 5);
+}
+
+/// Cost estimation selects the write rate by the turn's TTL; absence means
+/// the 5-minute default.
+#[test]
+fn estimate_selects_cache_write_rate_by_ttl() {
+    use claria_core::{model_id::CacheTtlChoice, models::token_count::TokenCount};
+
+    let sonnet = lookup("us.anthropic.claude-sonnet-4-6-v1").unwrap();
+    let zero = TokenCount {
+        input: 0,
+        output: 0,
+    };
+    let million_writes = |ttl| sonnet.estimate_cost_with_cache(zero, 0, 1_000_000, ttl);
+
+    assert!((million_writes(None) - 3.75).abs() < 1e-9);
+    assert!((million_writes(Some(CacheTtlChoice::FiveMinutes)) - 3.75).abs() < 1e-9);
+    assert!((million_writes(Some(CacheTtlChoice::OneHour)) - 6.0).abs() < 1e-9);
 }
 
 // ---------------------------------------------------------------------------

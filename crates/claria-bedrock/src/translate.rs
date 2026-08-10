@@ -199,7 +199,7 @@ pub async fn translate_segments(
         })
         .collect();
 
-    let usage = converse::optional_usage(response.usage(), model_id);
+    let usage = converse::optional_usage(response.usage(), model_id, None);
 
     Ok((outputs, usage))
 }

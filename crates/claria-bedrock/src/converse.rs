@@ -12,12 +12,13 @@ use aws_sdk_bedrockruntime::{
     error::{DisplayErrorContext, ProvideErrorMetadata, SdkError},
     operation::RequestId,
     types::{
-        ContentBlock, ContentBlockDelta, ConverseStreamOutput, ConverseTokensRequest,
-        CountTokensInput, Message, StopReason, TokenUsage,
+        CachePointBlock, CachePointType, CacheTtl, ContentBlock, ContentBlockDelta,
+        ConverseStreamOutput, ConverseTokensRequest, CountTokensInput, Message, StopReason,
+        TokenUsage,
     },
 };
 use aws_smithy_types::{Document, Number};
-use claria_core::models::turn_usage::TurnUsage;
+use claria_core::{model_id::CacheTtlChoice, models::turn_usage::TurnUsage};
 
 use crate::{error::BedrockError, tokens};
 
@@ -69,6 +70,51 @@ where
     }
 }
 
+/// Map a domain TTL choice to the wire TTL for a cache point.
+///
+/// `FiveMinutes` maps to `None` — the server default — so requests that use
+/// the default TTL stay byte-identical to the pre-TTL wire shape.
+pub(crate) fn sdk_cache_ttl(choice: CacheTtlChoice) -> Option<CacheTtl> {
+    match choice {
+        CacheTtlChoice::FiveMinutes => None,
+        CacheTtlChoice::OneHour => Some(CacheTtl::OneHour),
+    }
+}
+
+/// Build one prompt-cache `cachePoint` block, with an optional extended
+/// TTL. `None` omits the ttl field entirely (server default: 5 minutes).
+pub(crate) fn cache_point(ttl: Option<CacheTtl>) -> Result<CachePointBlock, BedrockError> {
+    let mut builder = CachePointBlock::builder().r#type(CachePointType::Default);
+    if let Some(ttl) = ttl {
+        builder = builder.ttl(ttl);
+    }
+    builder
+        .build()
+        .map_err(|error| BedrockError::Invocation(error.to_string()))
+}
+
+/// Append a cache point to the final message's content so the next request
+/// in the conversation reads everything up to (and including) this message
+/// from cache. Shared by the chat and report flows; an empty conversation
+/// is returned unchanged.
+pub(crate) fn with_tail_cache_point(
+    mut messages: Vec<Message>,
+    ttl: Option<CacheTtl>,
+) -> Result<Vec<Message>, BedrockError> {
+    let Some(last) = messages.pop() else {
+        return Ok(messages);
+    };
+    let mut content = last.content().to_vec();
+    content.push(ContentBlock::CachePoint(cache_point(ttl)?));
+    let rebuilt = Message::builder()
+        .role(last.role().clone())
+        .set_content(Some(content))
+        .build()
+        .map_err(|error| BedrockError::Invocation(error.to_string()))?;
+    messages.push(rebuilt);
+    Ok(messages)
+}
+
 /// Concatenate the text blocks of an assistant message.
 pub(crate) fn collect_text(message: &Message) -> String {
     message
@@ -88,9 +134,13 @@ pub(crate) fn collect_text(message: &Message) -> String {
 /// structure when the service omits the block. A successful Converse call
 /// necessarily consumes tokens, so an all-zero shape is reported as `None`
 /// rather than a misleading metered zero — callers render absence.
-pub(crate) fn optional_usage(usage: Option<&TokenUsage>, model_id: &str) -> Option<TurnUsage> {
+pub(crate) fn optional_usage(
+    usage: Option<&TokenUsage>,
+    model_id: &str,
+    cache_ttl: Option<CacheTtlChoice>,
+) -> Option<TurnUsage> {
     usage.and_then(|usage| {
-        let extracted = tokens::extract_turn_usage(usage, model_id);
+        let extracted = tokens::extract_turn_usage(usage, model_id, cache_ttl);
         (extracted.input_tokens > 0
             || extracted.output_tokens > 0
             || extracted.cache_read_input_tokens > 0
@@ -176,11 +226,14 @@ impl StreamCollector {
 
     /// Close out the stream: a missing `messageStop` is a protocol error,
     /// truncation and context overflow become the same typed errors as the
-    /// unary path, and an omitted usage block stays `None`.
+    /// unary path, and an omitted usage block stays `None`. `cache_ttl` is
+    /// the TTL the request's cache points carried (`None` when uncached),
+    /// recorded on the usage so cache writes price at the right tier.
     pub fn finish(
         self,
         model_id: &str,
         max_output_tokens: u32,
+        cache_ttl: Option<CacheTtlChoice>,
     ) -> Result<StreamOutcome, BedrockError> {
         let stop_reason = self.stop_reason.ok_or_else(|| {
             BedrockError::ResponseParse(
@@ -188,12 +241,45 @@ impl StreamCollector {
             )
         })?;
         ensure_complete_text_response(&stop_reason, max_output_tokens)?;
-        let usage = optional_usage(self.usage.as_ref(), model_id);
+        let usage = optional_usage(self.usage.as_ref(), model_id, cache_ttl);
         Ok(StreamOutcome {
             text: self.text,
             stop_reason: stop_reason.as_str().to_string(),
             usage,
         })
+    }
+}
+
+/// Structured cache/usage observability line for one completed Converse
+/// call, shared by the chat and report flows. `hit_rate` is the fraction of
+/// input tokens served from cache; `cache_ttl` names the write tier so a
+/// console export answers "did caching hit, and at which TTL?". Fields are
+/// model IDs, counts, and rates — never prompt or response content.
+pub(crate) fn log_turn_usage(operation: &'static str, model_id: &str, usage: Option<&TurnUsage>) {
+    if let Some(usage) = usage {
+        let total_input =
+            usage.input_tokens + usage.cache_read_input_tokens + usage.cache_write_input_tokens;
+        let hit_rate = if total_input > 0 {
+            usage.cache_read_input_tokens as f64 / total_input as f64
+        } else {
+            0.0
+        };
+        tracing::info!(
+            target: "claria_bedrock::cache",
+            operation,
+            model_id,
+            input_tokens = usage.input_tokens,
+            cache_read = usage.cache_read_input_tokens,
+            cache_write = usage.cache_write_input_tokens,
+            cache_ttl = usage
+                .cache_ttl
+                .map_or("none", claria_core::model_id::CacheTtlChoice::as_str),
+            hit_rate,
+            cost_usd = usage.cost_usd,
+            "turn complete"
+        );
+    } else {
+        tracing::warn!(operation, model_id, "turn completed without a usage block");
     }
 }
 

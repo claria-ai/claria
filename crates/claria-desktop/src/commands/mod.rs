@@ -258,6 +258,7 @@ pub(crate) fn usage_audit_details(
             "output_tokens": usage.output_tokens,
             "cache_read_input_tokens": usage.cache_read_input_tokens,
             "cache_write_input_tokens": usage.cache_write_input_tokens,
+            "cache_ttl": usage.cache_ttl,
             "cost_usd": usage.cost_usd,
             "pricing_version": usage.pricing_version,
             "usage_complete": true,

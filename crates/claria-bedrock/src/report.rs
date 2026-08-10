@@ -281,13 +281,18 @@ pub async fn converse_report_with_tool_limit(
     // Prompt caching, gated on the central capability table: one cache point
     // after the immutable system policy and one at the conversation tail, so
     // each loop iteration re-reads the previous iterations' prefix from
-    // cache instead of re-paying full input rates.
+    // cache instead of re-paying full input rates. The writer stays on the
+    // default 5-minute TTL (`None` on the wire) — its loop cadence re-reads
+    // within minutes, so the doubled 1-hour write rate would never pay off.
     let supports_caching =
         claria_core::model_id::ModelCapabilities::for_id(model_id).prompt_caching;
     let (system_blocks, converse_messages) = if supports_caching {
         (
-            vec![system, SystemContentBlock::CachePoint(cache_point()?)],
-            with_tail_cache_point(sdk_messages)?,
+            vec![
+                system,
+                SystemContentBlock::CachePoint(converse::cache_point(None)?),
+            ],
+            converse::with_tail_cache_point(sdk_messages, None)?,
         )
     } else {
         (vec![system], sdk_messages)
@@ -414,7 +419,8 @@ pub async fn converse_report_with_tool_limit(
     // inconsistency must reach it as data via `stop_tool_mismatch`.
     let stop_reason = map_stop_reason(response.stop_reason());
 
-    let usage = converse::optional_usage(response.usage(), model_id);
+    let usage = converse::optional_usage(response.usage(), model_id, None);
+    converse::log_turn_usage("report Converse", model_id, usage.as_ref());
 
     Ok(ReportConverseOutput {
         message: ReportProtocolMessage {
@@ -519,30 +525,6 @@ fn protocol_chars(system_prompt: &str, messages: &[ReportProtocolMessage]) -> u6
         }
     }
     chars
-}
-
-fn cache_point() -> Result<aws_sdk_bedrockruntime::types::CachePointBlock, BedrockError> {
-    aws_sdk_bedrockruntime::types::CachePointBlock::builder()
-        .r#type(aws_sdk_bedrockruntime::types::CachePointType::Default)
-        .build()
-        .map_err(|error| BedrockError::Invocation(error.to_string()))
-}
-
-/// Append a cache point to the final message's content so the next loop
-/// iteration reads everything up to (and including) this message from cache.
-fn with_tail_cache_point(mut messages: Vec<Message>) -> Result<Vec<Message>, BedrockError> {
-    let Some(last) = messages.pop() else {
-        return Ok(messages);
-    };
-    let mut content = last.content().to_vec();
-    content.push(ContentBlock::CachePoint(cache_point()?));
-    let rebuilt = Message::builder()
-        .role(last.role().clone())
-        .set_content(Some(content))
-        .build()
-        .map_err(|error| BedrockError::Invocation(error.to_string()))?;
-    messages.push(rebuilt);
-    Ok(messages)
 }
 
 fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {

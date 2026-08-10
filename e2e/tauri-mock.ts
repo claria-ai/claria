@@ -390,7 +390,7 @@ export function buildInitScript(
               model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
               messages: [
                 { role: "user", content: "Earlier question", usage: null },
-                { role: "assistant", content: "Earlier answer", usage: { model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0", input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cost_usd: 0.0001, pricing_version: 4 } },
+                { role: "assistant", content: "Earlier answer", usage: { model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0", input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cache_ttl: null, cost_usd: 0.0001, pricing_version: 4 } },
               ],
               created_at: "2026-08-01T12:00:00Z",
               updated_at: "2026-08-01T12:00:00Z",
@@ -402,7 +402,7 @@ export function buildInitScript(
               chat_id: args.chatId || "77777777-7777-4777-8777-777777777777",
               chat_name: "Chat (1)",
               content: "Unchanged Chat response",
-              usage: { model_id: args.modelId, input_tokens: 30, output_tokens: 8, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cost_usd: 0.0002, pricing_version: 4 },
+              usage: { model_id: args.modelId, input_tokens: 30, output_tokens: 8, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cache_ttl: null, cost_usd: 0.0002, pricing_version: 4 },
             };
           }
 
@@ -563,7 +563,7 @@ export function buildInitScript(
                   toolActivity("propose_report_changes", "proposal-1", "Staged report changes for approval", { summary: "Create an initial evaluation report", operations: [{ kind: "set_title", title: proposedContent.title }, { kind: "add_section", position: 0, heading: proposedContent.sections[0].heading, blocks: proposedContent.sections[0].blocks }] }, { status: "pending_user_acceptance", proposal_id: "proposal-1", base_revision: reportWorkspace.draft.revision }),
                   { kind: "message", role: "assistant", text: "I staged a proposal for your review.", created_at: new Date().toISOString() },
                 ],
-                usage: { model_id: args.modelId, input_tokens: 1240, output_tokens: 220, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cost_usd: 0.00702, pricing_version: 4 },
+                usage: { model_id: args.modelId, input_tokens: 1240, output_tokens: 220, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cache_ttl: null, cost_usd: 0.00702, pricing_version: 4 },
                 usage_complete: true,
                 converse_calls: 3,
                 tool_uses: 3,

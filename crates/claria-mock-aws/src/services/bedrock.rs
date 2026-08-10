@@ -67,6 +67,20 @@ fn validation_error(message: &str) -> Response {
         .into_response()
 }
 
+/// Validate one `cachePoint` block the way Bedrock does: the type must be
+/// `default`, and the optional `ttl` must be one of the wire values
+/// (`5m` / `1h`).
+fn validate_cache_point(cache_point: &Value) -> Result<(), &'static str> {
+    if cache_point.get("type").and_then(Value::as_str) != Some("default") {
+        return Err("cachePoint blocks must carry the default type");
+    }
+    match cache_point.get("ttl") {
+        None => Ok(()),
+        Some(ttl) if matches!(ttl.as_str(), Some("5m" | "1h")) => Ok(()),
+        Some(_) => Err("cachePoint ttl must be 5m or 1h"),
+    }
+}
+
 fn validate_report_request(body: &Value) -> Result<(), &'static str> {
     let tool_config = body
         .get("toolConfig")
@@ -205,9 +219,7 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
                 }
             } else if let Some(cache_point) = block.get("cachePoint") {
                 // Prompt-cache markers are valid anywhere in message content.
-                if cache_point.get("type").and_then(Value::as_str) != Some("default") {
-                    return Err("cachePoint blocks must carry the default type");
-                }
+                validate_cache_point(cache_point)?;
             } else if block.get("text").and_then(Value::as_str).is_none() {
                 return Err("unsupported content block");
             } else if expected_results.is_some() {

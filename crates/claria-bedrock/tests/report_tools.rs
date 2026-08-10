@@ -526,14 +526,19 @@ async fn cache_points_follow_the_capability_table() {
     {
         let state = server.state.read().await;
         let request = &state.bedrock_tool_requests[0];
-        assert_eq!(request["system"][1]["cachePoint"]["type"], "default");
+        // Writer cache points stay on the default 5-minute TTL — the full
+        // block shape is asserted so a `ttl` field can never sneak in.
+        assert_eq!(
+            request["system"][1]["cachePoint"],
+            serde_json::json!({"type": "default"})
+        );
         let tail = request["messages"].as_array().unwrap().last().unwrap()["content"]
             .as_array()
             .unwrap();
         assert_eq!(
-            tail.last().unwrap()["cachePoint"]["type"],
-            "default",
-            "conversation tail must end with a cache point"
+            tail.last().unwrap()["cachePoint"],
+            serde_json::json!({"type": "default"}),
+            "conversation tail must end with a ttl-less cache point"
         );
         assert!(
             !state.bedrock_count_token_requests[0]
