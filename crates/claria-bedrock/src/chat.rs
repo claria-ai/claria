@@ -95,7 +95,7 @@ use tracing::info;
 
 use claria_core::models::turn_usage::TurnUsage;
 
-use crate::{error::BedrockError, tokens};
+use crate::error::BedrockError;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -339,9 +339,9 @@ impl CacheStrategy {
 /// block. This is the shared implementation used by the desktop chat
 /// command.
 ///
-/// Returns a `(String, TurnUsage)` tuple. If the Bedrock response carries
-/// no `usage` block (shouldn't happen on Converse, but the SDK type is
-/// `Option`), the returned `TurnUsage` has zero token counts and zero cost.
+/// Returns a `(String, Option<TurnUsage>)` tuple. If the Bedrock response
+/// carries no `usage` block, the absence is preserved as `None` — callers
+/// render absence instead of a fabricated metered zero.
 // Timing span logs model id and turn count — never prompt or message text,
 // which may hold PHI.
 #[tracing::instrument(level = "trace", skip_all, fields(model_id = %model_id, turns = messages.len()))]
@@ -351,8 +351,8 @@ pub async fn chat_converse(
     system_prompt: &str,
     messages: &[ChatMessage],
     cache_strategy: CacheStrategy,
-) -> Result<(String, TurnUsage), BedrockError> {
-    let client = aws_sdk_bedrockruntime::Client::new(config);
+) -> Result<(String, Option<TurnUsage>), BedrockError> {
+    let client = crate::converse::runtime_client(config);
 
     let mut converse_messages: Vec<Message> = Vec::new();
 
@@ -392,54 +392,39 @@ pub async fn chat_converse(
         .set_messages(Some(converse_messages))
         .send()
         .await
-        .map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(model_id, error = %msg, "Bedrock Converse call failed");
-            BedrockError::Invocation(msg)
-        })?;
+        .map_err(|error| crate::converse::classify_error("chat Converse", error))?;
 
     let output_message = response
         .output()
         .and_then(|o| o.as_message().ok())
         .ok_or_else(|| BedrockError::ResponseParse("no message in response".to_string()))?;
 
-    let response_text = output_message
-        .content()
-        .iter()
-        .filter_map(|block| {
-            if let ContentBlock::Text(text) = block {
-                Some(text.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
-    let usage = match response.usage() {
-        Some(u) => tokens::extract_turn_usage(u, model_id),
-        None => tokens::empty_turn_usage(model_id),
-    };
+    let response_text = crate::converse::collect_text(output_message);
+    let usage = crate::converse::optional_usage(response.usage(), model_id);
 
     // Emit a structured tracing event for cache observability. `hit_rate`
     // is the fraction of input tokens served from cache this turn.
-    let total_input =
-        usage.input_tokens + usage.cache_read_input_tokens + usage.cache_write_input_tokens;
-    let hit_rate = if total_input > 0 {
-        usage.cache_read_input_tokens as f64 / total_input as f64
+    if let Some(usage) = &usage {
+        let total_input =
+            usage.input_tokens + usage.cache_read_input_tokens + usage.cache_write_input_tokens;
+        let hit_rate = if total_input > 0 {
+            usage.cache_read_input_tokens as f64 / total_input as f64
+        } else {
+            0.0
+        };
+        tracing::info!(
+            target: "claria_bedrock::cache",
+            model_id,
+            input_tokens = usage.input_tokens,
+            cache_read = usage.cache_read_input_tokens,
+            cache_write = usage.cache_write_input_tokens,
+            hit_rate,
+            cost_usd = usage.cost_usd,
+            "chat turn complete"
+        );
     } else {
-        0.0
-    };
-    tracing::info!(
-        target: "claria_bedrock::cache",
-        model_id,
-        input_tokens = usage.input_tokens,
-        cache_read = usage.cache_read_input_tokens,
-        cache_write = usage.cache_write_input_tokens,
-        hit_rate,
-        cost_usd = usage.cost_usd,
-        "chat turn complete"
-    );
+        tracing::warn!(model_id, "chat turn completed without a usage block");
+    }
 
     Ok((response_text, usage))
 }
@@ -488,7 +473,7 @@ pub async fn count_context_tokens(
     config: &aws_config::SdkConfig,
     system_prompt: &str,
 ) -> Result<u32, BedrockError> {
-    let client = aws_sdk_bedrockruntime::Client::new(config);
+    let client = crate::converse::runtime_client(config);
 
     // CountTokens requires a bare foundation model ID, not an inference
     // profile ID; `counting_model` returns bare IDs from the foundation
@@ -507,21 +492,7 @@ pub async fn count_context_tokens(
         .system(SystemContentBlock::Text(system_prompt.to_string()))
         .build();
 
-    let response = client
-        .count_tokens()
-        .model_id(bare_model_id)
-        .input(
-            aws_sdk_bedrockruntime::types::CountTokensInput::Converse(converse_input),
-        )
-        .send()
-        .await
-        .map_err(|e| {
-            let err = e.into_service_error().to_string();
-            tracing::warn!(bare_model_id, error = %err, "CountTokens failed");
-            BedrockError::Invocation(err)
-        })?;
-
-    let tokens = response.input_tokens() as u32;
+    let tokens = crate::converse::count_input_tokens(&client, bare_model_id, converse_input).await?;
     info!(bare_model_id, tokens, "context token count complete");
     Ok(tokens)
 }

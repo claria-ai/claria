@@ -78,18 +78,3 @@ pub fn extract_turn_usage(
         pricing_version,
     }
 }
-
-/// Build a `TurnUsage` for a turn whose Converse response carried no
-/// `usage` block. Token counts are zero and cost is zero, but the
-/// `model_id` is preserved so the UI can still attribute the turn.
-pub fn empty_turn_usage(model_id: &str) -> TurnUsage {
-    TurnUsage {
-        model_id: model_id.to_string(),
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_input_tokens: 0,
-        cache_write_input_tokens: 0,
-        cost_usd: 0.0,
-        pricing_version: 0,
-    }
-}

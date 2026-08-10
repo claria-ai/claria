@@ -80,21 +80,23 @@ pub enum ChatRole {
 }
 
 /// Response from a chat message, including the persisted chat session ID
-/// and per-turn token usage.
+/// and per-turn token usage. Usage is `None` when Bedrock omitted the usage
+/// block — the UI renders absence instead of a fabricated zero.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ChatResponse {
     pub chat_id: String,
     pub chat_name: String,
     pub content: String,
-    pub usage: claria_core::models::turn_usage::TurnUsage,
+    pub usage: Option<claria_core::models::turn_usage::TurnUsage>,
 }
 
 /// Response from an infrastructure chat turn. Infra chat does not persist
 /// history, but we still return token usage so the UI can display cost.
+/// Usage is `None` when Bedrock omitted the usage block.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct InfraChatResponse {
     pub content: String,
-    pub usage: claria_core::models::turn_usage::TurnUsage,
+    pub usage: Option<claria_core::models::turn_usage::TurnUsage>,
 }
 
 /// A single message in persisted chat history, including optional token
@@ -2232,6 +2234,9 @@ pub async fn upload_record_file(
                 .await
                 .map_err(|e| e.to_string())?;
 
+                let mut audit_details =
+                    usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref());
+                audit_details["client_id"] = serde_json::json!(id.to_string());
                 record_audit(
                     &sdk_config,
                     &cfg,
@@ -2241,16 +2246,7 @@ pub async fn upload_record_file(
                         filename,
                         cfg.account_id.clone(),
                     )
-                    .with_details(serde_json::json!({
-                        "client_id": id.to_string(),
-                        "model_id": usage.model_id,
-                        "input_tokens": usage.input_tokens,
-                        "output_tokens": usage.output_tokens,
-                        "cache_read_input_tokens": usage.cache_read_input_tokens,
-                        "cache_write_input_tokens": usage.cache_write_input_tokens,
-                        "cost_usd": usage.cost_usd,
-                        "pricing_version": usage.pricing_version,
-                    })),
+                    .with_details(audit_details),
                 )
                 .await;
 
@@ -2431,6 +2427,8 @@ async fn maybe_translate(
                     seg.translation = Some(output.translation.clone());
                 }
             }
+            let mut audit_details = usage_audit_details(model_id, usage.as_ref());
+            audit_details["segment_count"] = serde_json::json!(outputs.len());
             record_audit(
                 sdk_config,
                 cfg,
@@ -2440,14 +2438,7 @@ async fn maybe_translate(
                     "",
                     cfg.account_id.clone(),
                 )
-                .with_details(serde_json::json!({
-                    "segment_count": outputs.len(),
-                    "model_id": usage.model_id,
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                    "cost_usd": usage.cost_usd,
-                    "pricing_version": usage.pricing_version,
-                })),
+                .with_details(audit_details),
             )
             .await;
         }
@@ -2881,6 +2872,8 @@ pub async fn extract_record_file(
         .await
         .map_err(|e| e.to_string())?;
 
+        let mut audit_details = usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref());
+        audit_details["client_id"] = serde_json::json!(id.to_string());
         record_audit(
             &sdk_config,
             &cfg,
@@ -2890,16 +2883,7 @@ pub async fn extract_record_file(
                 &filename,
                 cfg.account_id.clone(),
             )
-            .with_details(serde_json::json!({
-                "client_id": id.to_string(),
-                "model_id": usage.model_id,
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "cache_read_input_tokens": usage.cache_read_input_tokens,
-                "cache_write_input_tokens": usage.cache_write_input_tokens,
-                "cost_usd": usage.cost_usd,
-                "pricing_version": usage.pricing_version,
-            })),
+            .with_details(audit_details),
         )
         .await;
 
@@ -3346,6 +3330,8 @@ pub async fn chat_message(
 
     // Emit a per-turn audit event with token usage in details. UUIDs only;
     // never the message content.
+    let mut audit_details = usage_audit_details(&model_id, usage.as_ref());
+    audit_details["chat_id"] = serde_json::json!(chat_uuid.to_string());
     record_audit(
         &sdk_config,
         &cfg,
@@ -3355,16 +3341,7 @@ pub async fn chat_message(
             client_uuid.to_string(),
             cfg.account_id.clone(),
         )
-        .with_details(serde_json::json!({
-            "chat_id": chat_uuid.to_string(),
-            "model_id": usage.model_id,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_read_input_tokens": usage.cache_read_input_tokens,
-            "cache_write_input_tokens": usage.cache_write_input_tokens,
-            "cost_usd": usage.cost_usd,
-            "pricing_version": usage.pricing_version,
-        })),
+        .with_details(audit_details),
     )
     .await;
 
@@ -3388,7 +3365,7 @@ pub async fn chat_message(
         role: claria_core::models::chat_history::ChatHistoryRole::Assistant,
         content: response_text.clone(),
         timestamp: updated_at,
-        usage: Some(usage.clone()),
+        usage: usage.clone(),
     });
 
     let history = claria_core::models::chat_history::ChatHistory {
@@ -3509,15 +3486,7 @@ pub async fn infra_chat(
             "infra",
             cfg.account_id.clone(),
         )
-        .with_details(serde_json::json!({
-            "model_id": usage.model_id,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_read_input_tokens": usage.cache_read_input_tokens,
-            "cache_write_input_tokens": usage.cache_write_input_tokens,
-            "cost_usd": usage.cost_usd,
-            "pricing_version": usage.pricing_version,
-        })),
+        .with_details(usage_audit_details(&model_id, usage.as_ref())),
     )
     .await;
 
@@ -3525,6 +3494,32 @@ pub async fn infra_chat(
 }
 
 /// Build the full system prompt for infrastructure chat from plan entries.
+/// Flat audit-detail fields for a Bedrock turn's token usage.
+///
+/// When Bedrock omitted the usage block (`None`), the event records
+/// `usage_complete: false` instead of fabricated zero counts.
+fn usage_audit_details(
+    model_id: &str,
+    usage: Option<&claria_core::models::turn_usage::TurnUsage>,
+) -> serde_json::Value {
+    match usage {
+        Some(usage) => serde_json::json!({
+            "model_id": usage.model_id,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+            "cache_write_input_tokens": usage.cache_write_input_tokens,
+            "cost_usd": usage.cost_usd,
+            "pricing_version": usage.pricing_version,
+            "usage_complete": true,
+        }),
+        None => serde_json::json!({
+            "model_id": model_id,
+            "usage_complete": false,
+        }),
+    }
+}
+
 /// Derive a [`claria_bedrock::chat::CacheStrategy`] from config + the
 /// inference profile we're about to invoke. Model support comes from the
 /// central capability table in `claria-core`.

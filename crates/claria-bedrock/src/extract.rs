@@ -11,7 +11,7 @@ use aws_sdk_bedrockruntime::types::{
 use claria_core::models::turn_usage::TurnUsage;
 use tracing::info;
 
-use crate::{error::BedrockError, tokens};
+use crate::{converse, error::BedrockError};
 
 /// Default prompt used for document text extraction when no custom prompt
 /// has been saved to S3.
@@ -34,8 +34,8 @@ pub async fn extract_document_text(
     filename: &str,
     format: DocumentFormat,
     system_prompt: &str,
-) -> Result<(String, TurnUsage), BedrockError> {
-    let client = aws_sdk_bedrockruntime::Client::new(config);
+) -> Result<(String, Option<TurnUsage>), BedrockError> {
+    let client = converse::runtime_client(config);
 
     let doc_name = sanitize_document_name(filename);
 
@@ -64,29 +64,14 @@ pub async fn extract_document_text(
         .messages(message)
         .send()
         .await
-        .map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(model_id, filename, error = %msg, "Bedrock Converse failed during document extraction");
-            BedrockError::Invocation(msg)
-        })?;
+        .map_err(|error| converse::classify_error("document extraction Converse", error))?;
 
     let output_message = response
         .output()
         .and_then(|o| o.as_message().ok())
         .ok_or_else(|| BedrockError::ResponseParse("no message in response".to_string()))?;
 
-    let text = output_message
-        .content()
-        .iter()
-        .filter_map(|block| {
-            if let ContentBlock::Text(t) = block {
-                Some(t.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
+    let text = converse::collect_text(output_message);
 
     info!(
         model_id,
@@ -95,10 +80,7 @@ pub async fn extract_document_text(
         "document text extraction complete"
     );
 
-    let usage = match response.usage() {
-        Some(u) => tokens::extract_turn_usage(u, model_id),
-        None => tokens::empty_turn_usage(model_id),
-    };
+    let usage = converse::optional_usage(response.usage(), model_id);
 
     Ok((text, usage))
 }

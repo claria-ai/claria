@@ -2,7 +2,7 @@
 //! and round-trip of `TurnUsage`.
 
 use aws_sdk_bedrockruntime::types::TokenUsage as SdkTokenUsage;
-use claria_bedrock::tokens::{empty_turn_usage, extract_turn_usage};
+use claria_bedrock::tokens::extract_turn_usage;
 
 fn build_usage(
     input: i32,
@@ -62,18 +62,6 @@ fn extract_turn_usage_unknown_model_zero_cost_zero_version() {
     assert_eq!(usage.cost_usd, 0.0);
     assert_eq!(usage.pricing_version, 0);
     assert_eq!(usage.input_tokens, 1000);
-}
-
-#[test]
-fn empty_turn_usage_keeps_model_id() {
-    let usage = empty_turn_usage("us.anthropic.claude-opus-4-20250514-v1:0");
-    assert_eq!(usage.input_tokens, 0);
-    assert_eq!(usage.output_tokens, 0);
-    assert_eq!(usage.cache_read_input_tokens, 0);
-    assert_eq!(usage.cache_write_input_tokens, 0);
-    assert_eq!(usage.cost_usd, 0.0);
-    assert_eq!(usage.pricing_version, 0);
-    assert_eq!(usage.model_id, "us.anthropic.claude-opus-4-20250514-v1:0");
 }
 
 #[test]

@@ -7,14 +7,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use aws_sdk_bedrockruntime::{
-    operation::RequestId,
-    types::{
-        ContentBlock, ConversationRole, ConverseTokensRequest, CountTokensInput, Message,
-        ReasoningContentBlock, ReasoningTextBlock, SystemContentBlock, Tool, ToolConfiguration,
-        ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolResultStatus,
-        ToolSpecification,
-    },
+use aws_sdk_bedrockruntime::types::{
+    ContentBlock, ConversationRole, ConverseTokensRequest, Message, ReasoningContentBlock,
+    ReasoningTextBlock, SystemContentBlock, Tool, ToolConfiguration, ToolInputSchema,
+    ToolResultBlock, ToolResultContentBlock, ToolResultStatus, ToolSpecification,
 };
 use aws_smithy_types::{Blob, Document, Number};
 use claria_core::models::{
@@ -26,7 +22,7 @@ use claria_core::models::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{error::BedrockError, tokens};
+use crate::{converse, error::BedrockError};
 
 pub const LIST_RECORD_FILES_TOOL: &str = "list_record_files";
 pub const READ_RECORD_FILE_TOOL: &str = "read_record_file";
@@ -208,7 +204,7 @@ pub async fn converse_report_with_tool_limit(
     validate_report_conversation(messages)
         .map_err(|error| BedrockError::SchemaViolation(error.to_string()))?;
 
-    let client = aws_sdk_bedrockruntime::Client::new(config);
+    let client = converse::runtime_client(config);
     let sdk_messages = messages
         .iter()
         .map(protocol_message_to_sdk)
@@ -228,7 +224,7 @@ pub async fn converse_report_with_tool_limit(
     // Keep the exact selected-model tokenizer by removing only a known
     // cross-region scope prefix.
     let counting_model_id = claria_core::model_id::strip_scope_prefix(model_id);
-    let input_tokens = match count_report_input_tokens(
+    let input_tokens = match converse::count_input_tokens(
         &client,
         counting_model_id,
         token_request.clone(),
@@ -239,7 +235,7 @@ pub async fn converse_report_with_tool_limit(
         Err(error)
             if matches!(
                 &error,
-                BedrockError::ReportService { code, .. } if code == "ValidationException"
+                BedrockError::Service { code, .. } if code == "ValidationException"
             ) =>
         {
             // Some newly listed Claude foundations support Converse before
@@ -258,7 +254,7 @@ pub async fn converse_report_with_tool_limit(
                 error = %error,
                 "selected report model does not support CountTokens; using Haiku tokenizer"
             );
-            count_report_input_tokens(&client, fallback_model_id, token_request)
+            converse::count_input_tokens(&client, fallback_model_id, token_request)
                 .await
                 .map_err(|fallback_error| {
                     tracing::error!(
@@ -292,30 +288,7 @@ pub async fn converse_report_with_tool_limit(
         .tool_config(tools)
         .send()
         .await
-        .map_err(|error| {
-            let status = error
-                .raw_response()
-                .map(|response| response.status().as_u16());
-            let service_error = error.into_service_error();
-            let code = service_error
-                .meta()
-                .code()
-                .unwrap_or("UnknownServiceError")
-                .to_string();
-            let request_id = service_error.meta().request_id().map(ToString::to_string);
-            tracing::error!(
-                model_id,
-                ?status,
-                code,
-                ?request_id,
-                "report Converse call failed"
-            );
-            BedrockError::ReportService {
-                status,
-                code,
-                request_id,
-            }
-        })?;
+        .map_err(|error| converse::classify_error("report Converse", error))?;
 
     let output_message = response
         .output()
@@ -427,18 +400,7 @@ pub async fn converse_report_with_tool_limit(
         )));
     }
 
-    // The AWS JSON deserializer may materialize a default all-zero usage
-    // structure when the service omits the block. A successful Converse call
-    // necessarily consumes tokens, so preserve that shape as missing rather
-    // than recording a misleading metered zero.
-    let usage = response.usage().and_then(|usage| {
-        let extracted = tokens::extract_turn_usage(usage, model_id);
-        (extracted.input_tokens > 0
-            || extracted.output_tokens > 0
-            || extracted.cache_read_input_tokens > 0
-            || extracted.cache_write_input_tokens > 0)
-            .then_some(extracted)
-    });
+    let usage = converse::optional_usage(response.usage(), model_id);
 
     Ok(ReportConverseOutput {
         message: ReportProtocolMessage {
@@ -468,37 +430,6 @@ pub fn report_model_context_tokens(model_id: &str) -> u32 {
 
 pub fn report_input_token_budget(model_id: &str) -> u32 {
     report_model_context_tokens(model_id).saturating_sub(REPORT_OUTPUT_TOKEN_RESERVE)
-}
-
-async fn count_report_input_tokens(
-    client: &aws_sdk_bedrockruntime::Client,
-    model_id: &str,
-    request: ConverseTokensRequest,
-) -> Result<u32, BedrockError> {
-    let response = client
-        .count_tokens()
-        .model_id(model_id)
-        .input(CountTokensInput::Converse(request))
-        .send()
-        .await
-        .map_err(|error| {
-            let status = error
-                .raw_response()
-                .map(|response| response.status().as_u16());
-            let service_error = error.into_service_error();
-            let code = service_error
-                .meta()
-                .code()
-                .unwrap_or("UnknownServiceError")
-                .to_string();
-            let request_id = service_error.meta().request_id().map(ToString::to_string);
-            BedrockError::ReportService {
-                status,
-                code,
-                request_id,
-            }
-        })?;
-    Ok(u32::try_from(response.input_tokens()).unwrap_or(u32::MAX))
 }
 
 fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {

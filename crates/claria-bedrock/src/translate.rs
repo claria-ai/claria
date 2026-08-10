@@ -16,7 +16,7 @@ use claria_core::models::turn_usage::TurnUsage;
 use serde::Deserialize;
 use tracing::info;
 
-use crate::{error::BedrockError, tokens};
+use crate::{converse, error::BedrockError};
 
 /// A segment-to-translate, identified by its position in the caller's segment
 /// list. Index numbers travel through Bedrock as-is so the caller can stitch
@@ -61,12 +61,12 @@ pub async fn translate_segments(
     config: &aws_config::SdkConfig,
     model_id: &str,
     requests: &[TranslationRequest],
-) -> Result<(Vec<TranslationOutput>, TurnUsage), BedrockError> {
+) -> Result<(Vec<TranslationOutput>, Option<TurnUsage>), BedrockError> {
     if requests.is_empty() {
-        return Ok((Vec::new(), tokens::empty_turn_usage(model_id)));
+        return Ok((Vec::new(), None));
     }
 
-    let client = aws_sdk_bedrockruntime::Client::new(config);
+    let client = converse::runtime_client(config);
 
     let user_payload = serde_json::json!({
         "segments": requests.iter().map(|r| serde_json::json!({
@@ -101,20 +101,13 @@ pub async fn translate_segments(
         )
         .send()
         .await
-        .map_err(|e| BedrockError::Invocation(e.into_service_error().to_string()))?;
+        .map_err(|error| converse::classify_error("translation Converse", error))?;
 
-    let output_text = response
+    let output_message = response
         .output()
         .and_then(|o| o.as_message().ok())
-        .ok_or_else(|| BedrockError::ResponseParse("no message in response".into()))?
-        .content()
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text(t) => Some(t.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("");
+        .ok_or_else(|| BedrockError::ResponseParse("no message in response".into()))?;
+    let output_text = converse::collect_text(output_message);
 
     let envelope: Envelope = parse_translation_envelope(&output_text)?;
 
@@ -127,10 +120,7 @@ pub async fn translate_segments(
         })
         .collect();
 
-    let usage = match response.usage() {
-        Some(u) => tokens::extract_turn_usage(u, model_id),
-        None => tokens::empty_turn_usage(model_id),
-    };
+    let usage = converse::optional_usage(response.usage(), model_id);
 
     Ok((outputs, usage))
 }

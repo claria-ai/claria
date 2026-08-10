@@ -361,7 +361,7 @@ async fn validation_errors_preserve_structured_service_metadata() {
     assert!(
         matches!(
             error,
-            BedrockError::ReportService {
+            BedrockError::Service {
                 status: Some(400),
                 ref code,
                 ..
