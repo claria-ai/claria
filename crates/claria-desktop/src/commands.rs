@@ -4305,11 +4305,8 @@ pub async fn check_for_updates() -> Result<UpdateCheck, String> {
     let result: Result<UpdateCheck, String> = tokio::task::spawn_blocking({
         let current = current.clone();
         move || {
-            let agent = ureq::Agent::new_with_config(
-                ureq::config::Config::builder()
-                    .timeout_global(Some(std::time::Duration::from_secs(5)))
-                    .build(),
-            );
+            let agent =
+                claria_desktop::http::ureq_agent(Some(std::time::Duration::from_secs(5)));
             let resp = agent
                 .get("https://api.github.com/repos/claria-ai/claria/releases/latest")
                 .header("User-Agent", "claria-desktop")

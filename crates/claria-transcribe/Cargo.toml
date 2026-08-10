@@ -22,7 +22,6 @@ claria-storage.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 transcribe-cpp = { git = "https://github.com/handy-computer/transcribe.cpp", rev = "553f1099a2b3a5bc4421894be171f09960fc0f3a", default-features = false }
 uuid = { workspace = true, features = ["v4"] }
@@ -33,3 +32,4 @@ cc = "=1.2.66"
 [dev-dependencies]
 aws-credential-types.workspace = true
 claria-mock-aws.workspace = true
+tokio = { workspace = true, features = ["full"] }

@@ -8,6 +8,7 @@ pub mod audit;
 pub mod aws;
 pub mod config;
 pub mod console;
+pub mod http;
 pub mod local_export;
 pub mod record_cache;
 pub mod records;

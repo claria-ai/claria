@@ -21,10 +21,10 @@ specta = { workspace = true, features = ["serde_json"] }
 serde_json.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["full"] }
 percent-encoding.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 aws-credential-types.workspace = true
 claria-mock-aws.workspace = true
+tokio = { workspace = true, features = ["full"] }

@@ -5,6 +5,7 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Project instructions gain review-derived coding rules covering reuse, frontend patterns, Rust conventions, LLM calls, logging, security, and performance
+- The app ships a single modern TLS stack, verifies update checks and model downloads against the operating system's certificate store, and builds a smaller release binary
 
 ## [0.22.0] — 2026-08-10
 

@@ -586,7 +586,8 @@ fn download_model_file(
 ) -> Result<(), String> {
     tracing::info!(model = ?model.id, url = model.url, "downloading local GGUF model");
     let result = (|| -> Result<(), String> {
-        let response = ureq::get(model.url)
+        let response = claria_desktop::http::ureq_agent(None)
+            .get(model.url)
             .header("User-Agent", "claria-desktop")
             .call()
             .map_err(|error| format!("model download failed: {error}"))?;

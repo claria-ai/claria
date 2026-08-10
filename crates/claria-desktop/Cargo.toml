@@ -43,9 +43,12 @@ specta.workspace = true
 specta-typescript = "=0.0.9"
 tauri = { version = "=2.11.5", features = [] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["fs", "macros", "rt", "sync"] }
 tracing.workspace = true
-ureq = "=3.3.0"
+# rustls is only here so the ureq agent can reuse the aws-lc crypto provider
+# the AWS clients already link (see src/http.rs).
+rustls = { version = "=0.23.41", default-features = false, features = ["aws_lc_rs", "std"] }
+ureq = { version = "=3.3.0", default-features = false, features = ["platform-verifier", "rustls-no-provider"] }
 tracing-subscriber = { workspace = true, features = ["json"] }
 uuid = { workspace = true, features = ["v4"] }
 
