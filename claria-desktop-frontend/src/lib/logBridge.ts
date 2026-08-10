@@ -6,16 +6,22 @@
  * has somewhere to go.
  */
 
-export type FrontendLogLevel = "error" | "warn" | "info";
+import { commands } from "./bindings";
+import type { FrontendLogLevel } from "./bindings";
+
+export type { FrontendLogLevel };
 
 export function logFrontendEvent(
   level: FrontendLogLevel,
   message: string
 ): void {
-  // TODO(#73 LOG-3): forward through a `log_frontend_event` Tauri command so
-  // frontend failures land in the backend console buffer and saved logs.
-  // Until that command exists, the webview console is the destination.
+  // The webview devtools console keeps a local copy for interactive debugging.
   console.error(`[claria:${level}] ${message}`);
+  // Forward to the backend so the event lands in the console ring buffer and
+  // the rolling log files. Fire-and-forget: if the bridge itself fails (e.g.
+  // outside a Tauri window in tests), the console line above is the fallback
+  // destination — reporting the failure here again would loop.
+  void commands.logFrontendEvent(level, message).catch(() => {});
 }
 
 /** Report uncaught errors and unhandled rejections. Install once at startup. */

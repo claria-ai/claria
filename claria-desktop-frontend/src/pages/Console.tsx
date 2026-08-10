@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import {
-  getConsoleLogs,
+  getConsoleLogsSince,
   getConsoleLogsText,
   revealLogFolder,
   saveConsoleLogs,
 } from "../lib/tauri";
-import type { ConsoleEntry } from "../lib/tauri";
+import type { ConsoleDelta, ConsoleEntry } from "../lib/tauri";
 
 const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
 
@@ -15,24 +15,10 @@ const POLL_INTERVAL_MS = 500;
 const MAX_RENDERED_ENTRIES = 500;
 
 /**
- * Cheap identity for a log snapshot, used to skip re-rendering an unchanged
- * buffer. Length alone misses the case that matters most here: the backend
- * buffer is bounded, so once it is full every new line rotates one out and the
- * length stops changing. Both ends go into the fingerprint, and either moves
- * on rotation.
+ * Client-side mirror cap. The backend ring buffer is byte-bounded; appending
+ * deltas forever would let the mirror outgrow it, so trim to the newest lines.
  */
-function fingerprint(entries: ConsoleEntry[]): string {
-  if (entries.length === 0) return "0";
-  const first = entries[0];
-  const last = entries[entries.length - 1];
-  return [
-    entries.length,
-    first.timestamp,
-    first.message,
-    last.timestamp,
-    last.message,
-  ].join("\u001f");
-}
+const MAX_CLIENT_ENTRIES = 10_000;
 
 function levelColor(level: string): string {
   switch (level) {
@@ -81,10 +67,31 @@ export default function Console() {
   const logRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // Delta cursor: the `next_seq` from the last poll. Each poll ships only
+  // lines the window has not seen yet instead of the whole bounded buffer.
+  const seqRef = useRef(0);
+
+  const applyDelta = useCallback((delta: ConsoleDelta) => {
+    seqRef.current = delta.next_seq;
+    if (delta.reset) {
+      setEntries(delta.entries);
+    } else if (delta.entries.length > 0) {
+      setEntries((prev) => {
+        const merged = [...prev, ...delta.entries];
+        return merged.length > MAX_CLIENT_ENTRIES
+          ? merged.slice(-MAX_CLIENT_ENTRIES)
+          : merged;
+      });
+    }
+  }, []);
+
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
-      setEntries(await getConsoleLogs());
+      // Cursor 0 refetches the full buffer; replace regardless of `reset`.
+      const delta = await getConsoleLogsSince(0);
+      seqRef.current = delta.next_seq;
+      setEntries(delta.entries);
     } catch {
       // If fetch fails, keep existing entries
     } finally {
@@ -101,19 +108,13 @@ export default function Console() {
   useEffect(() => {
     const id = setInterval(async () => {
       try {
-        // TODO(#73 PERF-2): replace with a get_console_logs_since(seq) delta
-        // command so each poll ships only new lines instead of the whole
-        // bounded buffer twice a second.
-        const latest = await getConsoleLogs();
-        setEntries((prev) =>
-          fingerprint(latest) === fingerprint(prev) ? prev : latest
-        );
+        applyDelta(await getConsoleLogsSince(seqRef.current));
       } catch {
         // Ignore poll failures
       }
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [applyDelta]);
 
   // Auto-scroll to bottom when new entries arrive (if user hasn't scrolled up).
   useEffect(() => {

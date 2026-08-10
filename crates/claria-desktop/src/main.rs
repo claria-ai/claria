@@ -152,9 +152,10 @@ fn main() -> Result<()> {
             commands::reveal_log_folder,
             commands::count_client_context_tokens,
             commands::count_infra_context_tokens,
-            commands::get_console_logs,
+            commands::get_console_logs_since,
             commands::get_console_logs_text,
             commands::save_console_logs,
+            commands::log_frontend_event,
         ]);
 
     #[cfg(debug_assertions)]

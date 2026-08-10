@@ -14,7 +14,7 @@ import type {
   ChatHistoryDetail,
   ChatHistorySummary,
   ChatMessage,
-  ConsoleEntry,
+  ConsoleDelta,
   CostAndUsageResult,
   CostGranularity,
   CredentialClass,
@@ -77,6 +77,7 @@ export type {
   ClientRecordDetails,
   ClientSummary,
   ConfigInfo,
+  ConsoleDelta,
   ConsoleEntry,
   CredentialAssessment,
   CredentialClass,
@@ -858,8 +859,8 @@ export async function countInfraContextTokens(planEntries: PlanEntry[]): Promise
 // The console commands are infallible on the Rust side, so the bindings return
 // the value directly rather than a `Result` — nothing to unwrap.
 
-export async function getConsoleLogs(): Promise<ConsoleEntry[]> {
-  return await commands.getConsoleLogs();
+export async function getConsoleLogsSince(seq: number): Promise<ConsoleDelta> {
+  return await commands.getConsoleLogsSince(seq);
 }
 
 export async function getConsoleLogsText(): Promise<string> {

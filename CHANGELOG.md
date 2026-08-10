@@ -53,6 +53,8 @@ All notable changes to Claria are documented here.
 - The console window renders only the newest lines by default with a control to show the full buffer
 - Chat, writer, preferences, cost, and provisioning screens share one set of interface primitives, async-load handling, and state hooks without behavior changes
 - The app ships a single modern TLS stack, verifies update checks and model downloads against the operating system's certificate store, and builds a smaller release binary
+- Frontend errors and warnings are forwarded to the backend log stack, so they appear in the console window, saved log exports, and the on-disk log files
+- The console window polls with a sequence cursor and receives only new lines instead of the whole buffer twice a second
 
 ## [0.22.0] — 2026-08-10
 

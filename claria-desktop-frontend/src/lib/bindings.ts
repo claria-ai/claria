@@ -1056,8 +1056,12 @@ async countInfraContextTokens(planEntries: PlanEntry[]) : Promise<Result<number,
     else return { status: "error", error: e  as any };
 }
 },
-async getConsoleLogs() : Promise<ConsoleEntry[]> {
-    return await TAURI_INVOKE("get_console_logs");
+/**
+ * Console entries at or after the sequence cursor `seq`. Pass the previous
+ * response's `next_seq`; start (or force a full refetch) with `0`.
+ */
+async getConsoleLogsSince(seq: number) : Promise<ConsoleDelta> {
+    return await TAURI_INVOKE("get_console_logs_since", { seq });
 },
 async getConsoleLogsText() : Promise<string> {
     return await TAURI_INVOKE("get_console_logs_text");
@@ -1069,6 +1073,19 @@ async saveConsoleLogs() : Promise<Result<boolean, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Record a frontend-reported event into the shared tracing stack.
+ *
+ * The `claria_desktop::frontend` target is admitted by the console and file
+ * layers via the shared crate-list filter, so webview failures land in the
+ * ring buffer and the rolling on-disk logs. Messages are length-capped and
+ * stripped of control characters so one event cannot flood the buffer or
+ * forge multi-line log records. Callers report operation names and error
+ * strings — never document content or client names.
+ */
+async logFrontendEvent(level: FrontendLogLevel, message: string) : Promise<void> {
+    await TAURI_INVOKE("log_frontend_event", { level, message });
 }
 }
 
@@ -1222,6 +1239,21 @@ export type ConfigInfo = { region: string; system_name: string; account_id: stri
  * A single log entry captured by the console ring buffer.
  */
 export type ConsoleEntry = { timestamp: string; level: string; target: string; message: string }
+/**
+ * One poll's worth of new console entries, addressed by a monotonic
+ * sequence cursor so the 500ms UI poll ships only new lines.
+ */
+export type ConsoleDelta = { entries: ConsoleEntry[];
+/**
+ * Cursor to pass on the next poll.
+ */
+next_seq: number;
+/**
+ * True when `entries` is the full buffer and must replace, not append —
+ * the requested cursor predates the buffer (lines rotated out unseen)
+ * or came from a previous app run.
+ */
+reset: boolean }
 export type CostAndUsageResult = { periods: CostTimePeriod[] }
 export type CostGranularity = "hourly" | "daily" | "monthly"
 export type CostResultGroup = { key: string; amount: string; unit: string }
@@ -1315,6 +1347,10 @@ actual: JsonValue }
  * A single version of a file in a client's record.
  */
 export type FileVersion = { version_id: string; size: number; last_modified: string | null; is_latest: boolean }
+/**
+ * Severity levels the frontend logging bridge may report.
+ */
+export type FrontendLogLevel = "error" | "warn" | "info"
 /**
  * Response from an infrastructure chat turn. Infra chat does not persist
  * history, but we still return token usage so the UI can display cost.
