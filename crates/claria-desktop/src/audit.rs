@@ -2,7 +2,7 @@
 //! happens when recording it fails.
 
 use aws_config::SdkConfig;
-use claria_audit::events::AuditEvent;
+use claria_storage::audit::AuditEvent;
 
 /// Log an audit event and persist it to the durable trail in S3.
 ///
@@ -18,7 +18,7 @@ use claria_audit::events::AuditEvent;
 pub async fn record(sdk_config: &SdkConfig, bucket: &str, event: AuditEvent) {
     event.emit();
 
-    if let Err(e) = claria_audit::sink::write_event(sdk_config, bucket, &event).await {
+    if let Err(e) = claria_storage::audit::write_event(sdk_config, bucket, &event).await {
         tracing::error!(
             audit.event_id = %event.event_id,
             audit.action = %event.action,

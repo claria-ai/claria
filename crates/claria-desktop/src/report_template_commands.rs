@@ -92,7 +92,7 @@ pub async fn upload_writer_template(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "writer_template_uploaded",
             "writer_template",
             id.to_string(),
@@ -127,7 +127,7 @@ pub async fn rename_writer_template(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "writer_template_renamed",
             "writer_template",
             template_id.to_string(),
@@ -155,7 +155,7 @@ pub async fn delete_writer_template(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "writer_template_deleted",
             "writer_template",
             template_id.to_string(),
@@ -293,7 +293,7 @@ pub async fn apply_report_template(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "report_template_imported",
             "report",
             workspace.report_id.clone(),

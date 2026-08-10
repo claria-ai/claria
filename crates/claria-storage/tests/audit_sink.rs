@@ -2,8 +2,11 @@
 //! key, and report a failed write rather than pretending it succeeded.
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
-use claria_audit::{error::AuditError, events::AuditEvent, sink};
 use claria_core::s3_keys;
+use claria_storage::{
+    audit::{self as sink, AuditEvent},
+    error::StorageError,
+};
 use claria_mock_aws::testing::MockServer;
 
 const BUCKET: &str = "123456789012-claria-data";
@@ -136,12 +139,12 @@ async fn a_failed_write_is_reported_not_swallowed() {
         .expect_err("write must fail against a missing bucket");
 
     assert!(
-        matches!(err, AuditError::Storage(_)),
+        matches!(err, StorageError::PutObject(_)),
         "expected a storage error, got {err:?}"
     );
     // The message has to name the problem — it is what reaches the console.
     assert!(
-        err.to_string().contains("audit store error"),
+        err.to_string().contains("S3 PutObject error"),
         "unhelpful error: {err}"
     );
 }

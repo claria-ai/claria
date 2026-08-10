@@ -10,15 +10,17 @@ aws-sdk-s3.workspace = true
 aws-smithy-types.workspace = true
 claria-core.workspace = true
 futures.workspace = true
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
 aws-credential-types.workspace = true
 tokio = { workspace = true, features = ["full"] }
 bytes.workspace = true
 claria-mock-aws.workspace = true
-uuid = { workspace = true, features = ["v4"] }
+tracing-subscriber.workspace = true

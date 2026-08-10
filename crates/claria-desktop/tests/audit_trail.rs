@@ -5,7 +5,7 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use tracing_subscriber::prelude::*;
 
-use claria_audit::events::AuditEvent;
+use claria_storage::audit::AuditEvent;
 use claria_desktop::console::{ConsoleBuffer, ConsoleLayer};
 use claria_mock_aws::testing::MockServer;
 
@@ -48,7 +48,7 @@ async fn a_recorded_event_reaches_s3_and_carries_its_details_into_the_exported_l
     let buffer = ConsoleBuffer::new();
     let subscriber =
         tracing_subscriber::registry().with(ConsoleLayer::new(buffer.clone()).with_filter(
-            tracing_subscriber::EnvFilter::new("info,claria_audit=trace"),
+            tracing_subscriber::EnvFilter::new("info,claria_storage=trace"),
         ));
     let _guard = tracing::subscriber::set_default(subscriber);
 
@@ -65,7 +65,7 @@ async fn a_recorded_event_reaches_s3_and_carries_its_details_into_the_exported_l
     let event_id = event.event_id;
     claria_desktop::audit::record(&sdk, BUCKET, event).await;
 
-    let stored = claria_audit::sink::read_day(&sdk, BUCKET, today())
+    let stored = claria_storage::audit::read_day(&sdk, BUCKET, today())
         .await
         .expect("read day");
     assert_eq!(stored.len(), 1);

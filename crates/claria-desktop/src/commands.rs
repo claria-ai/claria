@@ -1357,7 +1357,7 @@ pub(crate) fn bucket_name(cfg: &ClariaConfig) -> String {
 pub(crate) async fn record_audit(
     sdk_config: &aws_config::SdkConfig,
     cfg: &ClariaConfig,
-    event: claria_audit::events::AuditEvent,
+    event: claria_storage::audit::AuditEvent,
 ) {
     claria_desktop::audit::record(sdk_config, &bucket_name(cfg), event).await
 }
@@ -1556,7 +1556,7 @@ pub async fn rename_report_session(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "report_session_renamed",
             "report",
             workspace.report_id.clone(),
@@ -1662,7 +1662,7 @@ pub async fn revert_report_revision(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "report_revision_restored",
             "report",
             workspace.report_id.clone(),
@@ -1708,7 +1708,7 @@ pub async fn save_report_draft(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "report_draft_saved",
             "report",
             workspace.report_id.clone(),
@@ -1772,7 +1772,7 @@ pub async fn send_report_message(
             record_audit(
                 &sdk_config,
                 &cfg,
-                claria_audit::events::AuditEvent::new(
+                claria_storage::audit::AuditEvent::new(
                     "report_tool_turn_succeeded",
                     "report",
                     attempt.report_id.to_string(),
@@ -1810,7 +1810,7 @@ pub async fn send_report_message(
             record_audit(
                 &sdk_config,
                 &cfg,
-                claria_audit::events::AuditEvent::new(
+                claria_storage::audit::AuditEvent::new(
                     "report_tool_turn_failed",
                     "report",
                     resource_id,
@@ -1875,7 +1875,7 @@ pub async fn resolve_report_proposal(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             action,
             "report",
             workspace.report_id.clone(),
@@ -1994,7 +1994,7 @@ pub async fn export_report_docx(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "report_docx_exported",
             "report",
             report_id.to_string(),
@@ -2245,7 +2245,7 @@ pub async fn upload_record_file(
                 record_audit(
                     &sdk_config,
                     &cfg,
-                    claria_audit::events::AuditEvent::new(
+                    claria_storage::audit::AuditEvent::new(
                         "extract_document_text",
                         "record_file",
                         filename,
@@ -2437,7 +2437,7 @@ async fn maybe_translate(
             record_audit(
                 sdk_config,
                 cfg,
-                claria_audit::events::AuditEvent::new(
+                claria_storage::audit::AuditEvent::new(
                     "translate_transcript",
                     "transcript",
                     "",
@@ -2600,7 +2600,7 @@ pub async fn save_transcript_edits(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "save_transcript_edits",
             "transcript",
             &filename,
@@ -2885,7 +2885,7 @@ pub async fn extract_record_file(
         record_audit(
             &sdk_config,
             &cfg,
-            claria_audit::events::AuditEvent::new(
+            claria_storage::audit::AuditEvent::new(
                 "extract_document_text",
                 "record_file",
                 &filename,
@@ -3338,7 +3338,7 @@ pub async fn chat_message(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "chat_message",
             "client",
             client_uuid.to_string(),
@@ -3483,7 +3483,7 @@ pub async fn infra_chat(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "infra_chat",
             "infrastructure",
             "infra",
@@ -3718,7 +3718,7 @@ pub async fn rename_chat_history(
     record_audit(
         &sdk_config,
         &cfg,
-        claria_audit::events::AuditEvent::new(
+        claria_storage::audit::AuditEvent::new(
             "chat_history_renamed",
             "client",
             client_id.to_string(),

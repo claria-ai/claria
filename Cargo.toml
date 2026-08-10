@@ -4,7 +4,6 @@ members = [
     "crates/claria-core",
     "crates/claria-storage",
     "crates/claria-bedrock",
-    "crates/claria-audit",
     "crates/claria-provisioner",
     "crates/claria-transcribe",
     "crates/claria-billing",
@@ -21,7 +20,6 @@ license = "GPL-3.0-only"
 
 [workspace.dependencies]
 # Internal crates
-claria-audit = { path = "crates/claria-audit" }
 claria-bedrock = { path = "crates/claria-bedrock" }
 claria-billing = { path = "crates/claria-billing" }
 claria-core = { path = "crates/claria-core" }

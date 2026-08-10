@@ -13,7 +13,6 @@ rocm = ["claria-transcribe/rocm"]
 openmp = ["claria-transcribe/openmp"]
 
 [dependencies]
-claria-audit.workspace = true
 claria-bedrock.workspace = true
 claria-billing.workspace = true
 claria-core.workspace = true

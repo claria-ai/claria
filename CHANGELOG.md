@@ -8,6 +8,7 @@ All notable changes to Claria are documented here.
 - Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
 - Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed
 - Client CRUD, record inventory, content search, the record cache, and the delete/restore lifecycle move into one records crate with structured errors, and the sidecar-visibility rules are implemented exactly once
+- The audit-trail events and S3 sink fold into the storage crate, and reading a day of audit events fetches concurrently instead of one object at a time
 - Model capabilities (tool support, context window, prompt caching, token-counting model) resolve through one central table, so new Claude generations get modern behavior — including prompt caching — by default
 - All AI calls share one plumbing layer with structured error reporting, and turns whose token usage the service omitted are recorded as unmetered instead of zero-cost
 - Every AI call now enforces an output-token ceiling: a cut-off chat, writer, translation, or document-extraction response fails with a clear error instead of silently saving truncated text

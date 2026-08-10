@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use claria_audit::events::AuditEvent;
+use claria_storage::audit::AuditEvent;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::{Layer, layer::Context, prelude::*};
 

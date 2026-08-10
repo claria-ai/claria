@@ -71,6 +71,7 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 **`claria-storage` — S3 object operations**
 - CRUD for objects in S3 (get, put, delete, list)
 - No knowledge of what the objects represent (cases, reports, etc.)
+- `audit` module: structured audit events and the durable one-object-per-event S3 sink (the audit trail is S3 writes, which this crate owns)
 
 **`claria-records` — Client records**
 - Client CRUD, name history, optimistic-concurrency rename, and record content search
@@ -91,9 +92,6 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Runs Record Memo locally through `transcribe.cpp` and curated GGUF Whisper models
 - Processes Record Memo PCM on-device and supports Metal acceleration with CPU fallback
 - Owns the stable transcript sidecar parser and renderer
-
-**`claria-audit` — Audit trail**
-- Structured audit event logging
 
 **`claria-core` — Shared types**
 - Domain types shared across multiple crates
