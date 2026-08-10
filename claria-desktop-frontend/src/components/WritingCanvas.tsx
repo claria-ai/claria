@@ -3,6 +3,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
   ReportBlockView,
+  ReportContentView,
   ReportDraftEdit,
   ReportSectionEdit,
   ReportWorkspaceView,
@@ -29,6 +30,7 @@ export default function WritingCanvas({
   onChange,
   onSave,
   onExport,
+  onOpenRevisions,
   onReference,
   saveStatus,
   exportStatus,
@@ -45,6 +47,7 @@ export default function WritingCanvas({
   onChange: (edit: ReportDraftEdit) => void;
   onSave: () => void;
   onExport: () => void;
+  onOpenRevisions: () => void;
   onReference: (reference: WritingBlockReference) => void;
   saveStatus: string | null;
   exportStatus: string | null;
@@ -95,6 +98,14 @@ export default function WritingCanvas({
             {dirty ? " · Unsaved changes" : " · Saved"}
           </p>
         </div>
+        <button
+          type="button"
+          onClick={onOpenRevisions}
+          disabled={busy}
+          className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50"
+        >
+          Revisions
+        </button>
         {!editing ? (
           <button
             type="button"
@@ -179,7 +190,10 @@ export default function WritingCanvas({
               />
             </>
           ) : (
-            <AcceptedReport workspace={workspace} onReference={onReference} />
+            <ReportDocument
+              content={workspace.draft.content}
+              onReference={onReference}
+            />
           )}
         </div>
       </div>
@@ -187,16 +201,17 @@ export default function WritingCanvas({
   );
 }
 
-function AcceptedReport({
-  workspace,
+export function ReportDocument({
+  content,
   onReference,
+  testId = "accepted-report-canvas",
 }: {
-  workspace: ReportWorkspaceView;
-  onReference: (reference: WritingBlockReference) => void;
+  content: ReportContentView;
+  onReference?: (reference: WritingBlockReference) => void;
+  testId?: string;
 }) {
-  const content = workspace.draft.content;
   return (
-    <article data-testid="accepted-report-canvas">
+    <article data-testid={testId}>
       <h1 className="text-3xl font-semibold text-center text-gray-900 mb-10">
         <InlineMarkdown text={content.title} />
       </h1>
@@ -222,14 +237,17 @@ function AcceptedReport({
                         key={blockIndex}
                         text={block.text}
                         referenceLabel={`Reference ${section.heading}, paragraph ${blockIndex + 1} in Writing chat`}
-                        onReference={() =>
-                          onReference({
-                            kind: "paragraph",
-                            sectionId: section.id,
-                            blockIndex,
-                            sectionHeading: section.heading,
-                            preview: reportBlockReferencePreview(block),
-                          })
+                        onReference={
+                          onReference
+                            ? () =>
+                                onReference({
+                                  kind: "paragraph",
+                                  sectionId: section.id,
+                                  blockIndex,
+                                  sectionHeading: section.heading,
+                                  preview: reportBlockReferencePreview(block),
+                                })
+                            : undefined
                         }
                       />
                     );
@@ -250,14 +268,17 @@ function AcceptedReport({
                       key={blockIndex}
                       table={block}
                       referenceLabel={`Reference ${section.heading}, table ${blockIndex + 1} in Writing chat`}
-                      onReference={() =>
-                        onReference({
-                          kind: "table",
-                          sectionId: section.id,
-                          blockIndex,
-                          sectionHeading: section.heading,
-                          preview: reportBlockReferencePreview(block),
-                        })
+                      onReference={
+                        onReference
+                          ? () =>
+                              onReference({
+                                kind: "table",
+                                sectionId: section.id,
+                                blockIndex,
+                                sectionHeading: section.heading,
+                                preview: reportBlockReferencePreview(block),
+                              })
+                          : undefined
                       }
                     />
                   );
@@ -278,7 +299,7 @@ function ReportTable({
 }: {
   table: Extract<ReportBlockView, { kind: "table" }>;
   referenceLabel: string;
-  onReference: () => void;
+  onReference?: () => void;
 }) {
   const header = table.has_header ? table.rows[0] : null;
   const body = table.has_header ? table.rows.slice(1) : table.rows;
@@ -321,15 +342,17 @@ function ReportTable({
           </tbody>
         </table>
       </div>
-      <button
-        type="button"
-        aria-label={referenceLabel}
-        title="Reference this table in Writing chat"
-        onClick={onReference}
-        className="absolute -right-8 top-0 opacity-0 group-hover/table:opacity-100 group-focus-within/table:opacity-100 p-1 text-blue-500 hover:text-blue-800 bg-white border border-blue-200 rounded shadow-sm transition-opacity"
-      >
-        ↙
-      </button>
+      {onReference && (
+        <button
+          type="button"
+          aria-label={referenceLabel}
+          title="Reference this table in Writing chat"
+          onClick={onReference}
+          className="absolute -right-8 top-0 opacity-0 group-hover/table:opacity-100 group-focus-within/table:opacity-100 p-1 text-blue-500 hover:text-blue-800 bg-white border border-blue-200 rounded shadow-sm transition-opacity"
+        >
+          ↙
+        </button>
+      )}
     </div>
   );
 }
@@ -356,20 +379,22 @@ function ParagraphDisplay({
 }: {
   text: string;
   referenceLabel: string;
-  onReference: () => void;
+  onReference?: () => void;
 }) {
   return (
     <div className="group/paragraph relative rounded px-1 -mx-1 hover:bg-blue-50/40 focus-within:bg-blue-50/40">
       <MarkdownContent text={text} />
-      <button
-        type="button"
-        aria-label={referenceLabel}
-        title="Reference this paragraph in Writing chat"
-        onClick={onReference}
-        className="absolute -right-8 top-0 opacity-0 group-hover/paragraph:opacity-100 group-focus-within/paragraph:opacity-100 p-1 text-blue-500 hover:text-blue-800 bg-white border border-blue-200 rounded shadow-sm transition-opacity"
-      >
-        ↙
-      </button>
+      {onReference && (
+        <button
+          type="button"
+          aria-label={referenceLabel}
+          title="Reference this paragraph in Writing chat"
+          onClick={onReference}
+          className="absolute -right-8 top-0 opacity-0 group-hover/paragraph:opacity-100 group-focus-within/paragraph:opacity-100 p-1 text-blue-500 hover:text-blue-800 bg-white border border-blue-200 rounded shadow-sm transition-opacity"
+        >
+          ↙
+        </button>
+      )}
     </div>
   );
 }

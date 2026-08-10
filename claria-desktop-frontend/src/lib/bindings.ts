@@ -415,6 +415,30 @@ async renameReportSession(clientId: string, reportId: string, name: string) : Pr
     else return { status: "error", error: e  as any };
 }
 },
+async listReportRevisions(clientId: string, reportId: string) : Promise<Result<ReportRevisionView[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_report_revisions", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadReportRevision(clientId: string, reportId: string, revision: number) : Promise<Result<ReportDraftView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_report_revision", { clientId, reportId, revision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async revertReportRevision(clientId: string, reportId: string, expectedRevision: number, revision: number) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("revert_report_revision", { clientId, reportId, expectedRevision, revision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async saveReportDraft(clientId: string, expectedRevision: number, draft: ReportDraftEdit) : Promise<Result<ReportWorkspaceView, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_report_draft", { clientId, expectedRevision, draft }) };
@@ -1381,9 +1405,10 @@ export type ReportProposalDecision = "accept" | "reject"
 export type ReportProposalResolutionDecision = "accepted" | "rejected"
 export type ReportProposalResolutionView = { proposal_id: string; decision: ReportProposalResolutionDecision; resulting_revision: number; resolved_at: string }
 export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperationView[]; proposed_content: ReportContentView; created_at: string }
+export type ReportRevisionView = { revision: number; title: string; updated_at: string }
 export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlockView[] }
 export type ReportSectionView = { id: string; heading: string; blocks: ReportBlockView[] }
-export type ReportTemplateImportView = { imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
+export type ReportTemplateImportView = { writer_template_id: string | null; writer_template_name: string | null; imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
 export type ReportTemplatePreview = { import_id: string; content: ReportContentView; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
 export type ReportTemplateStatsView = { sections: number; paragraphs: number; bullet_lists: number; tables: number; table_cells: number; placeholder_count: number }
 export type ReportTemplateWarningView = { code: string; message: string; count: number }

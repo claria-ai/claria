@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   previewTemplate: vi.fn(),
   applyTemplate: vi.fn(),
   discardTemplate: vi.fn(),
+  getRecordText: vi.fn(),
+  listRevisions: vi.fn(),
+  loadRevision: vi.fn(),
+  revertRevision: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -26,6 +30,10 @@ vi.mock("../lib/tauri", () => ({
   previewWriterTemplate: mocks.previewTemplate,
   applyReportTemplate: mocks.applyTemplate,
   discardReportTemplatePreview: mocks.discardTemplate,
+  getRecordFileText: mocks.getRecordText,
+  listReportRevisions: mocks.listRevisions,
+  loadReportRevision: mocks.loadRevision,
+  revertReportRevision: mocks.revertRevision,
 }));
 
 import Writing from "./Writing";
@@ -51,7 +59,7 @@ function workspace({
   lastAgentRevision?: number | null;
 } = {}): ReportWorkspaceView {
   return {
-    schema_version: 3,
+    schema_version: 4,
     session_name: "Writer Session (1)",
     report_id: "report-1",
     client_id: "client-1",
@@ -204,6 +212,8 @@ beforeEach(() => {
   mocks.send.mockResolvedValue(turnResponse(workspace({ lastAgentRevision: 0 })));
   mocks.previewTemplate.mockResolvedValue(null);
   mocks.discardTemplate.mockResolvedValue(undefined);
+  mocks.getRecordText.mockResolvedValue("Preview text");
+  mocks.listRevisions.mockResolvedValue([]);
   mocks.exportDocx.mockResolvedValue({
     exported: true,
     report_id: "report-1",
@@ -539,6 +549,8 @@ describe("Writing", () => {
         .getAllByRole("status")
         .some((status) => status.textContent?.includes("Reading client context"))
     ).toBe(true);
+    expect(screen.queryByLabelText("Writer context")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /Context/ }));
     expect(screen.getByLabelText("Writer context").textContent).toContain("intake.txt");
 
     await act(async () => {
@@ -547,17 +559,80 @@ describe("Writing", () => {
     expect(screen.queryByText("Reading client context")).toBeNull();
   });
 
-  it("shows the accepted report and record reads in Context control", async () => {
+  it("combines context pills in one collapsed control and previews record content", async () => {
     mocks.load.mockResolvedValue(
       workspace({ assistantMarkdown: "Read it", contextReads: true })
     );
     renderWriting();
     await screen.findByText("Read it");
 
+    expect(screen.queryByLabelText("Writer context")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /Context/ }));
-    expect(screen.getByText(/Complete accepted report · revision 0/)).toBeDefined();
-    expect(screen.getAllByText("intake.txt")).toHaveLength(2);
-    expect(screen.getByText(/chars 0–120/)).toBeDefined();
+    expect(screen.getByText("Accepted report · r0")).toBeDefined();
+    expect(screen.getAllByText("intake.txt")).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "intake.txt" }));
+    expect(await screen.findByText("Preview text")).toBeDefined();
+    expect(mocks.getRecordText).toHaveBeenCalledWith("client-1", "intake.txt");
+  });
+
+  it("previews a previous report revision and restores it as a new revision", async () => {
+    const current = workspace({ title: "Current report", revision: 2 });
+    const restored = workspace({ title: "Earlier report", revision: 3 });
+    mocks.load.mockResolvedValue(current);
+    mocks.listRevisions.mockResolvedValue([
+      {
+        revision: 2,
+        title: "Current report",
+        updated_at: "2026-08-01T02:00:00Z",
+      },
+      {
+        revision: 1,
+        title: "Earlier report",
+        updated_at: "2026-08-01T01:00:00Z",
+      },
+      {
+        revision: 0,
+        title: "Blank report",
+        updated_at: "2026-08-01T00:00:00Z",
+      },
+    ]);
+    mocks.loadRevision.mockResolvedValue({
+      revision: 1,
+      content: restored.draft.content,
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T01:00:00Z",
+      last_applied_proposal_id: null,
+    });
+    mocks.revertRevision.mockResolvedValue(restored);
+    renderWriting();
+    await screen.findByText("Current report");
+
+    await userEvent.click(screen.getByRole("button", { name: "Revisions" }));
+    const historicalCanvas = await screen.findByTestId("revision-report-canvas");
+    expect(within(historicalCanvas).getByText("Earlier report")).toBeDefined();
+    expect(historicalCanvas.parentElement?.parentElement?.className).toContain(
+      "overflow-y-auto"
+    );
+    expect(
+      screen.queryByRole("option", { name: /Revision 2/ })
+    ).toBeNull();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Revert to version" })
+    );
+    expect(mocks.revertRevision).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      2,
+      1
+    );
+    expect(await screen.findByText("Restored as revision 3.")).toBeDefined();
+    expect(screen.queryByTestId("revision-report-canvas")).toBeNull();
+    expect(
+      within(screen.getByTestId("accepted-report-canvas")).getByText(
+        "Earlier report"
+      )
+    ).toBeDefined();
   });
 
   it("keeps raw LLM tool invocations nerdy and collapsed by default", async () => {
@@ -656,6 +731,8 @@ describe("Writing", () => {
     const imported = workspace({ title: "Imported evaluation", revision: 1 });
     imported.draft.content = preview.content;
     imported.template_import = {
+      writer_template_id: "template-1",
+      writer_template_name: "Assessment template",
       imported_revision: 1,
       imported_at: "2026-08-01T02:00:00Z",
       warnings: preview.warnings,
@@ -682,6 +759,11 @@ describe("Writing", () => {
     expect(mocks.previewTemplate).toHaveBeenCalledWith("client-1", "template-1");
     expect(mocks.applyTemplate).toHaveBeenCalledWith("client-1", 0, "import-1");
     expect(await screen.findByText("Imported evaluation")).toBeDefined();
+    expect(screen.getByText(/Template/).textContent).toContain(
+      "Template Assessment template applied"
+    );
+    expect(screen.queryByLabelText("Writer template")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply template" })).toBeNull();
     expect(screen.queryByText("Review DOCX template import")).toBeNull();
     expect(screen.queryByText(/carryover review required/)).toBeNull();
     expect(

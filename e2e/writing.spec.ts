@@ -158,6 +158,9 @@ test("managed writer templates apply directly and export without responsibility 
   );
   await page.getByRole("button", { name: "Apply template" }).click();
   await expect(page.getByText("Review DOCX template import")).toHaveCount(0);
+  await expect(page.getByText(/Template Imported Evaluation Template applied/)).toBeVisible();
+  await expect(page.getByLabel("Writer template")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Apply template" })).toHaveCount(0);
 
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Imported Evaluation Template",
@@ -190,6 +193,55 @@ test("managed writer templates apply directly and export without responsibility 
   expect(commands).toContain("apply_report_template");
   expect(commands).toContain("export_report_docx");
   expect(commands).not.toContain("acknowledge_report_template_review");
+});
+
+test("Writing previews and restores an old report without deleting later revisions", async ({
+  page,
+}) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="writing"]').click();
+
+  await page.getByRole("button", { name: "Apply template" }).click();
+  await expect(page.getByText(/Template Imported Evaluation Template applied/)).toBeVisible();
+  await expect(page.getByLabel("Writer template")).toHaveCount(0);
+  await page.getByRole("button", { name: "Revisions" }).click();
+
+  const historicalReport = page.getByTestId("revision-report-canvas");
+  await expect(historicalReport).toContainText("Untitled report");
+  await expect(historicalReport.locator("xpath=../..")).toHaveClass(
+    /overflow-y-auto/,
+  );
+  await page.getByRole("button", { name: "Revert to version" }).click();
+
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Untitled report",
+  );
+  await expect(page.getByText("Revision 2 · Saved")).toBeVisible();
+  await expect(page.getByText(/Template Imported Evaluation Template applied/)).toBeVisible();
+
+  // The imported revision is still available after the revert created r2.
+  await page.getByRole("button", { name: "Revisions" }).click();
+  await expect(page.getByTestId("revision-report-canvas")).toContainText(
+    "Imported Evaluation Template",
+  );
+  await expect(
+    page.getByRole("option", { name: /Revision 0 · Untitled report/ }),
+  ).toBeAttached();
+
+  const invocations = await page.evaluate(() =>
+    (window as unknown as {
+      __REPORT_INVOCATIONS__: Array<{
+        cmd: string;
+        args: Record<string, unknown>;
+      }>;
+    }).__REPORT_INVOCATIONS__,
+  );
+  expect(
+    invocations.find((invocation) => invocation.cmd === "revert_report_revision")
+      ?.args,
+  ).toMatchObject({ expectedRevision: 1, revision: 0 });
 });
 
 test("Writing opens the expanded template manager in Preferences", async ({ page }) => {

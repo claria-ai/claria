@@ -72,7 +72,7 @@ export function buildInitScript(
         created_at: new Date().toISOString(),
       });
       let reportWorkspace = {
-        schema_version: 3,
+        schema_version: 4,
         session_name: "Writer Session (1)",
         report_id: "99999999-9999-4999-8999-999999999999",
         client_id: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb",
@@ -91,6 +91,15 @@ export function buildInitScript(
         template_import: null,
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-01T00:00:00Z",
+      };
+      const reportDraftRevisions = new Map([
+        [reportWorkspace.draft.revision, structuredClone(reportWorkspace.draft)],
+      ]);
+      const rememberReportDraft = () => {
+        reportDraftRevisions.set(
+          reportWorkspace.draft.revision,
+          structuredClone(reportWorkspace.draft),
+        );
       };
       const reportTemplatePreview = {
         import_id: "77777777-7777-4777-8777-777777777777",
@@ -416,6 +425,46 @@ export function buildInitScript(
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
             return structuredClone(reportWorkspace);
           }
+          if (cmd === "list_report_revisions") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            if (args.reportId !== reportWorkspace.report_id) throw "The report changed on another computer. Reload it before continuing.";
+            return Array.from(reportDraftRevisions.values())
+              .sort((left, right) => right.revision - left.revision)
+              .map((draft) => ({
+                revision: draft.revision,
+                title: draft.content.title,
+                updated_at: draft.updated_at,
+              }));
+          }
+          if (cmd === "load_report_revision") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            if (args.reportId !== reportWorkspace.report_id) throw "The report changed on another computer. Reload it before continuing.";
+            const draft = reportDraftRevisions.get(args.revision);
+            if (!draft) throw "That report revision is no longer available.";
+            return structuredClone(draft);
+          }
+          if (cmd === "revert_report_revision") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (args.revision >= args.expectedRevision) throw "Choose an earlier report revision to restore.";
+            const historical = reportDraftRevisions.get(args.revision);
+            if (!historical) throw "That report revision is no longer available.";
+            reportWorkspace = {
+              ...reportWorkspace,
+              draft: {
+                ...reportWorkspace.draft,
+                revision: reportWorkspace.draft.revision + 1,
+                content: structuredClone(historical.content),
+                updated_at: new Date().toISOString(),
+              },
+              template_import: reportWorkspace.template_import
+                ? { ...reportWorkspace.template_import, reviewed_revision: reportWorkspace.draft.revision + 1, review_required: false }
+                : null,
+            };
+            rememberReportDraft();
+            return structuredClone(reportWorkspace);
+          }
           if (cmd === "save_report_draft") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
@@ -439,6 +488,7 @@ export function buildInitScript(
                 ? { ...reportWorkspace.template_import, reviewed_revision: reportWorkspace.draft.revision + 1, review_required: false }
                 : null,
             };
+            rememberReportDraft();
             return reportWorkspace;
           }
           if (cmd === "list_writer_templates") return [{
@@ -467,6 +517,8 @@ export function buildInitScript(
                 updated_at: new Date().toISOString(),
               },
               template_import: {
+                writer_template_id: "55555555-5555-4555-8555-555555555555",
+                writer_template_name: "Imported Evaluation Template",
                 imported_revision: reportWorkspace.draft.revision + 1,
                 imported_at: new Date().toISOString(),
                 warnings: structuredClone(reportTemplatePreview.warnings),
@@ -475,6 +527,7 @@ export function buildInitScript(
                 placeholder_count: reportTemplatePreview.stats.placeholder_count,
               },
             };
+            rememberReportDraft();
             return structuredClone(reportWorkspace);
           }
           if (cmd === "discard_report_template_preview") {
@@ -573,6 +626,7 @@ export function buildInitScript(
                   ? { ...reportWorkspace.template_import, reviewed_revision: reportWorkspace.draft.revision + 1, review_required: false }
                   : null,
               };
+              rememberReportDraft();
             } else {
               reportWorkspace = { ...reportWorkspace, pending_proposal: null };
             }

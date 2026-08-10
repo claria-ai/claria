@@ -7,12 +7,14 @@ export default function EditableName({
   onSave,
   disabled = false,
   className = "",
+  compactActions = false,
 }: {
   value: string;
   label: string;
   onSave: (name: string) => Promise<void>;
   disabled?: boolean;
   className?: string;
+  compactActions?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -55,7 +57,7 @@ export default function EditableName({
         onClick={() => setEditing(true)}
         disabled={disabled}
         aria-label={`Rename ${label}`}
-        title={`Rename ${label}`}
+        title={`${value} — rename ${label}`}
         className={`group inline-flex min-w-0 items-center gap-1.5 text-left disabled:cursor-default ${className}`}
       >
         <span className="truncate font-semibold text-gray-900">{value}</span>
@@ -96,17 +98,21 @@ export default function EditableName({
           type="button"
           onClick={() => void save()}
           disabled={saving || draft.trim() === ""}
+          aria-label={compactActions ? `Save ${label} name` : undefined}
+          title={compactActions ? "Save" : undefined}
           className="text-xs font-medium text-blue-700 disabled:opacity-40"
         >
-          {saving ? "Saving…" : "Save"}
+          {saving ? "Saving…" : compactActions ? "✓" : "Save"}
         </button>
         <button
           type="button"
           onClick={cancel}
           disabled={saving}
+          aria-label={compactActions ? `Cancel ${label} rename` : undefined}
+          title={compactActions ? "Cancel" : undefined}
           className="text-xs text-gray-500 disabled:opacity-40"
         >
-          Cancel
+          {compactActions ? "×" : "Cancel"}
         </button>
       </div>
       {error && <p className="mt-1 text-xs text-red-600">{error}</p>}

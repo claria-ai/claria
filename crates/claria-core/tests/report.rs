@@ -91,6 +91,46 @@ fn legacy_workspace_defaults_writing_queue_and_export_status() {
 }
 
 #[test]
+fn version_three_template_metadata_defaults_managed_identity() {
+    let mut workspace = workspace();
+    workspace.draft = workspace
+        .draft
+        .replace_content(
+            0,
+            ReportContent {
+                title: "Imported".to_string(),
+                sections: vec![],
+            },
+            timestamp("2026-08-01T12:01:00Z"),
+        )
+        .expect("import revision");
+    workspace.updated_at = timestamp("2026-08-01T12:01:00Z");
+    workspace.template_import = Some(ReportTemplateImport {
+        source_sha256: "a".repeat(64),
+        writer_template_id: None,
+        writer_template_name: None,
+        imported_revision: 1,
+        imported_at: timestamp("2026-08-01T12:01:00Z"),
+        warnings: vec![],
+        reviewed_revision: Some(1),
+    });
+    let mut value = serde_json::to_value(workspace).expect("workspace JSON");
+    value["schema_version"] = serde_json::json!(3);
+    let template = value["template_import"]
+        .as_object_mut()
+        .expect("template metadata");
+    template.remove("writer_template_id");
+    template.remove("writer_template_name");
+
+    let decoded = decode_report_workspace(&serde_json::to_vec(&value).unwrap())
+        .expect("decode version three workspace");
+    let template = decoded.template_import.expect("template metadata");
+    assert_eq!(decoded.schema_version, REPORT_WORKSPACE_SCHEMA_VERSION);
+    assert_eq!(template.writer_template_id, None);
+    assert_eq!(template.writer_template_name, None);
+}
+
+#[test]
 fn writer_session_name_is_trimmed_and_validated() {
     let mut workspace = workspace();
     workspace
@@ -396,6 +436,8 @@ fn template_metadata_is_revision_bound_and_contains_no_local_identity() {
     workspace.updated_at = timestamp("2026-08-01T12:01:00Z");
     workspace.template_import = Some(ReportTemplateImport {
         source_sha256: "a".repeat(64),
+        writer_template_id: None,
+        writer_template_name: None,
         imported_revision: 1,
         imported_at: timestamp("2026-08-01T12:01:00Z"),
         warnings: vec![ReportTemplateWarning {

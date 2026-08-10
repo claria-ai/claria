@@ -13,7 +13,6 @@ import {
   saveReportDraft,
   sendReportMessage,
   type ChatModel,
-  type ReportContextReadView,
   type ReportDraftEdit,
   type ReportTimelineItemView,
   type ReportTurnProgressView,
@@ -27,6 +26,8 @@ import {
   validateReportEdit,
 } from "../lib/writingWorkspace";
 import EditableName from "../components/EditableName";
+import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
+import ReportRevisionModal from "../components/ReportRevisionModal";
 import WritingCanvas from "../components/WritingCanvas";
 import WritingProposalCard from "../components/WritingProposalCard";
 import Spinner from "../components/Spinner";
@@ -36,6 +37,13 @@ import {
   writeWritingComposerDraft,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
+
+type ContextPill = {
+  key: string;
+  label: string;
+  status: "loading" | "ready" | "failed";
+  filename?: string;
+};
 
 export type WritingLeaveState = {
   /** Any work that would be lost when the desktop app closes. */
@@ -97,13 +105,13 @@ export default function Writing({
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const [previewFilename, setPreviewFilename] = useState<string | null>(null);
+  const [revisionsOpen, setRevisionsOpen] = useState(false);
   const [agentActivity, setAgentActivity] = useState<{
     label: string;
     detail?: string;
   } | null>(null);
-  const [liveContext, setLiveContext] = useState<
-    Array<{ key: string; label: string; status: "loading" | "ready" | "failed" }>
-  >([]);
+  const [liveContext, setLiveContext] = useState<ContextPill[]>([]);
   const [writerTemplates, setWriterTemplates] = useState<WriterTemplateView[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [templatesError, setTemplatesError] = useState<string | null>(null);
@@ -591,11 +599,7 @@ export default function Writing({
   }
 
   const contextReads = workspace.turns.flatMap((turn) => turn.context_reads);
-  const contextPills: Array<{
-    key: string;
-    label: string;
-    status: "loading" | "ready" | "failed";
-  }> = [
+  const contextPills: ContextPill[] = [
     {
       key: "accepted-report",
       label: `Accepted report · r${workspace.draft.revision}`,
@@ -622,7 +626,12 @@ export default function Writing({
     contextPills.push({ key: "record-list", label: "Record file list", status: "ready" });
   }
   for (const filename of new Set(contextReads.map((read) => read.filename))) {
-    contextPills.push({ key: `record:${filename}`, label: filename, status: "ready" });
+    contextPills.push({
+      key: `record:${filename}`,
+      label: filename,
+      status: "ready",
+      filename,
+    });
   }
   for (const reference of references) {
     contextPills.push({
@@ -633,8 +642,10 @@ export default function Writing({
   }
   for (const live of liveContext) {
     const existing = contextPills.find((pill) => pill.label === live.label);
-    if (existing) existing.status = live.status;
-    else contextPills.push(live);
+    if (existing) {
+      existing.status = live.status;
+      existing.filename ??= live.filename;
+    } else contextPills.push(live);
   }
 
   return (
@@ -642,105 +653,119 @@ export default function Writing({
       <div className="flex-1 min-h-0 grid grid-cols-1 min-[800px]:grid-cols-[minmax(340px,42%)_minmax(0,58%)] overflow-y-auto min-[800px]:overflow-hidden">
       <section className="min-h-[32rem] min-[800px]:min-h-0 flex flex-col bg-white">
         <div className="px-5 py-4 border-b border-gray-200 space-y-3">
-          <EditableName
-            value={workspace.session_name}
-            label="writer session"
-            onSave={handleRenameSession}
-            disabled={controlsBusy}
-            className="w-full"
-          />
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
-            <label className="block">
-              <span className="text-xs font-medium text-gray-600">Model</span>
-              <select
-                aria-label="Writing model"
-                value={selectedModelId}
-                onChange={(event) => setSelectedModelId(event.target.value)}
-                disabled={controlsBusy || pending !== null || chatModelsLoading}
-                className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
-              >
-                {chatModelsLoading ? (
-                  <option value="">Loading models…</option>
-                ) : chatModels.length === 0 ? (
-                  <option value="">No models available</option>
-                ) : null}
-                {chatModels.map((model) => (
-                  <option key={model.model_id} value={model.model_id}>
-                    {model.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+          <div className="grid grid-cols-[minmax(4rem,0.7fr)_minmax(7rem,1fr)_auto] items-center gap-2">
+            <div className="min-w-0">
+              <EditableName
+                value={workspace.session_name}
+                label="writer session"
+                onSave={handleRenameSession}
+                disabled={controlsBusy}
+                compactActions
+                className="w-full text-sm"
+              />
+            </div>
+            <select
+              aria-label="Writing model"
+              value={selectedModelId}
+              onChange={(event) => setSelectedModelId(event.target.value)}
+              disabled={controlsBusy || pending !== null || chatModelsLoading}
+              className="min-w-0 w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+            >
+              {chatModelsLoading ? (
+                <option value="">Loading models…</option>
+              ) : chatModels.length === 0 ? (
+                <option value="">No models available</option>
+              ) : null}
+              {chatModels.map((model) => (
+                <option key={model.model_id} value={model.model_id}>
+                  {model.name}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               aria-expanded={contextOpen}
               aria-controls="writing-context-control"
               onClick={() => setContextOpen((open) => !open)}
-              className="mb-px px-3 py-2 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50"
+              className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50"
             >
-              Context · {contextReads.length + 1}
+              Context · {contextPills.length}
             </button>
           </div>
-
-          <ContextPills pills={contextPills} />
-
-          <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-end gap-2">
-            <label className="block min-w-0">
-              <span className="text-xs font-medium text-gray-600">Writer template</span>
-              <select
-                aria-label="Writer template"
-                value={selectedTemplateId}
-                onChange={(event) => setSelectedTemplateId(event.target.value)}
-                disabled={controlsBusy || pending !== null || writerTemplates.length === 0}
-                className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
-              >
-                {writerTemplates.length === 0 && (
-                  <option value="">No saved templates</option>
-                )}
-                {writerTemplates.map((template) => (
-                  <option key={template.id} value={template.id}>
-                    {template.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="button"
-              onClick={() => void handleApplyTemplate()}
-              disabled={
-                controlsBusy ||
-                pending !== null ||
-                dirty ||
-                editing ||
-                selectedTemplateId === ""
-              }
-              className="mb-px rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
-            >
-              {busy === "applying_template" ? "Applying…" : "Apply template"}
-            </button>
-            <button
-              type="button"
-              onClick={onManageTemplates}
-              disabled={controlsBusy}
-              className="mb-px px-2 py-2 text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
-            >
-              Manage in Preferences
-            </button>
-          </div>
-          {templatesError && (
-            <p role="alert" className="text-xs text-red-600">
-              Could not load writer templates: {templatesError}
-            </p>
-          )}
 
           {contextOpen && (
-            <ContextControl
-              revision={workspace.draft.revision}
-              turns={workspace.turns.length}
-              reads={contextReads}
-              references={references}
-              templateImported={workspace.template_import !== null}
-            />
+            <div
+              id="writing-context-control"
+              className="rounded-md border border-gray-200 bg-gray-50 p-2.5"
+            >
+              <ContextPills
+                pills={contextPills}
+                onPreviewFile={setPreviewFilename}
+              />
+            </div>
+          )}
+
+          {workspace.template_import ? (
+            <div
+              title="Start a new Writing session to use another template"
+              className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800"
+            >
+              <span aria-hidden="true">✓</span>
+              <span className="min-w-0 truncate">
+                Template <strong>{workspace.template_import.writer_template_name ?? "Word template"}</strong> applied
+              </span>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-end gap-2">
+                <label className="block min-w-0">
+                  <span className="text-xs font-medium text-gray-600">Writer template</span>
+                  <select
+                    aria-label="Writer template"
+                    value={selectedTemplateId}
+                    onChange={(event) => setSelectedTemplateId(event.target.value)}
+                    disabled={controlsBusy || pending !== null || writerTemplates.length === 0}
+                    className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                  >
+                    {writerTemplates.length === 0 && (
+                      <option value="">No saved templates</option>
+                    )}
+                    {writerTemplates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void handleApplyTemplate()}
+                  disabled={
+                    controlsBusy ||
+                    pending !== null ||
+                    dirty ||
+                    editing ||
+                    selectedTemplateId === ""
+                  }
+                  className="mb-px rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+                >
+                  {busy === "applying_template" ? "Applying…" : "Apply template"}
+                </button>
+                <button
+                  type="button"
+                  onClick={onManageTemplates}
+                  disabled={controlsBusy}
+                  className="mb-px px-2 py-2 text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
+                >
+                  Manage in Preferences
+                </button>
+              </div>
+              {templatesError && (
+                <p role="alert" className="text-xs text-red-600">
+                  Could not load writer templates: {templatesError}
+                </p>
+              )}
+            </>
           )}
 
           {chatModelsError && (
@@ -933,6 +958,7 @@ export default function Writing({
         onChange={setEdit}
         onSave={() => void handleSave()}
         onExport={() => void handleExport()}
+        onOpenRevisions={() => setRevisionsOpen(true)}
         onReference={addReference}
         saveStatus={null}
         exportStatus={exportStatus}
@@ -940,48 +966,86 @@ export default function Writing({
         agentActivity={agentActivity}
       />
       </div>
+
+      {previewFilename && (
+        <RecordFilePreviewModal
+          clientId={clientId}
+          filename={previewFilename}
+          onClose={() => setPreviewFilename(null)}
+        />
+      )}
+      {revisionsOpen && (
+        <ReportRevisionModal
+          clientId={clientId}
+          workspace={workspace}
+          canRevert={
+            !controlsBusy && !dirty && !editing && pending === null
+          }
+          onClose={() => setRevisionsOpen(false)}
+          onReverted={(updated) => {
+            setWorkspace(updated);
+            setEdit(draftToEdit(updated.draft));
+            setEditing(false);
+            setReferences([]);
+            setActionError(null);
+            setConflict(false);
+            setExportStatus(null);
+            setSaveStatus(`Restored as revision ${updated.draft.revision}.`);
+          }}
+        />
+      )}
     </>
   );
 }
 
 function ContextPills({
   pills,
+  onPreviewFile,
 }: {
-  pills: Array<{
-    key: string;
-    label: string;
-    status: "loading" | "ready" | "failed";
-  }>;
+  pills: ContextPill[];
+  onPreviewFile: (filename: string) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5" aria-label="Writer context">
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">
-        Context
-      </span>
-      {pills.map((pill) => (
-        <span
-          key={pill.key}
-          className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium ${
-            pill.status === "failed"
-              ? "border-red-200 bg-red-50 text-red-700"
-              : pill.status === "loading"
-                ? "border-blue-200 bg-blue-50 text-blue-700"
-                : "border-emerald-200 bg-emerald-50 text-emerald-700"
-          }`}
-        >
-          <span
-            aria-hidden="true"
-            className={`h-1.5 w-1.5 rounded-full ${
-              pill.status === "failed"
-                ? "bg-red-500"
-                : pill.status === "loading"
-                  ? "bg-blue-500 animate-pulse"
-                  : "bg-emerald-500"
-            }`}
-          />
-          {pill.label}
-        </span>
-      ))}
+      {pills.map((pill) => {
+        const className = `inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium ${
+          pill.status === "failed"
+            ? "border-red-200 bg-red-50 text-red-700"
+            : pill.status === "loading"
+              ? "border-blue-200 bg-blue-50 text-blue-700"
+              : "border-emerald-200 bg-emerald-50 text-emerald-700"
+        }`;
+        const content = (
+          <>
+            <span
+              aria-hidden="true"
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                pill.status === "failed"
+                  ? "bg-red-500"
+                  : pill.status === "loading"
+                    ? "bg-blue-500 animate-pulse"
+                    : "bg-emerald-500"
+              }`}
+            />
+            <span className="truncate">{pill.label}</span>
+          </>
+        );
+        return pill.filename ? (
+          <button
+            type="button"
+            key={pill.key}
+            onClick={() => onPreviewFile(pill.filename!)}
+            title={`Preview ${pill.filename}`}
+            className={`${className} hover:border-emerald-400 hover:text-emerald-900`}
+          >
+            {content}
+          </button>
+        ) : (
+          <span key={pill.key} className={className}>
+            {content}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -1000,11 +1064,7 @@ function agentActivityForTool(name: string, context: string | null) {
 }
 
 function upsertLiveContext(
-  current: Array<{
-    key: string;
-    label: string;
-    status: "loading" | "ready" | "failed";
-  }>,
+  current: ContextPill[],
   label: string,
   status: "loading" | "ready" | "failed"
 ) {
@@ -1013,73 +1073,7 @@ function upsertLiveContext(
   if (existing) {
     return current.map((item) => (item.key === key ? { ...item, status } : item));
   }
-  return [...current, { key, label, status }];
-}
-
-function ContextControl({
-  revision,
-  turns,
-  reads,
-  references,
-  templateImported,
-}: {
-  revision: number;
-  turns: number;
-  reads: ReportContextReadView[];
-  references: WritingBlockReference[];
-  templateImported: boolean;
-}) {
-  const uniqueReads = Array.from(
-    new Map(
-      reads.map((read) => [
-        `${read.filename}:${read.offset}:${read.returned_characters}`,
-        read,
-      ])
-    ).values()
-  );
-  return (
-    <div
-      id="writing-context-control"
-      className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 space-y-2"
-    >
-      <div>
-        <p className="font-semibold text-gray-800">Included on the next message</p>
-        <ul className="mt-1 list-disc pl-4 space-y-0.5">
-          <li>Complete accepted report · revision {revision}</li>
-          <li>{turns} retained Writing turn{turns === 1 ? "" : "s"}</li>
-          {templateImported && <li>DOCX template provenance and import notes</li>}
-          {references.length > 0 && (
-            <li>
-              {references.length} focused report block
-              {references.length === 1 ? "" : "s"}
-            </li>
-          )}
-        </ul>
-      </div>
-      <div>
-        <p className="font-semibold text-gray-800">
-          Record excerpts read this session · {uniqueReads.length}
-        </p>
-        {uniqueReads.length === 0 ? (
-          <p className="mt-1 text-gray-500">No record files have been read yet.</p>
-        ) : (
-          <ul className="mt-1 space-y-1 max-h-28 overflow-y-auto">
-            {uniqueReads.map((read) => (
-              <li key={`${read.filename}:${read.offset}:${read.returned_characters}`}>
-                <span className="font-medium">{read.filename}</span>{" "}
-                <span className="text-gray-500">
-                  chars {read.offset}–{read.offset + read.returned_characters}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="mt-1 text-[10px] leading-4 text-gray-400">
-          Excerpt text is not stored in history. Claude re-reads source text on demand.
-        </p>
-      </div>
-    </div>
-  );
+  return [...current, { key, label, status, filename: label }];
 }
 
 function reconcileReferences(

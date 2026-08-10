@@ -18,7 +18,8 @@ pub struct CachedSdkConfig {
 
 pub(crate) struct PendingReportTemplate {
     pub(crate) client_id: uuid::Uuid,
-    pub(crate) writer_template_id: Option<uuid::Uuid>,
+    pub(crate) writer_template_id: uuid::Uuid,
+    pub(crate) writer_template_name: String,
     pub(crate) source_docx: Vec<u8>,
     pub(crate) imported: claria_docx::ImportedTemplate,
 }

@@ -8,7 +8,7 @@
 mod error;
 pub mod writer_templates;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::{
@@ -207,6 +207,22 @@ pub struct ReportExportSnapshot {
     pub template_source: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReportRevisionSummary {
+    pub revision: u64,
+    pub title: String,
+    pub updated_at: jiff::Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReportTemplateApplication {
+    pub content: ReportContent,
+    pub source_sha256: String,
+    pub writer_template_id: Uuid,
+    pub writer_template_name: String,
+    pub warnings: Vec<ReportTemplateWarning>,
+}
+
 /// A paragraph or table the user explicitly attached to their next writing
 /// message. The host validates the stable section ID and current block index
 /// before exposing the current block to the model.
@@ -308,6 +324,90 @@ pub async fn rename_report_session(
     Ok(loaded.workspace)
 }
 
+pub async fn list_report_revisions(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    report_id: Uuid,
+) -> Result<Vec<ReportRevisionSummary>, ReportAuthoringError> {
+    let current = load_or_create(s3, bucket, client_id).await?;
+    if current.workspace.report_id != report_id {
+        return Err(ReportAuthoringError::Conflict);
+    }
+
+    let mut seen = HashSet::new();
+    let mut revisions = Vec::new();
+    for workspace in load_workspace_versions(s3, bucket, client_id).await? {
+        if workspace.report_id == report_id && seen.insert(workspace.draft.revision) {
+            revisions.push(ReportRevisionSummary {
+                revision: workspace.draft.revision,
+                title: workspace.draft.content.title,
+                updated_at: workspace.draft.updated_at,
+            });
+        }
+    }
+    revisions.sort_by_key(|revision| std::cmp::Reverse(revision.revision));
+    Ok(revisions)
+}
+
+pub async fn load_report_revision(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    report_id: Uuid,
+    revision: u64,
+) -> Result<ReportDraft, ReportAuthoringError> {
+    let current = load_or_create(s3, bucket, client_id).await?;
+    if current.workspace.report_id != report_id {
+        return Err(ReportAuthoringError::Conflict);
+    }
+    Ok(
+        load_workspace_revision(s3, bucket, client_id, report_id, revision)
+            .await?
+            .draft,
+    )
+}
+
+pub async fn revert_report_revision(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    report_id: Uuid,
+    expected_revision: u64,
+    revision: u64,
+) -> Result<ReportWorkspace, ReportAuthoringError> {
+    let mut loaded = load_or_create(s3, bucket, client_id).await?;
+    if loaded.workspace.report_id != report_id {
+        return Err(ReportAuthoringError::Conflict);
+    }
+    ensure_revision(&loaded.workspace, expected_revision)?;
+    if revision >= expected_revision {
+        return Err(ReportAuthoringError::InvalidInput(
+            "Choose an earlier report revision to restore.".to_string(),
+        ));
+    }
+    if loaded.workspace.session.pending_proposal.is_some() {
+        return Err(ReportAuthoringError::InvalidInput(
+            "Accept or reject the pending proposal before restoring a report revision.".to_string(),
+        ));
+    }
+    let historical = load_workspace_revision(s3, bucket, client_id, report_id, revision).await?;
+
+    let now = jiff::Timestamp::now();
+    loaded.workspace.draft = loaded
+        .workspace
+        .draft
+        .replace_content(expected_revision, historical.draft.content, now)
+        .map_err(|error| ReportAuthoringError::InvalidInput(error.to_string()))?;
+    // A revert restores report content, not session-level provenance. Keep the
+    // current proposal/template metadata and save the historical content as a
+    // new draft revision.
+    mark_template_current(&mut loaded.workspace);
+    loaded.workspace.updated_at = now;
+    save_loaded(s3, bucket, &mut loaded).await?;
+    Ok(loaded.workspace)
+}
+
 pub async fn save_report_draft(
     s3: &S3Client,
     bucket: &str,
@@ -385,12 +485,16 @@ pub async fn apply_report_template(
     bucket: &str,
     client_id: Uuid,
     expected_revision: u64,
-    content: ReportContent,
-    source_sha256: String,
-    warnings: Vec<ReportTemplateWarning>,
+    application: ReportTemplateApplication,
 ) -> Result<ReportWorkspace, ReportAuthoringError> {
     let mut loaded = load_or_create(s3, bucket, client_id).await?;
     ensure_revision(&loaded.workspace, expected_revision)?;
+    if loaded.workspace.template_import.is_some() {
+        return Err(ReportAuthoringError::InvalidInput(
+            "This Writing session already has a template. Start a new session to use a different template."
+                .to_string(),
+        ));
+    }
     if loaded.workspace.session.pending_proposal.is_some() {
         return Err(ReportAuthoringError::InvalidInput(
             "Accept or reject the pending proposal before importing a template.".to_string(),
@@ -401,13 +505,15 @@ pub async fn apply_report_template(
     loaded.workspace.draft = loaded
         .workspace
         .draft
-        .replace_content(expected_revision, content, now)
+        .replace_content(expected_revision, application.content, now)
         .map_err(|error| ReportAuthoringError::InvalidInput(error.to_string()))?;
     loaded.workspace.template_import = Some(ReportTemplateImport {
-        source_sha256,
+        source_sha256: application.source_sha256,
+        writer_template_id: Some(application.writer_template_id),
+        writer_template_name: Some(application.writer_template_name),
         imported_revision: loaded.workspace.draft.revision,
         imported_at: now,
-        warnings,
+        warnings: application.warnings,
         reviewed_revision: Some(loaded.workspace.draft.revision),
     });
     loaded.workspace.updated_at = now;
@@ -1307,6 +1413,77 @@ async fn load_existing(
     }
     let etag = require_etag(output.etag.unwrap_or_default()).map_err(LoadWorkspaceError::Public)?;
     Ok(LoadedWorkspace { workspace, etag })
+}
+
+async fn load_workspace_versions(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+) -> Result<Vec<ReportWorkspace>, ReportAuthoringError> {
+    let key = claria_core::s3_keys::report_workspace(client_id);
+    let versions = claria_storage::objects::list_object_versions(s3, bucket, &key)
+        .await
+        .map_err(|source| ReportAuthoringError::storage("listing report revisions", source))?;
+    let mut workspaces = Vec::new();
+    for version in versions
+        .into_iter()
+        .filter(|version| !version.is_delete_marker)
+    {
+        workspaces.push(
+            load_workspace_object_version(s3, bucket, &key, client_id, &version.version_id)
+                .await?,
+        );
+    }
+    Ok(workspaces)
+}
+
+async fn load_workspace_revision(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    report_id: Uuid,
+    revision: u64,
+) -> Result<ReportWorkspace, ReportAuthoringError> {
+    let key = claria_core::s3_keys::report_workspace(client_id);
+    let versions = claria_storage::objects::list_object_versions(s3, bucket, &key)
+        .await
+        .map_err(|source| ReportAuthoringError::storage("listing report revisions", source))?;
+    for version in versions
+        .into_iter()
+        .filter(|version| !version.is_delete_marker)
+    {
+        let workspace =
+            load_workspace_object_version(s3, bucket, &key, client_id, &version.version_id).await?;
+        if workspace.report_id == report_id && workspace.draft.revision == revision {
+            return Ok(workspace);
+        }
+    }
+    Err(ReportAuthoringError::InvalidInput(format!(
+        "Report revision {revision} is no longer available."
+    )))
+}
+
+async fn load_workspace_object_version(
+    s3: &S3Client,
+    bucket: &str,
+    key: &str,
+    client_id: Uuid,
+    version_id: &str,
+) -> Result<ReportWorkspace, ReportAuthoringError> {
+    let output = claria_storage::objects::get_object_version(s3, bucket, key, version_id)
+        .await
+        .map_err(|source| ReportAuthoringError::storage("reading a report revision", source))?;
+    let workspace = decode_report_workspace(&output.body).map_err(|error| {
+        ReportAuthoringError::InvalidWorkspace(format!(
+            "a stored report revision is invalid: {error}"
+        ))
+    })?;
+    if workspace.client_id != client_id {
+        return Err(ReportAuthoringError::InvalidWorkspace(
+            "A report revision belongs to another client.".to_string(),
+        ));
+    }
+    Ok(workspace)
 }
 
 async fn save_loaded(

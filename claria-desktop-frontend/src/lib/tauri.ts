@@ -37,8 +37,10 @@ import type {
   RecordFile,
   ReportBlockReferenceInput,
   ReportDraftEdit,
+  ReportDraftView,
   ReportExportResult,
   ReportProposalDecision,
+  ReportRevisionView,
   ReportAuthoringPreferences,
   ReportTemplatePreview,
   ReportTurnProgressView,
@@ -118,6 +120,7 @@ export type {
   ReportProposalResolutionDecision,
   ReportProposalResolutionView,
   ReportProposalView,
+  ReportRevisionView,
   ReportSectionEdit,
   ReportTemplateImportView,
   ReportTemplatePreview,
@@ -443,6 +446,37 @@ export async function renameReportSession(
   name: string
 ): Promise<ReportWorkspaceView> {
   return unwrap(await commands.renameReportSession(clientId, reportId, name));
+}
+
+export async function listReportRevisions(
+  clientId: string,
+  reportId: string
+): Promise<ReportRevisionView[]> {
+  return unwrap(await commands.listReportRevisions(clientId, reportId));
+}
+
+export async function loadReportRevision(
+  clientId: string,
+  reportId: string,
+  revision: number
+): Promise<ReportDraftView> {
+  return unwrap(await commands.loadReportRevision(clientId, reportId, revision));
+}
+
+export async function revertReportRevision(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number,
+  revision: number
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.revertReportRevision(
+      clientId,
+      reportId,
+      expectedRevision,
+      revision
+    )
+  );
 }
 
 export async function saveReportDraft(

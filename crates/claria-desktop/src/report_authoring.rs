@@ -82,6 +82,13 @@ pub struct ReportDraftView {
     pub last_applied_proposal_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportRevisionView {
+    pub revision: u64,
+    pub title: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 pub struct ReportContentView {
     pub title: String,
@@ -113,6 +120,8 @@ pub enum ReportBlockView {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ReportTemplateImportView {
+    pub writer_template_id: Option<String>,
+    pub writer_template_name: Option<String>,
     pub imported_revision: u64,
     pub imported_at: String,
     pub warnings: Vec<ReportTemplateWarningView>,
@@ -440,7 +449,7 @@ pub fn workspace_view(workspace: &ReportWorkspace) -> ReportWorkspaceView {
         report_id: workspace.report_id.to_string(),
         client_id: workspace.client_id.to_string(),
         session_name: workspace.session_name.clone(),
-        draft: draft_view(&workspace.draft),
+        draft: report_draft_view(&workspace.draft),
         turns: workspace.session.turns.iter().map(turn_view).collect(),
         pending_proposal: workspace
             .session
@@ -500,6 +509,8 @@ fn template_import_view(
     workspace: &ReportWorkspace,
 ) -> ReportTemplateImportView {
     ReportTemplateImportView {
+        writer_template_id: template.writer_template_id.map(|id| id.to_string()),
+        writer_template_name: template.writer_template_name.clone(),
         imported_revision: template.imported_revision,
         imported_at: template.imported_at.to_string(),
         warnings: template
@@ -577,7 +588,7 @@ fn template_warning_message(code: ReportTemplateWarningCode) -> &'static str {
     }
 }
 
-fn draft_view(draft: &ReportDraft) -> ReportDraftView {
+pub fn report_draft_view(draft: &ReportDraft) -> ReportDraftView {
     ReportDraftView {
         revision: draft.revision,
         content: content_view(&draft.content),

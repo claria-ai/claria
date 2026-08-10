@@ -182,7 +182,7 @@ pub async fn preview_writer_template(
         .map_err(|error| error.to_string())?;
     let (cfg, sdk_config) = load_sdk_config(&state).await?;
     let s3 = claria_storage::client::from_config(&sdk_config);
-    let bytes = claria_report_authoring::writer_templates::load_docx(
+    let (metadata, bytes) = claria_report_authoring::writer_templates::load_docx_with_metadata(
         &s3,
         &bucket_name(&cfg),
         template_id,
@@ -208,7 +208,8 @@ pub async fn preview_writer_template(
         import_id,
         PendingReportTemplate {
             client_id,
-            writer_template_id: Some(template_id),
+            writer_template_id: template_id,
+            writer_template_name: metadata.name,
             source_docx,
             imported,
         },
@@ -231,7 +232,7 @@ pub async fn apply_report_template(
     let import_id = import_id
         .parse::<uuid::Uuid>()
         .map_err(|error| error.to_string())?;
-    let (imported, writer_template_id, source_docx) = {
+    let (imported, writer_template_id, writer_template_name, source_docx) = {
         let pending = state.pending_report_templates.lock().await;
         let candidate = pending.get(&import_id).ok_or_else(|| {
             "That template preview expired. Select the template again.".to_string()
@@ -242,6 +243,7 @@ pub async fn apply_report_template(
         (
             candidate.imported.clone(),
             candidate.writer_template_id,
+            candidate.writer_template_name.clone(),
             candidate.source_docx.clone(),
         )
     };
@@ -265,9 +267,13 @@ pub async fn apply_report_template(
         &bucket,
         client_id,
         expected_revision,
-        imported.content,
-        imported.source_sha256,
-        imported.warnings,
+        claria_report_authoring::ReportTemplateApplication {
+            content: imported.content,
+            source_sha256: imported.source_sha256,
+            writer_template_id,
+            writer_template_name,
+            warnings: imported.warnings,
+        },
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -276,12 +282,11 @@ pub async fn apply_report_template(
         .lock()
         .await
         .remove(&import_id);
-    if let Some(template_id) = writer_template_id
-        && let Err(error) =
-            claria_report_authoring::writer_templates::increment_usage(&s3, &bucket, template_id)
-                .await
+    if let Err(error) =
+        claria_report_authoring::writer_templates::increment_usage(&s3, &bucket, writer_template_id)
+            .await
     {
-        tracing::warn!(template_id = %template_id, error = %error, "writer template usage counter reset or could not be saved");
+        tracing::warn!(template_id = %writer_template_id, error = %error, "writer template usage counter reset or could not be saved");
     }
     let workspace = claria_desktop::report_authoring::workspace_view(&workspace);
 
@@ -297,7 +302,7 @@ pub async fn apply_report_template(
         .with_details(serde_json::json!({
             "client_id": client_id.to_string(),
             "report_id": workspace.report_id,
-            "writer_template_id": writer_template_id.map(|id| id.to_string()),
+            "writer_template_id": writer_template_id.to_string(),
             "revision": workspace.draft.revision,
             "warning_category_count": warning_count,
             "section_count": stats.sections,

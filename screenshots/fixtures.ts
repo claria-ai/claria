@@ -292,7 +292,7 @@ export const fixtures: Record<string, unknown> = {
   ].join("\n").replace(/– /g, "–"),
 
   load_report_workspace: {
-    schema_version: 3,
+    schema_version: 4,
     session_name: "Jane Doe evaluation",
     report_id: "99999999-9999-4999-8999-999999999999",
     client_id: CLIENT_ID,

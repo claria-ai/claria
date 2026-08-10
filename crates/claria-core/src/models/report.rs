@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{error::CoreError, models::turn_usage::TurnUsage};
 
-pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 3;
+pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 4;
 pub const MAX_REPORT_SECTIONS: usize = 100;
 pub const MAX_SECTION_BLOCKS: usize = 200;
 pub const MAX_TABLE_ROWS: usize = 200;
@@ -97,8 +97,15 @@ pub enum ReportBlock {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReportTemplateImport {
     /// SHA-256 of the selected DOCX bytes. This ties the import to the file
-    /// inspected locally without persisting its name, path, or package bytes.
+    /// inspected locally without persisting its original filename, path, or
+    /// package bytes.
     pub source_sha256: String,
+    /// Managed shelf identity and user-facing label. Legacy imports have
+    /// neither; the original local filename is never stored here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_template_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_template_name: Option<String>,
     pub imported_revision: u64,
     pub imported_at: Timestamp,
     pub warnings: Vec<ReportTemplateWarning>,
@@ -581,6 +588,21 @@ pub fn decode_report_workspace(bytes: &[u8]) -> Result<ReportWorkspace, CoreErro
     // Versions 1 and 2 predate user-facing writer session names.
     if schema_version.is_some_and(|version| version <= 2) {
         value["session_name"] = serde_json::json!(default_report_session_name());
+    }
+    // Versions through 3 predate managed-template identity breadcrumbs. The
+    // fields themselves are optional, so legacy direct imports remain valid.
+    if schema_version.is_some_and(|version| version <= 3) {
+        if let Some(template) = value
+            .get_mut("template_import")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            template
+                .entry("writer_template_id")
+                .or_insert(serde_json::Value::Null);
+            template
+                .entry("writer_template_name")
+                .or_insert(serde_json::Value::Null);
+        }
         value["schema_version"] = serde_json::json!(REPORT_WORKSPACE_SCHEMA_VERSION);
     }
     let workspace: ReportWorkspace = serde_json::from_value(value)?;
@@ -790,6 +812,24 @@ fn validate_template_import(
             .all(|byte| byte.is_ascii_hexdigit())
     {
         return Err(invalid("template source hash must be a SHA-256 hex digest"));
+    }
+    match (&template.writer_template_id, &template.writer_template_name) {
+        (Some(id), Some(name)) => {
+            if id.is_nil() {
+                return Err(invalid("managed writer template ID must not be nil"));
+            }
+            validate_nonempty_text(
+                "managed writer template name",
+                name,
+                MAX_REPORT_SESSION_NAME_CHARACTERS,
+            )?;
+        }
+        (None, None) => {}
+        _ => {
+            return Err(invalid(
+                "managed writer template identity requires both ID and name",
+            ));
+        }
     }
     if template.imported_revision == 0 || template.imported_revision > workspace.draft.revision {
         return Err(invalid(

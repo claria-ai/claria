@@ -49,18 +49,16 @@ beforeEach(() => {
 });
 
 describe("useRecordFileDialog", () => {
-  it("keeps preview failures inside the preview dialog", async () => {
-    mocks.getText.mockRejectedValue(new Error("preview unavailable"));
+  it("opens a shared record preview without preloading it in the dialog hook", () => {
     const hook = renderDialogHook();
 
-    await act(async () => hook.current().openPreview("scan.pdf"));
+    act(() => hook.current().openPreview("scan.pdf"));
 
     expect(hook.current().dialog).toEqual({
       kind: "preview",
       filename: "scan.pdf",
-      text: "Error loading preview: Error: preview unavailable",
     });
-    expect(hook.onError).not.toHaveBeenCalled();
+    expect(mocks.getText).not.toHaveBeenCalled();
   });
 
   it("keeps an editor open after a failed save and closes it after success", async () => {

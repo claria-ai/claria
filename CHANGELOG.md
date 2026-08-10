@@ -5,10 +5,11 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Chat and writer sessions receive numbered names that can be edited directly in their panes and are shown in history
-- Writing shows live context pills and a reusable activity throbber while the report agent plans, reads records, and drafts proposals
+- Writing shows live and persisted context in one collapsible pill list, opens record contents from those pills, and uses a reusable activity throbber while the report agent plans, reads records, and drafts proposals
+- Writing previews complete earlier report revisions in a scrollable Word-style view and restores any prior version as a new revision without deleting history
 - Printable UTF-8 record files such as Markdown, JSON, CSV, and extensionless text remain directly previewable and readable by Chat and Writing while PDF and DOCX extraction produces structured Markdown
 - Preferences includes a managed, renameable shelf of redacted Word writer templates with size, upload date, and best-effort usage counts
-- Writing applies managed templates directly, without responsibility popups, review gates, or dismissible warning banners, and sends template uploads to the expanded Preferences manager
+- Writing applies managed templates directly, locks the chosen template to its session, shows the applied template name, and removes responsibility popups, review gates, and dismissible warning banners
 - Template-backed Word exports retain the source package's fonts, run styles, paragraph spacing, blank paragraphs, page setup, headers, footers, media, and table formatting
 - A release helper regenerates marketing screenshots, updates website artifact metadata, and rebuilds the generated release site
 

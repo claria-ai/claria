@@ -209,6 +209,135 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
 }
 
 #[tokio::test]
+async fn report_revisions_can_be_previewed_and_restored_without_removing_history() {
+    let (_server, _sdk, s3) = setup().await;
+    s3.put_bucket_versioning()
+        .bucket(BUCKET)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let initial = report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("workspace");
+
+    let first = report_authoring::save_report_draft(
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        ReportContent {
+            title: "First version".to_string(),
+            sections: vec![],
+        },
+    )
+    .await
+    .expect("save first version");
+    let second = report_authoring::save_report_draft(
+        &s3,
+        BUCKET,
+        client_id,
+        1,
+        ReportContent {
+            title: "Second version".to_string(),
+            sections: vec![],
+        },
+    )
+    .await
+    .expect("save second version");
+    report_authoring::rename_report_session(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        "Renamed session",
+    )
+    .await
+    .expect("save another object version at the same draft revision");
+
+    let revisions =
+        report_authoring::list_report_revisions(&s3, BUCKET, client_id, initial.report_id)
+            .await
+            .expect("list revisions");
+    assert_eq!(
+        revisions
+            .iter()
+            .map(|revision| revision.revision)
+            .collect::<Vec<_>>(),
+        vec![2, 1, 0]
+    );
+    assert_eq!(revisions[0].title, "Second version");
+
+    let historical = report_authoring::load_report_revision(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        first.draft.revision,
+    )
+    .await
+    .expect("load first revision");
+    assert_eq!(historical.content.title, "First version");
+
+    let restored = report_authoring::revert_report_revision(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        second.draft.revision,
+        first.draft.revision,
+    )
+    .await
+    .expect("restore first revision");
+    assert_eq!(restored.draft.revision, 3);
+    assert_eq!(restored.draft.content.title, "First version");
+
+    let revisions_after_restore =
+        report_authoring::list_report_revisions(&s3, BUCKET, client_id, initial.report_id)
+            .await
+            .expect("list revisions after restore");
+    assert_eq!(
+        revisions_after_restore
+            .iter()
+            .map(|revision| revision.revision)
+            .collect::<Vec<_>>(),
+        vec![3, 2, 1, 0]
+    );
+    let preserved = report_authoring::load_report_revision(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        second.draft.revision,
+    )
+    .await
+    .expect("load revision that preceded restore");
+    assert_eq!(preserved.content.title, "Second version");
+
+    let current_error = report_authoring::revert_report_revision(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        restored.draft.revision,
+        restored.draft.revision,
+    )
+    .await
+    .expect_err("current revision cannot be restored");
+    assert!(
+        current_error
+            .to_string()
+            .contains("earlier report revision")
+    );
+}
+
+#[tokio::test]
 async fn template_import_exports_without_confirmation_and_keeps_its_source_package() {
     let (_server, _sdk, s3) = setup().await;
     s3.put_bucket_versioning()
@@ -245,26 +374,30 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
         BUCKET,
         client_id,
         0,
-        ReportContent {
-            title: "Imported template".to_string(),
-            sections: vec![ReportSection {
-                id: Uuid::new_v4(),
-                heading: "Scores".to_string(),
-                blocks: vec![ReportBlock::Table {
-                    rows: vec![
-                        vec!["Measure".to_string(), "Score".to_string()],
-                        vec!["Attention".to_string(), "".to_string()],
-                    ],
-                    has_header: true,
-                    column_widths: Some(vec![7_000, 3_000]),
+        report_authoring::ReportTemplateApplication {
+            content: ReportContent {
+                title: "Imported template".to_string(),
+                sections: vec![ReportSection {
+                    id: Uuid::new_v4(),
+                    heading: "Scores".to_string(),
+                    blocks: vec![ReportBlock::Table {
+                        rows: vec![
+                            vec!["Measure".to_string(), "Score".to_string()],
+                            vec!["Attention".to_string(), "".to_string()],
+                        ],
+                        has_header: true,
+                        column_widths: Some(vec![7_000, 3_000]),
+                    }],
                 }],
+            },
+            source_sha256,
+            writer_template_id: Uuid::new_v4(),
+            writer_template_name: "Clinical report".to_string(),
+            warnings: vec![ReportTemplateWarning {
+                code: ReportTemplateWarningCode::HeadersFootersOmitted,
+                count: 2,
             }],
         },
-        source_sha256,
-        vec![ReportTemplateWarning {
-            code: ReportTemplateWarningCode::HeadersFootersOmitted,
-            count: 2,
-        }],
     )
     .await
     .expect("apply template");
@@ -275,6 +408,10 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
         .expect("template metadata");
     assert_eq!(metadata.imported_revision, 1);
     assert_eq!(metadata.reviewed_revision, Some(1));
+    assert_eq!(
+        metadata.writer_template_name.as_deref(),
+        Some("Clinical report")
+    );
 
     let snapshot =
         report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 1)
@@ -310,6 +447,30 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
             .draft
             .revision,
         2
+    );
+
+    let second_template = report_authoring::apply_report_template(
+        &s3,
+        BUCKET,
+        client_id,
+        2,
+        report_authoring::ReportTemplateApplication {
+            content: ReportContent {
+                title: "Different template".to_string(),
+                sections: vec![],
+            },
+            source_sha256: "c".repeat(64),
+            writer_template_id: Uuid::new_v4(),
+            writer_template_name: "Different template".to_string(),
+            warnings: vec![],
+        },
+    )
+    .await
+    .expect_err("a session cannot switch templates");
+    assert!(
+        second_template
+            .to_string()
+            .contains("already has a template")
     );
 
     let persisted = claria_storage::objects::get_object(

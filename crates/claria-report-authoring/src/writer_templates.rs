@@ -177,8 +177,19 @@ pub async fn load_docx(
     id: Uuid,
     max_bytes: u64,
 ) -> Result<Vec<u8>, ReportAuthoringError> {
-    // Require metadata too, so a stale/orphaned DOCX cannot be selected.
-    load_metadata(s3, bucket, id).await?;
+    load_docx_with_metadata(s3, bucket, id, max_bytes)
+        .await
+        .map(|(_, bytes)| bytes)
+}
+
+pub async fn load_docx_with_metadata(
+    s3: &S3Client,
+    bucket: &str,
+    id: Uuid,
+    max_bytes: u64,
+) -> Result<(WriterTemplateMetadata, Vec<u8>), ReportAuthoringError> {
+    // Require matching metadata so a stale/orphaned DOCX cannot be selected.
+    let metadata = load_metadata(s3, bucket, id).await?;
     let output = claria_storage::objects::get_object_bounded(
         s3,
         bucket,
@@ -187,7 +198,7 @@ pub async fn load_docx(
     )
     .await
     .map_err(|source| ReportAuthoringError::storage("reading the writer template", source))?;
-    Ok(output.body)
+    Ok((metadata, output.body))
 }
 
 pub async fn increment_usage(

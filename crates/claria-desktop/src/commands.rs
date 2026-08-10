@@ -60,9 +60,9 @@ pub enum ProvisionerProgress {
 pub use claria_desktop::{
     records::{ClientNameUpdate, ClientRecordDetails, ClientSummary},
     report_authoring::{
-        EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportExportResult,
-        ReportExportStatusView, ReportProposalDecision, ReportTurnProgressView, ReportTurnResponse,
-        ReportWorkspaceView,
+        EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportDraftView,
+        ReportExportResult, ReportExportStatusView, ReportProposalDecision, ReportRevisionView,
+        ReportTurnProgressView, ReportTurnResponse, ReportWorkspaceView,
     },
 };
 
@@ -1557,6 +1557,116 @@ pub async fn rename_report_session(
             cfg.account_id.clone(),
         )
         .with_details(serde_json::json!({ "client_id": client_id.to_string() })),
+    )
+    .await;
+
+    Ok(workspace)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_report_revisions(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+) -> Result<Vec<ReportRevisionView>, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let report_id = report_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    claria_report_authoring::list_report_revisions(&s3, &bucket, client_id, report_id)
+        .await
+        .map(|revisions| {
+            revisions
+                .into_iter()
+                .map(|revision| ReportRevisionView {
+                    revision: revision.revision,
+                    title: revision.title,
+                    updated_at: revision.updated_at.to_string(),
+                })
+                .collect()
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn load_report_revision(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+    revision: u64,
+) -> Result<ReportDraftView, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let report_id = report_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let draft = claria_report_authoring::load_report_revision(
+        &s3,
+        &bucket,
+        client_id,
+        report_id,
+        revision,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(claria_desktop::report_authoring::report_draft_view(&draft))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn revert_report_revision(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+    expected_revision: u64,
+    revision: u64,
+) -> Result<ReportWorkspaceView, String> {
+    let (cfg, sdk_config) = load_sdk_config(&state).await?;
+    let s3 = claria_storage::client::from_config(&sdk_config);
+    let bucket = bucket_name(&cfg);
+    let client_id = client_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let report_id = report_id
+        .parse::<uuid::Uuid>()
+        .map_err(|error| error.to_string())?;
+    let workspace = claria_report_authoring::revert_report_revision(
+        &s3,
+        &bucket,
+        client_id,
+        report_id,
+        expected_revision,
+        revision,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let workspace = claria_desktop::report_authoring::workspace_view(&workspace);
+
+    record_audit(
+        &sdk_config,
+        &cfg,
+        claria_audit::events::AuditEvent::new(
+            "report_revision_restored",
+            "report",
+            workspace.report_id.clone(),
+            cfg.account_id.clone(),
+        )
+        .with_details(serde_json::json!({
+            "client_id": client_id.to_string(),
+            "source_revision": revision,
+            "new_revision": workspace.draft.revision
+        })),
     )
     .await;
 
