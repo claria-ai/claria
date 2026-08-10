@@ -5,9 +5,6 @@ pub enum StorageError {
     #[error("object not found: {key}")]
     NotFound { key: String },
 
-    #[error("ETag mismatch (expected {expected}, got {actual})")]
-    ETagMismatch { expected: String, actual: String },
-
     #[error("precondition failed for key: {key}")]
     PreconditionFailed { key: String },
 
@@ -49,15 +46,19 @@ pub enum StorageError {
         details: String,
     },
 
+    /// Restoring deleted objects under a prefix is per-key work; every key is
+    /// attempted and the failures are aggregated so the caller knows exactly
+    /// how much of the prefix is restored.
+    #[error("restore left {failed} of {attempted} deleted objects unrestored: {details}")]
+    RestoreObjects {
+        attempted: usize,
+        failed: usize,
+        details: String,
+    },
+
     #[error("S3 ListObjects error: {0}")]
     ListObjects(String),
 
     #[error("S3 ListObjectVersions error: {0}")]
     ListObjectVersions(String),
-
-    #[error("S3 presign error: {0}")]
-    Presign(String),
-
-    #[error("AWS config error: {0}")]
-    Config(String),
 }

@@ -31,7 +31,7 @@ base64 = "=0.22.1"
 color-eyre = "=0.6.5"
 dirs.workspace = true
 eyre.workspace = true
-futures = "=0.3.32"
+futures.workspace = true
 rfd = "=0.17.2"
 jiff.workspace = true
 lru = "=0.18.0"

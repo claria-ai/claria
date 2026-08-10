@@ -11,9 +11,3 @@ impl TokenCount {
         self.input + self.output
     }
 }
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub tokens: TokenCount,
-    pub cost_usd: f64,
-}

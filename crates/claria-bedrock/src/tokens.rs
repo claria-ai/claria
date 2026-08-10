@@ -1,39 +1,12 @@
 //! Token-usage extraction from Bedrock Converse responses.
 //!
-//! The chat path uses [`extract_turn_usage`] to build a [`TurnUsage`] from
-//! a `&aws_sdk_bedrockruntime::types::TokenUsage` and the model_id used to
+//! [`extract_turn_usage`] builds a [`TurnUsage`] from a
+//! `&aws_sdk_bedrockruntime::types::TokenUsage` and the model_id used to
 //! invoke Bedrock. Pricing is resolved via `claria_billing::pricing::lookup`
 //! and stamped with `claria_billing::PRICING_VERSION` so historical totals
 //! are reconstructable from chat-history JSON alone.
-//!
-//! [`calculate_cost`] is retained for the legacy `BedrockTransaction`
-//! surface (report generation / anonymization) which still uses the
-//! pre-cache `TokenUsage` shape from `claria_core::models::token_count`.
 
-use claria_core::models::{
-    cost::ModelPricing,
-    token_count::{TokenCount, TokenUsage},
-    turn_usage::TurnUsage,
-};
-
-/// Extract token counts from a Bedrock Converse response (legacy shape).
-///
-/// Used by the report-generation / anonymization transaction path; the
-/// chat path uses [`extract_turn_usage`].
-pub fn extract_token_count(usage: &aws_sdk_bedrockruntime::types::TokenUsage) -> TokenCount {
-    TokenCount {
-        input: usage.input_tokens as u64,
-        output: usage.output_tokens as u64,
-    }
-}
-
-/// Calculate the cost for a token count given model pricing (legacy shape).
-pub fn calculate_cost(tokens: TokenCount, pricing: &ModelPricing) -> TokenUsage {
-    TokenUsage {
-        tokens,
-        cost_usd: pricing.estimate_cost(tokens),
-    }
-}
+use claria_core::models::{token_count::TokenCount, turn_usage::TurnUsage};
 
 /// Build a [`TurnUsage`] from a Bedrock `TokenUsage` block and the model
 /// invoked.

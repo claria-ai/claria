@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::record_cache::RecordCache;
 
 /// Max concurrent GetObject requests when hydrating a listing.
-pub const S3_FETCH_CONCURRENCY: usize = 16;
+pub use claria_storage::objects::S3_FETCH_CONCURRENCY;
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ClientSummary {

@@ -9,6 +9,7 @@ aws-config.workspace = true
 aws-sdk-s3.workspace = true
 aws-smithy-types.workspace = true
 claria-core.workspace = true
+futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

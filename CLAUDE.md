@@ -69,7 +69,7 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Never reads/writes local config — returns structured results for the caller to persist
 
 **`claria-storage` — S3 object operations**
-- CRUD for objects in S3 (get, put, delete, list, presign)
+- CRUD for objects in S3 (get, put, delete, list)
 - No knowledge of what the objects represent (cases, reports, etc.)
 
 **`claria-bedrock` — LLM interactions**

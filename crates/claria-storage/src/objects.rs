@@ -1,9 +1,13 @@
-use aws_sdk_s3::{Client, presigning::PresigningConfig};
+use aws_sdk_s3::Client;
 use aws_smithy_types::byte_stream::ByteStream;
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::error::StorageError;
+
+/// Max concurrent per-object S3 requests when fanning out over a listing.
+pub const S3_FETCH_CONCURRENCY: usize = 16;
 
 /// Result of a GET operation, including the body and ETag.
 #[derive(Debug)]
@@ -299,7 +303,7 @@ const DELETE_BATCH_SIZE: usize = 1000;
 /// How many per-object failures to name before summarising the rest. The
 /// message reaches the UI, and a thousand-line error is no more useful than
 /// a handful of examples.
-const MAX_REPORTED_DELETE_ERRORS: usize = 5;
+const MAX_REPORTED_OBJECT_ERRORS: usize = 5;
 
 /// An object to delete: a key, optionally pinned to one version.
 ///
@@ -383,7 +387,7 @@ pub async fn delete_objects(
         if !errors.is_empty() {
             let mut details: Vec<String> = errors
                 .iter()
-                .take(MAX_REPORTED_DELETE_ERRORS)
+                .take(MAX_REPORTED_OBJECT_ERRORS)
                 .map(|e| {
                     format!(
                         "{} ({}: {})",
@@ -393,10 +397,10 @@ pub async fn delete_objects(
                     )
                 })
                 .collect();
-            if errors.len() > MAX_REPORTED_DELETE_ERRORS {
+            if errors.len() > MAX_REPORTED_OBJECT_ERRORS {
                 details.push(format!(
                     "and {} more",
-                    errors.len() - MAX_REPORTED_DELETE_ERRORS
+                    errors.len() - MAX_REPORTED_OBJECT_ERRORS
                 ));
             }
             let details = details.join("; ");
@@ -716,18 +720,68 @@ pub async fn restore_deleted_object_if_absent(
 /// Restore every currently deleted key under `prefix` using conditional
 /// creates. Safe to retry after partial failure and safe alongside a
 /// concurrent writer, whose current object is never overwritten.
+///
+/// Each key's 3-round-trip restore stays sequential internally, but keys fan
+/// out with bounded concurrency. Every key is attempted even when some fail;
+/// failures are aggregated into one error so the caller knows exactly how much
+/// of the prefix is restored — re-running picks up whatever is left.
+///
+/// Returns the number of objects this call restored.
 pub async fn restore_deleted_objects_by_prefix(
     client: &Client,
     bucket: &str,
     prefix: &str,
 ) -> Result<usize, StorageError> {
     let deleted = list_deleted_objects(client, bucket, prefix).await?;
+    let attempted = deleted.len();
+
+    let restores = deleted.into_iter().map(|object| async move {
+        let outcome = restore_deleted_object_if_absent(client, bucket, &object.key).await;
+        (object.key, outcome)
+    });
+    let outcomes: Vec<(String, Result<bool, StorageError>)> = futures::stream::iter(restores)
+        .buffered(S3_FETCH_CONCURRENCY)
+        .collect()
+        .await;
+
     let mut restored = 0usize;
-    for object in deleted {
-        if restore_deleted_object_if_absent(client, bucket, &object.key).await? {
-            restored = restored.saturating_add(1);
+    let mut failures: Vec<(String, StorageError)> = Vec::new();
+    for (key, outcome) in outcomes {
+        match outcome {
+            Ok(true) => restored = restored.saturating_add(1),
+            Ok(false) => {}
+            Err(error) => failures.push((key, error)),
         }
     }
+
+    if !failures.is_empty() {
+        let failed = failures.len();
+        let mut details: Vec<String> = failures
+            .iter()
+            .take(MAX_REPORTED_OBJECT_ERRORS)
+            .map(|(key, error)| format!("{key} ({error})"))
+            .collect();
+        if failed > MAX_REPORTED_OBJECT_ERRORS {
+            details.push(format!("and {} more", failed - MAX_REPORTED_OBJECT_ERRORS));
+        }
+        let details = details.join("; ");
+
+        tracing::error!(
+            bucket,
+            prefix,
+            failed,
+            attempted,
+            restored,
+            "restoring deleted objects reported per-object failures"
+        );
+
+        return Err(StorageError::RestoreObjects {
+            attempted,
+            failed,
+            details,
+        });
+    }
+
     Ok(restored)
 }
 
@@ -772,26 +826,6 @@ pub async fn delete_all_object_versions(
     );
 
     delete_objects(client, bucket, &targets).await
-}
-
-/// Get the first (oldest, non-delete-marker) version of an object.
-///
-/// Useful when the caller wants the "original" of a versioned object — e.g.
-/// restoring a Transcribe-generated transcript after a user has edited it.
-pub async fn get_first_version(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-) -> Result<GetObjectOutput, StorageError> {
-    let mut versions = list_object_versions(client, bucket, key).await?;
-    versions.retain(|v| !v.is_delete_marker);
-    versions.sort_by(|a, b| a.last_modified.cmp(&b.last_modified));
-
-    let first = versions.first().ok_or_else(|| StorageError::NotFound {
-        key: key.to_string(),
-    })?;
-
-    get_object_version(client, bucket, key, &first.version_id).await
 }
 
 /// Get a specific version of an object.
@@ -841,59 +875,3 @@ pub async fn get_object_version(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Presigning
-// ---------------------------------------------------------------------------
-
-/// Generate a presigned GET URL for an object.
-pub async fn presign_get(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    expires_in: Duration,
-) -> Result<String, StorageError> {
-    let presign_config = PresigningConfig::builder()
-        .expires_in(expires_in)
-        .build()
-        .map_err(|e| StorageError::Presign(e.to_string()))?;
-
-    let presigned = client
-        .get_object()
-        .bucket(bucket)
-        .key(key)
-        .presigned(presign_config)
-        .await
-        .map_err(|e| {
-            tracing::warn!(bucket, key, error = %e, "S3 presign GET failed");
-            StorageError::Presign(e.to_string())
-        })?;
-
-    Ok(presigned.uri().to_string())
-}
-
-/// Generate a presigned PUT URL for uploading an object.
-pub async fn presign_put(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    content_type: Option<&str>,
-    expires_in: Duration,
-) -> Result<String, StorageError> {
-    let presign_config = PresigningConfig::builder()
-        .expires_in(expires_in)
-        .build()
-        .map_err(|e| StorageError::Presign(e.to_string()))?;
-
-    let mut req = client.put_object().bucket(bucket).key(key);
-
-    if let Some(ct) = content_type {
-        req = req.content_type(ct);
-    }
-
-    let presigned = req.presigned(presign_config).await.map_err(|e| {
-        tracing::warn!(bucket, key, error = %e, "S3 presign PUT failed");
-        StorageError::Presign(e.to_string())
-    })?;
-
-    Ok(presigned.uri().to_string())
-}
