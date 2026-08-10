@@ -197,6 +197,11 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
                 if role != Some("assistant") {
                     return Err("reasoningContent blocks require assistant role");
                 }
+            } else if let Some(cache_point) = block.get("cachePoint") {
+                // Prompt-cache markers are valid anywhere in message content.
+                if cache_point.get("type").and_then(Value::as_str) != Some("default") {
+                    return Err("cachePoint blocks must carry the default type");
+                }
             } else if block.get("text").and_then(Value::as_str).is_none() {
                 return Err("unsupported content block");
             } else if expected_results.is_some() {

@@ -206,6 +206,7 @@ async fn configured_tool_limit_rejects_oversized_model_responses() {
         "System",
         &[user_message("Draft")],
         1,
+        &mut claria_bedrock::report::ReportInputBudget::new(MODEL_ID),
     )
     .await
     .expect_err("configured tool limit");
@@ -498,6 +499,74 @@ async fn exact_count_tokens_budget_is_enforced_before_converse() {
     assert_eq!(state.bedrock_count_token_requests.len(), 1);
     assert!(state.bedrock_tool_requests.is_empty());
     assert_eq!(state.bedrock_tool_responses.len(), 1);
+}
+
+#[tokio::test]
+async fn cache_points_follow_the_capability_table() {
+    // Caching-capable model: cache points at the system boundary and the
+    // conversation tail; the CountTokens request stays cache-free.
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Ready."}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 12, "outputTokens": 3}
+        })],
+    )
+    .await;
+    converse_report(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("converse");
+    {
+        let state = server.state.read().await;
+        let request = &state.bedrock_tool_requests[0];
+        assert_eq!(request["system"][1]["cachePoint"]["type"], "default");
+        let tail = request["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            tail.last().unwrap()["cachePoint"]["type"],
+            "default",
+            "conversation tail must end with a cache point"
+        );
+        assert!(
+            !state.bedrock_count_token_requests[0]
+                .to_string()
+                .contains("cachePoint")
+        );
+    }
+
+    // A Claude family on the caching denylist gets no cache points.
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Ready."}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 12, "outputTokens": 3}
+        })],
+    )
+    .await;
+    converse_report(
+        &sdk_config(&server.endpoint),
+        "us.anthropic.claude-3-sonnet-20240229-v1:0",
+        "System prompt",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("converse");
+    let state = server.state.read().await;
+    assert!(
+        !state.bedrock_tool_requests[0]
+            .to_string()
+            .contains("cachePoint")
+    );
 }
 
 #[test]

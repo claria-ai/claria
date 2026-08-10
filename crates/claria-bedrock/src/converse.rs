@@ -133,6 +133,16 @@ pub(crate) struct InputTokenBudget {
 }
 
 impl InputTokenBudget {
+    /// A budget whose first check runs a real `CountTokens` call, then
+    /// estimates increments.
+    pub(crate) fn exact(budget: u32) -> Self {
+        Self {
+            budget,
+            verified: None,
+            verify_first: true,
+        }
+    }
+
     /// A budget that trusts the character estimate until it comes within
     /// ~10% of the budget, only then verifying with a real count.
     pub(crate) fn estimated(budget: u32) -> Self {

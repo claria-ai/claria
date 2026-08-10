@@ -671,13 +671,17 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
             ["signature"],
         "signature-1"
     );
-    let first_results = state.bedrock_tool_requests[1]["messages"]
+    // The trailing block is the prompt-cache point; the tool results precede it.
+    let first_results: Vec<_> = state.bedrock_tool_requests[1]["messages"]
         .as_array()
         .unwrap()
         .last()
         .unwrap()["content"]
         .as_array()
-        .unwrap();
+        .unwrap()
+        .iter()
+        .filter(|block| block.get("toolResult").is_some())
+        .collect();
     assert_eq!(first_results.len(), 3);
     let listed = &first_results[0]["toolResult"]["content"][0]["json"]["files"];
     let listed_json = listed.to_string();
@@ -796,14 +800,17 @@ async fn schema_and_proposal_failures_return_verbatim_diagnostics() {
     // the serde decode message and the specific proposal-validation reason —
     // so the model's repair round is not wasted on a generic sentence.
     let state = server.state.read().await;
-    let results = state.bedrock_tool_requests[1]["messages"]
+    let results: Vec<_> = state.bedrock_tool_requests[1]["messages"]
         .as_array()
         .unwrap()
         .last()
         .unwrap()["content"]
         .as_array()
         .unwrap()
-        .clone();
+        .iter()
+        .filter(|block| block.get("toolResult").is_some())
+        .cloned()
+        .collect();
     assert_eq!(results.len(), 2);
     let decode = &results[0]["toolResult"];
     assert_eq!(decode["status"], "error");
@@ -1014,6 +1021,50 @@ async fn second_inconsistent_stop_reason_fails_the_turn() {
 }
 
 #[tokio::test]
+async fn multi_call_turn_counts_tokens_once_and_estimates_the_rest() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "list-1", "name": "list_record_files", "input": {}}}
+                ]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 10, "outputTokens": 4}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "No records found."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 20, "outputTokens": 4}
+            }),
+        ],
+    )
+    .await;
+
+    report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("List my records."),
+    )
+    .await
+    .expect("turn");
+
+    let state = server.state.read().await;
+    assert_eq!(state.bedrock_tool_requests.len(), 2);
+    // Count once per turn; the tool round far from the budget is estimated
+    // incrementally instead of re-counted against the service.
+    assert_eq!(state.bedrock_count_token_requests.len(), 1);
+}
+
+#[tokio::test]
 async fn writer_reads_printable_text_regardless_of_extension() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();
@@ -1216,13 +1267,16 @@ async fn record_reads_are_capped_at_48000_unicode_characters_per_turn() {
     .expect("turn");
 
     let state = server.state.read().await;
-    let results = state.bedrock_tool_requests[1]["messages"]
+    let results: Vec<_> = state.bedrock_tool_requests[1]["messages"]
         .as_array()
         .unwrap()
         .last()
         .unwrap()["content"]
         .as_array()
-        .unwrap();
+        .unwrap()
+        .iter()
+        .filter(|block| block.get("toolResult").is_some())
+        .collect();
     assert_eq!(results.len(), 7);
     assert!(
         results[..6]

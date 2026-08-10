@@ -174,8 +174,27 @@ pub fn decode_tool_request(call: &ReportToolCall) -> Result<ReportToolRequest, B
     }
 }
 
+/// Per-turn input-token budget for the report loop.
+///
+/// The first Converse call of a turn runs one real `CountTokens` against the
+/// exact request shape; every later call in the same turn estimates the
+/// appended messages at ~4 chars/token and re-verifies with a real count
+/// only when the estimate comes within ~10% of the budget. Create one per
+/// turn and pass it to every [`converse_report_with_tool_limit`] call.
+pub struct ReportInputBudget {
+    inner: converse::InputTokenBudget,
+}
+
+impl ReportInputBudget {
+    pub fn new(model_id: &str) -> Self {
+        Self {
+            inner: converse::InputTokenBudget::exact(report_input_token_budget(model_id)),
+        }
+    }
+}
+
 /// Send one report-protocol Converse request with all three report tools using
-/// the default per-response tool-use limit.
+/// the default per-response tool-use limit and a fresh single-call budget.
 pub async fn converse_report(
     config: &aws_config::SdkConfig,
     model_id: &str,
@@ -188,6 +207,7 @@ pub async fn converse_report(
         system_prompt,
         messages,
         DEFAULT_MAX_TOOL_USES_PER_RESPONSE,
+        &mut ReportInputBudget::new(model_id),
     )
     .await
 }
@@ -213,6 +233,7 @@ pub async fn converse_report_with_tool_limit(
     system_prompt: &str,
     messages: &[ReportProtocolMessage],
     max_tool_uses_per_response: usize,
+    budget: &mut ReportInputBudget,
 ) -> Result<ReportConverseOutput, BedrockError> {
     if max_tool_uses_per_response == 0 || max_tool_uses_per_response > MAX_TOOL_USES_PER_RESPONSE {
         return Err(BedrockError::SchemaViolation(format!(
@@ -235,79 +256,48 @@ pub async fn converse_report_with_tool_limit(
     let tools = report_tool_configuration()?;
     let system = SystemContentBlock::Text(system_prompt.to_string());
 
-    // Count the exact Converse shape, including immutable policy, messages,
-    // and tool schemas, immediately before every billed call.
+    // Budget check: an exact CountTokens of the full Converse shape
+    // (policy, messages, tool schemas) on the turn's first call; appended
+    // messages are estimated afterward and re-verified only near the budget.
+    // Cache points are excluded — they do not change the token count.
     let token_request = ConverseTokensRequest::builder()
         .set_messages(Some(sdk_messages.clone()))
         .system(system.clone())
         .tool_config(tools.clone())
         .build();
-    // Converse uses the cross-region inference profile selected in the UI,
-    // while CountTokens requires the underlying foundation model identifier.
-    // Keep the exact selected-model tokenizer by removing only a known
-    // cross-region scope prefix.
-    let counting_model_id = claria_core::model_id::strip_scope_prefix(model_id);
-    let input_tokens = match converse::count_input_tokens(
-        &client,
-        counting_model_id,
-        token_request.clone(),
-    )
-    .await
-    {
-        Ok(tokens) => tokens,
-        Err(error)
-            if matches!(
-                &error,
-                BedrockError::Service { code, .. } if code == "ValidationException"
-            ) =>
-        {
-            // Some newly listed Claude foundations support Converse before
-            // CountTokens. Fall back to the newest active Haiku tokenizer so
-            // the Writing turn remains usable while retaining the selected
-            // model's conservative context-window limit.
-            let fallback_model_id = crate::chat::counting_model(config).await?;
-            if fallback_model_id == counting_model_id {
-                tracing::error!(model_id, error = %error, "report CountTokens fallback unavailable");
-                return Err(error);
-            }
-            tracing::warn!(
-                model_id,
-                counting_model_id,
-                fallback_model_id,
-                error = %error,
-                "selected report model does not support CountTokens; using Haiku tokenizer"
-            );
-            converse::count_input_tokens(&client, fallback_model_id, token_request)
-                .await
-                .map_err(|fallback_error| {
-                    tracing::error!(
-                        model_id,
-                        fallback_model_id,
-                        error = %fallback_error,
-                        "report CountTokens fallback failed"
-                    );
-                    fallback_error
-                })?
-        }
-        Err(error) => {
-            tracing::error!(model_id, error = %error, "report CountTokens call failed");
-            return Err(error);
-        }
+    budget
+        .inner
+        .ensure_within(
+            protocol_chars(system_prompt, messages),
+            || count_report_tokens(config, &client, model_id, token_request),
+            |input_tokens, input_token_budget| BedrockError::ContextBudgetExceeded {
+                model_id: model_id.to_string(),
+                input_tokens,
+                input_token_budget,
+            },
+        )
+        .await?;
+
+    // Prompt caching, gated on the central capability table: one cache point
+    // after the immutable system policy and one at the conversation tail, so
+    // each loop iteration re-reads the previous iterations' prefix from
+    // cache instead of re-paying full input rates.
+    let supports_caching =
+        claria_core::model_id::ModelCapabilities::for_id(model_id).prompt_caching;
+    let (system_blocks, converse_messages) = if supports_caching {
+        (
+            vec![system, SystemContentBlock::CachePoint(cache_point()?)],
+            with_tail_cache_point(sdk_messages)?,
+        )
+    } else {
+        (vec![system], sdk_messages)
     };
-    let input_token_budget = report_input_token_budget(model_id);
-    if input_tokens > input_token_budget {
-        return Err(BedrockError::ContextBudgetExceeded {
-            model_id: model_id.to_string(),
-            input_tokens,
-            input_token_budget,
-        });
-    }
 
     let response = client
         .converse()
         .model_id(model_id)
-        .system(system)
-        .set_messages(Some(sdk_messages))
+        .set_system(Some(system_blocks))
+        .set_messages(Some(converse_messages))
         .tool_config(tools)
         .inference_config(
             InferenceConfiguration::builder()
@@ -454,6 +444,105 @@ pub fn report_model_context_tokens(model_id: &str) -> u32 {
 
 pub fn report_input_token_budget(model_id: &str) -> u32 {
     report_model_context_tokens(model_id).saturating_sub(REPORT_OUTPUT_TOKEN_RESERVE)
+}
+
+/// Run one real `CountTokens` for the report request shape.
+///
+/// Converse uses the cross-region inference profile selected in the UI,
+/// while CountTokens requires the underlying foundation model identifier, so
+/// only a known scope prefix is stripped. Some newly listed Claude
+/// foundations support Converse before CountTokens; those fall back to the
+/// newest active Haiku tokenizer while retaining the selected model's
+/// conservative context-window limit.
+async fn count_report_tokens(
+    config: &aws_config::SdkConfig,
+    client: &aws_sdk_bedrockruntime::Client,
+    model_id: &str,
+    token_request: ConverseTokensRequest,
+) -> Result<u32, BedrockError> {
+    let counting_model_id = claria_core::model_id::strip_scope_prefix(model_id);
+    match converse::count_input_tokens(client, counting_model_id, token_request.clone()).await {
+        Ok(tokens) => Ok(tokens),
+        Err(error)
+            if matches!(
+                &error,
+                BedrockError::Service { code, .. } if code == "ValidationException"
+            ) =>
+        {
+            let fallback_model_id = crate::chat::counting_model(config).await?;
+            if fallback_model_id == counting_model_id {
+                tracing::error!(model_id, error = %error, "report CountTokens fallback unavailable");
+                return Err(error);
+            }
+            tracing::warn!(
+                model_id,
+                counting_model_id,
+                fallback_model_id,
+                error = %error,
+                "selected report model does not support CountTokens; using Haiku tokenizer"
+            );
+            converse::count_input_tokens(client, fallback_model_id, token_request)
+                .await
+                .map_err(|fallback_error| {
+                    tracing::error!(
+                        model_id,
+                        fallback_model_id,
+                        error = %fallback_error,
+                        "report CountTokens fallback failed"
+                    );
+                    fallback_error
+                })
+        }
+        Err(error) => {
+            tracing::error!(model_id, error = %error, "report CountTokens call failed");
+            Err(error)
+        }
+    }
+}
+
+/// Character measure of the request used for incremental token estimation.
+/// Only message/system content counts — the fixed tool schemas are covered
+/// by the turn's initial exact count.
+fn protocol_chars(system_prompt: &str, messages: &[ReportProtocolMessage]) -> u64 {
+    let mut chars = system_prompt.len() as u64;
+    for message in messages {
+        for block in &message.content {
+            chars += match block {
+                ReportProtocolBlock::Text { text } => text.len(),
+                ReportProtocolBlock::ReasoningText { text, .. } => text.len(),
+                ReportProtocolBlock::ReasoningRedacted { data } => data.len(),
+                ReportProtocolBlock::ToolUse { name, input, .. } => {
+                    name.len() + input.to_string().len()
+                }
+                ReportProtocolBlock::ToolResult { content, .. } => content.to_string().len(),
+            } as u64;
+        }
+    }
+    chars
+}
+
+fn cache_point() -> Result<aws_sdk_bedrockruntime::types::CachePointBlock, BedrockError> {
+    aws_sdk_bedrockruntime::types::CachePointBlock::builder()
+        .r#type(aws_sdk_bedrockruntime::types::CachePointType::Default)
+        .build()
+        .map_err(|error| BedrockError::Invocation(error.to_string()))
+}
+
+/// Append a cache point to the final message's content so the next loop
+/// iteration reads everything up to (and including) this message from cache.
+fn with_tail_cache_point(mut messages: Vec<Message>) -> Result<Vec<Message>, BedrockError> {
+    let Some(last) = messages.pop() else {
+        return Ok(messages);
+    };
+    let mut content = last.content().to_vec();
+    content.push(ContentBlock::CachePoint(cache_point()?));
+    let rebuilt = Message::builder()
+        .role(last.role().clone())
+        .set_content(Some(content))
+        .build()
+        .map_err(|error| BedrockError::Invocation(error.to_string()))?;
+    messages.push(rebuilt);
+    Ok(messages)
 }
 
 fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {

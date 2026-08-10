@@ -1021,6 +1021,9 @@ async fn run_turn(
 
     let mut rounds = 0_u32;
     let mut corrective_round_used = false;
+    // One exact CountTokens per turn; later calls estimate appended messages
+    // and re-verify only near the budget.
+    let mut input_budget = report::ReportInputBudget::new(&progress.model_id);
     let mut tool_context = ToolExecutionContext {
         s3,
         bucket,
@@ -1048,6 +1051,7 @@ async fn run_turn(
             REPORT_SYSTEM_PROMPT,
             &protocol,
             limits.max_tool_uses_per_response as usize,
+            &mut input_budget,
         )
         .await
         .map_err(map_bedrock_failure)?;
