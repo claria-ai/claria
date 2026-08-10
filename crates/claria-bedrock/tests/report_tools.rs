@@ -277,7 +277,7 @@ async fn tool_results_are_sent_as_correlated_json_blocks() {
 }
 
 #[tokio::test]
-async fn duplicate_empty_and_inconsistent_tool_ids_are_rejected() {
+async fn duplicate_and_empty_tool_ids_are_rejected() {
     for response in [
         serde_json::json!({
             "output": {"message": {"role": "assistant", "content": [
@@ -292,12 +292,6 @@ async fn duplicate_empty_and_inconsistent_tool_ids_are_rejected() {
             ]}},
             "stopReason": "tool_use"
         }),
-        serde_json::json!({
-            "output": {"message": {"role": "assistant", "content": [
-                {"toolUse": {"toolUseId": "id", "name": "list_record_files", "input": {}}}
-            ]}},
-            "stopReason": "end_turn"
-        }),
     ] {
         let server = MockServer::spawn().await;
         script(&server, vec![response]).await;
@@ -311,6 +305,34 @@ async fn duplicate_empty_and_inconsistent_tool_ids_are_rejected() {
         .unwrap_err();
         assert!(matches!(error, BedrockError::ResponseParse(_)));
     }
+}
+
+/// A stop reason that disagrees with tool presence is surfaced as data — the
+/// report loop owns the one corrective round — instead of aborting here.
+#[tokio::test]
+async fn stop_tool_mismatch_is_surfaced_not_rejected() {
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [
+                {"toolUse": {"toolUseId": "id", "name": "list_record_files", "input": {}}}
+            ]}},
+            "stopReason": "end_turn"
+        })],
+    )
+    .await;
+    let output = converse_report(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("mismatch passes through");
+    assert_eq!(output.stop_reason, ReportStopReason::EndTurn);
+    assert_eq!(output.tool_calls.len(), 1);
+    assert!(output.stop_tool_mismatch());
 }
 
 #[tokio::test]

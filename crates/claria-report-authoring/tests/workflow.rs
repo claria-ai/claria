@@ -834,6 +834,186 @@ async fn schema_and_proposal_failures_return_verbatim_diagnostics() {
 }
 
 #[tokio::test]
+async fn max_tokens_after_staged_proposal_completes_with_truncated_notice() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{
+                    "toolUse": {"toolUseId": "proposal-1", "name": "propose_report_changes",
+                        "input": {"summary": "Add a summary section", "operations": [
+                            {"kind": "add_section", "position": 0, "heading": "Summary",
+                             "blocks": [{"kind": "paragraph", "text": "Proposed text"}]}
+                        ]}}
+                }]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 10, "outputTokens": 4}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "I staged a proposal that"}]}},
+                "stopReason": "max_tokens",
+                "usage": {"inputTokens": 20, "outputTokens": 8192}
+            }),
+        ],
+    )
+    .await;
+
+    let outcome = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Draft a summary."),
+    )
+    .await
+    .expect("truncated final reply keeps the staged proposal");
+
+    assert!(outcome.proposal_id.is_some());
+    assert!(outcome.workspace.session.pending_proposal.is_some());
+    assert!(outcome.assistant_text.starts_with("I staged a proposal that"));
+    assert!(
+        outcome
+            .assistant_text
+            .contains(report_authoring::REPORT_TRUNCATED_NOTICE)
+    );
+}
+
+#[tokio::test]
+async fn max_tokens_without_staged_proposal_still_fails() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "An unfinished repl"}]}},
+            "stopReason": "max_tokens",
+            "usage": {"inputTokens": 10, "outputTokens": 8192}
+        })],
+    )
+    .await;
+
+    let error = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Draft a summary."),
+    )
+    .await
+    .expect_err("nothing staged, nothing to salvage");
+    assert_eq!(
+        error.failure_code(),
+        Some(report_authoring::ReportFailureCode::UnexpectedStop)
+    );
+}
+
+#[tokio::test]
+async fn inconsistent_stop_reason_gets_exactly_one_corrective_round() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![
+            // Tool call, but the model claims end_turn: mismatch.
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"text": "Let me check the records."},
+                    {"toolUse": {"toolUseId": "list-1", "name": "list_record_files", "input": {}}}
+                ]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 10, "outputTokens": 4}
+            }),
+            // After the corrective round, a well-formed reply.
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "There are no records."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 20, "outputTokens": 4}
+            }),
+        ],
+    )
+    .await;
+
+    let outcome = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("List my records."),
+    )
+    .await
+    .expect("one corrective round recovers the turn");
+    assert_eq!(outcome.assistant_text, "There are no records.");
+    assert_eq!(outcome.attempt.converse_calls, 2);
+    // The mismatched call is recorded as a (never-executed) tool use; the
+    // correction answered it with an error tool_result.
+    assert_eq!(outcome.attempt.tool_uses, 1);
+
+    let state = server.state.read().await;
+    let correction = state.bedrock_tool_requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["content"][0]["toolResult"]
+        .clone();
+    assert_eq!(correction["toolUseId"], "list-1");
+    assert_eq!(correction["status"], "error");
+    assert_eq!(
+        correction["content"][0]["json"]["error"]["code"],
+        "inconsistent_stop_reason"
+    );
+}
+
+#[tokio::test]
+async fn second_inconsistent_stop_reason_fails_the_turn() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+
+    let mismatch = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [
+            {"text": "Checking."},
+            {"toolUse": {"toolUseId": "list-1", "name": "list_record_files", "input": {}}}
+        ]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 10, "outputTokens": 4}
+    });
+    let mut second = mismatch.clone();
+    second["output"]["message"]["content"][1]["toolUse"]["toolUseId"] =
+        serde_json::json!("list-2");
+    script(&server, vec![mismatch, second]).await;
+
+    let error = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("List my records."),
+    )
+    .await
+    .expect_err("a repeated mismatch is a protocol failure");
+    assert_eq!(
+        error.failure_code(),
+        Some(report_authoring::ReportFailureCode::InvalidProtocol)
+    );
+}
+
+#[tokio::test]
 async fn writer_reads_printable_text_regardless_of_extension() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();

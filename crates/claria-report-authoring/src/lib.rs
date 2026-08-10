@@ -58,6 +58,13 @@ const ATTEMPT_SCHEMA_VERSION: u32 = 1;
 pub const REPORT_CONFLICT_MESSAGE: &str =
     "The report changed on another computer. Reload it before continuing.";
 
+/// Appended to the visible reply when the final response hit its
+/// output-token limit after a proposal was already staged: the staged work
+/// survives instead of the whole turn being discarded.
+pub const REPORT_TRUNCATED_NOTICE: &str = "Claria note: the assistant reached its \
+response-length limit, so this reply was cut short. The staged proposal is complete \
+and awaiting your review.";
+
 /// User-configurable guardrails for one report-writing request and its retained
 /// conversation context.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1013,6 +1020,7 @@ async fn run_turn(
     protocol.push(protocol_user_message);
 
     let mut rounds = 0_u32;
+    let mut corrective_round_used = false;
     let mut tool_context = ToolExecutionContext {
         s3,
         bucket,
@@ -1075,8 +1083,55 @@ async fn run_turn(
             })
             .collect::<Vec<_>>()
             .join("");
+        let stop_tool_mismatch = output.stop_tool_mismatch();
         protocol.push(output.message.clone());
         turn_messages.push(output.message);
+
+        // Stop-reason/tool-presence mismatch: attempt exactly one corrective
+        // round telling the model its response ended inconsistently, instead
+        // of discarding the whole turn on a transient provider glitch.
+        if stop_tool_mismatch {
+            if corrective_round_used {
+                return Err(TurnRunFailure::new(
+                    ReportFailureCode::InvalidProtocol,
+                    "Bedrock repeatedly returned an inconsistent report stop reason. Nothing from this turn was applied.",
+                ));
+            }
+            corrective_round_used = true;
+            // The mismatched tool calls stay in the persisted protocol, so
+            // they count as (unexecuted) tool uses for the attempt record.
+            progress.tool_uses = progress
+                .tool_uses
+                .saturating_add(output.tool_calls.len() as u32);
+            let content = if output.tool_calls.is_empty() {
+                vec![ReportProtocolBlock::Text {
+                    text: "Your previous response ended inconsistently: it signaled tool use \
+                           without issuing a tool call. Re-issue the tool call, or answer in text."
+                        .to_string(),
+                }]
+            } else {
+                output
+                    .tool_calls
+                    .iter()
+                    .map(|call| ReportProtocolBlock::ToolResult {
+                        tool_use_id: call.tool_use_id.clone(),
+                        status: ReportToolResultStatus::Error,
+                        content: serde_json::json!({"error": {
+                            "code": "inconsistent_stop_reason",
+                            "message": "Your response ended inconsistently: it contained this tool call but did not stop for tool use. Re-issue the tool call in a well-formed response."
+                        }}),
+                    })
+                    .collect()
+            };
+            let corrective_message = ReportProtocolMessage {
+                role: ReportProtocolRole::User,
+                content,
+                created_at: jiff::Timestamp::now(),
+            };
+            protocol.push(corrective_message.clone());
+            turn_messages.push(corrective_message);
+            continue;
+        }
 
         match output.stop_reason {
             ReportStopReason::ToolUse => {
@@ -1138,6 +1193,17 @@ async fn run_turn(
             }
             ReportStopReason::EndTurn => {
                 terminal_text = response_text;
+                break;
+            }
+            // The reply was cut short after a proposal was already staged:
+            // finish the turn with a visible truncation notice instead of
+            // discarding the staged work.
+            ReportStopReason::MaxTokens if tool_context.staged_proposal.is_some() => {
+                terminal_text = if response_text.is_empty() {
+                    REPORT_TRUNCATED_NOTICE.to_string()
+                } else {
+                    format!("{response_text}\n\n{REPORT_TRUNCATED_NOTICE}")
+                };
                 break;
             }
             reason => return Err(terminal_stop_failure(reason)),

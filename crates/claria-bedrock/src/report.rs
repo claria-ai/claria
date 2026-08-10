@@ -55,6 +55,15 @@ pub struct ReportConverseOutput {
     pub usage: Option<TurnUsage>,
 }
 
+impl ReportConverseOutput {
+    /// True when the stop reason disagrees with tool presence — tool calls
+    /// without a `tool_use` stop, or a `tool_use` stop without tool calls.
+    /// The loop attempts one corrective round on this before failing.
+    pub fn stop_tool_mismatch(&self) -> bool {
+        self.tool_calls.is_empty() == matches!(self.stop_reason, ReportStopReason::ToolUse)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportStopReason {
@@ -409,15 +418,11 @@ pub async fn converse_report_with_tool_limit(
         )));
     }
 
+    // A stop reason that disagrees with tool presence (e.g. `end_turn` next
+    // to a tool use) is deliberately NOT an error here: the report loop
+    // attempts one corrective tool-result round before failing, so the
+    // inconsistency must reach it as data via `stop_tool_mismatch`.
     let stop_reason = map_stop_reason(response.stop_reason());
-    let has_tools = !tool_calls.is_empty();
-    if has_tools != matches!(stop_reason, ReportStopReason::ToolUse) {
-        return Err(BedrockError::ResponseParse(format!(
-            "inconsistent report stop reason {:?} for {} tool uses",
-            stop_reason,
-            tool_calls.len()
-        )));
-    }
 
     let usage = converse::optional_usage(response.usage(), model_id);
 
