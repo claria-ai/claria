@@ -6,6 +6,7 @@ use claria_core::models::report::{
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 use claria_report_authoring::{self as report_authoring, REPORT_CONFLICT_MESSAGE};
 use claria_storage::client;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const BUCKET: &str = "claria-report-authoring-test";
@@ -208,38 +209,195 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
 }
 
 #[tokio::test]
-async fn template_import_is_previewed_content_with_revision_bound_export_review() {
+async fn report_revisions_can_be_previewed_and_restored_without_removing_history() {
     let (_server, _sdk, s3) = setup().await;
+    s3.put_bucket_versioning()
+        .bucket(BUCKET)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
     let client_id = Uuid::new_v4();
     put_client(&s3, client_id).await;
     let initial = report_authoring::load_report_workspace(&s3, BUCKET, client_id)
         .await
         .expect("workspace");
-    let imported = report_authoring::apply_report_template(
+
+    let first = report_authoring::save_report_draft(
         &s3,
         BUCKET,
         client_id,
         0,
         ReportContent {
-            title: "Imported template".to_string(),
-            sections: vec![ReportSection {
-                id: Uuid::new_v4(),
-                heading: "Scores".to_string(),
-                blocks: vec![ReportBlock::Table {
-                    rows: vec![
-                        vec!["Measure".to_string(), "Score".to_string()],
-                        vec!["Attention".to_string(), "".to_string()],
-                    ],
-                    has_header: true,
-                    column_widths: Some(vec![7_000, 3_000]),
+            title: "First version".to_string(),
+            sections: vec![],
+        },
+    )
+    .await
+    .expect("save first version");
+    let second = report_authoring::save_report_draft(
+        &s3,
+        BUCKET,
+        client_id,
+        1,
+        ReportContent {
+            title: "Second version".to_string(),
+            sections: vec![],
+        },
+    )
+    .await
+    .expect("save second version");
+    report_authoring::rename_report_session(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        "Renamed session",
+    )
+    .await
+    .expect("save another object version at the same draft revision");
+
+    let revisions =
+        report_authoring::list_report_revisions(&s3, BUCKET, client_id, initial.report_id)
+            .await
+            .expect("list revisions");
+    assert_eq!(
+        revisions
+            .iter()
+            .map(|revision| revision.revision)
+            .collect::<Vec<_>>(),
+        vec![2, 1, 0]
+    );
+    assert_eq!(revisions[0].title, "Second version");
+
+    let historical = report_authoring::load_report_revision(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        first.draft.revision,
+    )
+    .await
+    .expect("load first revision");
+    assert_eq!(historical.content.title, "First version");
+
+    let restored = report_authoring::revert_report_revision(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        second.draft.revision,
+        first.draft.revision,
+    )
+    .await
+    .expect("restore first revision");
+    assert_eq!(restored.draft.revision, 3);
+    assert_eq!(restored.draft.content.title, "First version");
+
+    let revisions_after_restore =
+        report_authoring::list_report_revisions(&s3, BUCKET, client_id, initial.report_id)
+            .await
+            .expect("list revisions after restore");
+    assert_eq!(
+        revisions_after_restore
+            .iter()
+            .map(|revision| revision.revision)
+            .collect::<Vec<_>>(),
+        vec![3, 2, 1, 0]
+    );
+    let preserved = report_authoring::load_report_revision(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        second.draft.revision,
+    )
+    .await
+    .expect("load revision that preceded restore");
+    assert_eq!(preserved.content.title, "Second version");
+
+    let current_error = report_authoring::revert_report_revision(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        restored.draft.revision,
+        restored.draft.revision,
+    )
+    .await
+    .expect_err("current revision cannot be restored");
+    assert!(
+        current_error
+            .to_string()
+            .contains("earlier report revision")
+    );
+}
+
+#[tokio::test]
+async fn template_import_exports_without_confirmation_and_keeps_its_source_package() {
+    let (_server, _sdk, s3) = setup().await;
+    s3.put_bucket_versioning()
+        .bucket(BUCKET)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let initial = report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("workspace");
+    let template_source = b"validated redacted template package".to_vec();
+    let source_sha256 = Sha256::digest(&template_source)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    report_authoring::store_report_template_source(
+        &s3,
+        BUCKET,
+        client_id,
+        &source_sha256,
+        template_source.clone(),
+    )
+    .await
+    .expect("store source package");
+    let imported = report_authoring::apply_report_template(
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        report_authoring::ReportTemplateApplication {
+            content: ReportContent {
+                title: "Imported template".to_string(),
+                sections: vec![ReportSection {
+                    id: Uuid::new_v4(),
+                    heading: "Scores".to_string(),
+                    blocks: vec![ReportBlock::Table {
+                        rows: vec![
+                            vec!["Measure".to_string(), "Score".to_string()],
+                            vec!["Attention".to_string(), "".to_string()],
+                        ],
+                        has_header: true,
+                        column_widths: Some(vec![7_000, 3_000]),
+                    }],
                 }],
+            },
+            source_sha256,
+            writer_template_id: Uuid::new_v4(),
+            writer_template_name: "Clinical report".to_string(),
+            warnings: vec![ReportTemplateWarning {
+                code: ReportTemplateWarningCode::HeadersFootersOmitted,
+                count: 2,
             }],
         },
-        "a".repeat(64),
-        vec![ReportTemplateWarning {
-            code: ReportTemplateWarningCode::HeadersFootersOmitted,
-            count: 2,
-        }],
     )
     .await
     .expect("apply template");
@@ -249,33 +407,18 @@ async fn template_import_is_previewed_content_with_revision_bound_export_review(
         .as_ref()
         .expect("template metadata");
     assert_eq!(metadata.imported_revision, 1);
-    assert_eq!(metadata.reviewed_revision, None);
+    assert_eq!(metadata.reviewed_revision, Some(1));
+    assert_eq!(
+        metadata.writer_template_name.as_deref(),
+        Some("Clinical report")
+    );
 
-    let blocked =
+    let snapshot =
         report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 1)
             .await
-            .expect_err("unreviewed import must not export");
-    assert!(blocked.to_string().contains("Review template carryover"));
-
-    let reviewed = report_authoring::acknowledge_report_template_review(
-        &s3,
-        BUCKET,
-        client_id,
-        initial.report_id,
-        1,
-    )
-    .await
-    .expect("review template");
-    assert_eq!(
-        reviewed
-            .template_import
-            .as_ref()
-            .and_then(|template| template.reviewed_revision),
-        Some(1)
-    );
-    report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 1)
-        .await
-        .expect("reviewed export snapshot");
+            .expect("export without confirmation");
+    assert_eq!(snapshot.draft.revision, 1);
+    assert_eq!(snapshot.template_source, Some(template_source.clone()));
 
     let edited = report_authoring::save_report_draft(
         &s3,
@@ -284,7 +427,7 @@ async fn template_import_is_previewed_content_with_revision_bound_export_review(
         1,
         ReportContent {
             title: "Imported template revised".to_string(),
-            sections: reviewed.draft.content.sections,
+            sections: imported.draft.content.sections,
         },
     )
     .await
@@ -295,12 +438,39 @@ async fn template_import_is_previewed_content_with_revision_bound_export_review(
             .template_import
             .as_ref()
             .and_then(|template| template.reviewed_revision),
-        None
+        Some(2)
     );
-    assert!(
-        report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 2,)
+    assert_eq!(
+        report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 2)
             .await
-            .is_err()
+            .expect("edited template export")
+            .draft
+            .revision,
+        2
+    );
+
+    let second_template = report_authoring::apply_report_template(
+        &s3,
+        BUCKET,
+        client_id,
+        2,
+        report_authoring::ReportTemplateApplication {
+            content: ReportContent {
+                title: "Different template".to_string(),
+                sections: vec![],
+            },
+            source_sha256: "c".repeat(64),
+            writer_template_id: Uuid::new_v4(),
+            writer_template_name: "Different template".to_string(),
+            warnings: vec![],
+        },
+    )
+    .await
+    .expect_err("a session cannot switch templates");
+    assert!(
+        second_template
+            .to_string()
+            .contains("already has a template")
     );
 
     let persisted = claria_storage::objects::get_object(
@@ -313,6 +483,20 @@ async fn template_import_is_previewed_content_with_revision_bound_export_review(
     let json = String::from_utf8(persisted.body).expect("workspace JSON");
     assert!(!json.contains("local_path"));
     assert!(!json.contains("source_filename"));
+
+    report_authoring::delete_report_workspace_for_client(&s3, BUCKET, client_id)
+        .await
+        .expect("delete report objects");
+    assert!(
+        report_authoring::restore_report_workspace_for_client(&s3, BUCKET, client_id)
+            .await
+            .expect("restore report")
+    );
+    let restored =
+        report_authoring::load_export_snapshot(&s3, BUCKET, client_id, initial.report_id, 2)
+            .await
+            .expect("restored export snapshot");
+    assert_eq!(restored.template_source, Some(template_source));
 }
 
 #[tokio::test]
@@ -400,6 +584,8 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
     )
     .await;
 
+    let progress = std::sync::Mutex::new(Vec::new());
+    let emit_progress = |event| progress.lock().expect("progress lock").push(event);
     let response = report_authoring::send_report_message(
         &sdk,
         &s3,
@@ -407,10 +593,34 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
         client_id,
         0,
         MODEL_ID,
-        report_authoring::ReportMessageRequest::new("Draft an initial report from the intake."),
+        report_authoring::ReportMessageRequest::new("Draft an initial report from the intake.")
+            .with_progress(&emit_progress),
     )
     .await
     .expect("report turn");
+
+    let progress = progress.into_inner().expect("progress values");
+    assert!(matches!(
+        progress.first(),
+        Some(report_authoring::ReportTurnProgress::ModelCallStarted { call_number: 1 })
+    ));
+    assert!(progress.iter().any(|event| matches!(
+        event,
+        report_authoring::ReportTurnProgress::ToolStarted { name, context }
+            if name == "read_record_file" && context.as_deref() == Some("intake.txt")
+    )));
+    assert!(progress.iter().any(|event| matches!(
+        event,
+        report_authoring::ReportTurnProgress::ToolFinished {
+            name,
+            context,
+            status: claria_core::models::report::ReportToolResultStatus::Error,
+        } if name == "read_record_file" && context.as_deref() == Some("../secret.txt")
+    )));
+    assert!(matches!(
+        progress.last(),
+        Some(report_authoring::ReportTurnProgress::ModelCallStarted { call_number: 3 })
+    ));
 
     assert_eq!(response.attempt.converse_calls, 3);
     assert_eq!(response.attempt.tool_uses, 4);
@@ -535,7 +745,110 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
     )
     .await
     .expect("export draft");
-    assert_eq!(export_draft.content.title, "Initial Assessment");
+    assert_eq!(export_draft.draft.content.title, "Initial Assessment");
+}
+
+#[tokio::test]
+async fn writer_reads_printable_text_regardless_of_extension() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "referral.md"),
+        "# Referral\n\nNarrative history",
+    )
+    .await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "scores.json"),
+        r#"{"instrument":"ADOS-2","score":12}"#,
+    )
+    .await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "notes.custom"),
+        "extension-independent text",
+    )
+    .await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "scan.pdf"),
+        "%PDF-1.7 binary container",
+    )
+    .await;
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "list", "name": "list_record_files", "input": {}}},
+                    {"toolUse": {"toolUseId": "read-md", "name": "read_record_file", "input": {"filename": "referral.md"}}},
+                    {"toolUse": {"toolUseId": "read-json", "name": "read_record_file", "input": {"filename": "scores.json"}}},
+                    {"toolUse": {"toolUseId": "read-custom", "name": "read_record_file", "input": {"filename": "notes.custom"}}},
+                    {"toolUse": {"toolUseId": "read-binary", "name": "read_record_file", "input": {"filename": "scan.pdf"}}}
+                ]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 10, "outputTokens": 2}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "I read the available record text."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 20, "outputTokens": 3}
+            }),
+        ],
+    )
+    .await;
+
+    let response = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Review every source."),
+    )
+    .await
+    .expect("report turn");
+    assert_eq!(response.attempt.tool_uses, 5);
+
+    let state = server.state.read().await;
+    let results = state.bedrock_tool_requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .last()
+        .expect("tool result message")["content"]
+        .as_array()
+        .expect("tool results");
+    let listed = results[0]["toolResult"]["content"][0]["json"]["files"]
+        .as_array()
+        .expect("listed files");
+    for filename in ["referral.md", "scores.json", "notes.custom"] {
+        let entry = listed
+            .iter()
+            .find(|entry| entry["filename"] == filename)
+            .expect("structured text in inventory");
+        assert_eq!(entry["readable"], true);
+    }
+    assert_eq!(
+        results[1]["toolResult"]["content"][0]["json"]["text"],
+        "# Referral\n\nNarrative history"
+    );
+    assert_eq!(
+        results[2]["toolResult"]["content"][0]["json"]["text"],
+        r#"{"instrument":"ADOS-2","score":12}"#
+    );
+    assert_eq!(
+        results[3]["toolResult"]["content"][0]["json"]["text"],
+        "extension-independent text"
+    );
+    assert_eq!(results[4]["toolResult"]["status"], "error");
+    assert_eq!(
+        results[4]["toolResult"]["content"][0]["json"]["error"]["code"],
+        "record_not_text"
+    );
 }
 
 #[tokio::test]

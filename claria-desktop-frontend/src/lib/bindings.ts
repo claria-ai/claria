@@ -407,6 +407,38 @@ async listEditorHistory(clientId: string) : Promise<Result<EditorHistoryEntry[],
     else return { status: "error", error: e  as any };
 }
 },
+async renameReportSession(clientId: string, reportId: string, name: string) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_report_session", { clientId, reportId, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listReportRevisions(clientId: string, reportId: string) : Promise<Result<ReportRevisionView[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_report_revisions", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadReportRevision(clientId: string, reportId: string, revision: number) : Promise<Result<ReportDraftView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_report_revision", { clientId, reportId, revision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async revertReportRevision(clientId: string, reportId: string, expectedRevision: number, revision: number) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("revert_report_revision", { clientId, reportId, expectedRevision, revision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async saveReportDraft(clientId: string, expectedRevision: number, draft: ReportDraftEdit) : Promise<Result<ReportWorkspaceView, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_report_draft", { clientId, expectedRevision, draft }) };
@@ -415,21 +447,55 @@ async saveReportDraft(clientId: string, expectedRevision: number, draft: ReportD
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Open a bounded native DOCX picker and return a structured content preview.
- * The parsed candidate remains only in process memory until explicitly
- * applied or discarded.
- */
-async pickReportTemplateDocx(clientId: string) : Promise<Result<ReportTemplatePreview | null, string>> {
+async listWriterTemplates() : Promise<Result<WriterTemplateView[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("pick_report_template_docx", { clientId }) };
+    return { status: "ok", data: await TAURI_INVOKE("list_writer_templates") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Apply an already previewed DOCX candidate as a new accepted revision.
+ * Pick, validate, and upload a redacted DOCX into the managed template shelf.
+ * The local filename and path are never persisted.
+ */
+async uploadWriterTemplate() : Promise<Result<WriterTemplateView | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("upload_writer_template") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async renameWriterTemplate(templateId: string, name: string) : Promise<Result<WriterTemplateView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_writer_template", { templateId, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async deleteWriterTemplate(templateId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_writer_template", { templateId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Parse a managed template into an in-memory candidate for direct application.
+ */
+async previewWriterTemplate(clientId: string, templateId: string) : Promise<Result<ReportTemplatePreview, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("preview_writer_template", { clientId, templateId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply a parsed managed DOCX candidate as a new accepted revision.
  */
 async applyReportTemplate(clientId: string, expectedRevision: number, importId: string) : Promise<Result<ReportWorkspaceView, string>> {
     try {
@@ -447,17 +513,9 @@ async discardReportTemplatePreview(importId: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
-async acknowledgeReportTemplateReview(clientId: string, reportId: string, expectedRevision: number) : Promise<Result<ReportWorkspaceView, string>> {
+async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("acknowledge_report_template_review", { clientId, reportId, expectedRevision }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[]) : Promise<Result<ReportTurnResponse, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction, references }) };
+    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction, references, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -508,8 +566,9 @@ async searchRecordContents(clientId: string, query: string) : Promise<Result<str
 /**
  * Upload a file to a client's record from a local file path.
  * 
- * If the file is a PDF or DOCX, a sidecar `.text` file is generated
- * via Bedrock document text extraction and uploaded alongside.
+ * Printable UTF-8 files remain directly readable under their original names.
+ * PDF and DOCX files receive a structured-Markdown `.text` sidecar via
+ * Bedrock; audio files receive a transcript sidecar.
  */
 async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<RecordFile, string>> {
     try {
@@ -520,7 +579,8 @@ async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<Reco
 }
 },
 /**
- * Delete a file from a client's record, including its sidecar if present.
+ * Delete a file from a client's record, including its generated sidecar
+ * when present.
  */
 async deleteRecordFile(clientId: string, filename: string) : Promise<Result<null, string>> {
     try {
@@ -531,10 +591,11 @@ async deleteRecordFile(clientId: string, filename: string) : Promise<Result<null
 }
 },
 /**
- * Get the text content for a record file.
+ * Get the readable text for a record file.
  * 
- * For plain text files (`.txt`), returns the file content directly.
- * For other files, returns the `.text` sidecar content if available.
+ * Generated document/transcript sidecars take precedence. Otherwise any
+ * printable UTF-8 original—including JSON, Markdown, CSV, and extensionless
+ * text—is returned unchanged.
  */
 async getRecordFileText(clientId: string, filename: string) : Promise<Result<string, string>> {
     try {
@@ -572,9 +633,9 @@ async updateTextRecordFile(clientId: string, filename: string, content: string) 
 /**
  * Load text content for all record files belonging to a client.
  * 
- * For `.txt` files, returns the file content directly. For PDF/DOCX,
- * returns the `.text` sidecar content if available. Files with no
- * readable text are omitted.
+ * Printable UTF-8 originals are returned unchanged, regardless of extension.
+ * PDF, DOCX, and audio files use their generated `.text` sidecars. Files with
+ * no safe readable representation are omitted.
  */
 async listRecordContext(clientId: string) : Promise<Result<RecordContext[], string>> {
     try {
@@ -585,11 +646,10 @@ async listRecordContext(clientId: string) : Promise<Result<RecordContext[], stri
 }
 },
 /**
- * Re-run text extraction for a single record file.
+ * Resolve readable text for a single record file.
  * 
- * Downloads the original file from S3, runs Bedrock document extraction
- * (or audio transcription for audio files), uploads the `.text` sidecar,
- * and returns the updated `RecordContext` with the extracted text.
+ * PDF and DOCX files are re-extracted through Bedrock, audio is
+ * retranscribed, and printable UTF-8 originals are returned unchanged.
  */
 async extractRecordFile(clientId: string, filename: string) : Promise<Result<RecordContext, string>> {
     try {
@@ -627,9 +687,9 @@ async listChatModels() : Promise<Result<ChatModel[], string>> {
  * The `chat_id` is generated on the first message and returned so the
  * frontend can pass it back on subsequent calls.
  */
-async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null, contextFilenames: string[]) : Promise<Result<ChatResponse, string>> {
+async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null, chatName: string | null, contextFilenames: string[]) : Promise<Result<ChatResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId, contextFilenames }) };
+    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId, chatName, contextFilenames }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -666,6 +726,17 @@ async acceptModelAgreement(modelId: string) : Promise<Result<null, string>> {
 }
 },
 /**
+ * List named chat sessions for the Record screen history folder.
+ */
+async listChatHistories(clientId: string) : Promise<Result<ChatHistorySummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_chat_histories", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Load a chat history session from S3.
  * 
  * Returns the full conversation with model ID so the frontend can
@@ -674,6 +745,17 @@ async acceptModelAgreement(modelId: string) : Promise<Result<null, string>> {
 async loadChatHistory(clientId: string, chatId: string) : Promise<Result<ChatHistoryDetail, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("load_chat_history", { clientId, chatId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Rename a persisted chat session without changing its stable UUID key.
+ */
+async renameChatHistory(clientId: string, chatId: string, name: string) : Promise<Result<ChatHistoryDetail, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_chat_history", { clientId, chatId, name }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1094,7 +1176,7 @@ export type Cause = "in_sync" | "missing" | "drift" | "orphaned"
 /**
  * Detail of a persisted chat session, returned when resuming a conversation.
  */
-export type ChatHistoryDetail = { chat_id: string; model_id: string; messages: ChatHistoryDetailMessage[]; created_at: string }
+export type ChatHistoryDetail = { chat_id: string; name: string; model_id: string; messages: ChatHistoryDetailMessage[]; created_at: string; updated_at: string }
 /**
  * A single message in persisted chat history, including optional token
  * usage on assistant turns.
@@ -1106,6 +1188,10 @@ export type ChatHistoryDetailMessage = { role: ChatRole; content: string;
  * written before per-turn usage tracking landed.
  */
 usage: TurnUsage | null }
+/**
+ * Lightweight persisted-chat row for the Record screen history folder.
+ */
+export type ChatHistorySummary = { chat_id: string; filename: string; name: string; size: number; updated_at: string }
 export type ChatMessage = { role: ChatRole; content: string }
 /**
  * Specta type mirroring `claria_bedrock::chat::ChatModel`.
@@ -1115,7 +1201,7 @@ export type ChatModel = { model_id: string; name: string }
  * Response from a chat message, including the persisted chat session ID
  * and per-turn token usage.
  */
-export type ChatResponse = { chat_id: string; content: string; usage: TurnUsage }
+export type ChatResponse = { chat_id: string; chat_name: string; content: string; usage: TurnUsage }
 export type ChatRole = "user" | "assistant"
 export type ClientNameHistoryEntry = { name: string; changed_at: string }
 export type ClientNameUpdate = { id: string; name: string; updated_at: string }
@@ -1185,7 +1271,7 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  * A file that has been deleted (has a delete marker as the latest version).
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
-export type EditorHistoryEntry = { report_id: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExportView | null }
+export type EditorHistoryEntry = { report_id: string; name: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExportView | null }
 /**
  * Structured before/after for a single field that doesn't match desired state.
  * 
@@ -1319,17 +1405,19 @@ export type ReportProposalDecision = "accept" | "reject"
 export type ReportProposalResolutionDecision = "accepted" | "rejected"
 export type ReportProposalResolutionView = { proposal_id: string; decision: ReportProposalResolutionDecision; resulting_revision: number; resolved_at: string }
 export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperationView[]; proposed_content: ReportContentView; created_at: string }
+export type ReportRevisionView = { revision: number; title: string; updated_at: string }
 export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlockView[] }
 export type ReportSectionView = { id: string; heading: string; blocks: ReportBlockView[] }
-export type ReportTemplateImportView = { imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
+export type ReportTemplateImportView = { writer_template_id: string | null; writer_template_name: string | null; imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
 export type ReportTemplatePreview = { import_id: string; content: ReportContentView; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
 export type ReportTemplateStatsView = { sections: number; paragraphs: number; bullet_lists: number; tables: number; table_cells: number; placeholder_count: number }
 export type ReportTemplateWarningView = { code: string; message: string; count: number }
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
+export type ReportTurnProgressView = { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus }
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
-export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; draft: ReportDraftView; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolutionView[]; last_agent_revision: number | null; last_export: ReportExportView | null; template_import: ReportTemplateImportView | null; created_at: string; updated_at: string }
+export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; session_name: string; draft: ReportDraftView; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolutionView[]; last_agent_revision: number | null; last_export: ReportExportView | null; template_import: ReportTemplateImportView | null; created_at: string; updated_at: string }
 /**
  * Every resource in the system is declared as a `ResourceSpec`.
  * 
@@ -1484,6 +1572,7 @@ pricing_version: number }
  * Result of checking for a newer release on GitHub.
  */
 export type UpdateCheck = { current_version: string; latest_version: string; update_available: boolean; release_url: string }
+export type WriterTemplateView = { id: string; name: string; size: number; uploaded_at: string; use_count: number }
 
 /** tauri-specta globals **/
 

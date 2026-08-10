@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getPrompt,
+  listWriterTemplates,
   savePrompt,
   deletePrompt,
   setPreferredModel,
@@ -14,6 +15,9 @@ import {
   getCostAndUsage,
   savePreferences,
   fetchCloudPreferences,
+  uploadWriterTemplate,
+  renameWriterTemplate,
+  deleteWriterTemplate,
   type ChatModel,
   type ConfigInfo,
   type LocalBackend,
@@ -26,11 +30,13 @@ import {
   type ReportAuthoringPreferences,
   type TranscriptionLanguage,
   type TranscriptionPreferences,
+  type WriterTemplateView,
 } from "../lib/tauri";
 import { costErrorMessage } from "../lib/costErrors";
-import { formatFileSize } from "../lib/format";
+import { formatDateTime, formatFileSize } from "../lib/format";
 import { promptVersions } from "../lib/versions";
-import { BackButton } from "../components/icons";
+import EditableName from "../components/EditableName";
+import { BackButton, TrashIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import VersionHistoryModal from "../components/VersionHistoryModal";
 import type { Page } from "../App";
@@ -42,6 +48,8 @@ export default function Preferences({
   chatModelsError,
   preferredModelId,
   onPreferredModelChanged,
+  openWriterTemplates = false,
+  backPage = "start",
 }: {
   navigate: (page: Page) => void;
   chatModels: ChatModel[];
@@ -49,6 +57,8 @@ export default function Preferences({
   chatModelsError: string | null;
   preferredModelId: string | null;
   onPreferredModelChanged: (id: string | null) => void;
+  openWriterTemplates?: boolean;
+  backPage?: Page;
 }) {
   // Model preference state
   const [modelSaving, setModelSaving] = useState(false);
@@ -72,7 +82,7 @@ export default function Preferences({
     <div className="max-w-2xl mx-auto p-8">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <BackButton onClick={() => navigate("start")} />
+        <BackButton onClick={() => navigate(backPage)} />
         <h2 className="text-2xl font-bold">Preferences</h2>
       </div>
 
@@ -81,7 +91,7 @@ export default function Preferences({
          changes until restart. */}
       <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
         <p className="text-sm text-blue-900">
-          Workflow defaults are stored in your S3 bucket so they sync across
+          Shared defaults are stored in your S3 bucket so they sync across
           computers. Local memo models, decoder controls, and hardware choices
           are machine-local.
         </p>
@@ -90,6 +100,9 @@ export default function Preferences({
       <div className="space-y-4">
         {/* Transcription preferences section */}
         <TranscriptionSection />
+
+        {/* Managed, redacted templates used by the document writer */}
+        <WriterTemplatesSection defaultOpen={openWriterTemplates} />
 
         {/* Agentic document-writer guardrails */}
         <ReportAuthoringSection />
@@ -106,7 +119,7 @@ export default function Preferences({
         <PromptEditor
           promptName="pdf-extraction"
           label="PDF Extraction Prompt"
-          description="Instructions used when extracting text from uploaded PDF and DOCX files."
+          description="Instructions used when converting uploaded PDF and DOCX files to structured Markdown."
         />
 
         {/* Machine-local transcribe.cpp models and inference controls */}
@@ -972,6 +985,178 @@ function CostExplorerSection() {
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
             <p className="text-red-800 text-sm">{error}</p>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Writer templates: managed redacted DOCX presets stored in S3
+// ---------------------------------------------------------------------------
+
+function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [templates, setTemplates] = useState<WriterTemplateView[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setTemplates(await listWriterTemplates());
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
+
+  async function upload() {
+    setBusy("upload");
+    setError(null);
+    try {
+      const uploaded = await uploadWriterTemplate();
+      if (uploaded) {
+        setTemplates((current) => [uploaded, ...current]);
+      }
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function rename(templateId: string, name: string) {
+    const updated = await renameWriterTemplate(templateId, name);
+    setTemplates((current) =>
+      current.map((template) => (template.id === templateId ? updated : template))
+    );
+  }
+
+  async function remove(template: WriterTemplateView) {
+    if (!window.confirm(`Delete ${template.name}? Existing reports are not affected.`)) {
+      return;
+    }
+    setBusy(template.id);
+    setError(null);
+    try {
+      await deleteWriterTemplate(template.id);
+      setTemplates((current) =>
+        current.filter((candidate) => candidate.id !== template.id)
+      );
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <details
+      className="border border-gray-200 rounded-lg group"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      data-testid="writer-template-manager"
+    >
+      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-gray-900">Writer Templates</span>
+          <span className="text-xs text-gray-400">
+            {templates.length} saved
+          </span>
+        </div>
+        <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
+          &#9656;
+        </span>
+      </summary>
+      <div className="border-t border-gray-100 p-4 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm text-gray-700">
+              Keep a small shelf of reusable Word templates in Claria&apos;s managed
+              S3 storage. Writing sessions can preview and apply these presets.
+            </p>
+            <p className="text-xs text-amber-700 mt-1">
+              Upload only redacted templates. Remove names, dates, diagnoses,
+              scores, and other client-specific facts before saving a preset.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void upload()}
+            disabled={busy !== null}
+            className="shrink-0 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            {busy === "upload" ? "Uploading…" : "Upload .docx"}
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-sm text-gray-500">
+            <Spinner /> Loading writer templates…
+          </div>
+        ) : templates.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">
+            No writer templates yet.
+          </p>
+        ) : (
+          <div className="divide-y divide-gray-100 rounded-lg border border-gray-200">
+            {templates.map((template) => (
+              <div key={template.id} className="flex items-center gap-3 p-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-blue-50 text-xs font-bold text-blue-700">
+                  W
+                </div>
+                <div className="min-w-0 flex-1">
+                  <EditableName
+                    value={template.name}
+                    label="writer template"
+                    onSave={(name) => rename(template.id, name)}
+                    disabled={busy !== null}
+                    className="w-full"
+                  />
+                  <p className="mt-0.5 text-xs text-gray-400">
+                    {formatFileSize(template.size)} · uploaded{" "}
+                    {formatDateTime(template.uploaded_at)} · used {template.use_count}{" "}
+                    time{template.use_count === 1 ? "" : "s"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void remove(template)}
+                  disabled={busy !== null}
+                  aria-label={`Delete ${template.name}`}
+                  title="Delete writer template"
+                  className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3">
+            <p className="text-sm text-red-800">{error}</p>
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="mt-2 text-xs font-semibold text-red-700"
+            >
+              Try again
+            </button>
           </div>
         )}
       </div>

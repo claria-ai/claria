@@ -6,8 +6,8 @@ use aws_sdk_s3::primitives::ByteStream;
 
 use claria_desktop::record_cache::RecordCache;
 use claria_desktop::records::{
-    ClientSummary, fetch_record_texts, get_client_record_details, list_client_summaries,
-    search_record_contents, update_client_name, validate_client_name,
+    ClientSummary, fetch_record_text, fetch_record_texts, get_client_record_details,
+    list_client_summaries, search_record_contents, update_client_name, validate_client_name,
 };
 use claria_mock_aws::testing::MockServer;
 
@@ -281,21 +281,50 @@ async fn list_client_summaries_skips_unparseable_objects() {
 }
 
 #[tokio::test]
-async fn fetch_record_texts_reads_txt_and_sidecars_in_listing_order() {
+async fn fetch_record_texts_reads_structured_text_and_prefers_sidecars() {
     let (_mock, s3) = setup().await;
     let id = uuid::Uuid::new_v4();
     let prefix = claria_core::s3_keys::client_records_prefix(id);
 
     put(&s3, &format!("{prefix}a.txt"), b"alpha text".to_vec()).await;
-    put(&s3, &format!("{prefix}b.pdf"), b"%PDF binary".to_vec()).await;
+    put(
+        &s3,
+        &format!("{prefix}assessment.md"),
+        b"# Assessment\n\nNarrative findings".to_vec(),
+    )
+    .await;
+    put(
+        &s3,
+        &format!("{prefix}b.pdf"),
+        b"%PDF-1.7 binary source".to_vec(),
+    )
+    .await;
     put(
         &s3,
         &format!("{prefix}b.pdf.text"),
         b"bravo extracted".to_vec(),
     )
     .await;
-    // No sidecar: listed with no text.
-    put(&s3, &format!("{prefix}c.pdf"), b"%PDF binary".to_vec()).await;
+    // A binary container without a generated sidecar has no readable text.
+    put(
+        &s3,
+        &format!("{prefix}c.pdf"),
+        b"%PDF-1.7 binary source".to_vec(),
+    )
+    .await;
+    put(
+        &s3,
+        &format!("{prefix}scores.json"),
+        br#"{"instrument":"ADOS-2","score":12}"#.to_vec(),
+    )
+    .await;
+    // Content, not extension, is authoritative.
+    put(
+        &s3,
+        &format!("{prefix}structured.custom"),
+        b"key: readable value".to_vec(),
+    )
+    .await;
     // Chat history is never record context.
     put(
         &s3,
@@ -316,9 +345,43 @@ async fn fetch_record_texts_reads_txt_and_sidecars_in_listing_order() {
         texts,
         vec![
             ("a.txt".to_string(), Some("alpha text".to_string())),
+            (
+                "assessment.md".to_string(),
+                Some("# Assessment\n\nNarrative findings".to_string()),
+            ),
             ("b.pdf".to_string(), Some("bravo extracted".to_string())),
             ("c.pdf".to_string(), None),
+            (
+                "scores.json".to_string(),
+                Some(r#"{"instrument":"ADOS-2","score":12}"#.to_string()),
+            ),
+            (
+                "structured.custom".to_string(),
+                Some("key: readable value".to_string()),
+            ),
         ]
+    );
+}
+
+#[tokio::test]
+async fn fetch_record_text_previews_json_without_renaming_it() {
+    let (_mock, s3) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client_record_file(id, "scores.json");
+    put(
+        &s3,
+        &key,
+        br#"{"instrument":"ADOS-2","classification":"Autism"}"#.to_vec(),
+    )
+    .await;
+
+    let text = fetch_record_text(&s3, BUCKET, id, "scores.json", &RecordCache::new())
+        .await
+        .expect("fetch JSON preview");
+
+    assert_eq!(
+        text.as_deref(),
+        Some(r#"{"instrument":"ADOS-2","classification":"Autism"}"#)
     );
 }
 
@@ -354,7 +417,10 @@ async fn search_record_contents_matches_text_case_insensitively() {
         .await
         .expect("search_record_contents");
 
-    assert_eq!(hits, vec!["intake.pdf".to_string(), "notes.txt".to_string()]);
+    assert_eq!(
+        hits,
+        vec!["intake.pdf".to_string(), "notes.txt".to_string()]
+    );
 }
 
 #[tokio::test]

@@ -18,6 +18,7 @@ export default function ClientRecord({
   preferredModelId,
   onRetryChatModels,
   onClientNameChanged,
+  onManageWriterTemplates,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
@@ -28,8 +29,12 @@ export default function ClientRecord({
   preferredModelId?: string | null;
   onRetryChatModels?: () => void;
   onClientNameChanged: (name: string) => void;
+  onManageWriterTemplates: () => void;
 }) {
-  const workspace = useClientWorkspace(() => navigate("clients"));
+  const workspace = useClientWorkspace(
+    () => navigate("clients"),
+    onManageWriterTemplates
+  );
 
   return (
     <ClientWorkspaceTabs
@@ -75,6 +80,7 @@ export default function ClientRecord({
           preferredModelId={preferredModelId}
           onLeaveStateChange={workspace.updateWritingLeaveState}
           onRetryModels={onRetryChatModels}
+          onManageTemplates={workspace.manageWriterTemplates}
         />
       )}
     </ClientWorkspaceTabs>

@@ -112,7 +112,13 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `clients/{uuid}.json` | Client record JSON |
 | `records/{uuid}/{filename}` | Files attached to a client |
 | `records/{uuid}/{filename}.text` | Sidecar with extracted text (hidden in UI when base file exists) |
-| `records/{uuid}/chat-history/{chat_id}.json` | Persisted chat sessions |
+| `records/{uuid}/chat-history/{chat_id}.json` | Persisted, user-named chat sessions |
+| `report-authoring/{uuid}/workspace.json` | Accepted report, named writer session, and proposal history |
+| `report-authoring/{uuid}/attempts/` | Bounded writer-attempt diagnostics and usage |
+| `report-authoring/{uuid}/templates/{sha256}.docx` | Immutable redacted template snapshot used to preserve Word formatting on export |
+| `writer_templates/{template_uuid}.docx` | Global managed, redacted writer-template source |
+| `writer_templates/{template_uuid}.json` | Writer-template metadata (name, size, upload date) |
+| `writer_templates/{template_uuid}.usage.json` | Best-effort writer-template use count |
 | `claria-prompts/system-prompt.md` | Custom chat system prompt |
 | `claria-prompts/pdf-extraction.md` | Custom PDF/DOCX extraction prompt |
 | `_cloudtrail/` | CloudTrail audit logs |
@@ -121,7 +127,7 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `_state/preferences.json` | Synced user preferences |
 
 ### Sidecar Pattern
-Binary uploads (PDF, DOCX, audio) generate a `.text` sidecar file containing extracted text. The file list hides sidecars when the base file exists. New extraction formats (e.g. audio transcription) follow this same pattern: upload the original, generate a `{key}.text` sidecar alongside it.
+Binary uploads generate a `.text` sidecar alongside the original: PDF and DOCX sidecars contain structured Markdown, while audio sidecars contain transcripts. The file list hides sidecars when the base file exists. Printable UTF-8 originals—including Markdown, JSON, CSV, source files, and extensionless notes—are read directly without renaming or conversion; content validation, not the filename extension, determines whether an original is text.
 
 ## IAM Action Names
 
@@ -159,7 +165,7 @@ Common gotchas:
 - `cargo release patch` / `minor` / `major` bumps all workspace crates, tags, and pushes. The CHANGELOG.md should be udpated and land in the release commit.
 - The pushed tag triggers GitHub Actions to build and create a GitHub Release (changelog is auto-extracted)
 - Never run `git tag` directly for version tags
-- The claria-ai.github.com repo's index.html should be updated to show the new release as soon as the tag is cut
+- After all release artifacts are published, run `./screenshots/update_release_site.py <version>` to regenerate screenshots, update `claria-ai.github.io/claria.yml` (including artifact sizes), and rebuild the generated site. Review and commit the website changes; never hand-edit its generated HTML.
 
 ## Adding a Tauri Command
 
@@ -223,7 +229,7 @@ Test files have their own TypeScript project (`tsconfig.test.json`) so they can 
 
 Marketing screenshots and videos are generated in this repo, not the docs site:
 
-- `screenshots/` — Playwright suite that renders the React frontend against the Vite dev server with `window.__TAURI_INTERNALS__` mocked (fixtures in `fixtures.ts` keyed by Tauri command name). `npm run capture` writes PNGs to `screenshots/output/`; copy them to `../claria-ai.github.io/img/`. Full how-to in `screenshots/README.md`.
+- `screenshots/` — Playwright suite that renders the React frontend against the Vite dev server with `window.__TAURI_INTERNALS__` mocked (fixtures in `fixtures.ts` keyed by Tauri command name). `npm run capture` writes PNGs to `screenshots/output/`. After a tagged release, `./screenshots/update_release_site.py <version>` captures, copies the website's images, updates release metadata/artifact sizes, and invokes the site's generator. Full how-to in `screenshots/README.md`.
 - `demos/` — same Playwright + mock pattern, but records video for three end-to-end scenarios (bootstrap, sync, record-chat). `npm run record` writes WebM to `demos/output/`. See `demos/README.md`.
 
 If `playwright test --list` produces no output and never returns, your Node is newer than the pinned Playwright supports — bump `@playwright/test` and re-run `npm install`. Both subdirs pin a supported Node range via `engines` + `engines-strict` so `npm install` refuses the wrong version going forward.

@@ -54,7 +54,8 @@ vi.mock("../lib/tauri", () => ({
   sendReportMessage: mocks.sendReport,
   resolveReportProposal: vi.fn(),
   exportReportDocx: vi.fn(),
-  pickReportTemplateDocx: vi.fn().mockResolvedValue(null),
+  listWriterTemplates: vi.fn().mockResolvedValue([]),
+  previewWriterTemplate: vi.fn(),
   applyReportTemplate: vi.fn(),
   discardReportTemplatePreview: vi.fn(),
   acknowledgeReportTemplateReview: vi.fn(),
@@ -64,7 +65,8 @@ import { clearWritingComposerDrafts } from "../lib/writingComposerDraft";
 import ClientRecord from "./ClientRecord";
 
 const workspace = {
-  schema_version: 2,
+  schema_version: 3,
+  session_name: "Writer Session (1)",
   report_id: "report-1",
   client_id: "client-1",
   draft: {
@@ -95,6 +97,7 @@ function renderClient(navigate = vi.fn(), onNameChanged = vi.fn()) {
       chatModelsError={null}
       preferredModelId="model-1"
       onClientNameChanged={onNameChanged}
+      onManageWriterTemplates={vi.fn()}
     />
   );
 }

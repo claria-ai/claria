@@ -1,8 +1,8 @@
 //! Document text extraction via the Bedrock Converse API.
 //!
 //! Sends PDF or DOCX files to a Claude model using the `DocumentBlock`
-//! content type and asks for pure text extraction. The Converse API handles
-//! parsing the document format natively.
+//! content type and asks for structured Markdown extraction. The Converse API
+//! handles parsing the document format natively.
 
 use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, DocumentBlock, DocumentFormat, DocumentSource, Message,
@@ -16,12 +16,12 @@ use crate::{error::BedrockError, tokens};
 /// Default prompt used for document text extraction when no custom prompt
 /// has been saved to S3.
 pub const DEFAULT_EXTRACTION_PROMPT: &str = "\
-Extract the complete text content from this document. \
-Return plain text, preserving paragraph structure. \
-Do not add commentary, headers, or formatting.\n\n\
-Preserve table structure. Use a markdown format.";
+Extract the complete document as structured Markdown. \
+Preserve headings, paragraph boundaries, lists, tables, labels, and reading order. \
+Represent tables with Markdown tables and keep meaningful blank lines between sections. \
+Return only the extracted Markdown without commentary or a wrapping code fence.";
 
-/// Extract plain text from a PDF or DOCX document via Bedrock.
+/// Extract structured Markdown from a PDF or DOCX document via Bedrock.
 ///
 /// Sends the document bytes to the given model using the Converse API's
 /// `DocumentBlock`, which handles PDF and DOCX parsing natively.
@@ -50,7 +50,7 @@ pub async fn extract_document_text(
         .role(ConversationRole::User)
         .content(ContentBlock::Document(doc_block))
         .content(ContentBlock::Text(
-            "Extract the full text from this document.".to_string(),
+            "Extract the complete document as structured Markdown.".to_string(),
         ))
         .build()
         .map_err(|e| BedrockError::Invocation(e.to_string()))?;

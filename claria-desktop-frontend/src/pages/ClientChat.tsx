@@ -7,6 +7,7 @@ import {
   extractRecordFile,
   getPrompt,
   listRecordContext,
+  renameChatHistory,
   type ChatMessage,
   type ChatModel,
   type RecordContext,
@@ -14,6 +15,7 @@ import {
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
 import ChatHistoryHeader from "../components/ChatHistoryHeader";
+import EditableName from "../components/EditableName";
 import { BackButton, CloseIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import TokenCountBadge from "../components/TokenCountBadge";
@@ -23,6 +25,7 @@ import { useContextTokens } from "../lib/useContextTokens";
 
 export type ResumeChat = {
   chatId: string;
+  name: string;
   modelId: string;
   messages: ChatMessage[];
   /// Per-turn token usage aligned with `messages` by index. `null` for
@@ -58,6 +61,8 @@ export default function ClientChat({
   preferredModelId?: string | null;
 }) {
   const chatIdRef = useRef<string | null>(null);
+  const [chatName, setChatName] = useState("New chat");
+  const [hasPersistedChat, setHasPersistedChat] = useState(false);
 
   // System prompt state
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
@@ -139,6 +144,8 @@ export default function ClientChat({
     if (!resumeChat) return;
     setInitialMessages(resumeChat.messages);
     setInitialModelId(resumeChat.modelId);
+    setChatName(resumeChat.name);
+    setHasPersistedChat(true);
     setInitialUsageByIndex(resumeChat.usageByIndex);
     setLastActivityIso(resumeChat.lastActivityIso ?? null);
     chatIdRef.current = resumeChat.chatId;
@@ -177,16 +184,42 @@ export default function ClientChat({
         modelId,
         messages,
         chatIdRef.current,
-        filenames
+        filenames,
+        chatIdRef.current || chatName === "New chat" ? null : chatName
       );
       chatIdRef.current = response.chat_id;
+      setChatName(response.chat_name);
+      setHasPersistedChat(true);
       return { content: response.content, usage: response.usage };
     },
-    [clientId]
+    [clientId, chatName]
   );
+
+  async function handleRename(name: string) {
+    const chatId = chatIdRef.current;
+    if (!chatId) {
+      setChatName(name);
+      return;
+    }
+    const updated = await renameChatHistory(clientId, chatId, name);
+    setChatName(updated.name);
+  }
 
   const toolbar = (
     <>
+      <div className="flex items-center gap-3 px-6 py-2 border-b border-gray-100 bg-white">
+        <EditableName
+          value={chatName}
+          label="chat"
+          onSave={handleRename}
+          className="flex-1"
+        />
+        {!hasPersistedChat && chatName === "New chat" && (
+          <span className="text-[11px] text-gray-400">
+            A numbered name is assigned after the first message.
+          </span>
+        )}
+      </div>
       {embedded && systemPrompt && (
         <div className="flex items-center gap-2 px-6 py-1.5 border-b border-gray-100 bg-white">
           <button

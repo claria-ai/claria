@@ -223,8 +223,11 @@ fn table_and_template_review_metadata_are_exposed_without_source_identity() {
         )
         .expect("import revision");
     workspace.updated_at = imported_at;
+    let managed_template_id = Uuid::new_v4();
     workspace.template_import = Some(ReportTemplateImport {
         source_sha256: "b".repeat(64),
+        writer_template_id: Some(managed_template_id),
+        writer_template_name: Some("Evaluation template".to_string()),
         imported_revision: 1,
         imported_at,
         warnings: vec![ReportTemplateWarning {
@@ -245,6 +248,15 @@ fn table_and_template_review_metadata_are_exposed_without_source_identity() {
     ));
     let template = view.template_import.expect("template view");
     assert!(template.review_required);
+    let managed_template_id = managed_template_id.to_string();
+    assert_eq!(
+        template.writer_template_id.as_deref(),
+        Some(managed_template_id.as_str())
+    );
+    assert_eq!(
+        template.writer_template_name.as_deref(),
+        Some("Evaluation template")
+    );
     assert_eq!(template.placeholder_count, 1);
     assert_eq!(template.warnings[0].code, "images_omitted");
     let json = serde_json::to_string(&template).expect("view JSON");

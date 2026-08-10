@@ -11,11 +11,13 @@ vi.mock("../lib/tauri", () => ({
   loadChatHistory: mocks.loadChatHistory,
 }));
 
-const files = [
+const entries = [
   {
+    chat_id: "1234567890",
     filename: "chat-history/1234567890.json",
+    name: "Chat (1)",
     size: 512,
-    uploaded_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
   },
 ];
 
@@ -36,7 +38,7 @@ describe("ChatHistoryFolder", () => {
     render(
       <ChatHistoryFolder
         clientId="client-1"
-        files={files}
+        entries={entries}
         onResume={onResume}
         onDelete={vi.fn()}
         onError={vi.fn()}
@@ -61,7 +63,7 @@ describe("ChatHistoryFolder", () => {
     render(
       <ChatHistoryFolder
         clientId="client-1"
-        files={files}
+        entries={entries}
         onResume={vi.fn()}
         onDelete={vi.fn()}
         onError={onError}

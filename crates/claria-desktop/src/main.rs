@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eyre::Result;
-use tauri::menu::{HELP_SUBMENU_ID, Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
-use tauri::webview::WebviewWindowBuilder;
-use tauri::Manager;
-use tauri_specta::{collect_commands, Builder};
+use tauri::{
+    Manager,
+    menu::{HELP_SUBMENU_ID, Menu, MenuItem, MenuItemKind, PredefinedMenuItem},
+    webview::WebviewWindowBuilder,
+};
+use tauri_specta::{Builder, collect_commands};
 use tracing_subscriber::prelude::*;
 
 use claria_desktop::console;
@@ -44,8 +46,7 @@ fn main() -> Result<()> {
         .with(console_layer.with_filter(console_filter))
         .init();
 
-    let builder = Builder::<tauri::Wry>::new()
-        .commands(collect_commands![
+    let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
             commands::has_config,
             commands::load_config,
             commands::save_config,
@@ -76,11 +77,18 @@ fn main() -> Result<()> {
             commands::delete_client,
             commands::load_report_workspace,
             commands::list_editor_history,
+            commands::rename_report_session,
+            commands::list_report_revisions,
+            commands::load_report_revision,
+            commands::revert_report_revision,
             commands::save_report_draft,
-            report_template_commands::pick_report_template_docx,
+            report_template_commands::list_writer_templates,
+            report_template_commands::upload_writer_template,
+            report_template_commands::rename_writer_template,
+            report_template_commands::delete_writer_template,
+            report_template_commands::preview_writer_template,
             report_template_commands::apply_report_template,
             report_template_commands::discard_report_template_preview,
-            report_template_commands::acknowledge_report_template_review,
             commands::send_report_message,
             commands::resolve_report_proposal,
             commands::export_report_docx,
@@ -97,7 +105,9 @@ fn main() -> Result<()> {
             commands::chat_message,
             commands::infra_chat,
             commands::accept_model_agreement,
+            commands::list_chat_histories,
             commands::load_chat_history,
+            commands::rename_chat_history,
             commands::get_prompt,
             commands::save_prompt,
             commands::delete_prompt,
@@ -146,8 +156,8 @@ fn main() -> Result<()> {
 
         // Prepend // @ts-nocheck so the generated file passes strict TypeScript
         // linting (specta emits some unused imports/functions).
-        let contents = std::fs::read_to_string(&bindings_path)
-            .expect("failed to read generated bindings");
+        let contents =
+            std::fs::read_to_string(&bindings_path).expect("failed to read generated bindings");
         std::fs::write(&bindings_path, format!("// @ts-nocheck\n{contents}"))
             .expect("failed to write @ts-nocheck header");
     }

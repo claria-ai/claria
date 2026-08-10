@@ -231,10 +231,22 @@ export const fixtures: Record<string, unknown> = {
     },
   ],
 
+  list_chat_histories: [
+    {
+      chat_id: "cccccccc-4444-5555-6666-dddddddddddd",
+      filename: "chat-history/cccccccc-4444-5555-6666-dddddddddddd.json",
+      name: "Teacher observations",
+      size: 9400,
+      updated_at: "2026-03-02T10:15:00Z",
+    },
+  ],
+
   load_chat_history: {
     chat_id: "cccccccc-4444-5555-6666-dddddddddddd",
+    name: "Teacher observations",
     model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
     created_at: "2026-03-02T10:15:00Z",
+    updated_at: "2026-03-02T10:18:00Z",
     messages: [
       {
         role: "user",
@@ -280,7 +292,8 @@ export const fixtures: Record<string, unknown> = {
   ].join("\n").replace(/– /g, "–"),
 
   load_report_workspace: {
-    schema_version: 2,
+    schema_version: 4,
+    session_name: "Jane Doe evaluation",
     report_id: "99999999-9999-4999-8999-999999999999",
     client_id: CLIENT_ID,
     draft: {
@@ -503,6 +516,7 @@ export const fixtures: Record<string, unknown> = {
   list_editor_history: [
     {
       report_id: "99999999-9999-4999-8999-999999999999",
+      name: "Jane Doe evaluation",
       title: "Psychological Evaluation",
       revision: 3,
       turn_count: 1,
@@ -514,6 +528,23 @@ export const fixtures: Record<string, unknown> = {
       },
     },
   ],
+  list_writer_templates: [
+    {
+      id: "44444444-4444-4444-8444-444444444444",
+      name: "Comprehensive evaluation",
+      size: 28672,
+      uploaded_at: "2026-03-10T13:20:00Z",
+      use_count: 7,
+    },
+    {
+      id: "55555555-5555-4555-8555-555555555555",
+      name: "Brief progress summary",
+      size: 18432,
+      uploaded_at: "2026-03-05T09:00:00Z",
+      use_count: 3,
+    },
+  ],
+
   export_report_docx: {
     exported: false,
     report_id: "99999999-9999-4999-8999-999999999999",
@@ -633,6 +664,7 @@ export const fixtures: Record<string, unknown> = {
 
   chat_message: {
     chat_id: "demo-chat-0001",
+    chat_name: "Chat (2)",
     content: `Here is a developmental and behavioral history compiled from the available records:
 
 ## Referral & Presenting Concerns

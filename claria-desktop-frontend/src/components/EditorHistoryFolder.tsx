@@ -58,8 +58,9 @@ export default function EditorHistoryFolder({
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-900 truncate">
-                  {entry.title}
+                  {entry.name}
                 </p>
+                <p className="text-xs text-gray-500 truncate">{entry.title}</p>
                 <p className="text-xs text-gray-400">
                   Revision {entry.revision} · {entry.turn_count} turn
                   {entry.turn_count === 1 ? "" : "s"} ·{" "}

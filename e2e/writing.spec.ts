@@ -30,7 +30,7 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
   expect(await reportCommands()).toEqual([]);
 
   await page.locator('[data-tab="writing"]').click();
-  await expect(page.getByText("Writing assistant")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rename writer session" })).toBeVisible();
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Untitled report",
   );
@@ -79,7 +79,10 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
   await expect(page.getByTestId("queued-report-edits")).toHaveCount(0);
   await page.getByRole("button", { name: /Context/ }).click();
   await expect(
-    page.getByText("intake-parent-interview.txt", { exact: true }),
+    page.locator("#writing-context-control").getByText(
+      "intake-parent-interview.txt",
+      { exact: true },
+    ),
   ).toBeVisible();
   await page.getByRole("button", {
     name: "Reference Summary, paragraph 1 in Writing chat",
@@ -142,7 +145,7 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
   });
 });
 
-test("DOCX templates import structured tables and gate export on carryover review", async ({
+test("managed writer templates apply directly and export without responsibility nags", async ({
   page,
 }) => {
   await page.goto(BASE_URL);
@@ -150,24 +153,22 @@ test("DOCX templates import structured tables and gate export on carryover revie
   await page.getByText("Jane Doe").click();
   await page.locator('[data-tab="writing"]').click();
 
-  await page.getByRole("button", { name: "Import .docx" }).click();
-  await expect(page.getByText("Review DOCX template import")).toBeVisible();
-  await expect(page.getByText("Treat completed reports as prior-client data")).toBeVisible();
-  await expect(page.getByText("Imported Evaluation Template")).toBeVisible();
-  await expect(page.getByText("Headers or footers were omitted. (2)")).toBeVisible();
-  const apply = page.getByRole("button", { name: "Import as accepted revision" });
-  await expect(apply).toBeDisabled();
-  await page.getByRole("checkbox").check();
-  await expect(apply).toBeEnabled();
-  await apply.click();
+  await expect(page.getByLabel("Writer template")).toContainText(
+    "Imported Evaluation Template",
+  );
+  await page.getByRole("button", { name: "Apply template" }).click();
+  await expect(page.getByText("Review DOCX template import")).toHaveCount(0);
+  await expect(page.getByText(/Template Imported Evaluation Template applied/)).toBeVisible();
+  await expect(page.getByLabel("Writer template")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Apply template" })).toHaveCount(0);
 
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Imported Evaluation Template",
   );
   await expect(page.getByTestId("report-table")).toContainText("Attention");
-  await expect(page.getByText(/carryover review required/)).toBeVisible();
+  await expect(page.getByText(/carryover review required/)).toHaveCount(0);
   const exportButton = page.getByRole("button", { name: "Export .docx" });
-  await expect(exportButton).toBeDisabled();
+  await expect(exportButton).toBeEnabled();
 
   // Imported tables and ordinary from-scratch blocks share one structured draft.
   await page.getByRole("button", { name: "Edit" }).click();
@@ -181,14 +182,6 @@ test("DOCX templates import structured tables and gate export on carryover revie
   await page.getByRole("button", { name: "Save now" }).click();
   await page.getByRole("button", { name: "Discard" }).click();
   await expect(page.getByTestId("accepted-report-canvas")).toContainText("91");
-  await expect(exportButton).toBeDisabled();
-
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("carried-over names");
-    await dialog.accept();
-  });
-  await page.getByRole("button", { name: "Mark reviewed" }).click();
-  await expect(page.getByText(/revision 2 reviewed/)).toBeVisible();
   await expect(exportButton).toBeEnabled();
   await exportButton.click();
   await expect(page.getByText("Word document exported from revision 2.")).toBeVisible();
@@ -196,10 +189,75 @@ test("DOCX templates import structured tables and gate export on carryover revie
   const commands = await page.evaluate(() =>
     (window as unknown as { __REPORT_COMMANDS__: string[] }).__REPORT_COMMANDS__,
   );
-  expect(commands).toContain("pick_report_template_docx");
+  expect(commands).toContain("preview_writer_template");
   expect(commands).toContain("apply_report_template");
-  expect(commands).toContain("acknowledge_report_template_review");
   expect(commands).toContain("export_report_docx");
+  expect(commands).not.toContain("acknowledge_report_template_review");
+});
+
+test("Writing previews and restores an old report without deleting later revisions", async ({
+  page,
+}) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="writing"]').click();
+
+  await page.getByRole("button", { name: "Apply template" }).click();
+  await expect(page.getByText(/Template Imported Evaluation Template applied/)).toBeVisible();
+  await expect(page.getByLabel("Writer template")).toHaveCount(0);
+  await page.getByRole("button", { name: "Revisions" }).click();
+
+  const historicalReport = page.getByTestId("revision-report-canvas");
+  await expect(historicalReport).toContainText("Untitled report");
+  await expect(historicalReport.locator("xpath=../..")).toHaveClass(
+    /overflow-y-auto/,
+  );
+  await page.getByRole("button", { name: "Revert to version" }).click();
+
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Untitled report",
+  );
+  await expect(page.getByText("Revision 2 · Saved")).toBeVisible();
+  await expect(page.getByText(/Template Imported Evaluation Template applied/)).toBeVisible();
+
+  // The imported revision is still available after the revert created r2.
+  await page.getByRole("button", { name: "Revisions" }).click();
+  await expect(page.getByTestId("revision-report-canvas")).toContainText(
+    "Imported Evaluation Template",
+  );
+  await expect(
+    page.getByRole("option", { name: /Revision 0 · Untitled report/ }),
+  ).toBeAttached();
+
+  const invocations = await page.evaluate(() =>
+    (window as unknown as {
+      __REPORT_INVOCATIONS__: Array<{
+        cmd: string;
+        args: Record<string, unknown>;
+      }>;
+    }).__REPORT_INVOCATIONS__,
+  );
+  expect(
+    invocations.find((invocation) => invocation.cmd === "revert_report_revision")
+      ?.args,
+  ).toMatchObject({ expectedRevision: 1, revision: 0 });
+});
+
+test("Writing opens the expanded template manager in Preferences", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="writing"]').click();
+
+  await page.getByRole("button", { name: "Manage in Preferences" }).click();
+  await expect(page.getByRole("heading", { name: "Preferences" })).toBeVisible();
+  const manager = page.getByTestId("writer-template-manager");
+  await expect(manager).toHaveAttribute("open", "");
+  await expect(manager).toContainText("Imported Evaluation Template");
+
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByText("Jane Doe")).toBeVisible();
 });
 
 test("Writing back navigation retains an unsent instruction", async ({ page }) => {
@@ -217,6 +275,27 @@ test("Writing back navigation retains an unsent instruction", async ({ page }) =
   await expect(page.getByLabel("Writing instruction")).toHaveValue(
     "Keep this draft",
   );
+});
+
+test("a new Chat can be named directly before its first message", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="chat"]').click();
+
+  await page.getByRole("button", { name: "Rename chat" }).click();
+  await page.getByLabel("chat name").fill("Intake synthesis");
+  await page.getByRole("button", { name: "Save" }).click();
+  await page.getByPlaceholder("Type a message...").fill("Start the summary");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Unchanged Chat response")).toBeVisible();
+
+  const invocations = await page.evaluate(
+    () => (window as unknown as { __CHAT_COMMANDS__: Array<{ cmd: string; args: Record<string, unknown> }> })
+      .__CHAT_COMMANDS__,
+  );
+  expect(invocations.find((invocation) => invocation.cmd === "chat_message")?.args)
+    .toMatchObject({ chatName: "Intake synthesis", chatId: null });
 });
 
 test("existing Chat still sends and resumes its original history contract", async ({

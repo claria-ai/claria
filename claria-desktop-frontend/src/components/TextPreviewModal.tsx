@@ -1,6 +1,6 @@
 import Modal from "./Modal";
 
-/** Read-only view of a file's extracted text. */
+/** Read-only view of an uploaded text file or generated text representation. */
 export default function TextPreviewModal({
   filename,
   text,

@@ -34,10 +34,10 @@ test("preferences page", async ({ page }) => {
   // Expand all the other collapsed sections so the full preferences surface
   // is visible in the screenshot.
   await page.click("summary:has-text('PDF Extraction Prompt')");
-  await page.click("summary:has-text('Memo Transcription')");
-  await page.waitForSelector("text=Best Quality");
-  await page.click("summary:has-text('Preferred Model')");
+  await page.waitForSelector("text=Memo speech model");
   await page.waitForSelector("text=Claude Opus 4.6");
+  await page.click("summary:has-text('Writer Templates')");
+  await page.waitForSelector("text=Comprehensive evaluation");
   await page.screenshot({ path: "output/preferences.png", fullPage: true });
 });
 

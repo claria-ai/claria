@@ -1,7 +1,22 @@
 //! Tests for `ChatHistoryMessage` — verifies legacy chat-history JSON
 //! (no `usage` key at all) still deserialises to `usage: None`.
 
-use claria_core::models::chat_history::{ChatHistoryMessage, ChatHistoryRole};
+use claria_core::models::chat_history::{ChatHistory, ChatHistoryMessage, ChatHistoryRole};
+
+#[test]
+fn legacy_history_without_name_gets_an_empty_migration_sentinel() {
+    let legacy_json = r#"{
+        "id": "11111111-1111-4111-8111-111111111111",
+        "client_id": "22222222-2222-4222-8222-222222222222",
+        "model_id": "test-model",
+        "messages": [],
+        "created_at": "2026-04-01T12:00:00Z",
+        "updated_at": "2026-04-01T12:00:00Z"
+    }"#;
+
+    let history: ChatHistory = serde_json::from_str(legacy_json).expect("legacy history");
+    assert!(history.name.is_empty());
+}
 
 #[test]
 fn legacy_message_without_usage_key_deserialises_to_none() {
