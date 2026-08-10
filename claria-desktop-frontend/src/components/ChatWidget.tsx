@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { MarkdownBlock } from "./Markdown";
 import {
   acceptModelAgreement,
   type ChatMessage,
@@ -409,9 +408,7 @@ function MessageBubble({
           {isUser ? (
             <p className="text-sm whitespace-pre-wrap">{message.content}</p>
           ) : (
-            <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
-              <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
-            </div>
+            <MarkdownBlock source={message.content} />
           )}
         </div>
         {!isUser && <TurnCostBadge usage={usage} />}

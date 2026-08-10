@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { MarkdownBlock } from "../components/Markdown";
 import {
   applyReportTemplate,
   discardReportTemplatePreview,
@@ -1162,9 +1161,7 @@ function TimelineItem({ item }: { item: ReportTimelineItemView }) {
         {user ? (
           item.text
         ) : (
-          <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
-            <Markdown remarkPlugins={[remarkGfm]}>{item.text}</Markdown>
-          </div>
+          <MarkdownBlock source={item.text} />
         )}
       </div>
     </div>

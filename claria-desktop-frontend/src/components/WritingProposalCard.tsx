@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { InlineMarkdown, MarkdownBlock } from "./Markdown";
 import type {
   ReportBlockView,
   ReportContentView,
@@ -406,11 +405,7 @@ function Blocks({ blocks }: { blocks: ReportBlockView[] }) {
     <div className="border border-gray-200 rounded p-2 bg-white mt-1.5 space-y-1 text-xs leading-5 text-gray-700">
       {blocks.map((block, index) => {
         if (block.kind === "paragraph") {
-          return (
-            <div key={index} className="prose prose-xs max-w-none prose-p:my-1">
-              <Markdown remarkPlugins={[remarkGfm]}>{block.text}</Markdown>
-            </div>
-          );
+          return <MarkdownBlock key={index} source={block.text} variant="xs" />;
         }
         if (block.kind === "bullet_list") {
           return (
@@ -523,19 +518,8 @@ function EmptyPreview() {
 
 function PlainText({ text }: { text: string }) {
   return (
-    <div className="text-xs text-gray-700 border border-gray-200 rounded p-2 bg-white prose prose-xs max-w-none prose-p:my-1">
-      <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+    <div className="text-xs text-gray-700 border border-gray-200 rounded p-2 bg-white">
+      <MarkdownBlock source={text} variant="xs" />
     </div>
-  );
-}
-
-function InlineMarkdown({ text }: { text: string }) {
-  return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      components={{ p: ({ children }) => <>{children}</> }}
-    >
-      {text}
-    </Markdown>
   );
 }

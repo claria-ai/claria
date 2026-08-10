@@ -1,6 +1,5 @@
 import { useEffect, useRef, type ElementType } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { InlineMarkdown, MarkdownBlock } from "./Markdown";
 import type {
   ReportBlockView,
   ReportContentView,
@@ -257,7 +256,7 @@ export function ReportDocument({
                       <ul key={blockIndex} className="list-disc pl-6 space-y-1">
                         {block.items.map((item, itemIndex) => (
                           <li key={itemIndex}>
-                            <MarkdownContent text={item} compact />
+                            <MarkdownBlock source={item} variant="document-compact" />
                           </li>
                         ))}
                       </ul>
@@ -383,7 +382,7 @@ function ParagraphDisplay({
 }) {
   return (
     <div className="group/paragraph relative rounded px-1 -mx-1 hover:bg-blue-50/40 focus-within:bg-blue-50/40">
-      <MarkdownContent text={text} />
+      <MarkdownBlock source={text} variant="document" />
       {onReference && (
         <button
           type="button"
@@ -828,27 +827,6 @@ function EditableText({
         disabled ? "opacity-60" : ""
       }`}
     />
-  );
-}
-
-function MarkdownContent({ text, compact = false }: { text: string; compact?: boolean }) {
-  return (
-    <div
-      className={`prose prose-sm max-w-none prose-headings:my-2 prose-p:${compact ? "my-0" : "my-2"} prose-ul:my-2 prose-ol:my-2 prose-li:my-0 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none`}
-    >
-      <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
-    </div>
-  );
-}
-
-function InlineMarkdown({ text }: { text: string }) {
-  return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      components={{ p: ({ children }) => <>{children}</> }}
-    >
-      {text}
-    </Markdown>
   );
 }
 
