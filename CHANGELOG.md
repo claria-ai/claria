@@ -5,6 +5,12 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Project instructions gain review-derived coding rules covering reuse, frontend patterns, Rust conventions, LLM calls, logging, security, and performance
+- Chat and writer composers both send on Enter and insert a newline with Shift+Enter, with a native resize grip replacing the chat drag handle
+- Writer turns show the same per-turn cost badges and running session spend banner as chat
+- Report bullet lists render with the intended compact spacing
+- An unexpected interface crash shows the error with a reload button instead of a blank window, and background interface failures are logged rather than silently swallowed
+- The console window renders only the newest lines by default with a control to show the full buffer
+- Chat, writer, preferences, cost, and provisioning screens share one set of interface primitives, async-load handling, and state hooks without behavior changes
 - The app ships a single modern TLS stack, verifies update checks and model downloads against the operating system's certificate store, and builds a smaller release binary
 
 ## [0.22.0] — 2026-08-10
