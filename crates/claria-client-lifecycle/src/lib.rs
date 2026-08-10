@@ -189,10 +189,14 @@ pub async fn restore_client(
         Err(source) => return Err(storage("restoring the client", source)),
     }
     // A concurrent winner must still be the expected client.
-    let current = claria_storage::objects::get_object(s3, bucket, &client_key)
-        .await
-        .map_err(|source| storage("validating the restored client", source))?;
-    validate_client_body(&current.body, client_id)?;
+    load_checked_client(
+        s3,
+        bucket,
+        &client_key,
+        client_id,
+        "validating the restored client",
+    )
+    .await?;
 
     // Preserve the established restore behavior for record files and the
     // text-only Chat history stored beneath the same prefix: a successful
@@ -220,61 +224,106 @@ async fn load_or_start_deletion(
     client_key: &str,
     lifecycle_key: &str,
 ) -> Result<ClientDeletionState, ClientLifecycleError> {
-    let lifecycle =
-        match claria_storage::state::load_state::<ClientDeletionState>(s3, bucket, lifecycle_key)
+    let lifecycle = match load_recovery_state(s3, bucket, lifecycle_key, client_id).await {
+        Ok(existing) => existing,
+        Err(ClientLifecycleError::Storage {
+            source: StorageError::NotFound { .. },
+            ..
+        }) => {
+            load_checked_client(s3, bucket, client_key, client_id, "validating the client")
+                .await?;
+            let now = jiff::Timestamp::now();
+            let created = ClientDeletionState {
+                schema_version: LIFECYCLE_SCHEMA_VERSION,
+                client_id,
+                phase: ClientDeletionPhase::Started,
+                started_at: now,
+                updated_at: now,
+            };
+            match claria_storage::state::save_state_if_none_match(
+                s3,
+                bucket,
+                lifecycle_key,
+                &created,
+            )
             .await
-        {
-            Ok((existing, _)) => existing,
-            Err(StorageError::NotFound { .. }) => {
-                let output = claria_storage::objects::get_object(s3, bucket, client_key)
-                    .await
-                    .map_err(|source| storage("validating the client", source))?;
-                validate_client_body(&output.body, client_id)?;
-                let now = jiff::Timestamp::now();
-                let created = ClientDeletionState {
-                    schema_version: LIFECYCLE_SCHEMA_VERSION,
-                    client_id,
-                    phase: ClientDeletionPhase::Started,
-                    started_at: now,
-                    updated_at: now,
-                };
-                match claria_storage::state::save_state_if_none_match(
-                    s3,
-                    bucket,
-                    lifecycle_key,
-                    &created,
-                )
-                .await
-                {
-                    Ok(_) => created,
-                    Err(StorageError::PreconditionFailed { .. }) => {
-                        claria_storage::state::load_state::<ClientDeletionState>(
-                            s3,
-                            bucket,
-                            lifecycle_key,
-                        )
-                        .await
-                        .map(|(state, _)| state)
-                        .map_err(|source| storage("loading deletion recovery state", source))?
-                    }
-                    Err(source) => return Err(storage("starting client deletion", source)),
+            {
+                Ok(_) => created,
+                Err(StorageError::PreconditionFailed { .. }) => {
+                    load_recovery_state(s3, bucket, lifecycle_key, client_id).await?
                 }
+                Err(source) => return Err(storage("starting client deletion", source)),
             }
-            Err(source) => return Err(storage("loading deletion recovery state", source)),
-        };
-    if lifecycle.schema_version != LIFECYCLE_SCHEMA_VERSION || lifecycle.client_id != client_id {
-        return Err(ClientLifecycleError::InvalidRecoveryState);
-    }
+        }
+        Err(error) => return Err(error),
+    };
     Ok(lifecycle)
 }
 
+/// Load and validate the deletion recovery state for `client_id`.
+async fn load_recovery_state(
+    s3: &S3Client,
+    bucket: &str,
+    lifecycle_key: &str,
+    client_id: Uuid,
+) -> Result<ClientDeletionState, ClientLifecycleError> {
+    claria_storage::state::load_state_checked(
+        s3,
+        bucket,
+        lifecycle_key,
+        None,
+        |state: &ClientDeletionState| {
+            if state.schema_version != LIFECYCLE_SCHEMA_VERSION || state.client_id != client_id {
+                return Err("The client deletion recovery state is invalid.".to_string());
+            }
+            Ok(())
+        },
+    )
+    .await
+    .map(|(state, _)| state)
+    .map_err(|source| match source {
+        StorageError::InvalidState { .. } => ClientLifecycleError::InvalidRecoveryState,
+        other => storage("loading deletion recovery state", other),
+    })
+}
+
+/// The identity rule shared by every read of a client record: the stored ID
+/// must match the storage key it was read from, and the nil UUID never names
+/// a real client.
+fn check_client_identity(client: &Client, expected_id: Uuid) -> Result<(), String> {
+    if client.id != expected_id || expected_id.is_nil() {
+        return Err("The client record does not match its storage key.".to_string());
+    }
+    Ok(())
+}
+
+/// Load the current client object at `key` and enforce the identity rule.
+async fn load_checked_client(
+    s3: &S3Client,
+    bucket: &str,
+    key: &str,
+    client_id: Uuid,
+    operation: &'static str,
+) -> Result<Client, ClientLifecycleError> {
+    claria_storage::state::load_state_checked(s3, bucket, key, None, |client: &Client| {
+        check_client_identity(client, client_id)
+    })
+    .await
+    .map(|(client, _)| client)
+    .map_err(|source| match source {
+        StorageError::Serialization(_) | StorageError::InvalidState { .. } => {
+            ClientLifecycleError::InvalidClient
+        }
+        other => storage(operation, other),
+    })
+}
+
+/// Validate raw client bytes (e.g. a historical S3 version) against the
+/// identity rule.
 fn validate_client_body(body: &[u8], expected_id: Uuid) -> Result<(), ClientLifecycleError> {
     let client: Client =
         serde_json::from_slice(body).map_err(|_| ClientLifecycleError::InvalidClient)?;
-    if client.id != expected_id || expected_id.is_nil() {
-        return Err(ClientLifecycleError::InvalidClient);
-    }
-    Ok(())
+    check_client_identity(&client, expected_id).map_err(|_| ClientLifecycleError::InvalidClient)
 }
 
 async fn delete_if_exists(

@@ -140,17 +140,39 @@ pub async fn put_object(
     Ok(resp.e_tag().unwrap_or_default().to_string())
 }
 
-/// Put an object to S3 only when the key has no current object.
+/// The precondition attached to a conditional PUT.
+enum PutCondition<'a> {
+    /// `If-None-Match: *` — succeed only when the key has no current object.
+    IfNoneMatch,
+    /// `If-Match: <etag>` — succeed only when the current object carries this
+    /// ETag (optimistic locking).
+    IfMatch(&'a str),
+}
+
+impl PutCondition<'_> {
+    fn label(&self) -> &'static str {
+        match self {
+            PutCondition::IfNoneMatch => "if-none-match",
+            PutCondition::IfMatch(_) => "if-match",
+        }
+    }
+}
+
+/// Put an object with a precondition, retrying transient conditional-request
+/// conflicts. Returns the new ETag.
 ///
-/// S3's `If-None-Match: *` makes lazy workspace creation race-safe: exactly one
-/// writer creates the object and every loser receives
-/// [`StorageError::PreconditionFailed`] instead of overwriting it.
-pub async fn put_object_if_none_match(
+/// S3 answers a failed precondition with 412, mapped to
+/// [`StorageError::PreconditionFailed`]. A 409 is a transient race between
+/// conditional evaluation and the write and is safe to retry with the same
+/// condition; a retry budget exhausted maps to
+/// [`StorageError::ConditionalRequestConflict`].
+async fn put_object_conditional(
     client: &Client,
     bucket: &str,
     key: &str,
     body: Vec<u8>,
     content_type: Option<&str>,
+    condition: PutCondition<'_>,
 ) -> Result<String, StorageError> {
     const MAX_CONFLICT_RETRIES: u32 = 3;
 
@@ -159,8 +181,11 @@ pub async fn put_object_if_none_match(
             .put_object()
             .bucket(bucket)
             .key(key)
-            .body(ByteStream::from(body.clone()))
-            .if_none_match("*");
+            .body(ByteStream::from(body.clone()));
+        req = match condition {
+            PutCondition::IfNoneMatch => req.if_none_match("*"),
+            PutCondition::IfMatch(etag) => req.if_match(etag),
+        };
         if let Some(ct) = content_type {
             req = req.content_type(ct);
         }
@@ -189,7 +214,13 @@ pub async fn put_object_if_none_match(
                     });
                 }
                 let msg = err.to_string();
-                tracing::error!(bucket, key, error = %msg, "S3 PutObject (if-none-match) failed");
+                tracing::error!(
+                    bucket,
+                    key,
+                    condition = condition.label(),
+                    error = %msg,
+                    "S3 conditional PutObject failed"
+                );
                 return Err(StorageError::PutObject(msg));
             }
         }
@@ -198,6 +229,29 @@ pub async fn put_object_if_none_match(
     Err(StorageError::ConditionalRequestConflict {
         key: key.to_string(),
     })
+}
+
+/// Put an object to S3 only when the key has no current object.
+///
+/// S3's `If-None-Match: *` makes lazy workspace creation race-safe: exactly one
+/// writer creates the object and every loser receives
+/// [`StorageError::PreconditionFailed`] instead of overwriting it.
+pub async fn put_object_if_none_match(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    body: Vec<u8>,
+    content_type: Option<&str>,
+) -> Result<String, StorageError> {
+    put_object_conditional(
+        client,
+        bucket,
+        key,
+        body,
+        content_type,
+        PutCondition::IfNoneMatch,
+    )
+    .await
 }
 
 /// Put an object to S3 with an If-Match precondition (ETag optimistic locking).
@@ -211,55 +265,15 @@ pub async fn put_object_if_match(
     content_type: Option<&str>,
     expected_etag: &str,
 ) -> Result<String, StorageError> {
-    const MAX_CONFLICT_RETRIES: u32 = 3;
-
-    for attempt in 0..=MAX_CONFLICT_RETRIES {
-        let mut req = client
-            .put_object()
-            .bucket(bucket)
-            .key(key)
-            .body(ByteStream::from(body.clone()))
-            .if_match(expected_etag);
-        if let Some(ct) = content_type {
-            req = req.content_type(ct);
-        }
-
-        match req.send().await {
-            Ok(resp) => return Ok(resp.e_tag().unwrap_or_default().to_string()),
-            Err(error) => {
-                // S3 answers an If-Match miss with 412. A 409 is a transient
-                // race between conditional evaluation and the write and is
-                // safe to retry with the same condition.
-                let status = error
-                    .raw_response()
-                    .map(|response| response.status().as_u16());
-                let err = error.into_service_error();
-                let code = err.meta().code();
-                if status == Some(412) || code == Some("PreconditionFailed") {
-                    return Err(StorageError::PreconditionFailed {
-                        key: key.to_string(),
-                    });
-                }
-                if status == Some(409) || code == Some("ConditionalRequestConflict") {
-                    if attempt < MAX_CONFLICT_RETRIES {
-                        tokio::time::sleep(Duration::from_millis(10 * u64::from(attempt + 1)))
-                            .await;
-                        continue;
-                    }
-                    return Err(StorageError::ConditionalRequestConflict {
-                        key: key.to_string(),
-                    });
-                }
-                let msg = err.to_string();
-                tracing::error!(bucket, key, error = %msg, "S3 PutObject (if-match) failed");
-                return Err(StorageError::PutObject(msg));
-            }
-        }
-    }
-
-    Err(StorageError::ConditionalRequestConflict {
-        key: key.to_string(),
-    })
+    put_object_conditional(
+        client,
+        bucket,
+        key,
+        body,
+        content_type,
+        PutCondition::IfMatch(expected_etag),
+    )
+    .await
 }
 
 /// Delete an object from S3.
@@ -481,84 +495,34 @@ pub async fn list_objects_with_metadata(
 }
 
 /// List objects under a prefix. Returns keys.
-#[tracing::instrument(
-    level = "trace",
-    skip_all,
-    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
-)]
 pub async fn list_objects(
     client: &Client,
     bucket: &str,
     prefix: &str,
 ) -> Result<Vec<String>, StorageError> {
-    let mut keys = Vec::new();
-    let mut pages = client
-        .list_objects_v2()
-        .bucket(bucket)
-        .prefix(prefix)
-        .into_paginator()
-        .send();
-
-    while let Some(page) = pages.next().await {
-        let page = page.map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
-            StorageError::ListObjects(msg)
-        })?;
-
-        for obj in page.contents() {
-            if let Some(key) = obj.key() {
-                keys.push(key.to_string());
-            }
-        }
-    }
-
-    tracing::Span::current().record("count", keys.len() as u64);
-
-    Ok(keys)
+    Ok(list_objects_with_metadata(client, bucket, prefix)
+        .await?
+        .into_iter()
+        .map(|object| object.key)
+        .collect())
 }
 
 /// List objects under a prefix, returning `(key, etag)` pairs in listing order.
 ///
 /// The ETag is the freshness probe for the record cache: it comes back on the
 /// `ListObjectsV2` response the listing already makes, so a cached body can be
-/// revalidated without a GET. When `e_tag()` is absent the etag is
+/// revalidated without a GET. When the listing carries no ETag the etag is
 /// `String::new()`, which never matches a cache entry — a safe miss.
-#[tracing::instrument(
-    level = "trace",
-    skip_all,
-    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
-)]
 pub async fn list_object_etags(
     client: &Client,
     bucket: &str,
     prefix: &str,
 ) -> Result<Vec<(String, String)>, StorageError> {
-    let mut pairs = Vec::new();
-    let mut pages = client
-        .list_objects_v2()
-        .bucket(bucket)
-        .prefix(prefix)
-        .into_paginator()
-        .send();
-
-    while let Some(page) = pages.next().await {
-        let page = page.map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
-            StorageError::ListObjects(msg)
-        })?;
-
-        for obj in page.contents() {
-            if let Some(key) = obj.key() {
-                pairs.push((key.to_string(), obj.e_tag().unwrap_or_default().to_string()));
-            }
-        }
-    }
-
-    tracing::Span::current().record("count", pairs.len() as u64);
-
-    Ok(pairs)
+    Ok(list_objects_with_metadata(client, bucket, prefix)
+        .await?
+        .into_iter()
+        .map(|object| (object.key, object.etag.unwrap_or_default()))
+        .collect())
 }
 
 // ---------------------------------------------------------------------------

@@ -273,9 +273,11 @@ pub async fn update_client_name(
 ) -> Result<ClientNameUpdate, String> {
     let name = validate_client_name(name)?;
     let (mut client, etag) = load_client(s3, bucket, client_id).await?;
-    let etag = etag.ok_or_else(|| {
-        "Client record is missing its S3 version identifier; reload and try again.".to_string()
-    })?;
+    if etag.is_empty() {
+        return Err(
+            "Client record is missing its S3 version identifier; reload and try again.".to_string(),
+        );
+    }
 
     let updated_at = jiff::Timestamp::now();
     client.name = name.clone();
@@ -309,17 +311,27 @@ async fn load_client(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
     client_id: uuid::Uuid,
-) -> Result<(claria_core::models::client::Client, Option<String>), String> {
+) -> Result<(claria_core::models::client::Client, String), String> {
     let key = claria_core::s3_keys::client(client_id);
-    let output = claria_storage::objects::get_object(s3, bucket, &key)
-        .await
-        .map_err(|error| error.to_string())?;
-    let client: claria_core::models::client::Client =
-        serde_json::from_slice(&output.body).map_err(|error| error.to_string())?;
-    if client.id != client_id {
-        return Err("Client record identifier does not match its storage key.".to_string());
-    }
-    Ok((client, output.etag))
+    claria_storage::state::load_state_checked(
+        s3,
+        bucket,
+        &key,
+        None,
+        |client: &claria_core::models::client::Client| {
+            if client.id != client_id {
+                return Err(
+                    "Client record identifier does not match its storage key.".to_string()
+                );
+            }
+            Ok(())
+        },
+    )
+    .await
+    .map_err(|error| match error {
+        claria_storage::error::StorageError::InvalidState { reason, .. } => reason,
+        other => other.to_string(),
+    })
 }
 
 /// Filenames of record files whose readable text contains `query`,

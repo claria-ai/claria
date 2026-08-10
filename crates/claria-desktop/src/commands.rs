@@ -3137,19 +3137,26 @@ async fn stored_chat_history(
     chat_id: uuid::Uuid,
 ) -> Result<(claria_core::models::chat_history::ChatHistory, String), String> {
     let key = claria_core::s3_keys::chat_history(client_id, chat_id);
-    let output =
-        claria_storage::objects::get_object_bounded(s3, bucket, &key, MAX_CHAT_HISTORY_BYTES)
-            .await
-            .map_err(|error| error.to_string())?;
-    let history: claria_core::models::chat_history::ChatHistory =
-        serde_json::from_slice(&output.body).map_err(|error| error.to_string())?;
-    if history.client_id != client_id || history.id != chat_id {
-        return Err("The stored chat history has mismatched identifiers.".to_string());
+    let (history, etag) = claria_storage::state::load_state_checked(
+        s3,
+        bucket,
+        &key,
+        Some(MAX_CHAT_HISTORY_BYTES),
+        |history: &claria_core::models::chat_history::ChatHistory| {
+            if history.client_id != client_id || history.id != chat_id {
+                return Err("The stored chat history has mismatched identifiers.".to_string());
+            }
+            Ok(())
+        },
+    )
+    .await
+    .map_err(|error| match error {
+        claria_storage::error::StorageError::InvalidState { reason, .. } => reason,
+        other => other.to_string(),
+    })?;
+    if etag.trim().is_empty() {
+        return Err("The stored chat history is missing a concurrency token.".to_string());
     }
-    let etag = output
-        .etag
-        .filter(|etag| !etag.trim().is_empty())
-        .ok_or_else(|| "The stored chat history is missing a concurrency token.".to_string())?;
     Ok((history, etag))
 }
 

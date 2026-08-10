@@ -218,23 +218,32 @@ async fn load_metadata(
     bucket: &str,
     id: Uuid,
 ) -> Result<WriterTemplateMetadata, ReportAuthoringError> {
-    let output = claria_storage::objects::get_object(
+    let (metadata, _) = claria_storage::state::load_state_checked(
         s3,
         bucket,
         &claria_core::s3_keys::writer_template_metadata(id),
+        None,
+        |metadata: &WriterTemplateMetadata| {
+            if metadata.id != id || metadata.schema_version != METADATA_SCHEMA_VERSION {
+                return Err(
+                    "The stored writer template metadata does not match its key.".to_string()
+                );
+            }
+            Ok(())
+        },
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("reading writer template metadata", source))?;
-    let metadata: WriterTemplateMetadata = serde_json::from_slice(&output.body).map_err(|_| {
-        ReportAuthoringError::InvalidInput(
-            "The stored writer template has invalid metadata.".to_string(),
-        )
+    .map_err(|source| match source {
+        claria_storage::error::StorageError::Serialization(_) => {
+            ReportAuthoringError::InvalidInput(
+                "The stored writer template has invalid metadata.".to_string(),
+            )
+        }
+        claria_storage::error::StorageError::InvalidState { reason, .. } => {
+            ReportAuthoringError::InvalidInput(reason)
+        }
+        other => ReportAuthoringError::storage("reading writer template metadata", other),
     })?;
-    if metadata.id != id || metadata.schema_version != METADATA_SCHEMA_VERSION {
-        return Err(ReportAuthoringError::InvalidInput(
-            "The stored writer template metadata does not match its key.".to_string(),
-        ));
-    }
     Ok(metadata)
 }
 

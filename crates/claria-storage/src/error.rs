@@ -14,6 +14,12 @@ pub enum StorageError {
     #[error("conditional request conflict for key after retries: {key}")]
     ConditionalRequestConflict { key: String },
 
+    /// A stored JSON object decoded but failed the caller's domain validation
+    /// (see `state::load_state_checked`). `reason` is the caller's own
+    /// user-facing sentence.
+    #[error("invalid stored state at {key}: {reason}")]
+    InvalidState { key: String, reason: String },
+
     #[error("object {key} is {actual_bytes} bytes, exceeding the {max_bytes}-byte read limit")]
     ObjectTooLarge {
         key: String,
