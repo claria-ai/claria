@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use super::{
-    CommandContext, CommandError, parse_uuid, prompts::load_prompt, run,
+    CommandContext, CommandError, parse_uuid,
+    prompts::load_prompt,
+    run,
     transcribe::{TranscribeOptionsOverrides, build_transcribe_options, maybe_translate},
     usage_audit_details,
 };
@@ -253,8 +255,7 @@ async fn upload_record_file_inner(
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CommandError::Msg(format!("Failed to read file: {e}")))?;
-        claria_core::record_text::decode_record_text(&bytes)
-            .map(|_| "text/plain; charset=utf-8")
+        claria_core::record_text::decode_record_text(&bytes).map(|_| "text/plain; charset=utf-8")
     } else {
         None
     };

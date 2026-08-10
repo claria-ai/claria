@@ -71,8 +71,14 @@ fn metadata_event(input_tokens: i32, output_tokens: i32) -> ConverseStreamOutput
 #[test]
 fn collector_accumulates_deltas_and_captures_usage() {
     let mut collector = StreamCollector::new();
-    assert_eq!(collector.absorb(delta_event("Hello, ")).as_deref(), Some("Hello, "));
-    assert_eq!(collector.absorb(delta_event("world.")).as_deref(), Some("world."));
+    assert_eq!(
+        collector.absorb(delta_event("Hello, ")).as_deref(),
+        Some("Hello, ")
+    );
+    assert_eq!(
+        collector.absorb(delta_event("world.")).as_deref(),
+        Some("world.")
+    );
     assert!(collector.absorb(stop_event(StopReason::EndTurn)).is_none());
     assert!(collector.absorb(metadata_event(120, 7)).is_none());
 

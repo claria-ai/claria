@@ -135,7 +135,10 @@ pub async fn fetch_record_text(
     cache: &RecordCache,
 ) -> Result<Option<String>, RecordsError> {
     let inventory = record_inventory(s3, bucket, client_id).await?;
-    let Some(entry) = inventory.into_iter().find(|entry| entry.filename == filename) else {
+    let Some(entry) = inventory
+        .into_iter()
+        .find(|entry| entry.filename == filename)
+    else {
         return Ok(None);
     };
     fetch_entry_text(s3, bucket, cache, &entry).await

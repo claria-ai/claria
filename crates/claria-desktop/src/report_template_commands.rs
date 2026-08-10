@@ -88,8 +88,12 @@ pub async fn upload_writer_template(
         .await?;
 
         ctx.record_audit(
-            ctx.audit_event("writer_template_uploaded", "writer_template", id.to_string())
-                .with_details(serde_json::json!({ "size": template.metadata.size })),
+            ctx.audit_event(
+                "writer_template_uploaded",
+                "writer_template",
+                id.to_string(),
+            )
+            .with_details(serde_json::json!({ "size": template.metadata.size })),
         )
         .await;
         Ok(Some(writer_template_view(template)))
@@ -159,14 +163,13 @@ pub async fn preview_writer_template(
         let client_id = parse_uuid(&client_id)?;
         let template_id = parse_uuid(&template_id)?;
         let ctx = CommandContext::new(&state).await?;
-        let (metadata, bytes) =
-            claria_report_authoring::writer_templates::load_docx_with_metadata(
-                &ctx.s3,
-                &ctx.bucket,
-                template_id,
-                claria_docx::MAX_TEMPLATE_DOCX_BYTES,
-            )
-            .await?;
+        let (metadata, bytes) = claria_report_authoring::writer_templates::load_docx_with_metadata(
+            &ctx.s3,
+            &ctx.bucket,
+            template_id,
+            claria_docx::MAX_TEMPLATE_DOCX_BYTES,
+        )
+        .await?;
         let (imported, source_docx) = tokio::task::spawn_blocking(move || {
             claria_docx::import_template(&bytes).map(|imported| (imported, bytes))
         })

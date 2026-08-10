@@ -814,7 +814,9 @@ fn protocol_block_to_sdk(block: &ReportProtocolBlock) -> Result<ContentBlock, Be
             };
             let result = ToolResultBlock::builder()
                 .tool_use_id(tool_use_id)
-                .content(ToolResultContentBlock::Json(converse::json_to_document(content)?))
+                .content(ToolResultContentBlock::Json(converse::json_to_document(
+                    content,
+                )?))
                 .status(status)
                 .build()
                 .map_err(|error| BedrockError::Invocation(error.to_string()))?;
@@ -838,4 +840,3 @@ fn map_stop_reason(reason: &aws_sdk_bedrockruntime::types::StopReason) -> Report
         _ => ReportStopReason::Unknown,
     }
 }
-

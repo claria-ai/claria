@@ -76,7 +76,10 @@ fn rotation_past_the_cursor_resets() {
         assert!(delta.reset, "rotated-out cursor must trigger a reset");
         assert!(!delta.entries.is_empty());
         assert!(
-            delta.entries.iter().all(|e| !e.message.contains("seen line")),
+            delta
+                .entries
+                .iter()
+                .all(|e| !e.message.contains("seen line")),
             "rotated entries must be gone from the resend"
         );
     });

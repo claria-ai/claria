@@ -177,7 +177,11 @@ impl StreamCollector {
     /// Close out the stream: a missing `messageStop` is a protocol error,
     /// truncation and context overflow become the same typed errors as the
     /// unary path, and an omitted usage block stays `None`.
-    pub fn finish(self, model_id: &str, max_output_tokens: u32) -> Result<StreamOutcome, BedrockError> {
+    pub fn finish(
+        self,
+        model_id: &str,
+        max_output_tokens: u32,
+    ) -> Result<StreamOutcome, BedrockError> {
         let stop_reason = self.stop_reason.ok_or_else(|| {
             BedrockError::ResponseParse(
                 "the response stream ended without a messageStop event".to_string(),

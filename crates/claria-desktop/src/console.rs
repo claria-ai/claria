@@ -7,11 +7,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tracing::{
+    Event, Subscriber,
     field::Visit,
     span::{Attributes, Id, Record},
-    Event, Subscriber,
 };
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 /// Maximum approximate byte size of the ring buffer (10 MB).
 const MAX_BYTES: usize = 10 * 1024 * 1024;
@@ -34,7 +34,11 @@ impl ConsoleEntry {
 
 impl fmt::Display for ConsoleEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} {}: {}", self.timestamp, self.level, self.target, self.message)
+        write!(
+            f,
+            "{} {} {}: {}",
+            self.timestamp, self.level, self.target, self.message
+        )
     }
 }
 

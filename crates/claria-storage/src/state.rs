@@ -1,8 +1,7 @@
 use aws_sdk_s3::Client;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
-use crate::error::StorageError;
-use crate::objects;
+use crate::{error::StorageError, objects};
 
 /// Load a JSON state file from S3. Returns the deserialized value and its ETag.
 pub async fn load_state<T: DeserializeOwned>(

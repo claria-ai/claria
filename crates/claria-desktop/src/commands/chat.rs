@@ -331,7 +331,9 @@ pub async fn chat_message(
                 let (history, etag) =
                     stored_chat_history(&ctx.s3, &ctx.bucket, client_uuid, chat_uuid).await?;
                 let name = if history.name.trim().is_empty() {
-                    let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid, &state.record_cache).await?;
+                    let rows =
+                        chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid, &state.record_cache)
+                            .await?;
                     rows.iter()
                         .position(|(candidate, _)| candidate.id == chat_uuid)
                         .map_or_else(
@@ -347,7 +349,13 @@ pub async fn chat_message(
                 let name = match chat_name {
                     Some(name) => normalized_chat_name(&name)?,
                     None => {
-                        let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid, &state.record_cache).await?;
+                        let rows = chat_history_rows(
+                            &ctx.s3,
+                            &ctx.bucket,
+                            client_uuid,
+                            &state.record_cache,
+                        )
+                        .await?;
                         next_chat_history_name(&rows)
                     }
                 };
@@ -763,9 +771,11 @@ pub async fn load_chat_history(
         let client_uuid = parse_uuid(&client_id)?;
         let chat_uuid = parse_uuid(&chat_id)?;
 
-        let (history, _) = stored_chat_history(&ctx.s3, &ctx.bucket, client_uuid, chat_uuid).await?;
+        let (history, _) =
+            stored_chat_history(&ctx.s3, &ctx.bucket, client_uuid, chat_uuid).await?;
         let fallback_name = if history.name.trim().is_empty() {
-            let rows = chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid, &state.record_cache).await?;
+            let rows =
+                chat_history_rows(&ctx.s3, &ctx.bucket, client_uuid, &state.record_cache).await?;
             rows.iter()
                 .position(|(candidate, _)| candidate.id == chat_uuid)
                 .map_or_else(

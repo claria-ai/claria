@@ -675,8 +675,16 @@ fn encode_converse_stream(
             }),
         )?;
     }
-    write_event(&mut frames, "contentBlockStop", &json!({"contentBlockIndex": 0}))?;
-    write_event(&mut frames, "messageStop", &json!({"stopReason": stop_reason}))?;
+    write_event(
+        &mut frames,
+        "contentBlockStop",
+        &json!({"contentBlockIndex": 0}),
+    )?;
+    write_event(
+        &mut frames,
+        "messageStop",
+        &json!({"stopReason": stop_reason}),
+    )?;
     if let Some(usage) = payload.get("usage") {
         write_event(
             &mut frames,

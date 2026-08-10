@@ -6,8 +6,7 @@
 
 use std::net::SocketAddr;
 
-use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
+use tokio::{net::TcpListener, task::JoinHandle};
 
 use crate::{router, state};
 

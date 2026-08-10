@@ -8,10 +8,7 @@ use crate::config::CredentialSource;
 /// a `CredentialSource` (our config-level type) into an AWS SDK config.
 /// All AWS business logic lives in the provisioner — we just build the
 /// config and hand it over.
-pub async fn build_aws_config(
-    region: &str,
-    creds: &CredentialSource,
-) -> aws_config::SdkConfig {
+pub async fn build_aws_config(region: &str, creds: &CredentialSource) -> aws_config::SdkConfig {
     // An explicit HTTP client shared by every service client built from this
     // config. Without one, each `Client::new` builds its own connector, so no
     // connection is ever reused across clients and every command pays
@@ -88,9 +85,7 @@ fn parse_ini_sections(
         let trimmed = line.trim();
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             let mut name = trimmed[1..trimmed.len() - 1].trim().to_string();
-            if strip_profile_prefix
-                && let Some(stripped) = name.strip_prefix("profile ")
-            {
+            if strip_profile_prefix && let Some(stripped) = name.strip_prefix("profile ") {
                 name = stripped.trim().to_string();
             }
             if !name.is_empty() {

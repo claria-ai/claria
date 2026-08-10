@@ -8,8 +8,10 @@
 //! entry repopulated. Steady state (nothing changed) makes zero GETs, and
 //! there is no staleness window.
 
-use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+};
 
 use lru::LruCache;
 

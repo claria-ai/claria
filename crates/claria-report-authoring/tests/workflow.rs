@@ -262,15 +262,10 @@ async fn report_revisions_can_be_previewed_and_restored_without_removing_history
     .expect("save another object version at the same draft revision");
 
     let cache = report_authoring::RevisionCache::new();
-    let revisions = report_authoring::list_report_revisions(
-        &s3,
-        BUCKET,
-        client_id,
-        initial.report_id,
-        &cache,
-    )
-    .await
-    .expect("list revisions");
+    let revisions =
+        report_authoring::list_report_revisions(&s3, BUCKET, client_id, initial.report_id, &cache)
+            .await
+            .expect("list revisions");
     assert_eq!(
         revisions
             .iter()
@@ -306,15 +301,10 @@ async fn report_revisions_can_be_previewed_and_restored_without_removing_history
     assert_eq!(restored.draft.revision, 3);
     assert_eq!(restored.draft.content.title, "First version");
 
-    let revisions_after_restore = report_authoring::list_report_revisions(
-        &s3,
-        BUCKET,
-        client_id,
-        initial.report_id,
-        &cache,
-    )
-    .await
-    .expect("list revisions after restore");
+    let revisions_after_restore =
+        report_authoring::list_report_revisions(&s3, BUCKET, client_id, initial.report_id, &cache)
+            .await
+            .expect("list revisions after restore");
     assert_eq!(
         revisions_after_restore
             .iter()
@@ -898,7 +888,11 @@ async fn max_tokens_after_staged_proposal_completes_with_truncated_notice() {
 
     assert!(outcome.proposal_id.is_some());
     assert!(outcome.workspace.session.pending_proposal.is_some());
-    assert!(outcome.assistant_text.starts_with("I staged a proposal that"));
+    assert!(
+        outcome
+            .assistant_text
+            .starts_with("I staged a proposal that")
+    );
     assert!(
         outcome
             .assistant_text
@@ -1014,8 +1008,7 @@ async fn second_inconsistent_stop_reason_fails_the_turn() {
         "usage": {"inputTokens": 10, "outputTokens": 4}
     });
     let mut second = mismatch.clone();
-    second["output"]["message"]["content"][1]["toolUse"]["toolUseId"] =
-        serde_json::json!("list-2");
+    second["output"]["message"]["content"][1]["toolUse"]["toolUseId"] = serde_json::json!("list-2");
     script(&server, vec![mismatch, second]).await;
 
     let error = report_authoring::send_report_message(
@@ -1549,9 +1542,7 @@ async fn accepted_report_content_and_focused_tables_stay_in_untrusted_context() 
         .expect("untrusted user context");
     assert!(user_context.contains(malicious));
     // The system prompt names these exact delimiter tags.
-    assert!(
-        report_authoring::REPORT_SYSTEM_PROMPT.contains("<untrusted_report_context>")
-    );
+    assert!(report_authoring::REPORT_SYSTEM_PROMPT.contains("<untrusted_report_context>"));
     let context: serde_json::Value = serde_json::from_str(
         user_context
             .strip_prefix("<untrusted_report_context>")

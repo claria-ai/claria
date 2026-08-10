@@ -4,6 +4,8 @@ use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use super::{CommandContext, CommandError, parse_uuid, run};
+use crate::state::DesktopState;
 use claria_desktop::config::{self, ClariaConfig, CredentialSource};
 use claria_provisioner::{
     Action, CredentialScope, PlanEntry,
@@ -12,8 +14,6 @@ use claria_provisioner::{
         StepStatus,
     },
 };
-use super::{CommandContext, CommandError, parse_uuid, run};
-use crate::state::DesktopState;
 
 // ---------------------------------------------------------------------------
 // Credential input — what the frontend may reference credentials by
@@ -555,7 +555,10 @@ async fn scan_with_progress(
     let mut entries = Vec::with_capacity(results.len());
     for (syncer, actual_result) in results {
         let actual = actual_result?;
-        entries.push(claria_provisioner::build_plan_entry(syncer.as_ref(), actual));
+        entries.push(claria_provisioner::build_plan_entry(
+            syncer.as_ref(),
+            actual,
+        ));
     }
 
     entries.extend(claria_provisioner::find_orphans(syncers, prov_state));
@@ -842,8 +845,7 @@ pub async fn provision_scan(
         let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
 
         // Resolve account ID via STS.
-        let identity =
-            claria_provisioner::account_setup::get_caller_identity(&sdk_config).await?;
+        let identity = claria_provisioner::account_setup::get_caller_identity(&sdk_config).await?;
 
         let manifest =
             claria_provisioner::build_manifest(&identity.account_id, &system_name, &region);
@@ -918,8 +920,7 @@ pub async fn provision_apply(
         };
         let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
 
-        let identity =
-            claria_provisioner::account_setup::get_caller_identity(&sdk_config).await?;
+        let identity = claria_provisioner::account_setup::get_caller_identity(&sdk_config).await?;
 
         let manifest =
             claria_provisioner::build_manifest(&identity.account_id, &system_name, &region);

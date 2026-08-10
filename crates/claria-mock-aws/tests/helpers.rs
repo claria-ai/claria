@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
 use axum::{
+    Router,
     body::Body,
     http::{Method, Request, StatusCode},
-    Router,
 };
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -15,7 +15,12 @@ pub fn app() -> Router {
     router::build_router(state)
 }
 
-pub async fn request(app: &Router, method: Method, uri: &str, body: impl Into<Body>) -> TestResponse {
+pub async fn request(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    body: impl Into<Body>,
+) -> TestResponse {
     let req = Request::builder()
         .method(method)
         .uri(uri)
@@ -30,7 +35,11 @@ pub async fn request(app: &Router, method: Method, uri: &str, body: impl Into<Bo
         .collect();
     let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8_lossy(&body_bytes).to_string();
-    TestResponse { status, body, headers }
+    TestResponse {
+        status,
+        body,
+        headers,
+    }
 }
 
 pub async fn request_with_header(
@@ -56,7 +65,11 @@ pub async fn request_with_header(
         .collect();
     let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8_lossy(&body_bytes).to_string();
-    TestResponse { status, body, headers }
+    TestResponse {
+        status,
+        body,
+        headers,
+    }
 }
 
 pub struct TestResponse {

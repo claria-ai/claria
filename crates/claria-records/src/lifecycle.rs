@@ -195,8 +195,7 @@ async fn load_or_start_deletion(
             source: StorageError::NotFound { .. },
             ..
         }) => {
-            load_checked_client(s3, bucket, client_key, client_id, "validating the client")
-                .await?;
+            load_checked_client(s3, bucket, client_key, client_id, "validating the client").await?;
             let now = jiff::Timestamp::now();
             let created = ClientDeletionState {
                 schema_version: LIFECYCLE_SCHEMA_VERSION,

@@ -226,7 +226,7 @@ async fn load_metadata(
         |metadata: &WriterTemplateMetadata| {
             if metadata.id != id || metadata.schema_version != METADATA_SCHEMA_VERSION {
                 return Err(
-                    "The stored writer template metadata does not match its key.".to_string()
+                    "The stored writer template metadata does not match its key.".to_string(),
                 );
             }
             Ok(())

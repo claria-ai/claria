@@ -5,9 +5,9 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use tracing_subscriber::prelude::*;
 
-use claria_storage::audit::AuditEvent;
 use claria_desktop::console::{ConsoleBuffer, ConsoleLayer};
 use claria_mock_aws::testing::MockServer;
+use claria_storage::audit::AuditEvent;
 
 const BUCKET: &str = "123456789012-claria-data";
 

@@ -16,9 +16,7 @@ use std::{sync::Arc, time::Duration};
 pub fn ureq_agent(global_timeout: Option<Duration>) -> ureq::Agent {
     let tls_config = ureq::tls::TlsConfig::builder()
         .provider(ureq::tls::TlsProvider::Rustls)
-        .unversioned_rustls_crypto_provider(Arc::new(
-            rustls::crypto::aws_lc_rs::default_provider(),
-        ))
+        .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
         .root_certs(ureq::tls::RootCerts::PlatformVerifier)
         .build();
     ureq::Agent::new_with_config(

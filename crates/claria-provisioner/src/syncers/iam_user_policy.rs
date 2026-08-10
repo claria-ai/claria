@@ -3,12 +3,12 @@ use std::collections::HashSet;
 use aws_sdk_iam::Client;
 use serde_json::json;
 
-use crate::account_setup::{
-    self, claria_policy_document, IAM_POLICY_NAME, IAM_USER_NAME,
+use crate::{
+    account_setup::{self, IAM_POLICY_NAME, IAM_USER_NAME, claria_policy_document},
+    error::ProvisionerError,
+    manifest::ResourceSpec,
+    syncer::{BoxFuture, ResourceSyncer},
 };
-use crate::error::ProvisionerError;
-use crate::manifest::ResourceSpec;
-use crate::syncer::{BoxFuture, ResourceSyncer};
 
 pub struct IamUserPolicySyncer {
     spec: ResourceSpec,
@@ -37,10 +37,7 @@ impl IamUserPolicySyncer {
     }
 
     fn policy_arn(&self) -> String {
-        format!(
-            "arn:aws:iam::{}:policy/{IAM_POLICY_NAME}",
-            self.account_id
-        )
+        format!("arn:aws:iam::{}:policy/{IAM_POLICY_NAME}", self.account_id)
     }
 }
 
@@ -112,9 +109,7 @@ impl ResourceSyncer for IamUserPolicySyncer {
                 .version_id(version_id)
                 .send()
                 .await
-                .map_err(|e| {
-                    ProvisionerError::Aws(format!("iam:GetPolicyVersion failed: {e}"))
-                })?;
+                .map_err(|e| ProvisionerError::Aws(format!("iam:GetPolicyVersion failed: {e}")))?;
 
             let doc_str = version_resp
                 .policy_version()
@@ -201,14 +196,9 @@ impl ResourceSyncer for IamUserPolicySyncer {
     fn update(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {
         Box::pin(async {
             // Update the policy document to add/remove actions.
-            let document =
-                claria_policy_document(&self.system_name, &self.account_id);
-            account_setup::update_policy_document(
-                &self.client,
-                &self.policy_arn(),
-                &document,
-            )
-            .await?;
+            let document = claria_policy_document(&self.system_name, &self.account_id);
+            account_setup::update_policy_document(&self.client, &self.policy_arn(), &document)
+                .await?;
 
             Ok(json!({"policy_attached": true}))
         })
@@ -235,7 +225,11 @@ impl ResourceSyncer for IamUserPolicySyncer {
                 .send()
                 .await
             {
-                for v in versions.versions().iter().filter(|v| !v.is_default_version()) {
+                for v in versions
+                    .versions()
+                    .iter()
+                    .filter(|v| !v.is_default_version())
+                {
                     if let Some(vid) = v.version_id() {
                         let _ = self
                             .client
@@ -253,9 +247,7 @@ impl ResourceSyncer for IamUserPolicySyncer {
                 .policy_arn(&policy_arn)
                 .send()
                 .await
-                .map_err(|e| {
-                    ProvisionerError::Aws(format!("iam:DeletePolicy failed: {e}"))
-                })?;
+                .map_err(|e| ProvisionerError::Aws(format!("iam:DeletePolicy failed: {e}")))?;
 
             tracing::info!(policy_arn = %policy_arn, "deleted IAM policy");
             Ok(())

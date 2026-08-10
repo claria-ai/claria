@@ -84,7 +84,10 @@ fn scope_prefix_stripping_uses_exact_allowlist() {
         "anthropic.claude-sonnet-4-6-v1"
     );
     // Unknown short prefixes are not scopes either — no heuristic.
-    assert_eq!(strip_scope_prefix("mx.anthropic.claude"), "mx.anthropic.claude");
+    assert_eq!(
+        strip_scope_prefix("mx.anthropic.claude"),
+        "mx.anthropic.claude"
+    );
     assert_eq!(strip_scope_prefix("no-dots"), "no-dots");
 }
 

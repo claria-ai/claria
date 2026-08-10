@@ -52,8 +52,14 @@ pub async fn create_client(
         let body = serde_json::to_vec_pretty(&client)?;
         let key = claria_core::s3_keys::client(id);
 
-        claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, body, Some("application/json"))
-            .await?;
+        claria_storage::objects::put_object(
+            &ctx.s3,
+            &ctx.bucket,
+            &key,
+            body,
+            Some("application/json"),
+        )
+        .await?;
 
         // The client's name is PHI and never logged.
         tracing::info!(client_id = %id, "client record created");

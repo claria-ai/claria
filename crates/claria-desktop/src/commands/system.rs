@@ -112,10 +112,7 @@ pub async fn open_url(url: String) -> Result<(), String> {
         // Belt-and-braces against argument smuggling into whatever handles
         // the URL: a well-formed URL never contains whitespace or control
         // characters (they must be percent-encoded).
-        if url
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_control())
-        {
+        if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
             return Err(CommandError::Msg(
                 "URL must not contain whitespace or control characters".into(),
             ));

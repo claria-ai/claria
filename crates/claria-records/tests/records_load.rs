@@ -4,11 +4,11 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use aws_sdk_s3::primitives::ByteStream;
 
+use claria_mock_aws::testing::MockServer;
 use claria_records::{
     ClientSummary, RecordCache, fetch_record_text, fetch_record_texts, get_client_record_details,
     list_client_summaries, search_record_contents, update_client_name, validate_client_name,
 };
-use claria_mock_aws::testing::MockServer;
 
 const BUCKET: &str = "claria-test-bucket";
 
@@ -186,9 +186,7 @@ async fn update_client_name_trims_and_preserves_client_identity() {
     assert_eq!(updated.id, id.to_string());
     assert_eq!(updated.name, "Renamed Client");
     let updated_at: jiff::Timestamp = updated.updated_at.parse().expect("updated timestamp");
-    assert!(
-        updated_at > jiff::Timestamp::from_second(1_700_000_000).expect("created timestamp")
-    );
+    assert!(updated_at > jiff::Timestamp::from_second(1_700_000_000).expect("created timestamp"));
 
     let stored = claria_storage::objects::get_object(&s3, BUCKET, &key)
         .await

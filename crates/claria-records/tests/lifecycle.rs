@@ -1,10 +1,10 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
-use claria_records::{RecordsError, delete_client, restore_client};
 use claria_core::models::{
     client::Client,
     report::{ReportContent, ReportWorkspace},
 };
 use claria_mock_aws::testing::MockServer;
+use claria_records::{RecordsError, delete_client, restore_client};
 use claria_storage::client;
 use uuid::Uuid;
 

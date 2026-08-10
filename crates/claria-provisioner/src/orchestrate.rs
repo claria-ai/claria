@@ -1,12 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::addr::ResourceAddr;
-use crate::error::ProvisionerError;
-use crate::manifest::{Lifecycle, ResourceSpec};
-use crate::persistence::StatePersistence;
-use crate::plan::{Action, Cause, PlanEntry};
-use crate::state::{ProvisionerState, ResourceState, ResourceStatus};
-use crate::syncer::{compute_drift, ResourceSyncer};
+use crate::{
+    addr::ResourceAddr,
+    error::ProvisionerError,
+    manifest::{Lifecycle, ResourceSpec},
+    persistence::StatePersistence,
+    plan::{Action, Cause, PlanEntry},
+    state::{ProvisionerState, ResourceState, ResourceStatus},
+    syncer::{ResourceSyncer, compute_drift},
+};
 
 /// Build a single plan entry from a syncer and its read result.
 ///
@@ -30,8 +32,7 @@ pub fn build_plan_entry(
 
         // Data source exists → check it matches
         (Lifecycle::Data, Some(actual_val)) => {
-            let drift =
-                compute_drift(&syncer.desired_state(), &syncer.current_state(actual_val));
+            let drift = compute_drift(&syncer.desired_state(), &syncer.current_state(actual_val));
             PlanEntry {
                 spec: spec.clone(),
                 action: if drift.is_empty() {
@@ -60,8 +61,7 @@ pub fn build_plan_entry(
 
         // Managed resource exists → check for drift
         (Lifecycle::Managed, Some(actual_val)) => {
-            let drift =
-                compute_drift(&syncer.desired_state(), &syncer.current_state(actual_val));
+            let drift = compute_drift(&syncer.desired_state(), &syncer.current_state(actual_val));
             PlanEntry {
                 spec: spec.clone(),
                 action: if drift.is_empty() {
@@ -173,18 +173,19 @@ pub async fn execute(
         .filter(|e| e.action == Action::Create || e.action == Action::Modify)
     {
         let addr = entry.spec.addr();
-        let syncer = syncer_map.get(&addr).ok_or_else(|| {
-            ProvisionerError::ResourceNotFound {
+        let syncer = syncer_map
+            .get(&addr)
+            .ok_or_else(|| ProvisionerError::ResourceNotFound {
                 resource_type: addr.resource_type.clone(),
                 resource_id: addr.resource_name.clone(),
-            }
-        })?;
+            })?;
 
         if entry.action == Action::Create {
             tracing::info!(addr = %addr, "creating resource");
-            let result = syncer.create().await.map_err(|e| {
-                e.with_resource(&entry.spec.label, &entry.spec.resource_name)
-            })?;
+            let result = syncer
+                .create()
+                .await
+                .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
             state.resources.insert(
                 addr,
                 ResourceState {
@@ -196,9 +197,10 @@ pub async fn execute(
             );
         } else {
             tracing::info!(addr = %addr, "updating resource");
-            let result = syncer.update().await.map_err(|e| {
-                e.with_resource(&entry.spec.label, &entry.spec.resource_name)
-            })?;
+            let result = syncer
+                .update()
+                .await
+                .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
             if let Some(rs) = state.resources.get_mut(&addr) {
                 rs.status = ResourceStatus::Updated;
                 rs.properties = result;
@@ -208,17 +210,14 @@ pub async fn execute(
     }
 
     // Deletes — reverse order (dependents before dependencies)
-    for entry in entries
-        .iter()
-        .filter(|e| e.action == Action::Delete)
-        .rev()
-    {
+    for entry in entries.iter().filter(|e| e.action == Action::Delete).rev() {
         let addr = entry.spec.addr();
         if let Some(syncer) = syncer_map.get(&addr) {
             tracing::info!(addr = %addr, "destroying resource");
-            syncer.destroy().await.map_err(|e| {
-                e.with_resource(&entry.spec.label, &entry.spec.resource_name)
-            })?;
+            syncer
+                .destroy()
+                .await
+                .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
         }
         state.resources.remove(&addr);
         persistence.flush(state).await?;

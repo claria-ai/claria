@@ -1,4 +1,4 @@
-use claria_bedrock::context::{build_context_block, ContextFile};
+use claria_bedrock::context::{ContextFile, build_context_block};
 
 #[test]
 fn empty_files_returns_empty_string() {

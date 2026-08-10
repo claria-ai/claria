@@ -54,8 +54,7 @@ pub(crate) async fn load_prompt(
     // Try the canonical claria-prompts/ key first.
     match claria_storage::objects::get_object(s3, bucket, key).await {
         Ok(output) => {
-            return String::from_utf8(output.body)
-                .map_err(|e| CommandError::Msg(e.to_string()));
+            return String::from_utf8(output.body).map_err(|e| CommandError::Msg(e.to_string()));
         }
         Err(claria_storage::error::StorageError::NotFound { .. }) => {}
         Err(e) => return Err(e.into()),
@@ -66,8 +65,8 @@ pub(crate) async fn load_prompt(
     if let Some(legacy) = legacy_key {
         match claria_storage::objects::get_object(s3, bucket, legacy).await {
             Ok(output) => {
-                let text = String::from_utf8(output.body)
-                    .map_err(|e| CommandError::Msg(e.to_string()))?;
+                let text =
+                    String::from_utf8(output.body).map_err(|e| CommandError::Msg(e.to_string()))?;
 
                 // Copy to the new claria-prompts/ path.
                 if let Err(e) = claria_storage::objects::put_object(
@@ -221,8 +220,14 @@ pub async fn restore_prompt_version(
 
         let ctx = CommandContext::new(&state).await?;
 
-        restore_version_for_key(&ctx.s3, &ctx.bucket, key, &version_id, Some("text/markdown"))
-            .await?;
+        restore_version_for_key(
+            &ctx.s3,
+            &ctx.bucket,
+            key,
+            &version_id,
+            Some("text/markdown"),
+        )
+        .await?;
 
         tracing::info!(prompt_name, version_id, "prompt version restored");
 

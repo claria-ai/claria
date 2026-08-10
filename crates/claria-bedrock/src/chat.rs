@@ -208,16 +208,12 @@ async fn fetch_active_foundation_models(
                 .unwrap_or(false);
             // Skip context-window variants like `:48k`, `:200k`.
             let is_variant = id.rsplit_once(':').is_some_and(|(_, suffix)| {
-                suffix.chars().next().is_some_and(|c| c.is_ascii_digit())
-                    && suffix != "0"
+                suffix.chars().next().is_some_and(|c| c.is_ascii_digit()) && suffix != "0"
             });
             is_claude && is_active && !is_variant
         })
         .map(|m| {
-            let name = m
-                .model_name()
-                .unwrap_or(m.model_id())
-                .to_string();
+            let name = m.model_name().unwrap_or(m.model_id()).to_string();
             (m.model_id().to_string(), name)
         })
         .collect();
@@ -460,7 +456,8 @@ async fn prepare_chat_request(
             .iter()
             .map(|message| message.content.len() as u64)
             .sum::<u64>();
-    let mut budget = crate::converse::InputTokenBudget::estimated(chat_input_token_budget(model_id));
+    let mut budget =
+        crate::converse::InputTokenBudget::estimated(chat_input_token_budget(model_id));
     budget
         .ensure_within(
             current_chars,
@@ -568,7 +565,8 @@ pub async fn count_context_tokens(
         .system(SystemContentBlock::Text(system_prompt.to_string()))
         .build();
 
-    let tokens = crate::converse::count_input_tokens(&client, bare_model_id, converse_input).await?;
+    let tokens =
+        crate::converse::count_input_tokens(&client, bare_model_id, converse_input).await?;
     info!(bare_model_id, tokens, "context token count complete");
     Ok(tokens)
 }

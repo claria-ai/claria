@@ -26,9 +26,7 @@ use aws_sdk_transcribe::types::{
 };
 use backon::{ExponentialBuilder, Retryable};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::time::Duration;
+use std::{collections::HashMap, fmt::Write as _, time::Duration};
 use tracing::info;
 use uuid::Uuid;
 
@@ -657,10 +655,7 @@ fn extract_speakers(speaker_labels: Option<&serde_json::Value>) -> Vec<Speaker> 
     let Some(labels) = speaker_labels else {
         return vec![];
     };
-    let count = labels
-        .get("speakers")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as usize;
+    let count = labels.get("speakers").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     (0..count)
         .map(|i| Speaker {
             id: format!("spk_{i}"),

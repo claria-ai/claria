@@ -218,9 +218,9 @@ pub async fn assume_role(
             ))
         })?;
 
-    let creds = resp.credentials().ok_or_else(|| {
-        ProvisionerError::Aws("AssumeRole returned no credentials".into())
-    })?;
+    let creds = resp
+        .credentials()
+        .ok_or_else(|| ProvisionerError::Aws("AssumeRole returned no credentials".into()))?;
 
     let access_key_id = creds.access_key_id().to_string();
     let secret_access_key = creds.secret_access_key().to_string();
@@ -234,11 +234,7 @@ pub async fn assume_role(
 
     // Extract account ID from the assumed role ARN
     // Format: arn:aws:sts::ACCOUNT_ID:assumed-role/ROLE/SESSION
-    let account_id = assumed_role_arn
-        .split(':')
-        .nth(4)
-        .unwrap_or("")
-        .to_string();
+    let account_id = assumed_role_arn.split(':').nth(4).unwrap_or("").to_string();
 
     tracing::info!(
         assumed_role_arn = %assumed_role_arn,
@@ -290,12 +286,7 @@ pub async fn assess_credentials(
 
     // Step 2: Can we manage IAM? (probe with a cheap read-only call)
     let iam_client = aws_sdk_iam::Client::new(config);
-    let has_iam = iam_client
-        .list_users()
-        .max_items(1)
-        .send()
-        .await
-        .is_ok();
+    let has_iam = iam_client.list_users().max_items(1).send().await.is_ok();
 
     if has_iam {
         return Ok(CredentialAssessment {
@@ -365,8 +356,7 @@ pub async fn bootstrap_account(
     credential_class: CredentialClass,
 ) -> BootstrapResult {
     assert!(
-        credential_class == CredentialClass::Root
-            || credential_class == CredentialClass::IamAdmin,
+        credential_class == CredentialClass::Root || credential_class == CredentialClass::IamAdmin,
         "bootstrap_account should only be called for Root or IamAdmin credentials"
     );
 
@@ -467,12 +457,7 @@ pub async fn bootstrap_account(
 
     let (new_key_id, new_secret) = match create_access_key(config).await {
         Ok(keys) => {
-            set_step_status(
-                &mut steps,
-                "create_access_key",
-                StepStatus::Succeeded,
-                None,
-            );
+            set_step_status(&mut steps, "create_access_key", StepStatus::Succeeded, None);
             keys
         }
         Err(e) => {
@@ -480,7 +465,12 @@ pub async fn bootstrap_account(
                 ProvisionerError::AccessKeyLimitExceeded { .. } => "key_limit_exceeded".to_string(),
                 _ => e.to_string(),
             };
-            set_step_status(&mut steps, "create_access_key", StepStatus::Failed, Some(detail));
+            set_step_status(
+                &mut steps,
+                "create_access_key",
+                StepStatus::Failed,
+                Some(detail),
+            );
             result.error = Some(format!("Failed to create access key: {e}"));
             result.steps = steps;
             return result;
@@ -542,12 +532,7 @@ pub async fn bootstrap_account(
             );
             tracing::warn!("failed to delete root access key: {e}");
         } else {
-            set_step_status(
-                &mut steps,
-                "delete_source_key",
-                StepStatus::Succeeded,
-                None,
-            );
+            set_step_status(&mut steps, "delete_source_key", StepStatus::Succeeded, None);
         }
     } else {
         push_step(
@@ -621,10 +606,7 @@ pub async fn list_user_access_keys(
     let mut keys = Vec::new();
 
     for meta in resp.access_key_metadata() {
-        let key_id = meta
-            .access_key_id()
-            .unwrap_or_default()
-            .to_string();
+        let key_id = meta.access_key_id().unwrap_or_default().to_string();
         let status = meta
             .status()
             .map(|s| s.as_str().to_string())
@@ -636,25 +618,29 @@ pub async fn list_user_access_keys(
         // missing `iam:GetAccessKeyLastUsed` permission degrades the row to
         // "unknown" rather than failing the whole listing. Log it so the
         // reason is not invisible.
-        let (last_used_at, last_used_service) =
-            match client.get_access_key_last_used().access_key_id(&key_id).send().await {
-                Ok(lu_resp) => {
-                    let lu = lu_resp.access_key_last_used();
-                    (
-                        lu.and_then(|l| l.last_used_date()).map(|d| d.to_string()),
-                        lu.map(|l| l.service_name().to_string())
-                            .filter(|s| !s.is_empty()),
-                    )
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        access_key_id = %key_id,
-                        error = %DisplayErrorContext(&e),
-                        "iam:GetAccessKeyLastUsed failed — last-used will show as unknown"
-                    );
-                    (None, None)
-                }
-            };
+        let (last_used_at, last_used_service) = match client
+            .get_access_key_last_used()
+            .access_key_id(&key_id)
+            .send()
+            .await
+        {
+            Ok(lu_resp) => {
+                let lu = lu_resp.access_key_last_used();
+                (
+                    lu.and_then(|l| l.last_used_date()).map(|d| d.to_string()),
+                    lu.map(|l| l.service_name().to_string())
+                        .filter(|s| !s.is_empty()),
+                )
+            }
+            Err(e) => {
+                tracing::warn!(
+                    access_key_id = %key_id,
+                    error = %DisplayErrorContext(&e),
+                    "iam:GetAccessKeyLastUsed failed — last-used will show as unknown"
+                );
+                (None, None)
+            }
+        };
 
         keys.push(AccessKeyInfo {
             access_key_id: key_id,
@@ -832,17 +818,13 @@ pub async fn get_caller_identity(
     config: &aws_config::SdkConfig,
 ) -> Result<CallerIdentity, ProvisionerError> {
     let sts = aws_sdk_sts::Client::new(config);
-    let resp = sts
-        .get_caller_identity()
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "STS GetCallerIdentity failed — credentials may be invalid");
-            ProvisionerError::Aws(format!(
-                "STS GetCallerIdentity failed: {}",
-                DisplayErrorContext(&e)
-            ))
-        })?;
+    let resp = sts.get_caller_identity().send().await.map_err(|e| {
+        tracing::error!(error = %e, "STS GetCallerIdentity failed — credentials may be invalid");
+        ProvisionerError::Aws(format!(
+            "STS GetCallerIdentity failed: {}",
+            DisplayErrorContext(&e)
+        ))
+    })?;
 
     let arn = resp.arn().unwrap_or_default().to_string();
     let is_root = arn.ends_with(":root");
@@ -864,21 +846,13 @@ pub async fn get_caller_identity(
 /// they're not.
 async fn probe_s3(config: &aws_config::SdkConfig) -> bool {
     let client = claria_storage::client::from_config(config);
-    client
-        .list_buckets()
-        .send()
-        .await
-        .is_ok()
+    client.list_buckets().send().await.is_ok()
 }
 
 /// Check if the credentials have basic Bedrock access.
 async fn probe_bedrock(config: &aws_config::SdkConfig) -> bool {
     let client = aws_sdk_bedrock::Client::new(config);
-    client
-        .list_foundation_models()
-        .send()
-        .await
-        .is_ok()
+    client.list_foundation_models().send().await.is_ok()
 }
 
 // ── IAM helpers ──────────────────────────────────────────────────────────────
@@ -913,9 +887,7 @@ pub(crate) async fn create_policy(
             let arn = resp
                 .policy()
                 .and_then(|p| p.arn())
-                .ok_or_else(|| {
-                    ProvisionerError::Aws("CreatePolicy returned no ARN".into())
-                })?
+                .ok_or_else(|| ProvisionerError::Aws("CreatePolicy returned no ARN".into()))?
                 .to_string();
             tracing::info!(policy_arn = %arn, "created IAM policy");
             Ok(arn)
@@ -926,9 +898,7 @@ pub(crate) async fn create_policy(
                 .map(|se| se.is_entity_already_exists_exception())
                 .unwrap_or(false);
 
-            if is_conflict
-                && let Some(acct) = account_id
-            {
+            if is_conflict && let Some(acct) = account_id {
                 let arn = format!("arn:aws:iam::{acct}:policy/{IAM_POLICY_NAME}");
                 tracing::info!(policy_arn = %arn, "IAM policy already exists, updating document");
 
@@ -1050,22 +1020,13 @@ pub(crate) async fn update_policy_document(
 /// Create the `claria-admin` IAM user. Returns the user ARN.
 ///
 /// Idempotent: if the user already exists, returns the existing ARN.
-pub(crate) async fn create_user(
-    client: &aws_sdk_iam::Client,
-) -> Result<String, ProvisionerError> {
-    match client
-        .create_user()
-        .user_name(IAM_USER_NAME)
-        .send()
-        .await
-    {
+pub(crate) async fn create_user(client: &aws_sdk_iam::Client) -> Result<String, ProvisionerError> {
+    match client.create_user().user_name(IAM_USER_NAME).send().await {
         Ok(resp) => {
             let arn = resp
                 .user()
                 .map(|u| u.arn().to_string())
-                .ok_or_else(|| {
-                    ProvisionerError::Aws("CreateUser returned no user".into())
-                })?;
+                .ok_or_else(|| ProvisionerError::Aws("CreateUser returned no user".into()))?;
             tracing::info!(user_arn = %arn, "created IAM user");
             Ok(arn)
         }
@@ -1091,9 +1052,7 @@ pub(crate) async fn create_user(
                 let arn = get_resp
                     .user()
                     .map(|u| u.arn().to_string())
-                    .ok_or_else(|| {
-                        ProvisionerError::Aws("iam:GetUser returned no user".into())
-                    })?;
+                    .ok_or_else(|| ProvisionerError::Aws("iam:GetUser returned no user".into()))?;
 
                 tracing::info!(user_arn = %arn, "IAM user already exists, reusing");
                 return Ok(arn);
@@ -1166,9 +1125,9 @@ pub async fn create_access_key(
             ))
         })?;
 
-    let ak = resp.access_key().ok_or_else(|| {
-        ProvisionerError::Aws("CreateAccessKey returned no key".into())
-    })?;
+    let ak = resp
+        .access_key()
+        .ok_or_else(|| ProvisionerError::Aws("CreateAccessKey returned no key".into()))?;
 
     let key_id = ak.access_key_id().to_string();
     let secret = ak.secret_access_key().to_string();

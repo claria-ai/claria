@@ -36,13 +36,11 @@ async fn instrumented_s3_calls_export_elapsed_ms() {
     let export_buffer = ConsoleBuffer::new();
     let default_buffer = ConsoleBuffer::new();
     let subscriber = tracing_subscriber::registry()
-        .with(
-            ConsoleLayer::new(export_buffer.clone()).with_filter(
-                tracing_subscriber::EnvFilter::new(
-                    "info,claria_storage=trace,claria_bedrock=trace,claria_desktop=trace",
-                ),
+        .with(ConsoleLayer::new(export_buffer.clone()).with_filter(
+            tracing_subscriber::EnvFilter::new(
+                "info,claria_storage=trace,claria_bedrock=trace,claria_desktop=trace",
             ),
-        )
+        ))
         .with(
             ConsoleLayer::new(default_buffer.clone())
                 .with_filter(tracing_subscriber::EnvFilter::new("info")),

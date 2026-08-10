@@ -11,11 +11,11 @@ use std::collections::{HashMap, HashSet};
 
 use claria_core::models::{
     report::{
-        ReportBlock, ReportContent, ReportDraft, ReportExport, ReportExportStatus,
-        ReportOperation, ReportProposal, ReportProposalDecision as CoreProposalDecision,
-        ReportProposalResolution, ReportProtocolBlock, ReportProtocolRole, ReportSection,
-        ReportTemplateImport, ReportTemplateWarning, ReportTemplateWarningCode,
-        ReportToolResultStatus, ReportWorkspace, report_template_placeholder_count,
+        ReportBlock, ReportContent, ReportDraft, ReportExport, ReportExportStatus, ReportOperation,
+        ReportProposal, ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
+        ReportProtocolBlock, ReportProtocolRole, ReportSection, ReportTemplateImport,
+        ReportTemplateWarning, ReportTemplateWarningCode, ReportToolResultStatus, ReportWorkspace,
+        report_template_placeholder_count,
     },
     turn_usage::TurnUsage,
 };

@@ -26,25 +26,23 @@ pub mod state;
 pub mod syncer;
 pub mod syncers;
 
-pub use crate::account_setup::{
-    assess_credentials, assume_role, bootstrap_account, build_role_arn, create_access_key,
-    delete_user_access_key, get_caller_identity, list_user_access_keys, update_iam_policy,
-    validate_new_credentials, AccessKeyInfo, AssumeRoleResult, BootstrapResult, BootstrapStep,
-    CallerIdentity, CredentialAssessment, CredentialClass, NewCredentials, StepStatus,
-    MAX_ACCESS_KEYS_PER_USER,
+pub use crate::{
+    account_setup::{
+        AccessKeyInfo, AssumeRoleResult, BootstrapResult, BootstrapStep, CallerIdentity,
+        CredentialAssessment, CredentialClass, MAX_ACCESS_KEYS_PER_USER, NewCredentials,
+        StepStatus, assess_credentials, assume_role, bootstrap_account, build_role_arn,
+        create_access_key, delete_user_access_key, get_caller_identity, list_user_access_keys,
+        update_iam_policy, validate_new_credentials,
+    },
+    addr::ResourceAddr,
+    error::ProvisionerError,
+    manifest::{CredentialScope, FieldDrift, Lifecycle, Manifest, ResourceSpec, Severity},
+    orchestrate::{build_plan_entry, destroy_all, execute, find_orphans, log_scan_summary, plan},
+    persistence::StatePersistence,
+    plan::{Action, Cause, PlanEntry},
+    state::ProvisionerState,
+    syncer::ResourceSyncer,
 };
-pub use crate::addr::ResourceAddr;
-pub use crate::error::ProvisionerError;
-pub use crate::manifest::{
-    CredentialScope, FieldDrift, Lifecycle, Manifest, ResourceSpec, Severity,
-};
-pub use crate::orchestrate::{
-    build_plan_entry, destroy_all, execute, find_orphans, log_scan_summary, plan,
-};
-pub use crate::persistence::StatePersistence;
-pub use crate::plan::{Action, Cause, PlanEntry};
-pub use crate::state::ProvisionerState;
-pub use crate::syncer::ResourceSyncer;
 
 /// Construct the resource manifest from runtime config.
 pub fn build_manifest(account_id: &str, system_name: &str, region: &str) -> Manifest {
@@ -98,28 +96,27 @@ pub fn build_syncers(
                     spec.clone(),
                     s3.clone(),
                 )),
-                "s3_bucket_versioning" => {
-                    Box::new(syncers::s3_bucket_versioning::S3BucketVersioningSyncer::new(
+                "s3_bucket_versioning" => Box::new(
+                    syncers::s3_bucket_versioning::S3BucketVersioningSyncer::new(
                         spec.clone(),
                         s3.clone(),
-                    ))
-                }
-                "s3_bucket_encryption" => {
-                    Box::new(syncers::s3_bucket_encryption::S3BucketEncryptionSyncer::new(
+                    ),
+                ),
+                "s3_bucket_encryption" => Box::new(
+                    syncers::s3_bucket_encryption::S3BucketEncryptionSyncer::new(
                         spec.clone(),
                         s3.clone(),
-                    ))
-                }
+                    ),
+                ),
                 "s3_bucket_public_access_block" => Box::new(
                     syncers::s3_bucket_public_access_block::S3BucketPublicAccessBlockSyncer::new(
                         spec.clone(),
                         s3.clone(),
                     ),
                 ),
-                "s3_bucket_policy" => Box::new(syncers::s3_bucket_policy::S3BucketPolicySyncer::new(
-                    spec.clone(),
-                    s3.clone(),
-                )),
+                "s3_bucket_policy" => Box::new(
+                    syncers::s3_bucket_policy::S3BucketPolicySyncer::new(spec.clone(), s3.clone()),
+                ),
                 "cloudtrail_trail" => {
                     Box::new(syncers::cloudtrail_trail::CloudTrailTrailSyncer::new(
                         spec.clone(),

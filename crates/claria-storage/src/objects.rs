@@ -870,4 +870,3 @@ pub async fn get_object_version(
         content_type,
     })
 }
-

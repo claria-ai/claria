@@ -75,7 +75,9 @@ async fn diagnostic_raw_api_calls() {
 #[ignore]
 async fn list_chat_models_all_have_us_prefix() {
     let config = build_config().await;
-    let models = list_chat_models(&config).await.expect("list_chat_models should succeed");
+    let models = list_chat_models(&config)
+        .await
+        .expect("list_chat_models should succeed");
 
     for m in &models {
         assert!(
@@ -91,7 +93,9 @@ async fn list_chat_models_all_have_us_prefix() {
 #[ignore]
 async fn list_chat_models_includes_opus_4_6() {
     let config = build_config().await;
-    let models = list_chat_models(&config).await.expect("list_chat_models should succeed");
+    let models = list_chat_models(&config)
+        .await
+        .expect("list_chat_models should succeed");
 
     println!("Discovered {} models:", models.len());
     for m in &models {
@@ -112,7 +116,9 @@ async fn list_chat_models_includes_opus_4_6() {
 #[ignore]
 async fn list_chat_models_includes_sonnet_4_6() {
     let config = build_config().await;
-    let models = list_chat_models(&config).await.expect("list_chat_models should succeed");
+    let models = list_chat_models(&config)
+        .await
+        .expect("list_chat_models should succeed");
 
     assert!(
         models
@@ -129,7 +135,9 @@ async fn list_chat_models_includes_sonnet_4_6() {
 #[ignore]
 async fn list_chat_models_excludes_legacy_opus_3() {
     let config = build_config().await;
-    let models = list_chat_models(&config).await.expect("list_chat_models should succeed");
+    let models = list_chat_models(&config)
+        .await
+        .expect("list_chat_models should succeed");
 
     assert!(
         !models.iter().any(|m| m.model_id.contains("claude-3-opus")),
@@ -143,7 +151,9 @@ async fn list_chat_models_excludes_legacy_opus_3() {
 #[ignore]
 async fn list_chat_models_excludes_legacy_models() {
     let config = build_config().await;
-    let models = list_chat_models(&config).await.expect("list_chat_models should succeed");
+    let models = list_chat_models(&config)
+        .await
+        .expect("list_chat_models should succeed");
 
     let legacy_fragments = [
         "claude-3-sonnet",

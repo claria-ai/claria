@@ -73,7 +73,11 @@ pub async fn rename_report_session(
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let workspace = claria_report_authoring::rename_report_session(
-            &ctx.s3, &ctx.bucket, client_id, report_id, &name,
+            &ctx.s3,
+            &ctx.bucket,
+            client_id,
+            report_id,
+            &name,
         )
         .await?;
         let workspace = claria_desktop::report_authoring::workspace_view(&workspace);

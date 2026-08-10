@@ -3,11 +3,11 @@
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_core::s3_keys;
+use claria_mock_aws::testing::MockServer;
 use claria_storage::{
     audit::{self as sink, AuditEvent},
     error::StorageError,
 };
-use claria_mock_aws::testing::MockServer;
 
 const BUCKET: &str = "123456789012-claria-data";
 

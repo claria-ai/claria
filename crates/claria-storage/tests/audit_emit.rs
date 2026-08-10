@@ -69,11 +69,11 @@ fn emit_is_a_summary_without_the_details_payload() {
         uuid::Uuid::nil().to_string(),
         "123456789012",
     )
-        .with_details(serde_json::json!({
-            "input_tokens": 1234,
-            "cost_usd": 0.0042,
-            "model_id": "anthropic.claude-sonnet-4",
-        }));
+    .with_details(serde_json::json!({
+        "input_tokens": 1234,
+        "cost_usd": 0.0042,
+        "model_id": "anthropic.claude-sonnet-4",
+    }));
 
     let (target, fields) = capture(&event);
 

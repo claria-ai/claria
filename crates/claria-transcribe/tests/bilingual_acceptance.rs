@@ -22,11 +22,9 @@
 //! language, and 25 speaker-diarized segments. Refresh by re-running the same
 //! example and overwriting the file.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
-use aws_credential_types::Credentials;
-use aws_credential_types::provider::SharedCredentialsProvider;
+use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_transcribe::types::MediaFormat;
 
@@ -103,15 +101,9 @@ async fn mixed_mode_request_uses_language_identification_and_returns_both_langua
         engine: TranscriptionEngine::Standard,
     };
 
-    let result = transcribe_audio_with_options(
-        &sdk,
-        BUCKET,
-        AUDIO_KEY,
-        MediaFormat::Mp4,
-        &options,
-    )
-    .await
-    .expect("transcription succeeded");
+    let result = transcribe_audio_with_options(&sdk, BUCKET, AUDIO_KEY, MediaFormat::Mp4, &options)
+        .await
+        .expect("transcription succeeded");
 
     // ── Assert on the request the SDK actually sent ───────────────────────────
     let recorded = {
@@ -134,7 +126,9 @@ async fn mixed_mode_request_uses_language_identification_and_returns_both_langua
         req.body
     );
     assert_eq!(
-        req.body.get("IdentifyMultipleLanguages").and_then(|v| v.as_bool()),
+        req.body
+            .get("IdentifyMultipleLanguages")
+            .and_then(|v| v.as_bool()),
         Some(true),
         "Mixed mode must set IdentifyMultipleLanguages=true; full request body: {}",
         req.body
@@ -226,8 +220,7 @@ async fn mixed_mode_request_uses_language_identification_and_returns_both_langua
             "speaker {spk} should be mono-lingual in this recording, got {langs:?}"
         );
     }
-    let distinct_speaker_langs: HashSet<&&str> =
-        langs_per_speaker.values().flatten().collect();
+    let distinct_speaker_langs: HashSet<&&str> = langs_per_speaker.values().flatten().collect();
     assert_eq!(
         distinct_speaker_langs.len(),
         2,

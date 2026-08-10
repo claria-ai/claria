@@ -1,4 +1,4 @@
-use claria_billing::{validate_query, CostGranularity, CostQuery};
+use claria_billing::{CostGranularity, CostQuery, validate_query};
 
 #[test]
 fn test_valid_daily_query() {

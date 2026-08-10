@@ -52,16 +52,34 @@ async fn load_fully_provisioned_scenario() {
     assert_eq!(r.status, StatusCode::OK);
 
     // Should have a bucket with data
-    let r = request(&app, Method::GET, "/185735714230-claria-data?list-type=2", "").await;
+    let r = request(
+        &app,
+        Method::GET,
+        "/185735714230-claria-data?list-type=2",
+        "",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("<Key>"));
 
     // Should have versioning enabled
-    let r = request(&app, Method::GET, "/185735714230-claria-data?versioning", "").await;
+    let r = request(
+        &app,
+        Method::GET,
+        "/185735714230-claria-data?versioning",
+        "",
+    )
+    .await;
     assert!(r.body.contains("Enabled"));
 
     // Should have encryption
-    let r = request(&app, Method::GET, "/185735714230-claria-data?encryption", "").await;
+    let r = request(
+        &app,
+        Method::GET,
+        "/185735714230-claria-data?encryption",
+        "",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("AES256"));
 
@@ -78,11 +96,23 @@ async fn load_drifted_scenario_has_missing_config() {
     request(&app, Method::POST, "/mock/scenario/drifted", "").await;
 
     // Drifted: versioning should be suspended/disabled
-    let r = request(&app, Method::GET, "/185735714230-claria-data?versioning", "").await;
+    let r = request(
+        &app,
+        Method::GET,
+        "/185735714230-claria-data?versioning",
+        "",
+    )
+    .await;
     assert!(!r.body.contains("<Status>Enabled</Status>"));
 
     // Drifted: encryption should be missing
-    let r = request(&app, Method::GET, "/185735714230-claria-data?encryption", "").await;
+    let r = request(
+        &app,
+        Method::GET,
+        "/185735714230-claria-data?encryption",
+        "",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
 }
 
@@ -105,10 +135,7 @@ fn params_extract_basic() {
         claria_mock_aws::params::extract("foo=bar&baz=qux", "baz"),
         Some("qux".to_string())
     );
-    assert_eq!(
-        claria_mock_aws::params::extract("foo=bar", "missing"),
-        None
-    );
+    assert_eq!(claria_mock_aws::params::extract("foo=bar", "missing"), None);
 }
 
 #[test]
