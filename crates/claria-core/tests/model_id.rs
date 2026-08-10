@@ -153,6 +153,46 @@ fn prompt_caching_is_denied_only_for_known_non_caching_families() {
 }
 
 #[test]
+fn extended_cache_ttl_is_denied_only_for_pre_45_families() {
+    // Everything on the caching denylist, plus caching-capable claude-3-x
+    // families, plus the dated 4.0/4.1 generation — none accept ttl "1h".
+    for id in [
+        "anthropic.claude-v2:1",
+        "anthropic.claude-instant-v1",
+        "us.anthropic.claude-3-opus-20240229-v1:0",
+        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+        "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "us.anthropic.claude-opus-4-20250514-v1:0",
+        "us.anthropic.claude-opus-4-1-20250805-v1:0",
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+    ] {
+        assert!(
+            !ModelCapabilities::for_id(id).supports_extended_cache_ttl,
+            "{id}"
+        );
+    }
+    // The 4.5 generation and everything newer gets the 1-hour TTL by
+    // default — including dated 4.5 IDs and undated 4.6+ profile shapes.
+    for id in [
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "us.anthropic.claude-opus-4-6-v1",
+        "us.anthropic.claude-sonnet-4-6-v1",
+        "global.anthropic.claude-sonnet-5-v1",
+        "us.anthropic.claude-fable-5-v1:0",
+        "us.anthropic.claude-mythos-5-v1:0",
+    ] {
+        assert!(
+            ModelCapabilities::for_id(id).supports_extended_cache_ttl,
+            "{id}"
+        );
+    }
+    // Unknown providers never get the extended TTL.
+    assert!(!ModelCapabilities::for_id("us.amazon.nova-pro-v1:0").supports_extended_cache_ttl);
+}
+
+#[test]
 fn counting_model_picks_newest_haiku_by_release_date() {
     let models = [
         "anthropic.claude-3-5-haiku-20241022-v1:0",

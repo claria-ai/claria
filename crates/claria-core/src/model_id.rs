@@ -10,6 +10,33 @@
 //! of silently losing features until someone edits an allowlist.
 
 use serde::{Deserialize, Serialize};
+use specta::Type;
+
+/// Time-to-live for a Bedrock prompt-cache entry.
+///
+/// Lives next to the capability table because which TTLs a model accepts is
+/// model knowledge: `FiveMinutes` is the server default every caching model
+/// supports, while `OneHour` requires
+/// [`ModelCapabilities::supports_extended_cache_ttl`]. Persisted on
+/// `TurnUsage` so historical costs price cache writes at the rate that was
+/// actually in effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheTtlChoice {
+    FiveMinutes,
+    OneHour,
+}
+
+impl CacheTtlChoice {
+    /// Stable snake_case name, matching the serde representation — for log
+    /// fields and audit details.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FiveMinutes => "five_minutes",
+            Self::OneHour => "one_hour",
+        }
+    }
+}
 
 /// Strip a cross-region inference-profile scope prefix (`us.`, `eu.`,
 /// `apac.`, `global.`) from a model ID, returning the bare foundation model
@@ -120,6 +147,12 @@ pub struct ModelCapabilities {
     /// blocks. Denylist of known-non-caching families, so claude-*-5 and
     /// newer generations get caching by default.
     pub prompt_caching: bool,
+    /// Whether the family accepts the extended 1-hour cache TTL
+    /// (`cachePoint.ttl = "1h"`). Denylist: everything on the caching
+    /// denylist, every `claude-3-*` family, and the dated 4.0/4.1
+    /// generation — AWS gates the 1-hour TTL to Claude 4.5 and newer, so
+    /// new generations get it by default.
+    pub supports_extended_cache_ttl: bool,
 }
 
 impl ModelCapabilities {
@@ -148,10 +181,35 @@ impl ModelCapabilities {
             || id.contains("claude-3-haiku")
             || id.contains("claude-3-5-sonnet");
 
+        // Families that cache but predate the extended 1-hour TTL: every
+        // claude-3-x family plus the dated 4.0/4.1 generation (Opus 4,
+        // Opus 4.1, Sonnet 4). Minor-versioned 4.5+ IDs fall through to
+        // modern-default true.
+        let no_extended_ttl = no_caching
+            || id.contains("claude-3-")
+            || family_with_date_stamp(&id, "claude-opus-4")
+            || family_with_date_stamp(&id, "claude-opus-4-1")
+            || family_with_date_stamp(&id, "claude-sonnet-4");
+
         Self {
             report_tools: is_claude && !legacy_pre_tools,
             context_window_tokens,
             prompt_caching: is_claude && !no_caching,
+            supports_extended_cache_ttl: is_claude && !no_extended_ttl,
         }
     }
+}
+
+/// True when `id` contains `family` followed by `-` and a release-date
+/// stamp (4+ digits), i.e. the dated generation shape
+/// (`claude-opus-4-20250514`). A short digit run after the dash is a minor
+/// version bump (`claude-sonnet-4-5`), not this generation.
+fn family_with_date_stamp(id: &str, family: &str) -> bool {
+    id.match_indices(family).any(|(start, _)| {
+        let leading_digits = id[start + family.len()..]
+            .strip_prefix('-')
+            .map(|rest| rest.chars().take_while(char::is_ascii_digit).count())
+            .unwrap_or(0);
+        leading_digits >= 4
+    })
 }

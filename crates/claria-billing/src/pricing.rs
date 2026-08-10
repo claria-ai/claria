@@ -25,7 +25,8 @@ use claria_core::{model_id::strip_scope_prefix, models::cost::ModelPricing};
 /// Phase 2 (prompt caching active) → version 2 with non-zero cache prices.
 /// Phase 3 (Claude 4.5+ generation added) → version 3.
 /// Phase 4 (tier-level matching; Fable/Mythos and Claude 5 generation) → version 4.
-pub const PRICING_VERSION: u32 = 4;
+/// Phase 5 (extended 1-hour cache TTL write tier) → version 5.
+pub const PRICING_VERSION: u32 = 5;
 
 /// Resolve pricing for a Bedrock model_id.
 ///
@@ -68,13 +69,14 @@ pub fn lookup(model_id: &str) -> Option<ModelPricing> {
 }
 
 /// Cache pricing follows Anthropic's standard multipliers: reads at 0.1×
-/// the input rate, writes at 1.25× (5-minute TTL).
+/// the input rate, writes at 1.25× (5-minute TTL) or 2× (1-hour TTL).
 fn tier(input_per_million: f64, output_per_million: f64) -> ModelPricing {
     ModelPricing {
         input_per_million,
         output_per_million,
         cache_read_per_million: input_per_million * 0.10,
         cache_write_per_million: input_per_million * 1.25,
+        cache_write_1h_per_million: input_per_million * 2.0,
     }
 }
 

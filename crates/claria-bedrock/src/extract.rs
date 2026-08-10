@@ -98,7 +98,7 @@ pub async fn extract_document_text(
         "document text extraction complete"
     );
 
-    let usage = converse::optional_usage(response.usage(), model_id);
+    let usage = converse::optional_usage(response.usage(), model_id, None);
 
     Ok((text, usage))
 }

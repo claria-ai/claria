@@ -523,6 +523,7 @@ fn complete_turn(index: usize, text_size: usize) -> ReportAuthoringTurn {
             output_tokens: 1,
             cache_read_input_tokens: 0,
             cache_write_input_tokens: 0,
+            cache_ttl: None,
             cost_usd: 0.0,
             pricing_version: 0,
         },

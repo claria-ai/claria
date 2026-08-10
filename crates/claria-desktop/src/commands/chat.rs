@@ -592,18 +592,21 @@ fn assemble_chat_prompt(
 /// Derive a [`claria_bedrock::chat::CacheStrategy`] from config + the
 /// inference profile we're about to invoke. Model support comes from the
 /// central capability table in `claria-core`.
+///
+/// Chat surfaces (client chat and infra chat) use the extended 1-hour TTL —
+/// conversations resume across gaps longer than the 5-minute default — and
+/// fall back to the default TTL silently on families that don't support it.
 fn build_cache_strategy(cfg: &ClariaConfig, model_id: &str) -> claria_bedrock::chat::CacheStrategy {
     if !cfg.prompt_caching_enabled {
         return claria_bedrock::chat::CacheStrategy::disabled();
     }
-    claria_bedrock::chat::CacheStrategy::enabled_for_model(model_supports_prompt_caching(model_id))
-}
-
-/// True if the model_id (inference profile or bare foundation id) honours
-/// Bedrock prompt-caching `cachePoint` blocks, per the central capability
-/// table in `claria-core`.
-fn model_supports_prompt_caching(model_id: &str) -> bool {
-    claria_core::model_id::ModelCapabilities::for_id(model_id).prompt_caching
+    let capabilities = claria_core::model_id::ModelCapabilities::for_id(model_id);
+    let ttl = if capabilities.supports_extended_cache_ttl {
+        claria_core::model_id::CacheTtlChoice::OneHour
+    } else {
+        claria_core::model_id::CacheTtlChoice::FiveMinutes
+    };
+    claria_bedrock::chat::CacheStrategy::enabled_for_model(capabilities.prompt_caching, ttl)
 }
 
 fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {

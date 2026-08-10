@@ -2231,6 +2231,7 @@ fn empty_usage(model_id: &str) -> TurnUsage {
         output_tokens: 0,
         cache_read_input_tokens: 0,
         cache_write_input_tokens: 0,
+        cache_ttl: None,
         cost_usd: 0.0,
         pricing_version: 0,
     }

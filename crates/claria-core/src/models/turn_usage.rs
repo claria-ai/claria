@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+use crate::model_id::CacheTtlChoice;
+
 /// Per-turn token usage captured from a Bedrock Converse response.
 ///
 /// Cache fields are populated by the prompt-caching layer; until then they
@@ -37,6 +39,12 @@ pub struct TurnUsage {
     /// entry. Mirrors the AWS SDK `TokenUsage::cache_write_input_tokens`.
     /// `0` when prompt caching is not active.
     pub cache_write_input_tokens: u64,
+
+    /// TTL carried by the request's cache points. `None` means the
+    /// 5-minute default or a legacy/uncached turn — either way cache
+    /// writes billed at the 5-minute rate, so absence prices correctly.
+    #[serde(default)]
+    pub cache_ttl: Option<CacheTtlChoice>,
 
     /// USD cost computed at the moment of the call against `pricing_version`.
     /// Frozen — never recomputed on read. UI may recompute live for

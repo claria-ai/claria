@@ -11,6 +11,7 @@ use claria_bedrock::{
     converse::StreamCollector,
     error::BedrockError,
 };
+use claria_core::model_id::CacheTtlChoice;
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 
 const MODEL_ID: &str = "us.anthropic.claude-sonnet-test";
@@ -82,7 +83,7 @@ fn collector_accumulates_deltas_and_captures_usage() {
     assert!(collector.absorb(stop_event(StopReason::EndTurn)).is_none());
     assert!(collector.absorb(metadata_event(120, 7)).is_none());
 
-    let outcome = collector.finish(MODEL_ID, 8_192).expect("complete stream");
+    let outcome = collector.finish(MODEL_ID, 8_192, None).expect("complete stream");
     assert_eq!(outcome.text, "Hello, world.");
     assert_eq!(outcome.stop_reason, "end_turn");
     let usage = outcome.usage.expect("usage captured");
@@ -96,7 +97,7 @@ fn collector_surfaces_truncation_as_a_typed_error() {
     collector.absorb(delta_event("partial out"));
     collector.absorb(stop_event(StopReason::MaxTokens));
 
-    let error = collector.finish(MODEL_ID, 8_192).expect_err("truncated");
+    let error = collector.finish(MODEL_ID, 8_192, None).expect_err("truncated");
     assert!(matches!(
         error,
         BedrockError::ResponseTruncated {
@@ -110,7 +111,7 @@ fn collector_rejects_a_stream_that_never_stopped() {
     let mut collector = StreamCollector::new();
     collector.absorb(delta_event("cut off mid-"));
 
-    let error = collector.finish(MODEL_ID, 8_192).expect_err("no stop");
+    let error = collector.finish(MODEL_ID, 8_192, None).expect_err("no stop");
     assert!(matches!(error, BedrockError::ResponseParse(message)
         if message.contains("messageStop")));
 }
@@ -121,7 +122,7 @@ fn collector_preserves_missing_usage_as_none() {
     collector.absorb(delta_event("text"));
     collector.absorb(stop_event(StopReason::EndTurn));
 
-    let outcome = collector.finish(MODEL_ID, 8_192).expect("complete");
+    let outcome = collector.finish(MODEL_ID, 8_192, None).expect("complete");
     assert!(outcome.usage.is_none());
 }
 
@@ -156,6 +157,107 @@ async fn streamed_chat_forwards_deltas_and_returns_the_full_text() {
     assert_eq!(
         state.bedrock_text_requests[0]["inferenceConfig"]["maxTokens"],
         claria_bedrock::chat::CHAT_MAX_OUTPUT_TOKENS
+    );
+}
+
+#[tokio::test]
+async fn one_hour_chat_caching_marks_system_and_conversation_tail() {
+    let server = MockServer::spawn().await;
+    // Above the ~4,800-char floor so both cache gates open.
+    let system_prompt = "s".repeat(6_000);
+    let outcome = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        &system_prompt,
+        &user_messages("Hello"),
+        CacheStrategy::enabled_for_model(true, CacheTtlChoice::OneHour),
+        |_| {},
+    )
+    .await
+    .expect("streamed chat");
+
+    // The recorded usage carries the TTL the request was cached at.
+    assert_eq!(
+        outcome.usage.expect("usage").cache_ttl,
+        Some(CacheTtlChoice::OneHour)
+    );
+
+    let state = server.state.read().await;
+    let request = &state.bedrock_text_requests[0];
+    // System prefix: text block then a cache point carrying the 1h TTL.
+    assert_eq!(
+        request["system"][1]["cachePoint"],
+        serde_json::json!({"type": "default", "ttl": "1h"})
+    );
+    // Conversation tail: the last message's content ends with the same
+    // 1h cache point, so the next turn reads the history from cache.
+    let tail = request["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        tail.last().unwrap()["cachePoint"],
+        serde_json::json!({"type": "default", "ttl": "1h"}),
+        "conversation tail must end with a 1h cache point"
+    );
+}
+
+#[tokio::test]
+async fn five_minute_chat_caching_omits_the_ttl_field() {
+    let server = MockServer::spawn().await;
+    let system_prompt = "s".repeat(6_000);
+    let outcome = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        &system_prompt,
+        &user_messages("Hello"),
+        CacheStrategy::enabled_for_model(true, CacheTtlChoice::FiveMinutes),
+        |_| {},
+    )
+    .await
+    .expect("streamed chat");
+
+    assert_eq!(
+        outcome.usage.expect("usage").cache_ttl,
+        Some(CacheTtlChoice::FiveMinutes)
+    );
+
+    let state = server.state.read().await;
+    let request = &state.bedrock_text_requests[0];
+    // Default-TTL cache points stay byte-identical to the pre-TTL shape:
+    // no `ttl` key at all, on either marker.
+    assert_eq!(
+        request["system"][1]["cachePoint"],
+        serde_json::json!({"type": "default"})
+    );
+    let tail = request["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        tail.last().unwrap()["cachePoint"],
+        serde_json::json!({"type": "default"})
+    );
+}
+
+#[tokio::test]
+async fn uncached_chat_records_no_ttl() {
+    let server = MockServer::spawn().await;
+    let outcome = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        CacheStrategy::disabled(),
+        |_| {},
+    )
+    .await
+    .expect("streamed chat");
+
+    assert_eq!(outcome.usage.expect("usage").cache_ttl, None);
+    let state = server.state.read().await;
+    assert!(
+        !state.bedrock_text_requests[0]
+            .to_string()
+            .contains("cachePoint")
     );
 }
 
