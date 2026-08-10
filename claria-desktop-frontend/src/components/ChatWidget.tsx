@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { MarkdownBlock } from "./Markdown";
 import {
   acceptModelAgreement,
   type ChatMessage,
@@ -14,7 +13,11 @@ import {
   type SessionUsage,
 } from "../lib/cost";
 import { lookupModelPricing, type ModelPricing } from "../lib/tauri";
-import TurnCostBadge from "./TurnCostBadge";
+import { usePreferredModel } from "../lib/usePreferredModel";
+import ChatComposer from "./ChatComposer";
+import ChatEmptyState from "./ChatEmptyState";
+import MessageBubble from "./MessageBubble";
+import ModelSelect from "./ModelSelect";
 import SessionTotalBanner from "./SessionTotalBanner";
 import LastTurnFooter from "./LastTurnFooter";
 import Spinner from "./Spinner";
@@ -85,24 +88,12 @@ export default function ChatWidget({
   const [pricing, setPricing] = useState<ModelPricing | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [textareaHeight, setTextareaHeight] = useState(80);
-  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
-  const [selectedModelId, setSelectedModelId] = useState<string | null>(
-    initialModelId ?? null
+  const [selectedModelId, setSelectedModelId] = usePreferredModel(
+    chatModels,
+    preferredModelId,
+    initialModelId
   );
-
-  // Default to preferred model (or first available) once models are loaded
-  useEffect(() => {
-    if (chatModels.length > 0 && !selectedModelId) {
-      const preferred =
-        preferredModelId &&
-        chatModels.some((m) => m.model_id === preferredModelId)
-          ? preferredModelId
-          : chatModels[0].model_id;
-      setSelectedModelId(preferred);
-    }
-  }, [chatModels, selectedModelId, preferredModelId]);
 
   // Resolve pricing for the selected model. `null` when unknown.
   useEffect(() => {
@@ -141,33 +132,12 @@ export default function ChatWidget({
       setUsageByIndex([]);
       setSession(EMPTY_SESSION_USAGE);
     }
-  }, [initialMessages, initialModelId, initialUsageByIndex]);
+  }, [initialMessages, initialModelId, initialUsageByIndex, setSelectedModelId]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
-
-  // Drag-to-resize textarea
-  useEffect(() => {
-    function onPointerMove(e: PointerEvent) {
-      if (!dragRef.current) return;
-      const delta = dragRef.current.startY - e.clientY;
-      setTextareaHeight(
-        Math.max(48, Math.min(400, dragRef.current.startHeight + delta))
-      );
-    }
-    function onPointerUp() {
-      dragRef.current = null;
-      document.body.style.userSelect = "";
-    }
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-    return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-  }, []);
 
   const canSend =
     !sending &&
@@ -235,26 +205,13 @@ export default function ChatWidget({
         className={`flex items-center gap-2 px-6 py-2 border-b ${embedded ? "border-gray-100 bg-gray-50" : "border-gray-100 bg-white"}`}
       >
         <div className="flex-1" />
-        {chatModelsLoading ? (
-          <div className="flex items-center gap-1.5 text-gray-400 text-xs">
-            <Spinner />
-            <span>Loading models...</span>
-          </div>
-        ) : chatModelsError ? (
-          <span className="text-red-500 text-xs">Failed to load models</span>
-        ) : (
-          <select
-            value={selectedModelId ?? ""}
-            onChange={(e) => setSelectedModelId(e.target.value)}
-            className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            {chatModels.map((m) => (
-              <option key={m.model_id} value={m.model_id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        )}
+        <ModelSelect
+          models={chatModels}
+          loading={chatModelsLoading}
+          error={chatModelsError}
+          value={selectedModelId}
+          onChange={setSelectedModelId}
+        />
       </div>
 
       {/* Persistent session-cost banner — fuel-gauge style. */}
@@ -277,16 +234,16 @@ export default function ChatWidget({
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         {messages.length === 0 && !sending && (
-          <div className="text-center text-gray-400 text-sm mt-8">
-            <p className="mb-1">{emptyStateTitle}</p>
-            {emptyStateSubtitle && (
-              <p className="text-xs">{emptyStateSubtitle}</p>
-            )}
-          </div>
+          <ChatEmptyState title={emptyStateTitle} subtitle={emptyStateSubtitle} />
         )}
 
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} usage={usageByIndex[i]} />
+          <MessageBubble
+            key={i}
+            role={msg.role}
+            content={msg.content}
+            usage={usageByIndex[i]}
+          />
         ))}
 
         {sending && (
@@ -341,77 +298,17 @@ export default function ChatWidget({
       />
 
       {/* Input bar */}
-      <div className="border-t border-gray-200 bg-white">
-        {/* Drag handle */}
-        <div
-          className="flex justify-center py-1.5 cursor-row-resize select-none hover:bg-gray-50 transition-colors"
-          onPointerDown={(e) => {
-            dragRef.current = {
-              startY: e.clientY,
-              startHeight: textareaHeight,
-            };
-            document.body.style.userSelect = "none";
-          }}
-        >
-          <div className="w-8 h-1 rounded-full bg-gray-300" />
-        </div>
-        <div className="flex gap-3 px-6 pb-4">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder={resolvedPlaceholder}
-            disabled={
-              sending ||
-              chatModelsLoading ||
-              extraLoading ||
-              !selectedModelId
-            }
-            style={{ height: textareaHeight, resize: "none" }}
-            className="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
-          />
-          <button
-            onClick={handleSend}
-            disabled={!canSend}
-            className="self-end px-5 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-          >
-            Send
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MessageBubble({
-  message,
-  usage,
-}: {
-  message: ChatMessage;
-  usage?: TurnUsage | null;
-}) {
-  const isUser = message.role === "user";
-
-  return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[80%] flex flex-col ${isUser ? "items-end" : "items-start"}`}>
-        <div
-          className={`rounded-lg px-4 py-2.5 ${
-            isUser ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-800"
-          }`}
-        >
-          {isUser ? (
-            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-          ) : (
-            <MarkdownBlock source={message.content} />
-          )}
-        </div>
-        {!isUser && <TurnCostBadge usage={usage} />}
+      <div className="border-t border-gray-200 bg-white px-6 py-4">
+        <ChatComposer
+          value={input}
+          onChange={setInput}
+          onSend={() => void handleSend()}
+          disabled={
+            sending || chatModelsLoading || extraLoading || !selectedModelId
+          }
+          canSend={canSend}
+          placeholder={resolvedPlaceholder}
+        />
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MarkdownBlock } from "../components/Markdown";
+import MessageBubble from "../components/MessageBubble";
 import {
   applyReportTemplate,
   discardReportTemplatePreview,
@@ -24,12 +24,16 @@ import {
   reportEditsEqual,
   validateReportEdit,
 } from "../lib/writingWorkspace";
+import ChatComposer from "../components/ChatComposer";
+import ChatEmptyState from "../components/ChatEmptyState";
 import EditableName from "../components/EditableName";
+import ModelSelect from "../components/ModelSelect";
 import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
 import ReportRevisionModal from "../components/ReportRevisionModal";
 import WritingCanvas from "../components/WritingCanvas";
 import WritingProposalCard from "../components/WritingProposalCard";
 import Spinner from "../components/Spinner";
+import { usePreferredModel } from "../lib/usePreferredModel";
 import {
   readWritingComposerDraft,
   reportBlockReferencePreview,
@@ -88,7 +92,10 @@ export default function Writing({
     | "exporting"
     | "applying_template"
   >(null);
-  const [selectedModelId, setSelectedModelId] = useState("");
+  const [selectedModelId, setSelectedModelId] = usePreferredModel(
+    chatModels,
+    preferredModelId
+  );
   const [instruction, setInstruction] = useState(
     initialComposerDraft?.instruction ?? ""
   );
@@ -170,19 +177,6 @@ export default function Writing({
   useEffect(() => {
     writeWritingComposerDraft(clientId, { instruction, references });
   }, [clientId, instruction, references]);
-
-  useEffect(() => {
-    if (
-      selectedModelId &&
-      chatModels.some((model) => model.model_id === selectedModelId)
-    ) {
-      return;
-    }
-    const preferred = chatModels.find(
-      (model) => model.model_id === preferredModelId
-    );
-    setSelectedModelId(preferred?.model_id ?? chatModels[0]?.model_id ?? "");
-  }, [chatModels, preferredModelId, selectedModelId]);
 
   const baseline = useMemo(
     () => (workspace ? draftToEdit(workspace.draft) : null),
@@ -663,24 +657,16 @@ export default function Writing({
                 className="w-full text-sm"
               />
             </div>
-            <select
-              aria-label="Writing model"
+            <ModelSelect
+              models={chatModels}
+              loading={chatModelsLoading}
+              error={chatModelsError}
               value={selectedModelId}
-              onChange={(event) => setSelectedModelId(event.target.value)}
-              disabled={controlsBusy || pending !== null || chatModelsLoading}
-              className="min-w-0 w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
-            >
-              {chatModelsLoading ? (
-                <option value="">Loading models…</option>
-              ) : chatModels.length === 0 ? (
-                <option value="">No models available</option>
-              ) : null}
-              {chatModels.map((model) => (
-                <option key={model.model_id} value={model.model_id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedModelId}
+              disabled={controlsBusy || pending !== null}
+              ariaLabel="Writing model"
+              className="min-w-0 w-full"
+            />
             <button
               type="button"
               aria-expanded={contextOpen}
@@ -790,15 +776,10 @@ export default function Writing({
           className="flex-1 overflow-y-auto px-5 py-4 space-y-4 select-text"
         >
           {workspace.turns.length === 0 && !pending && (
-            <div className="py-8 text-center">
-              <p className="text-sm font-medium text-gray-700">
-                Build the report interactively.
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                Ask Claude to inspect records, answer a question, propose
-                specific sections, or apply a managed Word template.
-              </p>
-            </div>
+            <ChatEmptyState
+              title="Build the report interactively."
+              subtitle="Ask Claude to inspect records, answer a question, propose specific sections, or apply a managed Word template."
+            />
           )}
           {workspace.turns.map((turn) => (
             <div key={turn.id} className="space-y-2">
@@ -903,37 +884,18 @@ export default function Writing({
               ))}
             </div>
           )}
-          <textarea
-            ref={composerRef}
-            aria-label="Writing instruction"
+          <ChatComposer
+            composerRef={composerRef}
+            ariaLabel="Writing instruction"
             value={instruction}
-            onChange={(event) => setInstruction(event.target.value)}
-            onKeyDown={(event) => {
-              if (
-                event.key === "Enter" &&
-                (event.ctrlKey || event.metaKey) &&
-                !composerDisabled
-              ) {
-                event.preventDefault();
-                void handleSend();
-              }
-            }}
+            onChange={setInstruction}
+            onSend={() => void handleSend()}
             disabled={composerDisabled}
-            rows={4}
+            canSend={!composerDisabled && instruction.trim() !== ""}
             placeholder="Ask a question or describe the report change you want…"
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
+            sendLabel={busy === "sending" ? "Using tools…" : "Send"}
+            rows={4}
           />
-          <div className="mt-2 flex items-center justify-between">
-            <span className="text-[11px] text-gray-400">Ctrl/Cmd + Enter to send</span>
-            <button
-              type="button"
-              onClick={() => void handleSend()}
-              disabled={composerDisabled || instruction.trim() === ""}
-              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
-            >
-              {busy === "sending" ? "Using tools…" : "Send"}
-            </button>
-          </div>
         </div>
       </section>
 
@@ -1148,22 +1110,5 @@ function TimelineItem({ item }: { item: ReportTimelineItemView }) {
     );
   }
 
-  const user = item.role === "user";
-  return (
-    <div className={`flex ${user ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[90%] rounded-lg px-3 py-2 text-sm select-text ${
-          user
-            ? "bg-blue-600 text-white whitespace-pre-wrap"
-            : "bg-gray-100 text-gray-800 border border-gray-200"
-        }`}
-      >
-        {user ? (
-          item.text
-        ) : (
-          <MarkdownBlock source={item.text} />
-        )}
-      </div>
-    </div>
-  );
+  return <MessageBubble role={item.role} content={item.text} />;
 }
