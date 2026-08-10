@@ -2,6 +2,10 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Project instructions gain review-derived coding rules covering reuse, frontend patterns, Rust conventions, LLM calls, logging, security, and performance
+
 ## [0.22.0] — 2026-08-10
 
 - Chat and writer sessions receive numbered names that can be edited directly in their panes and are shown in history
