@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ElementType } from "react";
+import { memo, useEffect, useRef, type ElementType } from "react";
 import { InlineMarkdown, MarkdownBlock } from "./Markdown";
 import type {
   ReportBlockView,
@@ -18,7 +18,14 @@ import {
 } from "../lib/writingComposerDraft";
 import AgentThrobber from "./AgentThrobber";
 
-export default function WritingCanvas({
+/**
+ * The accepted-report canvas. Memoized — the writer page re-renders on every
+ * composer keystroke, and the canvas only depends on the workspace, the edit
+ * buffer, and stable callbacks.
+ */
+export default memo(WritingCanvas);
+
+function WritingCanvas({
   workspace,
   edit,
   editing,

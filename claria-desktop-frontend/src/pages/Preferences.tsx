@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getPrompt,
-  listWriterTemplates,
   savePrompt,
   deletePrompt,
   setPreferredModel,
@@ -33,6 +32,7 @@ import {
   type WriterTemplateView,
 } from "../lib/tauri";
 import { costErrorMessage } from "../lib/costErrors";
+import { useWriterTemplates } from "../lib/useWriterTemplates";
 import { formatDateTime, formatFileSize } from "../lib/format";
 import { promptVersions } from "../lib/versions";
 import EditableName from "../components/EditableName";
@@ -998,26 +998,16 @@ function CostExplorerSection() {
 
 function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
-  const [templates, setTemplates] = useState<WriterTemplateView[]>([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    templates,
+    setTemplates,
+    loading,
+    error: loadError,
+    reload,
+  } = useWriterTemplates();
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setTemplates(await listWriterTemplates());
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error = loadError ?? actionError;
 
   useEffect(() => {
     if (defaultOpen) setOpen(true);
@@ -1025,14 +1015,14 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
 
   async function upload() {
     setBusy("upload");
-    setError(null);
+    setActionError(null);
     try {
       const uploaded = await uploadWriterTemplate();
       if (uploaded) {
         setTemplates((current) => [uploaded, ...current]);
       }
     } catch (reason) {
-      setError(String(reason));
+      setActionError(String(reason));
     } finally {
       setBusy(null);
     }
@@ -1050,14 +1040,14 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
       return;
     }
     setBusy(template.id);
-    setError(null);
+    setActionError(null);
     try {
       await deleteWriterTemplate(template.id);
       setTemplates((current) =>
         current.filter((candidate) => candidate.id !== template.id)
       );
     } catch (reason) {
-      setError(String(reason));
+      setActionError(String(reason));
     } finally {
       setBusy(null);
     }
@@ -1152,7 +1142,10 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
             <p className="text-sm text-red-800">{error}</p>
             <button
               type="button"
-              onClick={() => void load()}
+              onClick={() => {
+                setActionError(null);
+                void reload();
+              }}
               className="mt-2 text-xs font-semibold text-red-700"
             >
               Try again

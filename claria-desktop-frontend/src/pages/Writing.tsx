@@ -1,52 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import MessageBubble from "../components/MessageBubble";
-import {
-  applyReportTemplate,
-  discardReportTemplatePreview,
-  exportReportDocx,
-  listWriterTemplates,
-  loadReportWorkspace,
-  previewWriterTemplate,
-  renameReportSession,
-  resolveReportProposal,
-  saveReportDraft,
-  sendReportMessage,
-  type ChatModel,
-  type ReportDraftEdit,
-  type ReportTimelineItemView,
-  type ReportTurnProgressView,
-  type ReportWorkspaceView,
-  type WriterTemplateView,
-} from "../lib/tauri";
-import {
-  countReportEdits,
-  draftToEdit,
-  reportEditsEqual,
-  validateReportEdit,
-} from "../lib/writingWorkspace";
+import { type ChatModel } from "../lib/tauri";
 import ChatComposer from "../components/ChatComposer";
 import ChatEmptyState from "../components/ChatEmptyState";
+import ContextPills, { buildContextPills } from "../components/ContextPills";
 import EditableName from "../components/EditableName";
 import ModelSelect from "../components/ModelSelect";
 import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
 import ReportRevisionModal from "../components/ReportRevisionModal";
+import SessionTotalBanner from "../components/SessionTotalBanner";
+import TimelineItem from "../components/TimelineItem";
+import TurnCostBadge from "../components/TurnCostBadge";
 import WritingCanvas from "../components/WritingCanvas";
 import WritingProposalCard from "../components/WritingProposalCard";
 import Spinner from "../components/Spinner";
+import {
+  EMPTY_SESSION_USAGE,
+  accumulateUsage,
+  type SessionUsage,
+} from "../lib/cost";
 import { usePreferredModel } from "../lib/usePreferredModel";
+import { useReportWorkspace } from "../lib/useReportWorkspace";
+import { useWriterTemplates } from "../lib/useWriterTemplates";
 import {
   readWritingComposerDraft,
   reportBlockReferencePreview,
   writeWritingComposerDraft,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
-
-type ContextPill = {
-  key: string;
-  label: string;
-  status: "loading" | "ready" | "failed";
-  filename?: string;
-};
+import type { ReportWorkspaceView } from "../lib/tauri";
 
 export type WritingLeaveState = {
   /** Any work that would be lost when the desktop app closes. */
@@ -77,21 +58,8 @@ export default function Writing({
   onRetryModels?: () => void;
   onManageTemplates: () => void;
 }) {
-  const generationRef = useRef(0);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const initialComposerDraft = useRef(readWritingComposerDraft(clientId)).current;
-  const [workspace, setWorkspace] = useState<ReportWorkspaceView | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<
-    | null
-    | "saving"
-    | "sending"
-    | "resolving"
-    | "exporting"
-    | "applying_template"
-  >(null);
   const [selectedModelId, setSelectedModelId] = usePreferredModel(
     chatModels,
     preferredModelId
@@ -99,101 +67,74 @@ export default function Writing({
   const [instruction, setInstruction] = useState(
     initialComposerDraft?.instruction ?? ""
   );
-  const [editing, setEditing] = useState(false);
-  const [edit, setEdit] = useState<ReportDraftEdit>({
-    title: "Untitled report",
-    sections: [],
-  });
   const [references, setReferences] = useState<WritingBlockReference[]>(
     initialComposerDraft?.references ?? []
   );
-  const [saveStatus, setSaveStatus] = useState<string | null>(null);
-  const [exportStatus, setExportStatus] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [previewFilename, setPreviewFilename] = useState<string | null>(null);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
-  const [agentActivity, setAgentActivity] = useState<{
-    label: string;
-    detail?: string;
-  } | null>(null);
-  const [liveContext, setLiveContext] = useState<ContextPill[]>([]);
-  const [writerTemplates, setWriterTemplates] = useState<WriterTemplateView[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
-  const [templatesError, setTemplatesError] = useState<string | null>(null);
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const proposalStartRef = useRef<HTMLDivElement | null>(null);
 
-  const load = useCallback(async () => {
-    const generation = ++generationRef.current;
-    setLoading(true);
-    setLoadError(null);
-    setActionError(null);
-    setConflict(false);
-    try {
-      const result = await loadReportWorkspace(clientId);
-      if (generation !== generationRef.current) return;
-      if (expectedReportId && result.report_id !== expectedReportId) {
-        throw new Error("That Editor History session is no longer available.");
-      }
-      setWorkspace(result);
-      setEdit(draftToEdit(result.draft));
-      setReferences((current) => reconcileReferences(current, result));
-      setEditing(false);
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      setLoadError(String(error));
-    } finally {
-      if (generation === generationRef.current) setLoading(false);
-    }
-  }, [clientId, expectedReportId]);
+  const {
+    workspace,
+    loading,
+    loadError,
+    actionError,
+    conflict,
+    busy,
+    editing,
+    edit,
+    setEdit,
+    dirty,
+    editCount,
+    validationErrors,
+    savedEditsQueued,
+    saveStatus,
+    setSaveStatus,
+    exportStatus,
+    agentActivity,
+    liveContext,
+    load,
+    beginEdit,
+    cancelEdit,
+    save,
+    send,
+    resolveProposal,
+    applyTemplate,
+    exportDocx,
+    renameSession,
+    applyReverted,
+  } = useReportWorkspace({ clientId, expectedReportId });
+
+  const {
+    templates: writerTemplates,
+    error: templatesError,
+    reload: reloadTemplates,
+  } = useWriterTemplates();
 
   useEffect(() => {
-    void load();
-    return () => {
-      generationRef.current += 1;
-    };
-  }, [clientId, expectedReportId, load]);
-
-  const loadTemplates = useCallback(async () => {
-    try {
-      const templates = await listWriterTemplates();
-      setWriterTemplates(templates);
-      setSelectedTemplateId((current) =>
-        templates.some((template) => template.id === current)
-          ? current
-          : (templates[0]?.id ?? "")
-      );
-      setTemplatesError(null);
-    } catch (error) {
-      setTemplatesError(String(error));
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadTemplates();
-  }, [loadTemplates]);
+    setSelectedTemplateId((current) =>
+      writerTemplates.some((template) => template.id === current)
+        ? current
+        : (writerTemplates[0]?.id ?? "")
+    );
+  }, [writerTemplates]);
 
   useEffect(() => {
     writeWritingComposerDraft(clientId, { instruction, references });
   }, [clientId, instruction, references]);
 
-  const baseline = useMemo(
-    () => (workspace ? draftToEdit(workspace.draft) : null),
-    [workspace]
-  );
-  const dirty = Boolean(
-    editing && baseline && !reportEditsEqual(edit, baseline)
-  );
-  const editCount = useMemo(
-    () => (baseline && dirty ? countReportEdits(baseline, edit) : 0),
-    [baseline, dirty, edit]
-  );
-  const validationErrors = useMemo(() => validateReportEdit(edit), [edit]);
-  const savedEditsQueued = Boolean(
-    workspace &&
-      workspace.draft.revision > (workspace.last_agent_revision ?? 0)
-  );
+  // Reconcile queued block references against the loaded draft: a reference
+  // to a block that no longer exists (or changed kind) is dropped.
+  useEffect(() => {
+    if (!workspace) return;
+    setReferences((current) => reconcileReferences(current, workspace));
+    // A fresh workspace identity is the only trigger — references are
+    // reconciled once per load/save result.
+  }, [workspace]);
+
   const editsQueued = dirty || savedEditsQueued;
   const hasUnsavedWork =
     dirty || instruction.trim() !== "" || references.length > 0;
@@ -220,6 +161,40 @@ export default function Writing({
       timelineEndRef.current?.scrollIntoView?.({ block: "nearest" });
     }
   }, [workspace?.turns.length, pendingProposalId]);
+
+  // Lifetime writer-session spend, matching the chat surfaces' banner.
+  const session: SessionUsage = useMemo(
+    () =>
+      (workspace?.turns ?? []).reduce(
+        (acc, turn) => accumulateUsage(acc, turn.usage),
+        EMPTY_SESSION_USAGE
+      ),
+    [workspace?.turns]
+  );
+
+  const addReference = useCallback(
+    (reference: WritingBlockReference) => {
+      setReferences((current) => {
+        if (
+          current.some(
+            (item) =>
+              item.sectionId === reference.sectionId &&
+              item.blockIndex === reference.blockIndex
+          )
+        ) {
+          return current;
+        }
+        return [...current, reference].slice(-10);
+      });
+      setSaveStatus(
+        `${reference.kind === "paragraph" ? "Paragraph" : "Table"} attached to your next Writing message.`
+      );
+      requestAnimationFrame(() => composerRef.current?.focus());
+    },
+    [setSaveStatus]
+  );
+
+  const openRevisions = useCallback(() => setRevisionsOpen(true), []);
 
   if (loading) {
     return (
@@ -263,12 +238,6 @@ export default function Writing({
     chatModelsLoading ||
     (dirty && validationErrors.length > 0);
 
-  function showActionError(error: unknown) {
-    const message = String(error);
-    setActionError(message);
-    setConflict(isReportConflict(message));
-  }
-
   async function handleReload() {
     if (controlsBusy) return;
     if (
@@ -282,364 +251,30 @@ export default function Writing({
     await load();
   }
 
-  async function persistCurrentEdit(): Promise<ReportWorkspaceView> {
-    if (!workspace) throw new Error("The writing session is not loaded.");
-    if (!dirty) return workspace;
-    if (validationErrors.length > 0) {
-      throw new Error("Fix the highlighted report fields before continuing.");
-    }
-    const result = await saveReportDraft(
-      clientId,
-      workspace.draft.revision,
-      edit
-    );
-    setWorkspace(result);
-    setEdit(draftToEdit(result.draft));
-    setConflict(false);
-    return result;
-  }
-
-  async function handleSave() {
-    if (!dirty || controlsBusy || validationErrors.length > 0) return;
-    const generation = generationRef.current;
-    setBusy("saving");
-    setActionError(null);
-    setSaveStatus("Saving report edits…");
-    try {
-      const result = await persistCurrentEdit();
-      if (generation !== generationRef.current) return;
-      setSaveStatus(
-        `Saved revision ${result.draft.revision}. These edits are queued for Claude's next message.`
-      );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
-    }
-  }
-
-  function handleAgentProgress(progress: ReportTurnProgressView) {
-    if (progress.kind === "model_call_started") {
-      setAgentActivity({
-        label: progress.call_number === 1 ? "Claude is planning" : "Claude is continuing",
-        detail: `Model call ${progress.call_number}`,
-      });
-      return;
-    }
-
-    const context = progress.context;
-    if (progress.kind === "tool_started") {
-      setAgentActivity(agentActivityForTool(progress.name, context));
-      if (context) {
-        setLiveContext((current) => upsertLiveContext(current, context, "loading"));
-      }
-      return;
-    }
-
-    setAgentActivity(
-      progress.name === "propose_report_changes"
-        ? { label: "Claude is reviewing its proposal" }
-        : {
-            label: progress.status === "succeeded" ? "Context ready" : "Context unavailable",
-            detail: context ?? progress.name,
-          }
-    );
-    if (context) {
-      setLiveContext((current) =>
-        upsertLiveContext(
-          current,
-          context,
-          progress.status === "succeeded" ? "ready" : "failed"
-        )
-      );
-    }
-  }
-
   async function handleSend() {
     const value = instruction.trim();
     if (!workspace || !value || composerDisabled) return;
-    const generation = generationRef.current;
-    setBusy("sending");
-    setActionError(null);
-    setLiveContext([]);
-    setAgentActivity({ label: "Preparing the writer", detail: "Loading approved context" });
-    setSaveStatus(
-      dirty
-        ? "Saving your report edits before Claude reads the next message…"
-        : "Claude is using the approved tools…"
+    const sent = await send(
+      selectedModelId,
+      value,
+      references.map((reference) => ({
+        section_id: reference.sectionId,
+        block_index: reference.blockIndex,
+      }))
     );
-    try {
-      const current = await persistCurrentEdit();
-      if (generation !== generationRef.current) return;
-      const result = await sendReportMessage(
-        clientId,
-        current.draft.revision,
-        selectedModelId,
-        value,
-        references.map((reference) => ({
-          section_id: reference.sectionId,
-          block_index: reference.blockIndex,
-        })),
-        (progress) => {
-          if (generation === generationRef.current) handleAgentProgress(progress);
-        }
-      );
-      if (generation !== generationRef.current) return;
-      setWorkspace(result.workspace);
-      setEdit(draftToEdit(result.workspace.draft));
+    if (sent) {
       setInstruction("");
       setReferences([]);
-      setConflict(false);
-      setSaveStatus(
-        result.workspace.pending_proposal
-          ? "Proposal ready for your review. The accepted draft is unchanged."
-          : "Writing assistant turn complete."
-      );
-      setLiveContext([]);
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      // Keep the instruction, references, and local edit for an exact retry.
-      showActionError(error);
-      setSaveStatus(null);
-      setLiveContext([]);
-    } finally {
-      if (generation === generationRef.current) {
-        setAgentActivity(null);
-        setBusy(null);
-      }
-    }
-  }
-
-  async function handleDecision(decision: "accept" | "reject") {
-    if (!workspace?.pending_proposal || controlsBusy) return;
-    const generation = generationRef.current;
-    const proposalId = workspace.pending_proposal.id;
-    setBusy("resolving");
-    setActionError(null);
-    setSaveStatus(
-      decision === "accept" ? "Accepting and saving proposal…" : "Rejecting proposal…"
-    );
-    try {
-      const result = await resolveReportProposal(
-        clientId,
-        proposalId,
-        decision
-      );
-      if (generation !== generationRef.current) return;
-      setWorkspace(result);
-      setEdit(draftToEdit(result.draft));
-      setEditing(false);
-      setConflict(false);
-      setSaveStatus(
-        decision === "accept"
-          ? `Accepted and saved as revision ${result.draft.revision}.`
-          : "Proposal rejected. The accepted draft was not changed."
-      );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
     }
   }
 
   async function handleApplyTemplate() {
-    const currentWorkspace = workspace;
-    if (
-      !currentWorkspace ||
-      !selectedTemplateId ||
-      controlsBusy ||
-      dirty ||
-      editing ||
-      currentWorkspace.pending_proposal
-    ) {
-      return;
-    }
-    const generation = generationRef.current;
-    let importId: string | null = null;
-    setBusy("applying_template");
-    setActionError(null);
-    setSaveStatus("Applying the managed Word template…");
-    try {
-      const preview = await previewWriterTemplate(clientId, selectedTemplateId);
-      importId = preview.import_id;
-      if (generation !== generationRef.current) return;
-      const result = await applyReportTemplate(
-        clientId,
-        currentWorkspace.draft.revision,
-        preview.import_id
-      );
-      if (generation !== generationRef.current) return;
-      setWorkspace(result);
-      setEdit(draftToEdit(result.draft));
-      setEditing(false);
-      setConflict(false);
-      setSaveStatus(
-        `Applied the Word template as revision ${result.draft.revision}. Its layout and formatting will be retained on export.`
-      );
-      void loadTemplates();
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (importId) {
-        await discardReportTemplatePreview(importId).catch(() => undefined);
-      }
-      if (generation === generationRef.current) setBusy(null);
-    }
+    if (editing) return;
+    const applied = await applyTemplate(selectedTemplateId);
+    if (applied) void reloadTemplates();
   }
 
-  async function handleExport() {
-    if (dirty || controlsBusy || !workspace) {
-      return;
-    }
-    const generation = generationRef.current;
-    const visibleReportId = workspace.report_id;
-    const visibleRevision = workspace.draft.revision;
-    setBusy("exporting");
-    setActionError(null);
-    setSaveStatus(null);
-    setExportStatus("Choose where to save the Word document…");
-    try {
-      const result = await exportReportDocx(
-        clientId,
-        visibleReportId,
-        visibleRevision
-      );
-      if (generation !== generationRef.current) return;
-      if (
-        result.report_id !== visibleReportId ||
-        result.revision !== visibleRevision
-      ) {
-        throw new Error("The exported report revision did not match the visible report.");
-      }
-      setWorkspace((current) =>
-        current
-          ? {
-              ...current,
-              last_export: {
-                revision: result.revision,
-                status: result.status,
-                attempted_at: result.attempted_at,
-              },
-            }
-          : current
-      );
-      setConflict(false);
-      const persistenceSuffix = result.status_persisted
-        ? ""
-        : " Export status could not be synced to Editor History."
-      setExportStatus(
-        result.exported
-          ? `Word document exported from revision ${result.revision}.${persistenceSuffix}`
-          : `Export canceled. You can try again.${persistenceSuffix}`
-      );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setExportStatus("Export failed. Choose Export .docx to try again.");
-      // A failed local write is persisted even though the export command
-      // returns an error. Refresh so that status is visible immediately.
-      try {
-        const latest = await loadReportWorkspace(clientId);
-        if (
-          generation === generationRef.current &&
-          latest.report_id === visibleReportId
-        ) {
-          setWorkspace(latest);
-          setEdit(draftToEdit(latest.draft));
-        }
-      } catch {
-        // Keep the actionable export error when status refresh is unavailable.
-      }
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
-    }
-  }
-
-  function addReference(reference: WritingBlockReference) {
-    setReferences((current) => {
-      if (
-        current.some(
-          (item) =>
-            item.sectionId === reference.sectionId &&
-            item.blockIndex === reference.blockIndex
-        )
-      ) {
-        return current;
-      }
-      return [...current, reference].slice(-10);
-    });
-    setSaveStatus(
-      `${reference.kind === "paragraph" ? "Paragraph" : "Table"} attached to your next Writing message.`
-    );
-    requestAnimationFrame(() => composerRef.current?.focus());
-  }
-
-  async function handleRenameSession(name: string) {
-    const currentWorkspace = workspace;
-    if (!currentWorkspace) return;
-    const result = await renameReportSession(
-      clientId,
-      currentWorkspace.report_id,
-      name
-    );
-    setWorkspace(result);
-  }
-
-  const contextReads = workspace.turns.flatMap((turn) => turn.context_reads);
-  const contextPills: ContextPill[] = [
-    {
-      key: "accepted-report",
-      label: `Accepted report · r${workspace.draft.revision}`,
-      status: "ready",
-    },
-  ];
-  if (workspace.turns.length > 0) {
-    contextPills.push({
-      key: "session-history",
-      label: `${workspace.turns.length} prior turn${workspace.turns.length === 1 ? "" : "s"}`,
-      status: "ready",
-    });
-  }
-  if (workspace.template_import) {
-    contextPills.push({ key: "template", label: "Template provenance", status: "ready" });
-  }
-  if (
-    workspace.turns.some((turn) =>
-      turn.timeline.some(
-        (item) => item.kind === "tool_activity" && item.name === "list_record_files"
-      )
-    )
-  ) {
-    contextPills.push({ key: "record-list", label: "Record file list", status: "ready" });
-  }
-  for (const filename of new Set(contextReads.map((read) => read.filename))) {
-    contextPills.push({
-      key: `record:${filename}`,
-      label: filename,
-      status: "ready",
-      filename,
-    });
-  }
-  for (const reference of references) {
-    contextPills.push({
-      key: `reference:${reference.sectionId}:${reference.blockIndex}`,
-      label: `${reference.sectionHeading} · ${reference.kind}`,
-      status: "ready",
-    });
-  }
-  for (const live of liveContext) {
-    const existing = contextPills.find((pill) => pill.label === live.label);
-    if (existing) {
-      existing.status = live.status;
-      existing.filename ??= live.filename;
-    } else contextPills.push(live);
-  }
+  const contextPills = buildContextPills(workspace, references, liveContext);
 
   return (
     <>
@@ -651,7 +286,7 @@ export default function Writing({
               <EditableName
                 value={workspace.session_name}
                 label="writer session"
-                onSave={handleRenameSession}
+                onSave={renameSession}
                 disabled={controlsBusy}
                 compactActions
                 className="w-full text-sm"
@@ -771,6 +406,9 @@ export default function Writing({
           )}
         </div>
 
+        {/* Lifetime session spend, matching chat's banner. */}
+        {session.turnCount > 0 && <SessionTotalBanner session={session} />}
+
         <div
           aria-label="Writing timeline"
           className="flex-1 overflow-y-auto px-5 py-4 space-y-4 select-text"
@@ -786,10 +424,12 @@ export default function Writing({
               {turn.timeline.map((item, index) => (
                 <TimelineItem key={`${turn.id}-${index}`} item={item} />
               ))}
-              <p className="text-[10px] text-gray-400 text-right">
-                {turn.tool_uses} tool use{turn.tool_uses === 1 ? "" : "s"} ·{" "}
-                {turn.usage.input_tokens + turn.usage.output_tokens} tokens
-              </p>
+              <div className="flex items-center justify-end gap-2 text-[10px] text-gray-400">
+                <span>
+                  {turn.tool_uses} tool use{turn.tool_uses === 1 ? "" : "s"}
+                </span>
+                <TurnCostBadge usage={turn.usage} />
+              </div>
             </div>
           ))}
 
@@ -799,8 +439,8 @@ export default function Writing({
                 proposal={pending}
                 accepted={workspace.draft.content}
                 busy={busy === "resolving"}
-                onAccept={() => void handleDecision("accept")}
-                onReject={() => void handleDecision("reject")}
+                onAccept={() => void resolveProposal("accept")}
+                onReject={() => void resolveProposal("reject")}
               />
             </div>
           )}
@@ -905,21 +545,12 @@ export default function Writing({
         editing={editing}
         dirty={dirty}
         busy={controlsBusy}
-        onBeginEdit={() => {
-          setEdit(draftToEdit(workspace.draft));
-          setEditing(true);
-          setActionError(null);
-          setSaveStatus(null);
-        }}
-        onCancelEdit={() => {
-          setEdit(draftToEdit(workspace.draft));
-          setEditing(false);
-          setActionError(null);
-        }}
+        onBeginEdit={beginEdit}
+        onCancelEdit={cancelEdit}
         onChange={setEdit}
-        onSave={() => void handleSave()}
-        onExport={() => void handleExport()}
-        onOpenRevisions={() => setRevisionsOpen(true)}
+        onSave={save}
+        onExport={exportDocx}
+        onOpenRevisions={openRevisions}
         onReference={addReference}
         status={exportStatus}
         validationErrors={validationErrors}
@@ -943,97 +574,13 @@ export default function Writing({
           }
           onClose={() => setRevisionsOpen(false)}
           onReverted={(updated) => {
-            setWorkspace(updated);
-            setEdit(draftToEdit(updated.draft));
-            setEditing(false);
+            applyReverted(updated);
             setReferences([]);
-            setActionError(null);
-            setConflict(false);
-            setExportStatus(null);
-            setSaveStatus(`Restored as revision ${updated.draft.revision}.`);
           }}
         />
       )}
     </>
   );
-}
-
-function ContextPills({
-  pills,
-  onPreviewFile,
-}: {
-  pills: ContextPill[];
-  onPreviewFile: (filename: string) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5" aria-label="Writer context">
-      {pills.map((pill) => {
-        const className = `inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium ${
-          pill.status === "failed"
-            ? "border-red-200 bg-red-50 text-red-700"
-            : pill.status === "loading"
-              ? "border-blue-200 bg-blue-50 text-blue-700"
-              : "border-emerald-200 bg-emerald-50 text-emerald-700"
-        }`;
-        const content = (
-          <>
-            <span
-              aria-hidden="true"
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                pill.status === "failed"
-                  ? "bg-red-500"
-                  : pill.status === "loading"
-                    ? "bg-blue-500 animate-pulse"
-                    : "bg-emerald-500"
-              }`}
-            />
-            <span className="truncate">{pill.label}</span>
-          </>
-        );
-        return pill.filename ? (
-          <button
-            type="button"
-            key={pill.key}
-            onClick={() => onPreviewFile(pill.filename!)}
-            title={`Preview ${pill.filename}`}
-            className={`${className} hover:border-emerald-400 hover:text-emerald-900`}
-          >
-            {content}
-          </button>
-        ) : (
-          <span key={pill.key} className={className}>
-            {content}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
-function agentActivityForTool(name: string, context: string | null) {
-  if (name === "list_record_files") {
-    return { label: "Checking available records", detail: context ?? undefined };
-  }
-  if (name === "read_record_file") {
-    return { label: "Reading client context", detail: context ?? undefined };
-  }
-  if (name === "propose_report_changes") {
-    return { label: "Drafting a reviewable proposal" };
-  }
-  return { label: "Using an approved tool", detail: name };
-}
-
-function upsertLiveContext(
-  current: ContextPill[],
-  label: string,
-  status: "loading" | "ready" | "failed"
-) {
-  const key = `live:${label}`;
-  const existing = current.find((item) => item.key === key);
-  if (existing) {
-    return current.map((item) => (item.key === key ? { ...item, status } : item));
-  }
-  return [...current, { key, label, status, filename: label }];
 }
 
 function reconcileReferences(
@@ -1056,58 +603,4 @@ function reconcileReferences(
       },
     ];
   });
-}
-
-function isReportConflict(message: string): boolean {
-  return message.toLowerCase().includes("changed on another computer");
-}
-
-function TimelineItem({ item }: { item: ReportTimelineItemView }) {
-  if (item.kind === "tool_activity") {
-    const color =
-      item.status === "failed"
-        ? "border-red-200 bg-red-50 text-red-700"
-        : item.status === "succeeded"
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-          : "border-gray-200 bg-gray-50 text-gray-600";
-    return (
-      <details className={`group border rounded-md text-xs ${color}`}>
-        <summary className="list-none cursor-pointer px-3 py-2 flex items-center gap-2 [&::-webkit-details-marker]:hidden">
-          <span
-            aria-hidden="true"
-            className="inline-block transition-transform group-open:rotate-90"
-          >
-            ▸
-          </span>
-          <span className="flex-1">{item.summary}</span>
-          <code className="hidden sm:inline text-[10px] opacity-70">
-            {item.name}
-          </code>
-          <span className="capitalize">{item.status}</span>
-        </summary>
-        <div className="border-t border-current/15 bg-gray-950 text-gray-100 px-3 py-3 space-y-3 select-text">
-          <div>
-            <p className="mb-1 text-[10px] uppercase tracking-wide text-gray-400">
-              Raw LLM invocation
-            </p>
-            <pre className="max-h-72 overflow-auto whitespace-pre text-[11px] leading-4 font-mono">
-              {item.invocation_json}
-            </pre>
-          </div>
-          {item.result_json && (
-            <div>
-              <p className="mb-1 text-[10px] uppercase tracking-wide text-gray-400">
-                Correlated tool result
-              </p>
-              <pre className="max-h-72 overflow-auto whitespace-pre text-[11px] leading-4 font-mono">
-                {item.result_json}
-              </pre>
-            </div>
-          )}
-        </div>
-      </details>
-    );
-  }
-
-  return <MessageBubble role={item.role} content={item.text} />;
 }
