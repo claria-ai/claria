@@ -13,6 +13,7 @@ import {
   type SessionUsage,
 } from "../lib/cost";
 import { lookupModelPricing, type ModelPricing } from "../lib/tauri";
+import { logFrontendEvent } from "../lib/logBridge";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { usePreferredModel } from "../lib/usePreferredModel";
 import ChatComposer from "./ChatComposer";
@@ -96,13 +97,23 @@ export default function ChatWidget({
     initialModelId
   );
 
-  // Per-model pricing for pre-flight estimates, `null` when unknown.
-  // Looked up once per selected model.
+  // Per-model pricing for pre-flight estimates, `null` when unknown. Looked
+  // up once per selected model; a failed lookup hides the estimate chip but
+  // is still reported through the log bridge.
   const pricingLoad = useAsyncLoad<ModelPricing | null>(
-    selectedModelId ? () => lookupModelPricing(selectedModelId) : null,
+    selectedModelId
+      ? () =>
+          lookupModelPricing(selectedModelId).catch((reason) => {
+            logFrontendEvent(
+              "warn",
+              `Pricing lookup failed for ${selectedModelId}: ${reason}`
+            );
+            return null;
+          })
+      : null,
     [selectedModelId]
   );
-  const pricing = pricingLoad.loading || pricingLoad.error ? null : pricingLoad.data;
+  const pricing = pricingLoad.loading ? null : pricingLoad.data;
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {

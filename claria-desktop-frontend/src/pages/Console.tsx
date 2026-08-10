@@ -6,6 +6,9 @@ const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
 
 const POLL_INTERVAL_MS = 500;
 
+/** Rows rendered by default; older lines sit behind a "show all" toggle. */
+const MAX_RENDERED_ENTRIES = 500;
+
 /**
  * Cheap identity for a log snapshot, used to skip re-rendering an unchanged
  * buffer. Length alone misses the case that matters most here: the backend
@@ -93,6 +96,9 @@ export default function Console() {
   useEffect(() => {
     const id = setInterval(async () => {
       try {
+        // TODO(#73 PERF-2): replace with a get_console_logs_since(seq) delta
+        // command so each poll ships only new lines instead of the whole
+        // bounded buffer twice a second.
         const latest = await getConsoleLogs();
         setEntries((prev) =>
           fingerprint(latest) === fingerprint(prev) ? prev : latest
@@ -141,6 +147,12 @@ export default function Console() {
       return true;
     });
   }, [entries, search, enabledLevels]);
+
+  // Render only the newest lines by default — the buffer can hold thousands
+  // of rows, and re-rendering them all twice a second is wasted work.
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? filtered : filtered.slice(-MAX_RENDERED_ENTRIES);
+  const hiddenCount = filtered.length - visible.length;
 
   const toggleLevel = (level: string) => {
     setEnabledLevels((prev) => {
@@ -252,14 +264,25 @@ export default function Console() {
             {entries.length === 0 ? "No log entries yet." : "No matching entries."}
           </p>
         ) : (
-          filtered.map((entry, i) => {
-            const line = `${entry.timestamp} ${entry.level} ${entry.target}: ${entry.message}`;
-            return (
-              <div key={i} className={`${levelColor(entry.level)} whitespace-pre-wrap break-all`}>
-                {search ? highlightMatch(line, search) : line}
-              </div>
-            );
-          })
+          <>
+            {hiddenCount > 0 && (
+              <button
+                onClick={() => setShowAll(true)}
+                className="block w-full py-1.5 mb-1 text-center text-xs text-blue-600 bg-blue-50 hover:bg-blue-100 rounded transition-colors"
+              >
+                Show all {filtered.length.toLocaleString()} entries (
+                {hiddenCount.toLocaleString()} older hidden)
+              </button>
+            )}
+            {visible.map((entry, i) => {
+              const line = `${entry.timestamp} ${entry.level} ${entry.target}: ${entry.message}`;
+              return (
+                <div key={i} className={`${levelColor(entry.level)} whitespace-pre-wrap break-all`}>
+                  {search ? highlightMatch(line, search) : line}
+                </div>
+              );
+            })}
+          </>
         )}
       </div>
     </div>

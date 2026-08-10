@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { hasConfig, loadConfig, listChatModels, type ChatModel } from "./lib/tauri";
 import { ChatModelsContext, type ChatModelsState } from "./lib/chatModels";
+import { logFrontendEvent } from "./lib/logBridge";
 import StartScreen from "./pages/StartScreen";
 import AwsAccountGuide from "./pages/AwsAccountGuide";
 import MfaSetupGuide from "./pages/MfaSetupGuide";
@@ -45,7 +46,11 @@ export default function App() {
   const [preferredModelId, setPreferredModelId] = useState<string | null>(null);
 
   const refreshConfig = useCallback(async () => {
-    const exists = await hasConfig().catch(() => false);
+    const exists = await hasConfig().catch((reason) => {
+      // Treat an unreadable config as absent, but say so.
+      logFrontendEvent("warn", `hasConfig failed: ${reason}`);
+      return false;
+    });
     setConfigExists(exists);
     if (exists) {
       try {
