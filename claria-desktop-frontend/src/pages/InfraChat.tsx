@@ -102,8 +102,14 @@ export default function InfraChat({
   } = useContextTokens(planEntries.length === 0 ? null : countContext);
 
   const handleSend = useCallback(
-    async (modelId: string, messages: ChatMessage[]) => {
-      const response = await infraChat(modelId, messages, planEntries);
+    async (
+      modelId: string,
+      messages: ChatMessage[],
+      onDelta: (text: string) => void
+    ) => {
+      const response = await infraChat(modelId, messages, planEntries, (event) => {
+        if (event.kind === "delta") onDelta(event.text);
+      });
       return { content: response.content, usage: response.usage };
     },
     [planEntries]

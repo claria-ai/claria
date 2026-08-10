@@ -25,6 +25,29 @@ pub struct ChatResponse {
     pub usage: Option<claria_core::models::turn_usage::TurnUsage>,
 }
 
+/// One increment of a streaming chat response, sent over the command's
+/// channel while the model responds. The command still returns the complete
+/// response, so a caller that ignores the channel (tests, mocks) loses
+/// nothing but the incremental render.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChatStreamEvent {
+    /// Incremental assistant text.
+    Delta { text: String },
+    /// Terminal event: the model finished; usage and stop reason are final.
+    Done {
+        stop_reason: String,
+        usage: Option<claria_core::models::turn_usage::TurnUsage>,
+    },
+}
+
+/// Forward a stream event to the frontend, ignoring a closed channel — a
+/// navigated-away webview must not fail the turn (the return value still
+/// carries the complete response for persistence).
+fn send_stream_event(channel: &tauri::ipc::Channel<ChatStreamEvent>, event: ChatStreamEvent) {
+    let _ = channel.send(event);
+}
+
 /// Response from an infrastructure chat turn. Infra chat does not persist
 /// history, but we still return token usage so the UI can display cost.
 /// Usage is `None` when Bedrock omitted the usage block.
@@ -285,6 +308,9 @@ fn chat_history_detail(
     skip_all,
     fields(client_id = %client_id, model_id = %model_id, turns = messages.len())
 )]
+// A Tauri command's parameters are its IPC contract, not a refactorable
+// argument list; the streaming channel pushes this one past clippy's ceiling.
+#[allow(clippy::too_many_arguments)]
 pub async fn chat_message(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -293,6 +319,7 @@ pub async fn chat_message(
     chat_id: Option<String>,
     chat_name: Option<String>,
     context_filenames: Vec<String>,
+    on_event: tauri::ipc::Channel<ChatStreamEvent>,
 ) -> Result<ChatResponse, String> {
     run("chat_message", async {
         let ctx = CommandContext::new(&state).await?;
@@ -338,14 +365,33 @@ pub async fn chat_message(
 
         let cache_strategy = build_cache_strategy(&ctx.cfg, &model_id);
 
-        let (response_text, usage) = claria_bedrock::chat::chat_converse(
+        // Stream deltas to the frontend as they arrive; the complete text
+        // still comes back here so history persistence and audit are
+        // identical to the unary path. Delta content is PHI — never logged.
+        let outcome = claria_bedrock::chat::chat_converse_stream(
             &ctx.sdk_config,
             &model_id,
             &full_prompt,
             &messages,
             cache_strategy,
+            |delta| {
+                send_stream_event(
+                    &on_event,
+                    ChatStreamEvent::Delta {
+                        text: delta.to_string(),
+                    },
+                );
+            },
         )
         .await?;
+        let (response_text, usage) = (outcome.text, outcome.usage);
+        send_stream_event(
+            &on_event,
+            ChatStreamEvent::Done {
+                stop_reason: outcome.stop_reason,
+                usage: usage.clone(),
+            },
+        );
 
         // Emit a per-turn audit event with token usage in details. UUIDs only;
         // never the message content.
@@ -457,6 +503,7 @@ pub async fn infra_chat(
     model_id: String,
     messages: Vec<ChatMessage>,
     plan_entries: Vec<PlanEntry>,
+    on_event: tauri::ipc::Channel<ChatStreamEvent>,
 ) -> Result<InfraChatResponse, String> {
     run("infra_chat", async {
         let ctx = CommandContext::new(&state).await?;
@@ -465,14 +512,30 @@ pub async fn infra_chat(
 
         let cache_strategy = build_cache_strategy(&ctx.cfg, &model_id);
 
-        let (content, usage) = claria_bedrock::chat::chat_converse(
+        let outcome = claria_bedrock::chat::chat_converse_stream(
             &ctx.sdk_config,
             &model_id,
             &system_prompt,
             &messages,
             cache_strategy,
+            |delta| {
+                send_stream_event(
+                    &on_event,
+                    ChatStreamEvent::Delta {
+                        text: delta.to_string(),
+                    },
+                );
+            },
         )
         .await?;
+        let (content, usage) = (outcome.text, outcome.usage);
+        send_stream_event(
+            &on_event,
+            ChatStreamEvent::Done {
+                stop_reason: outcome.stop_reason,
+                usage: usage.clone(),
+            },
+        );
 
         // Audit the infra-chat turn against the AWS account_id (no per-client
         // resource here).

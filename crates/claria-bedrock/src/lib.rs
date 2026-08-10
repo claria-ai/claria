@@ -4,7 +4,7 @@
 
 pub mod chat;
 pub mod context;
-mod converse;
+pub mod converse;
 pub mod error;
 pub mod extract;
 pub mod report;

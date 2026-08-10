@@ -150,7 +150,11 @@ export default function ClientChat({
   contextFilesRef.current = contextFiles;
 
   const handleSend = useCallback(
-    async (modelId: string, messages: ChatMessage[]) => {
+    async (
+      modelId: string,
+      messages: ChatMessage[],
+      onDelta: (text: string) => void
+    ) => {
       const filenames = contextFilesRef.current
         .filter((f) => f.text.length > 0)
         .map((f) => f.filename);
@@ -160,7 +164,10 @@ export default function ClientChat({
         messages,
         chatIdRef.current,
         filenames,
-        chatIdRef.current || chatName === "New chat" ? null : chatName
+        chatIdRef.current || chatName === "New chat" ? null : chatName,
+        (event) => {
+          if (event.kind === "delta") onDelta(event.text);
+        }
       );
       chatIdRef.current = response.chat_id;
       setChatName(response.chat_name);

@@ -57,6 +57,7 @@ All notable changes to Claria are documented here.
 - The console window polls with a sequence cursor and receives only new lines instead of the whole buffer twice a second
 - Preference saves send only the changed section's fields and merge into the cloud copy under an ETag precondition, so sections and machines can no longer clobber each other's settings
 - The report domain types cross the IPC boundary directly instead of through a field-for-field mirror layer, and one chat role enum replaces the three that existed
+- Chat responses stream into the conversation as the model writes them, in both record chat and infrastructure chat, with truncation still surfacing as an error instead of silently saved partial text
 
 ## [0.22.0] — 2026-08-10
 

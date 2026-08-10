@@ -31,6 +31,17 @@ function isMarketplaceError(error: string): boolean {
 /** `handleSend` contract: the assistant reply plus its token usage, if known. */
 export type SendResult = { content: string; usage: TurnUsage | null };
 
+/**
+ * `handleSend` also receives an `onDelta` callback. Senders whose backend
+ * streams call it with each incremental text chunk; senders that don't
+ * simply ignore it, and the widget falls back to the awaited result.
+ */
+export type SendFn = (
+  modelId: string,
+  messages: ChatMessage[],
+  onDelta: (text: string) => void
+) => Promise<SendResult>;
+
 export default function ChatWidget({
   onSend,
   initialMessages,
@@ -45,7 +56,7 @@ export default function ChatWidget({
   toolbar,
   historyHeader,
 }: {
-  onSend: (modelId: string, messages: ChatMessage[]) => Promise<SendResult>;
+  onSend: SendFn;
   initialMessages?: ChatMessage[];
   initialModelId?: string;
   /// Per-message usage aligned with `initialMessages` — used when
@@ -80,6 +91,11 @@ export default function ChatWidget({
   );
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // Incrementally streamed assistant text for the in-flight turn. `null`
+  // until the first delta arrives — non-streaming senders (and the mock
+  // paths in tests) never set it, and the widget falls back to the awaited
+  // response.
+  const [streamText, setStreamText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
 
@@ -115,10 +131,10 @@ export default function ChatWidget({
   );
   const pricing = pricingLoad.loading ? null : pricingLoad.data;
 
-  // Auto-scroll to bottom when messages change
+  // Auto-scroll to bottom when messages change or streamed text grows.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, streamText]);
 
   const canSend =
     !sending &&
@@ -142,7 +158,11 @@ export default function ChatWidget({
 
     setSending(true);
     try {
-      const { content, usage } = await onSend(selectedModelId, updatedMessages);
+      const { content, usage } = await onSend(
+        selectedModelId,
+        updatedMessages,
+        (delta) => setStreamText((prev) => (prev ?? "") + delta)
+      );
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content,
@@ -154,6 +174,7 @@ export default function ChatWidget({
       setError(String(e));
     } finally {
       setSending(false);
+      setStreamText(null);
     }
   }
 
@@ -225,7 +246,13 @@ export default function ChatWidget({
           />
         ))}
 
-        {sending && (
+        {sending && streamText !== null && (
+          // Streaming turn: render the accumulating assistant text through
+          // the same memoized bubble the finished message will use.
+          <MessageBubble role="assistant" content={streamText} />
+        )}
+
+        {sending && streamText === null && (
           <div className="flex items-start gap-3">
             <div className="bg-gray-100 rounded-lg px-4 py-2.5 max-w-[80%]">
               <div className="flex items-center gap-2 text-gray-500 text-sm">

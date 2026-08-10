@@ -6,7 +6,7 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use aws_sdk_bedrockruntime::types::DocumentFormat;
 use claria_bedrock::{
-    chat::{CHAT_MAX_OUTPUT_TOKENS, CacheStrategy, ChatMessage, ChatRole, chat_converse},
+    chat::{CHAT_MAX_OUTPUT_TOKENS, CacheStrategy, ChatMessage, ChatRole, chat_converse_stream},
     error::BedrockError,
     extract::{DEFAULT_EXTRACTION_PROMPT, EXTRACT_MAX_OUTPUT_TOKENS, extract_document_text},
 };
@@ -53,17 +53,18 @@ async fn add_haiku(server: &MockServer) {
 #[tokio::test]
 async fn chat_sets_max_tokens_and_skips_counting_far_from_budget() {
     let server = MockServer::spawn().await;
-    let (text, usage) = chat_converse(
+    let outcome = chat_converse_stream(
         &sdk_config(&server.endpoint),
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        |_| {},
     )
     .await
     .expect("chat");
-    assert!(!text.is_empty());
-    assert_eq!(usage.expect("usage").input_tokens, 150);
+    assert!(!outcome.text.is_empty());
+    assert_eq!(outcome.usage.expect("usage").input_tokens, 150);
 
     let state = server.state.read().await;
     assert_eq!(state.bedrock_text_requests.len(), 1);
@@ -91,12 +92,13 @@ async fn chat_truncation_is_a_typed_error() {
             "usage": {"inputTokens": 10, "outputTokens": 8192}
         })));
 
-    let error = chat_converse(
+    let error = chat_converse_stream(
         &sdk_config(&server.endpoint),
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        |_| {},
     )
     .await
     .expect_err("truncation");
@@ -121,12 +123,13 @@ async fn chat_context_overflow_maps_to_friendly_error() {
             "stopReason": "model_context_window_exceeded"
         })));
 
-    let error = chat_converse(
+    let error = chat_converse_stream(
         &sdk_config(&server.endpoint),
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        |_| {},
     )
     .await
     .expect_err("overflow");
@@ -145,12 +148,13 @@ async fn chat_near_budget_verifies_and_rejects_before_spending() {
     // ~700k chars ≈ 175k estimated tokens: within 10% of the budget, so the
     // real CountTokens verification runs.
     let big_prompt = "x".repeat(700_000);
-    let error = chat_converse(
+    let error = chat_converse_stream(
         &sdk_config(&server.endpoint),
         MODEL_ID,
         &big_prompt,
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        |_| {},
     )
     .await
     .expect_err("budget");

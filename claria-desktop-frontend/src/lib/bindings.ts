@@ -688,9 +688,9 @@ async listChatModels() : Promise<Result<ChatModel[], string>> {
  * The `chat_id` is generated on the first message and returned so the
  * frontend can pass it back on subsequent calls.
  */
-async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null, chatName: string | null, contextFilenames: string[]) : Promise<Result<ChatResponse, string>> {
+async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null, chatName: string | null, contextFilenames: string[], onEvent: TAURI_CHANNEL<ChatStreamEvent>) : Promise<Result<ChatResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId, chatName, contextFilenames }) };
+    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId, chatName, contextFilenames, onEvent }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -703,9 +703,9 @@ async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], ch
  * on every message. We build a rich system prompt explaining Claria's
  * operating model and the current infrastructure state, then call Bedrock.
  */
-async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry[]) : Promise<Result<InfraChatResponse, string>> {
+async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry[], onEvent: TAURI_CHANNEL<ChatStreamEvent>) : Promise<Result<InfraChatResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("infra_chat", { modelId, messages, planEntries }) };
+    return { status: "ok", data: await TAURI_INVOKE("infra_chat", { modelId, messages, planEntries, onEvent }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1228,6 +1228,13 @@ export type ChatResponse = { chat_id: string; chat_name: string; content: string
  */
 usage: TurnUsage | null }
 export type ChatRole = "user" | "assistant"
+/**
+ * One increment of a streaming chat response, sent over the command's
+ * channel while the model responds. The command still returns the complete
+ * response, so a caller that ignores the channel (tests, mocks) loses
+ * nothing but the incremental render.
+ */
+export type ChatStreamEvent = { kind: "delta"; text: string } | { kind: "done"; stop_reason: string; usage: TurnUsage | null }
 export type ClientNameHistoryEntry = { name: string; changed_at: string }
 export type ClientNameUpdate = { id: string; name: string; updated_at: string }
 export type ClientRecordDetails = { id: string; name: string; created_at: string; updated_at: string; file_count: number; storage_bytes: number; storage_bytes_with_history: number; name_history: ClientNameHistoryEntry[] }

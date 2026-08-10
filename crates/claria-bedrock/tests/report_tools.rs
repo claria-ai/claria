@@ -594,16 +594,17 @@ async fn ordinary_chat_still_sends_no_tool_configuration() {
         role: ChatRole::User,
         content: "Hello".to_string(),
     }];
-    let (text, _) = claria_bedrock::chat::chat_converse(
+    let outcome = claria_bedrock::chat::chat_converse_stream(
         &sdk_config(&server.endpoint),
         MODEL_ID,
         "System",
         &messages,
         CacheStrategy::disabled(),
+        |_| {},
     )
     .await
     .expect("ordinary chat");
-    assert!(!text.is_empty());
+    assert!(!outcome.text.is_empty());
 
     let state = server.state.read().await;
     assert!(state.bedrock_tool_requests.is_empty());

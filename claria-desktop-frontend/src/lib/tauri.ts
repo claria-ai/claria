@@ -14,6 +14,7 @@ import type {
   ChatHistoryDetail,
   ChatHistorySummary,
   ChatMessage,
+  ChatStreamEvent,
   ConsoleDelta,
   CostAndUsageResult,
   CostGranularity,
@@ -71,6 +72,7 @@ export type {
   ChatModel,
   ChatResponse,
   ChatRole,
+  ChatStreamEvent,
   ClientNameHistoryEntry,
   ClientNameUpdate,
   ClientRecordDetails,
@@ -609,13 +611,29 @@ export async function listChatModels() {
   return unwrap(await commands.listChatModels());
 }
 
+/**
+ * Streamed-response channel shared by the chat commands. Wire `onEvent` to
+ * receive incremental deltas; callers that omit it (tests, scripts) still
+ * get the complete response from the command's return value.
+ */
+function chatStreamChannel(
+  onEvent?: (event: ChatStreamEvent) => void
+): Channel<ChatStreamEvent> {
+  const channel = new Channel<ChatStreamEvent>();
+  if (onEvent) {
+    channel.onmessage = onEvent;
+  }
+  return channel;
+}
+
 export async function chatMessage(
   clientId: string,
   modelId: string,
   messages: ChatMessage[],
   chatId?: string | null,
   contextFilenames?: string[],
-  chatName?: string | null
+  chatName?: string | null,
+  onEvent?: (event: ChatStreamEvent) => void
 ) {
   return unwrap(
     await commands.chatMessage(
@@ -624,7 +642,8 @@ export async function chatMessage(
       messages,
       chatId ?? null,
       chatName ?? null,
-      contextFilenames ?? []
+      contextFilenames ?? [],
+      chatStreamChannel(onEvent)
     )
   );
 }
@@ -632,9 +651,17 @@ export async function chatMessage(
 export async function infraChat(
   modelId: string,
   messages: ChatMessage[],
-  planEntries: PlanEntry[]
+  planEntries: PlanEntry[],
+  onEvent?: (event: ChatStreamEvent) => void
 ): Promise<InfraChatResponse> {
-  return unwrap(await commands.infraChat(modelId, messages, planEntries));
+  return unwrap(
+    await commands.infraChat(
+      modelId,
+      messages,
+      planEntries,
+      chatStreamChannel(onEvent)
+    )
+  );
 }
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {

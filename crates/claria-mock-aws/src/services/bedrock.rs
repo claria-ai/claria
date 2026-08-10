@@ -15,6 +15,12 @@ pub async fn dispatch(method: &Method, path: &str, body: Value, state: SharedSta
         }
         return converse(path, body, state).await;
     }
+    if path.starts_with("/model/") && path.ends_with("/converse-stream") {
+        if method != Method::POST {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        return converse_stream(body, state).await;
+    }
     if path.starts_with("/model/") && path.ends_with("/count-tokens") {
         if method != Method::POST {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
@@ -523,6 +529,19 @@ async fn forced_tool_converse(forced_tool: &str, body: Value, state: SharedState
 }
 
 async fn plain_converse(body: Value, state: SharedState) -> Response {
+    let (status, payload) = plain_converse_payload(body, state).await;
+    (
+        status,
+        [("content-type", "application/json")],
+        payload.to_string(),
+    )
+        .into_response()
+}
+
+/// Scripted-or-canned JSON payload for a plain (no `toolConfig`) Converse
+/// request — the one behavior shared by the unary and streaming endpoints,
+/// which differ only in how the payload goes over the wire.
+async fn plain_converse_payload(body: Value, state: SharedState) -> (StatusCode, Value) {
     // Plain Converse requests are captured and may be scripted; otherwise
     // the canned response below keeps existing flows deterministic.
     let scripted = {
@@ -537,12 +556,7 @@ async fn plain_converse(body: Value, state: SharedState) -> Response {
     if let Some(scripted) = scripted {
         let status =
             StatusCode::from_u16(scripted.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        return (
-            status,
-            [("content-type", "application/json")],
-            scripted.body.to_string(),
-        )
-            .into_response();
+        return (status, scripted.body);
     }
 
     // Return the existing canned response for ordinary Converse requests.
@@ -571,17 +585,129 @@ async fn plain_converse(body: Value, state: SharedState) -> Response {
             .to_string()
     };
 
-    json_response(json!({
-        "output": {
-            "message": {
-                "role": "assistant",
-                "content": [{ "text": response_text }]
+    (
+        StatusCode::OK,
+        json!({
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "text": response_text }]
+                }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+                "inputTokens": 150,
+                "outputTokens": 50,
             }
-        },
-        "stopReason": "end_turn",
-        "usage": {
-            "inputTokens": 150,
-            "outputTokens": 50,
-        }
-    }))
+        }),
+    )
+}
+
+/// How many characters of assistant text each `contentBlockDelta` carries.
+/// Small enough that every canned response streams as several deltas.
+const STREAM_DELTA_CHARS: usize = 24;
+
+/// Respond to `ConverseStream` with real AWS event-stream frames.
+///
+/// The plain script FIFO and canned response are shared with the unary
+/// endpoint; a 200 payload is decomposed into `messageStart`, chunked
+/// `contentBlockDelta`s, `contentBlockStop`, `messageStop`, and a trailing
+/// `metadata` event. Non-200 scripted responses return as ordinary JSON
+/// errors, which the SDK surfaces before streaming begins.
+async fn converse_stream(body: Value, state: SharedState) -> Response {
+    let (status, payload) = plain_converse_payload(body, state.clone()).await;
+    state.write().await.bedrock_stream_request_count += 1;
+    if status != StatusCode::OK {
+        return (
+            status,
+            [("content-type", "application/json")],
+            payload.to_string(),
+        )
+            .into_response();
+    }
+
+    match encode_converse_stream(&payload) {
+        Ok(frames) => (
+            StatusCode::OK,
+            [("content-type", "application/vnd.amazon.eventstream")],
+            frames,
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [("content-type", "application/json")],
+            json!({
+                "message": format!("failed to encode event stream: {error}"),
+                "__type": "InternalServerException"
+            })
+            .to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// Decompose a unary Converse JSON payload into encoded event-stream frames.
+fn encode_converse_stream(
+    payload: &Value,
+) -> Result<Vec<u8>, aws_smithy_eventstream::error::Error> {
+    let text: String = payload
+        .pointer("/output/message/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect();
+    let stop_reason = payload
+        .get("stopReason")
+        .and_then(Value::as_str)
+        .unwrap_or("end_turn");
+
+    let mut frames = Vec::new();
+    write_event(&mut frames, "messageStart", &json!({"role": "assistant"}))?;
+    let chars: Vec<char> = text.chars().collect();
+    for chunk in chars.chunks(STREAM_DELTA_CHARS) {
+        write_event(
+            &mut frames,
+            "contentBlockDelta",
+            &json!({
+                "contentBlockIndex": 0,
+                "delta": {"text": chunk.iter().collect::<String>()}
+            }),
+        )?;
+    }
+    write_event(&mut frames, "contentBlockStop", &json!({"contentBlockIndex": 0}))?;
+    write_event(&mut frames, "messageStop", &json!({"stopReason": stop_reason}))?;
+    if let Some(usage) = payload.get("usage") {
+        write_event(
+            &mut frames,
+            "metadata",
+            &json!({"usage": usage, "metrics": {"latencyMs": 42}}),
+        )?;
+    }
+    Ok(frames)
+}
+
+/// Frame one event with the standard `:message-type`/`:event-type`/
+/// `:content-type` headers and append it to `buffer`.
+fn write_event(
+    buffer: &mut Vec<u8>,
+    event_type: &str,
+    payload: &Value,
+) -> Result<(), aws_smithy_eventstream::error::Error> {
+    use aws_smithy_types::event_stream::{Header, HeaderValue, Message};
+
+    let message = Message::new(bytes::Bytes::from(payload.to_string()))
+        .add_header(Header::new(
+            ":message-type",
+            HeaderValue::String("event".into()),
+        ))
+        .add_header(Header::new(
+            ":event-type",
+            HeaderValue::String(event_type.to_string().into()),
+        ))
+        .add_header(Header::new(
+            ":content-type",
+            HeaderValue::String("application/json".into()),
+        ));
+    aws_smithy_eventstream::frame::write_message_to(&message, buffer)
 }

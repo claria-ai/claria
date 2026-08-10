@@ -64,8 +64,12 @@ pub struct MockState {
     /// FIFO responses for plain (no `toolConfig`) Converse requests. When
     /// empty, the canned chat/extraction response is returned.
     pub bedrock_text_responses: Vec<ScriptedBedrockResponse>,
-    /// Raw plain Converse request bodies, in wire order.
+    /// Raw plain Converse request bodies, in wire order. `ConverseStream`
+    /// requests land here too — the streaming endpoint shares the plain
+    /// script FIFO and canned response, delivered as event-stream frames.
     pub bedrock_text_requests: Vec<serde_json::Value>,
+    /// How many of the captured plain requests arrived via `ConverseStream`.
+    pub bedrock_stream_request_count: usize,
     /// Raw tool-configured Converse request bodies, in wire order.
     pub bedrock_tool_requests: Vec<serde_json::Value>,
     /// Decoded model IDs for the captured tool-configured requests.

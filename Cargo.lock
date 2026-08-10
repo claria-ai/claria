@@ -1327,6 +1327,8 @@ dependencies = [
 name = "claria-mock-aws"
 version = "0.22.0"
 dependencies = [
+ "aws-smithy-eventstream",
+ "aws-smithy-types",
  "axum",
  "bytes",
  "clap",

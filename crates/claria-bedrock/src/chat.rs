@@ -95,7 +95,10 @@ use tracing::info;
 
 use claria_core::models::turn_usage::TurnUsage;
 
-use crate::error::BedrockError;
+use crate::{
+    converse::{StreamCollector, StreamOutcome},
+    error::BedrockError,
+};
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -330,29 +333,92 @@ impl CacheStrategy {
     }
 }
 
-/// Send a multi-turn conversation to Bedrock and return the assistant's
-/// reply along with per-turn token usage.
+/// Send a multi-turn conversation to Bedrock via `ConverseStream`, forwarding
+/// each assistant text delta to `on_delta` as it arrives.
 ///
 /// The caller provides the full message history, a system prompt, and a
 /// [`CacheStrategy`] controlling placement of the Bedrock `cachePoint`
-/// block. This is the shared implementation used by the desktop chat
-/// command.
+/// block. The complete accumulated text, wire stop reason, and usage (from
+/// the trailing `metadata` event, `None` preserved when the service omitted
+/// it) come back in the returned [`StreamOutcome`]. Truncation and context
+/// overflow are typed errors, exactly as on the unary flows.
 ///
-/// Returns a `(String, Option<TurnUsage>)` tuple. If the Bedrock response
-/// carries no `usage` block, the absence is preserved as `None` — callers
-/// render absence instead of a fabricated metered zero.
-// Timing span logs model id and turn count — never prompt or message text,
-// which may hold PHI.
+/// This is chat's only Bedrock path — chat is the one surface that renders
+/// incrementally. Extraction, translation, and the report writer keep their
+/// unary Converse calls.
+// Timing span logs model id and turn count — never prompt, message, or
+// delta text, which may hold PHI.
 #[tracing::instrument(level = "trace", skip_all, fields(model_id = %model_id, turns = messages.len()))]
-pub async fn chat_converse(
+pub async fn chat_converse_stream<F>(
     config: &aws_config::SdkConfig,
     model_id: &str,
     system_prompt: &str,
     messages: &[ChatMessage],
     cache_strategy: CacheStrategy,
-) -> Result<(String, Option<TurnUsage>), BedrockError> {
+    mut on_delta: F,
+) -> Result<StreamOutcome, BedrockError>
+where
+    F: FnMut(&str),
+{
     let client = crate::converse::runtime_client(config);
+    let (converse_messages, system_blocks) = prepare_chat_request(
+        config,
+        &client,
+        model_id,
+        system_prompt,
+        messages,
+        cache_strategy,
+    )
+    .await?;
 
+    let response = client
+        .converse_stream()
+        .model_id(model_id)
+        .set_system(Some(system_blocks))
+        .set_messages(Some(converse_messages))
+        .inference_config(
+            InferenceConfiguration::builder()
+                .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
+                .build(),
+        )
+        .send()
+        .await
+        .map_err(|error| crate::converse::classify_error("chat ConverseStream", error))?;
+
+    let mut stream = response.stream;
+    let mut collector = StreamCollector::new();
+    loop {
+        // Mid-stream failures have a different SdkError shape (raw event
+        // frame, not an HTTP response); keep the full error chain instead of
+        // collapsing to "unhandled error".
+        let event = stream.recv().await.map_err(|error| {
+            tracing::error!(operation = "chat ConverseStream", "Bedrock stream failed");
+            BedrockError::Invocation(
+                aws_sdk_bedrockruntime::error::DisplayErrorContext(&error).to_string(),
+            )
+        })?;
+        let Some(event) = event else { break };
+        if let Some(delta) = collector.absorb(event) {
+            on_delta(&delta);
+        }
+    }
+
+    let outcome = collector.finish(model_id, CHAT_MAX_OUTPUT_TOKENS)?;
+    log_chat_usage(model_id, outcome.usage.as_ref());
+    Ok(outcome)
+}
+
+/// Build the Converse message list and system blocks and enforce the input
+/// budget — the request preparation shared verbatim by the unary and
+/// streaming chat paths so the two can never drift.
+async fn prepare_chat_request(
+    config: &aws_config::SdkConfig,
+    client: &aws_sdk_bedrockruntime::Client,
+    model_id: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    cache_strategy: CacheStrategy,
+) -> Result<(Vec<Message>, Vec<SystemContentBlock>), BedrockError> {
     let mut converse_messages: Vec<Message> = Vec::new();
 
     for msg in messages {
@@ -404,39 +470,19 @@ pub async fn chat_converse(
                     .set_messages(Some(converse_messages.clone()))
                     .system(SystemContentBlock::Text(system_prompt.to_string()))
                     .build();
-                crate::converse::count_input_tokens(&client, bare_model_id, request).await
+                crate::converse::count_input_tokens(client, bare_model_id, request).await
             },
             |_, _| BedrockError::ContextWindowExceeded,
         )
         .await?;
 
-    let response = client
-        .converse()
-        .model_id(model_id)
-        .set_system(Some(system_blocks))
-        .set_messages(Some(converse_messages))
-        .inference_config(
-            InferenceConfiguration::builder()
-                .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
-                .build(),
-        )
-        .send()
-        .await
-        .map_err(|error| crate::converse::classify_error("chat Converse", error))?;
+    Ok((converse_messages, system_blocks))
+}
 
-    crate::converse::ensure_complete_text_response(response.stop_reason(), CHAT_MAX_OUTPUT_TOKENS)?;
-
-    let output_message = response
-        .output()
-        .and_then(|o| o.as_message().ok())
-        .ok_or_else(|| BedrockError::ResponseParse("no message in response".to_string()))?;
-
-    let response_text = crate::converse::collect_text(output_message);
-    let usage = crate::converse::optional_usage(response.usage(), model_id);
-
-    // Emit a structured tracing event for cache observability. `hit_rate`
-    // is the fraction of input tokens served from cache this turn.
-    if let Some(usage) = &usage {
+/// Structured cache/usage observability line for a completed chat turn.
+/// `hit_rate` is the fraction of input tokens served from cache this turn.
+fn log_chat_usage(model_id: &str, usage: Option<&TurnUsage>) {
+    if let Some(usage) = usage {
         let total_input =
             usage.input_tokens + usage.cache_read_input_tokens + usage.cache_write_input_tokens;
         let hit_rate = if total_input > 0 {
@@ -457,8 +503,6 @@ pub async fn chat_converse(
     } else {
         tracing::warn!(model_id, "chat turn completed without a usage block");
     }
-
-    Ok((response_text, usage))
 }
 
 // ── Token counting ───────────────────────────────────────────────────────────
