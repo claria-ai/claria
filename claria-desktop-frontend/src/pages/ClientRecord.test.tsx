@@ -62,7 +62,7 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import { clearWritingComposerDrafts } from "../lib/writingComposerDraft";
-import { ChatModelsProvider, type ChatModelsState } from "../lib/chatModels";
+import { ChatModelsContext, type ChatModelsState } from "../lib/chatModels";
 import ClientRecord from "./ClientRecord";
 
 const modelsState: ChatModelsState = {
@@ -98,7 +98,7 @@ const workspace = {
 
 function renderClient(navigate = vi.fn(), onNameChanged = vi.fn()) {
   return render(
-    <ChatModelsProvider value={modelsState}>
+    <ChatModelsContext.Provider value={modelsState}>
       <ClientRecord
         navigate={navigate}
         clientId="client-1"
@@ -106,7 +106,7 @@ function renderClient(navigate = vi.fn(), onNameChanged = vi.fn()) {
         onClientNameChanged={onNameChanged}
         onManageWriterTemplates={vi.fn()}
       />
-    </ChatModelsProvider>
+    </ChatModelsContext.Provider>
   );
 }
 

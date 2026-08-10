@@ -10,6 +10,7 @@ import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
 import { BackButton } from "../components/icons";
 import TextPreviewModal from "../components/TextPreviewModal";
+import { ErrorBanner } from "../components/StateCards";
 import TokenCountBadge from "../components/TokenCountBadge";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useContextTokens } from "../lib/useContextTokens";
@@ -146,15 +147,12 @@ export default function InfraChat({
 
       {scanError ? (
         <div className="flex-1 flex items-center justify-center px-6">
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-w-md text-center">
-            <p className="text-red-800 text-sm">{scanError}</p>
-            <button
-              onClick={() => navigate("start")}
-              className="mt-3 px-4 py-1.5 text-sm text-gray-600 hover:text-gray-800"
-            >
-              Go back
-            </button>
-          </div>
+          <ErrorBanner
+            message={scanError}
+            onRetry={() => navigate("start")}
+            retryLabel="Go back"
+            className="max-w-md"
+          />
         </div>
       ) : (
         <ChatWidget

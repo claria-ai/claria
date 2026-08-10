@@ -40,6 +40,7 @@ import EditableName from "../components/EditableName";
 import PreferencesSection from "../components/PreferencesSection";
 import { BackButton, TrashIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
+import { ErrorBanner, LoadingCard } from "../components/StateCards";
 import VersionHistoryModal from "../components/VersionHistoryModal";
 import type { Page } from "../App";
 
@@ -146,9 +147,7 @@ export default function Preferences({
                 <span>Loading models...</span>
               </div>
             ) : chatModelsError ? (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">{chatModelsError}</p>
-              </div>
+              <ErrorBanner message={chatModelsError} className="" />
             ) : (
               <>
                 <select
@@ -165,9 +164,7 @@ export default function Preferences({
                   ))}
                 </select>
                 {modelError && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
-                    <p className="text-red-800 text-sm">{modelError}</p>
-                  </div>
+                  <ErrorBanner message={modelError} className="mt-3" />
                 )}
                 <p className="text-xs text-gray-400 mt-2">
                   Applies to new chat sessions. Existing chats keep the model
@@ -254,12 +251,7 @@ function PromptEditor({
             <p className="text-xs text-gray-400 mb-3">{description}</p>
           )}
           {loading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="flex items-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Loading prompt...</span>
-              </div>
-            </div>
+            <LoadingCard>Loading prompt...</LoadingCard>
           ) : (
             <>
               <textarea
@@ -273,9 +265,7 @@ function PromptEditor({
               />
 
               {error && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
-                  <p className="text-red-800 text-sm">{error}</p>
-                </div>
+                <ErrorBanner message={error} className="mt-3" />
               )}
 
               <div className="flex justify-between mt-3">
@@ -690,15 +680,11 @@ function LocalTranscriptionSection() {
         ) : null}
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error}</p>
-            <button
-              onClick={() => void refresh()}
-              className="mt-2 px-2.5 py-1 text-xs text-red-700 border border-red-300 rounded"
-            >
-              Try again
-            </button>
-          </div>
+          <ErrorBanner
+            message={error}
+            onRetry={() => void refresh()}
+            className=""
+          />
         )}
     </PreferencesSection>
   );
@@ -952,9 +938,7 @@ function CostExplorerSection() {
         )}
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
-            <p className="text-red-800 text-sm">{error}</p>
-          </div>
+          <ErrorBanner message={error} className="mt-3" />
         )}
     </PreferencesSection>
   );
@@ -1098,19 +1082,14 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
         )}
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-3">
-            <p className="text-sm text-red-800">{error}</p>
-            <button
-              type="button"
-              onClick={() => {
-                setActionError(null);
-                void reload();
-              }}
-              className="mt-2 text-xs font-semibold text-red-700"
-            >
-              Try again
-            </button>
-          </div>
+          <ErrorBanner
+            message={error}
+            onRetry={() => {
+              setActionError(null);
+              void reload();
+            }}
+            className=""
+          />
         )}
     </PreferencesSection>
   );
@@ -1296,11 +1275,10 @@ function ReportAuthoringSection() {
             <span>Loading document writer limits...</span>
           </div>
         ) : !draft ? (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">
-              {loadError ?? "Could not load document writer limits."}
-            </p>
-          </div>
+          <ErrorBanner
+            message={loadError ?? "Could not load document writer limits."}
+            className=""
+          />
         ) : (
           <>
             <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-1.5">
@@ -1351,16 +1329,13 @@ function ReportAuthoringSection() {
             </div>
 
             {validationError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">{validationError}</p>
-              </div>
+              <ErrorBanner message={validationError} className="" />
             )}
             {saveError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">
-                  Could not save document writer limits: {saveError}
-                </p>
-              </div>
+              <ErrorBanner
+                message={`Could not save document writer limits: ${saveError}`}
+                className=""
+              />
             )}
 
             <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-3">
@@ -1577,9 +1552,10 @@ function TranscriptionSection() {
             <span>Loading transcription preferences...</span>
           </div>
         ) : !draft ? (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error ?? "Could not load preferences."}</p>
-          </div>
+          <ErrorBanner
+            message={error ?? "Could not load preferences."}
+            className=""
+          />
         ) : (
           <>
             <p className="text-xs text-gray-500">
@@ -1683,20 +1659,13 @@ function TranscriptionSection() {
             </label>
 
             {syncError ? (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">
-                  Could not save transcription preferences: {syncError}
-                </p>
-                <button
-                  onClick={() => {
-                    if (snapshot && draft) sync(snapshot, draft);
-                  }}
-                  disabled={syncing || !snapshot || !draft}
-                  className="mt-2 px-3 py-1.5 text-sm text-red-700 border border-red-300 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
-                >
-                  Try again
-                </button>
-              </div>
+              <ErrorBanner
+                message={`Could not save transcription preferences: ${syncError}`}
+                onRetry={() => {
+                  if (snapshot && draft) void sync(snapshot, draft);
+                }}
+                className=""
+              />
             ) : syncing ? (
               <p className="text-xs text-gray-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
                 <Spinner /> Saving...

@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext } from "react";
 import type { ChatModel } from "./tauri";
 
 /**
@@ -18,7 +18,8 @@ export type ChatModelsState = {
   setPreferredModelId: (id: string | null) => void;
 };
 
-const ChatModelsContext = createContext<ChatModelsState>({
+/** Provided by App; the default covers detached test mounts. */
+export const ChatModelsContext = createContext<ChatModelsState>({
   models: [],
   loading: true,
   error: null,
@@ -26,20 +27,6 @@ const ChatModelsContext = createContext<ChatModelsState>({
   retry: () => {},
   setPreferredModelId: () => {},
 });
-
-export function ChatModelsProvider({
-  value,
-  children,
-}: {
-  value: ChatModelsState;
-  children: ReactNode;
-}) {
-  return (
-    <ChatModelsContext.Provider value={value}>
-      {children}
-    </ChatModelsContext.Provider>
-  );
-}
 
 export function useChatModels(): ChatModelsState {
   return useContext(ChatModelsContext);

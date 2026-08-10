@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Spinner from "./Spinner";
+import { ErrorBanner } from "./StateCards";
 import type { AccessKeyInfo, AccessKeyLimitReached } from "../lib/tauri";
 
 /**
@@ -67,11 +68,10 @@ export default function AccessKeyLimitPanel({
       </div>
 
       {keysError && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-          <p className="text-sm text-red-800">
-            Could not list the existing keys: {keysError}
-          </p>
-        </div>
+        <ErrorBanner
+          message={`Could not list the existing keys: ${keysError}`}
+          className=""
+        />
       )}
 
       {loadingKeys ? (

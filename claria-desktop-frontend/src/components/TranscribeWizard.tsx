@@ -12,6 +12,7 @@ import {
 import { transcribeEngineSummary } from "../lib/transcribe";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import Modal from "./Modal";
+import { ErrorBanner } from "./StateCards";
 
 /**
  * Per-file transcription wizard.
@@ -156,9 +157,7 @@ export default function TranscribeWizard({
         {loadingPrefs ? (
           <p className="text-sm text-gray-500">Loading your defaults...</p>
         ) : prefsError ? (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{prefsError}</p>
-          </div>
+          <ErrorBanner message={prefsError} className="" />
         ) : (
           <>
             {/* File picker / drop target */}
@@ -309,9 +308,7 @@ export default function TranscribeWizard({
             </div>
 
             {uploadError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-red-800 text-sm">{uploadError}</p>
-              </div>
+              <ErrorBanner message={uploadError} className="" />
             )}
           </>
         )}

@@ -20,6 +20,7 @@ import {
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { BackButton, CloseIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
+import { ErrorBanner } from "../components/StateCards";
 import type { Page } from "../App";
 
 // ---------------------------------------------------------------------------
@@ -277,11 +278,7 @@ function Onboarding({ onEnabled }: { onEnabled: () => void }) {
             : "I've enabled Cost Explorer \u2014 verify"}
         </button>
 
-        {probeError && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mt-4">
-            <p className="text-red-800 text-sm">{probeError}</p>
-          </div>
-        )}
+        {probeError && <ErrorBanner message={probeError} className="mt-4" />}
       </div>
     </div>
   );
@@ -557,11 +554,7 @@ function CostChart({ hourlyAvailable }: { hourlyAvailable: boolean }) {
       )}
 
       {/* Error */}
-      {error && !fetching && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800 text-sm">{error}</p>
-        </div>
-      )}
+      {error && !fetching && <ErrorBanner message={error} className="" />}
 
       {/* Chart */}
       {result && !fetching && !error && (

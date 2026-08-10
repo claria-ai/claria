@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChatModels } from "../lib/chatModels";
 import ChatComposer from "../components/ChatComposer";
 import ChatEmptyState from "../components/ChatEmptyState";
-import ContextPills, { buildContextPills } from "../components/ContextPills";
+import ContextPills from "../components/ContextPills";
+import { buildContextPills } from "../lib/contextPills";
 import EditableName from "../components/EditableName";
 import ModelSelect from "../components/ModelSelect";
 import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
@@ -56,21 +57,22 @@ export default function Writing({
     retry: onRetryModels,
   } = useChatModels();
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const initialComposerDraft = useRef(readWritingComposerDraft(clientId)).current;
   const [selectedModelId, setSelectedModelId] = usePreferredModel(
     chatModels,
     preferredModelId
   );
+  // The composer draft survives navigation in process memory; read it once
+  // as lazy initial state.
   const [instruction, setInstruction] = useState(
-    initialComposerDraft?.instruction ?? ""
+    () => readWritingComposerDraft(clientId)?.instruction ?? ""
   );
-  const [references, setReferences] = useState<WritingBlockReference[]>(
-    initialComposerDraft?.references ?? []
-  );
+  const [queuedReferences, setQueuedReferences] = useState<
+    WritingBlockReference[]
+  >(() => readWritingComposerDraft(clientId)?.references ?? []);
   const [contextOpen, setContextOpen] = useState(false);
   const [previewFilename, setPreviewFilename] = useState<string | null>(null);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
-  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [chosenTemplateId, setChosenTemplateId] = useState("");
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const proposalStartRef = useRef<HTMLDivElement | null>(null);
 
@@ -111,26 +113,28 @@ export default function Writing({
     reload: reloadTemplates,
   } = useWriterTemplates();
 
-  useEffect(() => {
-    setSelectedTemplateId((current) =>
-      writerTemplates.some((template) => template.id === current)
-        ? current
-        : (writerTemplates[0]?.id ?? "")
-    );
-  }, [writerTemplates]);
+  // The user's explicit template choice, falling back to the first template
+  // while the choice is unset or no longer exists.
+  const selectedTemplateId = writerTemplates.some(
+    (template) => template.id === chosenTemplateId
+  )
+    ? chosenTemplateId
+    : (writerTemplates[0]?.id ?? "");
+
+  // Queued block references reconciled against the loaded draft: a reference
+  // to a block that no longer exists (or changed kind) is dropped, and
+  // headings/previews follow the current content.
+  const references = useMemo(
+    () =>
+      workspace
+        ? reconcileReferences(queuedReferences, workspace)
+        : queuedReferences,
+    [queuedReferences, workspace]
+  );
 
   useEffect(() => {
     writeWritingComposerDraft(clientId, { instruction, references });
   }, [clientId, instruction, references]);
-
-  // Reconcile queued block references against the loaded draft: a reference
-  // to a block that no longer exists (or changed kind) is dropped.
-  useEffect(() => {
-    if (!workspace) return;
-    setReferences((current) => reconcileReferences(current, workspace));
-    // A fresh workspace identity is the only trigger — references are
-    // reconciled once per load/save result.
-  }, [workspace]);
 
   const editsQueued = dirty || savedEditsQueued;
   const hasUnsavedWork =
@@ -171,7 +175,7 @@ export default function Writing({
 
   const addReference = useCallback(
     (reference: WritingBlockReference) => {
-      setReferences((current) => {
+      setQueuedReferences((current) => {
         if (
           current.some(
             (item) =>
@@ -261,7 +265,7 @@ export default function Writing({
     );
     if (sent) {
       setInstruction("");
-      setReferences([]);
+      setQueuedReferences([]);
     }
   }
 
@@ -340,7 +344,7 @@ export default function Writing({
                   <select
                     aria-label="Writer template"
                     value={selectedTemplateId}
-                    onChange={(event) => setSelectedTemplateId(event.target.value)}
+                    onChange={(event) => setChosenTemplateId(event.target.value)}
                     disabled={controlsBusy || pending !== null || writerTemplates.length === 0}
                     className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
                   >
@@ -505,7 +509,7 @@ export default function Writing({
                     type="button"
                     aria-label={`Remove reference to ${reference.sectionHeading}, ${reference.kind} ${reference.blockIndex + 1}`}
                     onClick={() =>
-                      setReferences((current) =>
+                      setQueuedReferences((current) =>
                         current.filter(
                           (item) =>
                             item.sectionId !== reference.sectionId ||
@@ -572,7 +576,7 @@ export default function Writing({
           onClose={() => setRevisionsOpen(false)}
           onReverted={(updated) => {
             applyReverted(updated);
-            setReferences([]);
+            setQueuedReferences([]);
           }}
         />
       )}

@@ -7,6 +7,7 @@ import {
   type Segment,
 } from "../lib/transcript";
 import Modal from "./Modal";
+import { ErrorBanner } from "./StateCards";
 
 /**
  * Per-segment transcript editor.
@@ -165,11 +166,7 @@ export default function TranscriptEditor({
           />
         )}
 
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error}</p>
-          </div>
-        )}
+        {error && <ErrorBanner message={error} className="" />}
       </div>
 
       <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">

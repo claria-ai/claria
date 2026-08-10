@@ -37,7 +37,7 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import Writing from "./Writing";
-import { ChatModelsProvider, type ChatModelsState } from "../lib/chatModels";
+import { ChatModelsContext, type ChatModelsState } from "../lib/chatModels";
 
 const models = [{ model_id: "model-1", name: "Claude Sonnet" }];
 const modelsState: ChatModelsState = {
@@ -183,13 +183,13 @@ function turnResponse(value: ReportWorkspaceView) {
 
 function renderWriting(clientId = "client-1", expectedReportId?: string) {
   return render(
-    <ChatModelsProvider value={modelsState}>
+    <ChatModelsContext.Provider value={modelsState}>
       <Writing
         clientId={clientId}
         expectedReportId={expectedReportId}
         onManageTemplates={vi.fn()}
       />
-    </ChatModelsProvider>
+    </ChatModelsContext.Provider>
   );
 }
 
@@ -854,9 +854,9 @@ describe("Writing", () => {
     );
     const rendered = renderWriting("client-a");
     rendered.rerender(
-      <ChatModelsProvider value={modelsState}>
+      <ChatModelsContext.Provider value={modelsState}>
         <Writing clientId="client-b" onManageTemplates={vi.fn()} />
-      </ChatModelsProvider>
+      </ChatModelsContext.Provider>
     );
 
     await act(async () => {

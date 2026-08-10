@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
-import Spinner from "./Spinner";
+import { LoadingCard } from "./StateCards";
 import { formatDateTime, formatFileSize } from "../lib/format";
 import { diffLines, type DiffLine } from "../lib/diff";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
@@ -140,11 +140,8 @@ export default function VersionHistoryModal({
   return (
     <Modal open onClose={onClose} title={title} className={className}>
       {loading ? (
-        <div className="flex-1 flex items-center justify-center py-8">
-          <div className="flex items-center gap-2 text-gray-500 text-sm">
-            <Spinner />
-            <span>Loading versions...</span>
-          </div>
+        <div className="flex-1 py-8">
+          <LoadingCard>Loading versions...</LoadingCard>
         </div>
       ) : versions.length === 0 ? (
         <div className="flex-1 flex items-center justify-center py-8">

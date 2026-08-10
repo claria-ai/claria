@@ -19,10 +19,7 @@ import {
   reportEditsEqual,
   validateReportEdit,
 } from "./writingWorkspace";
-import {
-  upsertLiveContext,
-  type ContextPill,
-} from "../components/ContextPills";
+import { upsertLiveContext, type ContextPill } from "./contextPills";
 
 export type WriterBusy =
   | null
@@ -161,7 +158,7 @@ export function useReportWorkspace({
   }, []);
 
   /** Save any dirty inline edit, returning the workspace to act against. */
-  async function persistCurrentEdit(): Promise<ReportWorkspaceView> {
+  const persistCurrentEdit = useCallback(async (): Promise<ReportWorkspaceView> => {
     const { workspace: current, dirty: isDirty, edit: currentEdit, validationErrors: errors } =
       stateRef.current;
     if (!current) throw new Error("The writing session is not loaded.");
@@ -178,7 +175,7 @@ export function useReportWorkspace({
     setEdit(draftToEdit(result.draft));
     setConflict(false);
     return result;
-  }
+  }, [clientId]);
 
   const save = useCallback(async () => {
     const { dirty: isDirty, busy: currentBusy, validationErrors: errors } =
@@ -201,10 +198,9 @@ export function useReportWorkspace({
     } finally {
       if (generation === generationRef.current) setBusy(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientId, showActionError]);
+  }, [persistCurrentEdit, showActionError]);
 
-  function handleAgentProgress(progress: ReportTurnProgressView) {
+  const handleAgentProgress = useCallback((progress: ReportTurnProgressView) => {
     if (progress.kind === "model_call_started") {
       setAgentActivity({
         label:
@@ -241,7 +237,7 @@ export function useReportWorkspace({
         )
       );
     }
-  }
+  }, []);
 
   const send = useCallback(
     async (
@@ -299,9 +295,8 @@ export function useReportWorkspace({
           setBusy(null);
         }
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [clientId, showActionError]
+    [clientId, handleAgentProgress, persistCurrentEdit, showActionError]
   );
 
   const resolveProposal = useCallback(

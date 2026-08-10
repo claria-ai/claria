@@ -37,8 +37,6 @@ export function useAsyncLoad<T>(
   const loadRef = useRef(load);
   loadRef.current = load;
 
-  // The dependency list is the caller's contract, exactly like useEffect.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const reload = useCallback(() => {
     const generation = ++generationRef.current;
     const fn = loadRef.current;
@@ -63,6 +61,8 @@ export function useAsyncLoad<T>(
         }
       }
     );
+    // The dependency list is the caller's contract, exactly like useEffect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
   useEffect(() => {

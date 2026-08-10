@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { hasConfig, loadConfig, listChatModels, type ChatModel } from "./lib/tauri";
-import { ChatModelsProvider, type ChatModelsState } from "./lib/chatModels";
+import { ChatModelsContext, type ChatModelsState } from "./lib/chatModels";
 import StartScreen from "./pages/StartScreen";
 import AwsAccountGuide from "./pages/AwsAccountGuide";
 import MfaSetupGuide from "./pages/MfaSetupGuide";
@@ -126,7 +126,7 @@ export default function App() {
   }
 
   return (
-    <ChatModelsProvider value={chatModelsState}>
+    <ChatModelsContext.Provider value={chatModelsState}>
     <div className="min-h-screen bg-gray-50 text-gray-900">
       {page === "start" && (
         <StartScreen navigate={navigate} configExists={configExists} />
@@ -169,6 +169,6 @@ export default function App() {
       {page === "cost-explorer" && <CostExplorer navigate={navigate} />}
       {page === "about" && <About navigate={navigate} />}
     </div>
-    </ChatModelsProvider>
+    </ChatModelsContext.Provider>
   );
 }
