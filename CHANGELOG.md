@@ -14,6 +14,11 @@ All notable changes to Claria are documented here.
 - Logs also roll to bounded daily files on disk, and the console gains a button that opens the log folder
 - Log filter directives for all workspace crates are built from one shared list
 - Creating, renaming, deleting, and restoring clients, uploading, editing, deleting, and restoring record files, and saving prompts now all write durable audit events
+- The app window enforces a strict content security policy allowing only bundled resources
+- Assumed-role secrets and freshly minted access-key secrets no longer cross the IPC boundary; the frontend holds an opaque handle and the backend keeps the credentials
+- Opening a URL on Windows goes through the platform API instead of a shell command, and URLs with whitespace or control characters are rejected
+- Creating the IAM policy without a resolved account ID now fails instead of silently widening resource scopes to a wildcard
+- The plaintext-with-file-permissions credential storage model is documented, with keychain migration tracked
 - Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
 - Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
 - Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed

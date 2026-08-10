@@ -84,7 +84,11 @@ pub struct CredentialAssessment {
 }
 
 /// Fresh credentials created during the bootstrap flow.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+///
+/// Secret-bearing: deliberately not `specta::Type`, so it can never be part
+/// of a Tauri command's IPC surface. The desktop persists the secret and
+/// returns a redacted view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewCredentials {
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -115,7 +119,11 @@ pub struct AccessKeyInfo {
 /// These are short-lived (typically 1 hour) and include a session token.
 /// They should **never** be persisted to disk — they exist only to bootstrap
 /// a dedicated IAM user in the sub-account.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+///
+/// Secret-bearing: deliberately not `specta::Type`, so it can never be part
+/// of a Tauri command's IPC surface. The desktop holds the secrets in memory
+/// and hands the frontend an opaque handle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssumeRoleResult {
     /// Temporary access key ID for the assumed role.
     pub access_key_id: String,
@@ -151,7 +159,10 @@ pub enum StepStatus {
 }
 
 /// The result of a full bootstrap attempt.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+///
+/// Carries [`NewCredentials`] and therefore is not `specta::Type`; the
+/// desktop command layer returns a redacted view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootstrapResult {
     pub success: bool,
     pub steps: Vec<BootstrapStep>,
@@ -679,6 +690,16 @@ pub async fn delete_user_access_key(
 /// S3 actions are scoped to buckets matching `{system_name}-*`.
 /// IAM read actions are scoped to the `claria-admin` user and
 /// `ClariaProvisionerAccess` policy so the dashboard can verify its own setup.
+///
+/// `account_id` must be a concrete, resolved account ID — never a wildcard.
+/// The remaining `"Resource": "*"` statements below are deliberate and must
+/// stay narrow in *actions* instead: CloudTrail, Bedrock, Marketplace,
+/// Artifact, Transcribe, Cost Explorer, and STS either do not support
+/// resource-level scoping for the listed actions or operate on
+/// account-global resources (trails are looked up by name, foundation models
+/// and agreements are not account resources, `ce:GetCostAndUsage` and
+/// `sts:GetCallerIdentity` are account-wide by definition). Widening any of
+/// those statements' action lists is what would grant new power — do not.
 pub(crate) fn claria_policy_document(system_name: &str, account_id: &str) -> String {
     serde_json::json!({
         "Version": "2012-10-17",
@@ -870,7 +891,14 @@ pub(crate) async fn create_policy(
     system_name: &str,
     account_id: &Option<String>,
 ) -> Result<String, ProvisionerError> {
-    let acct = account_id.as_deref().unwrap_or("*");
+    // Fail closed: without a resolved account ID the bucket and IAM resource
+    // ARNs would have to widen to "*", silently turning the least-privilege
+    // policy into an any-bucket grant.
+    let acct = account_id.as_deref().ok_or_else(|| {
+        ProvisionerError::Aws(
+            "cannot create the Claria IAM policy without a resolved AWS account ID".into(),
+        )
+    })?;
     let document = claria_policy_document(system_name, acct);
 
     match client

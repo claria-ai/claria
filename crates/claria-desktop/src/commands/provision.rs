@@ -8,13 +8,129 @@ use claria_desktop::config::{self, ClariaConfig, CredentialSource};
 use claria_provisioner::{
     Action, CredentialScope, PlanEntry,
     account_setup::{
-        AccessKeyInfo, AssumeRoleResult, BootstrapResult, CredentialAssessment, CredentialClass,
+        AccessKeyInfo, BootstrapResult, BootstrapStep, CredentialAssessment, CredentialClass,
         StepStatus,
     },
 };
-
-use super::{CommandContext, CommandError, run};
+use super::{CommandContext, CommandError, parse_uuid, run};
 use crate::state::DesktopState;
+
+// ---------------------------------------------------------------------------
+// Credential input — what the frontend may reference credentials by
+// ---------------------------------------------------------------------------
+
+/// Credentials as the frontend supplies them to provisioning commands.
+///
+/// Mirrors [`CredentialSource`] for the user-typed variants and adds
+/// `AssumedRole`, an opaque handle to temporary STS credentials held in
+/// [`DesktopState`] — the secret access key and session token from an
+/// `assume_role` call never cross the IPC boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CredentialInput {
+    Inline {
+        access_key_id: String,
+        secret_access_key: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        session_token: Option<String>,
+    },
+    Profile {
+        profile_name: String,
+    },
+    DefaultChain,
+    AssumedRole {
+        handle: String,
+    },
+}
+
+impl CredentialInput {
+    /// Resolve to a concrete [`CredentialSource`], dereferencing an
+    /// assumed-role handle through state.
+    async fn resolve(
+        self,
+        state: &State<'_, DesktopState>,
+    ) -> Result<CredentialSource, CommandError> {
+        match self {
+            CredentialInput::Inline {
+                access_key_id,
+                secret_access_key,
+                session_token,
+            } => Ok(CredentialSource::Inline {
+                access_key_id,
+                secret_access_key,
+                session_token,
+            }),
+            CredentialInput::Profile { profile_name } => {
+                Ok(CredentialSource::Profile { profile_name })
+            }
+            CredentialInput::DefaultChain => Ok(CredentialSource::DefaultChain),
+            CredentialInput::AssumedRole { handle } => {
+                let handle = parse_uuid(&handle)?;
+                state
+                    .assumed_role_credentials
+                    .lock()
+                    .await
+                    .get(&handle)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CommandError::Msg(
+                            "The assumed-role session is no longer available. Assume the role again."
+                                .to_string(),
+                        )
+                    })
+            }
+        }
+    }
+}
+
+/// What `assume_role` returns to the frontend: everything about the assumed
+/// session except its secrets, plus the opaque handle later provisioning
+/// commands exchange for them.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct AssumedRoleSession {
+    /// Opaque reference to the credentials held in memory.
+    pub handle: String,
+    /// Temporary access key ID (not secret; shown for operator recognition).
+    pub access_key_id: String,
+    /// When the temporary credentials expire (ISO 8601).
+    pub expiration: Option<String>,
+    /// The ARN of the assumed role.
+    pub assumed_role_arn: String,
+    /// The account ID of the sub-account we assumed into.
+    pub account_id: String,
+}
+
+/// Redacted [`BootstrapResult`] for the frontend: the minted secret access
+/// key is persisted to the local config Rust-side and never returned.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct BootstrapOutcome {
+    pub success: bool,
+    pub steps: Vec<BootstrapStep>,
+    pub account_id: Option<String>,
+    /// Present when bootstrap minted scoped credentials.
+    pub new_credentials: Option<NewCredentialsInfo>,
+    pub error: Option<String>,
+}
+
+/// The non-secret half of freshly minted credentials.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct NewCredentialsInfo {
+    pub access_key_id: String,
+    pub iam_user_arn: String,
+}
+
+fn redact_bootstrap(result: BootstrapResult) -> BootstrapOutcome {
+    BootstrapOutcome {
+        success: result.success,
+        steps: result.steps,
+        account_id: result.account_id,
+        new_credentials: result.new_credentials.map(|creds| NewCredentialsInfo {
+            access_key_id: creds.access_key_id,
+            iam_user_arn: creds.iam_user_arn,
+        }),
+        error: result.error,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Provisioner progress — streamed to the frontend via Channel<T>
@@ -63,10 +179,12 @@ pub enum ProvisionerProgress {
 #[tauri::command]
 #[specta::specta]
 pub async fn assess_credentials(
+    state: State<'_, DesktopState>,
     region: String,
-    credentials: CredentialSource,
+    credentials: CredentialInput,
 ) -> Result<CredentialAssessment, String> {
     run("assess_credentials", async {
+        let credentials = credentials.resolve(&state).await?;
         let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
         Ok(claria_provisioner::assess_credentials(&sdk_config).await?)
     })
@@ -76,25 +194,50 @@ pub async fn assess_credentials(
 /// Assume a role in an AWS sub-account using parent-account credentials.
 ///
 /// The operator provides their parent-account credentials and the sub-account
-/// details. We call STS AssumeRole and return temporary credentials that can
-/// be used with `assess_credentials` and `bootstrap_iam_user` to set up a
-/// dedicated IAM user in the sub-account.
-///
-/// The temporary credentials are never persisted to disk.
+/// details. We call STS AssumeRole, hold the temporary credentials in memory,
+/// and return an [`AssumedRoleSession`] whose handle later provisioning
+/// commands exchange for them. Neither the secret access key nor the session
+/// token ever reaches the frontend, and nothing is persisted to disk.
 #[tauri::command]
 #[specta::specta]
 pub async fn assume_role(
+    state: State<'_, DesktopState>,
     region: String,
-    credentials: CredentialSource,
+    credentials: CredentialInput,
     account_id: String,
     role_name: String,
-) -> Result<AssumeRoleResult, String> {
+) -> Result<AssumedRoleSession, String> {
     run("assume_role", async {
+        let credentials = credentials.resolve(&state).await?;
         let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
 
         let role_arn = claria_provisioner::build_role_arn(&account_id, &role_name);
 
-        Ok(claria_provisioner::assume_role(&sdk_config, &role_arn, None).await?)
+        let result = claria_provisioner::assume_role(&sdk_config, &role_arn, None).await?;
+
+        let handle = uuid::Uuid::new_v4();
+        {
+            let mut sessions = state.assumed_role_credentials.lock().await;
+            // One live assumed-role session at a time: stale sessions have
+            // expired or been superseded, and holding them serves nothing.
+            sessions.clear();
+            sessions.insert(
+                handle,
+                CredentialSource::Inline {
+                    access_key_id: result.access_key_id.clone(),
+                    secret_access_key: result.secret_access_key,
+                    session_token: Some(result.session_token),
+                },
+            );
+        }
+
+        Ok(AssumedRoleSession {
+            handle: handle.to_string(),
+            access_key_id: result.access_key_id,
+            expiration: result.expiration,
+            assumed_role_arn: result.assumed_role_arn,
+            account_id: result.account_id,
+        })
     })
     .await
 }
@@ -117,10 +260,12 @@ pub async fn list_aws_profiles() -> Result<Vec<String>, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn list_user_access_keys(
+    state: State<'_, DesktopState>,
     region: String,
-    credentials: CredentialSource,
+    credentials: CredentialInput,
 ) -> Result<Vec<AccessKeyInfo>, String> {
     run("list_user_access_keys", async {
+        let credentials = credentials.resolve(&state).await?;
         let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
         Ok(claria_provisioner::list_user_access_keys(&sdk_config).await?)
     })
@@ -134,11 +279,13 @@ pub async fn list_user_access_keys(
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_user_access_key(
+    state: State<'_, DesktopState>,
     region: String,
-    credentials: CredentialSource,
+    credentials: CredentialInput,
     access_key_id: String,
 ) -> Result<(), String> {
     run("delete_user_access_key", async {
+        let credentials = credentials.resolve(&state).await?;
         let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
         Ok(claria_provisioner::delete_user_access_key(&sdk_config, &access_key_id).await?)
     })
@@ -165,7 +312,7 @@ pub async fn bootstrap_iam_user(
     root_secret_access_key: String,
     session_token: Option<String>,
     credential_class: CredentialClass,
-) -> Result<BootstrapResult, String> {
+) -> Result<BootstrapOutcome, String> {
     run("bootstrap_iam_user", async {
         // Build an SDK config from the raw credentials. These are held only in
         // memory — the desktop app never persists broad/root credentials to disk.
@@ -215,16 +362,20 @@ pub async fn bootstrap_iam_user(
 
             if let Err(e) = config::save_config(&cfg) {
                 // Bootstrap succeeded in AWS but we failed to write config
-                // locally. Return a modified result so the frontend can
-                // show the new credentials and let the operator save them
-                // manually.
+                // locally. The minted secret only lives in that config, so
+                // tell the operator to free the key slot and retry rather
+                // than echoing the secret back over IPC.
                 let mut failed = result;
                 failed.steps.push(claria_provisioner::BootstrapStep {
                     name: "write_config".to_string(),
                     status: StepStatus::Failed,
-                    detail: Some(format!("Failed to write config: {e}")),
+                    detail: Some(format!(
+                        "Failed to write config: {e}. The new access key exists in AWS but \
+                         could not be saved locally — delete it from the IAM user and run \
+                         setup again."
+                    )),
                 });
-                return Ok(failed);
+                return Ok(redact_bootstrap(failed));
             }
 
             let mut guard = state.config.lock().await;
@@ -296,7 +447,7 @@ pub async fn bootstrap_iam_user(
             }
         }
 
-        Ok(result)
+        Ok(redact_bootstrap(result))
     })
     .await
 }
@@ -676,12 +827,14 @@ pub struct ProvisionApplyOutcome {
 #[tauri::command]
 #[specta::specta]
 pub async fn provision_scan(
+    state: State<'_, DesktopState>,
     region: String,
     system_name: String,
-    credentials: CredentialSource,
+    credentials: CredentialInput,
     on_progress: tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<ProvisionScanResult, String> {
     run("provision_scan", async {
+        let credentials = credentials.resolve(&state).await?;
         let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
 
         // Resolve account ID via STS.
@@ -747,11 +900,16 @@ pub async fn provision_apply(
     state: State<'_, DesktopState>,
     region: String,
     system_name: String,
-    credentials: CredentialSource,
-    elevated_credentials: Option<CredentialSource>,
+    credentials: CredentialInput,
+    elevated_credentials: Option<CredentialInput>,
     on_progress: tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<ProvisionApplyOutcome, String> {
     run("provision_apply", async {
+        let credentials = credentials.resolve(&state).await?;
+        let elevated_credentials = match elevated_credentials {
+            Some(input) => Some(input.resolve(&state).await?),
+            None => None,
+        };
         let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
 
         let identity =

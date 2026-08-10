@@ -18,6 +18,7 @@ import type {
   CostAndUsageResult,
   CostGranularity,
   CredentialClass,
+  CredentialInput,
   CredentialSource,
   DeletedClient,
   DeletedFile,
@@ -58,8 +59,8 @@ export type {
   AccessKeyInfo,
   AccessKeyLimitReached,
   Action,
-  AssumeRoleResult,
-  BootstrapResult,
+  AssumedRoleSession,
+  BootstrapOutcome,
   BootstrapStep,
   CallerIdentity,
   Cause,
@@ -79,6 +80,7 @@ export type {
   ConsoleEntry,
   CredentialAssessment,
   CredentialClass,
+  CredentialInput,
   CredentialSource,
   DeletedClient,
   DeletedFile,
@@ -97,7 +99,7 @@ export type {
   LocalTranscriptionStatus,
   ModelDownloadProgress,
   ModelPricing,
-  NewCredentials,
+  NewCredentialsInfo,
   PlanEntry,
   ProvisionApplyOutcome,
   ProvisionScanResult,
@@ -258,7 +260,7 @@ export async function deleteConfig(): Promise<void> {
 
 export async function assessCredentials(
   region: string,
-  credentials: CredentialSource
+  credentials: CredentialInput
 ) {
   return unwrap(await commands.assessCredentials(region, credentials));
 }
@@ -266,13 +268,14 @@ export async function assessCredentials(
 /**
  * Assume a role in an AWS sub-account using parent-account credentials.
  *
- * Returns temporary credentials (with session token) that can be fed into
- * `assessCredentials` and `bootstrapIamUser` to set up a dedicated IAM user
- * in the sub-account.
+ * Returns an `AssumedRoleSession`: the session's metadata plus an opaque
+ * handle that later provisioning calls pass as
+ * `{ type: "assumed_role", handle }` — the temporary secrets stay in the
+ * Rust backend and never reach the frontend.
  */
 export async function assumeRole(
   region: string,
-  credentials: CredentialSource,
+  credentials: CredentialInput,
   accountId: string,
   roleName: string
 ) {
@@ -307,7 +310,7 @@ export async function listAwsProfiles(): Promise<string[]> {
 
 export async function listUserAccessKeys(
   region: string,
-  credentials: CredentialSource
+  credentials: CredentialInput
 ) {
   return unwrap(
     await commands.listUserAccessKeys(region, credentials)
@@ -316,7 +319,7 @@ export async function listUserAccessKeys(
 
 export async function deleteUserAccessKey(
   region: string,
-  credentials: CredentialSource,
+  credentials: CredentialInput,
   accessKeyId: string
 ): Promise<void> {
   unwrap(
@@ -346,7 +349,7 @@ function progressChannel(
 export async function provisionScan(
   region: string,
   systemName: string,
-  credentials: CredentialSource,
+  credentials: CredentialInput,
   onProgress?: (p: ProvisionerProgress) => void
 ): Promise<ProvisionScanResult> {
   return unwrap(
@@ -362,8 +365,8 @@ export async function provisionScan(
 export async function provisionApply(
   region: string,
   systemName: string,
-  credentials: CredentialSource,
-  elevatedCredentials: CredentialSource | null,
+  credentials: CredentialInput,
+  elevatedCredentials: CredentialInput | null,
   onProgress?: (p: ProvisionerProgress) => void
 ): Promise<ProvisionApplyOutcome> {
   return unwrap(

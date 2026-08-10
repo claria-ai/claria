@@ -34,6 +34,11 @@ pub struct DesktopState {
     /// long enough to write the immutable formatting snapshot; local paths are
     /// never retained.
     pub(crate) pending_report_templates: Arc<Mutex<HashMap<uuid::Uuid, PendingReportTemplate>>>,
+    /// Temporary assumed-role credentials, keyed by the opaque handle the
+    /// `assume_role` command returned. The secrets never cross the IPC
+    /// boundary — the frontend only ever holds the handle — and they expire
+    /// with the STS session, so entries are replaced rather than accumulated.
+    pub(crate) assumed_role_credentials: Arc<Mutex<HashMap<uuid::Uuid, CredentialSource>>>,
 }
 
 impl Default for DesktopState {
@@ -46,6 +51,7 @@ impl Default for DesktopState {
             )),
             record_cache: Arc::new(RecordCache::new()),
             pending_report_templates: Arc::new(Mutex::new(HashMap::new())),
+            assumed_role_credentials: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

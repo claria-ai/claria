@@ -137,7 +137,7 @@ async setPreferredModel(modelId: string | null) : Promise<Result<null, string>> 
  * The desktop app uses the returned `CredentialAssessment` to decide
  * which UI flow to present (bootstrap vs. straight to provisioning).
  */
-async assessCredentials(region: string, credentials: CredentialSource) : Promise<Result<CredentialAssessment, string>> {
+async assessCredentials(region: string, credentials: CredentialInput) : Promise<Result<CredentialAssessment, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("assess_credentials", { region, credentials }) };
 } catch (e) {
@@ -155,7 +155,7 @@ async assessCredentials(region: string, credentials: CredentialSource) : Promise
  * 
  * The temporary credentials are never persisted to disk.
  */
-async assumeRole(region: string, credentials: CredentialSource, accountId: string, roleName: string) : Promise<Result<AssumeRoleResult, string>> {
+async assumeRole(region: string, credentials: CredentialInput, accountId: string, roleName: string) : Promise<Result<AssumedRoleSession, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("assume_role", { region, credentials, accountId, roleName }) };
 } catch (e) {
@@ -178,7 +178,7 @@ async listAwsProfiles() : Promise<Result<string[], string>> {
  * Called when bootstrap fails due to the 2-key limit so the operator can
  * pick which key to delete.
  */
-async listUserAccessKeys(region: string, credentials: CredentialSource) : Promise<Result<AccessKeyInfo[], string>> {
+async listUserAccessKeys(region: string, credentials: CredentialInput) : Promise<Result<AccessKeyInfo[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_user_access_keys", { region, credentials }) };
 } catch (e) {
@@ -192,7 +192,7 @@ async listUserAccessKeys(region: string, credentials: CredentialSource) : Promis
  * Called after the operator picks a key to remove to make room for a
  * fresh one during bootstrap.
  */
-async deleteUserAccessKey(region: string, credentials: CredentialSource, accessKeyId: string) : Promise<Result<null, string>> {
+async deleteUserAccessKey(region: string, credentials: CredentialInput, accessKeyId: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_user_access_key", { region, credentials, accessKeyId }) };
 } catch (e) {
@@ -208,7 +208,7 @@ async deleteUserAccessKey(region: string, credentials: CredentialSource, accessK
  * The provisioner does all the IAM work and returns the new credentials.
  * We handle only the config write and in-memory state update.
  */
-async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: string, rootSecretAccessKey: string, sessionToken: string | null, credentialClass: CredentialClass) : Promise<Result<BootstrapResult, string>> {
+async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: string, rootSecretAccessKey: string, sessionToken: string | null, credentialClass: CredentialClass) : Promise<Result<BootstrapOutcome, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("bootstrap_iam_user", { region, systemName, rootAccessKeyId, rootSecretAccessKey, sessionToken, credentialClass }) };
 } catch (e) {
@@ -242,7 +242,7 @@ async escalateIamPolicy(accessKeyId: string, secretAccessKey: string, onProgress
  * Returns a `ProvisionScanResult` that tells the frontend whether elevated
  * credentials are needed before applying.
  */
-async provisionScan(region: string, systemName: string, credentials: CredentialSource, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionScanResult, string>> {
+async provisionScan(region: string, systemName: string, credentials: CredentialInput, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionScanResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("provision_scan", { region, systemName, credentials, onProgress }) };
 } catch (e) {
@@ -266,7 +266,7 @@ async provisionScan(region: string, systemName: string, credentials: CredentialS
  * [`ProvisionApplyOutcome::access_key_limit`] so the caller can offer key
  * deletion and retry.
  */
-async provisionApply(region: string, systemName: string, credentials: CredentialSource, elevatedCredentials: CredentialSource | null, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionApplyOutcome, string>> {
+async provisionApply(region: string, systemName: string, credentials: CredentialInput, elevatedCredentials: CredentialInput | null, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionApplyOutcome, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("provision_apply", { region, systemName, credentials, elevatedCredentials, onProgress }) };
 } catch (e) {
@@ -1132,32 +1132,25 @@ limit: number;
 message: string }
 export type Action = "ok" | "create" | "modify" | "delete" | "precondition_failed"
 /**
- * Temporary credentials obtained by assuming a role in a sub-account.
- * 
- * These are short-lived (typically 1 hour) and include a session token.
- * They should **never** be persisted to disk — they exist only to bootstrap
- * a dedicated IAM user in the sub-account.
+ * What `assume_role` returns to the frontend: everything about the assumed
+ * session except its secrets, plus the opaque handle later provisioning
+ * commands exchange for them.
  */
-export type AssumeRoleResult = { 
+export type AssumedRoleSession = { 
 /**
- * Temporary access key ID for the assumed role.
+ * Opaque reference to the credentials held in memory.
+ */
+handle: string; 
+/**
+ * Temporary access key ID (not secret; shown for operator recognition).
  */
 access_key_id: string; 
 /**
- * Temporary secret access key for the assumed role.
- */
-secret_access_key: string; 
-/**
- * Session token — required for all API calls made with these credentials.
- */
-session_token: string; 
-/**
- * When these temporary credentials expire (ISO 8601).
+ * When the temporary credentials expire (ISO 8601).
  */
 expiration: string | null; 
 /**
- * The ARN of the assumed role (e.g.
- * `arn:aws:sts::690641653532:assumed-role/OrganizationAccountAccessRole/claria-setup`).
+ * The ARN of the assumed role.
  */
 assumed_role_arn: string; 
 /**
@@ -1165,13 +1158,14 @@ assumed_role_arn: string;
  */
 account_id: string }
 /**
- * The result of a full bootstrap attempt.
+ * Redacted bootstrap outcome for the frontend: the minted secret access
+ * key is persisted to the local config Rust-side and never returned.
  */
-export type BootstrapResult = { success: boolean; steps: BootstrapStep[]; account_id: string | null; 
+export type BootstrapOutcome = { success: boolean; steps: BootstrapStep[]; account_id: string | null; 
 /**
- * The new, scoped credentials. `None` on failure.
+ * Present when bootstrap minted scoped credentials.
  */
-new_credentials: NewCredentials | null; error: string | null }
+new_credentials: NewCredentialsInfo | null; error: string | null }
 /**
  * A single step in the bootstrap sequence, reported for UI rendering.
  */
@@ -1272,6 +1266,15 @@ export type CredentialScope =
 "regular"
 export type CredentialSource = { type: "inline"; access_key_id: string; secret_access_key: string; session_token?: string | null } | { type: "profile"; profile_name: string } | { type: "default_chain" }
 /**
+ * Credentials as the frontend supplies them to provisioning commands.
+ * 
+ * Mirrors `CredentialSource` for the user-typed variants and adds
+ * `AssumedRole`, an opaque handle to temporary STS credentials held in
+ * `DesktopState` — the secret access key and session token from an
+ * `assume_role` call never cross the IPC boundary.
+ */
+export type CredentialInput = { type: "inline"; access_key_id: string; secret_access_key: string; session_token?: string | null } | { type: "profile"; profile_name: string } | { type: "default_chain" } | { type: "assumed_role"; handle: string }
+/**
  * A client that has been deleted (has a delete marker on the client JSON).
  */
 export type DeletedClient = { id: string; name: string; deleted_at: string | null; version_id: string }
@@ -1335,7 +1338,7 @@ export type ModelPricing = { input_per_million: number; output_per_million: numb
 /**
  * Fresh credentials created during the bootstrap flow.
  */
-export type NewCredentials = { access_key_id: string; secret_access_key: string; iam_user_arn: string }
+export type NewCredentialsInfo = { access_key_id: string; iam_user_arn: string }
 /**
  * A single entry in the plan — the spec annotated with what happened.
  * 

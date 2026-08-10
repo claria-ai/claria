@@ -14,11 +14,11 @@ import {
   resetProvisionerState,
   plan,
   apply,
-  type CredentialSource,
+  type CredentialInput,
 
   type AccessKeyInfo,
   type AccessKeyLimitReached,
-  type AssumeRoleResult,
+  type AssumedRoleSession,
   type PlanEntry,
   type ConfigInfo,
 } from "../lib/tauri";
@@ -72,7 +72,7 @@ export default function Provision({
   // Sub-account fields
   const [subAccountId, setSubAccountId] = useState("");
   const [roleName, setRoleName] = useState(DEFAULT_ROLE_NAME);
-  const [assumeRoleResult, setAssumeRoleResult] = useState<AssumeRoleResult | null>(null);
+  const [assumedRoleSession, setAssumedRoleSession] = useState<AssumedRoleSession | null>(null);
 
   // ── Escalation (inline elevated creds) ───────────────────────────────
   const [escAccessKeyId, setEscAccessKeyId] = useState("");
@@ -116,15 +116,11 @@ export default function Provision({
   const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  // Build credentials from form state.
-  const buildCredentials = useCallback((): CredentialSource => {
-    if (assumeRoleResult) {
-      return {
-        type: "inline",
-        access_key_id: assumeRoleResult.access_key_id,
-        secret_access_key: assumeRoleResult.secret_access_key,
-        session_token: assumeRoleResult.session_token,
-      };
+  // Build credentials from form state. An assumed-role session is referenced
+  // by its opaque handle — the temporary secrets never leave the backend.
+  const buildCredentials = useCallback((): CredentialInput => {
+    if (assumedRoleSession) {
+      return { type: "assumed_role", handle: assumedRoleSession.handle };
     }
     switch (credMode) {
       case "inline":
@@ -136,7 +132,7 @@ export default function Provision({
       case "sub_account":
         return { type: "inline", access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null };
     }
-  }, [credMode, accessKeyId, secretAccessKey, profileName, assumeRoleResult]);
+  }, [credMode, accessKeyId, secretAccessKey, profileName, assumedRoleSession]);
 
   // ── Initialization ───────────────────────────────────────────────────
   useEffect(() => {
@@ -165,20 +161,19 @@ export default function Provision({
   async function handleInitialScan() {
     await runPhase("scanning", async () => {
       // If sub-account mode and not yet assumed role, do that first.
-      if (credMode === "sub_account" && !assumeRoleResult) {
-        const creds: CredentialSource = {
+      if (credMode === "sub_account" && !assumedRoleSession) {
+        const creds: CredentialInput = {
           type: "inline", access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null,
         };
-        const result = await assumeRole(region, creds, subAccountId, roleName);
-        setAssumeRoleResult(result);
-        // Now scan with assumed-role creds.
-        const assumedCreds: CredentialSource = {
-          type: "inline",
-          access_key_id: result.access_key_id,
-          secret_access_key: result.secret_access_key,
-          session_token: result.session_token,
-        };
-        const scanRes = await provisionScan(region, systemName, assumedCreds, progressHandler);
+        const session = await assumeRole(region, creds, subAccountId, roleName);
+        setAssumedRoleSession(session);
+        // Now scan with the assumed-role handle.
+        const scanRes = await provisionScan(
+          region,
+          systemName,
+          { type: "assumed_role", handle: session.handle },
+          progressHandler,
+        );
         setEntries(scanRes.entries);
         setPhase("planned");
         return;
@@ -239,7 +234,7 @@ export default function Provision({
 
   // ── Access-key limit recovery ────────────────────────────────────────
 
-  async function loadExistingKeys(creds: CredentialSource) {
+  async function loadExistingKeys(creds: CredentialInput) {
     setLoadingKeys(true);
     setKeysError(null);
     try {
@@ -283,7 +278,7 @@ export default function Provision({
       // Load the saved scoped creds from config for regular resources.
       const savedCreds = await loadConfig();
       // The escalation creds are from the inline form.
-      const elevatedCreds: CredentialSource = {
+      const elevatedCreds: CredentialInput = {
         type: "inline",
         access_key_id: escAccessKeyId,
         secret_access_key: escSecretAccessKey,
@@ -368,7 +363,7 @@ export default function Provision({
     }
     // First run: return to the credential form without unmounting.
     if (configExists === false && (phase === "planned" || phase === "error")) {
-      setAssumeRoleResult(null);
+      setAssumedRoleSession(null);
       setError(null);
       setPhase("input");
       return;
@@ -541,7 +536,7 @@ export default function Provision({
             ] as [CredMode, string][]).map(([mode, label]) => (
               <button
                 key={mode}
-                onClick={() => { setCredMode(mode); setAssumeRoleResult(null); }}
+                onClick={() => { setCredMode(mode); setAssumedRoleSession(null); }}
                 className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   credMode === mode
                     ? "bg-white shadow-sm text-gray-900"
