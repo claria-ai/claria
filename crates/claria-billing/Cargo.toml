@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 aws-config.workspace = true
-aws-sdk-costexplorer = "=1.120.0"
+aws-sdk-costexplorer = { version = "=1.120.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-smithy-runtime-api = "=1.12.3"
 aws-smithy-types.workspace = true
 claria-core.workspace = true

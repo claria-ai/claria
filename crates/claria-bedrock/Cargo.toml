@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 aws-config.workspace = true
 aws-sdk-bedrock.workspace = true
-aws-sdk-bedrockruntime = "=1.135.0"
+aws-sdk-bedrockruntime = { version = "=1.135.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-smithy-types.workspace = true
 claria-billing.workspace = true
 claria-core.workspace = true

@@ -15,7 +15,7 @@ openmp = ["transcribe-cpp/openmp"]
 [dependencies]
 aws-config.workspace = true
 aws-sdk-s3.workspace = true
-aws-sdk-transcribe = "=1.108.0"
+aws-sdk-transcribe = { version = "=1.108.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 backon.workspace = true
 claria-core.workspace = true
 claria-storage.workspace = true
