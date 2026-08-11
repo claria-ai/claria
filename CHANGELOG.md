@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.23.0] — 2026-08-11
 
 - Writing can fill an entire report in one action, save it directly as one versioned draft, and reserve reviewable proposals for later targeted edits
 - Writing sessions now behave like chats: opening the Writing tab starts a fresh report, while Editor History resumes a specific prior session
