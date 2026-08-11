@@ -180,6 +180,21 @@ test("whole-report generation preloads records and saves one direct draft revisi
     page.getByText(/Generated and saved revision 1 from 3 readable records/),
   ).toBeVisible();
   await expect(page.getByLabel("Writing instruction")).toHaveValue("");
+
+  await page.getByRole("button", { name: /Context/ }).click();
+  const writerContext = page.getByLabel("Writer context");
+  await expect(writerContext.getByText("intake-parent-interview.txt")).toBeVisible();
+  await expect(writerContext.getByText("teacher-observation.txt")).toBeVisible();
+  await expect(writerContext.getByText("assessment-scores.json")).toBeVisible();
+  await writerContext
+    .getByRole("button", { name: "teacher-observation.txt" })
+    .click();
+  const preview = page.getByRole("dialog", { name: "teacher-observation.txt" });
+  await expect(preview).toContainText(
+    "Teacher observation record used for the complete report.",
+  );
+  await preview.getByRole("button", { name: "Close" }).first().click();
+
   await page.getByRole("tab", { name: "Get started" }).click();
   await expect(
     page.getByRole("button", { name: "Fill whole report" }),

@@ -9,8 +9,8 @@ export type ContextPill = {
 };
 
 /**
- * Assemble the writer's context pills from the workspace, the queued report
- * references, and the live tool activity of an in-flight turn.
+ * Assemble the writer's context pills from report history, eager record
+ * snapshots, later tool reads, queued references, and in-flight activity.
  */
 export function buildContextPills(
   workspace: ReportWorkspaceView,
@@ -18,6 +18,9 @@ export function buildContextPills(
   liveContext: ContextPill[]
 ): ContextPill[] {
   const contextReads = workspace.turns.flatMap((turn) => turn.context_reads);
+  const preloadedFiles = workspace.turns.flatMap(
+    (turn) => turn.context_files ?? []
+  );
   const pills: ContextPill[] = [
     {
       key: "accepted-report",
@@ -44,11 +47,23 @@ export function buildContextPills(
   ) {
     pills.push({ key: "record-list", label: "Record file list", status: "ready" });
   }
-  for (const filename of new Set(contextReads.map((read) => read.filename))) {
+  // Whole-report generation records every file in its eager source snapshot,
+  // while later targeted turns expose successful tool reads. Merge both so a
+  // newly uploaded file appears as soon as Claude actually reads it, and a
+  // successful read upgrades an earlier unavailable snapshot entry.
+  const recordFiles = new Map<string, ContextPill["status"]>();
+  for (const file of preloadedFiles) {
+    const status = file.available ? "ready" : "failed";
+    if (status === "ready" || !recordFiles.has(file.filename)) {
+      recordFiles.set(file.filename, status);
+    }
+  }
+  for (const read of contextReads) recordFiles.set(read.filename, "ready");
+  for (const [filename, status] of recordFiles) {
     pills.push({
       key: `record:${filename}`,
       label: filename,
-      status: "ready",
+      status,
       filename,
     });
   }

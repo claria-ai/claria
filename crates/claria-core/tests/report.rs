@@ -131,6 +131,25 @@ fn version_three_template_metadata_defaults_managed_identity() {
 }
 
 #[test]
+fn version_four_turns_default_preloaded_record_provenance() {
+    let mut workspace = workspace();
+    workspace
+        .push_turn(complete_turn(0, 0))
+        .expect("complete turn");
+    let mut value = serde_json::to_value(workspace).expect("workspace JSON");
+    value["schema_version"] = serde_json::json!(4);
+    value["session"]["turns"][0]
+        .as_object_mut()
+        .expect("turn")
+        .remove("record_context_files");
+
+    let decoded = decode_report_workspace(&serde_json::to_vec(&value).unwrap())
+        .expect("decode version four workspace");
+    assert_eq!(decoded.schema_version, REPORT_WORKSPACE_SCHEMA_VERSION);
+    assert!(decoded.session.turns[0].record_context_files.is_empty());
+}
+
+#[test]
 fn writer_session_name_is_trimmed_and_validated() {
     let mut workspace = workspace();
     workspace
@@ -517,6 +536,7 @@ fn complete_turn(index: usize, text_size: usize) -> ReportAuthoringTurn {
                 created_at: now,
             },
         ],
+        record_context_files: vec![],
         usage: TurnUsage {
             model_id: "test-model".to_string(),
             input_tokens: 1,

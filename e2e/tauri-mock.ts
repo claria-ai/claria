@@ -72,7 +72,7 @@ export function buildInitScript(
         created_at: new Date().toISOString(),
       });
       let reportWorkspace = {
-        schema_version: 4,
+        schema_version: 5,
         session_name: "Writer Session (1)",
         report_id: "99999999-9999-4999-8999-999999999999",
         client_id: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb",
@@ -401,6 +401,14 @@ export function buildInitScript(
             uploaded_at: "2026-08-01T12:00:00Z",
           }];
           if (cmd === "list_record_context") return [];
+          if (cmd === "get_record_file_text") {
+            const previews = {
+              "intake-parent-interview.txt": "Parent interview record used for the complete report.",
+              "teacher-observation.txt": "Teacher observation record used for the complete report.",
+              "assessment-scores.json": '{"attention": "needs support"}',
+            };
+            return previews[args.filename] ?? "Record preview unavailable.";
+          }
           if (cmd === "list_deleted_files") return [];
           if (cmd === "list_deleted_clients") return [];
           if (cmd === "lookup_model_pricing") return {
@@ -651,6 +659,11 @@ export function buildInitScript(
                 usage_complete: true,
                 converse_calls: 3,
                 tool_uses: 3,
+                context_files: [
+                  { filename: "intake-parent-interview.txt", available: true },
+                  { filename: "teacher-observation.txt", available: true },
+                  { filename: "assessment-scores.json", available: true },
+                ],
                 context_reads: [],
                 created_at: now,
                 completed_at: now,
@@ -707,6 +720,7 @@ export function buildInitScript(
                 usage_complete: true,
                 converse_calls: 3,
                 tool_uses: 3,
+                context_files: [],
                 context_reads: [{
                   filename: "intake-parent-interview.txt",
                   offset: 0,

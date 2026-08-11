@@ -1,6 +1,6 @@
 import type { ContextPill } from "../lib/contextPills";
 
-/** The writer's context pills: report, prior turns, record reads, references. */
+/** Writer context: report history, preloaded records, tool reads, and references. */
 export default function ContextPills({
   pills,
   onPreviewFile,
@@ -33,13 +33,19 @@ export default function ContextPills({
             <span className="truncate">{pill.label}</span>
           </>
         );
+        const previewHover =
+          pill.status === "failed"
+            ? "hover:border-red-400 hover:text-red-900"
+            : pill.status === "loading"
+              ? "hover:border-blue-400 hover:text-blue-900"
+              : "hover:border-emerald-400 hover:text-emerald-900";
         return pill.filename ? (
           <button
             type="button"
             key={pill.key}
             onClick={() => onPreviewFile(pill.filename!)}
             title={`Preview ${pill.filename}`}
-            className={`${className} hover:border-emerald-400 hover:text-emerald-900`}
+            className={`${className} ${previewHover}`}
           >
             {content}
           </button>

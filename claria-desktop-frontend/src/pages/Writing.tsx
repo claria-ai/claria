@@ -797,6 +797,7 @@ export default function Writing({
         <RecordFilePreviewModal
           clientId={clientId}
           filename={previewFilename}
+          readOnly
           onClose={() => setPreviewFilename(null)}
         />
       )}

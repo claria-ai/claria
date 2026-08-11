@@ -1525,7 +1525,13 @@ export type RecordFile = { filename: string; size: number; uploaded_at: string |
  * relationship between the limits before they are saved or used.
  */
 export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
-export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
+export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number;
+/**
+ * Records preloaded outside the model's record-reading tools. Only the
+ * filename and availability cross IPC; source hashes/counts stay in the
+ * durable workspace and record text is never persisted there.
+ */
+context_files: ReportContextFileView[]; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
 export type ReportBlock = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | 
 /**
  * A rectangular, plain-text table. The first row is rendered as a
@@ -1535,6 +1541,7 @@ export type ReportBlock = { kind: "paragraph"; text: string } | { kind: "bullet_
 { kind: "table"; rows: string[][]; has_header: boolean; column_widths?: number[] | null }
 export type ReportBlockReferenceInput = { section_id: string; block_index: number }
 export type ReportContent = { title: string; sections: ReportSection[] }
+export type ReportContextFileView = { filename: string; available: boolean }
 export type ReportContextReadView = { filename: string; offset: number; returned_characters: number; total_characters: number | null; read_at: string }
 export type ReportDraft = { revision: number; content: ReportContent; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
 export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }

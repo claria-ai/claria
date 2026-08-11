@@ -127,9 +127,19 @@ pub struct ReportAuthoringTurnView {
     pub usage_complete: bool,
     pub converse_calls: u32,
     pub tool_uses: u32,
+    /// Records preloaded outside the model's record-reading tools. Only the
+    /// filename and availability cross IPC; source hashes/counts stay in the
+    /// durable workspace and record text is never persisted there.
+    pub context_files: Vec<ReportContextFileView>,
     pub context_reads: Vec<ReportContextReadView>,
     pub created_at: String,
     pub completed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportContextFileView {
+    pub filename: String,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -687,6 +697,14 @@ fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportA
         usage_complete: turn.usage_complete,
         converse_calls: turn.converse_calls,
         tool_uses: turn.tool_uses,
+        context_files: turn
+            .record_context_files
+            .iter()
+            .map(|file| ReportContextFileView {
+                filename: file.filename().to_string(),
+                available: file.is_available(),
+            })
+            .collect(),
         context_reads,
         created_at: turn.created_at.to_string(),
         completed_at: turn.completed_at.to_string(),

@@ -166,6 +166,12 @@ async fn full_report_generation_preloads_records_and_atomically_saves_one_draft(
     assert_eq!(outcome.record_context.included_files, 1);
     assert_eq!(outcome.record_context.unavailable_files, 1);
     assert_eq!(outcome.record_context.total_characters, source_characters);
+    let context_files = &outcome.workspace.session.turns[0].record_context_files;
+    assert_eq!(context_files.len(), 2);
+    assert_eq!(context_files[0].filename(), "intake.txt");
+    assert!(context_files[0].is_available());
+    assert_eq!(context_files[1].filename(), "scan.pdf");
+    assert!(!context_files[1].is_available());
     assert_eq!(outcome.attempt.converse_calls, 3);
     assert_eq!(outcome.attempt.tool_uses, 3);
 
@@ -214,6 +220,10 @@ async fn full_report_generation_preloads_records_and_atomically_saves_one_draft(
         .expect("reload generated report");
     assert_eq!(reloaded.draft.revision, 1);
     assert_eq!(reloaded.draft.content, outcome.workspace.draft.content);
+    assert_eq!(
+        reloaded.session.turns[0].record_context_files,
+        outcome.workspace.session.turns[0].record_context_files
+    );
 }
 
 #[tokio::test]

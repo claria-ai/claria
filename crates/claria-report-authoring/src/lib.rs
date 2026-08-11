@@ -30,8 +30,9 @@ use claria_core::models::{
         MAX_REPORT_TURNS, ReportAuthoringTurn, ReportBlock, ReportContent, ReportDraft,
         ReportExport, ReportExportStatus, ReportOperation, ReportProposal, ReportProposalDecision,
         ReportProposalResolution, ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole,
-        ReportSection, ReportTemplateImport, ReportTemplateWarning, ReportToolResultStatus,
-        ReportWorkspace, decode_report_workspace, validate_report_content, validate_report_summary,
+        ReportRecordContextFile, ReportSection, ReportTemplateImport, ReportTemplateWarning,
+        ReportToolResultStatus, ReportWorkspace, decode_report_workspace, validate_report_content,
+        validate_report_summary,
     },
     turn_usage::TurnUsage,
 };
@@ -2002,10 +2003,15 @@ async fn run_turn(
     }
 
     let sanitized_messages = sanitize_turn_messages(turn_messages);
+    let record_context_files = match request.kind {
+        TurnRunKind::FullDraft { record_context, .. } => record_context.files.clone(),
+        TurnRunKind::Targeted { .. } => Vec::new(),
+    };
     let turn = ReportAuthoringTurn {
         id: Uuid::new_v4(),
         model_id: progress.model_id.clone(),
         messages: sanitized_messages,
+        record_context_files,
         usage: progress.usage.clone(),
         usage_complete: progress.usage_complete,
         converse_calls: progress.converse_calls,
@@ -2563,6 +2569,7 @@ async fn load_record_inventory(
 struct FullRecordContext {
     prompt: String,
     summary: FullRecordContextSummary,
+    files: Vec<ReportRecordContextFile>,
 }
 
 enum LoadedFullRecord {
@@ -2642,6 +2649,7 @@ async fn load_full_record_context(
 
     let mut files = Vec::new();
     let mut unavailable = Vec::new();
+    let mut record_context_files = Vec::new();
     let mut total_characters = 0_u64;
     for record in loaded {
         match record.map_err(|source| {
@@ -2652,8 +2660,13 @@ async fn load_full_record_context(
                 text,
                 sha256,
             } => {
-                total_characters = total_characters
-                    .saturating_add(u64::try_from(text.chars().count()).unwrap_or(u64::MAX));
+                let characters = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+                total_characters = total_characters.saturating_add(characters);
+                record_context_files.push(ReportRecordContextFile::Included {
+                    filename: filename.clone(),
+                    sha256: sha256.clone(),
+                    characters,
+                });
                 files.push(serde_json::json!({
                     "filename": filename,
                     "sha256": sha256,
@@ -2661,6 +2674,10 @@ async fn load_full_record_context(
                 }));
             }
             LoadedFullRecord::Unavailable { filename, reason } => {
+                record_context_files.push(ReportRecordContextFile::Unavailable {
+                    filename: filename.clone(),
+                    reason: reason.to_string(),
+                });
                 unavailable.push(serde_json::json!({
                     "filename": filename,
                     "reason": reason
@@ -2697,6 +2714,7 @@ async fn load_full_record_context(
             unavailable_files,
             total_characters,
         },
+        files: record_context_files,
     })
 }
 

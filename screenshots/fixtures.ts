@@ -327,7 +327,7 @@ export const fixtures: Record<string, unknown> = {
   ].join("\n").replace(/– /g, "–"),
 
   load_report_workspace: {
-    schema_version: 4,
+    schema_version: 5,
     session_name: "Jane Doe evaluation",
     report_id: "99999999-9999-4999-8999-999999999999",
     client_id: CLIENT_ID,
@@ -427,6 +427,7 @@ export const fixtures: Record<string, unknown> = {
         usage_complete: true,
         converse_calls: 3,
         tool_uses: 3,
+        context_files: [],
         context_reads: [
           {
             filename: "teacher-observation.txt",

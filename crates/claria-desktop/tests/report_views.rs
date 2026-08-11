@@ -1,8 +1,9 @@
 use claria_core::models::{
     report::{
         ReportAuthoringTurn, ReportBlock, ReportContent, ReportProtocolBlock,
-        ReportProtocolMessage, ReportProtocolRole, ReportSection, ReportTemplateImport,
-        ReportTemplateWarning, ReportTemplateWarningCode, ReportToolResultStatus, ReportWorkspace,
+        ReportProtocolMessage, ReportProtocolRole, ReportRecordContextFile, ReportSection,
+        ReportTemplateImport, ReportTemplateWarning, ReportTemplateWarningCode,
+        ReportToolResultStatus, ReportWorkspace,
     },
     turn_usage::TurnUsage,
 };
@@ -67,6 +68,7 @@ fn failed_tool_activity_uses_safe_error_copy_without_success_summary() {
                     created_at: now,
                 },
             ],
+            record_context_files: vec![],
             usage: TurnUsage {
                 model_id: "us.anthropic.claude-sonnet-test".to_string(),
                 input_tokens: 10,
@@ -171,6 +173,17 @@ fn successful_record_reads_are_exposed_as_context_metadata() {
                     created_at: now,
                 },
             ],
+            record_context_files: vec![
+                ReportRecordContextFile::Included {
+                    filename: "preloaded.txt".to_string(),
+                    sha256: "a".repeat(64),
+                    characters: 120,
+                },
+                ReportRecordContextFile::Unavailable {
+                    filename: "scan.pdf".to_string(),
+                    reason: "text_extraction_unavailable".to_string(),
+                },
+            ],
             usage: TurnUsage {
                 model_id: "us.anthropic.claude-sonnet-test".to_string(),
                 input_tokens: 10,
@@ -190,6 +203,11 @@ fn successful_record_reads_are_exposed_as_context_metadata() {
         .expect("valid turn");
 
     let view = workspace_view(&workspace);
+    assert_eq!(view.turns[0].context_files.len(), 2);
+    assert_eq!(view.turns[0].context_files[0].filename, "preloaded.txt");
+    assert!(view.turns[0].context_files[0].available);
+    assert_eq!(view.turns[0].context_files[1].filename, "scan.pdf");
+    assert!(!view.turns[0].context_files[1].available);
     let read = &view.turns[0].context_reads[0];
     assert_eq!(read.filename, "intake.txt");
     assert_eq!(read.offset, 12);

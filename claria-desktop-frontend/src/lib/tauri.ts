@@ -117,6 +117,7 @@ export type {
   ReportBlockReferenceInput,
   ReportBlock,
   ReportContent,
+  ReportContextFileView,
   ReportContextReadView,
   ReportDraftEdit,
   ReportDraft,

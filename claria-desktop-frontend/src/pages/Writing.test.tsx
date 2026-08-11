@@ -65,6 +65,7 @@ function workspace({
   revision = 0,
   assistantMarkdown,
   contextReads = false,
+  contextFiles = [],
   lastAgentRevision = null,
 }: {
   title?: string;
@@ -73,10 +74,11 @@ function workspace({
   revision?: number;
   assistantMarkdown?: string;
   contextReads?: boolean;
+  contextFiles?: Array<{ filename: string; available: boolean }>;
   lastAgentRevision?: number | null;
 } = {}): ReportWorkspaceView {
   return {
-    schema_version: 4,
+    schema_version: 5,
     session_name: "Writer Session (1)",
     report_id: "report-1",
     client_id: "client-1",
@@ -121,6 +123,7 @@ function workspace({
             usage_complete: true,
             converse_calls: 1,
             tool_uses: contextReads ? 1 : 0,
+            context_files: contextFiles,
             context_reads: contextReads
               ? [
                   {
@@ -235,13 +238,19 @@ beforeEach(() => {
   const generated = workspace({
     title: "Generated complete report",
     revision: 1,
+    assistantMarkdown: "The complete working draft is ready.",
+    contextFiles: [
+      { filename: "intake.txt", available: true },
+      { filename: "teacher-observation.txt", available: true },
+      { filename: "scan.pdf", available: false },
+    ],
     lastAgentRevision: 1,
   });
   mocks.generate.mockResolvedValue({
     ...turnResponse(generated),
     workspace: generated,
-    included_record_files: 10,
-    unavailable_record_files: 0,
+    included_record_files: 2,
+    unavailable_record_files: 1,
     record_characters: 12872,
   });
   mocks.previewTemplate.mockResolvedValue(null);
@@ -551,7 +560,17 @@ describe("Writing", () => {
       expect.any(Function)
     );
     expect(await screen.findByText("Generated complete report")).toBeDefined();
-    expect(screen.getByText(/Generated and saved revision 1 from 10 readable records/)).toBeDefined();
+    expect(screen.getByText(/Generated and saved revision 1 from 2 readable records/)).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: /Context/ }));
+    const context = screen.getByLabelText("Writer context");
+    expect(within(context).getByText("intake.txt")).toBeDefined();
+    expect(within(context).getByText("teacher-observation.txt")).toBeDefined();
+    expect(within(context).getByText("scan.pdf")).toBeDefined();
+    await userEvent.click(
+      within(context).getByRole("button", { name: "intake.txt" })
+    );
+    expect(await screen.findByText("Preview text")).toBeDefined();
+    expect(mocks.getRecordText).toHaveBeenCalledWith("client-1", "intake.txt");
     expect(mocks.resolve).not.toHaveBeenCalled();
     expect(
       (screen.getByLabelText("Writing instruction") as HTMLTextAreaElement).value
@@ -764,6 +783,41 @@ describe("Writing", () => {
     await userEvent.click(screen.getByRole("button", { name: "intake.txt" }));
     expect(await screen.findByText("Preview text")).toBeDefined();
     expect(mocks.getRecordText).toHaveBeenCalledWith("client-1", "intake.txt");
+  });
+
+  it("keeps preloaded files and adds records read by later tool turns", async () => {
+    const value = workspace({
+      assistantMarkdown: "Initial complete draft",
+      contextFiles: [
+        { filename: "intake.txt", available: true },
+        { filename: "teacher.txt", available: true },
+      ],
+    });
+    value.turns.push({
+      ...structuredClone(value.turns[0]),
+      id: "turn-2",
+      context_files: [],
+      context_reads: [
+        {
+          filename: "new-upload.txt",
+          offset: 0,
+          returned_characters: 240,
+          total_characters: 240,
+          read_at: "2026-08-01T00:02:00Z",
+        },
+      ],
+      created_at: "2026-08-01T00:02:00Z",
+      completed_at: "2026-08-01T00:02:01Z",
+    });
+    mocks.load.mockResolvedValue(value);
+    renderWriting();
+    const contextButton = await screen.findByRole("button", { name: /Context/ });
+
+    await userEvent.click(contextButton);
+    const context = screen.getByLabelText("Writer context");
+    expect(within(context).getByText("intake.txt")).toBeDefined();
+    expect(within(context).getByText("teacher.txt")).toBeDefined();
+    expect(within(context).getByText("new-upload.txt")).toBeDefined();
   });
 
   it("previews a previous report revision and restores it as a new revision", async () => {

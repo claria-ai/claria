@@ -13,6 +13,19 @@ beforeEach(() => {
 });
 
 describe("RecordFilePreviewModal", () => {
+  it("shows context text already loaded by Chat without fetching it again", () => {
+    render(
+      <RecordFilePreviewModal
+        filename="intake.txt"
+        text="Already loaded context"
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Already loaded context")).toBeDefined();
+    expect(mocks.getText).not.toHaveBeenCalled();
+  });
+
   it("loads structured text through the shared record preview path", async () => {
     mocks.getText.mockResolvedValue('{"score": 12}');
 

@@ -14,6 +14,7 @@ import ChatWidget from "../components/ChatWidget";
 import ChatHistoryHeader from "../components/ChatHistoryHeader";
 import EditableName from "../components/EditableName";
 import { CloseIcon } from "../components/icons";
+import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
 import Spinner from "../components/Spinner";
 import TextPreviewModal from "../components/TextPreviewModal";
 import TokenCountBadge from "../components/TokenCountBadge";
@@ -321,7 +322,7 @@ export default function ClientChat({
 
       {/* Context file preview modal */}
       {previewContext && (
-        <TextPreviewModal
+        <RecordFilePreviewModal
           filename={previewContext.filename}
           text={previewContext.text}
           onClose={() => setPreviewContext(null)}
