@@ -1,4 +1,4 @@
-import { Component, type ReactNode } from "react";
+import { Component, type ErrorInfo, type ReactNode } from "react";
 import { logFrontendEvent } from "../lib/logBridge";
 
 /**
@@ -15,8 +15,12 @@ export default class ErrorBoundary extends Component<
     return { error };
   }
 
-  componentDidCatch(error: Error) {
-    logFrontendEvent("error", `Render crash: ${String(error)}`);
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    const stack = error.stack ?? String(error);
+    logFrontendEvent(
+      "error",
+      `React render crash: ${stack}${info.componentStack ?? ""}`
+    );
   }
 
   render() {

@@ -118,6 +118,7 @@ test("client writing", async ({ page }) => {
   await page.click("[data-client]:first-child");
   await page.waitForSelector("[data-tab=writing]");
   await page.click("[data-tab=writing]");
+  await page.getByRole("tab", { name: "Write with Claude" }).click();
   await page.waitForSelector("[data-testid=report-proposal]");
   await page.waitForTimeout(300);
   await page.screenshot({ path: "output/client-writing.png", fullPage: true });
@@ -221,6 +222,7 @@ test("cost explorer", async ({ page }) => {
   await page.click("text=Chat History");
   await page.waitForSelector('button[title="Resume conversation"]');
   await page.click('button[title="Resume conversation"]');
+  await page.getByRole("tab", { name: "Costs and cache" }).click();
   await page.click("text=See account spend");
   // Wait for the chart to render — the "Total:" line appears once data loads
   await page.waitForSelector("text=Total:");

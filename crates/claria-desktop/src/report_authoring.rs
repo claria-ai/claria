@@ -127,9 +127,19 @@ pub struct ReportAuthoringTurnView {
     pub usage_complete: bool,
     pub converse_calls: u32,
     pub tool_uses: u32,
+    /// Records preloaded outside the model's record-reading tools. Only the
+    /// filename and availability cross IPC; source hashes/counts stay in the
+    /// durable workspace and record text is never persisted there.
+    pub context_files: Vec<ReportContextFileView>,
     pub context_reads: Vec<ReportContextReadView>,
     pub created_at: String,
     pub completed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportContextFileView {
+    pub filename: String,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -144,6 +154,11 @@ pub struct ReportContextReadView {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReportTurnProgressView {
+    RecordContextPrepared {
+        included_files: u32,
+        unavailable_files: u32,
+        total_characters: u64,
+    },
     ModelCallStarted {
         call_number: u32,
     },
@@ -161,6 +176,15 @@ pub enum ReportTurnProgressView {
 impl From<claria_report_authoring::ReportTurnProgress> for ReportTurnProgressView {
     fn from(value: claria_report_authoring::ReportTurnProgress) -> Self {
         match value {
+            claria_report_authoring::ReportTurnProgress::RecordContextPrepared {
+                included_files,
+                unavailable_files,
+                total_characters,
+            } => Self::RecordContextPrepared {
+                included_files,
+                unavailable_files,
+                total_characters,
+            },
             claria_report_authoring::ReportTurnProgress::ModelCallStarted { call_number } => {
                 Self::ModelCallStarted { call_number }
             }
@@ -298,6 +322,21 @@ pub struct ReportTurnResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct FullReportGenerationResponse {
+    pub workspace: ReportWorkspaceView,
+    pub turn_id: String,
+    pub attempt_id: String,
+    pub assistant_text: String,
+    pub usage: TurnUsage,
+    pub usage_complete: bool,
+    pub converse_calls: u32,
+    pub tool_uses: u32,
+    pub included_record_files: u32,
+    pub unavailable_record_files: u32,
+    pub record_characters: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ReportExportResult {
     pub exported: bool,
     pub report_id: String,
@@ -348,6 +387,24 @@ pub fn turn_response_view(
         converse_calls: outcome.attempt.converse_calls,
         tool_uses: outcome.attempt.tool_uses,
         proposal_id: outcome.proposal_id.map(|id| id.to_string()),
+    }
+}
+
+pub fn full_report_response_view(
+    outcome: claria_report_authoring::FullReportGenerationOutcome,
+) -> FullReportGenerationResponse {
+    FullReportGenerationResponse {
+        workspace: workspace_view(&outcome.workspace),
+        turn_id: outcome.turn_id.to_string(),
+        attempt_id: outcome.attempt.attempt_id.to_string(),
+        assistant_text: outcome.assistant_text,
+        usage: outcome.attempt.usage,
+        usage_complete: outcome.attempt.usage_complete,
+        converse_calls: outcome.attempt.converse_calls,
+        tool_uses: outcome.attempt.tool_uses,
+        included_record_files: outcome.record_context.included_files,
+        unavailable_record_files: outcome.record_context.unavailable_files,
+        record_characters: outcome.record_context.total_characters,
     }
 }
 
@@ -640,6 +697,14 @@ fn turn_view(turn: &claria_core::models::report::ReportAuthoringTurn) -> ReportA
         usage_complete: turn.usage_complete,
         converse_calls: turn.converse_calls,
         tool_uses: turn.tool_uses,
+        context_files: turn
+            .record_context_files
+            .iter()
+            .map(|file| ReportContextFileView {
+                filename: file.filename().to_string(),
+                available: file.is_available(),
+            })
+            .collect(),
         context_reads,
         created_at: turn.created_at.to_string(),
         completed_at: turn.completed_at.to_string(),

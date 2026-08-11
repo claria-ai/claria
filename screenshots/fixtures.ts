@@ -170,6 +170,14 @@ export const fixtures: Record<string, unknown> = {
   },
   pick_audio_file: "/Users/clinician/Documents/visit-2026-03-15.m4a",
 
+  lookup_model_pricing: {
+    input_per_million: 5,
+    output_per_million: 25,
+    cache_read_per_million: 0.5,
+    cache_write_per_million: 6.25,
+    cache_write_1h_per_million: 10,
+  },
+
   list_chat_models: [
     {
       model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
@@ -290,7 +298,7 @@ export const fixtures: Record<string, unknown> = {
           cache_read_input_tokens: 0,
           cache_write_input_tokens: 0,
           cache_ttl: null,
-          cost_usd: 0.0842,
+          cost_usd: 0.028,
           pricing_version: 3,
         },
       },
@@ -319,7 +327,7 @@ export const fixtures: Record<string, unknown> = {
   ].join("\n").replace(/– /g, "–"),
 
   load_report_workspace: {
-    schema_version: 4,
+    schema_version: 5,
     session_name: "Jane Doe evaluation",
     report_id: "99999999-9999-4999-8999-999999999999",
     client_id: CLIENT_ID,
@@ -419,6 +427,7 @@ export const fixtures: Record<string, unknown> = {
         usage_complete: true,
         converse_calls: 3,
         tool_uses: 3,
+        context_files: [],
         context_reads: [
           {
             filename: "teacher-observation.txt",
@@ -788,6 +797,11 @@ All 14 resources are currently **in sync** — no drift detected.`,
   "get_file_version_text:ver-20260215-1100":
     "Jane Doe \u2014 Parent Interview, 2/15/2026\nHomework takes 2-3 hours, with frequent crying and refusal.",
 };
+
+// A direct Writing visit now creates a per-report session. The screenshot
+// fixture intentionally returns the rich report above so the capture can show
+// both the Writer timeline and its dedicated usage tab.
+fixtures.start_report_workspace = fixtures.load_report_workspace;
 
 /** Generate 30 days of realistic cost data totaling ~$8. */
 function generateCostData() {

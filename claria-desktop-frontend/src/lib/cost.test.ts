@@ -4,14 +4,13 @@ import {
   accumulateUsage,
   cacheHitPct,
   cacheWriteRatePerMillion,
-  estimateTurnCost,
   formatCost,
   formatTokens,
   humanRelative,
   prettyModel,
   summarizeHistory,
 } from "./cost";
-import type { ModelPricing, TurnUsage } from "./tauri";
+import type { TurnUsage } from "./tauri";
 
 function usage(over: Partial<TurnUsage> = {}): TurnUsage {
   return {
@@ -250,38 +249,6 @@ describe("cacheWriteRatePerMillion", () => {
   it("falls back to the 5-minute rate when the 1-hour rate is missing", () => {
     const legacy = { input_per_million: 3, cache_read_per_million: 0.3, cache_write_per_million: 3.75 };
     expect(cacheWriteRatePerMillion(legacy, "one_hour")).toBe(3.75);
-  });
-});
-
-describe("estimateTurnCost", () => {
-  const pricing: ModelPricing = {
-    input_per_million: 3,
-    output_per_million: 15,
-    cache_read_per_million: 0.3,
-    cache_write_per_million: 3.75,
-    cache_write_1h_per_million: 6,
-  };
-
-  it("is null without pricing, so the caller can hide the estimate", () => {
-    expect(estimateTurnCost(null, 1000, 400)).toBeNull();
-  });
-
-  it("charges the context plus the pending message at input rates", () => {
-    // 1,000,000 context tokens + 4,000,000 chars ≈ 1,000,000 more input
-    // tokens, and 200 projected output tokens.
-    const estimate = estimateTurnCost(pricing, 1_000_000, 4_000_000);
-    expect(estimate).toBeCloseTo(2 * 3 + (200 / 1_000_000) * 15);
-  });
-
-  it("takes a caller-supplied projection for the response length", () => {
-    const short = estimateTurnCost(pricing, 0, 0, 100);
-    const long = estimateTurnCost(pricing, 0, 0, 1000);
-    expect(short).toBeCloseTo((100 / 1_000_000) * 15);
-    expect(long).toBeCloseTo((1000 / 1_000_000) * 15);
-  });
-
-  it("treats a negative context as empty", () => {
-    expect(estimateTurnCost(pricing, -50, 0, 0)).toBe(0);
   });
 });
 

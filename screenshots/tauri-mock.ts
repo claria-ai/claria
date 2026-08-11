@@ -25,6 +25,7 @@ export function buildInitScript(overrides: Record<string, unknown> = {}): string
       },
       invoke: async function(cmd, args) {
         const fixtures = ${fixturesJson};
+        if (cmd === "log_frontend_event") return null;
         if (cmd === "plugin:app|version") {
           return "0.11.0";
         }

@@ -51,6 +51,7 @@ export function buildInitScript(
       window.__REPORT_COMMANDS__ = [];
       window.__REPORT_INVOCATIONS__ = [];
       window.__CHAT_COMMANDS__ = [];
+      window.__FRONTEND_LOGS__ = [];
       let clientName = "Jane Doe";
       const clientNameHistory = [
         { name: "Jane Doe", changed_at: "2026-08-01T12:00:00Z" },
@@ -72,7 +73,7 @@ export function buildInitScript(
         created_at: new Date().toISOString(),
       });
       let reportWorkspace = {
-        schema_version: 4,
+        schema_version: 5,
         session_name: "Writer Session (1)",
         report_id: "99999999-9999-4999-8999-999999999999",
         client_id: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb",
@@ -91,6 +92,34 @@ export function buildInitScript(
         template_import: null,
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-01T00:00:00Z",
+      };
+      let reportSessionStarted = false;
+      const reportWorkspaces = new Map();
+      const rememberActiveReport = () => {
+        if (reportSessionStarted) {
+          reportWorkspaces.set(reportWorkspace.report_id, structuredClone(reportWorkspace));
+        }
+      };
+      const freshReportWorkspace = (ordinal) => {
+        const fresh = structuredClone(reportWorkspace);
+        fresh.report_id = "99999999-9999-4999-8999-" + String(ordinal).padStart(12, "0");
+        fresh.session_name = "Writer Session (" + ordinal + ")";
+        fresh.draft = {
+          revision: 0,
+          content: { title: "Untitled report", sections: [] },
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_applied_proposal_id: null,
+        };
+        fresh.turns = [];
+        fresh.pending_proposal = null;
+        fresh.resolutions = [];
+        fresh.last_agent_revision = null;
+        fresh.last_export = null;
+        fresh.template_import = null;
+        fresh.created_at = new Date().toISOString();
+        fresh.updated_at = fresh.created_at;
+        return fresh;
       };
       const reportDraftRevisions = new Map([
         [reportWorkspace.draft.revision, structuredClone(reportWorkspace.draft)],
@@ -188,6 +217,10 @@ export function buildInitScript(
 
         invoke: async function(cmd, args) {
           // ── Tauri plugin stubs ───────────────────────────────────────
+          if (cmd === "log_frontend_event") {
+            window.__FRONTEND_LOGS__.push(structuredClone(args));
+            return null;
+          }
           if (cmd === "plugin:app|version") return "0.15.0";
           if (cmd === "plugin:app|name") return "Claria";
           if (cmd === "plugin:app|tauri_version") return "2.0.0";
@@ -373,8 +406,23 @@ export function buildInitScript(
             uploaded_at: "2026-08-01T12:00:00Z",
           }];
           if (cmd === "list_record_context") return [];
+          if (cmd === "get_record_file_text") {
+            const previews = {
+              "intake-parent-interview.txt": "Parent interview record used for the complete report.",
+              "teacher-observation.txt": "Teacher observation record used for the complete report.",
+              "assessment-scores.json": '{"attention": "needs support"}',
+            };
+            return previews[args.filename] ?? "Record preview unavailable.";
+          }
           if (cmd === "list_deleted_files") return [];
           if (cmd === "list_deleted_clients") return [];
+          if (cmd === "lookup_model_pricing") return {
+            input_per_million: 3,
+            output_per_million: 15,
+            cache_read_per_million: 0.3,
+            cache_write_per_million: 3.75,
+            cache_write_1h_per_million: 6,
+          };
           if (cmd === "list_chat_histories") return [{
             chat_id: "77777777-7777-4777-8777-777777777777",
             filename: "chat-history/77777777-7777-4777-8777-777777777777.json",
@@ -389,8 +437,8 @@ export function buildInitScript(
               name: "Chat (1)",
               model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
               messages: [
-                { role: "user", content: "Earlier question", usage: null },
-                { role: "assistant", content: "Earlier answer", usage: { model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0", input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cache_ttl: null, cost_usd: 0.0001, pricing_version: 4 } },
+                { role: "user", content: "Earlier question", timestamp: "2026-08-01T11:59:00Z", usage: null },
+                { role: "assistant", content: "Earlier answer", timestamp: "2026-08-01T12:00:00Z", usage: { model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0", input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cache_ttl: null, cost_usd: 0.0001, pricing_version: 4 } },
               ],
               created_at: "2026-08-01T12:00:00Z",
               updated_at: "2026-08-01T12:00:00Z",
@@ -402,27 +450,53 @@ export function buildInitScript(
               chat_id: args.chatId || "77777777-7777-4777-8777-777777777777",
               chat_name: "Chat (1)",
               content: "Unchanged Chat response",
-              usage: { model_id: args.modelId, input_tokens: 30, output_tokens: 8, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cache_ttl: null, cost_usd: 0.0002, pricing_version: 4 },
+              usage: { model_id: args.modelId, input_tokens: 3, output_tokens: 60, cache_read_input_tokens: 4243, cache_write_input_tokens: 5000, cache_ttl: "five_minutes", cost_usd: 0.0209319, pricing_version: 4 },
             };
           }
 
           // ── Writing assistant ────────────────────────────────────────
           if (cmd === "list_editor_history") {
-            return reportWorkspace.turns.length === 0 && reportWorkspace.draft.revision === 0
-              ? []
-              : [{
-                  report_id: reportWorkspace.report_id,
-                  name: reportWorkspace.session_name,
-                  title: reportWorkspace.draft.content.title,
-                  revision: reportWorkspace.draft.revision,
-                  turn_count: reportWorkspace.turns.length,
-                  updated_at: reportWorkspace.updated_at,
-                  last_export: reportWorkspace.last_export,
-                }];
+            rememberActiveReport();
+            return Array.from(reportWorkspaces.values())
+              .filter((workspace) => workspace.turns.length > 0 || workspace.draft.revision > 0 || workspace.template_import)
+              .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+              .map((workspace) => ({
+                report_id: workspace.report_id,
+                name: workspace.session_name,
+                title: workspace.draft.content.title,
+                revision: workspace.draft.revision,
+                turn_count: workspace.turns.length,
+                updated_at: workspace.updated_at,
+                last_export: workspace.last_export,
+              }));
+          }
+          if (cmd === "start_report_workspace") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            rememberActiveReport();
+            const existing = reportWorkspaces.get(args.reportId);
+            if (existing) {
+              reportWorkspace = structuredClone(existing);
+            } else if (!reportSessionStarted) {
+              reportWorkspace.report_id = args.reportId;
+            } else {
+              reportWorkspace = freshReportWorkspace(reportWorkspaces.size + 1);
+              reportWorkspace.report_id = args.reportId;
+              reportDraftRevisions.clear();
+              reportDraftRevisions.set(0, structuredClone(reportWorkspace.draft));
+            }
+            reportSessionStarted = true;
+            rememberActiveReport();
+            return structuredClone(reportWorkspace);
           }
           if (cmd === "load_report_workspace") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            rememberActiveReport();
+            const resumed = reportWorkspaces.get(args.reportId);
+            if (!resumed) throw "That Writing session is no longer available.";
+            reportWorkspace = structuredClone(resumed);
+            reportSessionStarted = true;
             return structuredClone(reportWorkspace);
           }
           if (cmd === "list_report_revisions") {
@@ -468,7 +542,7 @@ export function buildInitScript(
           if (cmd === "save_report_draft") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
-            if (args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
             if (reportWorkspace.pending_proposal) throw "Accept or reject the pending proposal before editing the report.";
             reportWorkspace = {
               ...reportWorkspace,
@@ -491,6 +565,27 @@ export function buildInitScript(
             rememberReportDraft();
             return reportWorkspace;
           }
+          if (cmd === "discard_queued_report_edits") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            const baseline = reportDraftRevisions.get(reportWorkspace.last_agent_revision || 0);
+            if (!baseline) throw "The queued report baseline is no longer available.";
+            const nextRevision = reportWorkspace.draft.revision + 1;
+            reportWorkspace = {
+              ...reportWorkspace,
+              draft: {
+                ...reportWorkspace.draft,
+                revision: nextRevision,
+                content: structuredClone(baseline.content),
+                updated_at: new Date().toISOString(),
+              },
+              last_agent_revision: nextRevision,
+              updated_at: new Date().toISOString(),
+            };
+            rememberReportDraft();
+            return structuredClone(reportWorkspace);
+          }
           if (cmd === "list_writer_templates") return [{
             id: "55555555-5555-4555-8555-555555555555",
             name: "Imported Evaluation Template",
@@ -507,7 +602,7 @@ export function buildInitScript(
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
             if (args.importId !== reportTemplatePreview.import_id) throw "That template preview expired. Select the template again.";
-            if (args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
             reportWorkspace = {
               ...reportWorkspace,
               draft: {
@@ -534,10 +629,73 @@ export function buildInitScript(
             window.__REPORT_COMMANDS__.push(cmd);
             return null;
           }
+          if (cmd === "generate_full_report") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (reportWorkspace.pending_proposal) throw "Accept or reject the pending proposal before starting another writer action.";
+            const nextRevision = reportWorkspace.draft.revision + 1;
+            const now = new Date().toISOString();
+            reportWorkspace = {
+              ...reportWorkspace,
+              draft: {
+                ...reportWorkspace.draft,
+                revision: nextRevision,
+                content: {
+                  title: "Complete Generated Evaluation",
+                  sections: [{
+                    id: "11111111-2222-4333-8444-555555555555",
+                    heading: "Summary",
+                    blocks: [{ kind: "paragraph", text: "Complete generated report content from every readable record." }],
+                  }],
+                },
+                updated_at: now,
+              },
+              turns: [...reportWorkspace.turns, {
+                id: "turn-full-1",
+                model_id: args.modelId,
+                timeline: [
+                  { kind: "message", role: "user", text: "Fill the complete report from all readable client records.\\n\\nGuidance: " + args.guidance, created_at: now },
+                  toolActivity("write_full_draft_section", "section-full-1", "Staged complete report section", { section_id: null, position: 0, block_count: 1, content_retained: false }, { status: "section_staged", section_count: 1 }),
+                  toolActivity("finish_full_draft", "finish-full-1", "Finalized complete working draft", { summary_retained: false }, { status: "full_draft_finalized", section_count: 1 }),
+                  { kind: "message", role: "assistant", text: "The complete working draft is ready.", created_at: now },
+                ],
+                usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.01599, pricing_version: 5 },
+                usage_complete: true,
+                converse_calls: 3,
+                tool_uses: 3,
+                context_files: [
+                  { filename: "intake-parent-interview.txt", available: true },
+                  { filename: "teacher-observation.txt", available: true },
+                  { filename: "assessment-scores.json", available: true },
+                ],
+                context_reads: [],
+                created_at: now,
+                completed_at: now,
+              }],
+              pending_proposal: null,
+              last_agent_revision: nextRevision,
+              updated_at: now,
+            };
+            rememberReportDraft();
+            return {
+              workspace: structuredClone(reportWorkspace),
+              turn_id: "turn-full-1",
+              attempt_id: "attempt-full-1",
+              assistant_text: "The complete working draft is ready.",
+              usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.01599, pricing_version: 5 },
+              usage_complete: true,
+              converse_calls: 3,
+              tool_uses: 3,
+              included_record_files: 3,
+              unavailable_record_files: 0,
+              record_characters: 6400,
+            };
+          }
           if (cmd === "send_report_message") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
-            if (args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
             if (reportWorkspace.pending_proposal) throw "Accept or reject the pending proposal before sending another instruction.";
             const proposedContent = {
               title: "Comprehensive Evaluation",
@@ -567,6 +725,7 @@ export function buildInitScript(
                 usage_complete: true,
                 converse_calls: 3,
                 tool_uses: 3,
+                context_files: [],
                 context_reads: [{
                   filename: "intake-parent-interview.txt",
                   offset: 0,
@@ -608,7 +767,7 @@ export function buildInitScript(
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
             const proposal = reportWorkspace.pending_proposal;
-            if (!proposal || args.proposalId !== proposal.id) throw "The pending proposal changed. Reload the report before continuing.";
+            if (args.reportId !== reportWorkspace.report_id || !proposal || args.proposalId !== proposal.id) throw "The pending proposal changed. Reload the report before continuing.";
             if (args.decision !== "accept" && args.decision !== "reject") throw "Invalid proposal decision.";
             if (args.decision === "accept") {
               reportWorkspace = {

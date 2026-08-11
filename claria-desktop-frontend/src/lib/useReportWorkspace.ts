@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyReportTemplate,
+  discardQueuedReportEdits,
   discardReportTemplatePreview,
   exportReportDocx,
+  generateFullReport,
   loadReportWorkspace,
   previewWriterTemplate,
   renameReportSession,
   resolveReportProposal,
   saveReportDraft,
   sendReportMessage,
+  startReportWorkspace,
   type ReportDraftEdit,
   type ReportTurnProgressView,
   type ReportWorkspaceView,
@@ -20,19 +23,42 @@ import {
   validateReportEdit,
 } from "./writingWorkspace";
 import { upsertLiveContext, type ContextPill } from "./contextPills";
+import { logFrontendEvent } from "./logBridge";
 
 export type WriterBusy =
   | null
   | "saving"
+  | "discarding"
   | "sending"
+  | "generating"
   | "resolving"
   | "exporting"
   | "applying_template";
 
 export type AgentActivity = { label: string; detail?: string } | null;
 
+function createReportId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  // Test/webview fallback. This ID is only an idempotency identity; the
+  // backend still validates UUID shape and conditionally creates the object.
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (value) => {
+    const random = Math.floor(Math.random() * 16);
+    const nibble = value === "x" ? random : (random & 0x3) | 0x8;
+    return nibble.toString(16);
+  });
+}
+
 function isReportConflict(message: string): boolean {
   return message.toLowerCase().includes("changed on another computer");
+}
+
+const MODEL_ACTIVITY_WORDS = ["thinking", "working", "inferring"] as const;
+
+function modelActivityLabel(callNumber: number): string {
+  const index = Math.max(0, callNumber - 1) % MODEL_ACTIVITY_WORDS.length;
+  return `Claude is ${MODEL_ACTIVITY_WORDS[index]}`;
 }
 
 function agentActivityForTool(name: string, context: string | null) {
@@ -44,6 +70,15 @@ function agentActivityForTool(name: string, context: string | null) {
   }
   if (name === "propose_report_changes") {
     return { label: "Drafting a reviewable proposal" };
+  }
+  if (name === "set_full_draft_title") {
+    return { label: "Setting the complete report title" };
+  }
+  if (name === "write_full_draft_section") {
+    return { label: "Writing the complete report", detail: "Adding a section" };
+  }
+  if (name === "finish_full_draft") {
+    return { label: "Validating the complete report" };
   }
   return { label: "Using an approved tool", detail: name };
 }
@@ -66,6 +101,8 @@ export function useReportWorkspace({
   expectedReportId?: string | null;
 }) {
   const generationRef = useRef(0);
+  const activeReportIdRef = useRef(expectedReportId ?? createReportId());
+  const startingNewSessionRef = useRef(expectedReportId == null);
   const [workspace, setWorkspace] = useState<ReportWorkspaceView | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -117,11 +154,15 @@ export function useReportWorkspace({
     setActionError(null);
     setConflict(false);
     try {
-      const result = await loadReportWorkspace(clientId);
+      const result = startingNewSessionRef.current
+        ? await startReportWorkspace(clientId, activeReportIdRef.current)
+        : await loadReportWorkspace(clientId, activeReportIdRef.current);
       if (generation !== generationRef.current) return;
       if (expectedReportId && result.report_id !== expectedReportId) {
         throw new Error("That Editor History session is no longer available.");
       }
+      activeReportIdRef.current = result.report_id;
+      startingNewSessionRef.current = false;
       setWorkspace(result);
       setEdit(draftToEdit(result.draft));
       setEditing(false);
@@ -171,6 +212,7 @@ export function useReportWorkspace({
     // this positional whole-draft write.
     const result = await saveReportDraft(
       clientId,
+      current.report_id,
       current.draft.revision,
       currentEdit
     );
@@ -191,6 +233,7 @@ export function useReportWorkspace({
     try {
       const result = await persistCurrentEdit();
       if (generation !== generationRef.current) return;
+      setEditing(false);
       setSaveStatus(
         `Saved revision ${result.draft.revision}. These edits are queued for Claude's next message.`
       );
@@ -203,11 +246,60 @@ export function useReportWorkspace({
     }
   }, [persistCurrentEdit, showActionError]);
 
+  const discardQueuedEdits = useCallback(async () => {
+    const { workspace: current, dirty: isDirty, busy: currentBusy } =
+      stateRef.current;
+    if (!current || currentBusy !== null) return;
+    const hasSavedEdits =
+      current.draft.revision > (current.last_agent_revision ?? 0);
+    if (!isDirty && !hasSavedEdits) return;
+
+    const generation = generationRef.current;
+    setBusy("discarding");
+    setActionError(null);
+    setSaveStatus("Discarding queued report edits…");
+    try {
+      const result = hasSavedEdits
+        ? await discardQueuedReportEdits(
+            clientId,
+            current.report_id,
+            current.draft.revision
+          )
+        : current;
+      if (generation !== generationRef.current) return;
+      setWorkspace(result);
+      setEdit(draftToEdit(result.draft));
+      setEditing(false);
+      setConflict(false);
+      setSaveStatus(
+        hasSavedEdits
+          ? `Discarded queued edits and restored the report as revision ${result.draft.revision}.`
+          : "Discarded unsaved report edits."
+      );
+    } catch (error) {
+      if (generation !== generationRef.current) return;
+      showActionError(error);
+      setSaveStatus(null);
+    } finally {
+      if (generation === generationRef.current) setBusy(null);
+    }
+  }, [clientId, showActionError]);
+
   const handleAgentProgress = useCallback((progress: ReportTurnProgressView) => {
+    if (progress.kind === "record_context_prepared") {
+      setAgentActivity({
+        label: `Loaded ${progress.included_files} readable record${progress.included_files === 1 ? "" : "s"}`,
+        detail:
+          progress.unavailable_files > 0
+            ? `${progress.unavailable_files} unavailable · ${progress.total_characters.toLocaleString()} characters ready`
+            : `${progress.total_characters.toLocaleString()} characters ready`,
+      });
+      return;
+    }
+
     if (progress.kind === "model_call_started") {
       setAgentActivity({
-        label:
-          progress.call_number === 1 ? "Claude is planning" : "Claude is continuing",
+        label: modelActivityLabel(progress.call_number),
         detail: `Model call ${progress.call_number}`,
       });
       return;
@@ -216,7 +308,7 @@ export function useReportWorkspace({
     const context = progress.context;
     if (progress.kind === "tool_started") {
       setAgentActivity(agentActivityForTool(progress.name, context));
-      if (context) {
+      if (context && !progress.name.includes("full_draft")) {
         setLiveContext((current) => upsertLiveContext(current, context, "loading"));
       }
       return;
@@ -225,13 +317,17 @@ export function useReportWorkspace({
     setAgentActivity(
       progress.name === "propose_report_changes"
         ? { label: "Claude is reviewing its proposal" }
-        : {
-            label:
-              progress.status === "succeeded" ? "Context ready" : "Context unavailable",
-            detail: context ?? progress.name,
-          }
+        : progress.name === "finish_full_draft"
+          ? { label: "Complete working draft ready" }
+          : progress.name === "write_full_draft_section"
+            ? { label: "Complete report section ready" }
+            : {
+                label:
+                  progress.status === "succeeded" ? "Context ready" : "Context unavailable",
+                detail: context ?? progress.name,
+              }
     );
-    if (context) {
+    if (context && !progress.name.includes("full_draft")) {
       setLiveContext((current) =>
         upsertLiveContext(
           current,
@@ -266,6 +362,7 @@ export function useReportWorkspace({
         if (generation !== generationRef.current) return false;
         const result = await sendReportMessage(
           clientId,
+          current.report_id,
           current.draft.revision,
           modelId,
           instruction,
@@ -302,6 +399,73 @@ export function useReportWorkspace({
     [clientId, handleAgentProgress, persistCurrentEdit, showActionError]
   );
 
+  const generateFullDraft = useCallback(
+    async (modelId: string, guidance: string): Promise<boolean> => {
+      const { busy: currentBusy } = stateRef.current;
+      if (currentBusy !== null) return false;
+      const generation = generationRef.current;
+      setBusy("generating");
+      setActionError(null);
+      setLiveContext([]);
+      setAgentActivity({
+        label: "Preparing the complete report",
+        detail: "Loading every readable client record",
+      });
+      setSaveStatus(
+        stateRef.current.dirty
+          ? "Saving your report edits before generating the complete draft…"
+          : "Loading all readable records for the complete draft…"
+      );
+      logFrontendEvent("info", "Writer whole-report generation requested");
+      try {
+        const current = await persistCurrentEdit();
+        if (generation !== generationRef.current) return false;
+        const result = await generateFullReport(
+          clientId,
+          current.report_id,
+          current.draft.revision,
+          modelId,
+          guidance,
+          (progress) => {
+            if (generation === generationRef.current) handleAgentProgress(progress);
+          }
+        );
+        if (generation !== generationRef.current) return false;
+        setWorkspace(result.workspace);
+        setEdit(draftToEdit(result.workspace.draft));
+        setEditing(false);
+        setConflict(false);
+        const unavailable =
+          result.unavailable_record_files > 0
+            ? ` ${result.unavailable_record_files} record${result.unavailable_record_files === 1 ? " was" : "s were"} unavailable and listed in the writer context.`
+            : "";
+        setSaveStatus(
+          `Generated and saved revision ${result.workspace.draft.revision} from ${result.included_record_files} readable record${result.included_record_files === 1 ? "" : "s"}.${unavailable}`
+        );
+        setLiveContext([]);
+        return true;
+      } catch (error) {
+        if (generation !== generationRef.current) return false;
+        const diagnostic =
+          error instanceof Error ? (error.stack ?? error.message) : String(error);
+        logFrontendEvent(
+          "error",
+          `Writer whole-report generation failed: ${diagnostic}`
+        );
+        showActionError(error);
+        setSaveStatus(null);
+        setLiveContext([]);
+        return false;
+      } finally {
+        if (generation === generationRef.current) {
+          setAgentActivity(null);
+          setBusy(null);
+        }
+      }
+    },
+    [clientId, handleAgentProgress, persistCurrentEdit, showActionError]
+  );
+
   const resolveProposal = useCallback(
     async (decision: "accept" | "reject") => {
       const { workspace: current, busy: currentBusy } = stateRef.current;
@@ -316,7 +480,12 @@ export function useReportWorkspace({
           : "Rejecting proposal…"
       );
       try {
-        const result = await resolveReportProposal(clientId, proposalId, decision);
+        const result = await resolveReportProposal(
+          clientId,
+          current.report_id,
+          proposalId,
+          decision
+        );
         if (generation !== generationRef.current) return;
         setWorkspace(result);
         setEdit(draftToEdit(result.draft));
@@ -362,6 +531,7 @@ export function useReportWorkspace({
         if (generation !== generationRef.current) return false;
         const result = await applyReportTemplate(
           clientId,
+          current.report_id,
           current.draft.revision,
           preview.import_id
         );
@@ -441,7 +611,7 @@ export function useReportWorkspace({
       // A failed local write is persisted even though the export command
       // returns an error. Refresh so that status is visible immediately.
       try {
-        const latest = await loadReportWorkspace(clientId);
+        const latest = await loadReportWorkspace(clientId, visibleReportId);
         if (
           generation === generationRef.current &&
           latest.report_id === visibleReportId
@@ -502,7 +672,9 @@ export function useReportWorkspace({
     beginEdit,
     cancelEdit,
     save,
+    discardQueuedEdits,
     send,
+    generateFullDraft,
     resolveProposal,
     applyTemplate,
     exportDocx,

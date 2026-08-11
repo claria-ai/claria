@@ -3,9 +3,9 @@
 use tauri::State;
 
 pub use claria_desktop::report_authoring::{
-    EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportExportResult,
-    ReportProposalChoice, ReportRevisionView, ReportTurnProgressView, ReportTurnResponse,
-    ReportWorkspaceView,
+    EditorHistoryEntry, FullReportGenerationResponse, ReportBlockReferenceInput, ReportDraftEdit,
+    ReportExportResult, ReportProposalChoice, ReportRevisionView, ReportTurnProgressView,
+    ReportTurnResponse, ReportWorkspaceView,
 };
 
 use claria_core::models::report::{ReportDraft, ReportExportStatus};
@@ -24,22 +24,51 @@ fn merge_details(base: &mut serde_json::Value, extra: serde_json::Value) {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn load_report_workspace(
+pub async fn start_report_workspace(
     state: State<'_, DesktopState>,
     client_id: String,
+    report_id: String,
 ) -> Result<ReportWorkspaceView, String> {
-    run("load_report_workspace", async {
+    run("start_report_workspace", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
-        let workspace =
-            claria_report_authoring::load_report_workspace(&ctx.s3, &ctx.bucket, client_id).await?;
+        let report_id = parse_uuid(&report_id)?;
+        let workspace = claria_report_authoring::start_report_workspace_with_id(
+            &ctx.s3,
+            &ctx.bucket,
+            client_id,
+            report_id,
+        )
+        .await?;
         Ok(claria_desktop::report_authoring::workspace_view(&workspace))
     })
     .await
 }
 
-/// Return the current persisted writing session for the Record screen's
-/// Editor History folder without creating a new workspace.
+#[tauri::command]
+#[specta::specta]
+pub async fn load_report_workspace(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+) -> Result<ReportWorkspaceView, String> {
+    run("load_report_workspace", async {
+        let ctx = CommandContext::new(&state).await?;
+        let client_id = parse_uuid(&client_id)?;
+        let workspace = claria_report_authoring::load_report_workspace_by_id(
+            &ctx.s3,
+            &ctx.bucket,
+            client_id,
+            parse_uuid(&report_id)?,
+        )
+        .await?;
+        Ok(claria_desktop::report_authoring::workspace_view(&workspace))
+    })
+    .await
+}
+
+/// Return every persisted Writing session for the Record screen's Editor
+/// History folder without creating a new workspace.
 #[tauri::command]
 #[specta::specta]
 pub async fn list_editor_history(
@@ -49,13 +78,18 @@ pub async fn list_editor_history(
     run("list_editor_history", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
-        let workspace =
-            claria_report_authoring::find_report_workspace(&ctx.s3, &ctx.bucket, client_id).await?;
-        Ok(workspace
-            .as_ref()
-            .map(claria_desktop::report_authoring::editor_history_entry)
-            .into_iter()
-            .collect())
+        Ok(
+            claria_report_authoring::list_report_workspaces(&ctx.s3, &ctx.bucket, client_id)
+                .await?
+                .iter()
+                .filter(|workspace| {
+                    workspace.draft.revision > 0
+                        || !workspace.session.turns.is_empty()
+                        || workspace.template_import.is_some()
+                })
+                .map(claria_desktop::report_authoring::editor_history_entry)
+                .collect(),
+        )
     })
     .await
 }
@@ -203,17 +237,20 @@ pub async fn revert_report_revision(
 pub async fn save_report_draft(
     state: State<'_, DesktopState>,
     client_id: String,
+    report_id: String,
     expected_revision: u64,
     draft: ReportDraftEdit,
 ) -> Result<ReportWorkspaceView, String> {
     run("save_report_draft", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
+        let report_id = parse_uuid(&report_id)?;
         let content = claria_desktop::report_authoring::content_from_edit(draft)?;
-        let workspace = claria_report_authoring::save_report_draft(
+        let workspace = claria_report_authoring::save_report_draft_for_report(
             &ctx.s3,
             &ctx.bucket,
             client_id,
+            report_id,
             expected_revision,
             content,
         )
@@ -238,9 +275,177 @@ pub async fn save_report_draft(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn discard_queued_report_edits(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+    expected_revision: u64,
+) -> Result<ReportWorkspaceView, String> {
+    run("discard_queued_report_edits", async {
+        let ctx = CommandContext::new(&state).await?;
+        let client_id = parse_uuid(&client_id)?;
+        let report_id = parse_uuid(&report_id)?;
+        let workspace = claria_report_authoring::discard_queued_report_edits(
+            &ctx.s3,
+            &ctx.bucket,
+            client_id,
+            report_id,
+            expected_revision,
+            &state.revision_cache,
+        )
+        .await?;
+        state.report_prompt_cache.invalidate(report_id);
+        let workspace = claria_desktop::report_authoring::workspace_view(&workspace);
+        ctx.record_audit(
+            ctx.audit_event(
+                "report_queued_edits_discarded",
+                "report",
+                workspace.report_id.clone(),
+            )
+            .with_details(serde_json::json!({
+                "client_id": client_id.to_string(),
+                "revision": workspace.draft.revision,
+            })),
+        )
+        .await;
+        Ok(workspace)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn generate_full_report(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+    expected_revision: u64,
+    model_id: String,
+    guidance: String,
+    on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
+) -> Result<FullReportGenerationResponse, String> {
+    run("generate_full_report", async {
+        let ctx = CommandContext::new(&state).await?;
+        let client_id = parse_uuid(&client_id)?;
+        let report_id = parse_uuid(&report_id)?;
+        let limits = ctx.cfg.report_authoring.limits()?;
+        tracing::info!(
+            client_id = %client_id,
+            report_id = %report_id,
+            expected_revision,
+            model_id,
+            "whole-report generation requested"
+        );
+        let progress = |event: claria_report_authoring::ReportTurnProgress| {
+            let _ = on_progress.send(event.into());
+        };
+        let result = claria_report_authoring::generate_full_report_for_report(
+            &ctx.sdk_config,
+            &ctx.s3,
+            &ctx.bucket,
+            client_id,
+            report_id,
+            expected_revision,
+            &model_id,
+            claria_report_authoring::FullReportRequest::new(&guidance)
+                .with_limits(limits)
+                .with_progress(&progress)
+                .with_prompt_cache(&state.report_prompt_cache),
+        )
+        .await;
+
+        match result {
+            Ok(outcome) => {
+                let attempt = outcome.attempt.clone();
+                let record_context = outcome.record_context.clone();
+                let response = claria_desktop::report_authoring::full_report_response_view(outcome);
+                let mut audit_details =
+                    usage_audit_details(&attempt.model_id, Some(&attempt.usage));
+                merge_details(
+                    &mut audit_details,
+                    serde_json::json!({
+                        "status": "succeeded",
+                        "client_id": attempt.client_id.to_string(),
+                        "report_id": attempt.report_id.to_string(),
+                        "attempt_id": attempt.attempt_id.to_string(),
+                        "turn_id": response.turn_id,
+                        "revision": response.workspace.draft.revision,
+                        "section_count": response.workspace.draft.content.sections.len(),
+                        "converse_calls": attempt.converse_calls,
+                        "tool_uses": attempt.tool_uses,
+                        "usage_complete": attempt.usage_complete,
+                        "included_record_files": record_context.included_files,
+                        "unavailable_record_files": record_context.unavailable_files,
+                        "record_characters": record_context.total_characters,
+                    }),
+                );
+                tracing::info!(
+                    client_id = %attempt.client_id,
+                    report_id = %attempt.report_id,
+                    revision = response.workspace.draft.revision,
+                    included_record_files = record_context.included_files,
+                    unavailable_record_files = record_context.unavailable_files,
+                    converse_calls = attempt.converse_calls,
+                    "whole-report generation completed"
+                );
+                ctx.record_audit(
+                    ctx.audit_event(
+                        "report_full_draft_generated",
+                        "report",
+                        attempt.report_id.to_string(),
+                    )
+                    .with_details(audit_details),
+                )
+                .await;
+                Ok(response)
+            }
+            Err(error) => {
+                let attempt = error.attempt().cloned();
+                let resource_id = attempt.as_ref().map_or_else(
+                    || report_id.to_string(),
+                    |value| value.report_id.to_string(),
+                );
+                let mut audit_details = usage_audit_details(
+                    &model_id,
+                    attempt.as_ref().map(|value| &value.usage),
+                );
+                merge_details(
+                    &mut audit_details,
+                    serde_json::json!({
+                        "status": "failed",
+                        "client_id": client_id.to_string(),
+                        "report_id": attempt.as_ref().map_or_else(
+                            || report_id.to_string(),
+                            |value| value.report_id.to_string(),
+                        ),
+                        "attempt_id": attempt.as_ref().map(|value| value.attempt_id.to_string()),
+                        "failure_code": error.failure_code(),
+                        "converse_calls": attempt.as_ref().map_or(0, |value| value.converse_calls),
+                        "tool_uses": attempt.as_ref().map_or(0, |value| value.tool_uses),
+                        "usage_complete": attempt.as_ref().is_some_and(|value| value.usage_complete),
+                    }),
+                );
+                ctx.record_audit(
+                    ctx.audit_event("report_full_draft_failed", "report", resource_id)
+                        .with_details(audit_details),
+                )
+                .await;
+                Err(error.into())
+            }
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+// Tauri command parameters are the typed IPC contract; report identity and
+// the progress channel legitimately take this one past clippy's ceiling.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_report_message(
     state: State<'_, DesktopState>,
     client_id: String,
+    report_id: String,
     expected_revision: u64,
     model_id: String,
     instruction: String,
@@ -250,6 +455,7 @@ pub async fn send_report_message(
     run("send_report_message", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
+        let report_id = parse_uuid(&report_id)?;
         let references = references
             .into_iter()
             .map(ReportBlockReferenceInput::into_domain)
@@ -258,17 +464,19 @@ pub async fn send_report_message(
         let progress = |event: claria_report_authoring::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
-        let result = claria_report_authoring::send_report_message(
+        let result = claria_report_authoring::send_report_message_for_report(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
             client_id,
+            report_id,
             expected_revision,
             &model_id,
             claria_report_authoring::ReportMessageRequest::new(&instruction)
                 .with_references(&references)
                 .with_limits(limits)
-                .with_progress(&progress),
+                .with_progress(&progress)
+                .with_prompt_cache(&state.report_prompt_cache),
         )
         .await;
 
@@ -310,7 +518,7 @@ pub async fn send_report_message(
             Err(error) => {
                 let attempt = error.attempt().cloned();
                 let resource_id = attempt.as_ref().map_or_else(
-                    || client_id.to_string(),
+                    || report_id.to_string(),
                     |value| value.report_id.to_string(),
                 );
                 let mut audit_details = usage_audit_details(
@@ -322,7 +530,10 @@ pub async fn send_report_message(
                     serde_json::json!({
                         "status": "failed",
                         "client_id": client_id.to_string(),
-                        "report_id": attempt.as_ref().map(|value| value.report_id.to_string()),
+                        "report_id": attempt.as_ref().map_or_else(
+                            || report_id.to_string(),
+                            |value| value.report_id.to_string(),
+                        ),
                         "attempt_id": attempt.as_ref().map(|value| value.attempt_id.to_string()),
                         "failure_code": error.failure_code(),
                         "converse_calls": attempt.as_ref().map_or(0, |value| value.converse_calls),
@@ -347,21 +558,24 @@ pub async fn send_report_message(
 pub async fn resolve_report_proposal(
     state: State<'_, DesktopState>,
     client_id: String,
+    report_id: String,
     proposal_id: String,
     decision: ReportProposalChoice,
 ) -> Result<ReportWorkspaceView, String> {
     run("resolve_report_proposal", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
+        let report_id = parse_uuid(&report_id)?;
         let proposal_id = parse_uuid(&proposal_id)?;
         let action = match decision {
             ReportProposalChoice::Accept => "report_proposal_accepted",
             ReportProposalChoice::Reject => "report_proposal_rejected",
         };
-        let workspace = claria_report_authoring::resolve_report_proposal(
+        let workspace = claria_report_authoring::resolve_report_proposal_for_report(
             &ctx.s3,
             &ctx.bucket,
             client_id,
+            report_id,
             proposal_id,
             decision.into(),
         )

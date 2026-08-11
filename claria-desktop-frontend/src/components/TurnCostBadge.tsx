@@ -6,7 +6,7 @@
 //   - cost_usd is NaN / pricing_version === 0 → token counts only, no dollar
 //     figure (unknown model pricing — omit rather than show a wrong $0.00)
 //   - cost_usd === 0    → "$0.00" (zero is a real number, not missing)
-//   - else              → "$0.012 · 1,080 cached · 160 new"
+//   - else              → "$0.012 · 1,080 tok cached · 160 tok new"
 //
 // Hover tooltip shows the full token / model / pricing-rev breakdown.
 

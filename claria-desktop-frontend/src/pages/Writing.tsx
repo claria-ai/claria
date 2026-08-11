@@ -3,13 +3,14 @@ import { useChatModels } from "../lib/chatModels";
 import ChatComposer from "../components/ChatComposer";
 import ChatEmptyState from "../components/ChatEmptyState";
 import ContextPills from "../components/ContextPills";
-import CostExplanation from "../components/CostExplanation";
 import { buildContextPills } from "../lib/contextPills";
 import EditableName from "../components/EditableName";
 import ModelSelect from "../components/ModelSelect";
+import Modal from "../components/Modal";
 import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
 import ReportRevisionModal from "../components/ReportRevisionModal";
-import SessionTotalBanner from "../components/SessionTotalBanner";
+import SessionTabs, { UsageTabIcon } from "../components/SessionTabs";
+import SessionUsagePanel from "../components/SessionUsagePanel";
 import TimelineItem from "../components/TimelineItem";
 import TurnCostBadge from "../components/TurnCostBadge";
 import WritingCanvas from "../components/WritingCanvas";
@@ -20,7 +21,7 @@ import {
   accumulateUsage,
   type SessionUsage,
 } from "../lib/cost";
-import { buildCostLedger, positiveLedgerSavings } from "../lib/costLedger";
+import { buildCostLedger } from "../lib/costLedger";
 import { usePreferredModel } from "../lib/usePreferredModel";
 import { usePricingMap } from "../lib/usePricingMap";
 import { useReportWorkspace } from "../lib/useReportWorkspace";
@@ -66,16 +67,28 @@ export default function Writing({
   );
   // The composer draft survives navigation in process memory; read it once
   // as lazy initial state.
-  const [instruction, setInstruction] = useState(
-    () => readWritingComposerDraft(clientId)?.instruction ?? ""
+  const [instruction, setInstruction] = useState(() =>
+    expectedReportId
+      ? (readWritingComposerDraft(clientId, expectedReportId)?.instruction ?? "")
+      : ""
   );
   const [queuedReferences, setQueuedReferences] = useState<
     WritingBlockReference[]
-  >(() => readWritingComposerDraft(clientId)?.references ?? []);
+  >(() =>
+    expectedReportId
+      ? (readWritingComposerDraft(clientId, expectedReportId)?.references ?? [])
+      : []
+  );
   const [contextOpen, setContextOpen] = useState(false);
   const [previewFilename, setPreviewFilename] = useState<string | null>(null);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [fullDraftConfirmationOpen, setFullDraftConfirmationOpen] =
+    useState(false);
   const [chosenTemplateId, setChosenTemplateId] = useState("");
+  const [activePane, setActivePane] = useState<"setup" | "write" | "usage">(
+    expectedReportId ? "write" : "setup"
+  );
+  const [showTurnCosts, setShowTurnCosts] = useState(false);
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const proposalStartRef = useRef<HTMLDivElement | null>(null);
 
@@ -102,7 +115,9 @@ export default function Writing({
     beginEdit,
     cancelEdit,
     save,
+    discardQueuedEdits,
     send,
+    generateFullDraft,
     resolveProposal,
     applyTemplate,
     exportDocx,
@@ -136,8 +151,12 @@ export default function Writing({
   );
 
   useEffect(() => {
-    writeWritingComposerDraft(clientId, { instruction, references });
-  }, [clientId, instruction, references]);
+    if (!workspace) return;
+    writeWritingComposerDraft(clientId, workspace.report_id, {
+      instruction,
+      references,
+    });
+  }, [clientId, instruction, references, workspace]);
 
   const editsQueued = dirty || savedEditsQueued;
   const hasUnsavedWork =
@@ -182,14 +201,20 @@ export default function Writing({
     () => (workspace?.turns ?? []).map((turn) => turn.usage),
     [workspace?.turns]
   );
+  const turnTimestamps = useMemo(
+    () => (workspace?.turns ?? []).map((turn) => turn.completed_at),
+    [workspace?.turns]
+  );
   const turnModelIds = useMemo(
     () => turnUsages.flatMap((usage) => (usage ? [usage.model_id] : [])),
     [turnUsages]
   );
-  const pricingByModel = usePricingMap(turnModelIds);
+  const pricingByModel = usePricingMap(
+    activePane === "usage" ? turnModelIds : []
+  );
   const ledger = useMemo(
-    () => buildCostLedger(turnUsages, pricingByModel),
-    [turnUsages, pricingByModel]
+    () => buildCostLedger(turnUsages, pricingByModel, turnTimestamps),
+    [turnTimestamps, turnUsages, pricingByModel]
   );
 
   const addReference = useCallback(
@@ -209,6 +234,7 @@ export default function Writing({
       setSaveStatus(
         `${reference.kind === "paragraph" ? "Paragraph" : "Table"} attached to your next Writing message.`
       );
+      setActivePane("write");
       requestAnimationFrame(() => composerRef.current?.focus());
     },
     [setSaveStatus]
@@ -288,6 +314,27 @@ export default function Writing({
     }
   }
 
+  async function handleGenerateFullDraft(replacementConfirmed = false) {
+    if (!workspace || composerDisabled || !selectedModelId) return;
+    const hasExistingDraft =
+      workspace.draft.content.sections.length > 0 ||
+      workspace.draft.content.title !== "Untitled report";
+    if (hasExistingDraft && !replacementConfirmed) {
+      setFullDraftConfirmationOpen(true);
+      return;
+    }
+    setFullDraftConfirmationOpen(false);
+    const generated = await generateFullDraft(
+      selectedModelId,
+      instruction.trim()
+    );
+    if (generated) {
+      setInstruction("");
+      setQueuedReferences([]);
+      setActivePane("write");
+    }
+  }
+
   async function handleApplyTemplate() {
     if (editing) return;
     const applied = await applyTemplate(selectedTemplateId);
@@ -300,8 +347,8 @@ export default function Writing({
     <>
       <div className="flex-1 min-h-0 grid grid-cols-1 min-[800px]:grid-cols-[minmax(340px,42%)_minmax(0,58%)] overflow-y-auto min-[800px]:overflow-hidden">
       <section className="min-h-[32rem] min-[800px]:min-h-0 flex flex-col bg-white">
-        <div className="px-5 py-4 border-b border-gray-200 space-y-3">
-          <div className="grid grid-cols-[minmax(4rem,0.7fr)_minmax(7rem,1fr)_auto] items-center gap-2">
+        <div className="space-y-2 px-5 py-3">
+          <div className="grid grid-cols-[minmax(4rem,1fr)_minmax(6rem,0.9fr)_auto] items-center gap-2">
             <div className="min-w-0">
               <EditableName
                 value={workspace.session_name}
@@ -327,7 +374,7 @@ export default function Writing({
               aria-expanded={contextOpen}
               aria-controls="writing-context-control"
               onClick={() => setContextOpen((open) => !open)}
-              className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
             >
               Context · {contextPills.length}
             </button>
@@ -343,69 +390,6 @@ export default function Writing({
                 onPreviewFile={setPreviewFilename}
               />
             </div>
-          )}
-
-          {workspace.template_import ? (
-            <div
-              title="Start a new Writing session to use another template"
-              className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800"
-            >
-              <span aria-hidden="true">✓</span>
-              <span className="min-w-0 truncate">
-                Template <strong>{workspace.template_import.writer_template_name ?? "Word template"}</strong> applied
-              </span>
-            </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-end gap-2">
-                <label className="block min-w-0">
-                  <span className="text-xs font-medium text-gray-600">Writer template</span>
-                  <select
-                    aria-label="Writer template"
-                    value={selectedTemplateId}
-                    onChange={(event) => setChosenTemplateId(event.target.value)}
-                    disabled={controlsBusy || pending !== null || writerTemplates.length === 0}
-                    className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
-                  >
-                    {writerTemplates.length === 0 && (
-                      <option value="">No saved templates</option>
-                    )}
-                    {writerTemplates.map((template) => (
-                      <option key={template.id} value={template.id}>
-                        {template.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => void handleApplyTemplate()}
-                  disabled={
-                    controlsBusy ||
-                    pending !== null ||
-                    dirty ||
-                    editing ||
-                    selectedTemplateId === ""
-                  }
-                  className="mb-px rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
-                >
-                  {busy === "applying_template" ? "Applying…" : "Apply template"}
-                </button>
-                <button
-                  type="button"
-                  onClick={onManageTemplates}
-                  disabled={controlsBusy}
-                  className="mb-px px-2 py-2 text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
-                >
-                  Manage in Preferences
-                </button>
-              </div>
-              {templatesError && (
-                <p role="alert" className="text-xs text-red-600">
-                  Could not load writer templates: {templatesError}
-                </p>
-              )}
-            </>
           )}
 
           {chatModelsError && (
@@ -426,20 +410,227 @@ export default function Writing({
           )}
         </div>
 
-        {/* Lifetime session spend, matching chat's banner. */}
-        {session.turnCount > 0 && (
-          <SessionTotalBanner
-            session={session}
-            cacheSavings={positiveLedgerSavings(ledger)}
-          />
-        )}
-
-        {/* Collapsed-by-default per-turn cost and cache explanation. */}
-        <CostExplanation
-          ledger={ledger}
-          className="px-5 py-2 border-b border-gray-200 bg-white"
+        <SessionTabs
+          idPrefix="writer-session"
+          label="Writing session"
+          active={activePane}
+          onSelect={setActivePane}
+          tabs={[
+            { id: "setup", label: "Get started" },
+            { id: "write", label: "Write with Claude" },
+            {
+              id: "usage",
+              label: "Costs and cache",
+              compact: true,
+              icon: <UsageTabIcon />,
+            },
+          ]}
         />
 
+        {activePane === "setup" && (
+          <div
+            id="writer-session-panel-setup"
+            role="tabpanel"
+            aria-labelledby="writer-session-tab-setup"
+            className="flex-1 overflow-y-auto bg-gray-50 px-5 py-5"
+            data-testid="writer-setup"
+          >
+            <div className="mx-auto max-w-xl space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Start this report
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-gray-500">
+                  Choose a template, ask Claude to fill the whole report, or skip both and start with tools. Every step is optional.
+                </p>
+              </div>
+
+              <section className="rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-start gap-3">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[10px] font-semibold text-gray-600">
+                    1
+                  </span>
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-800">
+                      Choose a Word template <span className="font-normal text-gray-400">· optional</span>
+                    </h4>
+                    <p className="mt-0.5 text-[11px] text-gray-500">
+                      Start with saved headings, tables, and export formatting.
+                    </p>
+                  </div>
+                </div>
+
+                {workspace.template_import ? (
+                  <div
+                    title="Start a new Writing session to use another template"
+                    className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800"
+                  >
+                    <span aria-hidden="true">✓</span>
+                    <span className="min-w-0 truncate">
+                      Template <strong>{workspace.template_import.writer_template_name ?? "Word template"}</strong> applied
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    <label className="block min-w-0">
+                      <span className="sr-only">Writer template</span>
+                      <select
+                        aria-label="Writer template"
+                        value={selectedTemplateId}
+                        onChange={(event) => setChosenTemplateId(event.target.value)}
+                        disabled={controlsBusy || pending !== null || writerTemplates.length === 0}
+                        className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                      >
+                        {writerTemplates.length === 0 && (
+                          <option value="">No saved templates</option>
+                        )}
+                        {writerTemplates.map((template) => (
+                          <option key={template.id} value={template.id}>
+                            {template.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={onManageTemplates}
+                        disabled={controlsBusy}
+                        className="text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
+                      >
+                        Manage templates
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleApplyTemplate()}
+                        disabled={
+                          controlsBusy ||
+                          pending !== null ||
+                          dirty ||
+                          editing ||
+                          selectedTemplateId === ""
+                        }
+                        className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {busy === "applying_template" ? "Applying…" : "Apply template"}
+                      </button>
+                    </div>
+                    {templatesError && (
+                      <p role="alert" className="mt-2 text-xs text-red-600">
+                        Could not load writer templates: {templatesError}
+                      </p>
+                    )}
+                  </>
+                )}
+              </section>
+
+              {workspace.turns.length === 0 && (
+                <section className="rounded-lg border border-blue-200 bg-white p-4">
+                  <div className="mb-3 flex items-start gap-3">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-[10px] font-semibold text-blue-700">
+                      2
+                    </span>
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-800">
+                        Fill the whole report <span className="font-normal text-gray-400">· optional</span>
+                      </h4>
+                      <p className="mt-0.5 text-[11px] leading-4 text-gray-500">
+                        Claude reads every available record and saves one complete, versioned draft.
+                      </p>
+                    </div>
+                  </div>
+                  <label className="block">
+                    <span className="text-[11px] font-medium text-gray-600">
+                      Guidance <span className="font-normal text-gray-400">· optional</span>
+                    </span>
+                    <textarea
+                      ref={composerRef}
+                      aria-label="Full report guidance"
+                      value={instruction}
+                      onChange={(event) => setInstruction(event.currentTarget.value)}
+                      disabled={composerDisabled}
+                      rows={3}
+                      placeholder="For example: Use a concise clinical style…"
+                      className="mt-1 w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                    />
+                  </label>
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void handleGenerateFullDraft()}
+                      disabled={composerDisabled}
+                      className="rounded-md bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+                    >
+                      {busy === "generating" ? "Filling…" : "Fill whole report"}
+                    </button>
+                  </div>
+                  {actionError && (
+                    <div
+                      role="alert"
+                      className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700"
+                    >
+                      <p className="font-semibold">Could not complete the Writer action</p>
+                      <p className="mt-1 break-words">{actionError}</p>
+                      {conflict && (
+                        <button
+                          type="button"
+                          onClick={() => void handleReload()}
+                          className="mt-2 font-semibold text-blue-700 hover:text-blue-900"
+                        >
+                          Reload writing session
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 pt-4">
+                <p className="text-[11px] text-gray-500">
+                  Prefer to build it section by section with approved tools?
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActivePane("write")}
+                  className="text-xs font-semibold text-blue-700 hover:text-blue-900"
+                >
+                  Write with Claude →
+                </button>
+              </div>
+
+              {saveStatus && (
+                <p role="status" aria-live="polite" className="text-xs text-gray-600">
+                  {saveStatus}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activePane === "usage" && (
+          <div
+            id="writer-session-panel-usage"
+            role="tabpanel"
+            aria-labelledby="writer-session-tab-usage"
+            className="min-h-0 flex-1"
+          >
+            <SessionUsagePanel
+              session={session}
+              ledger={ledger}
+              showTurnCosts={showTurnCosts}
+              onShowTurnCostsChange={setShowTurnCosts}
+              turnCostsLabel="Writing timeline"
+            />
+          </div>
+        )}
+
+        {activePane === "write" && (
+          <div
+            id="writer-session-panel-write"
+            role="tabpanel"
+            aria-labelledby="writer-session-tab-write"
+            className="flex min-h-0 flex-1 flex-col"
+          >
         <div
           aria-label="Writing timeline"
           className="flex-1 overflow-y-auto px-5 py-4 space-y-4 select-text"
@@ -447,7 +638,7 @@ export default function Writing({
           {workspace.turns.length === 0 && !pending && (
             <ChatEmptyState
               title="Build the report interactively."
-              subtitle="Ask Claude to inspect records, answer a question, propose specific sections, or apply a managed Word template."
+              subtitle="Ask Claude to inspect records with approved tools, answer a question, or propose specific sections."
             />
           )}
           {workspace.turns.map((turn) => (
@@ -459,7 +650,7 @@ export default function Writing({
                 <span>
                   {turn.tool_uses} tool use{turn.tool_uses === 1 ? "" : "s"}
                 </span>
-                <TurnCostBadge usage={turn.usage} />
+                {showTurnCosts && <TurnCostBadge usage={turn.usage} />}
               </div>
             </div>
           ))}
@@ -507,11 +698,24 @@ export default function Writing({
 
         <div className="border-t border-gray-200 p-4">
           {editsQueued && (
-            <p className="text-xs text-amber-700 mb-2" data-testid="queued-report-edits">
-              {dirty
-                ? `${editCount} report edit${editCount === 1 ? "" : "s"} queued. Claria will save and include them with your next message.`
-                : "Saved report edits are queued and will be included with your next message."}
-            </p>
+            <div
+              className="mb-2 flex items-center gap-2 text-xs text-amber-700"
+              data-testid="queued-report-edits"
+            >
+              <p className="min-w-0 flex-1">
+                {dirty
+                  ? `${editCount} report edit${editCount === 1 ? "" : "s"} queued. Claria will save and include them with your next message.`
+                  : `Accepted report r${workspace.draft.revision} has saved changes since Claude saw r${workspace.last_agent_revision ?? 0}; they are queued for your next message.`}
+              </p>
+              <button
+                type="button"
+                onClick={() => void discardQueuedEdits()}
+                disabled={controlsBusy}
+                className="shrink-0 font-semibold text-amber-800 hover:text-amber-950 disabled:opacity-50"
+              >
+                {busy === "discarding" ? "Discarding…" : "Discard"}
+              </button>
+            </div>
           )}
           {pending && (
             <p className="text-xs text-violet-700 mb-2">
@@ -568,6 +772,8 @@ export default function Writing({
             rows={4}
           />
         </div>
+          </div>
+        )}
       </section>
 
       <WritingCanvas
@@ -578,6 +784,8 @@ export default function Writing({
         busy={controlsBusy}
         onBeginEdit={beginEdit}
         onCancelEdit={cancelEdit}
+        hasQueuedEdits={editsQueued}
+        onDiscardQueued={() => void discardQueuedEdits()}
         onChange={setEdit}
         onSave={save}
         onExport={exportDocx}
@@ -589,10 +797,42 @@ export default function Writing({
       />
       </div>
 
+      {fullDraftConfirmationOpen && (
+        <Modal
+          open
+          title="Replace the working draft?"
+          onClose={() => setFullDraftConfirmationOpen(false)}
+          className="max-w-lg p-6"
+        >
+          <p className="text-sm leading-6 text-gray-600">
+            Claude will fill the whole report from every readable client record
+            and replace revision {workspace.draft.revision} with one new saved
+            revision. The current revision will remain available under
+            Revisions.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setFullDraftConfirmationOpen(false)}
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleGenerateFullDraft(true)}
+              className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+            >
+              Fill whole report
+            </button>
+          </div>
+        </Modal>
+      )}
       {previewFilename && (
         <RecordFilePreviewModal
           clientId={clientId}
           filename={previewFilename}
+          readOnly
           onClose={() => setPreviewFilename(null)}
         />
       )}

@@ -7,16 +7,29 @@ import Spinner from "./Spinner";
 import TextPreviewModal from "./TextPreviewModal";
 import TranscriptEditor from "./TranscriptEditor";
 
-/**
- * Load and display one record file exactly as the Record eye action does.
- * Writing context pills reuse this component so every file preview follows the
- * same sidecar lookup, loading, error, and transcript behavior.
- */
-export default function RecordFilePreviewModal(props: {
-  clientId: string;
+type PreviewProps = {
   filename: string;
   onClose: () => void;
-}) {
+} & (
+  | { text: string; clientId?: never; readOnly?: true }
+  | { clientId: string; text?: never; readOnly?: boolean }
+);
+
+/**
+ * Shared record-context preview for Chat and Writing. Chat can supply text it
+ * already loaded; Writing resolves the selected filename lazily. The Record
+ * eye action uses the same loader but retains transcript editing for audio.
+ */
+export default function RecordFilePreviewModal(props: PreviewProps) {
+  if (props.text !== undefined) {
+    return (
+      <TextPreviewModal
+        filename={props.filename}
+        text={props.text}
+        onClose={props.onClose}
+      />
+    );
+  }
   return (
     <RecordFilePreviewContent
       key={`${props.clientId}:${props.filename}`}
@@ -28,10 +41,12 @@ export default function RecordFilePreviewModal(props: {
 function RecordFilePreviewContent({
   clientId,
   filename,
+  readOnly = false,
   onClose,
 }: {
   clientId: string;
   filename: string;
+  readOnly?: boolean;
   onClose: () => void;
 }) {
   const { data, loading, error } = useAsyncLoad(
@@ -68,7 +83,7 @@ function RecordFilePreviewContent({
     );
   }
 
-  return isAudioSidecar(filename) ? (
+  return !readOnly && isAudioSidecar(filename) ? (
     <TranscriptEditor
       clientId={clientId}
       filename={filename}

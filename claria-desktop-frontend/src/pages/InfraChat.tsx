@@ -163,7 +163,6 @@ export default function InfraChat({
       ) : (
         <ChatWidget
           onSend={handleSend}
-          contextTokens={contextTokens}
           emptyStateTitle="Ask about your infrastructure."
           emptyStateSubtitle="Ask questions about your AWS resources, security configuration, and how Claria manages your environment."
           extraLoading={scanning}

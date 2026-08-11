@@ -14,6 +14,7 @@ import ChatWidget from "../components/ChatWidget";
 import ChatHistoryHeader from "../components/ChatHistoryHeader";
 import EditableName from "../components/EditableName";
 import { CloseIcon } from "../components/icons";
+import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
 import Spinner from "../components/Spinner";
 import TextPreviewModal from "../components/TextPreviewModal";
 import TokenCountBadge from "../components/TokenCountBadge";
@@ -30,6 +31,7 @@ export type ResumeChat = {
   /// user turns and for legacy assistant turns whose history pre-dates
   /// per-turn usage tracking.
   usageByIndex?: Array<import("../lib/tauri").TurnUsage | null>;
+  timestampsByIndex?: Array<string | null>;
   /// ISO-8601 timestamp of the chat's last activity (for the resume
   /// header — "Last activity: yesterday 4:12pm" etc).
   lastActivityIso?: string | null;
@@ -89,6 +91,7 @@ export default function ClientChat({
   const initialMessages = resumeChat?.messages;
   const initialModelId = resumeChat?.modelId;
   const initialUsageByIndex = resumeChat?.usageByIndex;
+  const initialTimestampsByIndex = resumeChat?.timestampsByIndex;
   const lastActivityIso = resumeChat?.lastActivityIso ?? null;
 
   // Count context tokens once context is loaded. Only files with extracted
@@ -137,12 +140,7 @@ export default function ClientChat({
           })),
           lastActivityIso
         );
-        return (
-          <ChatHistoryHeader
-            summary={summary}
-            onSeeAccountSpend={() => navigate("cost-explorer")}
-          />
-        );
+        return <ChatHistoryHeader summary={summary} />;
       })()
     : undefined;
 
@@ -292,13 +290,24 @@ export default function ClientChat({
         initialMessages={initialMessages}
         initialModelId={initialModelId}
         initialUsageByIndex={initialUsageByIndex}
-        contextTokens={contextTokens}
+        initialTimestampsByIndex={initialTimestampsByIndex}
         emptyStateTitle="Start the conversation."
         emptyStateSubtitle="The chat includes the context files shown above. Chat messages are saved separately and do not modify your client files."
         extraLoading={contextLoading}
         extraLoadingText="Building context..."
         toolbar={toolbar}
         historyHeader={historyHeader}
+        usageActions={
+          resumeChat ? (
+            <button
+              type="button"
+              onClick={() => navigate("cost-explorer")}
+              className="text-xs font-medium text-blue-700 hover:text-blue-900"
+            >
+              See account spend →
+            </button>
+          ) : undefined
+        }
       />
 
       {/* System prompt modal (read-only) */}
@@ -313,7 +322,7 @@ export default function ClientChat({
 
       {/* Context file preview modal */}
       {previewContext && (
-        <TextPreviewModal
+        <RecordFilePreviewModal
           filename={previewContext.filename}
           text={previewContext.text}
           onClose={() => setPreviewContext(null)}

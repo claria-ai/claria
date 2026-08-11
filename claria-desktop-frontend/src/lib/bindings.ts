@@ -387,17 +387,25 @@ async deleteClient(clientId: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async loadReportWorkspace(clientId: string) : Promise<Result<ReportWorkspaceView, string>> {
+async startReportWorkspace(clientId: string, reportId: string) : Promise<Result<ReportWorkspaceView, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("load_report_workspace", { clientId }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_report_workspace", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadReportWorkspace(clientId: string, reportId: string) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_report_workspace", { clientId, reportId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Return the current persisted writing session for the Record screen's
- * Editor History folder without creating a new workspace.
+ * Return every persisted Writing session for the Record screen's Editor
+ * History folder without creating a new workspace.
  */
 async listEditorHistory(clientId: string) : Promise<Result<EditorHistoryEntry[], string>> {
     try {
@@ -439,9 +447,17 @@ async revertReportRevision(clientId: string, reportId: string, expectedRevision:
     else return { status: "error", error: e  as any };
 }
 },
-async saveReportDraft(clientId: string, expectedRevision: number, draft: ReportDraftEdit) : Promise<Result<ReportWorkspaceView, string>> {
+async saveReportDraft(clientId: string, reportId: string, expectedRevision: number, draft: ReportDraftEdit) : Promise<Result<ReportWorkspaceView, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_report_draft", { clientId, expectedRevision, draft }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_report_draft", { clientId, reportId, expectedRevision, draft }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async discardQueuedReportEdits(clientId: string, reportId: string, expectedRevision: number) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("discard_queued_report_edits", { clientId, reportId, expectedRevision }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -497,9 +513,9 @@ async previewWriterTemplate(clientId: string, templateId: string) : Promise<Resu
 /**
  * Apply a parsed managed DOCX candidate as a new accepted revision.
  */
-async applyReportTemplate(clientId: string, expectedRevision: number, importId: string) : Promise<Result<ReportWorkspaceView, string>> {
+async applyReportTemplate(clientId: string, reportId: string, expectedRevision: number, importId: string) : Promise<Result<ReportWorkspaceView, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("apply_report_template", { clientId, expectedRevision, importId }) };
+    return { status: "ok", data: await TAURI_INVOKE("apply_report_template", { clientId, reportId, expectedRevision, importId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -513,17 +529,25 @@ async discardReportTemplatePreview(importId: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
-async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
+async generateFullReport(clientId: string, reportId: string, expectedRevision: number, modelId: string, guidance: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction, references, onProgress }) };
+    return { status: "ok", data: await TAURI_INVOKE("generate_full_report", { clientId, reportId, expectedRevision, modelId, guidance, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async resolveReportProposal(clientId: string, proposalId: string, decision: ReportProposalChoice) : Promise<Result<ReportWorkspaceView, string>> {
+async sendReportMessage(clientId: string, reportId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("resolve_report_proposal", { clientId, proposalId, decision }) };
+    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, reportId, expectedRevision, modelId, instruction, references, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resolveReportProposal(clientId: string, reportId: string, proposalId: string, decision: ReportProposalChoice) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_report_proposal", { clientId, reportId, proposalId, decision }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1218,7 +1242,7 @@ export type ChatHistoryDetail = { chat_id: string; name: string; model_id: strin
  * A single message in persisted chat history, including optional token
  * usage on assistant turns.
  */
-export type ChatHistoryDetailMessage = { role: ChatRole; content: string; 
+export type ChatHistoryDetailMessage = { role: ChatRole; content: string; timestamp: string;
 /**
  * `Some` on assistant turns whose Converse response carried a usage
  * block. `None` on user turns and on assistant turns from history
@@ -1388,6 +1412,7 @@ export type FileVersion = { version_id: string; size: number; last_modified: str
  * Severity levels the frontend logging bridge may report.
  */
 export type FrontendLogLevel = "error" | "warn" | "info"
+export type FullReportGenerationResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; included_record_files: number; unavailable_record_files: number; record_characters: number }
 /**
  * Response from an infrastructure chat turn. Infra chat does not persist
  * history, but we still return token usage so the UI can display cost.
@@ -1500,7 +1525,13 @@ export type RecordFile = { filename: string; size: number; uploaded_at: string |
  * relationship between the limits before they are saved or used.
  */
 export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
-export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
+export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number;
+/**
+ * Records preloaded outside the model's record-reading tools. Only the
+ * filename and availability cross IPC; source hashes/counts stay in the
+ * durable workspace and record text is never persisted there.
+ */
+context_files: ReportContextFileView[]; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
 export type ReportBlock = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | 
 /**
  * A rectangular, plain-text table. The first row is rendered as a
@@ -1510,6 +1541,7 @@ export type ReportBlock = { kind: "paragraph"; text: string } | { kind: "bullet_
 { kind: "table"; rows: string[][]; has_header: boolean; column_widths?: number[] | null }
 export type ReportBlockReferenceInput = { section_id: string; block_index: number }
 export type ReportContent = { title: string; sections: ReportSection[] }
+export type ReportContextFileView = { filename: string; available: boolean }
 export type ReportContextReadView = { filename: string; offset: number; returned_characters: number; total_characters: number | null; read_at: string }
 export type ReportDraft = { revision: number; content: ReportContent; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
 export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }
@@ -1540,7 +1572,7 @@ export type ReportTemplateWarningView = { code: string; message: string; count: 
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
-export type ReportTurnProgressView = { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus }
+export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus }
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
 /**
  * Earns its life over `ReportWorkspace`: flattens the session container and

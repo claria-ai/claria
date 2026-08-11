@@ -3,8 +3,9 @@ use claria_bedrock::{
     chat::{CacheStrategy, ChatMessage, ChatRole},
     error::BedrockError,
     report::{
-        PROPOSE_REPORT_CHANGES_TOOL, ReportStopReason, ReportToolRequest, converse_report,
-        converse_report_with_tool_limit, decode_tool_request,
+        PROPOSE_REPORT_CHANGES_TOOL, ReportInputBudget, ReportStopReason, ReportToolRequest,
+        converse_full_report_with_tool_limit, converse_report, converse_report_with_tool_limit,
+        decode_tool_request,
     },
 };
 use claria_core::models::report::{
@@ -108,6 +109,54 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
         request["inferenceConfig"]["maxTokens"],
         claria_bedrock::report::REPORT_OUTPUT_TOKEN_RESERVE
     );
+}
+
+#[tokio::test]
+async fn full_draft_request_exposes_only_atomic_candidate_tools() {
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Ready."}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 12, "outputTokens": 3}
+        })],
+    )
+    .await;
+
+    converse_full_report_with_tool_limit(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "Full draft policy",
+        &[user_message("Complete record snapshot")],
+        12,
+        &mut ReportInputBudget::new(MODEL_ID),
+    )
+    .await
+    .expect("full-draft converse");
+
+    let state = server.state.read().await;
+    let tools = state.bedrock_tool_requests[0]["toolConfig"]["tools"]
+        .as_array()
+        .expect("tools");
+    let names = tools
+        .iter()
+        .map(|tool| tool["toolSpec"]["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec![
+            "set_full_draft_title",
+            "write_full_draft_section",
+            "finish_full_draft"
+        ]
+    );
+    let section = &tools[1]["toolSpec"]["inputSchema"]["json"];
+    assert_eq!(
+        section["properties"]["blocks"]["maxItems"],
+        claria_bedrock::report::MAX_SECTION_BLOCKS
+    );
+    assert!(section["properties"]["section_id"].get("anyOf").is_some());
 }
 
 #[tokio::test]

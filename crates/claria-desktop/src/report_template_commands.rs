@@ -206,11 +206,13 @@ pub async fn preview_writer_template(
 pub async fn apply_report_template(
     state: State<'_, DesktopState>,
     client_id: String,
+    report_id: String,
     expected_revision: u64,
     import_id: String,
 ) -> Result<ReportWorkspaceView, String> {
     run("apply_report_template", async {
         let client_id = parse_uuid(&client_id)?;
+        let report_id = parse_uuid(&report_id)?;
         let import_id = parse_uuid(&import_id)?;
         let (imported, writer_template_id, writer_template_name, source_docx) = {
             let pending = state.pending_report_templates.lock().await;
@@ -243,10 +245,11 @@ pub async fn apply_report_template(
             source_docx,
         )
         .await?;
-        let workspace = claria_report_authoring::apply_report_template(
+        let workspace = claria_report_authoring::apply_report_template_for_report(
             &ctx.s3,
             &ctx.bucket,
             client_id,
+            report_id,
             expected_revision,
             claria_report_authoring::ReportTemplateApplication {
                 content: imported.content,

@@ -1,9 +1,9 @@
 //! Structured, versioned report-authoring workspaces.
 //!
-//! A workspace keeps the accepted report draft separate from the model's
-//! proposal. Model output is never applied directly: callers stage a
-//! [`ReportProposal`], show its exact candidate to the user, and only then use
-//! [`ReportDraft::accept`] to recompute and persist the accepted content.
+//! A workspace keeps the accepted report draft separate from targeted model
+//! proposals. Targeted edits stage a [`ReportProposal`] for review before
+//! [`ReportDraft::accept`]; the distinct whole-report workflow validates and
+//! commits one complete candidate atomically.
 
 use std::collections::HashSet;
 
@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{error::CoreError, models::turn_usage::TurnUsage};
 
-pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 4;
+pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 5;
 pub const MAX_REPORT_SECTIONS: usize = 100;
 pub const MAX_SECTION_BLOCKS: usize = 200;
 pub const MAX_TABLE_ROWS: usize = 200;
@@ -181,6 +181,11 @@ pub struct ReportAuthoringTurn {
     pub id: Uuid,
     pub model_id: String,
     pub messages: Vec<ReportProtocolMessage>,
+    /// Text-free provenance for records preloaded outside the tool protocol
+    /// (currently whole-report generation): filenames plus source hashes and
+    /// character counts. Targeted tool reads remain derivable from `messages`.
+    #[serde(default)]
+    pub record_context_files: Vec<ReportRecordContextFile>,
     pub usage: TurnUsage,
     /// False when one or more successful Converse responses omitted usage.
     pub usage_complete: bool,
@@ -188,6 +193,32 @@ pub struct ReportAuthoringTurn {
     pub tool_uses: u32,
     pub created_at: Timestamp,
     pub completed_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ReportRecordContextFile {
+    Included {
+        filename: String,
+        sha256: String,
+        characters: u64,
+    },
+    Unavailable {
+        filename: String,
+        reason: String,
+    },
+}
+
+impl ReportRecordContextFile {
+    pub fn filename(&self) -> &str {
+        match self {
+            Self::Included { filename, .. } | Self::Unavailable { filename, .. } => filename,
+        }
+    }
+
+    pub const fn is_available(&self) -> bool {
+        matches!(self, Self::Included { .. })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -599,17 +630,31 @@ pub fn decode_report_workspace(bytes: &[u8]) -> Result<ReportWorkspace, CoreErro
     }
     // Versions through 3 predate managed-template identity breadcrumbs. The
     // fields themselves are optional, so legacy direct imports remain valid.
-    if schema_version.is_some_and(|version| version <= 3) {
-        if let Some(template) = value
+    if schema_version.is_some_and(|version| version <= 3)
+        && let Some(template) = value
             .get_mut("template_import")
             .and_then(serde_json::Value::as_object_mut)
+    {
+        template
+            .entry("writer_template_id")
+            .or_insert(serde_json::Value::Null);
+        template
+            .entry("writer_template_name")
+            .or_insert(serde_json::Value::Null);
+    }
+    // Versions through 4 predate durable, text-free provenance for records
+    // preloaded by whole-report generation.
+    if schema_version.is_some_and(|version| version <= 4) {
+        if let Some(turns) = value
+            .pointer_mut("/session/turns")
+            .and_then(serde_json::Value::as_array_mut)
         {
-            template
-                .entry("writer_template_id")
-                .or_insert(serde_json::Value::Null);
-            template
-                .entry("writer_template_name")
-                .or_insert(serde_json::Value::Null);
+            for turn in turns {
+                if let Some(turn) = turn.as_object_mut() {
+                    turn.entry("record_context_files")
+                        .or_insert_with(|| serde_json::json!([]));
+                }
+            }
         }
         value["schema_version"] = serde_json::json!(REPORT_WORKSPACE_SCHEMA_VERSION);
     }
@@ -968,6 +1013,31 @@ fn validate_turn(turn: &ReportAuthoringTurn) -> Result<(), CoreError> {
         return Err(invalid("persisted turns must not retain model reasoning"));
     }
     validate_protocol(&turn.messages, true)?;
+
+    let mut context_filenames = HashSet::new();
+    for file in &turn.record_context_files {
+        let filename = file.filename();
+        validate_nonempty_text("record context filename", filename, 1_024)?;
+        if !context_filenames.insert(filename) {
+            return Err(invalid("record context filenames must be unique per turn"));
+        }
+        match file {
+            ReportRecordContextFile::Included { sha256, .. } => {
+                if sha256.len() != 64
+                    || !sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(invalid(
+                        "included record context SHA-256 must be 64 lowercase hexadecimal characters",
+                    ));
+                }
+            }
+            ReportRecordContextFile::Unavailable { reason, .. } => {
+                validate_nonempty_text("record context unavailable reason", reason, 100)?;
+            }
+        }
+    }
 
     let counted_tool_uses = turn
         .messages

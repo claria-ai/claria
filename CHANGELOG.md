@@ -4,10 +4,18 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
-- Chat and writer sessions now show how much prompt caching saved against what the same turns would have cost uncached
-- An expandable cost breakdown explains each turn's spend by component and flags cache hits, expired cache windows, and cold starts
+- Writing can fill an entire report in one action, save it directly as one versioned draft, and reserve reviewable proposals for later targeted edits
+- Writing sessions now behave like chats: opening the Writing tab starts a fresh report, while Editor History resumes a specific prior session
+- Whole-report generation loads every readable client record into one bounded source snapshot and drafts sections through internal cached tool rounds without asking the user to drive record retrieval; its prompt disappears after the first completed turn
+- Writer context now keeps a text-free per-file provenance list for whole-report snapshots, adds files read by later tool turns, and opens those pills through the same preview component as Chat
+- Whole-report replacement uses an in-app confirmation, reports failures beside the action, and logs request, failure, and completion diagnostics without record content
+- Webview `console.error`/`console.warn`, uncaught errors, unhandled rejections, and React render crashes now flow into the Claria Console and rolling logs with useful stacks but without serializing arbitrary objects
+- Reloaded chats and Writing sessions can reuse an exact five-minute prompt-cache prefix through small in-memory LRUs, and cache labels only claim expiry when elapsed time proves it
+- New Writing sessions open on an optional setup tab for choosing a Word template or filling the whole report; a second tab starts tool-driven work, and a compact lightning/dollar tab contains session usage
+- Chat and Writing keep cost and prompt-cache details in the same focused usage-tab design, including cache-write tokens and fees, rather than placing spend banners in the main flow
+- The usage tab can opt into per-turn cost badges, while its full-width breakdown explains component spend, cache reuse, stale windows, and cold starts without a squeezed accordion
 - Chat requests now end with a cache point on the conversation tail, so each turn re-reads the whole history from cache instead of paying full input rates
-- Chat cache entries last an hour on models that support the extended TTL, surviving the pauses of a real conversation; older families fall back to the five-minute default
+- Chat cache entries use the default five-minute tier and a hash-only in-memory prefix tracker rather than paying the doubled hour-long write rate
 - Costs now price hour-long cache writes at their real 2× rate, and each turn records the cache TTL it used so historical totals stay honest
 - Desktop commands are split into per-domain modules sharing one command context and one rich error type, with every error logged and stringified exactly once at the command boundary with its operation name
 - The S3 client is cached alongside the SDK config and invalidated with it, instead of being rebuilt on every command
@@ -52,7 +60,7 @@ All notable changes to Claria are documented here.
 - Document extraction sends a neutral user turn so the customizable extraction prompt is the single source of instructions
 - Project instructions gain review-derived coding rules covering reuse, frontend patterns, Rust conventions, LLM calls, logging, security, and performance
 - Chat and writer composers both send on Enter and insert a newline with Shift+Enter, with a native resize grip replacing the chat drag handle
-- Writer turns show the same per-turn cost badges and running session spend banner as chat
+- Writer activity cycles through clearer thinking, working, and inferring labels across internal model rounds
 - Report bullet lists render with the intended compact spacing
 - An unexpected interface crash shows the error with a reload button instead of a blank window
 - Chat, writer, preferences, cost, and provisioning screens share one set of interface primitives, async-load handling, and state hooks without behavior changes

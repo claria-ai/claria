@@ -7,7 +7,9 @@ import { clearWritingComposerDrafts } from "../lib/writingComposerDraft";
 const mocks = vi.hoisted(() => ({
   load: vi.fn(),
   save: vi.fn(),
+  discardQueued: vi.fn(),
   send: vi.fn(),
+  generate: vi.fn(),
   resolve: vi.fn(),
   exportDocx: vi.fn(),
   listTemplates: vi.fn(),
@@ -18,15 +20,23 @@ const mocks = vi.hoisted(() => ({
   listRevisions: vi.fn(),
   loadRevision: vi.fn(),
   revertRevision: vi.fn(),
+  logFrontend: vi.fn(),
+}));
+
+vi.mock("../lib/logBridge", () => ({
+  logFrontendEvent: mocks.logFrontend,
 }));
 
 vi.mock("../lib/tauri", () => ({
   // The ledger's pricing map resolves per-model pricing; `null` keeps the
   // cost-explanation rows unpriced without hitting the bridge.
   lookupModelPricing: vi.fn(async () => null),
+  startReportWorkspace: mocks.load,
   loadReportWorkspace: mocks.load,
   saveReportDraft: mocks.save,
+  discardQueuedReportEdits: mocks.discardQueued,
   sendReportMessage: mocks.send,
+  generateFullReport: mocks.generate,
   resolveReportProposal: mocks.resolve,
   exportReportDocx: mocks.exportDocx,
   listWriterTemplates: mocks.listTemplates,
@@ -60,6 +70,7 @@ function workspace({
   revision = 0,
   assistantMarkdown,
   contextReads = false,
+  contextFiles = [],
   lastAgentRevision = null,
 }: {
   title?: string;
@@ -68,10 +79,11 @@ function workspace({
   revision?: number;
   assistantMarkdown?: string;
   contextReads?: boolean;
+  contextFiles?: Array<{ filename: string; available: boolean }>;
   lastAgentRevision?: number | null;
 } = {}): ReportWorkspaceView {
   return {
-    schema_version: 4,
+    schema_version: 5,
     session_name: "Writer Session (1)",
     report_id: "report-1",
     client_id: "client-1",
@@ -116,6 +128,7 @@ function workspace({
             usage_complete: true,
             converse_calls: 1,
             tool_uses: contextReads ? 1 : 0,
+            context_files: contextFiles,
             context_reads: contextReads
               ? [
                   {
@@ -184,12 +197,15 @@ function turnResponse(value: ReportWorkspaceView) {
   };
 }
 
-function renderWriting(clientId = "client-1", expectedReportId?: string) {
+function renderWriting(
+  clientId = "client-1",
+  expectedReportId: string | null = "report-1"
+) {
   return render(
     <ChatModelsContext.Provider value={modelsState}>
       <Writing
         clientId={clientId}
-        expectedReportId={expectedReportId}
+        expectedReportId={expectedReportId ?? undefined}
         onManageTemplates={vi.fn()}
       />
     </ChatModelsContext.Provider>
@@ -209,7 +225,7 @@ beforeEach(() => {
   mocks.load.mockResolvedValue(workspace());
   mocks.listTemplates.mockResolvedValue([]);
   mocks.save.mockImplementation(
-    (_clientId: string, revision: number, draft: { title: string; sections: ReportWorkspaceView["draft"]["content"]["sections"] }) => {
+    (_clientId: string, _reportId: string, revision: number, draft: { title: string; sections: ReportWorkspaceView["draft"]["content"]["sections"] }) => {
       const saved = workspace({ title: draft.title, revision: revision + 1 });
       saved.draft.content.sections = draft.sections.map((section) => ({
         id: section.id ?? SECTION_ID,
@@ -219,7 +235,29 @@ beforeEach(() => {
       return Promise.resolve(saved);
     }
   );
+  mocks.discardQueued.mockImplementation(
+    (_clientId: string, _reportId: string, revision: number) =>
+      Promise.resolve(workspace({ revision: revision + 1, lastAgentRevision: revision + 1 }))
+  );
   mocks.send.mockResolvedValue(turnResponse(workspace({ lastAgentRevision: 0 })));
+  const generated = workspace({
+    title: "Generated complete report",
+    revision: 1,
+    assistantMarkdown: "The complete working draft is ready.",
+    contextFiles: [
+      { filename: "intake.txt", available: true },
+      { filename: "teacher-observation.txt", available: true },
+      { filename: "scan.pdf", available: false },
+    ],
+    lastAgentRevision: 1,
+  });
+  mocks.generate.mockResolvedValue({
+    ...turnResponse(generated),
+    workspace: generated,
+    included_record_files: 2,
+    unavailable_record_files: 1,
+    record_characters: 12872,
+  });
   mocks.previewTemplate.mockResolvedValue(null);
   mocks.discardTemplate.mockResolvedValue(undefined);
   mocks.getRecordText.mockResolvedValue("Preview text");
@@ -240,6 +278,25 @@ afterEach(() => {
 });
 
 describe("Writing", () => {
+  it("opens a new session on the optional setup tab and can skip to tools", async () => {
+    renderWriting("client-1", null);
+
+    await screen.findByText("Start this report");
+    expect(
+      screen.getByRole("tab", { name: "Get started" }).getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
+    expect(screen.getByLabelText("Writer template")).toBeDefined();
+    expect(screen.getByLabelText("Full report guidance")).toBeDefined();
+    expect(screen.queryByLabelText("Writing instruction")).toBeNull();
+
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Write with Claude" })
+    );
+    expect(screen.getByLabelText("Writing instruction")).toBeDefined();
+  });
+
   it("renders assistant and report Markdown instead of showing markers", async () => {
     mocks.load.mockResolvedValue(
       workspace({ assistantMarkdown: "A **bold assistant** response." })
@@ -250,6 +307,28 @@ describe("Writing", () => {
     const report = screen.getByText("bold report");
     expect(assistant.tagName).toBe("STRONG");
     expect(report.tagName).toBe("STRONG");
+  });
+
+  it("keeps cost noise in a compact usage tab and optionally reveals turn costs", async () => {
+    mocks.load.mockResolvedValue(
+      workspace({ assistantMarkdown: "A completed turn." })
+    );
+    renderWriting();
+
+    await screen.findByText("A completed turn.");
+    expect(screen.queryByTestId("session-usage-panel")).toBeNull();
+    expect(screen.queryByText("< $0.01")).toBeNull();
+
+    const usageTab = screen.getByRole("tab", { name: "Costs and cache" });
+    expect(usageTab.className).toContain("w-14");
+    await userEvent.click(usageTab);
+    expect(await screen.findByTestId("session-usage-panel")).toBeDefined();
+    expect(screen.getByText("Session cost & cache")).toBeDefined();
+    expect(screen.getByText("Cache writes")).toBeDefined();
+
+    await userEvent.click(screen.getByLabelText("Show turn costs"));
+    await userEvent.click(screen.getByRole("tab", { name: "Write with Claude" }));
+    expect(screen.getByText("< $0.01")).toBeDefined();
   });
 
   it("keeps a pending proposal separate from the accepted report", async () => {
@@ -350,6 +429,7 @@ describe("Writing", () => {
 
     expect(mocks.save).toHaveBeenCalledWith(
       "client-1",
+      "report-1",
       0,
       expect.objectContaining({
         sections: [
@@ -446,17 +526,131 @@ describe("Writing", () => {
 
     expect(mocks.save).toHaveBeenCalledWith(
       "client-1",
+      "report-1",
       0,
       expect.objectContaining({ title: "Edited directly" })
     );
     expect(mocks.send).toHaveBeenCalledWith(
       "client-1",
+      "report-1",
       1,
       "model-1",
       "Review my edits",
       [],
       expect.any(Function)
     );
+  });
+
+  it("fills the whole report in one direct versioned generation action", async () => {
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
+    await userEvent.type(
+      screen.getByLabelText("Full report guidance"),
+      "Use a concise clinical style"
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Fill whole report" })
+    );
+
+    const confirmation = screen.getByRole("dialog", {
+      name: "Replace the working draft?",
+    });
+    expect(confirmation.textContent).toContain(
+      "current revision will remain available"
+    );
+    expect(mocks.generate).not.toHaveBeenCalled();
+    await userEvent.click(
+      within(confirmation).getByRole("button", { name: "Fill whole report" })
+    );
+    expect(mocks.generate).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      0,
+      "model-1",
+      "Use a concise clinical style",
+      expect.any(Function)
+    );
+    expect(await screen.findByText("Generated complete report")).toBeDefined();
+    expect(screen.getByText(/Generated and saved revision 1 from 2 readable records/)).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: /Context/ }));
+    const context = screen.getByLabelText("Writer context");
+    expect(within(context).getByText("intake.txt")).toBeDefined();
+    expect(within(context).getByText("teacher-observation.txt")).toBeDefined();
+    expect(within(context).getByText("scan.pdf")).toBeDefined();
+    await userEvent.click(
+      within(context).getByRole("button", { name: "intake.txt" })
+    );
+    expect(await screen.findByText("Preview text")).toBeDefined();
+    expect(mocks.getRecordText).toHaveBeenCalledWith("client-1", "intake.txt");
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(
+      (screen.getByLabelText("Writing instruction") as HTMLTextAreaElement).value
+    ).toBe("");
+    expect(
+      screen.getByRole("tab", { name: "Write with Claude" }).getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
+  });
+
+  it("surfaces and logs whole-report failures beside the action", async () => {
+    mocks.generate.mockRejectedValue(new Error("Bedrock request unavailable"));
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Fill whole report" })
+    );
+    const confirmation = screen.getByRole("dialog", {
+      name: "Replace the working draft?",
+    });
+    await userEvent.click(
+      within(confirmation).getByRole("button", { name: "Fill whole report" })
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not complete the Writer action");
+    expect(alert.textContent).toContain("Bedrock request unavailable");
+    expect(mocks.logFrontend).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("Writer whole-report generation failed")
+    );
+  });
+
+  it("dismisses whole-report generation after the first completed turn", async () => {
+    mocks.load.mockResolvedValue(
+      workspace({ assistantMarkdown: "The first turn is complete." })
+    );
+    renderWriting();
+
+    await screen.findByText("The first turn is complete.");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
+    expect(
+      screen.queryByRole("button", { name: "Fill whole report" })
+    ).toBeNull();
+    expect(screen.queryByLabelText("Full report guidance")).toBeNull();
+  });
+
+  it("shows and executes discard beside both saved-queue surfaces", async () => {
+    const queued = workspace({ revision: 2, lastAgentRevision: 1 });
+    const discarded = workspace({ revision: 3, lastAgentRevision: 3 });
+    mocks.load.mockResolvedValue(queued);
+    mocks.discardQueued.mockResolvedValue(discarded);
+    renderWriting();
+
+    const notice = await screen.findByTestId("queued-report-edits");
+    expect(notice.textContent).toContain("Claude saw r1");
+    expect(screen.getAllByRole("button", { name: "Discard" })).toHaveLength(2);
+
+    await userEvent.click(within(notice).getByRole("button", { name: "Discard" }));
+    expect(mocks.discardQueued).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      2
+    );
+    expect(await screen.findByText(/restored the report as revision 3/)).toBeDefined();
+    expect(screen.queryByTestId("queued-report-edits")).toBeNull();
   });
 
   it("drops a hovered paragraph reference into the composer and sends it", async () => {
@@ -479,6 +673,7 @@ describe("Writing", () => {
 
     expect(mocks.send).toHaveBeenCalledWith(
       "client-1",
+      "report-1",
       0,
       "model-1",
       "Shorten this",
@@ -520,6 +715,7 @@ describe("Writing", () => {
 
     expect(mocks.send).toHaveBeenCalledWith(
       "client-1",
+      "report-1",
       0,
       "model-1",
       "Update this score table",
@@ -528,11 +724,51 @@ describe("Writing", () => {
     );
   });
 
+  it("cycles Claude activity language across internal model rounds", async () => {
+    let finish!: (value: ReturnType<typeof turnResponse>) => void;
+    let progress!: (value: unknown) => void;
+    mocks.send.mockImplementation(
+      (
+        _clientId: string,
+        _reportId: string,
+        _revision: number,
+        _modelId: string,
+        _instruction: string,
+        _references: unknown[],
+        onProgress: (value: unknown) => void
+      ) => {
+        progress = onProgress;
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      }
+    );
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.type(screen.getByLabelText("Writing instruction"), "Draft it");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    for (const [callNumber, label] of [
+      [1, "Claude is thinking"],
+      [2, "Claude is working"],
+      [3, "Claude is inferring"],
+      [4, "Claude is thinking"],
+    ] as const) {
+      act(() => progress({ kind: "model_call_started", call_number: callNumber }));
+      expect(screen.getByText(label)).toBeDefined();
+    }
+
+    await act(async () => {
+      finish(turnResponse(workspace({ lastAgentRevision: 0 })));
+    });
+  });
+
   it("shows live agent activity and a context pill while a record is read", async () => {
     let finish!: (value: ReturnType<typeof turnResponse>) => void;
     mocks.send.mockImplementation(
       (
         _clientId: string,
+        _reportId: string,
         _revision: number,
         _modelId: string,
         _instruction: string,
@@ -583,6 +819,41 @@ describe("Writing", () => {
     await userEvent.click(screen.getByRole("button", { name: "intake.txt" }));
     expect(await screen.findByText("Preview text")).toBeDefined();
     expect(mocks.getRecordText).toHaveBeenCalledWith("client-1", "intake.txt");
+  });
+
+  it("keeps preloaded files and adds records read by later tool turns", async () => {
+    const value = workspace({
+      assistantMarkdown: "Initial complete draft",
+      contextFiles: [
+        { filename: "intake.txt", available: true },
+        { filename: "teacher.txt", available: true },
+      ],
+    });
+    value.turns.push({
+      ...structuredClone(value.turns[0]),
+      id: "turn-2",
+      context_files: [],
+      context_reads: [
+        {
+          filename: "new-upload.txt",
+          offset: 0,
+          returned_characters: 240,
+          total_characters: 240,
+          read_at: "2026-08-01T00:02:00Z",
+        },
+      ],
+      created_at: "2026-08-01T00:02:00Z",
+      completed_at: "2026-08-01T00:02:01Z",
+    });
+    mocks.load.mockResolvedValue(value);
+    renderWriting();
+    const contextButton = await screen.findByRole("button", { name: /Context/ });
+
+    await userEvent.click(contextButton);
+    const context = screen.getByLabelText("Writer context");
+    expect(within(context).getByText("intake.txt")).toBeDefined();
+    expect(within(context).getByText("teacher.txt")).toBeDefined();
+    expect(within(context).getByText("new-upload.txt")).toBeDefined();
   });
 
   it("previews a previous report revision and restores it as a new revision", async () => {
@@ -763,11 +1034,17 @@ describe("Writing", () => {
     mocks.applyTemplate.mockResolvedValue(imported);
     renderWriting();
     await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
 
     expect(await screen.findByRole("option", { name: "Assessment template" })).toBeDefined();
     await userEvent.click(screen.getByRole("button", { name: "Apply template" }));
     expect(mocks.previewTemplate).toHaveBeenCalledWith("client-1", "template-1");
-    expect(mocks.applyTemplate).toHaveBeenCalledWith("client-1", 0, "import-1");
+    expect(mocks.applyTemplate).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      0,
+      "import-1"
+    );
     expect(await screen.findByText("Imported evaluation")).toBeDefined();
     expect(screen.getByText(/Template/).textContent).toContain(
       "Template Assessment template applied"

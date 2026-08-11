@@ -1284,6 +1284,7 @@ dependencies = [
  "eyre",
  "futures",
  "jiff",
+ "lru 0.18.0",
  "rfd",
  "rustls",
  "semver",

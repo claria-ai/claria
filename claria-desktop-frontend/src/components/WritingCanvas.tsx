@@ -33,6 +33,8 @@ function WritingCanvas({
   busy,
   onBeginEdit,
   onCancelEdit,
+  hasQueuedEdits,
+  onDiscardQueued,
   onChange,
   onSave,
   onExport,
@@ -49,6 +51,8 @@ function WritingCanvas({
   busy: boolean;
   onBeginEdit: () => void;
   onCancelEdit: () => void;
+  hasQueuedEdits: boolean;
+  onDiscardQueued: () => void;
   onChange: (edit: ReportDraftEdit) => void;
   onSave: () => void;
   onExport: () => void;
@@ -113,19 +117,31 @@ function WritingCanvas({
           Revisions
         </button>
         {!editing ? (
-          <button
-            type="button"
-            onClick={onBeginEdit}
-            disabled={busy || pending}
-            className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50"
-          >
-            Edit
-          </button>
+          <>
+            {hasQueuedEdits && (
+              <button
+                type="button"
+                onClick={onDiscardQueued}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 disabled:opacity-50"
+              >
+                Discard
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onBeginEdit}
+              disabled={busy || pending}
+              className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50"
+            >
+              Edit
+            </button>
+          </>
         ) : (
           <>
             <button
               type="button"
-              onClick={onCancelEdit}
+              onClick={hasQueuedEdits ? onDiscardQueued : onCancelEdit}
               disabled={busy}
               className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 disabled:opacity-50"
             >

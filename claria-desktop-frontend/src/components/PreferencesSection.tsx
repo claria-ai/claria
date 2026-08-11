@@ -15,6 +15,9 @@ export default function PreferencesSection({
   open,
   onToggle,
   contentClassName = "border-t border-gray-100 p-4",
+  className = "border border-gray-200 rounded-lg",
+  summaryClassName = "flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden",
+  titleClassName = "font-medium text-gray-900",
   testId,
   children,
 }: {
@@ -26,12 +29,15 @@ export default function PreferencesSection({
   open?: boolean;
   onToggle?: (open: boolean) => void;
   contentClassName?: string;
+  className?: string;
+  summaryClassName?: string;
+  titleClassName?: string;
   testId?: string;
   children: ReactNode;
 }) {
   return (
     <details
-      className="border border-gray-200 rounded-lg group"
+      className={`${className} group`}
       open={open !== undefined ? open : defaultOpen}
       onToggle={
         onToggle
@@ -41,9 +47,9 @@ export default function PreferencesSection({
       }
       data-testid={testId}
     >
-      <summary className="flex items-center justify-between p-4 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+      <summary className={summaryClassName}>
         <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">{title}</span>
+          <span className={titleClassName}>{title}</span>
           {summary}
         </div>
         <span className="shrink-0 text-gray-400 text-xs transition-transform group-open:rotate-90">
