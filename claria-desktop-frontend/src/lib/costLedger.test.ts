@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildCostLedger,
-  cacheTtlLabel,
-  positiveLedgerSavings,
-} from "./costLedger";
+import { buildCostLedger, cacheTtlLabel } from "./costLedger";
 import type { ModelPricing, TurnUsage } from "./tauri";
 
 const SONNET = "us.anthropic.claude-sonnet-4-20250514-v1:0";
@@ -265,35 +261,6 @@ describe("buildCostLedger", () => {
     expect(ledger.savingsPct).toBeCloseTo((1.95 / 12.3) * 100);
     expect(ledger.coldStartCount).toBe(1);
     expect(ledger.hitCount).toBe(1);
-  });
-});
-
-describe("positiveLedgerSavings", () => {
-  it("passes positive savings through with a whole-percent share", () => {
-    const ledger = buildCostLedger(
-      [
-        usage({ cache_write_input_tokens: 100_000, cache_ttl: "five_minutes" }),
-        usage({ cache_read_input_tokens: 1_000_000 }),
-      ],
-      pricingMap
-    );
-    const savings = positiveLedgerSavings(ledger);
-    expect(savings).not.toBeNull();
-    expect(savings?.usd).toBeCloseTo(ledger.savingsUsd);
-    expect(savings?.pct).toBe(Math.round(ledger.savingsPct));
-  });
-
-  it("is null while the session is net-invested in cache writes", () => {
-    const ledger = buildCostLedger(
-      [usage({ cache_write_input_tokens: 1_000_000, cache_ttl: "one_hour" })],
-      pricingMap
-    );
-    expect(ledger.savingsUsd).toBeLessThan(0);
-    expect(positiveLedgerSavings(ledger)).toBeNull();
-  });
-
-  it("is null for an empty ledger", () => {
-    expect(positiveLedgerSavings(buildCostLedger([], pricingMap))).toBeNull();
   });
 });
 

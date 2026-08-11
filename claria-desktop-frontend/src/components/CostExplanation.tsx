@@ -1,21 +1,14 @@
-// Expandable "where did the money go" panel shared by chat and the writer
-// timeline. Shows the session ledger rollup (actual vs. would-have-been,
-// savings, hit rate) and a compact per-turn list: a stacked bar of the four
-// billed components against a dashed ghost bar of the uncached
-// counterfactual, annotated for cold starts, timestamp-proven stale windows,
-// non-reused prefixes, and cache-investment turns. Purely derived from the
-// ledger — no fetching, no persistence — and collapsed by default behind the
-// shared accordion chrome.
+// Static per-turn cost breakdown used inside the dedicated session-usage tab.
+// It stays out of the primary chat/writer flow and can use the full panel width,
+// avoiding the squeezed accordion layout this replaces.
 
 import { memo, useState } from "react";
 import { formatCost } from "../lib/cost";
 import {
   cacheTtlLabel,
-  positiveLedgerSavings,
   type CostLedger,
   type TurnLedgerEntry,
 } from "../lib/costLedger";
-import PreferencesSection from "./PreferencesSection";
 
 // Rows rendered until the user asks for everything — keeps the panel cheap
 // for multi-hundred-turn sessions (Console's MAX_RENDERED_ENTRIES pattern).
@@ -23,13 +16,10 @@ const MAX_RENDERED_TURNS = 50;
 
 export default function CostExplanation({
   ledger,
-  className,
-  compact = false,
+  className = "",
 }: {
   ledger: CostLedger | null | undefined;
-  /** Outer wrapper classes — the only thing that differs per surface. */
   className?: string;
-  compact?: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
   if (!ledger || ledger.entries.length === 0) return null;
@@ -46,26 +36,22 @@ export default function CostExplanation({
   }
 
   return (
-    <div className={className}>
-      <PreferencesSection
-        title="Cost breakdown"
-        testId="cost-explanation"
-        summary={<SummaryChip ledger={ledger} compact={compact} />}
-        className={compact ? "border-0 rounded-none h-full" : undefined}
-        summaryClassName={
-          compact
-            ? "h-full flex items-center justify-between px-3 py-1.5 cursor-pointer list-none [&::-webkit-details-marker]:hidden"
-            : undefined
-        }
-        titleClassName={
-          compact ? "text-[11px] font-semibold text-gray-600" : undefined
-        }
-        contentClassName={
-          compact
-            ? "border-t border-gray-100 p-3 space-y-2"
-            : "border-t border-gray-100 p-4 space-y-3"
-        }
-      >
+    <section
+      data-testid="cost-explanation"
+      aria-labelledby="cost-breakdown-heading"
+      className={`rounded-lg border border-gray-200 bg-white ${className}`}
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-gray-100 px-4 py-3">
+        <h4 id="cost-breakdown-heading" className="text-xs font-semibold text-gray-800">
+          Cost breakdown
+        </h4>
+        <span className="text-[11px] text-gray-500">
+          {ledger.unpricedTurns > 0
+            ? `${ledger.entries.length - ledger.unpricedTurns} priced · ${ledger.unpricedTurns} awaiting rates`
+            : `${formatCost(ledger.actualUsd)} actual · ${formatCost(ledger.counterfactualUsd)} without cache`}
+        </span>
+      </div>
+      <div className="space-y-3 p-4">
         <SessionSummary ledger={ledger} />
         {hiddenCount > 0 && (
           <button
@@ -87,63 +73,26 @@ export default function CostExplanation({
           ))}
         </ol>
         <Legend />
-      </PreferencesSection>
-    </div>
-  );
-}
-
-function SummaryChip({
-  ledger,
-  compact,
-}: {
-  ledger: CostLedger;
-  compact: boolean;
-}) {
-  const savings = positiveLedgerSavings(ledger);
-  return (
-    <span
-      className={
-        compact ? "text-[10px] text-gray-500" : "text-xs text-gray-500"
-      }
-    >
-      {formatCost(ledger.actualUsd)}
-      {savings && (
-        <span className="text-emerald-600">
-          {" "}
-          · saved {formatCost(savings.usd)}
-        </span>
-      )}
-    </span>
+      </div>
+    </section>
   );
 }
 
 function SessionSummary({ ledger }: { ledger: CostLedger }) {
   return (
     <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
-        <span>
-          Actual{" "}
-          <span className="font-semibold">{formatCost(ledger.actualUsd)}</span>
-        </span>
-        <span className="text-gray-300">·</span>
-        <span>
-          Without caching{" "}
-          <span className="font-semibold">
-            {formatCost(ledger.counterfactualUsd)}
-          </span>
-        </span>
-        <span className="text-gray-300">·</span>
-        {ledger.savingsUsd >= 0 ? (
-          <span className="text-emerald-700 font-medium">
-            Saved {formatCost(ledger.savingsUsd)} (
-            {Math.round(ledger.savingsPct)}%)
-          </span>
-        ) : (
-          <span className="text-blue-700 font-medium">
-            {formatCost(-ledger.savingsUsd)} invested in cache so far
-          </span>
-        )}
-        <span className="text-gray-300">·</span>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600">
+        {ledger.unpricedTurns === 0 &&
+          (ledger.savingsUsd >= 0 ? (
+            <span className="font-medium text-emerald-700">
+              Saved {formatCost(ledger.savingsUsd)} (
+              {Math.round(ledger.savingsPct)}%)
+            </span>
+          ) : (
+            <span className="font-medium text-blue-700">
+              {formatCost(-ledger.savingsUsd)} invested in cache so far
+            </span>
+          ))}
         <span>
           Cache hits {ledger.hitCount} of {ledger.entries.length} turn
           {ledger.entries.length === 1 ? "" : "s"}

@@ -8,23 +8,17 @@ import { useChatModels } from "../lib/chatModels";
 import {
   EMPTY_SESSION_USAGE,
   accumulateUsage,
-  estimateTurnCost,
-  formatCost,
   type SessionUsage,
 } from "../lib/cost";
-import { buildCostLedger, positiveLedgerSavings } from "../lib/costLedger";
-import { lookupModelPricing, type ModelPricing } from "../lib/tauri";
-import { logFrontendEvent } from "../lib/logBridge";
-import { useAsyncLoad } from "../lib/useAsyncLoad";
+import { buildCostLedger } from "../lib/costLedger";
 import { usePreferredModel } from "../lib/usePreferredModel";
 import { usePricingMap } from "../lib/usePricingMap";
 import ChatComposer from "./ChatComposer";
 import ChatEmptyState from "./ChatEmptyState";
-import CostExplanation from "./CostExplanation";
 import MessageBubble from "./MessageBubble";
 import ModelSelect from "./ModelSelect";
-import SessionTotalBanner from "./SessionTotalBanner";
-import LastTurnFooter from "./LastTurnFooter";
+import SessionTabs, { UsageTabIcon } from "./SessionTabs";
+import SessionUsagePanel from "./SessionUsagePanel";
 import Spinner from "./Spinner";
 
 function isMarketplaceError(error: string): boolean {
@@ -51,7 +45,6 @@ export default function ChatWidget({
   initialModelId,
   initialUsageByIndex,
   initialTimestampsByIndex,
-  contextTokens,
   emptyStateTitle = "Start the conversation.",
   emptyStateSubtitle,
   placeholder,
@@ -59,27 +52,26 @@ export default function ChatWidget({
   extraLoadingText = "Loading...",
   toolbar,
   historyHeader,
+  usageActions,
 }: {
   onSend: SendFn;
   initialMessages?: ChatMessage[];
   initialModelId?: string;
   /// Per-message usage aligned with `initialMessages` — used when
-  /// resuming a chat from history so old assistant turns can render
-  /// their cost badges.
+  /// resuming a chat from history so old assistant turns can appear in the
+  /// usage tab and render badges when the user enables them.
   initialUsageByIndex?: Array<TurnUsage | null>;
   initialTimestampsByIndex?: Array<string | null>;
-  /// Optional context-token count used for pre-flight cost estimation.
-  /// When omitted, the pre-flight chip is hidden.
-  contextTokens?: number | null;
   emptyStateTitle?: string;
   emptyStateSubtitle?: string;
   placeholder?: string;
   extraLoading?: boolean;
   extraLoadingText?: string;
   toolbar?: ReactNode;
-  /// Optional content rendered between the session banner and the
-  /// toolbar — typically a chat-history summary header on resume.
+  /// Optional quiet resume context rendered above the conversation toolbar.
   historyHeader?: ReactNode;
+  /** Optional actions that belong with costs rather than in the chat flow. */
+  usageActions?: ReactNode;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
   const [usageByIndex, setUsageByIndex] = useState<Array<TurnUsage | null>>(
@@ -88,8 +80,8 @@ export default function ChatWidget({
   const [timestampsByIndex, setTimestampsByIndex] = useState<
     Array<string | null>
   >(initialTimestampsByIndex ?? []);
-  // Roll up resumed usage so the session banner reflects historical spend
-  // on the chat being resumed. Initial props are plain initial state — a
+  // Roll up resumed usage for the dedicated session-usage tab. Initial props
+  // are plain initial state — a
   // different chat identity remounts the widget via the caller's `key`.
   const [session, setSession] = useState<SessionUsage>(() =>
     (initialUsageByIndex ?? []).reduce<SessionUsage>(
@@ -106,6 +98,10 @@ export default function ChatWidget({
   const [streamText, setStreamText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
+  const [activeTab, setActiveTab] = useState<"conversation" | "usage">(
+    "conversation"
+  );
+  const [showTurnCosts, setShowTurnCosts] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -120,24 +116,6 @@ export default function ChatWidget({
     preferredModelId,
     initialModelId
   );
-
-  // Per-model pricing for pre-flight estimates, `null` when unknown. Looked
-  // up once per selected model; a failed lookup hides the estimate chip but
-  // is still reported through the log bridge.
-  const pricingLoad = useAsyncLoad<ModelPricing | null>(
-    selectedModelId
-      ? () =>
-          lookupModelPricing(selectedModelId).catch((reason) => {
-            logFrontendEvent(
-              "warn",
-              `Pricing lookup failed for ${selectedModelId}: ${reason}`
-            );
-            return null;
-          })
-      : null,
-    [selectedModelId]
-  );
-  const pricing = pricingLoad.loading ? null : pricingLoad.data;
 
   // Ordered assistant-turn usages for the cache-aware ledger. Only
   // assistant turns are metered; a null slot is a legacy/unmetered turn.
@@ -161,7 +139,9 @@ export default function ChatWidget({
     () => assistantTurnUsages.flatMap((usage) => (usage ? [usage.model_id] : [])),
     [assistantTurnUsages]
   );
-  const pricingByModel = usePricingMap(turnModelIds);
+  const pricingByModel = usePricingMap(
+    activeTab === "usage" ? turnModelIds : []
+  );
   const ledger = useMemo(
     () =>
       buildCostLedger(
@@ -244,9 +224,8 @@ export default function ChatWidget({
         : "Type a message...");
 
   return (
-    <div className="flex flex-col flex-1">
-      {/* Model selector bar */}
-      <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center gap-2 border-b border-gray-100 bg-white px-6 py-2">
         <div className="flex-1" />
         <ModelSelect
           models={chatModels}
@@ -257,117 +236,118 @@ export default function ChatWidget({
         />
       </div>
 
-      {/* Persistent session-cost banner — fuel-gauge style. */}
-      <SessionTotalBanner
-        session={session}
-        cacheSavings={positiveLedgerSavings(ledger)}
+      <SessionTabs
+        idPrefix="chat-session"
+        label="Chat session"
+        active={activeTab}
+        onSelect={setActiveTab}
+        tabs={[
+          { id: "conversation", label: "Conversation" },
+          {
+            id: "usage",
+            label: "Costs and cache",
+            compact: true,
+            icon: <UsageTabIcon />,
+          },
+        ]}
       />
 
-      {/* Collapsed-by-default per-turn cost and cache explanation. */}
-      <CostExplanation
-        ledger={ledger}
-        className="px-6 py-2 border-b border-gray-100 bg-white"
-      />
+      {activeTab === "usage" ? (
+        <div
+          id="chat-session-panel-usage"
+          role="tabpanel"
+          aria-labelledby="chat-session-tab-usage"
+          className="min-h-0 flex-1"
+        >
+          <SessionUsagePanel
+            session={session}
+            ledger={ledger}
+            showTurnCosts={showTurnCosts}
+            onShowTurnCostsChange={setShowTurnCosts}
+            actions={usageActions}
+          />
+        </div>
+      ) : (
+        <div
+          id="chat-session-panel-conversation"
+          role="tabpanel"
+          aria-labelledby="chat-session-tab-conversation"
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          {historyHeader}
+          {toolbar}
 
-      {/* Optional resumed-chat history header. */}
-      {historyHeader}
+          {extraLoading && (
+            <div className="flex items-center gap-2 border-b border-gray-100 bg-white px-6 py-2">
+              <Spinner />
+              <span className="text-xs text-gray-400">{extraLoadingText}</span>
+            </div>
+          )}
 
-      {/* Optional toolbar slot (context pills, etc.) */}
-      {toolbar}
+          <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4">
+            {messages.length === 0 && !sending && (
+              <ChatEmptyState
+                title={emptyStateTitle}
+                subtitle={emptyStateSubtitle}
+              />
+            )}
 
-      {/* Extra loading indicator */}
-      {extraLoading && (
-        <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white">
-          <Spinner />
-          <span className="text-xs text-gray-400">{extraLoadingText}</span>
+            {messages.map((msg, i) => (
+              <MessageBubble
+                key={i}
+                role={msg.role}
+                content={msg.content}
+                usage={showTurnCosts ? usageByIndex[i] : undefined}
+              />
+            ))}
+
+            {sending && streamText !== null && (
+              <MessageBubble role="assistant" content={streamText} />
+            )}
+
+            {sending && streamText === null && (
+              <div className="flex items-start gap-3">
+                <div className="max-w-[80%] rounded-lg bg-gray-100 px-4 py-2.5">
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <Spinner />
+                    <span>Thinking...</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3">
+                <p className="text-sm text-red-800">{error}</p>
+                {isMarketplaceError(error) && selectedModelId && (
+                  <button
+                    onClick={handleAcceptAgreement}
+                    disabled={accepting}
+                    className="mt-2 rounded-lg bg-blue-600 px-4 py-1.5 text-sm text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {accepting ? "Accepting..." : "Accept Model Agreement"}
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+
+          <div className="border-t border-gray-200 bg-white px-6 py-4">
+            <ChatComposer
+              value={input}
+              onChange={setInput}
+              onSend={() => void handleSend()}
+              disabled={
+                sending || chatModelsLoading || extraLoading || !selectedModelId
+              }
+              canSend={canSend}
+              placeholder={resolvedPlaceholder}
+            />
+          </div>
         </div>
       )}
-
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {messages.length === 0 && !sending && (
-          <ChatEmptyState title={emptyStateTitle} subtitle={emptyStateSubtitle} />
-        )}
-
-        {messages.map((msg, i) => (
-          <MessageBubble
-            key={i}
-            role={msg.role}
-            content={msg.content}
-            usage={usageByIndex[i]}
-          />
-        ))}
-
-        {sending && streamText !== null && (
-          // Streaming turn: render the accumulating assistant text through
-          // the same memoized bubble the finished message will use.
-          <MessageBubble role="assistant" content={streamText} />
-        )}
-
-        {sending && streamText === null && (
-          <div className="flex items-start gap-3">
-            <div className="bg-gray-100 rounded-lg px-4 py-2.5 max-w-[80%]">
-              <div className="flex items-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Thinking...</span>
-                {(() => {
-                  const est = estimateTurnCost(
-                    pricing,
-                    contextTokens ?? 0,
-                    input.length
-                  );
-                  return est != null && est > 0 ? (
-                    <span className="text-[10px] text-gray-400">
-                      (~{formatCost(est)} for this turn)
-                    </span>
-                  ) : null;
-                })()}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error}</p>
-            {isMarketplaceError(error) && selectedModelId && (
-              <button
-                onClick={handleAcceptAgreement}
-                disabled={accepting}
-                className="mt-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-              >
-                {accepting ? "Accepting..." : "Accept Model Agreement"}
-              </button>
-            )}
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Last-turn footer — quiet ambient line above the composer. */}
-      <LastTurnFooter
-        usage={
-          messages.length > 0 && messages[messages.length - 1].role === "assistant"
-            ? usageByIndex[messages.length - 1]
-            : undefined
-        }
-        sessionTotalUsd={session.unknownCostTurns === 0 ? session.totalUsd : null}
-      />
-
-      {/* Input bar */}
-      <div className="border-t border-gray-200 bg-white px-6 py-4">
-        <ChatComposer
-          value={input}
-          onChange={setInput}
-          onSend={() => void handleSend()}
-          disabled={
-            sending || chatModelsLoading || extraLoading || !selectedModelId
-          }
-          canSend={canSend}
-          placeholder={resolvedPlaceholder}
-        />
-      </div>
     </div>
   );
 }

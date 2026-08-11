@@ -38,6 +38,11 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
     (command) => command === "start_report_workspace",
   );
   expect(starts.length).toBeGreaterThan(0);
+  await expect(page.getByRole("tab", { name: "Get started" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.getByRole("tab", { name: "Write with Claude" }).click();
 
   await page
     .getByLabel("Writing instruction")
@@ -160,7 +165,7 @@ test("whole-report generation preloads records and saves one direct draft revisi
   await page.locator('[data-tab="writing"]').click();
 
   await page
-    .getByLabel("Writing instruction")
+    .getByLabel("Full report guidance")
     .fill("Use a concise clinical style.");
   await page.getByRole("button", { name: "Fill whole report" }).click();
 
@@ -175,9 +180,21 @@ test("whole-report generation preloads records and saves one direct draft revisi
     page.getByText(/Generated and saved revision 1 from 3 readable records/),
   ).toBeVisible();
   await expect(page.getByLabel("Writing instruction")).toHaveValue("");
+  await page.getByRole("tab", { name: "Get started" }).click();
   await expect(
     page.getByRole("button", { name: "Fill whole report" }),
   ).toHaveCount(0);
+  await expect(page.getByLabel("Full report guidance")).toHaveCount(0);
+
+  await page.getByRole("tab", { name: "Costs and cache" }).click();
+  const usagePanel = page.getByTestId("session-usage-panel");
+  await expect(usagePanel).toContainText("4,200 tok");
+  await expect(usagePanel).toContainText("3,600 tok");
+  await page.getByLabel("Show turn costs").check();
+  await page.getByRole("tab", { name: "Write with Claude" }).click();
+  await expect(page.getByText("$0.016", { exact: true })).toBeVisible();
+  await expect(page.getByText("4,200 tok cached")).toBeVisible();
+  await expect(page.getByText("10 tok new")).toBeVisible();
 
   const invocations = await page.evaluate(() =>
     (window as unknown as {
@@ -330,7 +347,7 @@ test("Writing opens the expanded template manager in Preferences", async ({ page
   await page.getByText("Jane Doe").click();
   await page.locator('[data-tab="writing"]').click();
 
-  await page.getByRole("button", { name: "Manage in Preferences" }).click();
+  await page.getByRole("button", { name: "Manage templates" }).click();
   await expect(page.getByRole("heading", { name: "Preferences" })).toBeVisible();
   const manager = page.getByTestId("writer-template-manager");
   await expect(manager).toHaveAttribute("open", "");
@@ -345,6 +362,7 @@ test("opening Writing from the record starts a fresh session", async ({ page }) 
   await page.getByRole("button", { name: "Client Files" }).click();
   await page.getByText("Jane Doe").click();
   await page.locator('[data-tab="writing"]').click();
+  await page.getByRole("tab", { name: "Write with Claude" }).click();
   await page.getByLabel("Writing instruction").fill("Keep this draft");
 
   await page.getByRole("button", { name: "Back" }).click();
@@ -352,6 +370,7 @@ test("opening Writing from the record starts a fresh session", async ({ page }) 
 
   await page.getByText("Jane Doe").click();
   await page.locator('[data-tab="writing"]').click();
+  await page.getByRole("tab", { name: "Write with Claude" }).click();
   await expect(page.getByLabel("Writing instruction")).toHaveValue("");
 
   const starts = await page.evaluate(() =>
@@ -400,6 +419,18 @@ test("existing Chat still sends and resumes its original history contract", asyn
   await page.getByPlaceholder("Type a message...").fill("New chat question");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Unchanged Chat response")).toBeVisible();
+  await expect(page.getByText("$0.021")).toHaveCount(0);
+
+  await page.getByRole("tab", { name: "Costs and cache" }).click();
+  const usagePanel = page.getByTestId("session-usage-panel");
+  await expect(usagePanel).toContainText("4,243 tok");
+  await expect(usagePanel).toContainText("5,000 tok");
+  await expect(usagePanel).toContainText("write fees");
+  await page.getByLabel("Show turn costs").check();
+  await page.getByRole("tab", { name: "Conversation" }).click();
+  await expect(page.getByText("$0.021", { exact: true })).toBeVisible();
+  await expect(page.getByText("4,243 tok cached")).toBeVisible();
+  await expect(page.getByText("3 tok new")).toBeVisible();
 
   const state = await page.evaluate(() => ({
     chat: (window as unknown as { __CHAT_COMMANDS__: unknown[] }).__CHAT_COMMANDS__,

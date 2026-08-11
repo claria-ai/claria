@@ -403,6 +403,13 @@ export function buildInitScript(
           if (cmd === "list_record_context") return [];
           if (cmd === "list_deleted_files") return [];
           if (cmd === "list_deleted_clients") return [];
+          if (cmd === "lookup_model_pricing") return {
+            input_per_million: 3,
+            output_per_million: 15,
+            cache_read_per_million: 0.3,
+            cache_write_per_million: 3.75,
+            cache_write_1h_per_million: 6,
+          };
           if (cmd === "list_chat_histories") return [{
             chat_id: "77777777-7777-4777-8777-777777777777",
             filename: "chat-history/77777777-7777-4777-8777-777777777777.json",
@@ -430,7 +437,7 @@ export function buildInitScript(
               chat_id: args.chatId || "77777777-7777-4777-8777-777777777777",
               chat_name: "Chat (1)",
               content: "Unchanged Chat response",
-              usage: { model_id: args.modelId, input_tokens: 30, output_tokens: 8, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cache_ttl: null, cost_usd: 0.0002, pricing_version: 4 },
+              usage: { model_id: args.modelId, input_tokens: 3, output_tokens: 60, cache_read_input_tokens: 4243, cache_write_input_tokens: 5000, cache_ttl: "five_minutes", cost_usd: 0.0209319, pricing_version: 4 },
             };
           }
 
@@ -640,7 +647,7 @@ export function buildInitScript(
                   toolActivity("finish_full_draft", "finish-full-1", "Finalized complete working draft", { summary_retained: false }, { status: "full_draft_finalized", section_count: 1 }),
                   { kind: "message", role: "assistant", text: "The complete working draft is ready.", created_at: now },
                 ],
-                usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.031, pricing_version: 5 },
+                usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.01599, pricing_version: 5 },
                 usage_complete: true,
                 converse_calls: 3,
                 tool_uses: 3,
@@ -658,7 +665,7 @@ export function buildInitScript(
               turn_id: "turn-full-1",
               attempt_id: "attempt-full-1",
               assistant_text: "The complete working draft is ready.",
-              usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.031, pricing_version: 5 },
+              usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.01599, pricing_version: 5 },
               usage_complete: true,
               converse_calls: 3,
               tool_uses: 3,

@@ -53,6 +53,13 @@ function isReportConflict(message: string): boolean {
   return message.toLowerCase().includes("changed on another computer");
 }
 
+const MODEL_ACTIVITY_WORDS = ["thinking", "working", "inferring"] as const;
+
+function modelActivityLabel(callNumber: number): string {
+  const index = Math.max(0, callNumber - 1) % MODEL_ACTIVITY_WORDS.length;
+  return `Claude is ${MODEL_ACTIVITY_WORDS[index]}`;
+}
+
 function agentActivityForTool(name: string, context: string | null) {
   if (name === "list_record_files") {
     return { label: "Checking available records", detail: context ?? undefined };
@@ -291,8 +298,7 @@ export function useReportWorkspace({
 
     if (progress.kind === "model_call_started") {
       setAgentActivity({
-        label:
-          progress.call_number === 1 ? "Claude is planning" : "Claude is continuing",
+        label: modelActivityLabel(progress.call_number),
         detail: `Model call ${progress.call_number}`,
       });
       return;

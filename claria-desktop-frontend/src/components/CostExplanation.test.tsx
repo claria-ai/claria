@@ -1,6 +1,5 @@
-// CostExplanation: renders the ledger rollup and per-turn bars, annotates
-// known-stale cache windows, hides itself without data, and toggles through the
-// shared accordion chrome.
+// CostExplanation: renders the dedicated-tab ledger rollup and per-turn bars,
+// annotates known-stale cache windows, and hides itself without data.
 
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -67,10 +66,10 @@ describe("CostExplanation", () => {
     );
     render(<CostExplanation ledger={ledger} />);
 
-    // Rollup: actual, counterfactual, savings share and hit count. The
-    // actual total also appears in the collapsed summary chip.
-    expect(screen.getAllByText("$10.35").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("$12.30")).toBeDefined();
+    // Rollup: actual, counterfactual, savings share and hit count.
+    expect(
+      screen.getByText("$10.35 actual · $12.30 without cache")
+    ).toBeDefined();
     expect(screen.getByText(/Saved \$1\.95 \(16%\)/)).toBeDefined();
     expect(screen.getByText(/Cache hits 1 of 2 turns/)).toBeDefined();
 
@@ -114,15 +113,15 @@ describe("CostExplanation", () => {
     ).toBeDefined();
   });
 
-  it("is collapsed by default and expands from the summary row", async () => {
+  it("renders as a static panel for the dedicated usage tab", () => {
     const ledger = buildCostLedger([usage({ input_tokens: 10 })], pricingMap);
     render(<CostExplanation ledger={ledger} />);
-    const details = screen.getByTestId("cost-explanation") as HTMLDetailsElement;
-    expect(details.open).toBe(false);
-    await userEvent.click(within(details).getByText("Cost breakdown"));
-    expect(details.open).toBe(true);
-    await userEvent.click(within(details).getByText("Cost breakdown"));
-    expect(details.open).toBe(false);
+    const panel = screen.getByTestId("cost-explanation");
+    expect(panel.tagName).toBe("SECTION");
+    expect(within(panel).getByText("Cost breakdown")).toBeDefined();
+    expect(
+      within(panel).getByRole("list", { name: "Per-turn cost breakdown" })
+    ).toBeDefined();
   });
 
   it("windows long sessions to the last 50 turns until asked for all", async () => {

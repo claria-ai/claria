@@ -301,6 +301,9 @@ describe("ClientRecord Writing integration", () => {
     renderClient(navigate);
     await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     await screen.findByTestId("accepted-report-canvas");
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Write with Claude" })
+    );
     await userEvent.type(
       screen.getByLabelText("Writing instruction"),
       "Keep this typed instruction"
@@ -317,6 +320,9 @@ describe("ClientRecord Writing integration", () => {
     renderClient();
     await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     await screen.findByTestId("accepted-report-canvas");
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Write with Claude" })
+    );
     await userEvent.type(
       screen.getByLabelText("Writing instruction"),
       "Keep this typed instruction"
@@ -335,6 +341,9 @@ describe("ClientRecord Writing integration", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     await screen.findByTestId("accepted-report-canvas");
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Write with Claude" })
+    );
     expect(
       (screen.getByLabelText("Writing instruction") as HTMLTextAreaElement).value
     ).toBe("");

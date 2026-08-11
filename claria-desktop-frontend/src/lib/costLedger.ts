@@ -231,19 +231,6 @@ function classifyOutcome(
   return { kind: "no_cache" };
 }
 
-/**
- * Presentation-layer savings for banner copy: positive net savings only,
- * with a whole-percent share of the counterfactual. `null` when the
- * session is at break-even or still net-invested in cache writes — the
- * banner then renders exactly as it did before the ledger existed.
- */
-export function positiveLedgerSavings(
-  ledger: CostLedger
-): { usd: number; pct: number } | null {
-  if (ledger.savingsUsd <= 0 || ledger.counterfactualUsd <= 0) return null;
-  return { usd: ledger.savingsUsd, pct: Math.round(ledger.savingsPct) };
-}
-
 /** Short user-facing label for a cache TTL class ("5m" / "1h"). */
 export function cacheTtlLabel(ttl: CacheTtlChoice): string {
   return ttl === "one_hour" ? "1h" : "5m";

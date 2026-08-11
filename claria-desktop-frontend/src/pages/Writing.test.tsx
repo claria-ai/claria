@@ -189,12 +189,15 @@ function turnResponse(value: ReportWorkspaceView) {
   };
 }
 
-function renderWriting(clientId = "client-1", expectedReportId?: string) {
+function renderWriting(
+  clientId = "client-1",
+  expectedReportId: string | null = "report-1"
+) {
   return render(
     <ChatModelsContext.Provider value={modelsState}>
       <Writing
         clientId={clientId}
-        expectedReportId={expectedReportId}
+        expectedReportId={expectedReportId ?? undefined}
         onManageTemplates={vi.fn()}
       />
     </ChatModelsContext.Provider>
@@ -261,6 +264,25 @@ afterEach(() => {
 });
 
 describe("Writing", () => {
+  it("opens a new session on the optional setup tab and can skip to tools", async () => {
+    renderWriting("client-1", null);
+
+    await screen.findByText("Start this report");
+    expect(
+      screen.getByRole("tab", { name: "Get started" }).getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
+    expect(screen.getByLabelText("Writer template")).toBeDefined();
+    expect(screen.getByLabelText("Full report guidance")).toBeDefined();
+    expect(screen.queryByLabelText("Writing instruction")).toBeNull();
+
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Write with Claude" })
+    );
+    expect(screen.getByLabelText("Writing instruction")).toBeDefined();
+  });
+
   it("renders assistant and report Markdown instead of showing markers", async () => {
     mocks.load.mockResolvedValue(
       workspace({ assistantMarkdown: "A **bold assistant** response." })
@@ -273,17 +295,26 @@ describe("Writing", () => {
     expect(report.tagName).toBe("STRONG");
   });
 
-  it("keeps session spend and the compact cost breakdown on one split row", async () => {
+  it("keeps cost noise in a compact usage tab and optionally reveals turn costs", async () => {
     mocks.load.mockResolvedValue(
       workspace({ assistantMarkdown: "A completed turn." })
     );
     renderWriting();
 
-    const cost = await screen.findByTestId("cost-explanation");
-    const spendRow = cost.parentElement?.parentElement;
-    expect(spendRow?.className).toContain("grid-cols-2");
-    expect(within(spendRow as HTMLElement).getByText("Session:")).toBeDefined();
-    expect(cost.querySelector("summary")?.className).toContain("py-1.5");
+    await screen.findByText("A completed turn.");
+    expect(screen.queryByTestId("session-usage-panel")).toBeNull();
+    expect(screen.queryByText("< $0.01")).toBeNull();
+
+    const usageTab = screen.getByRole("tab", { name: "Costs and cache" });
+    expect(usageTab.className).toContain("w-14");
+    await userEvent.click(usageTab);
+    expect(await screen.findByTestId("session-usage-panel")).toBeDefined();
+    expect(screen.getByText("Session cost & cache")).toBeDefined();
+    expect(screen.getByText("Cache writes")).toBeDefined();
+
+    await userEvent.click(screen.getByLabelText("Show turn costs"));
+    await userEvent.click(screen.getByRole("tab", { name: "Write with Claude" }));
+    expect(screen.getByText("< $0.01")).toBeDefined();
   });
 
   it("keeps a pending proposal separate from the accepted report", async () => {
@@ -499,8 +530,9 @@ describe("Writing", () => {
   it("fills the whole report in one direct versioned generation action", async () => {
     renderWriting();
     await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
     await userEvent.type(
-      screen.getByLabelText("Writing instruction"),
+      screen.getByLabelText("Full report guidance"),
       "Use a concise clinical style"
     );
     await userEvent.click(
@@ -524,6 +556,11 @@ describe("Writing", () => {
     expect(
       (screen.getByLabelText("Writing instruction") as HTMLTextAreaElement).value
     ).toBe("");
+    expect(
+      screen.getByRole("tab", { name: "Write with Claude" }).getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
   });
 
   it("dismisses whole-report generation after the first completed turn", async () => {
@@ -533,10 +570,11 @@ describe("Writing", () => {
     renderWriting();
 
     await screen.findByText("The first turn is complete.");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
     expect(
       screen.queryByRole("button", { name: "Fill whole report" })
     ).toBeNull();
-    expect(screen.queryByText("Generate the complete working draft")).toBeNull();
+    expect(screen.queryByLabelText("Full report guidance")).toBeNull();
   });
 
   it("shows and executes discard beside both saved-queue surfaces", async () => {
@@ -629,6 +667,45 @@ describe("Writing", () => {
       [{ section_id: SECTION_ID, block_index: 0 }],
       expect.any(Function)
     );
+  });
+
+  it("cycles Claude activity language across internal model rounds", async () => {
+    let finish!: (value: ReturnType<typeof turnResponse>) => void;
+    let progress!: (value: unknown) => void;
+    mocks.send.mockImplementation(
+      (
+        _clientId: string,
+        _reportId: string,
+        _revision: number,
+        _modelId: string,
+        _instruction: string,
+        _references: unknown[],
+        onProgress: (value: unknown) => void
+      ) => {
+        progress = onProgress;
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      }
+    );
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.type(screen.getByLabelText("Writing instruction"), "Draft it");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    for (const [callNumber, label] of [
+      [1, "Claude is thinking"],
+      [2, "Claude is working"],
+      [3, "Claude is inferring"],
+      [4, "Claude is thinking"],
+    ] as const) {
+      act(() => progress({ kind: "model_call_started", call_number: callNumber }));
+      expect(screen.getByText(label)).toBeDefined();
+    }
+
+    await act(async () => {
+      finish(turnResponse(workspace({ lastAgentRevision: 0 })));
+    });
   });
 
   it("shows live agent activity and a context pill while a record is read", async () => {
@@ -867,6 +944,7 @@ describe("Writing", () => {
     mocks.applyTemplate.mockResolvedValue(imported);
     renderWriting();
     await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
 
     expect(await screen.findByRole("option", { name: "Assessment template" })).toBeDefined();
     await userEvent.click(screen.getByRole("button", { name: "Apply template" }));

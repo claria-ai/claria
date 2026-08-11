@@ -139,12 +139,7 @@ export default function ClientChat({
           })),
           lastActivityIso
         );
-        return (
-          <ChatHistoryHeader
-            summary={summary}
-            onSeeAccountSpend={() => navigate("cost-explorer")}
-          />
-        );
+        return <ChatHistoryHeader summary={summary} />;
       })()
     : undefined;
 
@@ -295,13 +290,23 @@ export default function ClientChat({
         initialModelId={initialModelId}
         initialUsageByIndex={initialUsageByIndex}
         initialTimestampsByIndex={initialTimestampsByIndex}
-        contextTokens={contextTokens}
         emptyStateTitle="Start the conversation."
         emptyStateSubtitle="The chat includes the context files shown above. Chat messages are saved separately and do not modify your client files."
         extraLoading={contextLoading}
         extraLoadingText="Building context..."
         toolbar={toolbar}
         historyHeader={historyHeader}
+        usageActions={
+          resumeChat ? (
+            <button
+              type="button"
+              onClick={() => navigate("cost-explorer")}
+              className="text-xs font-medium text-blue-700 hover:text-blue-900"
+            >
+              See account spend →
+            </button>
+          ) : undefined
+        }
       />
 
       {/* System prompt modal (read-only) */}
