@@ -164,10 +164,25 @@ test("whole-report generation preloads records and saves one direct draft revisi
   await page.getByText("Jane Doe").click();
   await page.locator('[data-tab="writing"]').click();
 
+  // Reproduce replacement of a template-backed draft, not only generation
+  // from the empty report.
+  await page.getByRole("button", { name: "Apply template" }).click();
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Imported Evaluation Template",
+  );
   await page
     .getByLabel("Full report guidance")
     .fill("Use a concise clinical style.");
   await page.getByRole("button", { name: "Fill whole report" }).click();
+  const confirmation = page.getByRole("dialog", {
+    name: "Replace the working draft?",
+  });
+  await expect(confirmation).toContainText(
+    "current revision will remain available",
+  );
+  await confirmation
+    .getByRole("button", { name: "Fill whole report" })
+    .click();
 
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Complete Generated Evaluation",
@@ -177,7 +192,7 @@ test("whole-report generation preloads records and saves one direct draft revisi
   );
   await expect(page.getByTestId("report-proposal")).toHaveCount(0);
   await expect(
-    page.getByText(/Generated and saved revision 1 from 3 readable records/),
+    page.getByText(/Generated and saved revision 2 from 3 readable records/),
   ).toBeVisible();
   await expect(page.getByLabel("Writing instruction")).toHaveValue("");
 
@@ -220,7 +235,7 @@ test("whole-report generation preloads records and saves one direct draft revisi
     invocations.find((invocation) => invocation.cmd === "generate_full_report")
       ?.args,
   ).toMatchObject({
-    expectedRevision: 0,
+    expectedRevision: 1,
     modelId: "us.anthropic.claude-sonnet-4-20250514-v1:0",
     guidance: "Use a concise clinical style.",
   });

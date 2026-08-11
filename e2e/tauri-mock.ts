@@ -51,6 +51,7 @@ export function buildInitScript(
       window.__REPORT_COMMANDS__ = [];
       window.__REPORT_INVOCATIONS__ = [];
       window.__CHAT_COMMANDS__ = [];
+      window.__FRONTEND_LOGS__ = [];
       let clientName = "Jane Doe";
       const clientNameHistory = [
         { name: "Jane Doe", changed_at: "2026-08-01T12:00:00Z" },
@@ -216,6 +217,10 @@ export function buildInitScript(
 
         invoke: async function(cmd, args) {
           // ── Tauri plugin stubs ───────────────────────────────────────
+          if (cmd === "log_frontend_event") {
+            window.__FRONTEND_LOGS__.push(structuredClone(args));
+            return null;
+          }
           if (cmd === "plugin:app|version") return "0.15.0";
           if (cmd === "plugin:app|name") return "Claria";
           if (cmd === "plugin:app|tauri_version") return "2.0.0";

@@ -6,6 +6,7 @@ import ContextPills from "../components/ContextPills";
 import { buildContextPills } from "../lib/contextPills";
 import EditableName from "../components/EditableName";
 import ModelSelect from "../components/ModelSelect";
+import Modal from "../components/Modal";
 import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
 import ReportRevisionModal from "../components/ReportRevisionModal";
 import SessionTabs, { UsageTabIcon } from "../components/SessionTabs";
@@ -81,6 +82,8 @@ export default function Writing({
   const [contextOpen, setContextOpen] = useState(false);
   const [previewFilename, setPreviewFilename] = useState<string | null>(null);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [fullDraftConfirmationOpen, setFullDraftConfirmationOpen] =
+    useState(false);
   const [chosenTemplateId, setChosenTemplateId] = useState("");
   const [activePane, setActivePane] = useState<"setup" | "write" | "usage">(
     expectedReportId ? "write" : "setup"
@@ -311,19 +314,16 @@ export default function Writing({
     }
   }
 
-  async function handleGenerateFullDraft() {
+  async function handleGenerateFullDraft(replacementConfirmed = false) {
     if (!workspace || composerDisabled || !selectedModelId) return;
     const hasExistingDraft =
       workspace.draft.content.sections.length > 0 ||
       workspace.draft.content.title !== "Untitled report";
-    if (
-      hasExistingDraft &&
-      !window.confirm(
-        "Fill the whole report from every readable client record? Claude will replace the current working draft with one new revision. The current revision remains available in Version history."
-      )
-    ) {
+    if (hasExistingDraft && !replacementConfirmed) {
+      setFullDraftConfirmationOpen(true);
       return;
     }
+    setFullDraftConfirmationOpen(false);
     const generated = await generateFullDraft(
       selectedModelId,
       instruction.trim()
@@ -564,6 +564,24 @@ export default function Writing({
                       {busy === "generating" ? "Filling…" : "Fill whole report"}
                     </button>
                   </div>
+                  {actionError && (
+                    <div
+                      role="alert"
+                      className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700"
+                    >
+                      <p className="font-semibold">Could not complete the Writer action</p>
+                      <p className="mt-1 break-words">{actionError}</p>
+                      {conflict && (
+                        <button
+                          type="button"
+                          onClick={() => void handleReload()}
+                          className="mt-2 font-semibold text-blue-700 hover:text-blue-900"
+                        >
+                          Reload writing session
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </section>
               )}
 
@@ -580,20 +598,6 @@ export default function Writing({
                 </button>
               </div>
 
-              {actionError && (
-                <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">
-                  <p>{actionError}</p>
-                  {conflict && (
-                    <button
-                      type="button"
-                      onClick={() => void handleReload()}
-                      className="mt-2 font-semibold text-blue-700 hover:text-blue-900"
-                    >
-                      Reload writing session
-                    </button>
-                  )}
-                </div>
-              )}
               {saveStatus && (
                 <p role="status" aria-live="polite" className="text-xs text-gray-600">
                   {saveStatus}
@@ -793,6 +797,37 @@ export default function Writing({
       />
       </div>
 
+      {fullDraftConfirmationOpen && (
+        <Modal
+          open
+          title="Replace the working draft?"
+          onClose={() => setFullDraftConfirmationOpen(false)}
+          className="max-w-lg p-6"
+        >
+          <p className="text-sm leading-6 text-gray-600">
+            Claude will fill the whole report from every readable client record
+            and replace revision {workspace.draft.revision} with one new saved
+            revision. The current revision will remain available under
+            Revisions.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setFullDraftConfirmationOpen(false)}
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleGenerateFullDraft(true)}
+              className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+            >
+              Fill whole report
+            </button>
+          </div>
+        </Modal>
+      )}
       {previewFilename && (
         <RecordFilePreviewModal
           clientId={clientId}

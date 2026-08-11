@@ -20,6 +20,11 @@ const mocks = vi.hoisted(() => ({
   listRevisions: vi.fn(),
   loadRevision: vi.fn(),
   revertRevision: vi.fn(),
+  logFrontend: vi.fn(),
+}));
+
+vi.mock("../lib/logBridge", () => ({
+  logFrontendEvent: mocks.logFrontend,
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -548,8 +553,15 @@ describe("Writing", () => {
       screen.getByRole("button", { name: "Fill whole report" })
     );
 
-    expect(window.confirm).toHaveBeenCalledWith(
-      expect.stringContaining("replace the current working draft")
+    const confirmation = screen.getByRole("dialog", {
+      name: "Replace the working draft?",
+    });
+    expect(confirmation.textContent).toContain(
+      "current revision will remain available"
+    );
+    expect(mocks.generate).not.toHaveBeenCalled();
+    await userEvent.click(
+      within(confirmation).getByRole("button", { name: "Fill whole report" })
     );
     expect(mocks.generate).toHaveBeenCalledWith(
       "client-1",
@@ -580,6 +592,30 @@ describe("Writing", () => {
         "aria-selected"
       )
     ).toBe("true");
+  });
+
+  it("surfaces and logs whole-report failures beside the action", async () => {
+    mocks.generate.mockRejectedValue(new Error("Bedrock request unavailable"));
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Fill whole report" })
+    );
+    const confirmation = screen.getByRole("dialog", {
+      name: "Replace the working draft?",
+    });
+    await userEvent.click(
+      within(confirmation).getByRole("button", { name: "Fill whole report" })
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not complete the Writer action");
+    expect(alert.textContent).toContain("Bedrock request unavailable");
+    expect(mocks.logFrontend).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("Writer whole-report generation failed")
+    );
   });
 
   it("dismisses whole-report generation after the first completed turn", async () => {

@@ -23,6 +23,7 @@ import {
   validateReportEdit,
 } from "./writingWorkspace";
 import { upsertLiveContext, type ContextPill } from "./contextPills";
+import { logFrontendEvent } from "./logBridge";
 
 export type WriterBusy =
   | null
@@ -415,6 +416,7 @@ export function useReportWorkspace({
           ? "Saving your report edits before generating the complete draft…"
           : "Loading all readable records for the complete draft…"
       );
+      logFrontendEvent("info", "Writer whole-report generation requested");
       try {
         const current = await persistCurrentEdit();
         if (generation !== generationRef.current) return false;
@@ -444,6 +446,12 @@ export function useReportWorkspace({
         return true;
       } catch (error) {
         if (generation !== generationRef.current) return false;
+        const diagnostic =
+          error instanceof Error ? (error.stack ?? error.message) : String(error);
+        logFrontendEvent(
+          "error",
+          `Writer whole-report generation failed: ${diagnostic}`
+        );
         showActionError(error);
         setSaveStatus(null);
         setLiveContext([]);

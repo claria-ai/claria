@@ -8,6 +8,8 @@ All notable changes to Claria are documented here.
 - Writing sessions now behave like chats: opening the Writing tab starts a fresh report, while Editor History resumes a specific prior session
 - Whole-report generation loads every readable client record into one bounded source snapshot and drafts sections through internal cached tool rounds without asking the user to drive record retrieval; its prompt disappears after the first completed turn
 - Writer context now keeps a text-free per-file provenance list for whole-report snapshots, adds files read by later tool turns, and opens those pills through the same preview component as Chat
+- Whole-report replacement uses an in-app confirmation, reports failures beside the action, and logs request, failure, and completion diagnostics without record content
+- Webview `console.error`/`console.warn`, uncaught errors, unhandled rejections, and React render crashes now flow into the Claria Console and rolling logs with useful stacks but without serializing arbitrary objects
 - Reloaded chats and Writing sessions can reuse an exact five-minute prompt-cache prefix through small in-memory LRUs, and cache labels only claim expiry when elapsed time proves it
 - New Writing sessions open on an optional setup tab for choosing a Word template or filling the whole report; a second tab starts tool-driven work, and a compact lightning/dollar tab contains session usage
 - Chat and Writing keep cost and prompt-cache details in the same focused usage-tab design, including cache-write tokens and fees, rather than placing spend banners in the main flow

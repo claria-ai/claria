@@ -329,6 +329,13 @@ pub async fn generate_full_report(
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let limits = ctx.cfg.report_authoring.limits()?;
+        tracing::info!(
+            client_id = %client_id,
+            report_id = %report_id,
+            expected_revision,
+            model_id,
+            "whole-report generation requested"
+        );
         let progress = |event: claria_report_authoring::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
@@ -371,6 +378,15 @@ pub async fn generate_full_report(
                         "unavailable_record_files": record_context.unavailable_files,
                         "record_characters": record_context.total_characters,
                     }),
+                );
+                tracing::info!(
+                    client_id = %attempt.client_id,
+                    report_id = %attempt.report_id,
+                    revision = response.workspace.draft.revision,
+                    included_record_files = record_context.included_files,
+                    unavailable_record_files = record_context.unavailable_files,
+                    converse_calls = attempt.converse_calls,
+                    "whole-report generation completed"
                 );
                 ctx.record_audit(
                     ctx.audit_event(
