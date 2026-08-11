@@ -133,18 +133,48 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
             {
                 return Err("propose_report_changes schema must require summary and operations");
             }
+            "set_full_draft_title"
+                if required != std::collections::HashSet::from(["title"])
+                    || !properties.contains_key("title") =>
+            {
+                return Err("set_full_draft_title schema must require title");
+            }
+            "write_full_draft_section"
+                if required
+                    != std::collections::HashSet::from([
+                        "section_id",
+                        "position",
+                        "heading",
+                        "blocks",
+                    ])
+                    || !properties.contains_key("blocks") =>
+            {
+                return Err(
+                    "write_full_draft_section schema must require section_id, position, heading, and blocks",
+                );
+            }
+            "finish_full_draft"
+                if required != std::collections::HashSet::from(["summary"])
+                    || !properties.contains_key("summary") =>
+            {
+                return Err("finish_full_draft schema must require summary");
+            }
             _ => {}
         }
         names.push(name);
     }
-    if names
-        != [
-            "list_record_files",
-            "read_record_file",
-            "propose_report_changes",
-        ]
-    {
-        return Err("report requests must configure the three report tools in order");
+    let targeted_tools = [
+        "list_record_files",
+        "read_record_file",
+        "propose_report_changes",
+    ];
+    let full_draft_tools = [
+        "set_full_draft_title",
+        "write_full_draft_section",
+        "finish_full_draft",
+    ];
+    if names != targeted_tools && names != full_draft_tools {
+        return Err("report requests must configure one complete report tool set in order");
     }
 
     let messages = body

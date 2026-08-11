@@ -27,6 +27,9 @@ use crate::{converse, error::BedrockError};
 pub const LIST_RECORD_FILES_TOOL: &str = "list_record_files";
 pub const READ_RECORD_FILE_TOOL: &str = "read_record_file";
 pub const PROPOSE_REPORT_CHANGES_TOOL: &str = "propose_report_changes";
+pub const SET_FULL_DRAFT_TITLE_TOOL: &str = "set_full_draft_title";
+pub const WRITE_FULL_DRAFT_SECTION_TOOL: &str = "write_full_draft_section";
+pub const FINISH_FULL_DRAFT_TOOL: &str = "finish_full_draft";
 pub const DEFAULT_MAX_TOOL_USES_PER_RESPONSE: usize = 80;
 pub const MAX_TOOL_USES_PER_RESPONSE: usize = 100;
 
@@ -92,6 +95,9 @@ pub enum ReportToolRequest {
     ListRecordFiles(ListRecordFilesRequest),
     ReadRecordFile(ReadRecordFileRequest),
     ProposeReportChanges(ProposeReportChangesRequest),
+    SetFullDraftTitle(SetFullDraftTitleRequest),
+    WriteFullDraftSection(WriteFullDraftSectionRequest),
+    FinishFullDraft(FinishFullDraftRequest),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,6 +119,30 @@ pub struct ReadRecordFileRequest {
 pub struct ProposeReportChangesRequest {
     pub summary: String,
     pub operations: Vec<ReportProposalOperationRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SetFullDraftTitleRequest {
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WriteFullDraftSectionRequest {
+    /// Copy an existing section ID from the supplied report structure, or use
+    /// `null` when adding a genuinely new section.
+    #[serde(default)]
+    pub section_id: Option<String>,
+    pub position: u32,
+    pub heading: String,
+    pub blocks: Vec<ReportBlockRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FinishFullDraftRequest {
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -168,6 +198,15 @@ pub fn decode_tool_request(call: &ReportToolCall) -> Result<ReportToolRequest, B
         PROPOSE_REPORT_CHANGES_TOOL => serde_json::from_value(call.input.clone())
             .map(ReportToolRequest::ProposeReportChanges)
             .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        SET_FULL_DRAFT_TITLE_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::SetFullDraftTitle)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        WRITE_FULL_DRAFT_SECTION_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::WriteFullDraftSection)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        FINISH_FULL_DRAFT_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::FinishFullDraft)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
         name => Err(BedrockError::SchemaViolation(format!(
             "unknown report tool: {name}"
         ))),
@@ -212,21 +251,12 @@ pub async fn converse_report(
     .await
 }
 
-/// Send one report-protocol Converse request with a caller-selected tool-use
+/// Send one targeted-edit Converse request with a caller-selected tool-use
 /// limit.
 ///
 /// The caller owns the bounded tool loop and persistence. This function owns
 /// the exact Bedrock wire shape, validates safe tool correlation, and returns
 /// the response usage priced at this individual call's rates.
-#[tracing::instrument(
-    level = "trace",
-    skip_all,
-    fields(
-        model_id = %model_id,
-        messages = messages.len(),
-        max_tool_uses_per_response
-    )
-)]
 pub async fn converse_report_with_tool_limit(
     config: &aws_config::SdkConfig,
     model_id: &str,
@@ -234,6 +264,67 @@ pub async fn converse_report_with_tool_limit(
     messages: &[ReportProtocolMessage],
     max_tool_uses_per_response: usize,
     budget: &mut ReportInputBudget,
+) -> Result<ReportConverseOutput, BedrockError> {
+    converse_report_with_tool_set(
+        config,
+        model_id,
+        system_prompt,
+        messages,
+        max_tool_uses_per_response,
+        budget,
+        ReportToolSet::TargetedEdit,
+    )
+    .await
+}
+
+/// Send one full-draft Converse request. The full-draft tool set writes an
+/// isolated candidate section by section and finalizes it; it cannot stage a
+/// targeted proposal or fetch records because the host supplies the complete
+/// readable-record snapshot in the initial context.
+pub async fn converse_full_report_with_tool_limit(
+    config: &aws_config::SdkConfig,
+    model_id: &str,
+    system_prompt: &str,
+    messages: &[ReportProtocolMessage],
+    max_tool_uses_per_response: usize,
+    budget: &mut ReportInputBudget,
+) -> Result<ReportConverseOutput, BedrockError> {
+    converse_report_with_tool_set(
+        config,
+        model_id,
+        system_prompt,
+        messages,
+        max_tool_uses_per_response,
+        budget,
+        ReportToolSet::FullDraft,
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReportToolSet {
+    TargetedEdit,
+    FullDraft,
+}
+
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(
+        model_id = %model_id,
+        messages = messages.len(),
+        max_tool_uses_per_response,
+        tool_set = ?tool_set
+    )
+)]
+async fn converse_report_with_tool_set(
+    config: &aws_config::SdkConfig,
+    model_id: &str,
+    system_prompt: &str,
+    messages: &[ReportProtocolMessage],
+    max_tool_uses_per_response: usize,
+    budget: &mut ReportInputBudget,
+    tool_set: ReportToolSet,
 ) -> Result<ReportConverseOutput, BedrockError> {
     if max_tool_uses_per_response == 0 || max_tool_uses_per_response > MAX_TOOL_USES_PER_RESPONSE {
         return Err(BedrockError::SchemaViolation(format!(
@@ -253,7 +344,7 @@ pub async fn converse_report_with_tool_limit(
         .iter()
         .map(protocol_message_to_sdk)
         .collect::<Result<Vec<_>, _>>()?;
-    let tools = report_tool_configuration()?;
+    let tools = report_tool_configuration(tool_set)?;
     let system = SystemContentBlock::Text(system_prompt.to_string());
 
     // Budget check: an exact CountTokens of the full Converse shape
@@ -527,7 +618,7 @@ fn protocol_chars(system_prompt: &str, messages: &[ReportProtocolMessage]) -> u6
     chars
 }
 
-fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
+fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguration, BedrockError> {
     let list_schema = serde_json::json!({
         "type": "object",
         "properties": {},
@@ -672,7 +763,7 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "properties": {
                                 "kind": {"enum": ["replace_section"]},
                                 "section_id": section_id_schema.clone(),
-                                "heading": heading_schema,
+                                "heading": heading_schema.clone(),
                                 "blocks": {"type": "array", "maxItems": MAX_SECTION_BLOCKS, "items": block_schema.clone(),
                                     "description": "The complete replacement content. The whole section — heading included — is replaced; unchanged blocks must be restated."}
                             }
@@ -683,7 +774,7 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"enum": ["remove_section"]},
-                                "section_id": section_id_schema
+                                "section_id": section_id_schema.clone()
                             }
                         }
                     ]
@@ -691,35 +782,102 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
             }
         }
     });
+    let full_title_schema = serde_json::json!({
+        "type": "object",
+        "required": ["title"],
+        "additionalProperties": false,
+        "properties": {
+            "title": {
+                "type": "string", "minLength": 1, "maxLength": 200,
+                "description": "The complete title for the generated working draft."
+            }
+        }
+    });
+    let full_section_schema = serde_json::json!({
+        "type": "object",
+        "required": ["section_id", "position", "heading", "blocks"],
+        "additionalProperties": false,
+        "properties": {
+            "section_id": {
+                "anyOf": [section_id_schema, {"type": "null"}],
+                "description": "Copy an existing 36-character section UUID exactly to fill that template/report section, or null only when adding a genuinely new section."
+            },
+            "position": {
+                "type": "integer", "minimum": 0, "maximum": 100,
+                "description": "0-based final position of this section in the complete generated report."
+            },
+            "heading": heading_schema,
+            "blocks": {
+                "type": "array", "minItems": 1, "maxItems": MAX_SECTION_BLOCKS,
+                "items": block_schema,
+                "description": "The complete blocks for this section. Calling the tool again with the returned section_id replaces the earlier staged version."
+            }
+        }
+    });
+    let finish_full_draft_schema = serde_json::json!({
+        "type": "object",
+        "required": ["summary"],
+        "additionalProperties": false,
+        "properties": {
+            "summary": {
+                "type": "string", "minLength": 1, "maxLength": 500,
+                "description": "One or two plain sentences summarizing the completed full draft."
+            }
+        }
+    });
 
-    let tools = vec![
-        tool(
-            LIST_RECORD_FILES_TOOL,
-            "List the current client's record filenames and whether each file fits Claria's bounded \
-             text reader. Printable UTF-8 originals are readable regardless of extension; documents \
-             and recordings use generated text sidecars. Call this before any read_record_file call \
-             — only listed filenames are readable.",
-            list_schema,
-        )?,
-        tool(
-            READ_RECORD_FILE_TOOL,
-            "Read a bounded range from one filename returned by list_record_files. offset and limit \
-             are Unicode characters, not bytes. All reads in a turn share a 48000-character budget; \
-             when a result includes next_offset, pass it as offset to continue reading from there. \
-             Binary originals without a generated text sidecar are safely rejected.",
-            read_schema,
-        )?,
-        tool(
-            PROPOSE_REPORT_CHANGES_TOOL,
-            "Stage typed report changes for user review. Copy each section_id exactly from the \
-             accepted_report in the untrusted context; positions are 0-based; replace_section \
-             replaces the entire section including its heading. At most one call per turn — a \
-             second call fails. Nothing is saved or applied until the user accepts the proposal, so \
-             never claim a change was saved. Responses are limited to 8192 output tokens: keep one \
-             proposal small and split large rewrites across multiple turns.",
-            proposal_schema,
-        )?,
-    ];
+    let tools = match tool_set {
+        ReportToolSet::TargetedEdit => vec![
+            tool(
+                LIST_RECORD_FILES_TOOL,
+                "List the current client's record filenames and whether each file fits Claria's bounded \
+                 text reader. Printable UTF-8 originals are readable regardless of extension; documents \
+                 and recordings use generated text sidecars. Call this before any read_record_file call \
+                 — only listed filenames are readable.",
+                list_schema,
+            )?,
+            tool(
+                READ_RECORD_FILE_TOOL,
+                "Read a bounded range from one filename returned by list_record_files. offset and limit \
+                 are Unicode characters, not bytes. All reads in a turn share a 48000-character budget; \
+                 when a result includes next_offset, pass it as offset to continue reading from there. \
+                 Binary originals without a generated text sidecar are safely rejected.",
+                read_schema,
+            )?,
+            tool(
+                PROPOSE_REPORT_CHANGES_TOOL,
+                "Stage typed report changes for user review. Copy each section_id exactly from the \
+                 accepted_report in the untrusted context; positions are 0-based; replace_section \
+                 replaces the entire section including its heading. At most one call per turn — a \
+                 second call fails. Nothing is saved or applied until the user accepts the proposal, so \
+                 never claim a change was saved. Responses are limited to 8192 output tokens: keep one \
+                 proposal small and split large rewrites across multiple turns.",
+                proposal_schema,
+            )?,
+        ],
+        ReportToolSet::FullDraft => vec![
+            tool(
+                SET_FULL_DRAFT_TITLE_TOOL,
+                "Set the complete working draft's title. Call this before finalizing, even when retaining the supplied title.",
+                full_title_schema,
+            )?,
+            tool(
+                WRITE_FULL_DRAFT_SECTION_TOOL,
+                "Write one complete section into an isolated full-draft candidate. Copy existing \
+                 section_id values exactly so imported-template structure is retained; pass null only \
+                 for a new section. position is the 0-based final order. Use repeated calls or tool \
+                 rounds to fill the whole document; no section is saved to the working draft yet.",
+                full_section_schema,
+            )?,
+            tool(
+                FINISH_FULL_DRAFT_TOOL,
+                "Validate and finalize the isolated full-draft candidate after the title and every \
+                 supplied template/report section have been written. A successful result authorizes \
+                 the host to atomically save one new working-draft revision without a proposal gate.",
+                finish_full_draft_schema,
+            )?,
+        ],
+    };
 
     ToolConfiguration::builder()
         .set_tools(Some(tools))
