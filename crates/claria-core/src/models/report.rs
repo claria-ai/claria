@@ -1,9 +1,9 @@
 //! Structured, versioned report-authoring workspaces.
 //!
-//! A workspace keeps the accepted report draft separate from the model's
-//! proposal. Model output is never applied directly: callers stage a
-//! [`ReportProposal`], show its exact candidate to the user, and only then use
-//! [`ReportDraft::accept`] to recompute and persist the accepted content.
+//! A workspace keeps the accepted report draft separate from targeted model
+//! proposals. Targeted edits stage a [`ReportProposal`] for review before
+//! [`ReportDraft::accept`]; the distinct whole-report workflow validates and
+//! commits one complete candidate atomically.
 
 use std::collections::HashSet;
 

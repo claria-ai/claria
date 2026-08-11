@@ -1,5 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    num::NonZeroUsize,
+    sync::{Arc, Mutex as StdMutex},
+    time::{Duration, Instant},
+};
 
+use claria_core::models::chat_history::{ChatMessage, ChatRole};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use claria_desktop::config::{ClariaConfig, CredentialSource};
@@ -25,6 +32,148 @@ pub(crate) struct PendingReportTemplate {
     pub(crate) imported: claria_docx::ImportedTemplate,
 }
 
+const CHAT_PROMPT_CACHE_CAPACITY: usize = 32;
+const CHAT_PROMPT_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChatPromptCacheState {
+    Cold,
+    Reusable,
+    Stale,
+    PrefixChanged,
+}
+
+impl ChatPromptCacheState {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cold => "cold",
+            Self::Reusable => "reusable",
+            Self::Stale => "stale",
+            Self::PrefixChanged => "prefix_changed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ChatPromptCacheKey {
+    chat_id: uuid::Uuid,
+    model_id: String,
+}
+
+struct CachedChatPrefix {
+    system_digest: [u8; 32],
+    message_digest: [u8; 32],
+    message_count: usize,
+    refreshed_at: Instant,
+}
+
+/// Process-local knowledge of provider-side five-minute chat cache entries.
+/// Only hashes and counts are retained here—never chat or record text.
+pub(crate) struct ChatPromptCache {
+    inner: StdMutex<lru::LruCache<ChatPromptCacheKey, CachedChatPrefix>>,
+}
+
+impl ChatPromptCache {
+    fn new() -> Self {
+        Self {
+            inner: StdMutex::new(lru::LruCache::new(
+                NonZeroUsize::new(CHAT_PROMPT_CACHE_CAPACITY).expect("nonzero cache capacity"),
+            )),
+        }
+    }
+
+    pub(crate) fn classify(
+        &self,
+        chat_id: uuid::Uuid,
+        model_id: &str,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+    ) -> ChatPromptCacheState {
+        self.classify_at(chat_id, model_id, system_prompt, messages, Instant::now())
+    }
+
+    fn classify_at(
+        &self,
+        chat_id: uuid::Uuid,
+        model_id: &str,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+        now: Instant,
+    ) -> ChatPromptCacheState {
+        let key = ChatPromptCacheKey {
+            chat_id,
+            model_id: model_id.to_string(),
+        };
+        let mut cache = self.inner.lock().expect("chat prompt cache lock poisoned");
+        let Some(cached) = cache.get(&key) else {
+            return ChatPromptCacheState::Cold;
+        };
+        if now.duration_since(cached.refreshed_at) >= CHAT_PROMPT_CACHE_TTL {
+            cache.pop(&key);
+            return ChatPromptCacheState::Stale;
+        }
+        if cached.system_digest != digest_bytes(system_prompt.as_bytes())
+            || messages.len() < cached.message_count
+            || cached.message_digest != digest_messages(&messages[..cached.message_count])
+        {
+            return ChatPromptCacheState::PrefixChanged;
+        }
+        ChatPromptCacheState::Reusable
+    }
+
+    pub(crate) fn refresh(
+        &self,
+        chat_id: uuid::Uuid,
+        model_id: &str,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+    ) {
+        self.refresh_at(chat_id, model_id, system_prompt, messages, Instant::now());
+    }
+
+    fn refresh_at(
+        &self,
+        chat_id: uuid::Uuid,
+        model_id: &str,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+        now: Instant,
+    ) {
+        self.inner
+            .lock()
+            .expect("chat prompt cache lock poisoned")
+            .put(
+                ChatPromptCacheKey {
+                    chat_id,
+                    model_id: model_id.to_string(),
+                },
+                CachedChatPrefix {
+                    system_digest: digest_bytes(system_prompt.as_bytes()),
+                    message_digest: digest_messages(messages),
+                    message_count: messages.len(),
+                    refreshed_at: now,
+                },
+            );
+    }
+}
+
+fn digest_bytes(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+fn digest_messages(messages: &[ChatMessage]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    for message in messages {
+        digest.update(match message.role {
+            ChatRole::User => [0_u8],
+            ChatRole::Assistant => [1_u8],
+        });
+        digest.update((message.content.len() as u64).to_be_bytes());
+        digest.update(message.content.as_bytes());
+    }
+    digest.finalize().into()
+}
+
 pub struct DesktopState {
     pub config: Arc<Mutex<Option<ClariaConfig>>>,
     pub sdk_config: Arc<Mutex<Option<CachedSdkConfig>>>,
@@ -33,6 +182,12 @@ pub struct DesktopState {
     /// Per-version report-revision summaries; version IDs are immutable so
     /// entries never go stale.
     pub revision_cache: Arc<claria_report_authoring::RevisionCache>,
+    /// Exact transient Writer protocol, retained only for Bedrock's default
+    /// five-minute prompt-cache window.
+    pub report_prompt_cache: Arc<claria_report_authoring::ReportPromptCache>,
+    /// Hash-only state for deciding whether a reloaded client chat still has
+    /// a reusable provider cache prefix.
+    pub(crate) chat_prompt_cache: Arc<ChatPromptCache>,
     /// Parsed managed-template candidates. Validated source bytes stay only
     /// long enough to write the immutable formatting snapshot; local paths are
     /// never retained.
@@ -54,8 +209,80 @@ impl Default for DesktopState {
             )),
             record_cache: Arc::new(RecordCache::new()),
             revision_cache: Arc::new(claria_report_authoring::RevisionCache::new()),
+            report_prompt_cache: Arc::new(claria_report_authoring::ReportPromptCache::new()),
+            chat_prompt_cache: Arc::new(ChatPromptCache::new()),
             pending_report_templates: Arc::new(Mutex::new(HashMap::new())),
             assumed_role_credentials: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(role: ChatRole, content: &str) -> ChatMessage {
+        ChatMessage {
+            role,
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn reloaded_chat_prefix_is_reusable_until_the_five_minute_window_closes() {
+        let cache = ChatPromptCache::new();
+        let chat_id = uuid::Uuid::new_v4();
+        let model_id = "us.anthropic.claude-sonnet-4-6";
+        let system = "stable record context";
+        let first_request = vec![message(ChatRole::User, "First question")];
+        let refreshed_at = Instant::now();
+        cache.refresh_at(chat_id, model_id, system, &first_request, refreshed_at);
+
+        let resumed_request = vec![
+            first_request[0].clone(),
+            message(ChatRole::Assistant, "First answer"),
+            message(ChatRole::User, "Follow-up"),
+        ];
+        assert_eq!(
+            cache.classify_at(
+                chat_id,
+                model_id,
+                system,
+                &resumed_request,
+                refreshed_at + Duration::from_secs(2 * 60),
+            ),
+            ChatPromptCacheState::Reusable
+        );
+        assert_eq!(
+            cache.classify_at(
+                chat_id,
+                model_id,
+                system,
+                &resumed_request,
+                refreshed_at + Duration::from_secs(5 * 60),
+            ),
+            ChatPromptCacheState::Stale
+        );
+    }
+
+    #[test]
+    fn changed_context_is_not_mistaken_for_a_reusable_prefix() {
+        let cache = ChatPromptCache::new();
+        let chat_id = uuid::Uuid::new_v4();
+        let model_id = "us.anthropic.claude-sonnet-4-6";
+        let request = vec![message(ChatRole::User, "Question")];
+        let now = Instant::now();
+        cache.refresh_at(chat_id, model_id, "old context", &request, now);
+
+        assert_eq!(
+            cache.classify_at(
+                chat_id,
+                model_id,
+                "new context",
+                &request,
+                now + Duration::from_secs(60),
+            ),
+            ChatPromptCacheState::PrefixChanged
+        );
     }
 }

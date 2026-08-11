@@ -30,6 +30,7 @@ export type ResumeChat = {
   /// user turns and for legacy assistant turns whose history pre-dates
   /// per-turn usage tracking.
   usageByIndex?: Array<import("../lib/tauri").TurnUsage | null>;
+  timestampsByIndex?: Array<string | null>;
   /// ISO-8601 timestamp of the chat's last activity (for the resume
   /// header — "Last activity: yesterday 4:12pm" etc).
   lastActivityIso?: string | null;
@@ -89,6 +90,7 @@ export default function ClientChat({
   const initialMessages = resumeChat?.messages;
   const initialModelId = resumeChat?.modelId;
   const initialUsageByIndex = resumeChat?.usageByIndex;
+  const initialTimestampsByIndex = resumeChat?.timestampsByIndex;
   const lastActivityIso = resumeChat?.lastActivityIso ?? null;
 
   // Count context tokens once context is loaded. Only files with extracted
@@ -292,6 +294,7 @@ export default function ClientChat({
         initialMessages={initialMessages}
         initialModelId={initialModelId}
         initialUsageByIndex={initialUsageByIndex}
+        initialTimestampsByIndex={initialTimestampsByIndex}
         contextTokens={contextTokens}
         emptyStateTitle="Start the conversation."
         emptyStateSubtitle="The chat includes the context files shown above. Chat messages are saved separately and do not modify your client files."

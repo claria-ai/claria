@@ -43,6 +43,7 @@ export function useClientWorkspace(
         content: message.content,
       })),
       usageByIndex: detail.messages.map((message) => message.usage),
+      timestampsByIndex: detail.messages.map((message) => message.timestamp),
       lastActivityIso: detail.updated_at,
     });
     setActiveView("chat");

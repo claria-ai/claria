@@ -421,10 +421,18 @@ export async function deleteClient(clientId: string): Promise<void> {
 // Writing workspace wrappers
 // ---------------------------------------------------------------------------
 
-export async function loadReportWorkspace(
-  clientId: string
+export async function startReportWorkspace(
+  clientId: string,
+  reportId: string
 ): Promise<ReportWorkspaceView> {
-  return unwrap(await commands.loadReportWorkspace(clientId));
+  return unwrap(await commands.startReportWorkspace(clientId, reportId));
+}
+
+export async function loadReportWorkspace(
+  clientId: string,
+  reportId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.loadReportWorkspace(clientId, reportId));
 }
 
 export async function listEditorHistory(
@@ -474,11 +482,22 @@ export async function revertReportRevision(
 
 export async function saveReportDraft(
   clientId: string,
+  reportId: string,
   expectedRevision: number,
   draft: ReportDraftEdit
 ): Promise<ReportWorkspaceView> {
   return unwrap(
-    await commands.saveReportDraft(clientId, expectedRevision, draft)
+    await commands.saveReportDraft(clientId, reportId, expectedRevision, draft)
+  );
+}
+
+export async function discardQueuedReportEdits(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.discardQueuedReportEdits(clientId, reportId, expectedRevision)
   );
 }
 
@@ -510,11 +529,12 @@ export async function previewWriterTemplate(
 
 export async function applyReportTemplate(
   clientId: string,
+  reportId: string,
   expectedRevision: number,
   importId: string
 ): Promise<ReportWorkspaceView> {
   return unwrap(
-    await commands.applyReportTemplate(clientId, expectedRevision, importId)
+    await commands.applyReportTemplate(clientId, reportId, expectedRevision, importId)
   );
 }
 
@@ -526,6 +546,7 @@ export async function discardReportTemplatePreview(
 
 export async function generateFullReport(
   clientId: string,
+  reportId: string,
   expectedRevision: number,
   modelId: string,
   guidance: string,
@@ -536,6 +557,7 @@ export async function generateFullReport(
   return unwrap(
     await commands.generateFullReport(
       clientId,
+      reportId,
       expectedRevision,
       modelId,
       guidance,
@@ -546,6 +568,7 @@ export async function generateFullReport(
 
 export async function sendReportMessage(
   clientId: string,
+  reportId: string,
   expectedRevision: number,
   modelId: string,
   instruction: string,
@@ -557,6 +580,7 @@ export async function sendReportMessage(
   return unwrap(
     await commands.sendReportMessage(
       clientId,
+      reportId,
       expectedRevision,
       modelId,
       instruction,
@@ -568,11 +592,12 @@ export async function sendReportMessage(
 
 export async function resolveReportProposal(
   clientId: string,
+  reportId: string,
   proposalId: string,
   decision: ReportProposalChoice
 ): Promise<ReportWorkspaceView> {
   return unwrap(
-    await commands.resolveReportProposal(clientId, proposalId, decision)
+    await commands.resolveReportProposal(clientId, reportId, proposalId, decision)
   );
 }
 

@@ -63,6 +63,7 @@ pub struct InfraChatResponse {
 pub struct ChatHistoryDetailMessage {
     pub role: ChatRole,
     pub content: String,
+    pub timestamp: String,
     /// `Some` on assistant turns whose Converse response carried a usage
     /// block. `None` on user turns and on assistant turns from history
     /// written before per-turn usage tracking landed.
@@ -280,6 +281,7 @@ fn chat_history_detail(
             .map(|message| ChatHistoryDetailMessage {
                 role: message.role,
                 content: message.content,
+                timestamp: message.timestamp.to_string(),
                 usage: message.usage,
             })
             .collect(),
@@ -325,7 +327,7 @@ pub async fn chat_message(
         let ctx = CommandContext::new(&state).await?;
         let client_uuid = parse_uuid(&client_id)?;
         let now = jiff::Timestamp::now();
-        let (chat_uuid, chat_name, created_at, expected_etag) = match &chat_id {
+        let (chat_uuid, chat_name, created_at, expected_etag, stored_prefix) = match &chat_id {
             Some(id) => {
                 let chat_uuid = parse_uuid(id)?;
                 let (history, etag) =
@@ -343,7 +345,13 @@ pub async fn chat_message(
                 } else {
                     history.name
                 };
-                (chat_uuid, name, history.created_at, Some(etag))
+                (
+                    chat_uuid,
+                    name,
+                    history.created_at,
+                    Some(etag),
+                    history.messages,
+                )
             }
             None => {
                 let name = match chat_name {
@@ -359,7 +367,7 @@ pub async fn chat_message(
                         next_chat_history_name(&rows)
                     }
                 };
-                (uuid::Uuid::new_v4(), name, now, None)
+                (uuid::Uuid::new_v4(), name, now, None, Vec::new())
             }
         };
 
@@ -372,6 +380,18 @@ pub async fn chat_message(
         let full_prompt = assemble_chat_prompt(system_prompt, all_files, &context_filenames);
 
         let cache_strategy = build_cache_strategy(&ctx.cfg, &model_id);
+        let cache_tail = cache_strategy.cache_conversation_tail(&full_prompt, &messages);
+        if cache_tail {
+            let cache_state =
+                state
+                    .chat_prompt_cache
+                    .classify(chat_uuid, &model_id, &full_prompt, &messages);
+            tracing::debug!(
+                chat_id = %chat_uuid,
+                cache_state = cache_state.as_str(),
+                "classified client chat prompt cache"
+            );
+        }
 
         // Stream deltas to the frontend as they arrive; the complete text
         // still comes back here so history persistence and audit are
@@ -393,6 +413,11 @@ pub async fn chat_message(
         )
         .await?;
         let (response_text, usage) = (outcome.text, outcome.usage);
+        if cache_tail {
+            state
+                .chat_prompt_cache
+                .refresh(chat_uuid, &model_id, &full_prompt, &messages);
+        }
         send_stream_event(
             &on_event,
             ChatStreamEvent::Done {
@@ -416,11 +441,20 @@ pub async fn chat_message(
         let mut history_messages: Vec<claria_core::models::chat_history::ChatHistoryMessage> =
             messages
                 .iter()
-                .map(|m| claria_core::models::chat_history::ChatHistoryMessage {
-                    role: m.role,
-                    content: m.content.clone(),
-                    timestamp: updated_at,
-                    usage: None,
+                .enumerate()
+                .map(|(index, message)| {
+                    // The frontend sends role/content only. Preserve immutable
+                    // timestamps and usage for the matching stored prefix so
+                    // a follow-up does not erase prior billing/cache history.
+                    let stored = stored_prefix.get(index).filter(|stored| {
+                        stored.role == message.role && stored.content == message.content
+                    });
+                    claria_core::models::chat_history::ChatHistoryMessage {
+                        role: message.role,
+                        content: message.content.clone(),
+                        timestamp: stored.map_or(updated_at, |stored| stored.timestamp),
+                        usage: stored.and_then(|stored| stored.usage.clone()),
+                    }
                 })
                 .collect();
         history_messages.push(claria_core::models::chat_history::ChatHistoryMessage {
@@ -593,20 +627,18 @@ fn assemble_chat_prompt(
 /// inference profile we're about to invoke. Model support comes from the
 /// central capability table in `claria-core`.
 ///
-/// Chat surfaces (client chat and infra chat) use the extended 1-hour TTL —
-/// conversations resume across gaps longer than the 5-minute default — and
-/// fall back to the default TTL silently on families that don't support it.
+/// Chats use Bedrock's default five-minute TTL. A small process-local LRU
+/// tracks whether a resumed client chat's exact prefix is still reusable;
+/// paying the doubled one-hour write rate is unnecessary for this workflow.
 fn build_cache_strategy(cfg: &ClariaConfig, model_id: &str) -> claria_bedrock::chat::CacheStrategy {
     if !cfg.prompt_caching_enabled {
         return claria_bedrock::chat::CacheStrategy::disabled();
     }
     let capabilities = claria_core::model_id::ModelCapabilities::for_id(model_id);
-    let ttl = if capabilities.supports_extended_cache_ttl {
-        claria_core::model_id::CacheTtlChoice::OneHour
-    } else {
-        claria_core::model_id::CacheTtlChoice::FiveMinutes
-    };
-    claria_bedrock::chat::CacheStrategy::enabled_for_model(capabilities.prompt_caching, ttl)
+    claria_bedrock::chat::CacheStrategy::enabled_for_model(
+        capabilities.prompt_caching,
+        claria_core::model_id::CacheTtlChoice::FiveMinutes,
+    )
 }
 
 fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {

@@ -5,7 +5,10 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Writing can fill an entire report in one action, save it directly as one versioned draft, and reserve reviewable proposals for later targeted edits
-- Whole-report generation loads every readable client record into one bounded source snapshot and drafts sections through internal cached tool rounds without asking the user to drive record retrieval
+- Writing sessions now behave like chats: opening the Writing tab starts a fresh report, while Editor History resumes a specific prior session
+- Whole-report generation loads every readable client record into one bounded source snapshot and drafts sections through internal cached tool rounds without asking the user to drive record retrieval; its prompt disappears after the first completed turn
+- Reloaded chats and Writing sessions can reuse an exact five-minute prompt-cache prefix through small in-memory LRUs, and cache labels only claim expiry when elapsed time proves it
+- Writer spend controls now share one compact row, and queued report edits expose Discard beside both the queue notice and accepted-report controls
 - Chat and writer sessions now show how much prompt caching saved against what the same turns would have cost uncached
 - An expandable cost breakdown explains each turn's spend by component and flags cache hits, expired cache windows, and cold starts
 - Chat requests now end with a cache point on the conversation tail, so each turn re-reads the whole history from cache instead of paying full input rates

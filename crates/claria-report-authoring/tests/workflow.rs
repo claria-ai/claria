@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_core::models::report::{
     ReportBlock, ReportContent, ReportProposalDecision, ReportSection, ReportTemplateWarning,
@@ -215,6 +217,92 @@ async fn full_report_generation_preloads_records_and_atomically_saves_one_draft(
 }
 
 #[tokio::test]
+async fn transient_prompt_lru_reuses_exact_protocol_after_writer_reload() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let record_key = claria_core::s3_keys::client_record_file(client_id, "intake.txt");
+    put(&s3, &record_key, "EPHEMERAL SOURCE CONTENT").await;
+    report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("workspace");
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"toolUse": {
+                    "toolUseId": "read-1", "name": "read_record_file", "input": {
+                        "filename": "intake.txt", "offset": 0, "limit": 8000
+                    }
+                }}]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 4, "outputTokens": 2, "cacheWriteInputTokens": 1200}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "First turn complete."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 2, "outputTokens": 2, "cacheReadInputTokens": 1200}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "Reloaded follow-up complete."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 2, "outputTokens": 2, "cacheReadInputTokens": 1200}
+            }),
+        ],
+    )
+    .await;
+
+    let prompt_cache = report_authoring::ReportPromptCache::new();
+    let first = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Read the intake.")
+            .with_prompt_cache(&prompt_cache),
+    )
+    .await
+    .expect("first turn");
+    assert!(
+        !serde_json::to_string(&first.workspace)
+            .expect("workspace JSON")
+            .contains("EPHEMERAL SOURCE CONTENT")
+    );
+
+    let reloaded = report_authoring::load_report_workspace_by_id(
+        &s3,
+        BUCKET,
+        client_id,
+        first.workspace.report_id,
+    )
+    .await
+    .expect("reload Writing session");
+    report_authoring::send_report_message_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        reloaded.report_id,
+        reloaded.draft.revision,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Continue after reload.")
+            .with_prompt_cache(&prompt_cache),
+    )
+    .await
+    .expect("reloaded follow-up");
+
+    let state = server.state.read().await;
+    assert_eq!(state.bedrock_tool_requests.len(), 3);
+    assert!(
+        state.bedrock_tool_requests[2]
+            .to_string()
+            .contains("EPHEMERAL SOURCE CONTENT")
+    );
+}
+
+#[tokio::test]
 async fn unfinished_full_report_never_replaces_the_working_draft() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();
@@ -260,6 +348,106 @@ async fn unfinished_full_report_never_replaces_the_working_draft() {
     assert_eq!(workspace.draft.content.title, "Untitled report");
     assert!(workspace.session.turns.is_empty());
     assert!(workspace.session.pending_proposal.is_none());
+}
+
+#[tokio::test]
+async fn writing_sessions_start_fresh_and_resume_independently_by_report_id() {
+    let (_server, _sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+
+    let first = report_authoring::start_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("start first Writing session");
+    let replayed =
+        report_authoring::start_report_workspace_with_id(&s3, BUCKET, client_id, first.report_id)
+            .await
+            .expect("replay first start");
+    assert_eq!(replayed.report_id, first.report_id);
+    report_authoring::save_report_draft_for_report(
+        &s3,
+        BUCKET,
+        client_id,
+        first.report_id,
+        0,
+        ReportContent {
+            title: "First report".to_string(),
+            sections: vec![],
+        },
+    )
+    .await
+    .expect("save first report");
+
+    let second = report_authoring::start_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("start second Writing session");
+    assert_ne!(first.report_id, second.report_id);
+    assert_eq!(first.session_name, "Writer Session (1)");
+    assert_eq!(second.session_name, "Writer Session (2)");
+    report_authoring::save_report_draft_for_report(
+        &s3,
+        BUCKET,
+        client_id,
+        second.report_id,
+        0,
+        ReportContent {
+            title: "Second report".to_string(),
+            sections: vec![],
+        },
+    )
+    .await
+    .expect("save second report");
+
+    let sessions = report_authoring::list_report_workspaces(&s3, BUCKET, client_id)
+        .await
+        .expect("list Writing sessions");
+    assert_eq!(sessions.len(), 2);
+    let resumed_first =
+        report_authoring::load_report_workspace_by_id(&s3, BUCKET, client_id, first.report_id)
+            .await
+            .expect("resume first Writing session");
+    let resumed_second =
+        report_authoring::load_report_workspace_by_id(&s3, BUCKET, client_id, second.report_id)
+            .await
+            .expect("resume second Writing session");
+    assert_eq!(resumed_first.draft.content.title, "First report");
+    assert_eq!(resumed_second.draft.content.title, "Second report");
+}
+
+#[tokio::test]
+async fn legacy_singleton_remains_resumable_beside_new_writing_sessions() {
+    let (_server, _sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let legacy = report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("legacy workspace");
+    report_authoring::save_report_draft(
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        ReportContent {
+            title: "Legacy report".to_string(),
+            sections: vec![],
+        },
+    )
+    .await
+    .expect("save legacy report");
+
+    let fresh = report_authoring::start_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("new session");
+    assert_eq!(fresh.session_name, "Writer Session (2)");
+    let listed = report_authoring::list_report_workspaces(&s3, BUCKET, client_id)
+        .await
+        .expect("list mixed sessions");
+    assert_eq!(listed.len(), 2);
+    let resumed =
+        report_authoring::load_report_workspace_by_id(&s3, BUCKET, client_id, legacy.report_id)
+            .await
+            .expect("resume legacy session");
+    assert_eq!(resumed.draft.content.title, "Legacy report");
 }
 
 #[tokio::test]
@@ -522,6 +710,73 @@ async fn report_revisions_can_be_previewed_and_restored_without_removing_history
             .to_string()
             .contains("earlier report revision")
     );
+}
+
+#[tokio::test]
+async fn saved_edits_can_be_discarded_back_to_the_last_agent_baseline() {
+    let (server, sdk, s3) = setup().await;
+    s3.put_bucket_versioning()
+        .bucket(BUCKET)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let initial = report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("workspace");
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Baseline noted."}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 4, "outputTokens": 2}
+        })],
+    )
+    .await;
+    report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Review the current report."),
+    )
+    .await
+    .expect("complete baseline turn");
+    let edited = report_authoring::save_report_draft(
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        ReportContent {
+            title: "Queued user edit".to_string(),
+            sections: vec![],
+        },
+    )
+    .await
+    .expect("save queued edit");
+    assert_eq!(edited.session.last_agent_revision, Some(0));
+
+    let discarded = report_authoring::discard_queued_report_edits(
+        &s3,
+        BUCKET,
+        client_id,
+        initial.report_id,
+        1,
+        &report_authoring::RevisionCache::new(),
+    )
+    .await
+    .expect("discard queued edit");
+    assert_eq!(discarded.draft.revision, 2);
+    assert_eq!(discarded.draft.content.title, "Untitled report");
+    assert_eq!(discarded.session.last_agent_revision, Some(2));
 }
 
 #[tokio::test]
@@ -1643,6 +1898,71 @@ async fn client_delete_and_restore_round_trip_the_latest_report_workspace() {
         .expect("load after retry");
     assert_eq!(after_retry.draft.revision, 2);
     assert_eq!(after_retry.draft.content.title, "Edited after restore");
+}
+
+#[tokio::test]
+async fn client_lifecycle_restores_every_independent_writing_session() {
+    let (_server, _sdk, s3) = setup().await;
+    s3.put_bucket_versioning()
+        .bucket(BUCKET)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let first = report_authoring::start_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("first session");
+    let second = report_authoring::start_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("second session");
+    for (session, title) in [(&first, "First report"), (&second, "Second report")] {
+        report_authoring::save_report_draft_for_report(
+            &s3,
+            BUCKET,
+            client_id,
+            session.report_id,
+            0,
+            ReportContent {
+                title: title.to_string(),
+                sections: vec![],
+            },
+        )
+        .await
+        .expect("save session");
+    }
+
+    assert_eq!(
+        report_authoring::delete_report_workspace_for_client(&s3, BUCKET, client_id)
+            .await
+            .expect("delete sessions"),
+        2
+    );
+    assert!(
+        report_authoring::list_report_workspaces(&s3, BUCKET, client_id)
+            .await
+            .expect("deleted list")
+            .is_empty()
+    );
+    assert!(
+        report_authoring::restore_report_workspace_for_client(&s3, BUCKET, client_id)
+            .await
+            .expect("restore sessions")
+    );
+    let restored = report_authoring::list_report_workspaces(&s3, BUCKET, client_id)
+        .await
+        .expect("restored list");
+    assert_eq!(restored.len(), 2);
+    let titles = restored
+        .iter()
+        .map(|workspace| workspace.draft.content.title.as_str())
+        .collect::<HashSet<_>>();
+    assert_eq!(titles, HashSet::from(["First report", "Second report"]));
 }
 
 #[tokio::test]

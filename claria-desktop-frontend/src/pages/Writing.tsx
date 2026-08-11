@@ -66,12 +66,18 @@ export default function Writing({
   );
   // The composer draft survives navigation in process memory; read it once
   // as lazy initial state.
-  const [instruction, setInstruction] = useState(
-    () => readWritingComposerDraft(clientId)?.instruction ?? ""
+  const [instruction, setInstruction] = useState(() =>
+    expectedReportId
+      ? (readWritingComposerDraft(clientId, expectedReportId)?.instruction ?? "")
+      : ""
   );
   const [queuedReferences, setQueuedReferences] = useState<
     WritingBlockReference[]
-  >(() => readWritingComposerDraft(clientId)?.references ?? []);
+  >(() =>
+    expectedReportId
+      ? (readWritingComposerDraft(clientId, expectedReportId)?.references ?? [])
+      : []
+  );
   const [contextOpen, setContextOpen] = useState(false);
   const [previewFilename, setPreviewFilename] = useState<string | null>(null);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
@@ -102,6 +108,7 @@ export default function Writing({
     beginEdit,
     cancelEdit,
     save,
+    discardQueuedEdits,
     send,
     generateFullDraft,
     resolveProposal,
@@ -137,8 +144,12 @@ export default function Writing({
   );
 
   useEffect(() => {
-    writeWritingComposerDraft(clientId, { instruction, references });
-  }, [clientId, instruction, references]);
+    if (!workspace) return;
+    writeWritingComposerDraft(clientId, workspace.report_id, {
+      instruction,
+      references,
+    });
+  }, [clientId, instruction, references, workspace]);
 
   const editsQueued = dirty || savedEditsQueued;
   const hasUnsavedWork =
@@ -183,14 +194,18 @@ export default function Writing({
     () => (workspace?.turns ?? []).map((turn) => turn.usage),
     [workspace?.turns]
   );
+  const turnTimestamps = useMemo(
+    () => (workspace?.turns ?? []).map((turn) => turn.completed_at),
+    [workspace?.turns]
+  );
   const turnModelIds = useMemo(
     () => turnUsages.flatMap((usage) => (usage ? [usage.model_id] : [])),
     [turnUsages]
   );
   const pricingByModel = usePricingMap(turnModelIds);
   const ledger = useMemo(
-    () => buildCostLedger(turnUsages, pricingByModel),
-    [turnUsages, pricingByModel]
+    () => buildCostLedger(turnUsages, pricingByModel, turnTimestamps),
+    [turnTimestamps, turnUsages, pricingByModel]
   );
 
   const addReference = useCallback(
@@ -450,19 +465,22 @@ export default function Writing({
           )}
         </div>
 
-        {/* Lifetime session spend, matching chat's banner. */}
+        {/* One concise spend row: session total and expandable detail share
+            equal horizontal space and collapsed height. */}
         {session.turnCount > 0 && (
-          <SessionTotalBanner
-            session={session}
-            cacheSavings={positiveLedgerSavings(ledger)}
-          />
+          <div className="grid grid-cols-2 items-stretch border-b border-gray-200">
+            <SessionTotalBanner
+              session={session}
+              cacheSavings={positiveLedgerSavings(ledger)}
+              className="min-w-0 flex flex-wrap items-center gap-x-2 gap-y-0.5 border-r border-gray-200 bg-gray-50 px-3 py-1.5 text-[11px]"
+            />
+            <CostExplanation
+              ledger={ledger}
+              compact
+              className="min-w-0 bg-white"
+            />
+          </div>
         )}
-
-        {/* Collapsed-by-default per-turn cost and cache explanation. */}
-        <CostExplanation
-          ledger={ledger}
-          className="px-5 py-2 border-b border-gray-200 bg-white"
-        />
 
         <div
           aria-label="Writing timeline"
@@ -531,11 +549,24 @@ export default function Writing({
 
         <div className="border-t border-gray-200 p-4">
           {editsQueued && (
-            <p className="text-xs text-amber-700 mb-2" data-testid="queued-report-edits">
-              {dirty
-                ? `${editCount} report edit${editCount === 1 ? "" : "s"} queued. Claria will save and include them with your next message.`
-                : "Saved report edits are queued and will be included with your next message."}
-            </p>
+            <div
+              className="mb-2 flex items-center gap-2 text-xs text-amber-700"
+              data-testid="queued-report-edits"
+            >
+              <p className="min-w-0 flex-1">
+                {dirty
+                  ? `${editCount} report edit${editCount === 1 ? "" : "s"} queued. Claria will save and include them with your next message.`
+                  : `Accepted report r${workspace.draft.revision} has saved changes since Claude saw r${workspace.last_agent_revision ?? 0}; they are queued for your next message.`}
+              </p>
+              <button
+                type="button"
+                onClick={() => void discardQueuedEdits()}
+                disabled={controlsBusy}
+                className="shrink-0 font-semibold text-amber-800 hover:text-amber-950 disabled:opacity-50"
+              >
+                {busy === "discarding" ? "Discarding…" : "Discard"}
+              </button>
+            </div>
           )}
           {pending && (
             <p className="text-xs text-violet-700 mb-2">
@@ -579,24 +610,26 @@ export default function Writing({
               ))}
             </div>
           )}
-          <div className="mb-3 flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2.5">
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold text-blue-900">
-                Generate the complete working draft
-              </p>
-              <p className="mt-0.5 text-[11px] text-blue-700">
-                Loads every readable client record and saves one versioned draft. Composer text is optional guidance; use Send for later reviewable changes.
-              </p>
+          {workspace.turns.length === 0 && (
+            <div className="mb-3 flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-blue-900">
+                  Generate the complete working draft
+                </p>
+                <p className="mt-0.5 text-[11px] text-blue-700">
+                  Loads every readable client record and saves one versioned draft. Composer text is optional guidance; use Send for later reviewable changes.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleGenerateFullDraft()}
+                disabled={composerDisabled}
+                className="shrink-0 rounded-md bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+              >
+                {busy === "generating" ? "Filling…" : "Fill whole report"}
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => void handleGenerateFullDraft()}
-              disabled={composerDisabled}
-              className="shrink-0 rounded-md bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
-            >
-              {busy === "generating" ? "Filling…" : "Fill whole report"}
-            </button>
-          </div>
+          )}
           <ChatComposer
             composerRef={composerRef}
             ariaLabel="Writing instruction"
@@ -620,6 +653,8 @@ export default function Writing({
         busy={controlsBusy}
         onBeginEdit={beginEdit}
         onCancelEdit={cancelEdit}
+        hasQueuedEdits={editsQueued}
+        onDiscardQueued={() => void discardQueuedEdits()}
         onChange={setEdit}
         onSave={save}
         onExport={exportDocx}

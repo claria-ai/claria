@@ -1,5 +1,5 @@
 // CostExplanation: renders the ledger rollup and per-turn bars, annotates
-// expired cache windows, hides itself without data, and toggles through the
+// known-stale cache windows, hides itself without data, and toggles through the
 // shared accordion chrome.
 
 import { render, screen, within } from "@testing-library/react";
@@ -95,10 +95,11 @@ describe("CostExplanation", () => {
         usage({ cache_write_input_tokens: 1_000, cache_ttl: "five_minutes" }),
         usage({ input_tokens: 1_000 }),
       ],
-      pricingMap
+      pricingMap,
+      ["2026-08-11T12:00:00Z", "2026-08-11T12:06:00Z"]
     );
     render(<CostExplanation ledger={ledger} />);
-    expect(screen.getByText("5m window expired")).toBeDefined();
+    expect(screen.getByText("5m cache was stale")).toBeDefined();
   });
 
   it("labels turns whose model has no pricing entry instead of pricing them at zero", () => {

@@ -17,13 +17,14 @@ export type CacheOutcome =
   | { kind: "cold_start" }
   /** The turn read tokens back from cache. */
   | { kind: "hit" }
-  /**
-   * No cache reads even though the previous metered turn wrote cache:
-   * that turn's window expired (or was otherwise invalidated) before this
-   * one was sent. `expiredTtl` is the TTL class the predecessor wrote
-   * with (absent TTL = the 5-minute default).
-   */
+  /** The prior write is old enough that its TTL is known to have expired. */
   | { kind: "miss"; expiredTtl: CacheTtlChoice }
+  /**
+   * A recent prior turn wrote cache, but this turn did not read it. The
+   * prefix may have changed or the provider may not have reused it; elapsed
+   * time does not prove expiry.
+   */
+  | { kind: "not_reused" }
   /** No reads, and the previous metered turn wrote nothing to miss. */
   | { kind: "no_cache" };
 
@@ -82,6 +83,7 @@ export interface CostLedger {
   savingsPct: number;
   hitCount: number;
   missCount: number;
+  notReusedCount: number;
   coldStartCount: number;
 }
 
@@ -93,7 +95,8 @@ export interface CostLedger {
  */
 export function buildCostLedger(
   turns: ReadonlyArray<TurnUsage | null | undefined>,
-  pricingByModel: ReadonlyMap<string, ModelPricing>
+  pricingByModel: ReadonlyMap<string, ModelPricing>,
+  completedAt: ReadonlyArray<string | null | undefined> = []
 ): CostLedger {
   const entries: TurnLedgerEntry[] = [];
   const totals: TurnCostComponents = {
@@ -108,8 +111,10 @@ export function buildCostLedger(
   let counterfactualUsd = 0;
   let hitCount = 0;
   let missCount = 0;
+  let notReusedCount = 0;
   let coldStartCount = 0;
   let prevMetered: TurnUsage | null = null;
+  let prevCompletedAt: string | null = null;
 
   for (let index = 0; index < turns.length; index++) {
     const usage = turns[index];
@@ -118,9 +123,15 @@ export function buildCostLedger(
       continue;
     }
 
-    const outcome = classifyOutcome(usage, prevMetered);
+    const outcome = classifyOutcome(
+      usage,
+      prevMetered,
+      completedAt[index] ?? null,
+      prevCompletedAt
+    );
     if (outcome.kind === "hit") hitCount += 1;
     else if (outcome.kind === "miss") missCount += 1;
+    else if (outcome.kind === "not_reused") notReusedCount += 1;
     else if (outcome.kind === "cold_start") coldStartCount += 1;
 
     const pricing = pricingByModel.get(usage.model_id);
@@ -172,6 +183,7 @@ export function buildCostLedger(
       savingsUsd: savings,
     });
     prevMetered = usage;
+    prevCompletedAt = completedAt[index] ?? null;
   }
 
   const savingsUsd = counterfactualUsd - actualUsd;
@@ -187,18 +199,34 @@ export function buildCostLedger(
       counterfactualUsd > 0 ? (savingsUsd / counterfactualUsd) * 100 : 0,
     hitCount,
     missCount,
+    notReusedCount,
     coldStartCount,
   };
 }
 
 function classifyOutcome(
   usage: TurnUsage,
-  prevMetered: TurnUsage | null
+  prevMetered: TurnUsage | null,
+  currentCompletedAt: string | null,
+  prevCompletedAt: string | null
 ): CacheOutcome {
   if (usage.cache_read_input_tokens > 0) return { kind: "hit" };
   if (prevMetered === null) return { kind: "cold_start" };
   if (prevMetered.cache_write_input_tokens > 0) {
-    return { kind: "miss", expiredTtl: prevMetered.cache_ttl ?? "five_minutes" };
+    const ttl = prevMetered.cache_ttl ?? "five_minutes";
+    const previous = prevCompletedAt ? Date.parse(prevCompletedAt) : Number.NaN;
+    const current = currentCompletedAt
+      ? Date.parse(currentCompletedAt)
+      : Number.NaN;
+    const ttlMs = ttl === "one_hour" ? 60 * 60_000 : 5 * 60_000;
+    if (
+      Number.isFinite(previous) &&
+      Number.isFinite(current) &&
+      current - previous >= ttlMs
+    ) {
+      return { kind: "miss", expiredTtl: ttl };
+    }
+    return { kind: "not_reused" };
   }
   return { kind: "no_cache" };
 }

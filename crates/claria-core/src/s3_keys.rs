@@ -122,11 +122,22 @@ pub fn report_authoring_client_prefix(client_id: Uuid) -> String {
     format!("{REPORT_AUTHORING_PREFIX}{client_id}/")
 }
 
+/// Legacy singleton writer workspace key. Existing installations may still
+/// have one session here; new sessions use [`report_session_workspace`].
 pub fn report_workspace(client_id: Uuid) -> String {
     format!(
         "{}workspace.json",
         report_authoring_client_prefix(client_id)
     )
+}
+
+pub fn report_sessions_prefix(client_id: Uuid) -> String {
+    format!("{}sessions/", report_authoring_client_prefix(client_id))
+}
+
+/// One independently resumable Writing session, analogous to a saved chat.
+pub fn report_session_workspace(client_id: Uuid, report_id: Uuid) -> String {
+    format!("{}{report_id}.json", report_sessions_prefix(client_id))
 }
 
 pub fn report_attempt(client_id: Uuid, attempt_id: Uuid) -> String {

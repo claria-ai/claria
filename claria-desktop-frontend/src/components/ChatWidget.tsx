@@ -50,6 +50,7 @@ export default function ChatWidget({
   initialMessages,
   initialModelId,
   initialUsageByIndex,
+  initialTimestampsByIndex,
   contextTokens,
   emptyStateTitle = "Start the conversation.",
   emptyStateSubtitle,
@@ -66,6 +67,7 @@ export default function ChatWidget({
   /// resuming a chat from history so old assistant turns can render
   /// their cost badges.
   initialUsageByIndex?: Array<TurnUsage | null>;
+  initialTimestampsByIndex?: Array<string | null>;
   /// Optional context-token count used for pre-flight cost estimation.
   /// When omitted, the pre-flight chip is hidden.
   contextTokens?: number | null;
@@ -83,6 +85,9 @@ export default function ChatWidget({
   const [usageByIndex, setUsageByIndex] = useState<Array<TurnUsage | null>>(
     initialUsageByIndex ?? []
   );
+  const [timestampsByIndex, setTimestampsByIndex] = useState<
+    Array<string | null>
+  >(initialTimestampsByIndex ?? []);
   // Roll up resumed usage so the session banner reflects historical spend
   // on the chat being resumed. Initial props are plain initial state — a
   // different chat identity remounts the widget via the caller's `key`.
@@ -144,14 +149,27 @@ export default function ChatWidget({
         .map(({ index }) => usageByIndex[index] ?? null),
     [messages, usageByIndex]
   );
+  const assistantTurnTimestamps = useMemo(
+    () =>
+      messages
+        .map((message, index) => ({ message, index }))
+        .filter(({ message }) => message.role === "assistant")
+        .map(({ index }) => timestampsByIndex[index] ?? null),
+    [messages, timestampsByIndex]
+  );
   const turnModelIds = useMemo(
     () => assistantTurnUsages.flatMap((usage) => (usage ? [usage.model_id] : [])),
     [assistantTurnUsages]
   );
   const pricingByModel = usePricingMap(turnModelIds);
   const ledger = useMemo(
-    () => buildCostLedger(assistantTurnUsages, pricingByModel),
-    [assistantTurnUsages, pricingByModel]
+    () =>
+      buildCostLedger(
+        assistantTurnUsages,
+        pricingByModel,
+        assistantTurnTimestamps
+      ),
+    [assistantTurnTimestamps, assistantTurnUsages, pricingByModel]
   );
 
   // Auto-scroll to bottom when messages change or streamed text grows.
@@ -176,8 +194,9 @@ export default function ChatWidget({
     const userMessage: ChatMessage = { role: "user", content: text };
     const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
-    // Pad usageByIndex for the new user message so indices align.
+    // Pad metadata for the new user message so indices align.
     setUsageByIndex((prev) => [...prev, null]);
+    setTimestampsByIndex((prev) => [...prev, new Date().toISOString()]);
 
     setSending(true);
     try {
@@ -192,6 +211,7 @@ export default function ChatWidget({
       };
       setMessages([...updatedMessages, assistantMessage]);
       setUsageByIndex((prev) => [...prev, usage]);
+      setTimestampsByIndex((prev) => [...prev, new Date().toISOString()]);
       setSession((prev) => accumulateUsage(prev, usage));
     } catch (e) {
       setError(String(e));

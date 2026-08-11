@@ -8,6 +8,7 @@ import { formatCost, formatTokens } from "../lib/cost";
 export default function SessionTotalBanner({
   session,
   cacheSavings,
+  className,
 }: {
   session: SessionUsage;
   /** Ledger-derived savings vs. the no-caching counterfactual (see
@@ -15,12 +16,18 @@ export default function SessionTotalBanner({
    * break-even or net-invested in cache writes; absent, the banner renders
    * exactly as it did before the ledger existed. */
   cacheSavings?: { usd: number; pct: number } | null;
+  className?: string;
 }) {
   // Any turn without a pricing entry makes the dollar total understated —
   // omit the figure and let the token counts carry the banner.
   const costKnown = session.unknownCostTurns === 0;
   return (
-    <div className="flex flex-wrap items-center gap-2 px-6 py-1.5 text-[11px] border-b bg-gray-50 border-gray-100">
+    <div
+      className={
+        className ??
+        "flex flex-wrap items-center gap-2 px-6 py-1.5 text-[11px] border-b bg-gray-50 border-gray-100"
+      }
+    >
       <span className="font-semibold text-gray-600">Session:</span>
       {costKnown && (
         <>

@@ -2,9 +2,10 @@
 // timeline. Shows the session ledger rollup (actual vs. would-have-been,
 // savings, hit rate) and a compact per-turn list: a stacked bar of the four
 // billed components against a dashed ghost bar of the uncached
-// counterfactual, annotated for cold starts, expired cache windows and
-// cache-investment turns. Purely derived from the ledger — no fetching, no
-// persistence — and collapsed by default behind the shared accordion chrome.
+// counterfactual, annotated for cold starts, timestamp-proven stale windows,
+// non-reused prefixes, and cache-investment turns. Purely derived from the
+// ledger — no fetching, no persistence — and collapsed by default behind the
+// shared accordion chrome.
 
 import { memo, useState } from "react";
 import { formatCost } from "../lib/cost";
@@ -23,10 +24,12 @@ const MAX_RENDERED_TURNS = 50;
 export default function CostExplanation({
   ledger,
   className,
+  compact = false,
 }: {
   ledger: CostLedger | null | undefined;
   /** Outer wrapper classes — the only thing that differs per surface. */
   className?: string;
+  compact?: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
   if (!ledger || ledger.entries.length === 0) return null;
@@ -47,8 +50,21 @@ export default function CostExplanation({
       <PreferencesSection
         title="Cost breakdown"
         testId="cost-explanation"
-        summary={<SummaryChip ledger={ledger} />}
-        contentClassName="border-t border-gray-100 p-4 space-y-3"
+        summary={<SummaryChip ledger={ledger} compact={compact} />}
+        className={compact ? "border-0 rounded-none h-full" : undefined}
+        summaryClassName={
+          compact
+            ? "h-full flex items-center justify-between px-3 py-1.5 cursor-pointer list-none [&::-webkit-details-marker]:hidden"
+            : undefined
+        }
+        titleClassName={
+          compact ? "text-[11px] font-semibold text-gray-600" : undefined
+        }
+        contentClassName={
+          compact
+            ? "border-t border-gray-100 p-3 space-y-2"
+            : "border-t border-gray-100 p-4 space-y-3"
+        }
       >
         <SessionSummary ledger={ledger} />
         {hiddenCount > 0 && (
@@ -76,10 +92,20 @@ export default function CostExplanation({
   );
 }
 
-function SummaryChip({ ledger }: { ledger: CostLedger }) {
+function SummaryChip({
+  ledger,
+  compact,
+}: {
+  ledger: CostLedger;
+  compact: boolean;
+}) {
   const savings = positiveLedgerSavings(ledger);
   return (
-    <span className="text-xs text-gray-500">
+    <span
+      className={
+        compact ? "text-[10px] text-gray-500" : "text-xs text-gray-500"
+      }
+    >
       {formatCost(ledger.actualUsd)}
       {savings && (
         <span className="text-emerald-600">
@@ -124,8 +150,14 @@ function SessionSummary({ ledger }: { ledger: CostLedger }) {
         </span>
         {ledger.missCount > 0 && (
           <span className="text-amber-700">
-            {ledger.missCount} expired window
+            {ledger.missCount} stale cache window
             {ledger.missCount === 1 ? "" : "s"}
+          </span>
+        )}
+        {ledger.notReusedCount > 0 && (
+          <span className="text-gray-500">
+            {ledger.notReusedCount} cache prefix
+            {ledger.notReusedCount === 1 ? " was" : "es were"} not reused
           </span>
         )}
       </div>
@@ -205,8 +237,11 @@ const TurnRow = memo(function TurnRow({
         )}
         {entry.outcome.kind === "miss" && (
           <span className="text-amber-700">
-            {cacheTtlLabel(entry.outcome.expiredTtl)} window expired
+            {cacheTtlLabel(entry.outcome.expiredTtl)} cache was stale
           </span>
+        )}
+        {entry.outcome.kind === "not_reused" && (
+          <span className="text-gray-400">cache not reused</span>
         )}
         {savingsUsd !== null && savingsUsd > 0 && (
           <span className="text-emerald-600">

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyReportTemplate,
+  discardQueuedReportEdits,
   discardReportTemplatePreview,
   exportReportDocx,
   generateFullReport,
@@ -10,6 +11,7 @@ import {
   resolveReportProposal,
   saveReportDraft,
   sendReportMessage,
+  startReportWorkspace,
   type ReportDraftEdit,
   type ReportTurnProgressView,
   type ReportWorkspaceView,
@@ -25,6 +27,7 @@ import { upsertLiveContext, type ContextPill } from "./contextPills";
 export type WriterBusy =
   | null
   | "saving"
+  | "discarding"
   | "sending"
   | "generating"
   | "resolving"
@@ -32,6 +35,19 @@ export type WriterBusy =
   | "applying_template";
 
 export type AgentActivity = { label: string; detail?: string } | null;
+
+function createReportId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  // Test/webview fallback. This ID is only an idempotency identity; the
+  // backend still validates UUID shape and conditionally creates the object.
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (value) => {
+    const random = Math.floor(Math.random() * 16);
+    const nibble = value === "x" ? random : (random & 0x3) | 0x8;
+    return nibble.toString(16);
+  });
+}
 
 function isReportConflict(message: string): boolean {
   return message.toLowerCase().includes("changed on another computer");
@@ -77,6 +93,8 @@ export function useReportWorkspace({
   expectedReportId?: string | null;
 }) {
   const generationRef = useRef(0);
+  const activeReportIdRef = useRef(expectedReportId ?? createReportId());
+  const startingNewSessionRef = useRef(expectedReportId == null);
   const [workspace, setWorkspace] = useState<ReportWorkspaceView | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -128,11 +146,15 @@ export function useReportWorkspace({
     setActionError(null);
     setConflict(false);
     try {
-      const result = await loadReportWorkspace(clientId);
+      const result = startingNewSessionRef.current
+        ? await startReportWorkspace(clientId, activeReportIdRef.current)
+        : await loadReportWorkspace(clientId, activeReportIdRef.current);
       if (generation !== generationRef.current) return;
       if (expectedReportId && result.report_id !== expectedReportId) {
         throw new Error("That Editor History session is no longer available.");
       }
+      activeReportIdRef.current = result.report_id;
+      startingNewSessionRef.current = false;
       setWorkspace(result);
       setEdit(draftToEdit(result.draft));
       setEditing(false);
@@ -182,6 +204,7 @@ export function useReportWorkspace({
     // this positional whole-draft write.
     const result = await saveReportDraft(
       clientId,
+      current.report_id,
       current.draft.revision,
       currentEdit
     );
@@ -202,6 +225,7 @@ export function useReportWorkspace({
     try {
       const result = await persistCurrentEdit();
       if (generation !== generationRef.current) return;
+      setEditing(false);
       setSaveStatus(
         `Saved revision ${result.draft.revision}. These edits are queued for Claude's next message.`
       );
@@ -213,6 +237,45 @@ export function useReportWorkspace({
       if (generation === generationRef.current) setBusy(null);
     }
   }, [persistCurrentEdit, showActionError]);
+
+  const discardQueuedEdits = useCallback(async () => {
+    const { workspace: current, dirty: isDirty, busy: currentBusy } =
+      stateRef.current;
+    if (!current || currentBusy !== null) return;
+    const hasSavedEdits =
+      current.draft.revision > (current.last_agent_revision ?? 0);
+    if (!isDirty && !hasSavedEdits) return;
+
+    const generation = generationRef.current;
+    setBusy("discarding");
+    setActionError(null);
+    setSaveStatus("Discarding queued report edits…");
+    try {
+      const result = hasSavedEdits
+        ? await discardQueuedReportEdits(
+            clientId,
+            current.report_id,
+            current.draft.revision
+          )
+        : current;
+      if (generation !== generationRef.current) return;
+      setWorkspace(result);
+      setEdit(draftToEdit(result.draft));
+      setEditing(false);
+      setConflict(false);
+      setSaveStatus(
+        hasSavedEdits
+          ? `Discarded queued edits and restored the report as revision ${result.draft.revision}.`
+          : "Discarded unsaved report edits."
+      );
+    } catch (error) {
+      if (generation !== generationRef.current) return;
+      showActionError(error);
+      setSaveStatus(null);
+    } finally {
+      if (generation === generationRef.current) setBusy(null);
+    }
+  }, [clientId, showActionError]);
 
   const handleAgentProgress = useCallback((progress: ReportTurnProgressView) => {
     if (progress.kind === "record_context_prepared") {
@@ -292,6 +355,7 @@ export function useReportWorkspace({
         if (generation !== generationRef.current) return false;
         const result = await sendReportMessage(
           clientId,
+          current.report_id,
           current.draft.revision,
           modelId,
           instruction,
@@ -350,6 +414,7 @@ export function useReportWorkspace({
         if (generation !== generationRef.current) return false;
         const result = await generateFullReport(
           clientId,
+          current.report_id,
           current.draft.revision,
           modelId,
           guidance,
@@ -401,7 +466,12 @@ export function useReportWorkspace({
           : "Rejecting proposal…"
       );
       try {
-        const result = await resolveReportProposal(clientId, proposalId, decision);
+        const result = await resolveReportProposal(
+          clientId,
+          current.report_id,
+          proposalId,
+          decision
+        );
         if (generation !== generationRef.current) return;
         setWorkspace(result);
         setEdit(draftToEdit(result.draft));
@@ -447,6 +517,7 @@ export function useReportWorkspace({
         if (generation !== generationRef.current) return false;
         const result = await applyReportTemplate(
           clientId,
+          current.report_id,
           current.draft.revision,
           preview.import_id
         );
@@ -526,7 +597,7 @@ export function useReportWorkspace({
       // A failed local write is persisted even though the export command
       // returns an error. Refresh so that status is visible immediately.
       try {
-        const latest = await loadReportWorkspace(clientId);
+        const latest = await loadReportWorkspace(clientId, visibleReportId);
         if (
           generation === generationRef.current &&
           latest.report_id === visibleReportId
@@ -587,6 +658,7 @@ export function useReportWorkspace({
     beginEdit,
     cancelEdit,
     save,
+    discardQueuedEdits,
     send,
     generateFullDraft,
     resolveProposal,

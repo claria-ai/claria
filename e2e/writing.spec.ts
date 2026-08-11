@@ -34,10 +34,10 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Untitled report",
   );
-  const loads = (await reportCommands()).filter(
-    (command) => command === "load_report_workspace",
+  const starts = (await reportCommands()).filter(
+    (command) => command === "start_report_workspace",
   );
-  expect(loads.length).toBeGreaterThan(0);
+  expect(starts.length).toBeGreaterThan(0);
 
   await page
     .getByLabel("Writing instruction")
@@ -110,7 +110,10 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
   );
   await expect(page.getByLabel("Report title")).toContainText("Unsaved local title");
 
-  await page.getByRole("button", { name: "Discard" }).click();
+  await page
+    .getByLabel("Accepted report draft")
+    .getByRole("button", { name: "Discard" })
+    .click();
   await page.getByRole("button", { name: "Export .docx" }).click();
   await expect(
     page.getByText("Word document exported from revision 1.")
@@ -136,11 +139,14 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
       (invocation) => invocation.cmd === "resolve_report_proposal"
     )?.args
   ).toMatchObject({ proposalId: "proposal-1", decision: "accept" });
+  const startedReportId = invocations.find(
+    (invocation) => invocation.cmd === "start_report_workspace"
+  )?.args.reportId;
   expect(
     invocations.find((invocation) => invocation.cmd === "export_report_docx")
       ?.args
   ).toMatchObject({
-    reportId: "99999999-9999-4999-8999-999999999999",
+    reportId: startedReportId,
     expectedRevision: 1,
   });
 });
@@ -169,6 +175,9 @@ test("whole-report generation preloads records and saves one direct draft revisi
     page.getByText(/Generated and saved revision 1 from 3 readable records/),
   ).toBeVisible();
   await expect(page.getByLabel("Writing instruction")).toHaveValue("");
+  await expect(
+    page.getByRole("button", { name: "Fill whole report" }),
+  ).toHaveCount(0);
 
   const invocations = await page.evaluate(() =>
     (window as unknown as {
@@ -183,6 +192,38 @@ test("whole-report generation preloads records and saves one direct draft revisi
     modelId: "us.anthropic.claude-sonnet-4-20250514-v1:0",
     guidance: "Use a concise clinical style.",
   });
+});
+
+test("Editor History resumes a specific Writing session", async ({ page }) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="writing"]').click();
+  await page.getByRole("button", { name: "Fill whole report" }).click();
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Complete Generated Evaluation",
+  );
+
+  await page.locator('[data-tab="record"]').click();
+  await page.getByRole("button", { name: "Editor History" }).click();
+  await expect(page.getByText("Complete Generated Evaluation")).toBeVisible();
+  await page.getByTitle("Resume writing session").click();
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Complete Generated Evaluation",
+  );
+
+  const invocations = await page.evaluate(() =>
+    (window as unknown as {
+      __REPORT_INVOCATIONS__: Array<{ cmd: string; args: Record<string, unknown> }>;
+    }).__REPORT_INVOCATIONS__,
+  );
+  const startedReportId = invocations.find(
+    (invocation) => invocation.cmd === "start_report_workspace",
+  )?.args.reportId;
+  expect(
+    invocations.find((invocation) => invocation.cmd === "load_report_workspace")
+      ?.args,
+  ).toMatchObject({ reportId: startedReportId });
 });
 
 test("managed writer templates apply directly and export without responsibility nags", async ({
@@ -220,7 +261,6 @@ test("managed writer templates apply directly and export without responsibility 
   await page.getByTestId("inline-report-editor").locator("section").hover();
   await page.getByRole("button", { name: "Add paragraph" }).click();
   await page.getByRole("button", { name: "Save now" }).click();
-  await page.getByRole("button", { name: "Discard" }).click();
   await expect(page.getByTestId("accepted-report-canvas")).toContainText("91");
   await expect(exportButton).toBeEnabled();
   await exportButton.click();
@@ -300,7 +340,7 @@ test("Writing opens the expanded template manager in Preferences", async ({ page
   await expect(page.getByText("Jane Doe")).toBeVisible();
 });
 
-test("Writing back navigation retains an unsent instruction", async ({ page }) => {
+test("opening Writing from the record starts a fresh session", async ({ page }) => {
   await page.goto(BASE_URL);
   await page.getByRole("button", { name: "Client Files" }).click();
   await page.getByText("Jane Doe").click();
@@ -312,9 +352,17 @@ test("Writing back navigation retains an unsent instruction", async ({ page }) =
 
   await page.getByText("Jane Doe").click();
   await page.locator('[data-tab="writing"]').click();
-  await expect(page.getByLabel("Writing instruction")).toHaveValue(
-    "Keep this draft",
+  await expect(page.getByLabel("Writing instruction")).toHaveValue("");
+
+  const starts = await page.evaluate(() =>
+    (window as unknown as {
+      __REPORT_INVOCATIONS__: Array<{ cmd: string; args: Record<string, unknown> }>;
+    }).__REPORT_INVOCATIONS__.filter(
+      (invocation) => invocation.cmd === "start_report_workspace",
+    ),
   );
+  const uniqueReportIds = new Set(starts.map((start) => start.args.reportId));
+  expect(uniqueReportIds.size).toBe(2);
 });
 
 test("a new Chat can be named directly before its first message", async ({ page }) => {

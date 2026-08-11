@@ -146,7 +146,7 @@ describe("buildCostLedger", () => {
     expect(ledger.entries[0].index).toBe(1);
   });
 
-  it("attributes a miss to the window the predecessor wrote", () => {
+  it("attributes expiry only when timestamps prove the predecessor's window is stale", () => {
     const ledger = buildCostLedger(
       [
         usage({ cache_write_input_tokens: 100, cache_ttl: "one_hour" }),
@@ -154,7 +154,13 @@ describe("buildCostLedger", () => {
         usage({ cache_write_input_tokens: 100, cache_ttl: null }),
         usage({ input_tokens: 10 }),
       ],
-      pricingMap
+      pricingMap,
+      [
+        "2026-08-11T10:00:00Z",
+        "2026-08-11T11:01:00Z",
+        "2026-08-11T12:00:00Z",
+        "2026-08-11T12:06:00Z",
+      ]
     );
     expect(ledger.entries[1].outcome).toEqual({
       kind: "miss",
@@ -166,6 +172,21 @@ describe("buildCostLedger", () => {
       expiredTtl: "five_minutes",
     });
     expect(ledger.missCount).toBe(2);
+    expect(ledger.notReusedCount).toBe(0);
+  });
+
+  it("does not claim expiry when a recent cache prefix was not reused", () => {
+    const ledger = buildCostLedger(
+      [
+        usage({ cache_write_input_tokens: 100 }),
+        usage({ input_tokens: 10 }),
+      ],
+      pricingMap,
+      ["2026-08-11T12:00:00Z", "2026-08-11T12:02:00Z"]
+    );
+    expect(ledger.entries[1].outcome).toEqual({ kind: "not_reused" });
+    expect(ledger.missCount).toBe(0);
+    expect(ledger.notReusedCount).toBe(1);
   });
 
   it("does not call it a miss when the predecessor wrote nothing", () => {

@@ -77,12 +77,20 @@ fn report_workspace_is_isolated_from_records_and_chat_history() {
     let id = Uuid::new_v4();
     let prefix = s3_keys::report_authoring_client_prefix(id);
     let workspace = s3_keys::report_workspace(id);
+    let report_id = Uuid::new_v4();
+    let sessions = s3_keys::report_sessions_prefix(id);
+    let session = s3_keys::report_session_workspace(id, report_id);
     let attempt_id = Uuid::new_v4();
     let attempt = s3_keys::report_attempt(id, attempt_id);
     let usage = s3_keys::report_call_usage(id, attempt_id, 3);
 
     assert_eq!(prefix, format!("report-authoring/{id}/"));
     assert_eq!(workspace, format!("report-authoring/{id}/workspace.json"));
+    assert_eq!(sessions, format!("report-authoring/{id}/sessions/"));
+    assert_eq!(
+        session,
+        format!("report-authoring/{id}/sessions/{report_id}.json")
+    );
     assert_eq!(
         attempt,
         format!("report-authoring/{id}/attempts/{attempt_id}.json")

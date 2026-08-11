@@ -33,6 +33,7 @@ eyre.workspace = true
 futures.workspace = true
 rfd = "=0.17.2"
 jiff.workspace = true
+lru.workspace = true
 semver = "=1.0.28"
 serde.workspace = true
 serde_json.workspace = true
