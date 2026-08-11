@@ -25,6 +25,7 @@ import type {
   DeletedFile,
   EditorHistoryEntry,
   FileVersion,
+  FullReportGenerationResponse,
   InfraChatResponse,
   LocalModelId,
   LocalTranscriptionSettings,
@@ -90,6 +91,7 @@ export type {
   EditorHistoryEntry,
   FieldDrift,
   FileVersion,
+  FullReportGenerationResponse,
   InfraChatResponse,
   Lifecycle,
   LocalBackend,
@@ -520,6 +522,26 @@ export async function discardReportTemplatePreview(
   importId: string
 ): Promise<void> {
   unwrap(await commands.discardReportTemplatePreview(importId));
+}
+
+export async function generateFullReport(
+  clientId: string,
+  expectedRevision: number,
+  modelId: string,
+  guidance: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<FullReportGenerationResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.generateFullReport(
+      clientId,
+      expectedRevision,
+      modelId,
+      guidance,
+      channel
+    )
+  );
 }
 
 export async function sendReportMessage(

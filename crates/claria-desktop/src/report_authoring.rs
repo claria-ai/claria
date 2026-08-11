@@ -144,6 +144,11 @@ pub struct ReportContextReadView {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReportTurnProgressView {
+    RecordContextPrepared {
+        included_files: u32,
+        unavailable_files: u32,
+        total_characters: u64,
+    },
     ModelCallStarted {
         call_number: u32,
     },
@@ -161,6 +166,15 @@ pub enum ReportTurnProgressView {
 impl From<claria_report_authoring::ReportTurnProgress> for ReportTurnProgressView {
     fn from(value: claria_report_authoring::ReportTurnProgress) -> Self {
         match value {
+            claria_report_authoring::ReportTurnProgress::RecordContextPrepared {
+                included_files,
+                unavailable_files,
+                total_characters,
+            } => Self::RecordContextPrepared {
+                included_files,
+                unavailable_files,
+                total_characters,
+            },
             claria_report_authoring::ReportTurnProgress::ModelCallStarted { call_number } => {
                 Self::ModelCallStarted { call_number }
             }
@@ -298,6 +312,21 @@ pub struct ReportTurnResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct FullReportGenerationResponse {
+    pub workspace: ReportWorkspaceView,
+    pub turn_id: String,
+    pub attempt_id: String,
+    pub assistant_text: String,
+    pub usage: TurnUsage,
+    pub usage_complete: bool,
+    pub converse_calls: u32,
+    pub tool_uses: u32,
+    pub included_record_files: u32,
+    pub unavailable_record_files: u32,
+    pub record_characters: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ReportExportResult {
     pub exported: bool,
     pub report_id: String,
@@ -348,6 +377,24 @@ pub fn turn_response_view(
         converse_calls: outcome.attempt.converse_calls,
         tool_uses: outcome.attempt.tool_uses,
         proposal_id: outcome.proposal_id.map(|id| id.to_string()),
+    }
+}
+
+pub fn full_report_response_view(
+    outcome: claria_report_authoring::FullReportGenerationOutcome,
+) -> FullReportGenerationResponse {
+    FullReportGenerationResponse {
+        workspace: workspace_view(&outcome.workspace),
+        turn_id: outcome.turn_id.to_string(),
+        attempt_id: outcome.attempt.attempt_id.to_string(),
+        assistant_text: outcome.assistant_text,
+        usage: outcome.attempt.usage,
+        usage_complete: outcome.attempt.usage_complete,
+        converse_calls: outcome.attempt.converse_calls,
+        tool_uses: outcome.attempt.tool_uses,
+        included_record_files: outcome.record_context.included_files,
+        unavailable_record_files: outcome.record_context.unavailable_files,
+        record_characters: outcome.record_context.total_characters,
     }
 }
 

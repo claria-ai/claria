@@ -513,6 +513,14 @@ async discardReportTemplatePreview(importId: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
+async generateFullReport(clientId: string, expectedRevision: number, modelId: string, guidance: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("generate_full_report", { clientId, expectedRevision, modelId, guidance, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction, references, onProgress }) };
@@ -1388,6 +1396,7 @@ export type FileVersion = { version_id: string; size: number; last_modified: str
  * Severity levels the frontend logging bridge may report.
  */
 export type FrontendLogLevel = "error" | "warn" | "info"
+export type FullReportGenerationResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; included_record_files: number; unavailable_record_files: number; record_characters: number }
 /**
  * Response from an infrastructure chat turn. Infra chat does not persist
  * history, but we still return token usage so the UI can display cost.
@@ -1540,7 +1549,7 @@ export type ReportTemplateWarningView = { code: string; message: string; count: 
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
-export type ReportTurnProgressView = { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus }
+export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus }
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
 /**
  * Earns its life over `ReportWorkspace`: flattens the session container and

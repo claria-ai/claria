@@ -3,9 +3,9 @@
 use tauri::State;
 
 pub use claria_desktop::report_authoring::{
-    EditorHistoryEntry, ReportBlockReferenceInput, ReportDraftEdit, ReportExportResult,
-    ReportProposalChoice, ReportRevisionView, ReportTurnProgressView, ReportTurnResponse,
-    ReportWorkspaceView,
+    EditorHistoryEntry, FullReportGenerationResponse, ReportBlockReferenceInput, ReportDraftEdit,
+    ReportExportResult, ReportProposalChoice, ReportRevisionView, ReportTurnProgressView,
+    ReportTurnResponse, ReportWorkspaceView,
 };
 
 use claria_core::models::report::{ReportDraft, ReportExportStatus};
@@ -232,6 +232,107 @@ pub async fn save_report_draft(
         .await;
 
         Ok(workspace)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn generate_full_report(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    expected_revision: u64,
+    model_id: String,
+    guidance: String,
+    on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
+) -> Result<FullReportGenerationResponse, String> {
+    run("generate_full_report", async {
+        let ctx = CommandContext::new(&state).await?;
+        let client_id = parse_uuid(&client_id)?;
+        let limits = ctx.cfg.report_authoring.limits()?;
+        let progress = |event: claria_report_authoring::ReportTurnProgress| {
+            let _ = on_progress.send(event.into());
+        };
+        let result = claria_report_authoring::generate_full_report(
+            &ctx.sdk_config,
+            &ctx.s3,
+            &ctx.bucket,
+            client_id,
+            expected_revision,
+            &model_id,
+            claria_report_authoring::FullReportRequest::new(&guidance)
+                .with_limits(limits)
+                .with_progress(&progress),
+        )
+        .await;
+
+        match result {
+            Ok(outcome) => {
+                let attempt = outcome.attempt.clone();
+                let record_context = outcome.record_context.clone();
+                let response = claria_desktop::report_authoring::full_report_response_view(outcome);
+                let mut audit_details =
+                    usage_audit_details(&attempt.model_id, Some(&attempt.usage));
+                merge_details(
+                    &mut audit_details,
+                    serde_json::json!({
+                        "status": "succeeded",
+                        "client_id": attempt.client_id.to_string(),
+                        "report_id": attempt.report_id.to_string(),
+                        "attempt_id": attempt.attempt_id.to_string(),
+                        "turn_id": response.turn_id,
+                        "revision": response.workspace.draft.revision,
+                        "section_count": response.workspace.draft.content.sections.len(),
+                        "converse_calls": attempt.converse_calls,
+                        "tool_uses": attempt.tool_uses,
+                        "usage_complete": attempt.usage_complete,
+                        "included_record_files": record_context.included_files,
+                        "unavailable_record_files": record_context.unavailable_files,
+                        "record_characters": record_context.total_characters,
+                    }),
+                );
+                ctx.record_audit(
+                    ctx.audit_event(
+                        "report_full_draft_generated",
+                        "report",
+                        attempt.report_id.to_string(),
+                    )
+                    .with_details(audit_details),
+                )
+                .await;
+                Ok(response)
+            }
+            Err(error) => {
+                let attempt = error.attempt().cloned();
+                let resource_id = attempt.as_ref().map_or_else(
+                    || client_id.to_string(),
+                    |value| value.report_id.to_string(),
+                );
+                let mut audit_details = usage_audit_details(
+                    &model_id,
+                    attempt.as_ref().map(|value| &value.usage),
+                );
+                merge_details(
+                    &mut audit_details,
+                    serde_json::json!({
+                        "status": "failed",
+                        "client_id": client_id.to_string(),
+                        "report_id": attempt.as_ref().map(|value| value.report_id.to_string()),
+                        "attempt_id": attempt.as_ref().map(|value| value.attempt_id.to_string()),
+                        "failure_code": error.failure_code(),
+                        "converse_calls": attempt.as_ref().map_or(0, |value| value.converse_calls),
+                        "tool_uses": attempt.as_ref().map_or(0, |value| value.tool_uses),
+                        "usage_complete": attempt.as_ref().is_some_and(|value| value.usage_complete),
+                    }),
+                );
+                ctx.record_audit(
+                    ctx.audit_event("report_full_draft_failed", "report", resource_id)
+                        .with_details(audit_details),
+                )
+                .await;
+                Err(error.into())
+            }
+        }
     })
     .await
 }

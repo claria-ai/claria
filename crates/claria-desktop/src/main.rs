@@ -104,6 +104,7 @@ fn main() -> Result<()> {
         report_template_commands::preview_writer_template,
         report_template_commands::apply_report_template,
         report_template_commands::discard_report_template_preview,
+        commands::generate_full_report,
         commands::send_report_message,
         commands::resolve_report_proposal,
         commands::export_report_docx,

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   load: vi.fn(),
   save: vi.fn(),
   send: vi.fn(),
+  generate: vi.fn(),
   resolve: vi.fn(),
   exportDocx: vi.fn(),
   listTemplates: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock("../lib/tauri", () => ({
   loadReportWorkspace: mocks.load,
   saveReportDraft: mocks.save,
   sendReportMessage: mocks.send,
+  generateFullReport: mocks.generate,
   resolveReportProposal: mocks.resolve,
   exportReportDocx: mocks.exportDocx,
   listWriterTemplates: mocks.listTemplates,
@@ -220,6 +222,18 @@ beforeEach(() => {
     }
   );
   mocks.send.mockResolvedValue(turnResponse(workspace({ lastAgentRevision: 0 })));
+  const generated = workspace({
+    title: "Generated complete report",
+    revision: 1,
+    lastAgentRevision: 1,
+  });
+  mocks.generate.mockResolvedValue({
+    ...turnResponse(generated),
+    workspace: generated,
+    included_record_files: 10,
+    unavailable_record_files: 0,
+    record_characters: 12872,
+  });
   mocks.previewTemplate.mockResolvedValue(null);
   mocks.discardTemplate.mockResolvedValue(undefined);
   mocks.getRecordText.mockResolvedValue("Preview text");
@@ -457,6 +471,35 @@ describe("Writing", () => {
       [],
       expect.any(Function)
     );
+  });
+
+  it("fills the whole report in one direct versioned generation action", async () => {
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.type(
+      screen.getByLabelText("Writing instruction"),
+      "Use a concise clinical style"
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Fill whole report" })
+    );
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining("replace the current working draft")
+    );
+    expect(mocks.generate).toHaveBeenCalledWith(
+      "client-1",
+      0,
+      "model-1",
+      "Use a concise clinical style",
+      expect.any(Function)
+    );
+    expect(await screen.findByText("Generated complete report")).toBeDefined();
+    expect(screen.getByText(/Generated and saved revision 1 from 10 readable records/)).toBeDefined();
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(
+      (screen.getByLabelText("Writing instruction") as HTMLTextAreaElement).value
+    ).toBe("");
   });
 
   it("drops a hovered paragraph reference into the composer and sends it", async () => {

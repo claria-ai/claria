@@ -3,6 +3,7 @@ import {
   applyReportTemplate,
   discardReportTemplatePreview,
   exportReportDocx,
+  generateFullReport,
   loadReportWorkspace,
   previewWriterTemplate,
   renameReportSession,
@@ -25,6 +26,7 @@ export type WriterBusy =
   | null
   | "saving"
   | "sending"
+  | "generating"
   | "resolving"
   | "exporting"
   | "applying_template";
@@ -44,6 +46,15 @@ function agentActivityForTool(name: string, context: string | null) {
   }
   if (name === "propose_report_changes") {
     return { label: "Drafting a reviewable proposal" };
+  }
+  if (name === "set_full_draft_title") {
+    return { label: "Setting the complete report title" };
+  }
+  if (name === "write_full_draft_section") {
+    return { label: "Writing the complete report", detail: "Adding a section" };
+  }
+  if (name === "finish_full_draft") {
+    return { label: "Validating the complete report" };
   }
   return { label: "Using an approved tool", detail: name };
 }
@@ -204,6 +215,17 @@ export function useReportWorkspace({
   }, [persistCurrentEdit, showActionError]);
 
   const handleAgentProgress = useCallback((progress: ReportTurnProgressView) => {
+    if (progress.kind === "record_context_prepared") {
+      setAgentActivity({
+        label: `Loaded ${progress.included_files} readable record${progress.included_files === 1 ? "" : "s"}`,
+        detail:
+          progress.unavailable_files > 0
+            ? `${progress.unavailable_files} unavailable · ${progress.total_characters.toLocaleString()} characters ready`
+            : `${progress.total_characters.toLocaleString()} characters ready`,
+      });
+      return;
+    }
+
     if (progress.kind === "model_call_started") {
       setAgentActivity({
         label:
@@ -216,7 +238,7 @@ export function useReportWorkspace({
     const context = progress.context;
     if (progress.kind === "tool_started") {
       setAgentActivity(agentActivityForTool(progress.name, context));
-      if (context) {
+      if (context && !progress.name.includes("full_draft")) {
         setLiveContext((current) => upsertLiveContext(current, context, "loading"));
       }
       return;
@@ -225,13 +247,17 @@ export function useReportWorkspace({
     setAgentActivity(
       progress.name === "propose_report_changes"
         ? { label: "Claude is reviewing its proposal" }
-        : {
-            label:
-              progress.status === "succeeded" ? "Context ready" : "Context unavailable",
-            detail: context ?? progress.name,
-          }
+        : progress.name === "finish_full_draft"
+          ? { label: "Complete working draft ready" }
+          : progress.name === "write_full_draft_section"
+            ? { label: "Complete report section ready" }
+            : {
+                label:
+                  progress.status === "succeeded" ? "Context ready" : "Context unavailable",
+                detail: context ?? progress.name,
+              }
     );
-    if (context) {
+    if (context && !progress.name.includes("full_draft")) {
       setLiveContext((current) =>
         upsertLiveContext(
           current,
@@ -288,6 +314,65 @@ export function useReportWorkspace({
       } catch (error) {
         if (generation !== generationRef.current) return false;
         // Keep the caller's instruction and references for an exact retry.
+        showActionError(error);
+        setSaveStatus(null);
+        setLiveContext([]);
+        return false;
+      } finally {
+        if (generation === generationRef.current) {
+          setAgentActivity(null);
+          setBusy(null);
+        }
+      }
+    },
+    [clientId, handleAgentProgress, persistCurrentEdit, showActionError]
+  );
+
+  const generateFullDraft = useCallback(
+    async (modelId: string, guidance: string): Promise<boolean> => {
+      const { busy: currentBusy } = stateRef.current;
+      if (currentBusy !== null) return false;
+      const generation = generationRef.current;
+      setBusy("generating");
+      setActionError(null);
+      setLiveContext([]);
+      setAgentActivity({
+        label: "Preparing the complete report",
+        detail: "Loading every readable client record",
+      });
+      setSaveStatus(
+        stateRef.current.dirty
+          ? "Saving your report edits before generating the complete draft…"
+          : "Loading all readable records for the complete draft…"
+      );
+      try {
+        const current = await persistCurrentEdit();
+        if (generation !== generationRef.current) return false;
+        const result = await generateFullReport(
+          clientId,
+          current.draft.revision,
+          modelId,
+          guidance,
+          (progress) => {
+            if (generation === generationRef.current) handleAgentProgress(progress);
+          }
+        );
+        if (generation !== generationRef.current) return false;
+        setWorkspace(result.workspace);
+        setEdit(draftToEdit(result.workspace.draft));
+        setEditing(false);
+        setConflict(false);
+        const unavailable =
+          result.unavailable_record_files > 0
+            ? ` ${result.unavailable_record_files} record${result.unavailable_record_files === 1 ? " was" : "s were"} unavailable and listed in the writer context.`
+            : "";
+        setSaveStatus(
+          `Generated and saved revision ${result.workspace.draft.revision} from ${result.included_record_files} readable record${result.included_record_files === 1 ? "" : "s"}.${unavailable}`
+        );
+        setLiveContext([]);
+        return true;
+      } catch (error) {
+        if (generation !== generationRef.current) return false;
         showActionError(error);
         setSaveStatus(null);
         setLiveContext([]);
@@ -503,6 +588,7 @@ export function useReportWorkspace({
     cancelEdit,
     save,
     send,
+    generateFullDraft,
     resolveProposal,
     applyTemplate,
     exportDocx,

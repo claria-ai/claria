@@ -534,6 +534,64 @@ export function buildInitScript(
             window.__REPORT_COMMANDS__.push(cmd);
             return null;
           }
+          if (cmd === "generate_full_report") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (reportWorkspace.pending_proposal) throw "Accept or reject the pending proposal before starting another writer action.";
+            const nextRevision = reportWorkspace.draft.revision + 1;
+            const now = new Date().toISOString();
+            reportWorkspace = {
+              ...reportWorkspace,
+              draft: {
+                ...reportWorkspace.draft,
+                revision: nextRevision,
+                content: {
+                  title: "Complete Generated Evaluation",
+                  sections: [{
+                    id: "11111111-2222-4333-8444-555555555555",
+                    heading: "Summary",
+                    blocks: [{ kind: "paragraph", text: "Complete generated report content from every readable record." }],
+                  }],
+                },
+                updated_at: now,
+              },
+              turns: [...reportWorkspace.turns, {
+                id: "turn-full-1",
+                model_id: args.modelId,
+                timeline: [
+                  { kind: "message", role: "user", text: "Fill the complete report from all readable client records.\\n\\nGuidance: " + args.guidance, created_at: now },
+                  toolActivity("write_full_draft_section", "section-full-1", "Staged complete report section", { section_id: null, position: 0, block_count: 1, content_retained: false }, { status: "section_staged", section_count: 1 }),
+                  toolActivity("finish_full_draft", "finish-full-1", "Finalized complete working draft", { summary_retained: false }, { status: "full_draft_finalized", section_count: 1 }),
+                  { kind: "message", role: "assistant", text: "The complete working draft is ready.", created_at: now },
+                ],
+                usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.031, pricing_version: 5 },
+                usage_complete: true,
+                converse_calls: 3,
+                tool_uses: 3,
+                context_reads: [],
+                created_at: now,
+                completed_at: now,
+              }],
+              pending_proposal: null,
+              last_agent_revision: nextRevision,
+              updated_at: now,
+            };
+            rememberReportDraft();
+            return {
+              workspace: structuredClone(reportWorkspace),
+              turn_id: "turn-full-1",
+              attempt_id: "attempt-full-1",
+              assistant_text: "The complete working draft is ready.",
+              usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.031, pricing_version: 5 },
+              usage_complete: true,
+              converse_calls: 3,
+              tool_uses: 3,
+              included_record_files: 3,
+              unavailable_record_files: 0,
+              record_characters: 6400,
+            };
+          }
           if (cmd === "send_report_message") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });

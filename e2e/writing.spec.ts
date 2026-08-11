@@ -145,6 +145,46 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
   });
 });
 
+test("whole-report generation preloads records and saves one direct draft revision", async ({
+  page,
+}) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="writing"]').click();
+
+  await page
+    .getByLabel("Writing instruction")
+    .fill("Use a concise clinical style.");
+  await page.getByRole("button", { name: "Fill whole report" }).click();
+
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Complete Generated Evaluation",
+  );
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Complete generated report content from every readable record.",
+  );
+  await expect(page.getByTestId("report-proposal")).toHaveCount(0);
+  await expect(
+    page.getByText(/Generated and saved revision 1 from 3 readable records/),
+  ).toBeVisible();
+  await expect(page.getByLabel("Writing instruction")).toHaveValue("");
+
+  const invocations = await page.evaluate(() =>
+    (window as unknown as {
+      __REPORT_INVOCATIONS__: Array<{ cmd: string; args: Record<string, unknown> }>;
+    }).__REPORT_INVOCATIONS__,
+  );
+  expect(
+    invocations.find((invocation) => invocation.cmd === "generate_full_report")
+      ?.args,
+  ).toMatchObject({
+    expectedRevision: 0,
+    modelId: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+    guidance: "Use a concise clinical style.",
+  });
+});
+
 test("managed writer templates apply directly and export without responsibility nags", async ({
   page,
 }) => {

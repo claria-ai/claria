@@ -103,6 +103,7 @@ export default function Writing({
     cancelEdit,
     save,
     send,
+    generateFullDraft,
     resolveProposal,
     applyTemplate,
     exportDocx,
@@ -283,6 +284,29 @@ export default function Writing({
       }))
     );
     if (sent) {
+      setInstruction("");
+      setQueuedReferences([]);
+    }
+  }
+
+  async function handleGenerateFullDraft() {
+    if (!workspace || composerDisabled || !selectedModelId) return;
+    const hasExistingDraft =
+      workspace.draft.content.sections.length > 0 ||
+      workspace.draft.content.title !== "Untitled report";
+    if (
+      hasExistingDraft &&
+      !window.confirm(
+        "Fill the whole report from every readable client record? Claude will replace the current working draft with one new revision. The current revision remains available in Version history."
+      )
+    ) {
+      return;
+    }
+    const generated = await generateFullDraft(
+      selectedModelId,
+      instruction.trim()
+    );
+    if (generated) {
       setInstruction("");
       setQueuedReferences([]);
     }
@@ -555,6 +579,24 @@ export default function Writing({
               ))}
             </div>
           )}
+          <div className="mb-3 flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-blue-900">
+                Generate the complete working draft
+              </p>
+              <p className="mt-0.5 text-[11px] text-blue-700">
+                Loads every readable client record and saves one versioned draft. Composer text is optional guidance; use Send for later reviewable changes.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleGenerateFullDraft()}
+              disabled={composerDisabled}
+              className="shrink-0 rounded-md bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+            >
+              {busy === "generating" ? "Filling…" : "Fill whole report"}
+            </button>
+          </div>
           <ChatComposer
             composerRef={composerRef}
             ariaLabel="Writing instruction"
