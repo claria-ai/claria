@@ -1440,8 +1440,201 @@ async fn inconsistent_stop_reason_gets_exactly_one_corrective_round() {
     );
 }
 
+/// Reproduces the shipped `generate_full_report` failure: a large section
+/// write truncated by the 8k output reserve returns `max_tokens` beside
+/// complete tool calls. That is forward progress, not an inconsistent stop —
+/// the calls execute, the model is told it was cut off, and the draft
+/// finishes on the following rounds.
 #[tokio::test]
-async fn second_inconsistent_stop_reason_fails_the_turn() {
+async fn full_draft_truncated_after_tool_calls_executes_them_and_continues() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "intake.txt"),
+        "Complete intake source",
+    )
+    .await;
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "title-1", "name": "set_full_draft_title", "input": {
+                        "title": "Complete Evaluation"
+                    }}},
+                    {"toolUse": {"toolUseId": "section-1", "name": "write_full_draft_section", "input": {
+                        "section_id": null,
+                        "position": 0,
+                        "heading": "Summary",
+                        "blocks": [{"kind": "paragraph", "text": "Generated findings"}]
+                    }}}
+                ]}},
+                "stopReason": "max_tokens",
+                "usage": {"inputTokens": 3, "outputTokens": 8192}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"toolUse": {
+                    "toolUseId": "finish-1", "name": "finish_full_draft", "input": {
+                        "summary": "Generated the complete report."
+                    }
+                }}]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 1, "outputTokens": 5}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "The complete working draft is ready."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 6}
+            }),
+        ],
+    )
+    .await;
+
+    let outcome = report_authoring::generate_full_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::FullReportRequest::new(""),
+    )
+    .await
+    .expect("truncated tool round continues instead of failing the turn");
+
+    assert_eq!(outcome.workspace.draft.revision, 1);
+    assert_eq!(outcome.workspace.draft.content.title, "Complete Evaluation");
+    assert_eq!(outcome.attempt.converse_calls, 3);
+    assert_eq!(outcome.attempt.tool_uses, 3);
+
+    // The truncated round's tool calls were executed successfully — not
+    // rejected with inconsistent_stop_reason errors — and the last result
+    // carries the continuation notice.
+    let state = server.state.read().await;
+    let results = state.bedrock_tool_requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["content"]
+        .clone();
+    assert_eq!(results[0]["toolResult"]["toolUseId"], "title-1");
+    assert_eq!(results[0]["toolResult"]["status"], "success");
+    assert_eq!(results[1]["toolResult"]["toolUseId"], "section-1");
+    assert_eq!(results[1]["toolResult"]["status"], "success");
+    let notice = results[1]["toolResult"]["content"][0]["json"]["response_truncated"]
+        .as_str()
+        .expect("truncation notice on the last result");
+    assert!(notice.contains("output-token"));
+    assert!(
+        results[0]["toolResult"]["content"][0]["json"]["response_truncated"].is_null(),
+        "only the last result carries the notice"
+    );
+}
+
+#[tokio::test]
+async fn targeted_edit_truncated_after_tool_call_executes_it_and_continues() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "list-1", "name": "list_record_files", "input": {}}}
+                ]}},
+                "stopReason": "max_tokens",
+                "usage": {"inputTokens": 10, "outputTokens": 8192}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "There are no records."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 20, "outputTokens": 4}
+            }),
+        ],
+    )
+    .await;
+
+    let outcome = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("List my records."),
+    )
+    .await
+    .expect("truncated tool round continues instead of failing the turn");
+    assert_eq!(outcome.assistant_text, "There are no records.");
+    assert_eq!(outcome.attempt.converse_calls, 2);
+    assert_eq!(outcome.attempt.tool_uses, 1);
+}
+
+/// The corrective-round allowance re-arms after a well-formed response, so
+/// two transient glitches separated by real work no longer discard a long
+/// multi-round turn.
+#[tokio::test]
+async fn nonconsecutive_inconsistent_stop_reasons_each_get_a_corrective_round() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+
+    let mismatch = |id: &str| {
+        serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [
+                {"text": "Checking."},
+                {"toolUse": {"toolUseId": id, "name": "list_record_files", "input": {}}}
+            ]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 10, "outputTokens": 4}
+        })
+    };
+    script(
+        &server,
+        vec![
+            mismatch("list-1"),
+            // The corrective round recovers into a well-formed tool round,
+            // which re-arms the allowance...
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "list-2", "name": "list_record_files", "input": {}}}
+                ]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 10, "outputTokens": 4}
+            }),
+            // ...so a second, non-consecutive mismatch is corrected too.
+            mismatch("list-3"),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "There are no records."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 20, "outputTokens": 4}
+            }),
+        ],
+    )
+    .await;
+
+    let outcome = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("List my records."),
+    )
+    .await
+    .expect("mismatches separated by a well-formed round both recover");
+    assert_eq!(outcome.assistant_text, "There are no records.");
+    assert_eq!(outcome.attempt.converse_calls, 4);
+}
+
+#[tokio::test]
+async fn consecutive_inconsistent_stop_reasons_fail_the_turn() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();
     put_client(&s3, client_id).await;

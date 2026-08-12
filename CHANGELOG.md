@@ -2,6 +2,11 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Writer responses cut off by the output-token limit mid tool call no longer fail the turn; the completed tool calls are executed and the model continues where it was cut
+- The writer's corrective round for an inconsistent stop reason now re-arms after each well-formed response instead of being spent once per turn
+
 ## [0.23.0] — 2026-08-11
 
 - Writing can fill an entire report in one action, save it directly as one versioned draft, and reserve reviewable proposals for later targeted edits
