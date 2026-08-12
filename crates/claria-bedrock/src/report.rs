@@ -59,11 +59,24 @@ pub struct ReportConverseOutput {
 }
 
 impl ReportConverseOutput {
-    /// True when the stop reason disagrees with tool presence — tool calls
-    /// without a `tool_use` stop, or a `tool_use` stop without tool calls.
-    /// The loop attempts one corrective round on this before failing.
+    /// True when the stop reason disagrees with tool presence in a way that
+    /// has no meaning of its own — a `tool_use` stop without tool calls, or
+    /// tool calls beside a stop that claims the model finished normally.
+    /// The loop attempts a corrective round on this before failing.
+    ///
+    /// `max_tokens` beside complete tool calls is NOT a mismatch: it means
+    /// the response was truncated after the calls were emitted, and the loop
+    /// executes them so the model can continue. Terminal stops (filtered,
+    /// guardrail, malformed, context overflow) keep their own failure
+    /// handling regardless of tool presence.
     pub fn stop_tool_mismatch(&self) -> bool {
-        self.tool_calls.is_empty() == matches!(self.stop_reason, ReportStopReason::ToolUse)
+        match self.stop_reason {
+            ReportStopReason::ToolUse => self.tool_calls.is_empty(),
+            ReportStopReason::EndTurn
+            | ReportStopReason::StopSequence
+            | ReportStopReason::Unknown => !self.tool_calls.is_empty(),
+            _ => false,
+        }
     }
 }
 
@@ -506,7 +519,7 @@ async fn converse_report_with_tool_set(
 
     // A stop reason that disagrees with tool presence (e.g. `end_turn` next
     // to a tool use) is deliberately NOT an error here: the report loop
-    // attempts one corrective tool-result round before failing, so the
+    // attempts a corrective tool-result round before failing, so the
     // inconsistency must reach it as data via `stop_tool_mismatch`.
     let stop_reason = map_stop_reason(response.stop_reason());
 

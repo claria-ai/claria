@@ -385,6 +385,59 @@ async fn stop_tool_mismatch_is_surfaced_not_rejected() {
     assert!(output.stop_tool_mismatch());
 }
 
+/// `max_tokens` beside complete tool calls means the response was truncated
+/// after the calls were emitted — the loop executes them and continues, so
+/// this must not read as a stop/tool inconsistency.
+#[tokio::test]
+async fn max_tokens_beside_tool_calls_is_truncation_not_mismatch() {
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [
+                {"toolUse": {"toolUseId": "id", "name": "list_record_files", "input": {}}}
+            ]}},
+            "stopReason": "max_tokens"
+        })],
+    )
+    .await;
+    let output = converse_report(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("truncated tool response passes through");
+    assert_eq!(output.stop_reason, ReportStopReason::MaxTokens);
+    assert_eq!(output.tool_calls.len(), 1);
+    assert!(!output.stop_tool_mismatch());
+}
+
+/// A truncated response with no tool calls stays out of the corrective-round
+/// path too — the loop's `max_tokens` salvage/failure arms own it.
+#[tokio::test]
+async fn max_tokens_without_tool_calls_is_not_a_mismatch() {
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "An unfinished"}]}},
+            "stopReason": "max_tokens"
+        })],
+    )
+    .await;
+    let output = converse_report(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("truncated text response passes through");
+    assert!(!output.stop_tool_mismatch());
+}
+
 #[tokio::test]
 async fn malformed_and_unknown_requests_decode_to_schema_errors() {
     for (name, input) in [

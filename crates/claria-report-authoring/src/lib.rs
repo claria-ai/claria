@@ -1810,9 +1810,12 @@ async fn run_turn(
         protocol.push(output.message.clone());
         turn_messages.push(output.message);
 
-        // Stop-reason/tool-presence mismatch: attempt exactly one corrective
-        // round telling the model its response ended inconsistently, instead
-        // of discarding the whole turn on a transient provider glitch.
+        // Stop-reason/tool-presence mismatch: attempt one corrective round
+        // telling the model its response ended inconsistently, instead of
+        // discarding the whole turn on a transient provider glitch. The
+        // allowance is per streak, not per turn — a long multi-round turn
+        // only fails on two mismatches in a row, and any well-formed
+        // response in between re-arms it.
         if stop_tool_mismatch {
             if corrective_round_used {
                 return Err(TurnRunFailure::new(
@@ -1855,9 +1858,17 @@ async fn run_turn(
             turn_messages.push(corrective_message);
             continue;
         }
+        corrective_round_used = false;
 
         match output.stop_reason {
-            ReportStopReason::ToolUse => {
+            // `max_tokens` beside complete tool calls is truncation, not a
+            // protocol inconsistency: the calls that made it out are valid
+            // work. Execute them like a normal tool round and tell the model
+            // its response was cut off so it continues instead of re-paying
+            // for everything it already produced.
+            ReportStopReason::ToolUse | ReportStopReason::MaxTokens
+                if !output.tool_calls.is_empty() =>
+            {
                 if rounds >= limits.max_tool_rounds
                     || progress.converse_calls >= limits.max_converse_calls
                 {
@@ -1914,6 +1925,24 @@ async fn run_turn(
                         status: result.status,
                         content: result.content,
                     });
+                }
+                // The protocol requires a correlated result message to hold
+                // only results, so the truncation notice rides inside the
+                // last result's JSON instead of a separate text block.
+                if matches!(output.stop_reason, ReportStopReason::MaxTokens)
+                    && let Some(ReportProtocolBlock::ToolResult { content, .. }) =
+                        result_blocks.last_mut()
+                    && let Some(object) = content.as_object_mut()
+                {
+                    object.insert(
+                        "response_truncated".to_string(),
+                        serde_json::Value::String(
+                            "Your previous response hit the per-response output-token limit \
+                             after this tool call, so anything you were still generating was \
+                             cut off. Continue the remaining work in your next response."
+                                .to_string(),
+                        ),
+                    );
                 }
                 let result_message = ReportProtocolMessage {
                     role: ReportProtocolRole::User,
