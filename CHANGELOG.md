@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.23.1] — 2026-08-12
 
 - Writer responses cut off by the output-token limit mid tool call no longer fail the turn; the completed tool calls are executed and the model continues where it was cut
 - The writer's corrective round for an inconsistent stop reason now re-arms after each well-formed response instead of being spent once per turn
