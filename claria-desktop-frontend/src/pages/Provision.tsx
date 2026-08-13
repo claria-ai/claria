@@ -38,6 +38,7 @@ const AWS_REGIONS = [
 const DEFAULT_ROLE_NAME = "OrganizationAccountAccessRole";
 
 type CredMode = "inline" | "sub_account" | "profile" | "default_chain";
+type ElevationPurpose = "policy_update" | "destroy";
 
 type Phase =
   | "loading"         // Checking if config exists
@@ -74,10 +75,14 @@ export default function Provision({
   const [roleName, setRoleName] = useState(DEFAULT_ROLE_NAME);
   const [assumedRoleSession, setAssumedRoleSession] = useState<AssumedRoleSession | null>(null);
 
-  // ── Escalation (inline elevated creds) ───────────────────────────────
+  // ── Temporary elevated credentials ───────────────────────────────────
   const [escAccessKeyId, setEscAccessKeyId] = useState("");
   const [escSecretAccessKey, setEscSecretAccessKey] = useState("");
   const [showEscSecret, setShowEscSecret] = useState(false);
+  const [elevationPurpose, setElevationPurpose] =
+    useState<ElevationPurpose>("policy_update");
+  const [elevationReturnPhase, setElevationReturnPhase] =
+    useState<"planned" | "done">("planned");
 
   // ── Reconciliation state ─────────────────────────────────────────────
   const [phase, setPhase] = useState<Phase>("loading");
@@ -113,7 +118,6 @@ export default function Provision({
 
   // ── Management state ─────────────────────────────────────────────────
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   // Build credentials from form state. An assumed-role session is referenced
@@ -133,6 +137,32 @@ export default function Provision({
         return { type: "inline", access_key_id: accessKeyId, secret_access_key: secretAccessKey, session_token: null };
     }
   }, [credMode, accessKeyId, secretAccessKey, profileName, assumedRoleSession]);
+
+  function takeElevatedCredentials(): CredentialInput {
+    const credentials: CredentialInput = {
+      type: "inline",
+      access_key_id: escAccessKeyId,
+      secret_access_key: escSecretAccessKey,
+      session_token: null,
+    };
+    setEscAccessKeyId("");
+    setEscSecretAccessKey("");
+    setShowEscSecret(false);
+    return credentials;
+  }
+
+  function openElevation(purpose: ElevationPurpose) {
+    setElevationPurpose(purpose);
+    setElevationReturnPhase(phase === "done" ? "done" : "planned");
+    setPhase("escalation");
+  }
+
+  function cancelElevation() {
+    setEscAccessKeyId("");
+    setEscSecretAccessKey("");
+    setShowEscSecret(false);
+    setPhase(elevationReturnPhase);
+  }
 
   // ── Initialization ───────────────────────────────────────────────────
   useEffect(() => {
@@ -272,27 +302,28 @@ export default function Provision({
     setPhase("planned");
   }
 
-  // ── Escalation apply (day-2 with elevated creds) ─────────────────────
-  async function handleEscalationApply() {
-    await runPhase("applying", async () => {
-      // Load the saved scoped creds from config for regular resources.
-      const savedCreds = await loadConfig();
-      // The escalation creds are from the inline form.
-      const elevatedCreds: CredentialInput = {
-        type: "inline",
-        access_key_id: escAccessKeyId,
-        secret_access_key: escSecretAccessKey,
-        session_token: null,
-      };
+  // ── Elevated day-2 actions ───────────────────────────────────────────
+  async function handleElevatedAction() {
+    const elevatedCreds = takeElevatedCredentials();
 
-      // Use provision_apply for two-phase execution.
+    if (elevationPurpose === "destroy") {
+      await runPhase("applying", async () => {
+        await destroy(elevatedCreds);
+        await deleteConfig();
+        navigate("start");
+      });
+      return;
+    }
+
+    await runPhase("applying", async () => {
+      // Load the saved config for the deployment identity. The temporary
+      // elevated credentials perform both scan passes and are never saved.
+      const savedConfig = await loadConfig();
       const outcome = await provisionApply(
-        savedCreds.region,
-        savedCreds.system_name,
-        // Regular creds — rebuild from config.
-        // Note: we re-use the plan/apply path since config exists.
-        elevatedCreds, // credentials param (we use elevated for scanning)
-        elevatedCreds, // elevated_credentials param
+        savedConfig.region,
+        savedConfig.system_name,
+        elevatedCreds,
+        elevatedCreds,
         progressHandler,
       );
       // The handoff only runs when no local config exists, which is never
@@ -308,15 +339,6 @@ export default function Provision({
       const result = await plan(progressHandler);
       setEntries(result);
       setPhase("planned");
-    });
-  }
-
-  // ── Destroy all resources ────────────────────────────────────────────
-  async function handleDestroy() {
-    setShowDestroyConfirm(false);
-    await runPhase("applying", async () => {
-      await destroy();
-      await handleRescan();
     });
   }
 
@@ -368,9 +390,9 @@ export default function Provision({
       setPhase("input");
       return;
     }
-    // Mirror the escalation Cancel button so header Back is consistent.
+    // Mirror the elevation Cancel button so header Back is consistent.
     if (phase === "escalation") {
-      setPhase("planned");
+      cancelElevation();
       return;
     }
     // input, done, and all day-2 phases: leave the screen.
@@ -402,7 +424,7 @@ export default function Provision({
       if (needsEscalation && configExists) {
         return (
           <button
-            onClick={() => setPhase("escalation")}
+            onClick={() => openElevation("policy_update")}
             className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors"
           >
             Provide Admin Credentials
@@ -714,18 +736,33 @@ export default function Provision({
         />
       )}
 
-      {/* ── Phase: Escalation ──────────────────────────────────────── */}
+      {/* ── Phase: Elevated credentials ───────────────────────────── */}
       {phase === "escalation" && (
         <div className="space-y-4">
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-            <p className="text-sm font-medium text-amber-800 mb-1">
-              Admin credentials required
-            </p>
-            <p className="text-xs text-amber-700">
-              The IAM policy needs to be updated. Enter root or IAM admin
-              credentials — they'll be used once and discarded.
-            </p>
-          </div>
+          {elevationPurpose === "destroy" ? (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <p className="text-sm font-medium text-red-800 mb-1">
+                Permanent teardown requires elevated credentials
+              </p>
+              <p className="text-xs text-red-700">
+                This will delete every AWS resource and every S3 object version.
+                Your data will be permanently lost. Claria's normal credentials
+                cannot erase version history, so enter root or administrator
+                credentials with S3 and IAM teardown access. They'll be used
+                once and discarded.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <p className="text-sm font-medium text-amber-800 mb-1">
+                Admin credentials required
+              </p>
+              <p className="text-xs text-amber-700">
+                The IAM policy needs to be updated. Enter root or IAM admin
+                credentials — they'll be used once and discarded.
+              </p>
+            </div>
+          )}
 
           <input
             type="text"
@@ -753,18 +790,28 @@ export default function Provision({
 
           <div className="flex gap-2">
             <button
-              onClick={() => setPhase("planned")}
+              onClick={cancelElevation}
               className="px-4 py-2 border rounded-lg text-sm text-gray-600 hover:bg-gray-50"
             >
               Cancel
             </button>
-            <button
-              onClick={handleEscalationApply}
-              disabled={!escAccessKeyId || !escSecretAccessKey}
-              className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors disabled:opacity-50"
-            >
-              Apply with Elevated Credentials
-            </button>
+            {elevationPurpose === "destroy" ? (
+              <button
+                onClick={handleElevatedAction}
+                disabled={!escAccessKeyId || !escSecretAccessKey}
+                className="flex-1 py-2.5 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                Permanently Destroy All Resources
+              </button>
+            ) : (
+              <button
+                onClick={handleElevatedAction}
+                disabled={!escAccessKeyId || !escSecretAccessKey}
+                className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors disabled:opacity-50"
+              >
+                Apply with Elevated Credentials
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -786,7 +833,7 @@ export default function Provision({
               </button>
 
               <button
-                onClick={() => setShowDestroyConfirm(true)}
+                onClick={() => openElevation("destroy")}
                 className="w-full py-2 border border-red-200 rounded-lg text-sm text-red-600 hover:bg-red-50"
               >
                 Destroy All Resources
@@ -800,30 +847,6 @@ export default function Provision({
               </button>
             </div>
           </details>
-
-          {/* Destroy confirm dialog */}
-          {showDestroyConfirm && (
-            <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-4">
-              <p className="text-sm text-red-800 mb-3">
-                This will delete all AWS resources (S3 bucket, CloudTrail, etc.).
-                Your data will be permanently lost.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowDestroyConfirm(false)}
-                  className="flex-1 py-2 border rounded-lg text-sm"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDestroy}
-                  className="flex-1 py-2 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700"
-                >
-                  Destroy
-                </button>
-              </div>
-            </div>
-          )}
 
           {/* Delete config confirm dialog */}
           {showDeleteConfirm && (

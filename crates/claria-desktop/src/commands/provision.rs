@@ -734,18 +734,30 @@ pub async fn apply(
     .await
 }
 
-/// Destroy all managed resources. Returns nothing on success.
+/// Destroy all managed resources with temporary elevated credentials.
+///
+/// The saved scoped credentials deliberately cannot erase S3 version history.
+/// The supplied root or IAM administrator credentials are validated against
+/// the configured account, used only for this teardown, and never persisted.
 #[tauri::command]
 #[specta::specta]
-pub async fn destroy(state: State<'_, DesktopState>) -> Result<(), String> {
+pub async fn destroy(
+    state: State<'_, DesktopState>,
+    elevated_credentials: CredentialInput,
+) -> Result<(), String> {
     run("destroy", async {
-        let ctx = CommandContext::new(&state).await?;
-        let cfg = &ctx.cfg;
+        let elevated_credentials = elevated_credentials.resolve(&state).await?;
+        let cfg = config::load_config()?;
+        let elevated_config =
+            claria_desktop::aws::build_aws_config(&cfg.region, &elevated_credentials).await;
+        let assessment = claria_provisioner::assess_credentials(&elevated_config).await?;
+        claria_provisioner::validate_teardown_credentials(&assessment, &cfg.account_id)?;
+
         let manifest =
             claria_provisioner::build_manifest(&cfg.account_id, &cfg.system_name, &cfg.region);
-        let syncers = claria_provisioner::build_syncers(&ctx.sdk_config, &manifest, None);
+        let syncers = claria_provisioner::build_syncers(&elevated_config, &manifest, None);
         let persistence = claria_provisioner::build_persistence(
-            &ctx.sdk_config,
+            &elevated_config,
             &cfg.system_name,
             &cfg.account_id,
             &config::provisioner_state_dir(&cfg.system_name)?,

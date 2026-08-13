@@ -386,8 +386,10 @@ export async function apply(
   return unwrap(await commands.apply(progressChannel(onProgress)));
 }
 
-export async function destroy(): Promise<void> {
-  unwrap(await commands.destroy());
+export async function destroy(
+  elevatedCredentials: CredentialInput
+): Promise<void> {
+  unwrap(await commands.destroy(elevatedCredentials));
 }
 
 export async function resetProvisionerState(): Promise<void> {

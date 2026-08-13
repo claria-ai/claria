@@ -180,6 +180,8 @@ impl Manifest {
                     label: "S3 Bucket".into(),
                     description: "Encrypted storage for your client records and documents".into(),
                     severity: Severity::Normal,
+                    // Permanent version deletion belongs exclusively to the
+                    // temporary elevated credentials used for full teardown.
                     iam_actions: vec![
                         "s3:HeadBucket".into(),
                         "s3:CreateBucket".into(),
@@ -190,7 +192,6 @@ impl Manifest {
                         "s3:GetObjectVersion".into(),
                         "s3:PutObject".into(),
                         "s3:DeleteObject".into(),
-                        "s3:DeleteObjectVersion".into(),
                     ],
                 },
                 ResourceSpec {

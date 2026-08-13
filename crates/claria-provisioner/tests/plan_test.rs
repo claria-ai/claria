@@ -508,3 +508,36 @@ async fn plan_policy_escalation() {
         }
     }
 }
+
+/// Removing a formerly granted action is also policy drift, so an existing
+/// installation asks for elevated credentials and actually revokes it.
+#[tokio::test]
+async fn plan_policy_reduction_escalation() {
+    let m = manifest();
+    let state = fully_provisioned_state(&m);
+    let mut reads = all_in_sync_reads(&m);
+    let mut old_actions = collect_required_actions(&m);
+    old_actions.push("s3:DeleteObjectVersion".to_string());
+
+    let policy_addr = "iam_user_policy.claria-admin-policy".to_string();
+    for (addr, value) in &mut reads {
+        if *addr == policy_addr {
+            *value = Some(json!({
+                "policy_attached": true,
+                "policy_document": {},
+                "current_actions": old_actions,
+            }));
+            break;
+        }
+    }
+
+    let syncers = mock_syncers(&m, &reads);
+    let result = orchestrate::plan(&syncers, &state).await.unwrap();
+    let policy = result
+        .iter()
+        .find(|entry| entry.spec.addr().to_string() == policy_addr)
+        .expect("IAM policy plan entry");
+
+    assert_eq!(policy.action, Action::Modify);
+    assert_eq!(policy.cause, Cause::Drift);
+}

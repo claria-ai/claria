@@ -304,11 +304,15 @@ async apply(onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<Pla
 }
 },
 /**
- * Destroy all managed resources. Returns nothing on success.
+ * Destroy all managed resources with temporary elevated credentials.
+ *
+ * The saved scoped credentials deliberately cannot erase S3 version history.
+ * The supplied root or IAM administrator credentials are validated against
+ * the configured account, used only for this teardown, and never persisted.
  */
-async destroy() : Promise<Result<null, string>> {
+async destroy(elevatedCredentials: CredentialInput) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("destroy") };
+    return { status: "ok", data: await TAURI_INVOKE("destroy", { elevatedCredentials }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

@@ -32,7 +32,7 @@ pub use crate::{
         CredentialAssessment, CredentialClass, MAX_ACCESS_KEYS_PER_USER, NewCredentials,
         StepStatus, assess_credentials, assume_role, bootstrap_account, build_role_arn,
         create_access_key, delete_user_access_key, get_caller_identity, list_user_access_keys,
-        update_iam_policy, validate_new_credentials,
+        update_iam_policy, validate_new_credentials, validate_teardown_credentials,
     },
     addr::ResourceAddr,
     error::ProvisionerError,

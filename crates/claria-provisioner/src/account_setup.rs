@@ -327,6 +327,35 @@ pub async fn assess_credentials(
     })
 }
 
+/// Require a broad principal in the configured AWS account before teardown.
+///
+/// The scoped `claria-admin` user intentionally cannot permanently delete S3
+/// object versions. Destroying all infrastructure also removes that IAM user
+/// and its policy, so the whole operation runs with temporary root or IAM
+/// administrator credentials instead. AWS still authorizes each individual
+/// teardown call; an IAM administrator without the necessary S3 permissions
+/// receives the service's access-denied error.
+pub fn validate_teardown_credentials(
+    assessment: &CredentialAssessment,
+    expected_account_id: &str,
+) -> Result<(), ProvisionerError> {
+    if assessment.identity.account_id != expected_account_id {
+        return Err(ProvisionerError::CredentialAccountMismatch {
+            expected_account_id: expected_account_id.to_string(),
+            actual_account_id: assessment.identity.account_id.clone(),
+        });
+    }
+
+    if !matches!(
+        assessment.credential_class,
+        CredentialClass::Root | CredentialClass::IamAdmin
+    ) {
+        return Err(ProvisionerError::TeardownCredentialsRequired);
+    }
+
+    Ok(())
+}
+
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
 /// Create a least-privilege IAM user for Claria using the provided
@@ -674,6 +703,8 @@ pub async fn delete_user_access_key(
 /// Build the Claria minimal IAM policy document.
 ///
 /// S3 actions are scoped to buckets matching `{system_name}-*`.
+/// `s3:DeleteObjectVersion` is deliberately absent: only a temporary elevated
+/// credential may permanently erase version history during full teardown.
 /// IAM read actions are scoped to the `claria-admin` user and
 /// `ClariaProvisionerAccess` policy so the dashboard can verify its own setup.
 ///
@@ -709,7 +740,6 @@ pub(crate) fn claria_policy_document(system_name: &str, account_id: &str) -> Str
                     "s3:GetObjectVersion",
                     "s3:PutObject",
                     "s3:DeleteObject",
-                    "s3:DeleteObjectVersion",
                     "s3:ListBucket",
                     "s3:ListBucketVersions"
                 ],
