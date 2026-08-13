@@ -366,6 +366,34 @@ fn bullets_stay_numbered_after_a_multi_line_paragraph() {
     assert_eq!(multi_line.line_breaks, 1, "{multi_line:?}");
     assert!(multi_line.text.contains("Second observation."));
     assert!(!multi_line.text.contains('\n'));
+
+    // The template has no numbering part, so the bullets' numbering
+    // definition, its content-type override, and its document relationship
+    // must all be merged into the package — a dangling numId drops the
+    // bullet glyphs or makes Word prompt to repair.
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(output.as_slice())).expect("output zip");
+    let mut numbering = String::new();
+    archive
+        .by_name("word/numbering.xml")
+        .expect("merged numbering part")
+        .read_to_string(&mut numbering)
+        .expect("read numbering");
+    assert!(numbering.contains("w:numId=\"42\""));
+    let mut content_types = String::new();
+    archive
+        .by_name("[Content_Types].xml")
+        .expect("content types")
+        .read_to_string(&mut content_types)
+        .expect("read content types");
+    assert!(content_types.contains("/word/numbering.xml"));
+    let mut relationships = String::new();
+    archive
+        .by_name("word/_rels/document.xml.rels")
+        .expect("document relationships")
+        .read_to_string(&mut relationships)
+        .expect("read relationships");
+    assert!(relationships.contains("relationships/numbering"));
 }
 
 #[test]

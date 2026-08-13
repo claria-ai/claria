@@ -14,7 +14,7 @@ const LETTER_WIDTH_TWIPS: u32 = 12_240;
 const LETTER_HEIGHT_TWIPS: u32 = 15_840;
 const ONE_INCH_TWIPS: i32 = 1_440;
 const TABLE_CONTENT_WIDTH_TWIPS: usize = 9_360;
-const BULLET_NUMBERING_ID: usize = 42;
+pub(crate) const BULLET_NUMBERING_ID: usize = 42;
 const BODY_FONT: &str = "Times New Roman";
 
 pub fn render_report(draft: &ReportDraft) -> Result<Vec<u8>, DocxError> {

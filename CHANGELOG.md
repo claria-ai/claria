@@ -14,6 +14,7 @@ All notable changes to Claria are documented here.
 - Template import and export both recognize custom-named heading styles through the package's style definitions, so section headings keep the template's heading formatting and body text keeps the body font
 - Filling an empty template table cell regenerates the table instead of silently dropping the generated value
 - Multi-line paragraphs in template exports render their newlines as Word line breaks instead of disappearing
+- Bullet lists exported through a template without its own list formatting carry their numbering definition into the package instead of referencing one that does not exist
 
 - The scoped Claria IAM policy no longer grants permanent S3 object-version deletion
 - Full infrastructure teardown requires temporary elevated credentials from the configured AWS account

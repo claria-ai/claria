@@ -15,7 +15,9 @@ use quick_xml::{
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    DocxError, import_template, render_report,
+    DocxError, import_template,
+    render::BULLET_NUMBERING_ID,
+    render_report,
     style_catalog::{StyleCatalog, normalize_style},
 };
 
@@ -99,7 +101,125 @@ pub fn render_report_with_template(
         reconstruct_flow(&events, &spans, &targets)?
     };
     let rewritten_xml = write_events(&rewritten_events)?;
+    if references_generated_bullets(&rewritten_xml) {
+        return merge_bullet_numbering(template, &rewritten_xml);
+    }
     replace_zip_entry(template, "word/document.xml", &rewritten_xml)
+}
+
+/// Whether the rewritten document uses the generated bullet definition —
+/// list exemplars injected because the template had no bulleted paragraph
+/// of its own reference [`BULLET_NUMBERING_ID`].
+fn references_generated_bullets(document_xml: &[u8]) -> bool {
+    let needle = format!("w:numId w:val=\"{BULLET_NUMBERING_ID}\"");
+    document_xml
+        .windows(needle.len())
+        .any(|window| window == needle.as_bytes())
+}
+
+/// Ensure the output package defines [`BULLET_NUMBERING_ID`] so injected
+/// bullet paragraphs don't reference a numbering definition that does not
+/// exist (Word drops the glyphs and indent, or prompts to repair).
+///
+/// Three cases: the template already defines the id (accept its definition —
+/// the bullets adopt the template's own list format); the template has a
+/// `word/numbering.xml` without the id (append the generated definition);
+/// the template has no numbering part at all (add the generated part plus
+/// its content-type override and document relationship).
+fn merge_bullet_numbering(template: &[u8], document_xml: &[u8]) -> Result<Vec<u8>, DocxError> {
+    let mut entries: Vec<(String, Vec<u8>)> =
+        vec![("word/document.xml".to_string(), document_xml.to_vec())];
+    let generated_numbering = generated_numbering_part()?;
+    let num_marker = format!("w:numId=\"{BULLET_NUMBERING_ID}\"");
+
+    match zip_entry(template, "word/numbering.xml") {
+        Ok(existing) => {
+            let text = String::from_utf8_lossy(&existing);
+            if !text.contains(&num_marker) {
+                let generated_text = String::from_utf8_lossy(&generated_numbering).into_owned();
+                let definitions = extract_between(&generated_text, "<w:abstractNum", "</w:num>")
+                    .ok_or_else(|| {
+                        DocxError::Render(
+                            "generated numbering definitions are malformed".to_string(),
+                        )
+                    })?;
+                let merged = insert_before(&text, "</w:numbering>", definitions).ok_or_else(
+                    || DocxError::Render("template numbering.xml is malformed".to_string()),
+                )?;
+                entries.push(("word/numbering.xml".to_string(), merged.into_bytes()));
+            }
+        }
+        Err(_) => {
+            entries.push((
+                "word/numbering.xml".to_string(),
+                generated_numbering.clone(),
+            ));
+            let content_types = zip_entry(template, "[Content_Types].xml")?;
+            let content_types = String::from_utf8_lossy(&content_types).into_owned();
+            if !content_types.contains("/word/numbering.xml") {
+                let updated = insert_before(
+                    &content_types,
+                    "</Types>",
+                    "<Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/>",
+                )
+                .ok_or_else(|| {
+                    DocxError::Render("template content types are malformed".to_string())
+                })?;
+                entries.push(("[Content_Types].xml".to_string(), updated.into_bytes()));
+            }
+            const NUMBERING_RELATIONSHIP: &str = "<Relationship Id=\"rIdClariaNumbering\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/>";
+            let relationships = match zip_entry(template, "word/_rels/document.xml.rels") {
+                Ok(existing) => {
+                    let text = String::from_utf8_lossy(&existing).into_owned();
+                    if text.contains("relationships/numbering") {
+                        text
+                    } else {
+                        insert_before(&text, "</Relationships>", NUMBERING_RELATIONSHIP)
+                            .ok_or_else(|| {
+                                DocxError::Render(
+                                    "template document relationships are malformed".to_string(),
+                                )
+                            })?
+                    }
+                }
+                Err(_) => format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{NUMBERING_RELATIONSHIP}</Relationships>",
+                ),
+            };
+            entries.push((
+                "word/_rels/document.xml.rels".to_string(),
+                relationships.into_bytes(),
+            ));
+        }
+    }
+    rebuild_package(template, &entries)
+}
+
+/// The `word/numbering.xml` docx-rs emits for [`BULLET_NUMBERING_ID`],
+/// extracted from a minimal generated package so the definition can never
+/// drift from what the plain renderer produces.
+fn generated_numbering_part() -> Result<Vec<u8>, DocxError> {
+    let draft = single_target_draft(&TargetFlow {
+        kind: FlowKind::List,
+        content: FlowContent::Paragraph("bullet".to_string()),
+    })?;
+    let bytes = render_report(&draft)?;
+    zip_entry(&bytes, "word/numbering.xml")
+}
+
+fn extract_between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
+    let from = text.find(start)?;
+    let to = text[from..].find(end)? + from + end.len();
+    Some(&text[from..to])
+}
+
+fn insert_before(text: &str, marker: &str, insertion: &str) -> Option<String> {
+    let position = text.rfind(marker)?;
+    let mut output = String::with_capacity(text.len() + insertion.len());
+    output.push_str(&text[..position]);
+    output.push_str(insertion);
+    output.push_str(&text[position..]);
+    Some(output)
 }
 
 fn visible_content_matches(
@@ -1003,8 +1123,15 @@ fn zip_entry(bytes: &[u8], name: &str) -> Result<Vec<u8>, DocxError> {
 }
 
 fn replace_zip_entry(bytes: &[u8], name: &str, replacement: &[u8]) -> Result<Vec<u8>, DocxError> {
+    rebuild_package(bytes, &[(name.to_string(), replacement.to_vec())])
+}
+
+/// Re-emit the package with the named entries replaced; entries the source
+/// archive does not contain are appended as new package parts.
+fn rebuild_package(bytes: &[u8], entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, DocxError> {
     let mut archive = ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| DocxError::Render(format!("template package is invalid: {error}")))?;
+    let mut written = std::collections::HashSet::new();
     let mut output = Cursor::new(Vec::new());
     {
         let mut writer = ZipWriter::new(&mut output);
@@ -1027,7 +1154,8 @@ fn replace_zip_entry(bytes: &[u8], name: &str, replacement: &[u8]) -> Result<Vec
             writer.start_file(&entry_name, options).map_err(|error| {
                 DocxError::Render(format!("could not copy template entry: {error}"))
             })?;
-            if entry_name == name {
+            if let Some((_, replacement)) = entries.iter().find(|(name, _)| *name == entry_name) {
+                written.insert(entry_name);
                 writer.write_all(replacement).map_err(|error| {
                     DocxError::Render(format!("could not write updated template XML: {error}"))
                 })?;
@@ -1036,6 +1164,19 @@ fn replace_zip_entry(bytes: &[u8], name: &str, replacement: &[u8]) -> Result<Vec
                     DocxError::Render(format!("could not copy template entry: {error}"))
                 })?;
             }
+        }
+        for (name, replacement) in entries {
+            if written.contains(name) {
+                continue;
+            }
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .map_err(|error| {
+                    DocxError::Render(format!("could not add template entry: {error}"))
+                })?;
+            writer.write_all(replacement).map_err(|error| {
+                DocxError::Render(format!("could not write added template entry: {error}"))
+            })?;
         }
         writer.finish().map_err(|error| {
             DocxError::Render(format!("could not finish template DOCX: {error}"))
