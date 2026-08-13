@@ -339,6 +339,8 @@ pub async fn generate_full_report(
         let progress = |event: claria_report_authoring::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
+        let prompt_body =
+            super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-full-draft").await?;
         let result = claria_report_authoring::generate_full_report_for_report(
             &ctx.sdk_config,
             &ctx.s3,
@@ -350,7 +352,8 @@ pub async fn generate_full_report(
             claria_report_authoring::FullReportRequest::new(&guidance)
                 .with_limits(limits)
                 .with_progress(&progress)
-                .with_prompt_cache(&state.report_prompt_cache),
+                .with_prompt_cache(&state.report_prompt_cache)
+                .with_system_prompt_body(&prompt_body),
         )
         .await;
 
@@ -465,6 +468,8 @@ pub async fn send_report_message(
         let progress = |event: claria_report_authoring::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
+        let prompt_body =
+            super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-system").await?;
         let result = claria_report_authoring::send_report_message_for_report(
             &ctx.sdk_config,
             &ctx.s3,
@@ -477,7 +482,8 @@ pub async fn send_report_message(
                 .with_references(&references)
                 .with_limits(limits)
                 .with_progress(&progress)
-                .with_prompt_cache(&state.report_prompt_cache),
+                .with_prompt_cache(&state.report_prompt_cache)
+                .with_system_prompt_body(&prompt_body),
         )
         .await;
 

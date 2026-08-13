@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getPrompt,
+  getWriterTrustRules,
   savePrompt,
   deletePrompt,
   setPreferredModel,
@@ -62,6 +63,10 @@ export default function Preferences({
     setPreferredModelId,
   } = useChatModels();
 
+  // Fixed writer trust rules, displayed read-only under the writer prompt
+  // editors so nothing about how the writer runs is hidden.
+  const { data: trustRules } = useAsyncLoad(() => getWriterTrustRules(), []);
+
   // Model preference state
   const [modelSaving, setModelSaving] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -122,6 +127,22 @@ export default function Preferences({
           promptName="pdf-extraction"
           label="PDF Extraction Prompt"
           description="Instructions used when converting uploaded PDF and DOCX files to structured Markdown."
+        />
+
+        {/* Writer prompt sections — the editable bodies of the document
+            writer's system prompts. Claria always appends fixed trust rules,
+            shown read-only so nothing about how the writer runs is hidden. */}
+        <PromptEditor
+          promptName="report-system"
+          label="Writer Prompt"
+          description="Instructions given to the document writer for targeted edits and proposals."
+          fixedRules={trustRules?.targeted}
+        />
+        <PromptEditor
+          promptName="report-full-draft"
+          label="Whole-Report Prompt"
+          description="Instructions used when filling the complete report in one action."
+          fixedRules={trustRules?.full_draft}
         />
 
         {/* Machine-local transcribe.cpp models and inference controls */}
@@ -188,11 +209,14 @@ function PromptEditor({
   label,
   description,
   defaultOpen,
+  fixedRules,
 }: {
   promptName: string;
   label: string;
   description: string;
   defaultOpen?: boolean;
+  /** Read-only rules Claria always appends after the editable body. */
+  fixedRules?: string;
 }) {
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
@@ -264,6 +288,18 @@ function PromptEditor({
                 disabled={saving}
                 className="w-full min-h-[200px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
               />
+
+              {fixedRules && (
+                <div className="mt-3">
+                  <p className="text-xs text-gray-400 mb-1">
+                    Claria always appends these trust rules after your prompt.
+                    They are not editable and cannot be removed:
+                  </p>
+                  <pre className="w-full px-3 py-2 text-xs font-mono text-gray-500 bg-gray-50 border border-gray-200 rounded-lg whitespace-pre-wrap">
+                    {fixedRules}
+                  </pre>
+                </div>
+              )}
 
               {error && (
                 <ErrorBanner message={error} className="mt-3" />

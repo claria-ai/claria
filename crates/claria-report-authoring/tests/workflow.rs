@@ -2245,14 +2245,14 @@ async fn accepted_report_content_and_focused_tables_stay_in_untrusted_context() 
     let state = server.state.read().await;
     let request = &state.bedrock_tool_requests[0];
     let system = request["system"][0]["text"].as_str().expect("system text");
-    assert_eq!(system, report_authoring::REPORT_SYSTEM_PROMPT);
+    assert_eq!(system, report_authoring::report_system_prompt(None));
     assert!(!system.contains(malicious));
     let user_context = request["messages"][0]["content"][0]["text"]
         .as_str()
         .expect("untrusted user context");
     assert!(user_context.contains(malicious));
     // The system prompt names these exact delimiter tags.
-    assert!(report_authoring::REPORT_SYSTEM_PROMPT.contains("<untrusted_report_context>"));
+    assert!(report_authoring::report_system_prompt(None).contains("<untrusted_report_context>"));
     let context: serde_json::Value = serde_json::from_str(
         user_context
             .strip_prefix("<untrusted_report_context>")
@@ -2273,7 +2273,7 @@ async fn accepted_report_content_and_focused_tables_stay_in_untrusted_context() 
     let counted_system = state.bedrock_count_token_requests[0]["system"][0]["text"]
         .as_str()
         .expect("counted system");
-    assert_eq!(counted_system, report_authoring::REPORT_SYSTEM_PROMPT);
+    assert_eq!(counted_system, report_authoring::report_system_prompt(None));
 }
 
 #[tokio::test]

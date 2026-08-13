@@ -19,6 +19,7 @@ All notable changes to Claria are documented here.
 - Audit events record the app version and, for AI turns, the stop reason
 - Writer per-call usage records add stop reason, latency, the output ceiling in effect, a system-prompt digest, and the app version; chat history messages add stop reason and latency
 - The turn-complete console line reports stop reason, latency, and the output ceiling for every AI call
+- The document writer's system prompts are editable in Preferences with versioned history, while the untrusted-data and template-carryover trust rules stay fixed and are shown read-only
 
 - The scoped Claria IAM policy no longer grants permanent S3 object-version deletion
 - Full infrastructure teardown requires temporary elevated credentials from the configured AWS account

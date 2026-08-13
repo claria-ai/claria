@@ -804,6 +804,14 @@ async getPrompt(promptName: string) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getWriterTrustRules() : Promise<Result<WriterTrustRules, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_writer_trust_rules") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Save a named prompt to S3.
  * 
@@ -1765,6 +1773,12 @@ pricing_version: number }
  */
 export type UpdateCheck = { current_version: string; latest_version: string; update_available: boolean; release_url: string }
 export type WriterTemplateView = { id: string; name: string; size: number; uploaded_at: string; use_count: number }
+/**
+ * The fixed trust-boundary rules Claria appends to every writer prompt —
+ * surfaced so Preferences can display exactly what always runs, without
+ * making it editable.
+ */
+export type WriterTrustRules = { targeted: string; full_draft: string }
 
 /** tauri-specta globals **/
 

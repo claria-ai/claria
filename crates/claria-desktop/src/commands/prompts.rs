@@ -38,8 +38,38 @@ fn resolve_prompt(
             None,
             claria_bedrock::extract::DEFAULT_EXTRACTION_PROMPT,
         )),
+        // Only the editable body is stored; the fixed trust rules are always
+        // appended by claria-report-authoring's prompt composition.
+        "report-system" => Ok((
+            claria_core::s3_keys::REPORT_SYSTEM_PROMPT,
+            None,
+            claria_report_authoring::REPORT_SYSTEM_PROMPT_BODY,
+        )),
+        "report-full-draft" => Ok((
+            claria_core::s3_keys::FULL_REPORT_SYSTEM_PROMPT,
+            None,
+            claria_report_authoring::FULL_REPORT_SYSTEM_PROMPT_BODY,
+        )),
         _ => Err(CommandError::Msg(format!("unknown prompt name: {name}"))),
     }
+}
+
+/// The fixed trust-boundary rules Claria appends to every writer prompt —
+/// surfaced so Preferences can display exactly what always runs, without
+/// making it editable.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct WriterTrustRules {
+    pub targeted: String,
+    pub full_draft: String,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_writer_trust_rules() -> Result<WriterTrustRules, String> {
+    Ok(WriterTrustRules {
+        targeted: claria_report_authoring::REPORT_TRUST_RULES.to_string(),
+        full_draft: claria_report_authoring::FULL_REPORT_TRUST_RULES.to_string(),
+    })
 }
 
 /// Load a prompt from S3 by name, falling back to the legacy path and then the

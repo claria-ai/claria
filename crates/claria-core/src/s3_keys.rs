@@ -185,6 +185,12 @@ pub const SYSTEM_PROMPT: &str = "claria-prompts/system-prompt.md";
 
 pub const EXTRACTION_PROMPT: &str = "claria-prompts/pdf-extraction.md";
 
+/// Customized body of the writer's targeted-edit system prompt.
+pub const REPORT_SYSTEM_PROMPT: &str = "claria-prompts/report-system-prompt.md";
+
+/// Customized body of the writer's whole-document system prompt.
+pub const FULL_REPORT_SYSTEM_PROMPT: &str = "claria-prompts/full-report-system-prompt.md";
+
 /// Legacy key for the system prompt before the `claria-prompts/` migration.
 /// Used as a read fallback so existing buckets keep working.
 pub const LEGACY_SYSTEM_PROMPT: &str = "system-prompt.md";
