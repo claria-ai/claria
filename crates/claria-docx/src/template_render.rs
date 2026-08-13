@@ -476,8 +476,7 @@ fn patch_span(
 ) -> Result<bool, DocxError> {
     match (&span.content, &target.content) {
         (FlowContent::Paragraph(_), FlowContent::Paragraph(text)) => {
-            patch_paragraph(&mut events[span.start..=span.end], text, exemplar)?;
-            Ok(true)
+            patch_paragraph(&mut events[span.start..=span.end], text, exemplar)
         }
         (FlowContent::Table(_), FlowContent::Table(rows)) => {
             patch_table(&mut events[span.start..=span.end], rows, exemplar)
@@ -486,21 +485,24 @@ fn patch_span(
     }
 }
 
+/// Returns `Ok(false)` when the paragraph has no text slot to hold a
+/// nonempty target — the caller must fall back to another exemplar instead
+/// of silently dropping the content.
 fn patch_paragraph(
     events: &mut [Event<'static>],
     target: &str,
     exemplar: bool,
-) -> Result<(), DocxError> {
+) -> Result<bool, DocxError> {
     let slots = text_slots(events)?;
     if slots.is_empty() {
-        return Ok(());
+        return Ok(target.trim().is_empty());
     }
     let source = slots
         .iter()
         .map(|slot| slot.text.as_str())
         .collect::<String>();
     if source.trim() == target {
-        return Ok(());
+        return Ok(true);
     }
     let allocation = allocate_text(&slots, target);
     if exemplar && allocation.full_replacement {
@@ -513,7 +515,7 @@ fn patch_paragraph(
     for (slot, replacement) in slots.iter().zip(&allocation.replacements) {
         events[slot.event_index] = Event::Text(BytesText::new(replacement).into_owned());
     }
-    Ok(())
+    Ok(true)
 }
 
 struct TextAllocation {
@@ -666,7 +668,13 @@ fn patch_table(
     for (source_row, target_row) in cells.into_iter().zip(target_rows) {
         for (paragraphs, target) in source_row.into_iter().zip(target_row) {
             if paragraphs.is_empty() {
-                continue;
+                // A cell with no writable paragraph cannot hold a nonempty
+                // target; report failure so the caller regenerates the
+                // table instead of silently dropping the content.
+                if target.trim().is_empty() {
+                    continue;
+                }
+                return Ok(false);
             }
             let lines = target.split('\n').collect::<Vec<_>>();
             for (index, (start, end)) in paragraphs.iter().copied().enumerate() {
@@ -676,7 +684,9 @@ fn patch_table(
                 } else {
                     lines.get(index).copied().unwrap_or_default().to_string()
                 };
-                patch_paragraph(&mut events[start..=end], &replacement, exemplar)?;
+                if !patch_paragraph(&mut events[start..=end], &replacement, exemplar)? {
+                    return Ok(false);
+                }
             }
         }
     }

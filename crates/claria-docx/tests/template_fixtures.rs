@@ -400,6 +400,17 @@ fn custom_named_heading_styles_classify_as_headings() {
 }
 
 #[test]
+fn empty_template_cells_do_not_swallow_generated_content() {
+    // The template's results table has an empty Score cell. Filling it must
+    // never silently drop the value — the renderer regenerates the table
+    // when the template cell has nowhere to put the text.
+    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+        .expect("template render");
+    let flattened = paragraphs(&output);
+    assert!(body_paragraph(&flattened, "82").in_table);
+}
+
+#[test]
 fn content_controls_fixture_still_renders_a_complete_report() {
     let output = render_report_with_template(CONTENT_CONTROLS_TEMPLATE, &clinical_growth_draft())
         .expect("template render");
