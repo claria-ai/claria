@@ -2251,6 +2251,13 @@ async fn accepted_report_content_and_focused_tables_stay_in_untrusted_context() 
         .as_str()
         .expect("untrusted user context");
     assert!(user_context.contains(malicious));
+    // GOLDEN prompt shape: the report context is pretty-printed (the model
+    // navigates section/block structure and copies UUIDs out of it — the
+    // v0.23 compaction measurably degraded targeted edits) and exactly one
+    // real closing delimiter exists. Changing either is a deliberate
+    // quality decision, not a refactor.
+    assert!(user_context.contains("\n  \"accepted_report\""));
+    assert_eq!(user_context.matches("</untrusted_report_context>").count(), 1);
     // The system prompt names these exact delimiter tags.
     assert!(report_authoring::report_system_prompt(None).contains("<untrusted_report_context>"));
     let context: serde_json::Value = serde_json::from_str(
