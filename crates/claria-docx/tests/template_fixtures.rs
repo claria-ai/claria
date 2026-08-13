@@ -359,6 +359,13 @@ fn bullets_stay_numbered_after_a_multi_line_paragraph() {
     let flattened = paragraphs(&output);
     assert!(body_paragraph(&flattened, "Difficulty sustaining attention").numbered);
     assert!(body_paragraph(&flattened, "Incomplete classwork").numbered);
+
+    // A multi-line paragraph renders its newline as a real <w:br/>; a
+    // literal newline inside <w:t> displays as nothing in Word.
+    let multi_line = body_paragraph(&flattened, "First observation.");
+    assert_eq!(multi_line.line_breaks, 1, "{multi_line:?}");
+    assert!(multi_line.text.contains("Second observation."));
+    assert!(!multi_line.text.contains('\n'));
 }
 
 #[test]

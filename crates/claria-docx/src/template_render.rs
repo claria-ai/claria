@@ -513,9 +513,46 @@ fn patch_paragraph(
         strip_direct_decoration(events, slots[allocation.owner].event_index);
     }
     for (slot, replacement) in slots.iter().zip(&allocation.replacements) {
-        events[slot.event_index] = Event::Text(BytesText::new(replacement).into_owned());
+        events[slot.event_index] = if replacement.contains('\n') {
+            multi_line_text_event(events, slot.event_index, replacement)
+        } else {
+            Event::Text(BytesText::new(replacement).into_owned())
+        };
     }
     Ok(true)
+}
+
+/// Build a replacement for a text slot whose new content spans lines. A
+/// literal newline inside `<w:t>` renders as nothing in Word, so each break
+/// closes the text element, emits a `<w:br/>`, and reopens the text element
+/// (space-preserving), using the same namespace prefix as the enclosing
+/// element.
+fn multi_line_text_event(
+    events: &[Event<'static>],
+    text_index: usize,
+    replacement: &str,
+) -> Event<'static> {
+    let text_name = events[..text_index]
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"t" => {
+                Some(String::from_utf8_lossy(start.name().as_ref()).into_owned())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| "w:t".to_string());
+    let prefix = text_name
+        .rsplit_once(':')
+        .map(|(prefix, _)| format!("{prefix}:"))
+        .unwrap_or_default();
+    let separator = format!("</{text_name}><{prefix}br/><{text_name} xml:space=\"preserve\">");
+    let joined = replacement
+        .split('\n')
+        .map(|line| quick_xml::escape::escape(line).into_owned())
+        .collect::<Vec<_>>()
+        .join(&separator);
+    Event::Text(BytesText::from_escaped(joined).into_owned())
 }
 
 struct TextAllocation {
