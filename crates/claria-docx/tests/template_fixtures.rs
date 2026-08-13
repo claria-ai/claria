@@ -276,6 +276,33 @@ fn clinical_fixture_reconstructs_and_keeps_package_parts() {
 }
 
 #[test]
+fn blank_spacers_follow_the_report_instead_of_piling_at_the_top() {
+    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+        .expect("template render");
+    let flattened = paragraphs(&output);
+    let index_of = |needle: &str| {
+        flattened
+            .iter()
+            .position(|paragraph| paragraph.text.contains(needle))
+            .unwrap_or_else(|| panic!("no paragraph contains {needle:?}"))
+    };
+    let blank_indexes = flattened
+        .iter()
+        .enumerate()
+        .filter(|(_, paragraph)| !paragraph.in_table && paragraph.is_blank())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(blank_indexes.len(), 2);
+
+    // The template's two spacers spread with the report as it grows. The
+    // v0.22 renderer emitted every gap while walking the first
+    // template-length prefix of the generated report, bunching both
+    // spacers into the opening paragraphs.
+    assert!(blank_indexes[0] > index_of("The BASC-3 was completed by the parent and teacher."));
+    assert!(blank_indexes[1] > index_of("Findings are consistent with attention-related difficulties."));
+}
+
+#[test]
 fn content_controls_fixture_still_renders_a_complete_report() {
     let output = render_report_with_template(CONTENT_CONTROLS_TEMPLATE, &clinical_growth_draft())
         .expect("template render");

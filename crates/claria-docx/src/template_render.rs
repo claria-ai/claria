@@ -611,16 +611,37 @@ fn reconstruct_flow(
         }
         output.extend(replacement);
 
-        // Preserve intentional blank paragraphs and other non-flow body nodes
-        // at their original ordinal positions.
-        if target_index + 1 < spans.len() {
-            let gap_start = spans[target_index].end + 1;
-            let gap_end = spans[target_index + 1].start;
+        // Preserve intentional blank paragraphs and other non-flow body
+        // nodes: emit each inter-span gap exactly once, at the point where
+        // the proportional walk crosses from one source span to the next.
+        // Indexing the gaps with the target cursor piled every spacer after
+        // the first spans.len() targets of a report that outgrew its
+        // template — the v0.22 "line spacing is wrong in some sections" bug.
+        let here = scaled_source_position(spans.len(), targets.len(), target_index);
+        let next = if target_index + 1 < targets.len() {
+            scaled_source_position(spans.len(), targets.len(), target_index + 1)
+        } else {
+            spans.len().saturating_sub(1)
+        };
+        for boundary in here..next {
+            let gap_start = spans[boundary].end + 1;
+            let gap_end = spans[boundary + 1].start;
             output.extend_from_slice(&events[gap_start..gap_end]);
         }
     }
     output.extend_from_slice(&events[last.end + 1..]);
     Ok(output)
+}
+
+/// Map a generated-report position onto the template's span list, so a
+/// report that outgrew its template walks the whole source proportionally
+/// instead of pinning everything past the template's length to its final
+/// span.
+fn scaled_source_position(spans_len: usize, targets_len: usize, target_index: usize) -> usize {
+    if targets_len == 0 || spans_len == 0 {
+        return 0;
+    }
+    (target_index * spans_len / targets_len).min(spans_len - 1)
 }
 
 impl FlowSpan {
