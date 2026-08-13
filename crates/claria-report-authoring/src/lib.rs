@@ -2723,6 +2723,9 @@ async fn load_full_record_context(
 
     let included_files = u32::try_from(files.len()).unwrap_or(u32::MAX);
     let unavailable_files = u32::try_from(unavailable.len()).unwrap_or(u32::MAX);
+    // Deliberately compact, unlike the pretty-printed report context: this
+    // snapshot is dominated by record prose where indentation adds no
+    // structure signal, and it is the largest payload the writer ever sends.
     let json = serde_json::to_string(&serde_json::json!({
         "snapshot_complete": unavailable_files == 0,
         "files": files,
@@ -3459,13 +3462,14 @@ fn build_untrusted_context(
         "user_focused_blocks": focused_blocks,
         "recent_user_proposal_resolutions": resolutions
     });
-    // Compact JSON inside the delimiter tags the system prompt names: the
-    // wrapper — not prose or pretty-printing — marks the boundary of the
-    // untrusted data.
-    serde_json::to_string(&value)
+    // Pretty-printed JSON inside the delimiter tags the system prompt names:
+    // the wrapper marks the trust boundary, while indentation gives the model
+    // line-anchored structure cues for copying section UUIDs and locating
+    // blocks. Compacting this payload measurably degraded targeted edits.
+    serde_json::to_string_pretty(&value)
         .map(|json| {
             format!(
-                "<untrusted_report_context>{}</untrusted_report_context>",
+                "<untrusted_report_context>\n{}\n</untrusted_report_context>",
                 escape_delimiter_characters(&json)
             )
         })
