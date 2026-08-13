@@ -1,7 +1,7 @@
 {
   "identifier": "com.claria.desktop",
   "productName": "Claria",
-  "version": "0.23.1",
+  "version": "0.24.0",
   "build": {
     "beforeBuildCommand": "npm --prefix ../claria-desktop-frontend install && npm --prefix ../claria-desktop-frontend run build",
     "beforeDevCommand": "npm --prefix ../claria-desktop-frontend install && npm --prefix ../claria-desktop-frontend run dev",
