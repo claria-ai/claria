@@ -17,6 +17,8 @@ All notable changes to Claria are documented here.
 - The Tauri JavaScript API is pinned exactly, so the half of the pair that talks to the Rust runtime can no longer drift on an unrelated install
 - Local transcription's settings file and model downloads are restricted to the account Claria runs as on Windows, where they were previously left at whatever permissions the folder handed out
 - Restricting a file to the current user now fails loudly on every platform instead of reporting success it did not achieve
+- The costs-and-cache tab gains a scrollable three-lane diagram of each session turn — user messages, model replies and tool calls, and Claria state changes — with token, cost, size, and duration tallies
+- The diagram shows no clinical content by default; an Include PHI checkbox, off on every open, reveals truncated excerpts, tool summaries, and record filenames
 
 ## [0.26.0] — 2026-08-15
 
