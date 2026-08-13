@@ -38,8 +38,12 @@ pub const MAX_TOOL_USES_PER_RESPONSE: usize = 100;
 /// Output-token reserve for one report Converse call. This is both the
 /// `max_tokens` sent on the wire and the amount subtracted from the model's
 /// context window to form the input budget — the reserve is enforced, not
-/// aspirational.
-pub const REPORT_OUTPUT_TOKEN_RESERVE: u32 = 8_192;
+/// aspirational. Sized so one response can carry a full replacement of a
+/// long clinical section (a maximal 200-block section is ≈25k tokens);
+/// the 8k reserve shipped in v0.20–v0.23 forced multi-turn splitting and
+/// measurably degraded report flow. Truncation at this ceiling still
+/// surfaces as a MaxTokens stop handled by the caller's salvage path.
+pub const REPORT_OUTPUT_TOKEN_RESERVE: u32 = 32_768;
 
 /// Proposal wire-schema ceilings mirror the domain validators in
 /// `claria-core`, so the tool schema never rejects a proposal the domain
@@ -866,8 +870,8 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                  accepted_report in the untrusted context; positions are 0-based; replace_section \
                  replaces the entire section including its heading. At most one call per turn — a \
                  second call fails. Nothing is saved or applied until the user accepts the proposal, so \
-                 never claim a change was saved. Responses are limited to 8192 output tokens: keep one \
-                 proposal small and split large rewrites across multiple turns.",
+                 never claim a change was saved. If a response is cut off at the output-token limit, \
+                 completed tool calls still execute and you can continue in the next response.",
                 proposal_schema,
             )?,
         ],
