@@ -238,7 +238,7 @@ fn clinical_growth_draft() -> ReportDraft {
 
 #[test]
 fn clinical_fixture_reconstructs_and_keeps_package_parts() {
-    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+    let (output, _) = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
         .expect("template render");
 
     // Every non-document part is copied byte-for-byte.
@@ -284,7 +284,7 @@ fn clinical_fixture_reconstructs_and_keeps_package_parts() {
 
 #[test]
 fn blank_spacers_follow_the_report_instead_of_piling_at_the_top() {
-    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+    let (output, _) = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
         .expect("template render");
     let flattened = paragraphs(&output);
     let index_of = |needle: &str| {
@@ -311,7 +311,7 @@ fn blank_spacers_follow_the_report_instead_of_piling_at_the_top() {
 
 #[test]
 fn generated_body_text_never_inherits_label_or_signature_decoration() {
-    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+    let (output, _) = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
         .expect("template render");
     let flattened = paragraphs(&output);
 
@@ -354,7 +354,7 @@ fn bullets_stay_numbered_after_a_multi_line_paragraph() {
             ],
         )],
     );
-    let output =
+    let (output, _) =
         render_report_with_template(CLINICAL_TEMPLATE, &report).expect("template render");
     let flattened = paragraphs(&output);
     assert!(body_paragraph(&flattened, "Difficulty sustaining attention").numbered);
@@ -398,7 +398,7 @@ fn bullets_stay_numbered_after_a_multi_line_paragraph() {
 
 #[test]
 fn custom_named_heading_styles_classify_as_headings() {
-    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+    let (output, _) = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
         .expect("template render");
     let flattened = paragraphs(&output);
 
@@ -439,7 +439,7 @@ fn empty_template_cells_do_not_swallow_generated_content() {
     // The template's results table has an empty Score cell. Filling it must
     // never silently drop the value — the renderer regenerates the table
     // when the template cell has nowhere to put the text.
-    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+    let (output, _) = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
         .expect("template render");
     let flattened = paragraphs(&output);
     assert!(body_paragraph(&flattened, "82").in_table);
@@ -447,8 +447,10 @@ fn empty_template_cells_do_not_swallow_generated_content() {
 
 #[test]
 fn content_controls_fixture_still_renders_a_complete_report() {
-    let output = render_report_with_template(CONTENT_CONTROLS_TEMPLATE, &clinical_growth_draft())
-        .expect("template render");
+    let (output, fidelity) =
+        render_report_with_template(CONTENT_CONTROLS_TEMPLATE, &clinical_growth_draft())
+            .expect("template render");
+    assert_eq!(fidelity, claria_docx::TemplateRenderFidelity::PlainBodyFallback);
     let flattened = paragraphs(&output);
     body_paragraph(
         &flattened,

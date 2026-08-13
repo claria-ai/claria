@@ -13,4 +13,4 @@ mod template_render;
 pub use error::DocxError;
 pub use import::{ImportedTemplate, MAX_TEMPLATE_DOCX_BYTES, TemplateImportStats, import_template};
 pub use render::render_report;
-pub use template_render::render_report_with_template;
+pub use template_render::{TemplateRenderFidelity, render_report_with_template};

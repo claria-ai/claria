@@ -276,6 +276,10 @@ pub struct FullReportGenerationOutcome {
 pub struct ReportExportSnapshot {
     pub draft: ReportDraft,
     pub template_source: Option<Vec<u8>>,
+    /// The workspace references a template whose stored source object no
+    /// longer exists (imports predating v0.22 never retained it). The caller
+    /// must surface this instead of silently exporting without formatting.
+    pub template_missing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1371,12 +1375,16 @@ pub async fn load_export_snapshot(
     if loaded.workspace.draft.revision != expected_revision {
         return Err(ReportAuthoringError::Conflict);
     }
+    let mut template_missing = false;
     let template_source = if let Some(template) = &loaded.workspace.template_import {
         let key = claria_core::s3_keys::report_template_source(client_id, &template.source_sha256);
         match claria_storage::objects::get_object_bounded(s3, bucket, &key, 10 * 1024 * 1024).await
         {
             Ok(output) => Some(output.body),
-            Err(StorageError::NotFound { .. }) => None,
+            Err(StorageError::NotFound { .. }) => {
+                template_missing = true;
+                None
+            }
             Err(source) => {
                 return Err(ReportAuthoringError::storage(
                     "loading the report template formatting",
@@ -1390,6 +1398,7 @@ pub async fn load_export_snapshot(
     Ok(ReportExportSnapshot {
         draft: loaded.workspace.draft,
         template_source,
+        template_missing,
     })
 }
 

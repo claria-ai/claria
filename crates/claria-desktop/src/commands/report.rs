@@ -5,7 +5,7 @@ use tauri::State;
 pub use claria_desktop::report_authoring::{
     EditorHistoryEntry, FullReportGenerationResponse, ReportBlockReferenceInput, ReportDraftEdit,
     ReportExportResult, ReportProposalChoice, ReportRevisionView, ReportTurnProgressView,
-    ReportTurnResponse, ReportWorkspaceView,
+    ReportTurnResponse, ReportWorkspaceView, TemplateExportWarning,
 };
 
 use claria_core::models::report::{ReportDraft, ReportExportStatus};
@@ -619,11 +619,34 @@ pub async fn export_report_docx(
             expected_revision,
         )
         .await?;
-        let bytes = if let Some(template) = snapshot.template_source.as_deref() {
-            claria_docx::render_report_with_template(template, &snapshot.draft)
+        let (bytes, template_applied, template_warning) = if let Some(template) =
+            snapshot.template_source.as_deref()
+        {
+            let (bytes, fidelity) =
+                claria_docx::render_report_with_template(template, &snapshot.draft)?;
+            let warning = (fidelity == claria_docx::TemplateRenderFidelity::PlainBodyFallback)
+                .then_some(TemplateExportWarning::TemplateBodyFallback);
+            if warning.is_some() {
+                tracing::warn!(
+                    report_id = %report_id,
+                    ?fidelity,
+                    "template export fell back to generated body formatting"
+                );
+            }
+            (bytes, warning.is_none(), warning)
+        } else if snapshot.template_missing {
+            tracing::warn!(
+                report_id = %report_id,
+                "report template source is missing; exporting without template formatting"
+            );
+            (
+                claria_docx::render_report(&snapshot.draft)?,
+                false,
+                Some(TemplateExportWarning::TemplateMissing),
+            )
         } else {
-            claria_docx::render_report(&snapshot.draft)
-        }?;
+            (claria_docx::render_report(&snapshot.draft)?, false, None)
+        };
         let draft = snapshot.draft;
         let filename = claria_report_authoring::suggested_docx_filename(&draft.content.title);
         // Use the asynchronous dialog implementation. In particular, macOS must
@@ -654,6 +677,8 @@ pub async fn export_report_docx(
                 status: ReportExportStatus::Canceled,
                 attempted_at: attempted_at.to_string(),
                 status_persisted,
+                template_applied,
+                template_warning,
             });
         };
         let mut path = selected.path().to_path_buf();
@@ -708,6 +733,8 @@ pub async fn export_report_docx(
             status: ReportExportStatus::Exported,
             attempted_at: attempted_at.to_string(),
             status_persisted,
+            template_applied,
+            template_warning,
         })
     })
     .await

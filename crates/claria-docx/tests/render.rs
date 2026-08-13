@@ -278,7 +278,9 @@ fn template_render_retains_spacing_fonts_runs_and_blank_paragraphs() {
     let mut report = draft();
     report.content = imported.content;
     assert_eq!(
-        render_report_with_template(&template, &report).expect("unchanged template export"),
+        render_report_with_template(&template, &report)
+            .expect("unchanged template export")
+            .0,
         template,
         "an unchanged accepted template should be byte-identical"
     );
@@ -286,7 +288,7 @@ fn template_render_retains_spacing_fonts_runs_and_blank_paragraphs() {
     report.content.sections[0].blocks[0] = ReportBlock::Paragraph {
         text: "Client: Morgan Lee".to_string(),
     };
-    let rendered = render_report_with_template(&template, &report).expect("formatted export");
+    let (rendered, _) = render_report_with_template(&template, &report).expect("formatted export");
     let source_document = entry(&template, "word/document.xml");
     let rendered_document = entry(&rendered, "word/document.xml");
 
@@ -369,7 +371,7 @@ fn template_render_updates_cells_without_rebuilding_table_formatting() {
     };
     rows[1][1] = "87th percentile".to_string();
 
-    let rendered = render_report_with_template(&template, &report).expect("table export");
+    let (rendered, _) = render_report_with_template(&template, &report).expect("table export");
     let document = entry(&rendered, "word/document.xml");
     assert!(document.contains("87th percentile"));
     assert!(!document.contains("{{score}}"));
@@ -423,7 +425,8 @@ fn template_render_reuses_source_styles_for_new_sections() {
         }],
     });
 
-    let rendered = render_report_with_template(&template, &report).expect("structural export");
+    let (rendered, _) =
+        render_report_with_template(&template, &report).expect("structural export");
     let round_trip = import_template(&rendered).expect("re-import structural export");
     assert_eq!(round_trip.content.title, report.content.title);
     assert_eq!(round_trip.content.sections.len(), 2);

@@ -60,6 +60,24 @@ struct TextSlot {
 type ParagraphRange = (usize, usize);
 type TableCells = Vec<Vec<Vec<ParagraphRange>>>;
 
+/// How faithfully a template export could reuse the source package's
+/// formatting. Anything but [`TemplateRenderFidelity::PlainBodyFallback`]
+/// keeps the template's own body formatting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateRenderFidelity {
+    /// Visible content already matches the template; source bytes returned.
+    Exact,
+    /// Text updated in place; every template element retained.
+    PatchedInPlace,
+    /// Structure changed; formatting cloned from template exemplars.
+    Reconstructed,
+    /// The template body could not be walked (e.g. content controls wrap
+    /// it); the export used generated body formatting inside the template
+    /// package.
+    PlainBodyFallback,
+}
+
 /// Render an accepted report back through its original redacted Word package.
 ///
 /// When visible content is unchanged, the source bytes are returned exactly.
@@ -69,7 +87,7 @@ type TableCells = Vec<Vec<Vec<ParagraphRange>>>;
 pub fn render_report_with_template(
     template: &[u8],
     draft: &ReportDraft,
-) -> Result<Vec<u8>, DocxError> {
+) -> Result<(Vec<u8>, TemplateRenderFidelity), DocxError> {
     validate_report_content(&draft.content)
         .map_err(|error| DocxError::Render(error.to_string()))?;
     // Reuse the bounded package preflight and parser before retaining any part
@@ -77,7 +95,7 @@ pub fn render_report_with_template(
     let imported = import_template(template)?;
     let targets = target_flow(draft);
     if visible_content_matches(&imported.content, draft) {
-        return Ok(template.to_vec());
+        return Ok((template.to_vec(), TemplateRenderFidelity::Exact));
     }
 
     let document_xml = zip_entry(template, "word/document.xml")?;
@@ -85,7 +103,7 @@ pub fn render_report_with_template(
     let catalog = StyleCatalog::from_package(template);
     let spans = discover_flow(&events, &catalog)?;
 
-    let rewritten_events = if spans.len() == targets.len()
+    let (rewritten_events, fidelity) = if spans.len() == targets.len()
         && spans
             .iter()
             .zip(&targets)
@@ -93,7 +111,7 @@ pub fn render_report_with_template(
     {
         let mut candidate = events.clone();
         if patch_in_place(&mut candidate, &spans, &targets)? {
-            candidate
+            (candidate, TemplateRenderFidelity::PatchedInPlace)
         } else {
             reconstruct_flow(&events, &spans, &targets)?
         }
@@ -101,10 +119,12 @@ pub fn render_report_with_template(
         reconstruct_flow(&events, &spans, &targets)?
     };
     let rewritten_xml = write_events(&rewritten_events)?;
-    if references_generated_bullets(&rewritten_xml) {
-        return merge_bullet_numbering(template, &rewritten_xml);
-    }
-    replace_zip_entry(template, "word/document.xml", &rewritten_xml)
+    let package = if references_generated_bullets(&rewritten_xml) {
+        merge_bullet_numbering(template, &rewritten_xml)?
+    } else {
+        replace_zip_entry(template, "word/document.xml", &rewritten_xml)?
+    };
+    Ok((package, fidelity))
 }
 
 /// Whether the rewritten document uses the generated bullet definition —
@@ -854,9 +874,12 @@ fn reconstruct_flow(
     events: &[Event<'static>],
     spans: &[FlowSpan],
     targets: &[TargetFlow],
-) -> Result<Vec<Event<'static>>, DocxError> {
+) -> Result<(Vec<Event<'static>>, TemplateRenderFidelity), DocxError> {
     if spans.is_empty() || spans.iter().any(|span| !span.direct_body_child) {
-        return generated_document_events(targets);
+        return Ok((
+            generated_document_events(targets)?,
+            TemplateRenderFidelity::PlainBodyFallback,
+        ));
     }
     let first = spans.first().expect("checked nonempty");
     let last = spans.last().expect("checked nonempty");
@@ -901,7 +924,7 @@ fn reconstruct_flow(
         }
     }
     output.extend_from_slice(&events[last.end + 1..]);
-    Ok(output)
+    Ok((output, TemplateRenderFidelity::Reconstructed))
 }
 
 /// Map a generated-report position onto the template's span list, so a

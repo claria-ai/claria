@@ -599,9 +599,16 @@ export function useReportWorkspace({
       const persistenceSuffix = result.status_persisted
         ? ""
         : " Export status could not be synced to Editor History.";
+      // Reduced template fidelity is reported, never silently degraded.
+      const templateSuffix =
+        result.template_warning === "template_missing"
+          ? " The imported template's stored formatting was unavailable, so default formatting was used."
+          : result.template_warning === "template_body_fallback"
+            ? " The template's body layout could not be reused exactly, so default body formatting was used inside it."
+            : "";
       setExportStatus(
         result.exported
-          ? `Word document exported from revision ${result.revision}.${persistenceSuffix}`
+          ? `Word document exported from revision ${result.revision}.${templateSuffix}${persistenceSuffix}`
           : `Export canceled. You can try again.${persistenceSuffix}`
       );
     } catch (error) {
