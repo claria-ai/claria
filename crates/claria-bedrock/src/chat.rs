@@ -376,6 +376,7 @@ pub async fn chat_converse_stream<F>(
     system_prompt: &str,
     messages: &[ChatMessage],
     cache_strategy: CacheStrategy,
+    tuning: crate::converse::ModelTuning,
     mut on_delta: F,
 ) -> Result<StreamOutcome, BedrockError>
 where
@@ -401,8 +402,10 @@ where
         .inference_config(
             InferenceConfiguration::builder()
                 .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
+                .set_temperature(tuning.temperature)
                 .build(),
         )
+        .set_additional_model_request_fields(crate::converse::additional_request_fields(tuning)?)
         .send()
         .await
         .map_err(|error| crate::converse::classify_error("chat ConverseStream", error))?;

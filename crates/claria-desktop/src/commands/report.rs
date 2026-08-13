@@ -353,7 +353,8 @@ pub async fn generate_full_report(
                 .with_limits(limits)
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
-                .with_system_prompt_body(&prompt_body),
+                .with_system_prompt_body(&prompt_body)
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
         )
         .await;
 
@@ -483,7 +484,8 @@ pub async fn send_report_message(
                 .with_limits(limits)
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
-                .with_system_prompt_body(&prompt_body),
+                .with_system_prompt_body(&prompt_body)
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
         )
         .await;
 

@@ -290,6 +290,7 @@ pub async fn converse_report(
         messages,
         DEFAULT_MAX_TOOL_USES_PER_RESPONSE,
         &mut ReportInputBudget::new(model_id),
+        converse::ModelTuning::default(),
     )
     .await
 }
@@ -307,6 +308,7 @@ pub async fn converse_report_with_tool_limit(
     messages: &[ReportProtocolMessage],
     max_tool_uses_per_response: usize,
     budget: &mut ReportInputBudget,
+    tuning: converse::ModelTuning,
 ) -> Result<ReportConverseOutput, BedrockError> {
     converse_report_with_tool_set(
         config,
@@ -316,6 +318,7 @@ pub async fn converse_report_with_tool_limit(
         max_tool_uses_per_response,
         budget,
         ReportToolSet::TargetedEdit,
+        tuning,
     )
     .await
 }
@@ -331,6 +334,7 @@ pub async fn converse_full_report_with_tool_limit(
     messages: &[ReportProtocolMessage],
     max_tool_uses_per_response: usize,
     budget: &mut ReportInputBudget,
+    tuning: converse::ModelTuning,
 ) -> Result<ReportConverseOutput, BedrockError> {
     converse_report_with_tool_set(
         config,
@@ -340,6 +344,7 @@ pub async fn converse_full_report_with_tool_limit(
         max_tool_uses_per_response,
         budget,
         ReportToolSet::FullDraft,
+        tuning,
     )
     .await
 }
@@ -360,6 +365,7 @@ enum ReportToolSet {
         tool_set = ?tool_set
     )
 )]
+#[allow(clippy::too_many_arguments)]
 async fn converse_report_with_tool_set(
     config: &aws_config::SdkConfig,
     model_id: &str,
@@ -368,6 +374,7 @@ async fn converse_report_with_tool_set(
     max_tool_uses_per_response: usize,
     budget: &mut ReportInputBudget,
     tool_set: ReportToolSet,
+    tuning: converse::ModelTuning,
 ) -> Result<ReportConverseOutput, BedrockError> {
     if max_tool_uses_per_response == 0 || max_tool_uses_per_response > MAX_TOOL_USES_PER_RESPONSE {
         return Err(BedrockError::SchemaViolation(format!(
@@ -442,8 +449,10 @@ async fn converse_report_with_tool_set(
         .inference_config(
             InferenceConfiguration::builder()
                 .max_tokens(REPORT_OUTPUT_TOKEN_RESERVE as i32)
+                .set_temperature(tuning.temperature)
                 .build(),
         )
+        .set_additional_model_request_fields(converse::additional_request_fields(tuning)?)
         .send()
         .await
         .map_err(|error| converse::classify_error("report Converse", error))?;

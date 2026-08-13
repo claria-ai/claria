@@ -140,6 +140,9 @@ pub struct PreferencesPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub report_authoring: Option<ReportAuthoringPreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub model_tuning: Option<claria_desktop::config::ModelTuningPreferences>,
 }
 
 impl PreferencesPatch {
@@ -161,6 +164,9 @@ impl PreferencesPatch {
         }
         if let Some(report_authoring) = &self.report_authoring {
             synced.report_authoring = report_authoring.clone();
+        }
+        if let Some(model_tuning) = self.model_tuning {
+            synced.model_tuning = model_tuning;
         }
     }
 }
@@ -189,6 +195,9 @@ pub(crate) async fn apply_preferences_patch(
 ) -> Result<ClariaConfig, CommandError> {
     if let Some(report_authoring) = &patch.report_authoring {
         report_authoring.validate()?;
+    }
+    if let Some(model_tuning) = &patch.model_tuning {
+        model_tuning.validate()?;
     }
 
     // Persist locally first so we don't lose the user's edit if S3 is down.
@@ -321,6 +330,7 @@ pub async fn save_config(
             prompt_caching_enabled: true,
             transcription: Default::default(),
             report_authoring: Default::default(),
+            model_tuning: Default::default(),
         };
 
         config::save_config(&cfg)?;

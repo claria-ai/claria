@@ -24,6 +24,7 @@ fn sample_config() -> ClariaConfig {
             translate_to_english: true,
         },
         report_authoring: ReportAuthoringPreferences::default(),
+        model_tuning: Default::default(),
     }
 }
 
@@ -67,6 +68,7 @@ fn apply_to_config_leaves_machine_local_fields_alone() {
             max_tool_uses_per_response: 16,
             max_retained_turns: 30,
         },
+        model_tuning: Default::default(),
     };
 
     synced.apply_to_config(&mut cfg);
@@ -100,7 +102,7 @@ fn synced_preferences_serialize_snake_case() {
     assert!(json.contains("\"default_language\":\"mixed\""));
     assert!(json.contains("\"use_medical_for_english\":true"));
     assert!(json.contains("\"max_tool_rounds\":40"));
-    assert!(json.contains("\"preferences_version\":2"));
+    assert!(json.contains("\"preferences_version\":3"));
 }
 
 #[test]

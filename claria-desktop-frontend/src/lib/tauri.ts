@@ -147,6 +147,8 @@ export type {
   Severity,
   SpeakerMode,
   StepStatus,
+  EffortPreference,
+  ModelTuningPreferences,
   TranscribeOptionsOverrides,
   TranscriptionLanguage,
   TranscriptionPreferences,

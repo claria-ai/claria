@@ -131,6 +131,7 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
         &[user_message("Complete record snapshot")],
         12,
         &mut ReportInputBudget::new(MODEL_ID),
+        claria_bedrock::converse::ModelTuning::default(),
     )
     .await
     .expect("full-draft converse");
@@ -256,6 +257,7 @@ async fn configured_tool_limit_rejects_oversized_model_responses() {
         &[user_message("Draft")],
         1,
         &mut claria_bedrock::report::ReportInputBudget::new(MODEL_ID),
+        claria_bedrock::converse::ModelTuning::default(),
     )
     .await
     .expect_err("configured tool limit");
@@ -707,6 +709,7 @@ async fn ordinary_chat_still_sends_no_tool_configuration() {
         "System",
         &messages,
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await

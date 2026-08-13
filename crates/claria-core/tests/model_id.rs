@@ -193,6 +193,62 @@ fn extended_cache_ttl_is_denied_only_for_pre_45_families() {
 }
 
 #[test]
+fn adaptive_thinking_and_effort_follow_their_generation_boundaries() {
+    // Pre-4.6 families never get adaptive thinking.
+    for id in [
+        "anthropic.claude-v2:1",
+        "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "us.anthropic.claude-opus-4-20250514-v1:0",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    ] {
+        assert!(!ModelCapabilities::for_id(id).adaptive_thinking, "{id}");
+    }
+    // 4.6 and newer generations get it by default.
+    for id in [
+        "us.anthropic.claude-opus-4-6-v1",
+        "us.anthropic.claude-sonnet-4-6-v1",
+        "global.anthropic.claude-sonnet-5-v1",
+        "us.anthropic.claude-fable-5-v1:0",
+    ] {
+        assert!(ModelCapabilities::for_id(id).adaptive_thinking, "{id}");
+    }
+    // Effort shipped with 4.5.
+    assert!(!ModelCapabilities::for_id("us.anthropic.claude-opus-4-20250514-v1:0").effort_parameter);
+    assert!(ModelCapabilities::for_id("us.anthropic.claude-sonnet-4-5-20250929-v1:0").effort_parameter);
+    assert!(ModelCapabilities::for_id("us.anthropic.claude-opus-4-6-v1").effort_parameter);
+    assert!(ModelCapabilities::for_id("us.anthropic.claude-fable-5-v1:0").effort_parameter);
+    assert!(!ModelCapabilities::for_id("us.amazon.nova-pro-v1:0").effort_parameter);
+}
+
+#[test]
+fn sampling_params_are_an_allowlist_that_fails_closed_for_new_generations() {
+    // Generations through 4.6 accept temperature/top_p.
+    for id in [
+        "anthropic.claude-v2:1",
+        "us.anthropic.claude-3-haiku-20240307-v1:0",
+        "us.anthropic.claude-opus-4-20250514-v1:0",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "us.anthropic.claude-opus-4-6-v1",
+        "us.anthropic.claude-sonnet-4-6-v1",
+    ] {
+        assert!(ModelCapabilities::for_id(id).sampling_params, "{id}");
+    }
+    // 4.7-class and newer reject them — and unknown future families fail
+    // closed to the modern no-sampling contract.
+    for id in [
+        "global.anthropic.claude-sonnet-5-v1",
+        "us.anthropic.claude-fable-5-v1:0",
+        "us.anthropic.claude-mythos-5-v1:0",
+        "us.anthropic.claude-opus-6-v1:0",
+        "us.amazon.nova-pro-v1:0",
+    ] {
+        assert!(!ModelCapabilities::for_id(id).sampling_params, "{id}");
+    }
+}
+
+#[test]
 fn counting_model_picks_newest_haiku_by_release_date() {
     let models = [
         "anthropic.claude-3-5-haiku-20241022-v1:0",

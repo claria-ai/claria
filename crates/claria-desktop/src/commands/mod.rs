@@ -248,6 +248,28 @@ pub(crate) async fn cached_aws(
 ///
 /// When Bedrock omitted the usage block (`None`), the event records
 /// `usage_complete: false` instead of fabricated zero counts.
+/// Resolve the user's model-tuning preferences against the capability table
+/// for the chosen model. Unsupported knobs are dropped, never sent — the
+/// capability table (not this call site) decides what each generation
+/// accepts.
+pub(crate) fn model_tuning_for(
+    cfg: &ClariaConfig,
+    model_id: &str,
+) -> claria_bedrock::converse::ModelTuning {
+    let capabilities = claria_core::model_id::ModelCapabilities::for_id(model_id);
+    let preferences = cfg.model_tuning;
+    claria_bedrock::converse::ModelTuning {
+        adaptive_thinking: preferences.reasoning_enabled && capabilities.adaptive_thinking,
+        effort: preferences
+            .effort
+            .filter(|_| capabilities.effort_parameter)
+            .map(claria_desktop::config::EffortPreference::to_effort_level),
+        temperature: preferences
+            .temperature
+            .filter(|_| capabilities.sampling_params),
+    }
+}
+
 pub(crate) fn usage_audit_details(
     model_id: &str,
     usage: Option<&claria_core::models::turn_usage::TurnUsage>,

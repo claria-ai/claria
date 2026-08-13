@@ -1307,7 +1307,7 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences }
 /**
  * One poll's worth of new console entries, addressed by a monotonic
  * sequence cursor so the 500ms UI poll ships only new lines.
@@ -1393,6 +1393,7 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
 export type EditorHistoryEntry = { report_id: string; name: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExport | null }
+export type EffortPreference = "low" | "medium" | "high" | "max"
 /**
  * Structured before/after for a single field that doesn't match desired state.
  * 
@@ -1460,6 +1461,25 @@ export type ModelPricing = { input_per_million: number; output_per_million: numb
  */
 cache_write_1h_per_million?: number }
 /**
+ * Opt-in model-tuning knobs. Every knob defaults to "send nothing", and
+ * each is applied only on models whose capability-table entry accepts it —
+ * see `commands::model_tuning_for`.
+ */
+export type ModelTuningPreferences = { 
+/**
+ * Request adaptive thinking on models that support it (Claude 4.6+).
+ */
+reasoning_enabled?: boolean; 
+/**
+ * Requested effort level; `None` leaves the model default (high).
+ */
+effort?: EffortPreference | null; 
+/**
+ * Sampling temperature, only sent to generations that accept it
+ * (through Claude 4.6); `None` leaves the model default.
+ */
+temperature?: number | null }
+/**
  * The non-secret half of freshly minted credentials.
  */
 export type NewCredentialsInfo = { access_key_id: string; iam_user_arn: string }
@@ -1487,7 +1507,7 @@ export type PreferencesPatch = {
  * (only expressible in-process — over IPC use `set_preferred_model`),
  * `None` leaves it unchanged.
  */
-preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null }
+preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null }
 /**
  * What `provision_apply` did.
  * 

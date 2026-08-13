@@ -396,12 +396,14 @@ pub async fn chat_message(
         // Stream deltas to the frontend as they arrive; the complete text
         // still comes back here so history persistence and audit are
         // identical to the unary path. Delta content is PHI — never logged.
+        let tuning = super::model_tuning_for(&ctx.cfg, &model_id);
         let outcome = claria_bedrock::chat::chat_converse_stream(
             &ctx.sdk_config,
             &model_id,
             &full_prompt,
             &messages,
             cache_strategy,
+            tuning,
             |delta| {
                 send_stream_event(
                     &on_event,
@@ -563,12 +565,14 @@ pub async fn infra_chat(
 
         let cache_strategy = build_cache_strategy(&ctx.cfg, &model_id);
 
+        let tuning = super::model_tuning_for(&ctx.cfg, &model_id);
         let outcome = claria_bedrock::chat::chat_converse_stream(
             &ctx.sdk_config,
             &model_id,
             &system_prompt,
             &messages,
             cache_strategy,
+            tuning,
             |delta| {
                 send_stream_event(
                     &on_event,

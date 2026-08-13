@@ -453,6 +453,7 @@ pub struct ReportMessageRequest<'a> {
     progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
     prompt_cache: Option<&'a ReportPromptCache>,
     system_prompt_body: Option<&'a str>,
+    model_tuning: claria_bedrock::converse::ModelTuning,
 }
 
 impl<'a> ReportMessageRequest<'a> {
@@ -464,6 +465,7 @@ impl<'a> ReportMessageRequest<'a> {
             progress: None,
             prompt_cache: None,
             system_prompt_body: None,
+            model_tuning: claria_bedrock::converse::ModelTuning::default(),
         }
     }
 
@@ -471,6 +473,13 @@ impl<'a> ReportMessageRequest<'a> {
     /// appended during composition.
     pub fn with_system_prompt_body(mut self, body: &'a str) -> Self {
         self.system_prompt_body = Some(body);
+        self
+    }
+
+    /// Apply capability-gated model tuning (adaptive thinking, effort,
+    /// temperature) to every Converse call of the turn.
+    pub fn with_model_tuning(mut self, tuning: claria_bedrock::converse::ModelTuning) -> Self {
+        self.model_tuning = tuning;
         self
     }
 
@@ -511,6 +520,7 @@ pub struct FullReportRequest<'a> {
     progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
     prompt_cache: Option<&'a ReportPromptCache>,
     system_prompt_body: Option<&'a str>,
+    model_tuning: claria_bedrock::converse::ModelTuning,
 }
 
 impl<'a> FullReportRequest<'a> {
@@ -521,6 +531,7 @@ impl<'a> FullReportRequest<'a> {
             progress: None,
             prompt_cache: None,
             system_prompt_body: None,
+            model_tuning: claria_bedrock::converse::ModelTuning::default(),
         }
     }
 
@@ -528,6 +539,13 @@ impl<'a> FullReportRequest<'a> {
     /// appended during composition.
     pub fn with_system_prompt_body(mut self, body: &'a str) -> Self {
         self.system_prompt_body = Some(body);
+        self
+    }
+
+    /// Apply capability-gated model tuning (adaptive thinking, effort,
+    /// temperature) to every Converse call of the turn.
+    pub fn with_model_tuning(mut self, tuning: claria_bedrock::converse::ModelTuning) -> Self {
+        self.model_tuning = tuning;
         self
     }
 
@@ -1117,6 +1135,7 @@ async fn send_report_message_loaded(
             message.progress,
             message.prompt_cache,
             message.system_prompt_body,
+            message.model_tuning,
         ),
         &mut loaded,
     )
@@ -1223,6 +1242,7 @@ async fn generate_full_report_loaded(
             request.progress,
             request.prompt_cache,
             request.system_prompt_body,
+            request.model_tuning,
         ),
         &mut loaded,
     )
@@ -1554,6 +1574,7 @@ struct TurnRunRequest<'a> {
     /// Customized system-prompt body; the fixed trust rules are always
     /// appended during composition.
     system_prompt_body: Option<&'a str>,
+    model_tuning: claria_bedrock::converse::ModelTuning,
 }
 
 #[derive(Clone, Copy)]
@@ -1576,6 +1597,7 @@ impl<'a> TurnRunRequest<'a> {
         progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
         prompt_cache: Option<&'a ReportPromptCache>,
         system_prompt_body: Option<&'a str>,
+        model_tuning: claria_bedrock::converse::ModelTuning,
     ) -> Self {
         Self {
             kind: TurnRunKind::Targeted {
@@ -1586,6 +1608,7 @@ impl<'a> TurnRunRequest<'a> {
             progress,
             prompt_cache,
             system_prompt_body,
+            model_tuning,
         }
     }
 
@@ -1596,6 +1619,7 @@ impl<'a> TurnRunRequest<'a> {
         progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
         prompt_cache: Option<&'a ReportPromptCache>,
         system_prompt_body: Option<&'a str>,
+        model_tuning: claria_bedrock::converse::ModelTuning,
     ) -> Self {
         Self {
             kind: TurnRunKind::FullDraft {
@@ -1606,6 +1630,7 @@ impl<'a> TurnRunRequest<'a> {
             progress,
             prompt_cache,
             system_prompt_body,
+            model_tuning,
         }
     }
 
@@ -1857,6 +1882,7 @@ async fn run_turn(
                 &protocol,
                 limits.max_tool_uses_per_response as usize,
                 &mut input_budget,
+                request.model_tuning,
             )
             .await
         } else {
@@ -1867,6 +1893,7 @@ async fn run_turn(
                 &protocol,
                 limits.max_tool_uses_per_response as usize,
                 &mut input_budget,
+                request.model_tuning,
             )
             .await
         }

@@ -254,6 +254,68 @@ impl StreamCollector {
     }
 }
 
+/// Opt-in per-request model tuning. The desktop gates every knob against
+/// the central capability table before constructing this — this layer
+/// applies exactly what it is given and adds nothing by default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ModelTuning {
+    /// Send `thinking: {"type": "adaptive"}` via
+    /// `additionalModelRequestFields` (Claude 4.6+).
+    pub adaptive_thinking: bool,
+    /// Send `output_config: {"effort": ...}` via
+    /// `additionalModelRequestFields` (Claude 4.5+).
+    pub effort: Option<EffortLevel>,
+    /// Send `inferenceConfig.temperature` (rejected by Claude 4.7-class and
+    /// newer models — the capability table gates it to generations that
+    /// accept it).
+    pub temperature: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortLevel {
+    Low,
+    Medium,
+    High,
+    Max,
+}
+
+impl EffortLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// Anthropic-specific request fields that ride outside the Converse
+/// `inferenceConfig`, as a Smithy document; `None` when the tuning requests
+/// nothing so untuned requests stay byte-identical to the pre-tuning shape.
+pub(crate) fn additional_request_fields(
+    tuning: ModelTuning,
+) -> Result<Option<Document>, BedrockError> {
+    let mut fields = serde_json::Map::new();
+    if tuning.adaptive_thinking {
+        fields.insert(
+            "thinking".to_string(),
+            serde_json::json!({"type": "adaptive"}),
+        );
+    }
+    if let Some(effort) = tuning.effort {
+        fields.insert(
+            "output_config".to_string(),
+            serde_json::json!({"effort": effort.as_str()}),
+        );
+    }
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    json_to_document(&serde_json::Value::Object(fields)).map(Some)
+}
+
 /// Structured cache/usage observability line for one completed Converse
 /// call, shared by the chat and report flows. `hit_rate` is the fraction of
 /// input tokens served from cache; `cache_ttl` names the write tier, and

@@ -144,6 +144,7 @@ async fn streamed_chat_forwards_deltas_and_returns_the_full_text() {
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |delta| deltas.push(delta.to_string()),
     )
     .await
@@ -177,6 +178,7 @@ async fn one_hour_chat_caching_marks_system_and_conversation_tail() {
         &system_prompt,
         &user_messages("Hello"),
         CacheStrategy::enabled_for_model(true, CacheTtlChoice::OneHour),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await
@@ -217,6 +219,7 @@ async fn five_minute_chat_caching_omits_the_ttl_field() {
         &system_prompt,
         &user_messages("Hello"),
         CacheStrategy::enabled_for_model(true, CacheTtlChoice::FiveMinutes),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await
@@ -253,6 +256,7 @@ async fn uncached_chat_records_no_ttl() {
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await
@@ -290,6 +294,7 @@ async fn streamed_truncation_is_an_error_not_silent_partial_text() {
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await
@@ -319,6 +324,7 @@ async fn streamed_service_errors_keep_their_classification() {
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await
