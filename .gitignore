@@ -6,5 +6,6 @@ claria-desktop-frontend/dist/
 screenshots/node_modules/
 screenshots/output/*.png
 screenshots/test-results/
+__pycache__/
 *.swp
 crates/claria-desktop/gen/schemas/linux-schema.json

@@ -170,7 +170,7 @@ Common gotchas:
 - `cargo release patch` / `minor` / `major` bumps all workspace crates, tags, and pushes. The CHANGELOG.md should be udpated and land in the release commit.
 - The pushed tag triggers GitHub Actions to build and create a GitHub Release (changelog is auto-extracted)
 - Never run `git tag` directly for version tags
-- After all release artifacts are published, run `./screenshots/update_release_site.py <version>` to regenerate screenshots, update `claria-ai.github.io/claria.yml` (including artifact sizes), and rebuild the generated site. Review and commit the website changes; never hand-edit its generated HTML.
+- After every tagged release artifact is published, the release job regenerates screenshots, updates `claria-ai.github.io/claria.yml` (including artifact sizes), rebuilds the generated site, and pushes it with the scoped `CLARIA_SITE_TOKEN`. If that automation fails, run `./screenshots/update_release_site.py <version>` as the manual fallback. Never hand-edit the site's generated HTML.
 
 ## Adding a Tauri Command
 

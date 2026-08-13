@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -42,11 +42,36 @@ DEFAULT_SITE_DIR = default_site_dir()
 RELEASE_API = "https://api.github.com/repos/claria-ai/claria/releases/tags/v{}"
 
 
+def configured_release_version(path: Path) -> str:
+    in_release = False
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped == "release:":
+            in_release = True
+            continue
+        if in_release and stripped and not line[0].isspace():
+            break
+        if in_release and stripped.startswith("version:"):
+            return stripped.split(":", 1)[1].strip()
+    raise RuntimeError(f"no release.version entry found in {path}")
+
+
+def stable_version_key(version: str) -> tuple[int, int, int]:
+    components = version.removeprefix("v").split(".")
+    if len(components) != 3 or any(not component.isdecimal() for component in components):
+        raise RuntimeError(f"expected a stable X.Y.Z release version, got {version!r}")
+    major, minor, patch = (int(component) for component in components)
+    return major, minor, patch
+
+
 def release_assets(version: str) -> dict[str, int]:
-    request = urllib.request.Request(
-        RELEASE_API.format(version),
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "claria-release-site"},
-    )
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "claria-release-site",
+    }
+    if token := os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(RELEASE_API.format(version), headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.load(response)
@@ -60,9 +85,17 @@ def update_release_config(path: Path, version: str, assets: dict[str, int]) -> N
     version_updated = False
     current_suffix: str | None = None
     updated_suffixes: set[str] = set()
+    in_release = False
 
     for index, line in enumerate(lines):
         stripped = line.strip()
+        if stripped == "release:":
+            in_release = True
+            continue
+        if in_release and stripped and not line[0].isspace():
+            break
+        if not in_release:
+            continue
         if not version_updated and stripped.startswith("version:"):
             indent = line[: len(line) - len(line.lstrip())]
             ending = "\n" if line.endswith("\n") else ""
@@ -109,15 +142,15 @@ def copy_site_screenshots(site_dir: Path) -> list[str]:
 
 
 def run_site_build(site_dir: Path) -> None:
-    if shutil.which("uv"):
-        subprocess.run(["uv", "run", "build.py"], cwd=site_dir, check=True)
-        return
     available = subprocess.run(
         [sys.executable, "-c", "import jinja2, yaml"],
         capture_output=True,
     ).returncode == 0
     if available:
         subprocess.run([sys.executable, "build.py"], cwd=site_dir, check=True)
+        return
+    if shutil.which("uv"):
+        subprocess.run(["uv", "run", "build.py"], cwd=site_dir, check=True)
         return
     with tempfile.TemporaryDirectory(prefix="claria-site-build-") as dependencies:
         subprocess.run(
@@ -168,12 +201,21 @@ def main() -> int:
     if not (site_dir / "CLAUDE.md").is_file() or not (site_dir / "build.py").is_file():
         raise RuntimeError(f"{site_dir} is not a claria-ai.github.io checkout")
 
+    config_path = site_dir / "claria.yml"
+    current_version = configured_release_version(config_path)
+    if stable_version_key(current_version) > stable_version_key(version):
+        print(
+            f"Skipped v{version}: claria-ai.github.io already points at newer "
+            f"v{current_version}."
+        )
+        return 0
+
     # Fetch release metadata and complete capture before changing the website.
     assets = release_assets(version)
     if not args.skip_capture:
         subprocess.run(["npm", "run", "capture"], cwd=SCREENSHOTS_DIR, check=True)
 
-    update_release_config(site_dir / "claria.yml", version, assets)
+    update_release_config(config_path, version, assets)
     copied = copy_site_screenshots(site_dir)
     run_site_build(site_dir)
     subprocess.run(["git", "diff", "--check"], cwd=site_dir, check=True)

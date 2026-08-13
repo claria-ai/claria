@@ -165,7 +165,7 @@ export const fixtures: Record<string, unknown> = {
   upload_record_file_with_options: {
     filename: "session-2026-03-15.m4a",
     size: 4_823_521,
-    last_modified: new Date().toISOString(),
+    last_modified: "2026-03-15T16:30:00Z",
     is_text: false,
   },
   pick_audio_file: "/Users/clinician/Documents/visit-2026-03-15.m4a",
