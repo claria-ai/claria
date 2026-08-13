@@ -24,7 +24,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zip::ZipArchive;
 
-use crate::error::DocxError;
+use crate::{
+    error::DocxError,
+    style_catalog::{StyleCatalog, normalize_style},
+};
 
 pub const MAX_TEMPLATE_DOCX_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TEMPLATE_UNCOMPRESSED_BYTES: u64 = 32 * 1024 * 1024;
@@ -65,7 +68,8 @@ pub fn import_template(bytes: &[u8]) -> Result<ImportedTemplate, DocxError> {
     .map_err(|_| DocxError::Import("the DOCX package could not be parsed safely".to_string()))?
     .map_err(|_| DocxError::Import("the DOCX package is malformed or unsupported".to_string()))?;
 
-    let mut builder = ImportBuilder::new(preflight.warnings);
+    let catalog = StyleCatalog::from_package(bytes);
+    let mut builder = ImportBuilder::new(preflight.warnings, catalog);
     for child in &parsed.document.children {
         builder.document_child(child);
     }
@@ -271,10 +275,11 @@ struct ImportBuilder {
     pending_bullets: Vec<String>,
     warnings: WarningCounts,
     stats: TemplateImportStats,
+    catalog: StyleCatalog,
 }
 
 impl ImportBuilder {
-    fn new(warnings: WarningCounts) -> Self {
+    fn new(warnings: WarningCounts, catalog: StyleCatalog) -> Self {
         Self {
             title: None,
             sections: Vec::new(),
@@ -283,6 +288,7 @@ impl ImportBuilder {
             pending_bullets: Vec::new(),
             warnings,
             stats: TemplateImportStats::default(),
+            catalog,
         }
     }
 
@@ -348,7 +354,7 @@ impl ImportBuilder {
         if text.is_empty() {
             return;
         }
-        match paragraph_kind(paragraph) {
+        match paragraph_kind(paragraph, &self.catalog) {
             ParagraphKind::Title if self.title.is_none() => {
                 self.flush_bullets();
                 self.title = Some(text);
@@ -472,16 +478,16 @@ enum ParagraphKind {
     Body,
 }
 
-fn paragraph_kind(paragraph: &Paragraph) -> ParagraphKind {
+fn paragraph_kind(paragraph: &Paragraph, catalog: &StyleCatalog) -> ParagraphKind {
     let style = paragraph
         .property
         .style
         .as_ref()
         .map(|style| normalize_style(&style.val))
         .unwrap_or_default();
-    if style == "title" {
+    if catalog.is_title(&style) {
         ParagraphKind::Title
-    } else if style.starts_with("heading") {
+    } else if catalog.is_heading(&style) {
         ParagraphKind::Heading
     } else if paragraph.property.numbering_property.is_some() {
         ParagraphKind::List
@@ -500,13 +506,6 @@ fn nested_heading_was_flattened(paragraph: &Paragraph) -> bool {
         .is_some_and(|level| level > 1)
 }
 
-fn normalize_style(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| character.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
 
 fn paragraph_text(paragraph: &Paragraph) -> String {
     if paragraph.property.run_property.vanish.is_some()

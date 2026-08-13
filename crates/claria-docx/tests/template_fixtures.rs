@@ -362,6 +362,44 @@ fn bullets_stay_numbered_after_a_multi_line_paragraph() {
 }
 
 #[test]
+fn custom_named_heading_styles_classify_as_headings() {
+    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+        .expect("template render");
+    let flattened = paragraphs(&output);
+
+    // The template's headings use a custom "SectionHeading" style whose
+    // heading-ness lives in the style definition (outline level). Heading
+    // targets — including a brand-new section — must clone those
+    // exemplars, and body text must never land on one.
+    for heading in [
+        "Reason for Referral",
+        "Assessment Results",
+        "Summary and Recommendations",
+    ] {
+        assert_eq!(
+            body_paragraph(&flattened, heading).style.as_deref(),
+            Some("SectionHeading"),
+            "heading {heading:?} did not clone the template heading style"
+        );
+    }
+    for body in [
+        "Teacher reports difficulty sustaining attention in class.",
+        "The BASC-3 was completed by the parent and teacher.",
+        "Findings are consistent with attention-related difficulties.",
+    ] {
+        assert_ne!(
+            body_paragraph(&flattened, body).style.as_deref(),
+            Some("SectionHeading"),
+            "body text {body:?} landed on a heading exemplar"
+        );
+    }
+    assert_eq!(
+        body_paragraph(&flattened, "Psychoeducational Evaluation").style.as_deref(),
+        Some("Title")
+    );
+}
+
+#[test]
 fn content_controls_fixture_still_renders_a_complete_report() {
     let output = render_report_with_template(CONTENT_CONTROLS_TEMPLATE, &clinical_growth_draft())
         .expect("template render");

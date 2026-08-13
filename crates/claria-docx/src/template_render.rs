@@ -14,7 +14,10 @@ use quick_xml::{
 };
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::{DocxError, import_template, render_report};
+use crate::{
+    DocxError, import_template, render_report,
+    style_catalog::{StyleCatalog, normalize_style},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlowKind {
@@ -77,7 +80,8 @@ pub fn render_report_with_template(
 
     let document_xml = zip_entry(template, "word/document.xml")?;
     let events = parse_events(&document_xml)?;
-    let spans = discover_flow(&events)?;
+    let catalog = StyleCatalog::from_package(template);
+    let spans = discover_flow(&events, &catalog)?;
 
     let rewritten_events = if spans.len() == targets.len()
         && spans
@@ -172,7 +176,10 @@ fn write_events(events: &[Event<'static>]) -> Result<Vec<u8>, DocxError> {
     Ok(writer.into_inner())
 }
 
-fn discover_flow(events: &[Event<'static>]) -> Result<Vec<FlowSpan>, DocxError> {
+fn discover_flow(
+    events: &[Event<'static>],
+    catalog: &StyleCatalog,
+) -> Result<Vec<FlowSpan>, DocxError> {
     let mut spans = Vec::new();
     let mut paragraph_start = None;
     let mut table_start = None;
@@ -206,7 +213,7 @@ fn discover_flow(events: &[Event<'static>]) -> Result<Vec<FlowSpan>, DocxError> 
                 if local_name(name.as_ref()) == b"p" && table_depth == 0 {
                     if let Some((start, start_depth)) = paragraph_start.take()
                         && let Some((kind, text)) =
-                            paragraph_flow(&events[start..=index], title_seen)?
+                            paragraph_flow(&events[start..=index], title_seen, catalog)?
                     {
                         title_seen |= kind == FlowKind::Title;
                         spans.push(FlowSpan {
@@ -243,6 +250,7 @@ fn discover_flow(events: &[Event<'static>]) -> Result<Vec<FlowSpan>, DocxError> 
 fn paragraph_flow(
     events: &[Event<'static>],
     title_seen: bool,
+    catalog: &StyleCatalog,
 ) -> Result<Option<(FlowKind, String)>, DocxError> {
     let text = visible_paragraph_text(events)?;
     let text = text.trim().to_string();
@@ -251,6 +259,7 @@ fn paragraph_flow(
     }
     let mut style = String::new();
     let mut numbered = false;
+    let mut outline = false;
     for event in events {
         match event {
             Event::Start(start) | Event::Empty(start) => {
@@ -260,15 +269,21 @@ fn paragraph_flow(
                     style = attribute_value(start, b"val").unwrap_or_default();
                 } else if local == b"numPr" {
                     numbered = true;
+                } else if local == b"outlineLvl" {
+                    outline = true;
                 }
             }
             _ => {}
         }
     }
     let style = normalize_style(&style);
-    let kind = if style == "title" && !title_seen {
+    // Heading-ness usually lives in the style definition (custom names like
+    // "Section Heading" with an outline level), not in a literal HeadingN
+    // styleId — resolve through the package's style catalog, plus any
+    // paragraph-direct outline level.
+    let kind = if catalog.is_title(&style) && !title_seen {
         FlowKind::Title
-    } else if style.starts_with("heading") {
+    } else if catalog.is_heading(&style) || outline {
         FlowKind::Heading
     } else if numbered {
         FlowKind::List
@@ -769,7 +784,7 @@ fn generated_span(target: &TargetFlow) -> Result<Vec<Event<'static>>, DocxError>
     let bytes = render_report(&draft)?;
     let xml = zip_entry(&bytes, "word/document.xml")?;
     let events = parse_events(&xml)?;
-    let spans = discover_flow(&events)?;
+    let spans = discover_flow(&events, &StyleCatalog::from_package(&bytes))?;
     spans
         .iter()
         .find(|span| span.kind == target.kind)
@@ -911,14 +926,6 @@ fn draft_from_targets(targets: &[TargetFlow]) -> Result<ReportDraft, DocxError> 
         updated_at: timestamp,
         last_applied_proposal_id: None,
     })
-}
-
-fn normalize_style(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| character.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
 }
 
 fn local_name(name: &[u8]) -> &[u8] {

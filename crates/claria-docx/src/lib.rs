@@ -7,6 +7,7 @@
 mod error;
 mod import;
 mod render;
+mod style_catalog;
 mod template_render;
 
 pub use error::DocxError;
