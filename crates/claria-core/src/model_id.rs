@@ -153,6 +153,23 @@ pub struct ModelCapabilities {
     /// generation — AWS gates the 1-hour TTL to Claude 4.5 and newer, so
     /// new generations get it by default.
     pub supports_extended_cache_ttl: bool,
+    /// Whether the family accepts adaptive thinking
+    /// (`additionalModelRequestFields.thinking = {type: "adaptive"}`).
+    /// Denylist: everything predating the extended cache TTL plus the 4.5
+    /// minor generation — adaptive thinking arrived with Claude 4.6, so
+    /// newer generations get it by default.
+    pub adaptive_thinking: bool,
+    /// Whether the family accepts `output_config.effort` via
+    /// `additionalModelRequestFields`. Effort shipped with Opus 4.5 and
+    /// became tier-wide with 4.6 — Sonnet 4.5 and Haiku 4.5 reject it, so
+    /// the denylist mirrors adaptive thinking's with an Opus 4.5 carve-out.
+    pub effort_parameter: bool,
+    /// Whether non-default `temperature`/`top_p` are accepted. Claude
+    /// 4.7-class and newer models REJECT them, so this is an allowlist of
+    /// the generations that still take sampling parameters (through 4.6) —
+    /// unknown and future families deliberately resolve to false, matching
+    /// the modern no-sampling contract.
+    pub sampling_params: bool,
 }
 
 impl ModelCapabilities {
@@ -191,11 +208,40 @@ impl ModelCapabilities {
             || family_with_date_stamp(&id, "claude-opus-4-1")
             || family_with_date_stamp(&id, "claude-sonnet-4");
 
+        // Adaptive thinking arrived with Claude 4.6: exclude everything
+        // pre-4.5 (the extended-TTL denylist) plus the 4.5 minor generation.
+        let no_adaptive_thinking = no_extended_ttl
+            || id.contains("claude-opus-4-5")
+            || id.contains("claude-sonnet-4-5")
+            || id.contains("claude-haiku-4-5");
+
+        // Effort: Opus 4.5 introduced it; Sonnet 4.5 and Haiku 4.5 reject
+        // it; every 4.6+ generation accepts it.
+        let no_effort = no_adaptive_thinking && !id.contains("claude-opus-4-5");
+
+        // Generations through 4.6 accept sampling parameters; 4.7-class and
+        // newer reject them, so this list enumerates the accepting past and
+        // future families default to false.
+        let accepts_sampling = id.contains("claude-3-")
+            || legacy_pre_tools
+            || family_with_date_stamp(&id, "claude-opus-4")
+            || family_with_date_stamp(&id, "claude-opus-4-1")
+            || family_with_date_stamp(&id, "claude-sonnet-4")
+            || id.contains("claude-opus-4-5")
+            || id.contains("claude-opus-4-6")
+            || id.contains("claude-sonnet-4-5")
+            || id.contains("claude-sonnet-4-6")
+            || id.contains("claude-haiku-4-5")
+            || id.contains("claude-haiku-4-6");
+
         Self {
             report_tools: is_claude && !legacy_pre_tools,
             context_window_tokens,
             prompt_caching: is_claude && !no_caching,
             supports_extended_cache_ttl: is_claude && !no_extended_ttl,
+            adaptive_thinking: is_claude && !no_adaptive_thinking,
+            effort_parameter: is_claude && !no_effort,
+            sampling_params: is_claude && accepts_sampling,
         }
     }
 }

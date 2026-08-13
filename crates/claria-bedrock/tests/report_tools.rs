@@ -109,6 +109,24 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
         request["inferenceConfig"]["maxTokens"],
         claria_bedrock::report::REPORT_OUTPUT_TOKEN_RESERVE
     );
+
+    // GOLDEN wire shape: literal values so a silent constant change fails
+    // CI. Cutting these caps (25 → 10 operations) and the output ceiling
+    // (32k → 8k) — and telling the model to keep proposals small — caused
+    // the v0.20–v0.23 "robotic, choppy writing" regression. Changing them
+    // is a deliberate quality decision requiring a golden update.
+    assert_eq!(proposal["properties"]["operations"]["maxItems"], 25);
+    assert_eq!(request["inferenceConfig"]["maxTokens"], 32_768);
+    let description = tools[2]["toolSpec"]["description"]
+        .as_str()
+        .expect("proposal description");
+    assert!(description.contains("completed tool calls still execute"));
+    assert!(!description.contains("keep one proposal small"));
+    assert!(!description.to_ascii_lowercase().contains("output tokens:"));
+
+    // Untuned requests stay byte-identical to the pre-tuning shape.
+    assert!(request.get("additionalModelRequestFields").is_none());
+    assert!(request["inferenceConfig"].get("temperature").is_none());
 }
 
 #[tokio::test]
@@ -131,6 +149,7 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
         &[user_message("Complete record snapshot")],
         12,
         &mut ReportInputBudget::new(MODEL_ID),
+        claria_bedrock::converse::ModelTuning::default(),
     )
     .await
     .expect("full-draft converse");
@@ -156,7 +175,55 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
         section["properties"]["blocks"]["maxItems"],
         claria_bedrock::report::MAX_SECTION_BLOCKS
     );
+    // GOLDEN: literal value — lowering the per-section block ceiling forced
+    // multi-turn splitting of long clinical sections (v0.20–v0.23).
+    assert_eq!(section["properties"]["blocks"]["maxItems"], 200);
     assert!(section["properties"]["section_id"].get("anyOf").is_some());
+}
+
+#[tokio::test]
+async fn model_tuning_shapes_the_wire_request() {
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Tuned."}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 4, "outputTokens": 2}
+        })],
+    )
+    .await;
+
+    converse_report_with_tool_limit(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "Policy",
+        &[user_message("Hello")],
+        8,
+        &mut ReportInputBudget::new(MODEL_ID),
+        claria_bedrock::converse::ModelTuning {
+            adaptive_thinking: true,
+            effort: Some(claria_bedrock::converse::EffortLevel::High),
+            temperature: Some(0.3),
+        },
+    )
+    .await
+    .expect("tuned converse");
+
+    let state = server.state.read().await;
+    let request = &state.bedrock_tool_requests[0];
+    assert_eq!(
+        request["additionalModelRequestFields"],
+        serde_json::json!({
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+        })
+    );
+    // The SDK carries temperature as f32; compare with a tolerance.
+    let temperature = request["inferenceConfig"]["temperature"]
+        .as_f64()
+        .expect("temperature");
+    assert!((temperature - 0.3).abs() < 1e-6, "{temperature}");
 }
 
 #[tokio::test]
@@ -256,6 +323,7 @@ async fn configured_tool_limit_rejects_oversized_model_responses() {
         &[user_message("Draft")],
         1,
         &mut claria_bedrock::report::ReportInputBudget::new(MODEL_ID),
+        claria_bedrock::converse::ModelTuning::default(),
     )
     .await
     .expect_err("configured tool limit");
@@ -707,6 +775,7 @@ async fn ordinary_chat_still_sends_no_tool_configuration() {
         "System",
         &messages,
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await

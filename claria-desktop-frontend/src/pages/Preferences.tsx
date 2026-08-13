@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getPrompt,
+  getWriterTrustRules,
   savePrompt,
   deletePrompt,
   setPreferredModel,
@@ -18,6 +19,8 @@ import {
   renameWriterTemplate,
   deleteWriterTemplate,
   type ConfigInfo,
+  type EffortPreference,
+  type ModelTuningPreferences,
   type LocalBackend,
   type LocalKvPrecision,
   type LocalModelId,
@@ -61,6 +64,10 @@ export default function Preferences({
     preferredModelId,
     setPreferredModelId,
   } = useChatModels();
+
+  // Fixed writer trust rules, displayed read-only under the writer prompt
+  // editors so nothing about how the writer runs is hidden.
+  const { data: trustRules } = useAsyncLoad(() => getWriterTrustRules(), []);
 
   // Model preference state
   const [modelSaving, setModelSaving] = useState(false);
@@ -124,6 +131,22 @@ export default function Preferences({
           description="Instructions used when converting uploaded PDF and DOCX files to structured Markdown."
         />
 
+        {/* Writer prompt sections — the editable bodies of the document
+            writer's system prompts. Claria always appends fixed trust rules,
+            shown read-only so nothing about how the writer runs is hidden. */}
+        <PromptEditor
+          promptName="report-system"
+          label="Writer Prompt"
+          description="Instructions given to the document writer for targeted edits and proposals."
+          fixedRules={trustRules?.targeted}
+        />
+        <PromptEditor
+          promptName="report-full-draft"
+          label="Whole-Report Prompt"
+          description="Instructions used when filling the complete report in one action."
+          fixedRules={trustRules?.full_draft}
+        />
+
         {/* Machine-local transcribe.cpp models and inference controls */}
         <LocalTranscriptionSection />
 
@@ -174,8 +197,221 @@ export default function Preferences({
               </>
             )}
         </PreferencesSection>
+
+        {/* Opt-in model tuning knobs (adaptive reasoning, effort, temperature) */}
+        <ModelTuningSection />
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Model tuning — opt-in adaptive reasoning, effort, and temperature
+// ---------------------------------------------------------------------------
+
+const EFFORT_OPTIONS: { value: "" | EffortPreference; label: string }[] = [
+  { value: "", label: "Model default (high)" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "max", label: "Max" },
+];
+
+function ModelTuningSection() {
+  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
+  const [draft, setDraft] = useState<ModelTuningPreferences | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const info = await fetchCloudPreferences();
+      setSnapshot(info);
+      setDraft(info.model_tuning);
+    } catch (e) {
+      try {
+        const info = await loadConfig();
+        setSnapshot(info);
+        setDraft(info.model_tuning);
+      } catch (fallbackError) {
+        setLoadError(String(fallbackError ?? e));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const dirty =
+    snapshot != null &&
+    draft != null &&
+    JSON.stringify(snapshot.model_tuning) !== JSON.stringify(draft);
+  const temperatureInvalid =
+    draft?.temperature != null &&
+    (draft.temperature < 0 || draft.temperature > 1);
+
+  async function save() {
+    if (!snapshot || !draft || temperatureInvalid) return;
+    setSaving(true);
+    setSaveError(null);
+    setSaved(false);
+    try {
+      // Patch-save: only the model tuning section travels.
+      const updated = await savePreferencesPatch({ model_tuning: draft });
+      setSnapshot(updated);
+      setDraft(updated.model_tuning);
+      setSaved(true);
+    } catch (e) {
+      setSaveError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <PreferencesSection
+      title="Model Tuning"
+      summary={
+        draft && (draft.reasoning_enabled || draft.effort || draft.temperature != null) ? (
+          <span className="text-xs text-gray-400">
+            {[
+              draft.reasoning_enabled ? "Adaptive reasoning on" : null,
+              draft.effort ? `effort: ${draft.effort}` : null,
+              draft.temperature != null ? `temp: ${draft.temperature}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+        ) : undefined
+      }
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    >
+      {loading ? (
+        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+          <Spinner />
+          <span>Loading model tuning...</span>
+        </div>
+      ) : !draft ? (
+        <ErrorBanner
+          message={loadError ?? "Could not load model tuning preferences."}
+          className=""
+        />
+      ) : (
+        <>
+          <p className="text-xs text-gray-500">
+            Optional controls applied to chat and writer requests. Each
+            setting is sent only to models that support it — unsupported
+            knobs are skipped automatically, so nothing here can break a
+            model that does not accept them.
+          </p>
+
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={draft.reasoning_enabled}
+              onChange={(e) => {
+                setSaved(false);
+                setDraft({ ...draft, reasoning_enabled: e.target.checked });
+              }}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="text-sm text-gray-700 block">
+                Adaptive reasoning
+              </span>
+              <span className="text-xs text-gray-500 block">
+                Lets supported models (Claude 4.6 and newer) think before
+                answering, which can improve report quality. Reasoning tokens
+                bill as output and count against the response budget, so
+                turns cost more and take longer.
+              </span>
+            </span>
+          </label>
+
+          <div>
+            <label className="text-sm text-gray-700 block mb-1">Effort</label>
+            <select
+              value={draft.effort ?? ""}
+              onChange={(e) => {
+                setSaved(false);
+                setDraft({
+                  ...draft,
+                  effort: (e.target.value || null) as EffortPreference | null,
+                });
+              }}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              {EFFORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              How much reasoning supported models put into each response.
+              Sent to Opus 4.5 and every model from Claude 4.6 on.
+            </p>
+          </div>
+
+          <div>
+            <label className="text-sm text-gray-700 block mb-1">
+              Temperature
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.1}
+              placeholder="Model default"
+              value={draft.temperature ?? ""}
+              onChange={(e) => {
+                setSaved(false);
+                setDraft({
+                  ...draft,
+                  temperature:
+                    e.target.value === "" ? null : Number(e.target.value),
+                });
+              }}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              0.0 to 1.0; leave blank for the model default. Only sent to
+              model generations that accept it (through Claude 4.6) — newer
+              models always use their own default.
+            </p>
+          </div>
+
+          {temperatureInvalid && (
+            <ErrorBanner
+              message="Temperature must be between 0.0 and 1.0."
+              className=""
+            />
+          )}
+          {saveError && <ErrorBanner message={saveError} className="" />}
+
+          <div className="flex items-center justify-end gap-3">
+            {saved && !dirty && (
+              <span className="text-xs text-green-600">Saved</span>
+            )}
+            <button
+              onClick={save}
+              disabled={!dirty || saving || temperatureInvalid}
+              className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </>
+      )}
+    </PreferencesSection>
   );
 }
 
@@ -188,11 +424,14 @@ function PromptEditor({
   label,
   description,
   defaultOpen,
+  fixedRules,
 }: {
   promptName: string;
   label: string;
   description: string;
   defaultOpen?: boolean;
+  /** Read-only rules Claria always appends after the editable body. */
+  fixedRules?: string;
 }) {
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
@@ -262,8 +501,22 @@ function PromptEditor({
                   setDirty(true);
                 }}
                 disabled={saving}
-                className="w-full min-h-[200px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
+                className="w-full min-h-[216px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
               />
+
+              {fixedRules && (
+                <div className="mt-3">
+                  <p className="text-xs text-gray-400 mb-1">
+                    Claria always appends these trust rules after your prompt.
+                    They are not editable and cannot be removed:
+                  </p>
+                  {/* 184px = 8px top padding + 11 exact 16px text-xs line
+                      boxes, so the scroll fold never slices a line. */}
+                  <pre className="w-full max-h-[184px] overflow-auto px-3 py-2 text-xs font-mono text-gray-500 bg-gray-50 border border-gray-200 rounded-lg whitespace-pre-wrap">
+                    {fixedRules}
+                  </pre>
+                </div>
+              )}
 
               {error && (
                 <ErrorBanner message={error} className="mt-3" />

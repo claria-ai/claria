@@ -33,6 +33,12 @@ pub struct AuditEvent {
     pub resource_id: String,
     pub user_sub: String,
     pub details: Option<serde_json::Value>,
+    /// The app version that recorded the event. `None` on events written
+    /// before this field existed; the caller stamps it (this crate never
+    /// reads its own version so library and desktop releases stay
+    /// independent).
+    #[serde(default)]
+    pub app_version: Option<String>,
 }
 
 impl AuditEvent {
@@ -50,11 +56,17 @@ impl AuditEvent {
             resource_id: resource_id.into(),
             user_sub: user_sub.into(),
             details: None,
+            app_version: None,
         }
     }
 
     pub fn with_details(mut self, details: serde_json::Value) -> Self {
         self.details = Some(details);
+        self
+    }
+
+    pub fn with_app_version(mut self, app_version: impl Into<String>) -> Self {
+        self.app_version = Some(app_version.into());
         self
     }
 

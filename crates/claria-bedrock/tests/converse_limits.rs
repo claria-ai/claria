@@ -59,6 +59,7 @@ async fn chat_sets_max_tokens_and_skips_counting_far_from_budget() {
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await
@@ -98,6 +99,7 @@ async fn chat_truncation_is_a_typed_error() {
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await
@@ -129,6 +131,7 @@ async fn chat_context_overflow_maps_to_friendly_error() {
         "System prompt",
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await
@@ -154,6 +157,7 @@ async fn chat_near_budget_verifies_and_rejects_before_spending() {
         &big_prompt,
         &user_messages("Hello"),
         CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
         |_| {},
     )
     .await

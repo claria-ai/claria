@@ -127,6 +127,7 @@ fn main() -> Result<()> {
         commands::load_chat_history,
         commands::rename_chat_history,
         commands::get_prompt,
+        commands::get_writer_trust_rules,
         commands::save_prompt,
         commands::delete_prompt,
         commands::list_prompt_versions,

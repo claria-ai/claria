@@ -15,7 +15,9 @@ use aws_sdk_bedrockruntime::types::{
 use aws_smithy_types::Blob;
 use claria_core::models::{
     report::{
-        ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
+        MAX_BULLET_ITEM_CHARACTERS, MAX_BULLET_ITEMS, MAX_PARAGRAPH_CHARACTERS,
+        MAX_TABLE_CELL_CHARACTERS, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, ReportProtocolBlock,
+        ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
         validate_report_conversation,
     },
     turn_usage::TurnUsage,
@@ -36,17 +38,22 @@ pub const MAX_TOOL_USES_PER_RESPONSE: usize = 100;
 /// Output-token reserve for one report Converse call. This is both the
 /// `max_tokens` sent on the wire and the amount subtracted from the model's
 /// context window to form the input budget — the reserve is enforced, not
-/// aspirational.
-pub const REPORT_OUTPUT_TOKEN_RESERVE: u32 = 8_192;
+/// aspirational. Sized so one response can carry a full replacement of a
+/// long clinical section (a maximal 200-block section is ≈25k tokens);
+/// the 8k reserve shipped in v0.20–v0.23 forced multi-turn splitting and
+/// measurably degraded report flow. Truncation at this ceiling still
+/// surfaces as a MaxTokens stop handled by the caller's salvage path.
+pub const REPORT_OUTPUT_TOKEN_RESERVE: u32 = 32_768;
 
-/// Proposal schema ceilings, derived from [`REPORT_OUTPUT_TOKEN_RESERVE`]:
-/// one response of ≈8k tokens (≈32k characters) must be able to carry a
-/// maximal well-formed proposal, so per-call size limits stay small and the
-/// tool description tells the model to split large rewrites across turns.
-pub const MAX_PROPOSAL_OPERATIONS: u32 = 10;
-/// Maximum blocks per proposed section — sized so a full section fits in
-/// one [`REPORT_OUTPUT_TOKEN_RESERVE`]-bounded response.
-pub const MAX_SECTION_BLOCKS: u32 = 50;
+/// Proposal wire-schema ceilings mirror the domain validators in
+/// `claria-core`, so the tool schema never rejects a proposal the domain
+/// would accept. Shrinking these below the domain caps is a known quality
+/// regression — the model plans its edits around the advertised schema.
+/// Smaller caps do not prevent oversized responses either: those surface as
+/// a MaxTokens stop and are handled by the caller's truncation-salvage path.
+pub const MAX_PROPOSAL_OPERATIONS: usize = claria_core::models::report::MAX_PROPOSAL_OPERATIONS;
+/// Maximum blocks per proposed section — mirrors the domain validator.
+pub const MAX_SECTION_BLOCKS: usize = claria_core::models::report::MAX_SECTION_BLOCKS;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReportConverseOutput {
@@ -56,6 +63,10 @@ pub struct ReportConverseOutput {
     /// Bedrock may omit usage. Callers must preserve that incompleteness
     /// instead of recording a misleading metered zero.
     pub usage: Option<TurnUsage>,
+    /// Wall-clock time of the Converse round trip; `None` on records
+    /// written before this field existed.
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
 }
 
 impl ReportConverseOutput {
@@ -93,6 +104,25 @@ pub enum ReportStopReason {
     StopSequence,
     ToolUse,
     Unknown,
+}
+
+impl ReportStopReason {
+    /// Stable snake_case label matching the serde representation, for
+    /// PHI-free telemetry fields.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ContentFiltered => "content_filtered",
+            Self::EndTurn => "end_turn",
+            Self::GuardrailIntervened => "guardrail_intervened",
+            Self::MalformedModelOutput => "malformed_model_output",
+            Self::MalformedToolUse => "malformed_tool_use",
+            Self::MaxTokens => "max_tokens",
+            Self::ModelContextWindowExceeded => "model_context_window_exceeded",
+            Self::StopSequence => "stop_sequence",
+            Self::ToolUse => "tool_use",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -260,6 +290,7 @@ pub async fn converse_report(
         messages,
         DEFAULT_MAX_TOOL_USES_PER_RESPONSE,
         &mut ReportInputBudget::new(model_id),
+        converse::ModelTuning::default(),
     )
     .await
 }
@@ -277,6 +308,7 @@ pub async fn converse_report_with_tool_limit(
     messages: &[ReportProtocolMessage],
     max_tool_uses_per_response: usize,
     budget: &mut ReportInputBudget,
+    tuning: converse::ModelTuning,
 ) -> Result<ReportConverseOutput, BedrockError> {
     converse_report_with_tool_set(
         config,
@@ -286,6 +318,7 @@ pub async fn converse_report_with_tool_limit(
         max_tool_uses_per_response,
         budget,
         ReportToolSet::TargetedEdit,
+        tuning,
     )
     .await
 }
@@ -301,6 +334,7 @@ pub async fn converse_full_report_with_tool_limit(
     messages: &[ReportProtocolMessage],
     max_tool_uses_per_response: usize,
     budget: &mut ReportInputBudget,
+    tuning: converse::ModelTuning,
 ) -> Result<ReportConverseOutput, BedrockError> {
     converse_report_with_tool_set(
         config,
@@ -310,6 +344,7 @@ pub async fn converse_full_report_with_tool_limit(
         max_tool_uses_per_response,
         budget,
         ReportToolSet::FullDraft,
+        tuning,
     )
     .await
 }
@@ -330,6 +365,7 @@ enum ReportToolSet {
         tool_set = ?tool_set
     )
 )]
+#[allow(clippy::too_many_arguments)]
 async fn converse_report_with_tool_set(
     config: &aws_config::SdkConfig,
     model_id: &str,
@@ -338,6 +374,7 @@ async fn converse_report_with_tool_set(
     max_tool_uses_per_response: usize,
     budget: &mut ReportInputBudget,
     tool_set: ReportToolSet,
+    tuning: converse::ModelTuning,
 ) -> Result<ReportConverseOutput, BedrockError> {
     if max_tool_uses_per_response == 0 || max_tool_uses_per_response > MAX_TOOL_USES_PER_RESPONSE {
         return Err(BedrockError::SchemaViolation(format!(
@@ -402,6 +439,7 @@ async fn converse_report_with_tool_set(
         (vec![system], sdk_messages)
     };
 
+    let started = std::time::Instant::now();
     let response = client
         .converse()
         .model_id(model_id)
@@ -411,11 +449,14 @@ async fn converse_report_with_tool_set(
         .inference_config(
             InferenceConfiguration::builder()
                 .max_tokens(REPORT_OUTPUT_TOKEN_RESERVE as i32)
+                .set_temperature(tuning.temperature)
                 .build(),
         )
+        .set_additional_model_request_fields(converse::additional_request_fields(tuning)?)
         .send()
         .await
         .map_err(|error| converse::classify_error("report Converse", error))?;
+    let latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
 
     let output_message = response
         .output()
@@ -524,7 +565,14 @@ async fn converse_report_with_tool_set(
     let stop_reason = map_stop_reason(response.stop_reason());
 
     let usage = converse::optional_usage(response.usage(), model_id, None);
-    converse::log_turn_usage("report Converse", model_id, usage.as_ref());
+    converse::log_turn_usage(
+        "report Converse",
+        model_id,
+        usage.as_ref(),
+        Some(stop_reason.as_str()),
+        latency_ms,
+        REPORT_OUTPUT_TOKEN_RESERVE,
+    );
 
     Ok(ReportConverseOutput {
         message: ReportProtocolMessage {
@@ -535,6 +583,7 @@ async fn converse_report_with_tool_set(
         stop_reason,
         tool_calls,
         usage,
+        latency_ms,
     })
 }
 
@@ -665,8 +714,8 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                 "properties": {
                     "kind": {"enum": ["paragraph"]},
                     "text": {
-                        "type": "string", "minLength": 1, "maxLength": 20000,
-                        "description": "Plain paragraph text, at most 20000 characters. No markdown markup is rendered."
+                        "type": "string", "minLength": 1, "maxLength": MAX_PARAGRAPH_CHARACTERS,
+                        "description": format!("Plain paragraph text, at most {MAX_PARAGRAPH_CHARACTERS} characters. No markdown markup is rendered.")
                     }
                 }
             },
@@ -679,8 +728,8 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                     "items": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 100,
-                        "items": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        "maxItems": MAX_BULLET_ITEMS,
+                        "items": {"type": "string", "minLength": 1, "maxLength": MAX_BULLET_ITEM_CHARACTERS},
                         "description": "One plain-text string per bullet, in display order."
                     }
                 }
@@ -694,12 +743,12 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                     "rows": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 200,
+                        "maxItems": MAX_TABLE_ROWS,
                         "items": {
                             "type": "array",
                             "minItems": 1,
-                            "maxItems": 20,
-                            "items": {"type": "string", "maxLength": 5000}
+                            "maxItems": MAX_TABLE_COLUMNS,
+                            "items": {"type": "string", "maxLength": MAX_TABLE_CELL_CHARACTERS}
                         },
                         "description": "Rows in display order; each row is an array of plain-text cells. Every row must have the same number of cells. Leave unknown cells as empty strings rather than inventing values."
                     },
@@ -710,7 +759,7 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                     "column_widths": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 20,
+                        "maxItems": MAX_TABLE_COLUMNS,
                         "items": {"type": "integer", "minimum": 1, "maximum": 10000},
                         "description": "Optional relative column widths (proportions of total table width, not absolute units); one entry per column. Omit for equal widths."
                     }
@@ -863,8 +912,8 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                  accepted_report in the untrusted context; positions are 0-based; replace_section \
                  replaces the entire section including its heading. At most one call per turn — a \
                  second call fails. Nothing is saved or applied until the user accepts the proposal, so \
-                 never claim a change was saved. Responses are limited to 8192 output tokens: keep one \
-                 proposal small and split large rewrites across multiple turns.",
+                 never claim a change was saved. If a response is cut off at the output-token limit, \
+                 completed tool calls still execute and you can continue in the next response.",
                 proposal_schema,
             )?,
         ],

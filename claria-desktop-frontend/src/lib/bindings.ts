@@ -305,7 +305,7 @@ async apply(onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<Pla
 },
 /**
  * Destroy all managed resources with temporary elevated credentials.
- *
+ * 
  * The saved scoped credentials deliberately cannot erase S3 version history.
  * The supplied root or IAM administrator credentials are validated against
  * the configured account, used only for this teardown, and never persisted.
@@ -804,6 +804,14 @@ async getPrompt(promptName: string) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getWriterTrustRules() : Promise<Result<WriterTrustRules, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_writer_trust_rules") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Save a named prompt to S3.
  * 
@@ -1246,7 +1254,7 @@ export type ChatHistoryDetail = { chat_id: string; name: string; model_id: strin
  * A single message in persisted chat history, including optional token
  * usage on assistant turns.
  */
-export type ChatHistoryDetailMessage = { role: ChatRole; content: string; timestamp: string;
+export type ChatHistoryDetailMessage = { role: ChatRole; content: string; timestamp: string; 
 /**
  * `Some` on assistant turns whose Converse response carried a usage
  * block. `None` on user turns and on assistant turns from history
@@ -1299,7 +1307,7 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences }
 /**
  * One poll's worth of new console entries, addressed by a monotonic
  * sequence cursor so the 500ms UI poll ships only new lines.
@@ -1385,6 +1393,7 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
 export type EditorHistoryEntry = { report_id: string; name: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExport | null }
+export type EffortPreference = "low" | "medium" | "high" | "max"
 /**
  * Structured before/after for a single field that doesn't match desired state.
  * 
@@ -1452,6 +1461,25 @@ export type ModelPricing = { input_per_million: number; output_per_million: numb
  */
 cache_write_1h_per_million?: number }
 /**
+ * Opt-in model-tuning knobs. Every knob defaults to "send nothing", and
+ * each is applied only on models whose capability-table entry accepts it —
+ * see `commands::model_tuning_for`.
+ */
+export type ModelTuningPreferences = { 
+/**
+ * Request adaptive thinking on models that support it (Claude 4.6+).
+ */
+reasoning_enabled?: boolean; 
+/**
+ * Requested effort level; `None` leaves the model default (high).
+ */
+effort?: EffortPreference | null; 
+/**
+ * Sampling temperature, only sent to generations that accept it
+ * (through Claude 4.6); `None` leaves the model default.
+ */
+temperature?: number | null }
+/**
  * The non-secret half of freshly minted credentials.
  */
 export type NewCredentialsInfo = { access_key_id: string; iam_user_arn: string }
@@ -1479,7 +1507,7 @@ export type PreferencesPatch = {
  * (only expressible in-process — over IPC use `set_preferred_model`),
  * `None` leaves it unchanged.
  */
-preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null }
+preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null }
 /**
  * What `provision_apply` did.
  * 
@@ -1529,7 +1557,7 @@ export type RecordFile = { filename: string; size: number; uploaded_at: string |
  * relationship between the limits before they are saved or used.
  */
 export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
-export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number;
+export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; 
 /**
  * Records preloaded outside the model's record-reading tools. Only the
  * filename and availability cross IPC; source hashes/counts stay in the
@@ -1550,7 +1578,16 @@ export type ReportContextReadView = { filename: string; offset: number; returned
 export type ReportDraft = { revision: number; content: ReportContent; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
 export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }
 export type ReportExport = { revision: number; status: ReportExportStatus; attempted_at: string }
-export type ReportExportResult = { exported: boolean; report_id: string; revision: number; status: ReportExportStatus; attempted_at: string; status_persisted: boolean }
+export type ReportExportResult = { exported: boolean; report_id: string; revision: number; status: ReportExportStatus; attempted_at: string; status_persisted: boolean; 
+/**
+ * Whether the export carried the imported template's formatting.
+ */
+template_applied?: boolean; 
+/**
+ * Why the template's formatting was reduced or unavailable, when the
+ * workspace expected one — never silently degraded.
+ */
+template_warning?: TemplateExportWarning | null }
 export type ReportExportStatus = "exported" | "canceled" | "failed"
 export type ReportOperation = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSection } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlock[] } | { kind: "remove_section"; section_id: string }
 /**
@@ -1651,6 +1688,18 @@ export type SpeakerMode = "none" | "diarize" | "channels"
  */
 export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
 export type TAURI_CHANNEL<TSend> = null
+export type TemplateExportWarning = 
+/**
+ * The stored template source no longer exists (imports predating the
+ * template shelf never retained it); the export used generated
+ * formatting.
+ */
+"template_missing" | 
+/**
+ * The template body could not be walked (e.g. content controls); the
+ * export used generated body formatting inside the template package.
+ */
+"template_body_fallback"
 export type TranscribeMemoResult = { text: string; language: string | null; model_id: LocalModelId; backend: string }
 /**
  * Per-file overrides for the wizard flow. Each field is optional so the
@@ -1744,6 +1793,12 @@ pricing_version: number }
  */
 export type UpdateCheck = { current_version: string; latest_version: string; update_available: boolean; release_url: string }
 export type WriterTemplateView = { id: string; name: string; size: number; uploaded_at: string; use_count: number }
+/**
+ * The fixed trust-boundary rules Claria appends to every writer prompt —
+ * surfaced so Preferences can display exactly what always runs, without
+ * making it editable.
+ */
+export type WriterTrustRules = { targeted: string; full_draft: string }
 
 /** tauri-specta globals **/
 

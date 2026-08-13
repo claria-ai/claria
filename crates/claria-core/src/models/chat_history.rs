@@ -33,6 +33,14 @@ pub struct ChatHistoryMessage {
     /// "unknown".
     #[serde(default)]
     pub usage: Option<TurnUsage>,
+    /// The wire stop reason of the assistant turn; `None` on user turns and
+    /// pre-schema history.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    /// Wall-clock duration of the streamed exchange that produced this
+    /// assistant turn; `None` when unknown.
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
 }
 
 /// Role of a chat message — the one role enum shared by persisted history,

@@ -5,7 +5,7 @@ use tauri::State;
 pub use claria_desktop::report_authoring::{
     EditorHistoryEntry, FullReportGenerationResponse, ReportBlockReferenceInput, ReportDraftEdit,
     ReportExportResult, ReportProposalChoice, ReportRevisionView, ReportTurnProgressView,
-    ReportTurnResponse, ReportWorkspaceView,
+    ReportTurnResponse, ReportWorkspaceView, TemplateExportWarning,
 };
 
 use claria_core::models::report::{ReportDraft, ReportExportStatus};
@@ -339,6 +339,8 @@ pub async fn generate_full_report(
         let progress = |event: claria_report_authoring::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
+        let prompt_body =
+            super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-full-draft").await?;
         let result = claria_report_authoring::generate_full_report_for_report(
             &ctx.sdk_config,
             &ctx.s3,
@@ -350,7 +352,9 @@ pub async fn generate_full_report(
             claria_report_authoring::FullReportRequest::new(&guidance)
                 .with_limits(limits)
                 .with_progress(&progress)
-                .with_prompt_cache(&state.report_prompt_cache),
+                .with_prompt_cache(&state.report_prompt_cache)
+                .with_system_prompt_body(&prompt_body)
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
         )
         .await;
 
@@ -360,7 +364,7 @@ pub async fn generate_full_report(
                 let record_context = outcome.record_context.clone();
                 let response = claria_desktop::report_authoring::full_report_response_view(outcome);
                 let mut audit_details =
-                    usage_audit_details(&attempt.model_id, Some(&attempt.usage));
+                    usage_audit_details(&attempt.model_id, Some(&attempt.usage), None);
                 merge_details(
                     &mut audit_details,
                     serde_json::json!({
@@ -408,6 +412,7 @@ pub async fn generate_full_report(
                 let mut audit_details = usage_audit_details(
                     &model_id,
                     attempt.as_ref().map(|value| &value.usage),
+                    None,
                 );
                 merge_details(
                     &mut audit_details,
@@ -464,6 +469,8 @@ pub async fn send_report_message(
         let progress = |event: claria_report_authoring::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
+        let prompt_body =
+            super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-system").await?;
         let result = claria_report_authoring::send_report_message_for_report(
             &ctx.sdk_config,
             &ctx.s3,
@@ -476,7 +483,9 @@ pub async fn send_report_message(
                 .with_references(&references)
                 .with_limits(limits)
                 .with_progress(&progress)
-                .with_prompt_cache(&state.report_prompt_cache),
+                .with_prompt_cache(&state.report_prompt_cache)
+                .with_system_prompt_body(&prompt_body)
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
         )
         .await;
 
@@ -488,7 +497,7 @@ pub async fn send_report_message(
                 // is then overridden with the attempt's own aggregate flag
                 // (per-call omissions can leave a partial sum).
                 let mut audit_details =
-                    usage_audit_details(&attempt.model_id, Some(&attempt.usage));
+                    usage_audit_details(&attempt.model_id, Some(&attempt.usage), None);
                 merge_details(
                     &mut audit_details,
                     serde_json::json!({
@@ -524,6 +533,7 @@ pub async fn send_report_message(
                 let mut audit_details = usage_audit_details(
                     &model_id,
                     attempt.as_ref().map(|value| &value.usage),
+                    None,
                 );
                 merge_details(
                     &mut audit_details,
@@ -619,11 +629,33 @@ pub async fn export_report_docx(
             expected_revision,
         )
         .await?;
-        let bytes = if let Some(template) = snapshot.template_source.as_deref() {
-            claria_docx::render_report_with_template(template, &snapshot.draft)
-        } else {
-            claria_docx::render_report(&snapshot.draft)
-        }?;
+        let (bytes, template_applied, template_warning) =
+            if let Some(template) = snapshot.template_source.as_deref() {
+                let (bytes, fidelity) =
+                    claria_docx::render_report_with_template(template, &snapshot.draft)?;
+                let warning = (fidelity == claria_docx::TemplateRenderFidelity::PlainBodyFallback)
+                    .then_some(TemplateExportWarning::TemplateBodyFallback);
+                if warning.is_some() {
+                    tracing::warn!(
+                        report_id = %report_id,
+                        ?fidelity,
+                        "template export fell back to generated body formatting"
+                    );
+                }
+                (bytes, warning.is_none(), warning)
+            } else if snapshot.template_missing {
+                tracing::warn!(
+                    report_id = %report_id,
+                    "report template source is missing; exporting without template formatting"
+                );
+                (
+                    claria_docx::render_report(&snapshot.draft)?,
+                    false,
+                    Some(TemplateExportWarning::TemplateMissing),
+                )
+            } else {
+                (claria_docx::render_report(&snapshot.draft)?, false, None)
+            };
         let draft = snapshot.draft;
         let filename = claria_report_authoring::suggested_docx_filename(&draft.content.title);
         // Use the asynchronous dialog implementation. In particular, macOS must
@@ -654,6 +686,8 @@ pub async fn export_report_docx(
                 status: ReportExportStatus::Canceled,
                 attempted_at: attempted_at.to_string(),
                 status_persisted,
+                template_applied,
+                template_warning,
             });
         };
         let mut path = selected.path().to_path_buf();
@@ -708,6 +742,8 @@ pub async fn export_report_docx(
             status: ReportExportStatus::Exported,
             attempted_at: attempted_at.to_string(),
             status_persisted,
+            template_applied,
+            template_warning,
         })
     })
     .await

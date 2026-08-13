@@ -53,6 +53,7 @@ import type {
   TranscribeOptionsOverrides,
   UpdateCheck,
   WriterTemplateView,
+  WriterTrustRules,
 } from "./bindings";
 
 export { commands };
@@ -146,11 +147,14 @@ export type {
   Severity,
   SpeakerMode,
   StepStatus,
+  EffortPreference,
+  ModelTuningPreferences,
   TranscribeOptionsOverrides,
   TranscriptionLanguage,
   TranscriptionPreferences,
   TurnUsage,
   WriterTemplateView,
+  WriterTrustRules,
 } from "./bindings";
 export type { Result } from "./bindings";
 
@@ -751,6 +755,10 @@ export async function setPreferredModel(modelId: string | null): Promise<void> {
 
 export async function getPrompt(promptName: string): Promise<string> {
   return unwrap(await commands.getPrompt(promptName));
+}
+
+export async function getWriterTrustRules(): Promise<WriterTrustRules> {
+  return unwrap(await commands.getWriterTrustRules());
 }
 
 export async function savePrompt(promptName: string, content: string): Promise<void> {

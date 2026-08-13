@@ -4,6 +4,24 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Writer and chat context no longer rewrite angle brackets and ampersands inside clinical text; only sequences that could forge the untrusted-context delimiters are neutralized
+- The writer's report context is structured, indented JSON again instead of one compacted line
+- Writer proposals can carry 25 operations and 200 blocks per section again; the tool schema's ceilings now mirror the domain validators instead of maintaining smaller copies
+- Writer responses get a four-times-larger output budget, and the proposal tool no longer instructs the model to keep proposals small
+- Template exports keep blank spacer paragraphs aligned with the report instead of piling them near the top when the report outgrows the template
+- Template exports no longer underline or bold generated paragraphs with formatting copied from an unrelated template line such as a signature blank or field label
+- Template exports keep bullet lists numbered when the report also contains multi-line paragraphs
+- Template import and export both recognize custom-named heading styles through the package's style definitions, so section headings keep the template's heading formatting and body text keeps the body font
+- Filling an empty template table cell regenerates the table instead of silently dropping the generated value
+- Multi-line paragraphs in template exports render their newlines as Word line breaks instead of disappearing
+- Bullet lists exported through a template without its own list formatting carry their numbering definition into the package instead of referencing one that does not exist
+- Exports that could not apply the imported Word template's formatting now say so in the export status instead of silently producing a default-formatted document
+- Audit events record the app version and, for AI turns, the stop reason
+- Writer per-call usage records add stop reason, latency, the output ceiling in effect, a system-prompt digest, and the app version; chat history messages add stop reason and latency
+- The turn-complete console line reports stop reason, latency, and the output ceiling for every AI call
+- The document writer's system prompts are editable in Preferences with versioned history, while the untrusted-data and template-carryover trust rules stay fixed and are shown read-only
+- Preferences gains opt-in model tuning — adaptive reasoning, effort, and temperature — with each knob sent only to model generations the capability table says accept it
+
 - The scoped Claria IAM policy no longer grants permanent S3 object-version deletion
 - Full infrastructure teardown requires temporary elevated credentials from the configured AWS account
 - Successful full infrastructure teardown removes the now-invalid local system configuration

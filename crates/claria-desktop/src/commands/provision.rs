@@ -358,6 +358,7 @@ pub async fn bootstrap_iam_user(
                 prompt_caching_enabled: true,
                 transcription: Default::default(),
                 report_authoring: Default::default(),
+                model_tuning: Default::default(),
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -1083,6 +1084,7 @@ pub async fn provision_apply(
                 prompt_caching_enabled: true,
                 transcription: Default::default(),
                 report_authoring: Default::default(),
+                model_tuning: Default::default(),
             };
 
             config::save_config(&cfg)?;

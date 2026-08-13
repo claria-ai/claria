@@ -12,12 +12,12 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 8;
+const CURRENT_VERSION: u32 = 9;
 
 /// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
 /// because the synced subset lives in S3 and may be read by other machines'
 /// builds.
-pub const PREFERENCES_VERSION: u32 = 2;
+pub const PREFERENCES_VERSION: u32 = 3;
 
 fn default_prompt_caching_enabled() -> bool {
     true
@@ -57,6 +57,58 @@ pub struct ClariaConfig {
     /// Guardrails for the agentic document-writing loop. Added in v8.
     #[serde(default)]
     pub report_authoring: ReportAuthoringPreferences,
+    /// Opt-in model tuning (adaptive thinking, effort, temperature). Added
+    /// in v9. Defaults leave every request byte-identical to pre-v9 builds.
+    #[serde(default)]
+    pub model_tuning: ModelTuningPreferences,
+}
+
+/// Opt-in model-tuning knobs. Every knob defaults to "send nothing", and
+/// each is applied only on models whose capability-table entry accepts it —
+/// see `commands::model_tuning_for`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, Type)]
+pub struct ModelTuningPreferences {
+    /// Request adaptive thinking on models that support it (Claude 4.6+).
+    #[serde(default)]
+    pub reasoning_enabled: bool,
+    /// Requested effort level; `None` leaves the model default (high).
+    #[serde(default)]
+    pub effort: Option<EffortPreference>,
+    /// Sampling temperature, only sent to generations that accept it
+    /// (through Claude 4.6); `None` leaves the model default.
+    #[serde(default)]
+    pub temperature: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortPreference {
+    Low,
+    Medium,
+    High,
+    Max,
+}
+
+impl EffortPreference {
+    pub fn to_effort_level(self) -> claria_bedrock::converse::EffortLevel {
+        match self {
+            Self::Low => claria_bedrock::converse::EffortLevel::Low,
+            Self::Medium => claria_bedrock::converse::EffortLevel::Medium,
+            Self::High => claria_bedrock::converse::EffortLevel::High,
+            Self::Max => claria_bedrock::converse::EffortLevel::Max,
+        }
+    }
+}
+
+impl ModelTuningPreferences {
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(temperature) = self.temperature
+            && !(0.0..=1.0).contains(&temperature)
+        {
+            return Err("Temperature must be between 0.0 and 1.0.".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// Per-clinician guardrails for agentic document writing. These values sync
@@ -192,6 +244,8 @@ pub struct SyncedPreferences {
     pub transcription: TranscriptionPreferences,
     #[serde(default)]
     pub report_authoring: ReportAuthoringPreferences,
+    #[serde(default)]
+    pub model_tuning: ModelTuningPreferences,
 }
 
 impl SyncedPreferences {
@@ -205,6 +259,7 @@ impl SyncedPreferences {
             prompt_caching_enabled: config.prompt_caching_enabled,
             transcription: config.transcription.clone(),
             report_authoring: config.report_authoring.clone(),
+            model_tuning: config.model_tuning,
         }
     }
 
@@ -217,6 +272,7 @@ impl SyncedPreferences {
         config.prompt_caching_enabled = self.prompt_caching_enabled;
         config.transcription = self.transcription.clone();
         config.report_authoring = self.report_authoring.clone();
+        config.model_tuning = self.model_tuning;
     }
 }
 
@@ -251,6 +307,7 @@ pub struct ConfigInfo {
     pub prompt_caching_enabled: bool,
     pub transcription: TranscriptionPreferences,
     pub report_authoring: ReportAuthoringPreferences,
+    pub model_tuning: ModelTuningPreferences,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -441,12 +498,35 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v7 → v8 (added report authoring preferences)");
     }
 
+    if from_version < 9 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.insert(
+            "model_tuning".to_string(),
+            serde_json::json!({
+                "reasoning_enabled": false,
+                "effort": null,
+                "temperature": null,
+            }),
+        );
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(9.into()),
+        );
+        tracing::info!("migrated config v8 → v9 (added model tuning preferences)");
+    }
+
     Ok(json)
 }
 
 pub fn save_config(config: &ClariaConfig) -> eyre::Result<()> {
     config
         .report_authoring
+        .validate()
+        .map_err(|error| eyre::eyre!(error))?;
+    config
+        .model_tuning
         .validate()
         .map_err(|error| eyre::eyre!(error))?;
     let dir = config_dir()?;
@@ -520,6 +600,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         prompt_caching_enabled: config.prompt_caching_enabled,
         transcription: config.transcription.clone(),
         report_authoring: config.report_authoring.clone(),
+        model_tuning: config.model_tuning,
     }
 }
 

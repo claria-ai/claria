@@ -130,7 +130,7 @@ pub(crate) async fn maybe_translate(
                     seg.translation = Some(output.translation.clone());
                 }
             }
-            let mut audit_details = usage_audit_details(model_id, usage.as_ref());
+            let mut audit_details = usage_audit_details(model_id, usage.as_ref(), None);
             audit_details["segment_count"] = serde_json::json!(outputs.len());
             ctx.record_audit(
                 ctx.audit_event("translate_transcript", "transcript", "")

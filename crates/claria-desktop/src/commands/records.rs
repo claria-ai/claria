@@ -342,7 +342,7 @@ async fn generate_upload_sidecar(
         )
         .await?;
 
-        let mut audit_details = usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref());
+        let mut audit_details = usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref(), None);
         audit_details["client_id"] = serde_json::json!(id.to_string());
         ctx.record_audit(
             ctx.audit_event("extract_document_text", "record_file", filename)
@@ -701,7 +701,7 @@ pub async fn extract_record_file(
             )
             .await?;
 
-            let mut audit_details = usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref());
+            let mut audit_details = usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref(), None);
             audit_details["client_id"] = serde_json::json!(id.to_string());
             ctx.record_audit(
                 ctx.audit_event("extract_document_text", "record_file", &filename)

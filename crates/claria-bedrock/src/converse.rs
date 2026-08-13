@@ -181,6 +181,9 @@ pub struct StreamOutcome {
     /// Per-turn usage from the trailing `metadata` event; `None` preserved
     /// when the service omitted it (see [`optional_usage`]).
     pub usage: Option<TurnUsage>,
+    /// Wall-clock time of the full streamed exchange, stamped by the caller
+    /// that drove the stream; `None` when not measured (synthetic tests).
+    pub latency_ms: Option<u64>,
 }
 
 /// Accumulates a `ConverseStream` response: text deltas, the stop reason
@@ -246,16 +249,88 @@ impl StreamCollector {
             text: self.text,
             stop_reason: stop_reason.as_str().to_string(),
             usage,
+            latency_ms: None,
         })
     }
 }
 
+/// Opt-in per-request model tuning. The desktop gates every knob against
+/// the central capability table before constructing this — this layer
+/// applies exactly what it is given and adds nothing by default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ModelTuning {
+    /// Send `thinking: {"type": "adaptive"}` via
+    /// `additionalModelRequestFields` (Claude 4.6+).
+    pub adaptive_thinking: bool,
+    /// Send `output_config: {"effort": ...}` via
+    /// `additionalModelRequestFields` (Claude 4.5+).
+    pub effort: Option<EffortLevel>,
+    /// Send `inferenceConfig.temperature` (rejected by Claude 4.7-class and
+    /// newer models — the capability table gates it to generations that
+    /// accept it).
+    pub temperature: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortLevel {
+    Low,
+    Medium,
+    High,
+    Max,
+}
+
+impl EffortLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// Anthropic-specific request fields that ride outside the Converse
+/// `inferenceConfig`, as a Smithy document; `None` when the tuning requests
+/// nothing so untuned requests stay byte-identical to the pre-tuning shape.
+pub(crate) fn additional_request_fields(
+    tuning: ModelTuning,
+) -> Result<Option<Document>, BedrockError> {
+    let mut fields = serde_json::Map::new();
+    if tuning.adaptive_thinking {
+        fields.insert(
+            "thinking".to_string(),
+            serde_json::json!({"type": "adaptive"}),
+        );
+    }
+    if let Some(effort) = tuning.effort {
+        fields.insert(
+            "output_config".to_string(),
+            serde_json::json!({"effort": effort.as_str()}),
+        );
+    }
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    json_to_document(&serde_json::Value::Object(fields)).map(Some)
+}
+
 /// Structured cache/usage observability line for one completed Converse
 /// call, shared by the chat and report flows. `hit_rate` is the fraction of
-/// input tokens served from cache; `cache_ttl` names the write tier so a
-/// console export answers "did caching hit, and at which TTL?". Fields are
-/// model IDs, counts, and rates — never prompt or response content.
-pub(crate) fn log_turn_usage(operation: &'static str, model_id: &str, usage: Option<&TurnUsage>) {
+/// input tokens served from cache; `cache_ttl` names the write tier, and
+/// `stop_reason`, `latency_ms`, and `max_tokens` let a console export answer
+/// "was it truncated, how long did it take, at which ceiling?". Fields are
+/// model IDs, counts, rates, and durations — never prompt or response
+/// content.
+pub(crate) fn log_turn_usage(
+    operation: &'static str,
+    model_id: &str,
+    usage: Option<&TurnUsage>,
+    stop_reason: Option<&str>,
+    latency_ms: Option<u64>,
+    max_tokens: u32,
+) {
     if let Some(usage) = usage {
         let total_input =
             usage.input_tokens + usage.cache_read_input_tokens + usage.cache_write_input_tokens;
@@ -276,10 +351,20 @@ pub(crate) fn log_turn_usage(operation: &'static str, model_id: &str, usage: Opt
                 .map_or("none", claria_core::model_id::CacheTtlChoice::as_str),
             hit_rate,
             cost_usd = usage.cost_usd,
+            stop_reason = stop_reason.unwrap_or("unknown"),
+            latency_ms,
+            max_tokens,
             "turn complete"
         );
     } else {
-        tracing::warn!(operation, model_id, "turn completed without a usage block");
+        tracing::warn!(
+            operation,
+            model_id,
+            stop_reason = stop_reason.unwrap_or("unknown"),
+            latency_ms,
+            max_tokens,
+            "turn completed without a usage block"
+        );
     }
 }
 

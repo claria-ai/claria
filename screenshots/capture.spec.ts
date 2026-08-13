@@ -64,6 +64,13 @@ test("preferences page", async ({ page }) => {
   await page.waitForSelector("text=Claude Opus 4.6");
   await page.click("summary:has-text('Writer Templates')");
   await page.waitForSelector("text=Comprehensive evaluation");
+  // Writer prompt editors with their read-only trust rules, and the model
+  // tuning knobs.
+  await page.click("summary:has-text('Writer Prompt')");
+  await page.waitForSelector("text=Claria always appends these trust rules");
+  await page.click("summary:has-text('Whole-Report Prompt')");
+  await page.click("summary:has-text('Model Tuning')");
+  await page.waitForSelector("text=Adaptive reasoning");
   await capture(page, "preferences.png", true);
 });
 

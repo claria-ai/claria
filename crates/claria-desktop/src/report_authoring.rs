@@ -344,6 +344,25 @@ pub struct ReportExportResult {
     pub status: ReportExportStatus,
     pub attempted_at: String,
     pub status_persisted: bool,
+    /// Whether the export carried the imported template's formatting.
+    #[serde(default)]
+    pub template_applied: bool,
+    /// Why the template's formatting was reduced or unavailable, when the
+    /// workspace expected one — never silently degraded.
+    #[serde(default)]
+    pub template_warning: Option<TemplateExportWarning>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateExportWarning {
+    /// The stored template source no longer exists (imports predating the
+    /// template shelf never retained it); the export used generated
+    /// formatting.
+    TemplateMissing,
+    /// The template body could not be walked (e.g. content controls); the
+    /// export used generated body formatting inside the template package.
+    TemplateBodyFallback,
 }
 
 pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String> {
