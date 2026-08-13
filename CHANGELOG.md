@@ -4,6 +4,8 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Writer and chat context no longer rewrite angle brackets and ampersands inside clinical text; only sequences that could forge the untrusted-context delimiters are neutralized
+
 - The scoped Claria IAM policy no longer grants permanent S3 object-version deletion
 - Full infrastructure teardown requires temporary elevated credentials from the configured AWS account
 - Successful full infrastructure teardown removes the now-invalid local system configuration

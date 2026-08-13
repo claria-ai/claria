@@ -3472,11 +3472,14 @@ fn build_untrusted_context(
         .map_err(|_| "Claria could not serialize the accepted report context.".to_string())
 }
 
-/// Keep untrusted text from closing or opening the named host delimiters while
-/// preserving valid JSON (`serde_json` decodes these escapes back to the
-/// original characters for tests and any future structured consumer).
+/// Keep untrusted text from opening or closing the named host delimiters:
+/// only a `<` that begins `<untrusted_...` or `</untrusted_...` is rewritten
+/// to its six-character JSON unicode-escape form, so the serialized payload
+/// stays valid JSON and decodes back to the original characters. Ordinary clinical text —
+/// `T-score >70`, `<3rd percentile` — passes through verbatim; blanket
+/// angle-bracket escaping measurably mangled exactly that kind of prose.
 fn escape_delimiter_characters(value: &str) -> String {
-    value.replace('<', "\\u003c").replace('>', "\\u003e")
+    claria_bedrock::context::escape_delimiter_forgeries(value, &["untrusted_"], "\\u003c")
 }
 
 fn sanitize_turn_messages(messages: Vec<ReportProtocolMessage>) -> Vec<ReportProtocolMessage> {
