@@ -392,6 +392,7 @@ where
     )
     .await?;
 
+    let started = std::time::Instant::now();
     let response = client
         .converse_stream()
         .model_id(model_id)
@@ -424,8 +425,16 @@ where
         }
     }
 
-    let outcome = collector.finish(model_id, CHAT_MAX_OUTPUT_TOKENS, cache_ttl)?;
-    crate::converse::log_turn_usage("chat ConverseStream", model_id, outcome.usage.as_ref());
+    let mut outcome = collector.finish(model_id, CHAT_MAX_OUTPUT_TOKENS, cache_ttl)?;
+    outcome.latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    crate::converse::log_turn_usage(
+        "chat ConverseStream",
+        model_id,
+        outcome.usage.as_ref(),
+        Some(&outcome.stop_reason),
+        outcome.latency_ms,
+        CHAT_MAX_OUTPUT_TOKENS,
+    );
     Ok(outcome)
 }
 

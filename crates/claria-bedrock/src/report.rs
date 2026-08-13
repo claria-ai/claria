@@ -63,6 +63,10 @@ pub struct ReportConverseOutput {
     /// Bedrock may omit usage. Callers must preserve that incompleteness
     /// instead of recording a misleading metered zero.
     pub usage: Option<TurnUsage>,
+    /// Wall-clock time of the Converse round trip; `None` on records
+    /// written before this field existed.
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
 }
 
 impl ReportConverseOutput {
@@ -100,6 +104,25 @@ pub enum ReportStopReason {
     StopSequence,
     ToolUse,
     Unknown,
+}
+
+impl ReportStopReason {
+    /// Stable snake_case label matching the serde representation, for
+    /// PHI-free telemetry fields.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ContentFiltered => "content_filtered",
+            Self::EndTurn => "end_turn",
+            Self::GuardrailIntervened => "guardrail_intervened",
+            Self::MalformedModelOutput => "malformed_model_output",
+            Self::MalformedToolUse => "malformed_tool_use",
+            Self::MaxTokens => "max_tokens",
+            Self::ModelContextWindowExceeded => "model_context_window_exceeded",
+            Self::StopSequence => "stop_sequence",
+            Self::ToolUse => "tool_use",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -409,6 +432,7 @@ async fn converse_report_with_tool_set(
         (vec![system], sdk_messages)
     };
 
+    let started = std::time::Instant::now();
     let response = client
         .converse()
         .model_id(model_id)
@@ -423,6 +447,7 @@ async fn converse_report_with_tool_set(
         .send()
         .await
         .map_err(|error| converse::classify_error("report Converse", error))?;
+    let latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
 
     let output_message = response
         .output()
@@ -531,7 +556,14 @@ async fn converse_report_with_tool_set(
     let stop_reason = map_stop_reason(response.stop_reason());
 
     let usage = converse::optional_usage(response.usage(), model_id, None);
-    converse::log_turn_usage("report Converse", model_id, usage.as_ref());
+    converse::log_turn_usage(
+        "report Converse",
+        model_id,
+        usage.as_ref(),
+        Some(stop_reason.as_str()),
+        latency_ms,
+        REPORT_OUTPUT_TOKEN_RESERVE,
+    );
 
     Ok(ReportConverseOutput {
         message: ReportProtocolMessage {
@@ -542,6 +574,7 @@ async fn converse_report_with_tool_set(
         stop_reason,
         tool_calls,
         usage,
+        latency_ms,
     })
 }
 

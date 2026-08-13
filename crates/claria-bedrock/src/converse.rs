@@ -181,6 +181,9 @@ pub struct StreamOutcome {
     /// Per-turn usage from the trailing `metadata` event; `None` preserved
     /// when the service omitted it (see [`optional_usage`]).
     pub usage: Option<TurnUsage>,
+    /// Wall-clock time of the full streamed exchange, stamped by the caller
+    /// that drove the stream; `None` when not measured (synthetic tests).
+    pub latency_ms: Option<u64>,
 }
 
 /// Accumulates a `ConverseStream` response: text deltas, the stop reason
@@ -246,16 +249,26 @@ impl StreamCollector {
             text: self.text,
             stop_reason: stop_reason.as_str().to_string(),
             usage,
+            latency_ms: None,
         })
     }
 }
 
 /// Structured cache/usage observability line for one completed Converse
 /// call, shared by the chat and report flows. `hit_rate` is the fraction of
-/// input tokens served from cache; `cache_ttl` names the write tier so a
-/// console export answers "did caching hit, and at which TTL?". Fields are
-/// model IDs, counts, and rates — never prompt or response content.
-pub(crate) fn log_turn_usage(operation: &'static str, model_id: &str, usage: Option<&TurnUsage>) {
+/// input tokens served from cache; `cache_ttl` names the write tier, and
+/// `stop_reason`, `latency_ms`, and `max_tokens` let a console export answer
+/// "was it truncated, how long did it take, at which ceiling?". Fields are
+/// model IDs, counts, rates, and durations — never prompt or response
+/// content.
+pub(crate) fn log_turn_usage(
+    operation: &'static str,
+    model_id: &str,
+    usage: Option<&TurnUsage>,
+    stop_reason: Option<&str>,
+    latency_ms: Option<u64>,
+    max_tokens: u32,
+) {
     if let Some(usage) = usage {
         let total_input =
             usage.input_tokens + usage.cache_read_input_tokens + usage.cache_write_input_tokens;
@@ -276,10 +289,20 @@ pub(crate) fn log_turn_usage(operation: &'static str, model_id: &str, usage: Opt
                 .map_or("none", claria_core::model_id::CacheTtlChoice::as_str),
             hit_rate,
             cost_usd = usage.cost_usd,
+            stop_reason = stop_reason.unwrap_or("unknown"),
+            latency_ms,
+            max_tokens,
             "turn complete"
         );
     } else {
-        tracing::warn!(operation, model_id, "turn completed without a usage block");
+        tracing::warn!(
+            operation,
+            model_id,
+            stop_reason = stop_reason.unwrap_or("unknown"),
+            latency_ms,
+            max_tokens,
+            "turn completed without a usage block"
+        );
     }
 }
 
