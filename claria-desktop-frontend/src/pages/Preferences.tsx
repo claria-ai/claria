@@ -283,7 +283,7 @@ function ModelTuningSection() {
         draft && (draft.reasoning_enabled || draft.effort || draft.temperature != null) ? (
           <span className="text-xs text-gray-400">
             {[
-              draft.reasoning_enabled ? "reasoning" : null,
+              draft.reasoning_enabled ? "Adaptive reasoning on" : null,
               draft.effort ? `effort: ${draft.effort}` : null,
               draft.temperature != null ? `temp: ${draft.temperature}` : null,
             ]
@@ -306,7 +306,7 @@ function ModelTuningSection() {
         />
       ) : (
         <>
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             Optional controls applied to chat and writer requests. Each
             setting is sent only to models that support it — unsupported
             knobs are skipped automatically, so nothing here can break a
@@ -327,7 +327,7 @@ function ModelTuningSection() {
               <span className="text-sm text-gray-700 block">
                 Adaptive reasoning
               </span>
-              <span className="text-xs text-gray-400 block">
+              <span className="text-xs text-gray-500 block">
                 Lets supported models (Claude 4.6 and newer) think before
                 answering, which can improve report quality. Reasoning tokens
                 bill as output and count against the response budget, so
@@ -355,9 +355,9 @@ function ModelTuningSection() {
                 </option>
               ))}
             </select>
-            <p className="text-xs text-gray-400 mt-1">
+            <p className="text-xs text-gray-500 mt-1">
               How much reasoning supported models put into each response.
-              Sent to Claude 4.5 and newer.
+              Sent to Opus 4.5 and every model from Claude 4.6 on.
             </p>
           </div>
 
@@ -370,6 +370,7 @@ function ModelTuningSection() {
               min={0}
               max={1}
               step={0.1}
+              placeholder="Model default"
               value={draft.temperature ?? ""}
               onChange={(e) => {
                 setSaved(false);
@@ -381,7 +382,7 @@ function ModelTuningSection() {
               }}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
-            <p className="text-xs text-gray-400 mt-1">
+            <p className="text-xs text-gray-500 mt-1">
               0.0 to 1.0; leave blank for the model default. Only sent to
               model generations that accept it (through Claude 4.6) — newer
               models always use their own default.
@@ -500,7 +501,7 @@ function PromptEditor({
                   setDirty(true);
                 }}
                 disabled={saving}
-                className="w-full min-h-[200px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
+                className="w-full min-h-[216px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
               />
 
               {fixedRules && (
@@ -509,7 +510,9 @@ function PromptEditor({
                     Claria always appends these trust rules after your prompt.
                     They are not editable and cannot be removed:
                   </p>
-                  <pre className="w-full px-3 py-2 text-xs font-mono text-gray-500 bg-gray-50 border border-gray-200 rounded-lg whitespace-pre-wrap">
+                  {/* 184px = 8px top padding + 11 exact 16px text-xs line
+                      boxes, so the scroll fold never slices a line. */}
+                  <pre className="w-full max-h-[184px] overflow-auto px-3 py-2 text-xs font-mono text-gray-500 bg-gray-50 border border-gray-200 rounded-lg whitespace-pre-wrap">
                     {fixedRules}
                   </pre>
                 </div>

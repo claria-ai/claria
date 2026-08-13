@@ -213,9 +213,16 @@ fn adaptive_thinking_and_effort_follow_their_generation_boundaries() {
     ] {
         assert!(ModelCapabilities::for_id(id).adaptive_thinking, "{id}");
     }
-    // Effort shipped with 4.5.
+    // Effort shipped with Opus 4.5 and became tier-wide with 4.6 — Sonnet
+    // 4.5 and Haiku 4.5 reject it.
     assert!(!ModelCapabilities::for_id("us.anthropic.claude-opus-4-20250514-v1:0").effort_parameter);
-    assert!(ModelCapabilities::for_id("us.anthropic.claude-sonnet-4-5-20250929-v1:0").effort_parameter);
+    assert!(ModelCapabilities::for_id("us.anthropic.claude-opus-4-5-20251101-v1:0").effort_parameter);
+    assert!(
+        !ModelCapabilities::for_id("us.anthropic.claude-sonnet-4-5-20250929-v1:0").effort_parameter
+    );
+    assert!(
+        !ModelCapabilities::for_id("us.anthropic.claude-haiku-4-5-20251001-v1:0").effort_parameter
+    );
     assert!(ModelCapabilities::for_id("us.anthropic.claude-opus-4-6-v1").effort_parameter);
     assert!(ModelCapabilities::for_id("us.anthropic.claude-fable-5-v1:0").effort_parameter);
     assert!(!ModelCapabilities::for_id("us.amazon.nova-pro-v1:0").effort_parameter);
