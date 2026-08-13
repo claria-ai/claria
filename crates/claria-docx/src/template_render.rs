@@ -685,7 +685,7 @@ fn reconstruct_flow(
         let mut replacement = if let Some(source_index) = source_index {
             spans[source_index].clone_events(events)
         } else {
-            generated_span(targets, target_index)?
+            generated_span(target)?
         };
         let replacement_len = replacement.len();
         let synthetic_span = FlowSpan {
@@ -696,7 +696,7 @@ fn reconstruct_flow(
             content: target.content.clone(),
         };
         if !patch_span(&mut replacement, &synthetic_span, target, true)? {
-            replacement = generated_span(targets, target_index)?;
+            replacement = generated_span(target)?;
         }
         output.extend(replacement);
 
@@ -759,16 +759,82 @@ fn nearest_span(
         .map(|(index, _)| index)
 }
 
-fn generated_span(
-    targets: &[TargetFlow],
-    target_index: usize,
-) -> Result<Vec<Event<'static>>, DocxError> {
-    let events = generated_document_events(targets)?;
+fn generated_span(target: &TargetFlow) -> Result<Vec<Event<'static>>, DocxError> {
+    // Render a minimal draft holding only this target and select the span
+    // of the matching kind. Rendering the whole report and indexing by
+    // position was wrong whenever an earlier multi-line paragraph split
+    // into several <w:p> elements — the shifted index handed back a block
+    // of the wrong kind (e.g. a heading-styled paragraph for body text).
+    let draft = single_target_draft(target)?;
+    let bytes = render_report(&draft)?;
+    let xml = zip_entry(&bytes, "word/document.xml")?;
+    let events = parse_events(&xml)?;
     let spans = discover_flow(&events)?;
-    let span = spans.get(target_index).ok_or_else(|| {
-        DocxError::Render("could not construct a formatted template block".to_string())
-    })?;
-    Ok(span.clone_events(&events))
+    spans
+        .iter()
+        .find(|span| span.kind == target.kind)
+        .map(|span| span.clone_events(&events))
+        .ok_or_else(|| {
+            DocxError::Render("could not construct a formatted template block".to_string())
+        })
+}
+
+fn single_target_draft(target: &TargetFlow) -> Result<ReportDraft, DocxError> {
+    let section = |heading: &str, blocks: Vec<ReportBlock>| {
+        claria_core::models::report::ReportSection {
+            id: uuid::Uuid::new_v4(),
+            heading: heading.to_string(),
+            blocks,
+        }
+    };
+    let (title, sections) = match (&target.kind, &target.content) {
+        (FlowKind::Title, FlowContent::Paragraph(text)) => (text.clone(), Vec::new()),
+        (FlowKind::Heading, FlowContent::Paragraph(text)) => {
+            ("Generated".to_string(), vec![section(text, Vec::new())])
+        }
+        (FlowKind::Body, FlowContent::Paragraph(text)) => (
+            "Generated".to_string(),
+            vec![section(
+                "Generated",
+                vec![ReportBlock::Paragraph { text: text.clone() }],
+            )],
+        ),
+        (FlowKind::List, FlowContent::Paragraph(text)) => (
+            "Generated".to_string(),
+            vec![section(
+                "Generated",
+                vec![ReportBlock::BulletList {
+                    items: vec![text.clone()],
+                }],
+            )],
+        ),
+        (FlowKind::Table, FlowContent::Table(rows)) => (
+            "Generated".to_string(),
+            vec![section(
+                "Generated",
+                vec![ReportBlock::Table {
+                    rows: rows.clone(),
+                    has_header: false,
+                    column_widths: None,
+                }],
+            )],
+        ),
+        _ => {
+            return Err(DocxError::Render(
+                "could not construct a formatted template block".to_string(),
+            ));
+        }
+    };
+    let timestamp = "1970-01-01T00:00:00Z"
+        .parse()
+        .map_err(|error| DocxError::Render(format!("invalid fallback timestamp: {error}")))?;
+    Ok(ReportDraft {
+        revision: 0,
+        content: claria_core::models::report::ReportContent { title, sections },
+        created_at: timestamp,
+        updated_at: timestamp,
+        last_applied_proposal_id: None,
+    })
 }
 
 fn generated_document_events(targets: &[TargetFlow]) -> Result<Vec<Event<'static>>, DocxError> {

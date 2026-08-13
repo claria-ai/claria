@@ -31,6 +31,7 @@ struct Paragraph {
     text_run_bold: bool,
     text_run_fonts: Vec<String>,
     line_breaks: usize,
+    numbered: bool,
 }
 
 impl Paragraph {
@@ -81,6 +82,7 @@ fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
                             text_run_bold: false,
                             text_run_fonts: Vec::new(),
                             line_breaks: 0,
+                            numbered: false,
                         };
                         if is_empty {
                             output.push(paragraph);
@@ -107,6 +109,11 @@ fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
                     b"br" => {
                         if let Some(paragraph) = &mut current {
                             paragraph.line_breaks += 1;
+                        }
+                    }
+                    b"numPr" => {
+                        if let Some(paragraph) = &mut current {
+                            paragraph.numbered = true;
                         }
                     }
                     b"t" if !is_empty => in_text = true,
@@ -323,6 +330,35 @@ fn generated_body_text_never_inherits_label_or_signature_decoration() {
     // line; direct decoration must be stripped for unrelated text.
     let last = body_paragraph(&flattened, "Classroom accommodations are recommended.");
     assert!(!last.text_run_underlined, "signature underline leaked: {last:?}");
+}
+
+#[test]
+fn bullets_stay_numbered_after_a_multi_line_paragraph() {
+    // The template has no bulleted exemplar, so list items must come from a
+    // generated exemplar selected by KIND. The multi-line paragraph earlier
+    // in the report used to shift the generated document's span indices, so
+    // the positional lookup handed list items a plain body paragraph and
+    // the bullets lost their numbering.
+    let report = draft(
+        "Psychoeducational Evaluation",
+        vec![section(
+            "Reason for Referral",
+            vec![
+                paragraph("First observation.\nSecond observation."),
+                ReportBlock::BulletList {
+                    items: vec![
+                        "Difficulty sustaining attention".to_string(),
+                        "Incomplete classwork".to_string(),
+                    ],
+                },
+            ],
+        )],
+    );
+    let output =
+        render_report_with_template(CLINICAL_TEMPLATE, &report).expect("template render");
+    let flattened = paragraphs(&output);
+    assert!(body_paragraph(&flattened, "Difficulty sustaining attention").numbered);
+    assert!(body_paragraph(&flattened, "Incomplete classwork").numbered);
 }
 
 #[test]
