@@ -264,7 +264,14 @@ async fn fetch_us_inference_profiles(
 
 /// Output-token ceiling for every chat Converse call. The input budget below
 /// is derived from this reserve — the two must move together.
-pub const CHAT_MAX_OUTPUT_TOKENS: u32 = 8_192;
+///
+/// Matched to the writer's reserve deliberately: clinicians draft
+/// report-length sections here to carry into Word, and a long clinical
+/// section runs to roughly 25k tokens. The 8k this used to sit at is the
+/// same ceiling that measurably degraded the writer before v0.24, and it
+/// truncated for the same reason. The input budget it leaves — the model's
+/// window minus this reserve — is what the writer has run on since.
+pub const CHAT_MAX_OUTPUT_TOKENS: u32 = 32_768;
 
 /// Appended to a chat reply that hit [`CHAT_MAX_OUTPUT_TOKENS`] before
 /// finishing. The partial answer is kept — it already streamed to the
