@@ -8,6 +8,7 @@ export default defineConfig({
   use: {
     viewport: { width: 1024, height: 768 },
     deviceScaleFactor: 2,
+    timezoneId: "America/Los_Angeles",
     permissions: ["microphone"],
     launchOptions: {
       args: [

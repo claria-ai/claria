@@ -2,6 +2,12 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Tagged releases update the download site only after every desktop artifact is published
+- Older release reruns cannot roll the download site back from a newer version
+- Marketing screenshot dates are fixed so release-site reruns do not create time-only image changes
+
 ## [0.23.1] — 2026-08-12
 
 - Writer responses cut off by the output-token limit mid tool call no longer fail the turn; the completed tool calls are executed and the model continues where it was cut

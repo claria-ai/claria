@@ -1,18 +1,44 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { buildInitScript } from "./tauri-mock.js";
 import { driftedPlan } from "./fixtures.js";
 
 const BASE_URL = process.env.CLARIA_TEST_URL ?? "http://localhost:1420";
+const SCREENSHOT_TIME = new Date("2026-03-03T20:00:00Z");
 
 test.beforeEach(async ({ page }) => {
+  // Keep dates and generated filenames stable across local and CI captures.
+  // Fixed time leaves real timers running, which the memo tests require.
+  await page.clock.setFixedTime(SCREENSHOT_TIME);
   // Inject Tauri IPC mock before the app loads
   await page.addInitScript({ content: buildInitScript() });
 });
 
+async function capture(page: Page, filename: string, fullPage: boolean) {
+  await page.screenshot({
+    path: `output/${filename}`,
+    fullPage,
+    animations: "disabled",
+  });
+}
+
+async function settleConversationAtStart(page: Page) {
+  // Chat auto-scrolls smoothly after appending the response. Wait for that
+  // motion to finish, then show the start of the exchange consistently.
+  await page.waitForTimeout(500);
+  const scroller = page.locator(
+    "#chat-session-panel-conversation .overflow-y-auto"
+  );
+  await expect(scroller).toBeVisible();
+  await scroller.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await page.waitForTimeout(50);
+}
+
 test("start screen", async ({ page }) => {
   await page.goto(BASE_URL);
   await page.waitForSelector("[data-page=clients]");
-  await page.screenshot({ path: "output/start.png", fullPage: true });
+  await capture(page, "start.png", true);
 });
 
 test("about page", async ({ page }) => {
@@ -20,7 +46,7 @@ test("about page", async ({ page }) => {
   await page.waitForSelector("[data-page=about]");
   await page.click("[data-page=about]");
   await page.waitForSelector("text=About Claria");
-  await page.screenshot({ path: "output/about.png", fullPage: true });
+  await capture(page, "about.png", true);
 });
 
 test("preferences page", async ({ page }) => {
@@ -38,7 +64,7 @@ test("preferences page", async ({ page }) => {
   await page.waitForSelector("text=Claude Opus 4.6");
   await page.click("summary:has-text('Writer Templates')");
   await page.waitForSelector("text=Comprehensive evaluation");
-  await page.screenshot({ path: "output/preferences.png", fullPage: true });
+  await capture(page, "preferences.png", true);
 });
 
 test("transcribe wizard", async ({ page }) => {
@@ -60,7 +86,7 @@ test("transcribe wizard", async ({ page }) => {
   // Enable translation so the screenshot shows the toggle in its "on" state.
   await page.click("text=Translate non-English segments to English");
   await page.waitForTimeout(300);
-  await page.screenshot({ path: "output/transcribe-wizard.png", fullPage: false });
+  await capture(page, "transcribe-wizard.png", false);
 });
 
 test("transcript editor", async ({ page }) => {
@@ -77,7 +103,7 @@ test("transcript editor", async ({ page }) => {
   // The Speakers pane only renders when the body has diarization headers.
   await page.waitForSelector("text=Speakers");
   await page.waitForTimeout(300);
-  await page.screenshot({ path: "output/transcript-editor.png", fullPage: false });
+  await capture(page, "transcript-editor.png", false);
 });
 
 test("client list", async ({ page }) => {
@@ -85,7 +111,7 @@ test("client list", async ({ page }) => {
   await page.waitForSelector("[data-page=clients]");
   await page.click("[data-page=clients]");
   await page.waitForSelector("[data-client]");
-  await page.screenshot({ path: "output/clients.png", fullPage: true });
+  await capture(page, "clients.png", true);
 });
 
 test("client record", async ({ page }) => {
@@ -95,7 +121,7 @@ test("client record", async ({ page }) => {
   await page.waitForSelector("[data-client]");
   await page.click("[data-client]:first-child");
   await page.waitForSelector("[data-tab=record]");
-  await page.screenshot({ path: "output/client-record.png", fullPage: true });
+  await capture(page, "client-record.png", true);
 });
 
 test("client record settings", async ({ page }) => {
@@ -107,7 +133,7 @@ test("client record settings", async ({ page }) => {
   await page.getByRole("button", { name: "Record settings" }).click();
   await page.waitForSelector("text=Name history");
   await page.waitForTimeout(300);
-  await page.screenshot({ path: "output/client-record-settings.png", fullPage: true });
+  await capture(page, "client-record-settings.png", true);
 });
 
 test("client writing", async ({ page }) => {
@@ -121,7 +147,7 @@ test("client writing", async ({ page }) => {
   await page.getByRole("tab", { name: "Write with Claude" }).click();
   await page.waitForSelector("[data-testid=report-proposal]");
   await page.waitForTimeout(300);
-  await page.screenshot({ path: "output/client-writing.png", fullPage: true });
+  await capture(page, "client-writing.png", true);
 });
 
 test("client chat", async ({ page }) => {
@@ -136,9 +162,10 @@ test("client chat", async ({ page }) => {
   await expect(textarea).toBeVisible();
   await textarea.fill("Please build a history for this client");
   await page.click("text=Send");
-  // Wait for the assistant response to render
-  await page.waitForSelector("text=Referral");
-  await page.screenshot({ path: "output/client-chat.png", fullPage: true });
+  // Wait for the complete assistant response, then reset smooth auto-scroll.
+  await page.waitForSelector("text=Would you like me to draft");
+  await settleConversationAtStart(page);
+  await capture(page, "client-chat.png", true);
 });
 
 test("memo recording", async ({ page }) => {
@@ -152,7 +179,7 @@ test("memo recording", async ({ page }) => {
   await page.click("text=Record Memo");
   // Wait for the first transcription cycle (~4s) to populate the live transcript
   await page.waitForSelector("text=Jane presented today", { timeout: 15000 });
-  await page.screenshot({ path: "output/memo-recording.png", fullPage: true });
+  await capture(page, "memo-recording.png", true);
 });
 
 test("memo review", async ({ page }) => {
@@ -168,7 +195,7 @@ test("memo review", async ({ page }) => {
   // Click Done to trigger final transcription and open review modal
   await page.click("button:has-text('Done')");
   await page.waitForSelector("text=Review Memo");
-  await page.screenshot({ path: "output/memo-review.png", fullPage: true });
+  await capture(page, "memo-review.png", true);
 });
 
 test("aws management", async ({ page }) => {
@@ -177,7 +204,7 @@ test("aws management", async ({ page }) => {
   await page.click("[data-page=provision]");
   // Wait for the plan to load — one unified list, all resources visible
   await page.waitForSelector("text=all resources in sync");
-  await page.screenshot({ path: "output/aws.png", fullPage: true });
+  await capture(page, "aws.png", true);
 });
 
 test("aws drift", async ({ page }) => {
@@ -193,7 +220,7 @@ test("aws drift", async ({ page }) => {
   await page.waitForSelector("text=2 changes needed");
   await page.waitForSelector("text=Sync required");
   await page.waitForSelector("text=Provide Admin Credentials");
-  await page.screenshot({ path: "output/aws-drift.png", fullPage: true });
+  await capture(page, "aws-drift.png", true);
 });
 
 test("infra chat", async ({ page }) => {
@@ -206,9 +233,10 @@ test("infra chat", async ({ page }) => {
   await expect(textarea).toBeVisible();
   await textarea.fill("Is my data encrypted and protected?");
   await page.click("text=Send");
-  // Wait for the assistant response to render
-  await page.waitForSelector("text=well protected");
-  await page.screenshot({ path: "output/infra-chat.png", fullPage: true });
+  // Wait for the complete assistant response, then reset smooth auto-scroll.
+  await page.waitForSelector("text=no drift detected");
+  await settleConversationAtStart(page);
+  await capture(page, "infra-chat.png", true);
 });
 
 test("cost explorer", async ({ page }) => {
@@ -226,7 +254,7 @@ test("cost explorer", async ({ page }) => {
   await page.click("text=See account spend");
   // Wait for the chart to render — the "Total:" line appears once data loads
   await page.waitForSelector("text=Total:");
-  await page.screenshot({ path: "output/cost-explorer.png", fullPage: true });
+  await capture(page, "cost-explorer.png", true);
 });
 
 // ── File history screenshot ──────────────────────────────────────────
@@ -251,5 +279,5 @@ test("file history – diff", async ({ page }) => {
   await page.waitForSelector("text=2 versions selected");
   await page.click('button:has-text("Compare")');
   await page.waitForSelector("h4:has-text('Diff')");
-  await page.screenshot({ path: "output/history-diff.png", fullPage: true });
+  await capture(page, "history-diff.png", true);
 });

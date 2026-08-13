@@ -43,6 +43,9 @@ jobs:
         working-directory: claria-desktop-frontend
         run: npm run build
 
+      - name: Test release-site helper
+        run: python3 -m unittest discover -s screenshots/tests
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -164,7 +167,7 @@ jobs:
           CLARIA_SKIP_FRONTEND_BUILD: '1'
         run: |
           set -u
-          mkdir -p $HOME/.config/claria
+          mkdir -p "$HOME/.config/claria"
           xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' \
             ./target/release/claria-desktop > smoke.log 2>&1 &
           PID=$!
@@ -183,4 +186,4 @@ jobs:
           wait "$PID" 2>/dev/null || true
           echo '--- smoke.log ---'
           cat smoke.log
-          exit $STATUS
+          exit "$STATUS"

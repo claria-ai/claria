@@ -75,9 +75,11 @@ jobs:
             /^## \[/ { if (found) exit; if (index($0, "## [" ver "]") == 1) { found=1; next } }
             found
           ' CHANGELOG.md)
-          echo "body<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$BODY" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and release
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
@@ -92,3 +94,72 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+  update_release_site:
+    name: Update release site
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    needs: build
+    runs-on: macos-latest
+    concurrency:
+      group: claria-release-site
+      cancel-in-progress: false
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: screenshots/.nvmrc
+          cache: npm
+          cache-dependency-path: |
+            claria-desktop-frontend/package-lock.json
+            screenshots/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: claria-desktop-frontend
+        run: npm ci
+
+      - name: Install screenshot dependencies
+        working-directory: screenshots
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: screenshots
+        run: npx playwright install chromium
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install site generator dependencies
+        run: python -m pip install --disable-pip-version-check "jinja2==3.1.6" "pyyaml==6.0.2"
+
+      - name: Checkout release site
+        uses: actions/checkout@v4
+        with:
+          repository: claria-ai/claria-ai.github.io
+          token: ${{ secrets.CLARIA_SITE_TOKEN }}
+          ref: main
+          path: release-site
+
+      - name: Regenerate release site
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./screenshots/update_release_site.py "$GITHUB_REF_NAME" --site "$GITHUB_WORKSPACE/release-site"
+
+      - name: Commit and push release site
+        working-directory: release-site
+        run: |
+          git config user.name "claria-release[bot]"
+          git config user.email "claria-release@users.noreply.github.com"
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "release site is already current"
+            exit 0
+          fi
+          git add -A
+          git commit -m "chore: point downloads at Claria $GITHUB_REF_NAME"
+          git push origin HEAD:main

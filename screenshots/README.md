@@ -54,7 +54,9 @@ Screenshots are written to `output/` at 2× resolution (Retina):
 
 ## Updating claria-ai.github.io after a release
 
-Do this **after the tag and all GitHub release artifacts exist**. From the Claria repository root, the one-command path is:
+The tag release automatically updates the site after every platform build succeeds. Its final job checks out `claria-ai/claria-ai.github.io` with the repository-scoped `CLARIA_SITE_TOKEN`, runs the helper below, commits any changes, and pushes the site's `main` branch. Because the job needs the complete build matrix, it cannot publish download links before all expected artifacts exist. Site-update jobs are serialized, and the helper skips an older release if the site already names a newer version.
+
+For a manual fallback, wait until the tag and all GitHub release artifacts exist, then run this from the Claria repository root:
 
 ```bash
 ./screenshots/update_release_site.py 0.22.0
@@ -63,14 +65,14 @@ Do this **after the tag and all GitHub release artifacts exist**. From the Clari
 The helper:
 
 1. reads artifact sizes from the published GitHub release;
-2. runs the Playwright capture suite;
+2. runs the Playwright capture suite with a fixed date and timezone;
 3. copies every generated image already used by the sibling `claria-ai.github.io/img/` directory;
 4. updates `claria-ai.github.io/claria.yml` with the version and artifact sizes;
 5. runs the website's `build.py` and `git diff --check`.
 
 It never edits generated website HTML directly. Review and commit the resulting changes in the website checkout. The default checkout is `../claria-ai.github.io`; override it with `--site /path/to/claria-ai.github.io`. Use `--skip-capture` only when `output/` was generated and reviewed immediately beforehand.
 
-Before committing the website update:
+Before committing a manual website update:
 
 ```bash
 cd ../claria-ai.github.io
