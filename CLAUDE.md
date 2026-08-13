@@ -144,6 +144,10 @@ Common gotchas:
 - `s3:GetBucketPublicAccessBlock` (not `s3:GetPublicAccessBlock`)
 - `s3:ListBucket` (not `s3:ListObjectsV2`)
 
+`s3:DeleteObjectVersion` is intentionally absent from the scoped Claria policy.
+Only **Destroy All Resources**, after the operator supplies temporary elevated
+credentials, may permanently purge S3 version history.
+
 ## Config Versioning
 
 `config.json` carries a `config_version` field (u32). Current version: **8**.

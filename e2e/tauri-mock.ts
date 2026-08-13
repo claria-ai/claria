@@ -50,6 +50,7 @@ export function buildInitScript(
       }` : "null"};
       window.__REPORT_COMMANDS__ = [];
       window.__REPORT_INVOCATIONS__ = [];
+      window.__PROVISION_INVOCATIONS__ = [];
       window.__CHAT_COMMANDS__ = [];
       window.__FRONTEND_LOGS__ = [];
       let clientName = "Jane Doe";
@@ -345,6 +346,14 @@ export function buildInitScript(
             appliedOnce = true;
             // Return all-ok entries after apply
             return freshPlanEntries();
+          }
+
+          if (cmd === "destroy") {
+            window.__PROVISION_INVOCATIONS__.push({
+              cmd,
+              args: structuredClone(args),
+            });
+            return null;
           }
 
           // ── List AWS profiles ────────────────────────────────────────

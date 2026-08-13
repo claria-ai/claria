@@ -26,6 +26,17 @@ pub enum ProvisionerError {
     #[error("AWS error: {0}")]
     Aws(String),
 
+    #[error("permanent infrastructure teardown requires root or IAM administrator credentials")]
+    TeardownCredentialsRequired,
+
+    #[error(
+        "elevated credentials belong to AWS account {actual_account_id}, but this Claria system belongs to {expected_account_id}"
+    )]
+    CredentialAccountMismatch {
+        expected_account_id: String,
+        actual_account_id: String,
+    },
+
     /// IAM caps every user at two access keys. Kept separate from
     /// [`Self::Aws`] so the caller can offer the operator a way to free a
     /// slot instead of dead-ending on an opaque service error.

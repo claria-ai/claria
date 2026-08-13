@@ -4,6 +4,9 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- The scoped Claria IAM policy no longer grants permanent S3 object-version deletion
+- Full infrastructure teardown requires temporary elevated credentials from the configured AWS account
+- Successful full infrastructure teardown removes the now-invalid local system configuration
 - Tagged releases update the download site only after every desktop artifact is published
 - Older release reruns cannot roll the download site back from a newer version
 - Marketing screenshot dates are fixed so release-site reruns do not create time-only image changes
