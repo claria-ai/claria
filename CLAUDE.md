@@ -221,6 +221,8 @@ Machine-local, configured in the user-level `~/.cargo/config.toml` — not commi
 
 Design documents and future feature analysis live in `../plans/` (parent repo, outside the Cargo workspace). These are reference material, not executable — they capture architectural decisions, HIPAA analysis, and implementation plans for larger features.
 
+Current-architecture documentation lives in `design/` inside this repo (e.g. the writer loop and the template system) and must be kept accurate as the code changes — unlike `../plans/`, it describes what is, not what might be.
+
 ## Frontend Tests
 
 Two suites, with different jobs:

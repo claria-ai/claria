@@ -21,6 +21,7 @@ All notable changes to Claria are documented here.
 - The turn-complete console line reports stop reason, latency, and the output ceiling for every AI call
 - The document writer's system prompts are editable in Preferences with versioned history, while the untrusted-data and template-carryover trust rules stay fixed and are shown read-only
 - Preferences gains opt-in model tuning — adaptive reasoning, effort, and temperature — with each knob sent only to model generations the capability table says accept it
+- A design/ folder documents the writer workflow and the template system
 
 - The scoped Claria IAM policy no longer grants permanent S3 object-version deletion
 - Full infrastructure teardown requires temporary elevated credentials from the configured AWS account
