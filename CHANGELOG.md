@@ -9,6 +9,7 @@ All notable changes to Claria are documented here.
 - Writer proposals can carry 25 operations and 200 blocks per section again; the tool schema's ceilings now mirror the domain validators instead of maintaining smaller copies
 - Writer responses get a four-times-larger output budget, and the proposal tool no longer instructs the model to keep proposals small
 - Template exports keep blank spacer paragraphs aligned with the report instead of piling them near the top when the report outgrows the template
+- Template exports no longer underline or bold generated paragraphs with formatting copied from an unrelated template line such as a signature blank or field label
 
 - The scoped Claria IAM policy no longer grants permanent S3 object-version deletion
 - Full infrastructure teardown requires temporary elevated credentials from the configured AWS account

@@ -444,7 +444,9 @@ fn patch_in_place(
     targets: &[TargetFlow],
 ) -> Result<bool, DocxError> {
     for (span, target) in spans.iter().zip(targets) {
-        if !patch_span(events, span, target)? {
+        // Same-position edits keep every direct run property: the template
+        // author formatted exactly this spot.
+        if !patch_span(events, span, target, false)? {
             return Ok(false);
         }
     }
@@ -455,20 +457,25 @@ fn patch_span(
     events: &mut [Event<'static>],
     span: &FlowSpan,
     target: &TargetFlow,
+    exemplar: bool,
 ) -> Result<bool, DocxError> {
     match (&span.content, &target.content) {
         (FlowContent::Paragraph(_), FlowContent::Paragraph(text)) => {
-            patch_paragraph(&mut events[span.start..=span.end], text)?;
+            patch_paragraph(&mut events[span.start..=span.end], text, exemplar)?;
             Ok(true)
         }
         (FlowContent::Table(_), FlowContent::Table(rows)) => {
-            patch_table(&mut events[span.start..=span.end], rows)
+            patch_table(&mut events[span.start..=span.end], rows, exemplar)
         }
         _ => Ok(false),
     }
 }
 
-fn patch_paragraph(events: &mut [Event<'static>], target: &str) -> Result<(), DocxError> {
+fn patch_paragraph(
+    events: &mut [Event<'static>],
+    target: &str,
+    exemplar: bool,
+) -> Result<(), DocxError> {
     let slots = text_slots(events)?;
     if slots.is_empty() {
         return Ok(());
@@ -480,14 +487,31 @@ fn patch_paragraph(events: &mut [Event<'static>], target: &str) -> Result<(), Do
     if source.trim() == target {
         return Ok(());
     }
-    let allocations = allocate_text(&slots, target);
-    for (slot, replacement) in slots.iter().zip(allocations) {
-        events[slot.event_index] = Event::Text(BytesText::new(&replacement).into_owned());
+    let allocation = allocate_text(&slots, target);
+    if exemplar && allocation.full_replacement {
+        // The inserted text bears no relation to the exemplar's own words,
+        // so text-bound decoration (a bold "Assessment: " label, an
+        // underlined signature blank) must not carry over. Fonts, sizes,
+        // and paragraph properties stay.
+        strip_direct_decoration(events, slots[allocation.owner].event_index);
+    }
+    for (slot, replacement) in slots.iter().zip(&allocation.replacements) {
+        events[slot.event_index] = Event::Text(BytesText::new(replacement).into_owned());
     }
     Ok(())
 }
 
-fn allocate_text(slots: &[TextSlot], target: &str) -> Vec<String> {
+struct TextAllocation {
+    replacements: Vec<String>,
+    /// Index of the slot that received the unshared middle of the target.
+    owner: usize,
+    /// True when the shared prefix/suffix is negligible — the inserted text
+    /// is unrelated to the exemplar's original words (an incidental shared
+    /// period or newline does not make texts related).
+    full_replacement: bool,
+}
+
+fn allocate_text(slots: &[TextSlot], target: &str) -> TextAllocation {
     let source_chars = slots
         .iter()
         .flat_map(|slot| slot.text.chars())
@@ -517,14 +541,29 @@ fn allocate_text(slots: &[TextSlot], target: &str) -> Vec<String> {
         ranges.push((position, end));
         position = end;
     }
-    let owner = ranges
-        .iter()
-        .position(|(start, end)| *start <= prefix && prefix < *end)
-        .unwrap_or_else(|| ranges.len().saturating_sub(1));
+    let shared = prefix + suffix;
+    let full_replacement = shared * 4 < source_chars.len().min(target_chars.len());
+    let owner = if full_replacement {
+        // Unrelated text: land it in the visually dominant (longest) run,
+        // not run 0 — which in "Assessment: ____"-style label paragraphs is
+        // a bold/underlined prefix whose formatting would swallow the whole
+        // inserted paragraph. Earliest run wins length ties.
+        ranges
+            .iter()
+            .enumerate()
+            .max_by_key(|(index, (start, end))| (end - start, std::cmp::Reverse(*index)))
+            .map(|(index, _)| index)
+            .unwrap_or_default()
+    } else {
+        ranges
+            .iter()
+            .position(|(start, end)| *start <= prefix && prefix < *end)
+            .unwrap_or_else(|| ranges.len().saturating_sub(1))
+    };
     let source_suffix_start = source_chars.len().saturating_sub(suffix);
     let target_suffix_start = target_chars.len().saturating_sub(suffix);
 
-    ranges
+    let replacements = ranges
         .into_iter()
         .enumerate()
         .map(|(index, (start, end))| {
@@ -543,12 +582,62 @@ fn allocate_text(slots: &[TextSlot], target: &str) -> Vec<String> {
             }
             output
         })
-        .collect()
+        .collect();
+    TextAllocation {
+        replacements,
+        owner,
+        full_replacement,
+    }
+}
+
+/// Blank direct `w:u`/`w:b`/`w:i` (and complex-script variants) from the run
+/// that owns the text event at `text_event_index`. Fonts, sizes, colors, and
+/// paragraph properties are untouched; style-derived decoration (e.g. an
+/// underlined heading style) is intentionally preserved.
+fn strip_direct_decoration(events: &mut [Event<'static>], text_event_index: usize) {
+    const DECORATION: [&[u8]; 5] = [b"u", b"b", b"i", b"bCs", b"iCs"];
+    let Some(run_start) = events[..text_event_index].iter().rposition(|event| {
+        matches!(event, Event::Start(start) if local_name(start.name().as_ref()) == b"r")
+    }) else {
+        return;
+    };
+    let mut in_run_properties = false;
+    for index in run_start..text_event_index {
+        let blank = match &events[index] {
+            Event::Start(start) => {
+                let name = start.name();
+                let local = local_name(name.as_ref());
+                if local == b"rPr" {
+                    in_run_properties = true;
+                    false
+                } else {
+                    in_run_properties && DECORATION.contains(&local)
+                }
+            }
+            Event::Empty(empty) => {
+                let name = empty.name();
+                in_run_properties && DECORATION.contains(&local_name(name.as_ref()))
+            }
+            Event::End(end) => {
+                let name = end.name();
+                let local = local_name(name.as_ref());
+                if local == b"rPr" {
+                    break;
+                }
+                in_run_properties && DECORATION.contains(&local)
+            }
+            _ => false,
+        };
+        if blank {
+            events[index] = Event::Text(BytesText::new("").into_owned());
+        }
+    }
 }
 
 fn patch_table(
     events: &mut [Event<'static>],
     target_rows: &[Vec<String>],
+    exemplar: bool,
 ) -> Result<bool, DocxError> {
     let cells = table_cells(events)?;
     if cells.len() != target_rows.len()
@@ -572,7 +661,7 @@ fn patch_table(
                 } else {
                     lines.get(index).copied().unwrap_or_default().to_string()
                 };
-                patch_paragraph(&mut events[start..=end], &replacement)?;
+                patch_paragraph(&mut events[start..=end], &replacement, exemplar)?;
             }
         }
     }
@@ -592,7 +681,7 @@ fn reconstruct_flow(
     let mut output = events[..first.start].to_vec();
 
     for (target_index, target) in targets.iter().enumerate() {
-        let source_index = nearest_span(spans, target_index, target.kind);
+        let source_index = nearest_span(spans, targets.len(), target_index, target.kind);
         let mut replacement = if let Some(source_index) = source_index {
             spans[source_index].clone_events(events)
         } else {
@@ -606,7 +695,7 @@ fn reconstruct_flow(
             kind: target.kind,
             content: target.content.clone(),
         };
-        if !patch_span(&mut replacement, &synthetic_span, target)? {
+        if !patch_span(&mut replacement, &synthetic_span, target, true)? {
             replacement = generated_span(targets, target_index)?;
         }
         output.extend(replacement);
@@ -650,12 +739,23 @@ impl FlowSpan {
     }
 }
 
-fn nearest_span(spans: &[FlowSpan], target_index: usize, kind: FlowKind) -> Option<usize> {
+fn nearest_span(
+    spans: &[FlowSpan],
+    targets_len: usize,
+    target_index: usize,
+    kind: FlowKind,
+) -> Option<usize> {
+    // Anchor the search in the template's own index space. Comparing raw
+    // report indices against template indices meant every paragraph past
+    // the template's length "nearest-matched" the final same-kind span —
+    // in clinical templates, an underlined signature line whose formatting
+    // then bled over most of the generated report.
+    let anchor = scaled_source_position(spans.len(), targets_len, target_index);
     spans
         .iter()
         .enumerate()
         .filter(|(_, span)| span.kind == kind)
-        .min_by_key(|(index, _)| index.abs_diff(target_index))
+        .min_by_key(|(index, _)| index.abs_diff(anchor))
         .map(|(index, _)| index)
 }
 

@@ -303,6 +303,29 @@ fn blank_spacers_follow_the_report_instead_of_piling_at_the_top() {
 }
 
 #[test]
+fn generated_body_text_never_inherits_label_or_signature_decoration() {
+    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+        .expect("template render");
+    let flattened = paragraphs(&output);
+
+    // This paragraph's exemplar is the template's "Assessment: Pending
+    // review." label paragraph — the inserted text must take the plain
+    // Garamond body run, not the bold underlined label run.
+    let body = body_paragraph(
+        &flattened,
+        "Working memory performance fell below the 10th percentile.",
+    );
+    assert!(!body.text_run_underlined, "label underline leaked: {body:?}");
+    assert!(!body.text_run_bold, "label bold leaked: {body:?}");
+    assert_eq!(body.text_run_fonts, ["Garamond"]);
+
+    // The final body paragraph's exemplar is the underlined signature
+    // line; direct decoration must be stripped for unrelated text.
+    let last = body_paragraph(&flattened, "Classroom accommodations are recommended.");
+    assert!(!last.text_run_underlined, "signature underline leaked: {last:?}");
+}
+
+#[test]
 fn content_controls_fixture_still_renders_a_complete_report() {
     let output = render_report_with_template(CONTENT_CONTROLS_TEMPLATE, &clinical_growth_draft())
         .expect("template render");
