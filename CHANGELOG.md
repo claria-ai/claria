@@ -4,6 +4,8 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Writer turns stream from Bedrock instead of waiting on one unary response, so a long generation no longer risks an HTTP timeout at the writer's output ceiling
+- A chat reply cut off at the output limit keeps the text the reader watched arrive and says why it stops there, instead of discarding the whole answer
 - An exhausted writer guardrail now reports the tool-use rounds and Bedrock calls it reached, names the Preferences field that raises the one that bound, and warns that raising it costs more
 - A writer request that is already at a guardrail's maximum says so and suggests narrowing the request instead
 - Bedrock failures during a writer turn name the call that failed and its cause, so denied model access, throttling, and unreachable endpoints no longer read identically

@@ -7,7 +7,7 @@ use aws_sdk_bedrockruntime::types::{
     MessageStopEvent, StopReason, TokenUsage,
 };
 use claria_bedrock::{
-    chat::{CacheStrategy, ChatMessage, ChatRole, chat_converse_stream},
+    chat::{CHAT_TRUNCATED_NOTICE, CacheStrategy, ChatMessage, ChatRole, chat_converse_stream},
     converse::StreamCollector,
     error::BedrockError,
 };
@@ -93,21 +93,20 @@ fn collector_accumulates_deltas_and_captures_usage() {
     assert_eq!(usage.output_tokens, 7);
 }
 
+/// Truncation is the one incomplete stop reason the collector keeps: the
+/// text has already reached the reader, so discarding it would delete an
+/// answer they watched arrive.
 #[test]
-fn collector_surfaces_truncation_as_a_typed_error() {
+fn collector_keeps_truncated_text_instead_of_discarding_it() {
     let mut collector = StreamCollector::new();
     collector.absorb(delta_event("partial out"));
     collector.absorb(stop_event(StopReason::MaxTokens));
 
-    let error = collector
+    let outcome = collector
         .finish(MODEL_ID, 8_192, None)
-        .expect_err("truncated");
-    assert!(matches!(
-        error,
-        BedrockError::ResponseTruncated {
-            max_output_tokens: 8_192
-        }
-    ));
+        .expect("truncation is salvaged");
+    assert_eq!(outcome.text, "partial out");
+    assert_eq!(outcome.stop_reason, "max_tokens");
 }
 
 #[test]
@@ -272,7 +271,7 @@ async fn uncached_chat_records_no_ttl() {
 }
 
 #[tokio::test]
-async fn streamed_truncation_is_an_error_not_silent_partial_text() {
+async fn streamed_truncation_keeps_the_answer_and_labels_it() {
     let server = MockServer::spawn().await;
     server
         .state
@@ -288,6 +287,55 @@ async fn streamed_truncation_is_an_error_not_silent_partial_text() {
             }),
         });
 
+    let mut streamed = String::new();
+    let outcome = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
+        |delta| streamed.push_str(delta),
+    )
+    .await
+    .expect("truncation is salvaged, not an error");
+
+    assert!(
+        outcome.text.starts_with("partial"),
+        "partial answer was discarded: {}",
+        outcome.text
+    );
+    assert!(
+        outcome.text.contains(CHAT_TRUNCATED_NOTICE),
+        "no truncation notice: {}",
+        outcome.text
+    );
+    assert_eq!(outcome.stop_reason, "max_tokens");
+    assert_eq!(
+        streamed, outcome.text,
+        "the live view and the persisted text disagree"
+    );
+}
+
+/// Context overflow keeps failing: unlike truncation there is no partial
+/// answer worth showing, and the reader has to shorten the conversation.
+#[tokio::test]
+async fn streamed_context_overflow_is_still_a_typed_error() {
+    let server = MockServer::spawn().await;
+    server
+        .state
+        .write()
+        .await
+        .bedrock_text_responses
+        .push(ScriptedBedrockResponse {
+            status: 200,
+            body: serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": ""}]}},
+                "stopReason": "model_context_window_exceeded",
+                "usage": {"inputTokens": 10, "outputTokens": 0}
+            }),
+        });
+
     let error = chat_converse_stream(
         &sdk_config(&server.endpoint),
         MODEL_ID,
@@ -298,8 +346,8 @@ async fn streamed_truncation_is_an_error_not_silent_partial_text() {
         |_| {},
     )
     .await
-    .expect_err("truncated stream");
-    assert!(matches!(error, BedrockError::ResponseTruncated { .. }));
+    .expect_err("context overflow");
+    assert!(matches!(error, BedrockError::ContextWindowExceeded));
 }
 
 #[tokio::test]

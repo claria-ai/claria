@@ -109,6 +109,12 @@ continues in the next round). The activity feed shows every call, which is
 why a fresh ten-section report reads as 12+ tool calls even when nothing is
 wrong.
 
+Each round is a `ConverseStream` call, reassembled into a whole message
+before the loop acts on it. Nothing reaches the UI incrementally — a tool
+call is only executable once complete — but at a 32k output reserve a unary
+request would sit idle long enough to risk an HTTP timeout while the model
+generates, so the connection carries frames throughout instead.
+
 Targeted turns can also legitimately reach double digits: a turn that
 consults the records costs `list_record_files` (1) plus one
 `read_record_file` per file — and large sidecars paginate at 8,000

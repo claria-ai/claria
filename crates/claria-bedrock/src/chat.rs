@@ -88,7 +88,7 @@ use aws_sdk_bedrock::types::{
 };
 use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, ConverseTokensRequest, InferenceConfiguration, Message,
-    SystemContentBlock,
+    StopReason, SystemContentBlock,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -266,6 +266,12 @@ async fn fetch_us_inference_profiles(
 /// is derived from this reserve — the two must move together.
 pub const CHAT_MAX_OUTPUT_TOKENS: u32 = 8_192;
 
+/// Appended to a chat reply that hit [`CHAT_MAX_OUTPUT_TOKENS`] before
+/// finishing. The partial answer is kept — it already streamed to the
+/// reader — and this says why it stops where it does.
+pub const CHAT_TRUNCATED_NOTICE: &str = "Claria note: the assistant reached its \
+response-length limit, so this reply was cut short. Ask it to continue if you need the rest.";
+
 /// Input-token budget for a chat request against `model_id`: the model's
 /// context window minus the [`CHAT_MAX_OUTPUT_TOKENS`] output reserve.
 pub fn chat_input_token_budget(model_id: &str) -> u32 {
@@ -429,6 +435,14 @@ where
     }
 
     let mut outcome = collector.finish(model_id, CHAT_MAX_OUTPUT_TOKENS, cache_ttl)?;
+    // The reader has already watched the partial answer arrive, so the notice
+    // rides the same delta channel as the rest of it — the live view and the
+    // persisted history end up with identical text.
+    if outcome.stop_reason == StopReason::MaxTokens.as_str() {
+        let notice = format!("\n\n{CHAT_TRUNCATED_NOTICE}");
+        on_delta(&notice);
+        outcome.text.push_str(&notice);
+    }
     outcome.latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
     crate::converse::log_turn_usage(
         "chat ConverseStream",

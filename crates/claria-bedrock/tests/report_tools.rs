@@ -301,6 +301,39 @@ async fn nested_tool_input_round_trips_from_smithy_document() {
     ));
 }
 
+/// The writer's output ceiling is far above the point where a non-streaming
+/// Converse call risks an HTTP timeout mid-generation, so the transport is
+/// part of the contract rather than an implementation detail.
+#[tokio::test]
+async fn writer_calls_the_streaming_endpoint() {
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Drafted."}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 20, "outputTokens": 10}
+        })],
+    )
+    .await;
+
+    converse_report(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System",
+        &[user_message("Draft")],
+    )
+    .await
+    .expect("converse");
+
+    let state = server.state.read().await;
+    assert_eq!(
+        state.bedrock_stream_request_count, 1,
+        "the writer turn did not go through ConverseStream"
+    );
+    assert_eq!(state.bedrock_tool_requests.len(), 1);
+}
+
 #[tokio::test]
 async fn configured_tool_limit_rejects_oversized_model_responses() {
     let server = MockServer::spawn().await;
