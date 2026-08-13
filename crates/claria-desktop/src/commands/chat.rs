@@ -412,7 +412,12 @@ pub async fn chat_message(
             },
         )
         .await?;
-        let (response_text, usage) = (outcome.text, outcome.usage);
+        let claria_bedrock::converse::StreamOutcome {
+            text: response_text,
+            stop_reason,
+            usage,
+            latency_ms,
+        } = outcome;
         if cache_tail {
             state
                 .chat_prompt_cache
@@ -421,14 +426,14 @@ pub async fn chat_message(
         send_stream_event(
             &on_event,
             ChatStreamEvent::Done {
-                stop_reason: outcome.stop_reason,
+                stop_reason: stop_reason.clone(),
                 usage: usage.clone(),
             },
         );
 
         // Emit a per-turn audit event with token usage in details. UUIDs only;
         // never the message content.
-        let mut audit_details = usage_audit_details(&model_id, usage.as_ref());
+        let mut audit_details = usage_audit_details(&model_id, usage.as_ref(), Some(&stop_reason));
         audit_details["chat_id"] = serde_json::json!(chat_uuid.to_string());
         ctx.record_audit(
             ctx.audit_event("chat_message", "client", client_uuid.to_string())
@@ -454,6 +459,8 @@ pub async fn chat_message(
                         content: message.content.clone(),
                         timestamp: stored.map_or(updated_at, |stored| stored.timestamp),
                         usage: stored.and_then(|stored| stored.usage.clone()),
+                        stop_reason: stored.and_then(|stored| stored.stop_reason.clone()),
+                        latency_ms: stored.and_then(|stored| stored.latency_ms),
                     }
                 })
                 .collect();
@@ -462,6 +469,8 @@ pub async fn chat_message(
             content: response_text.clone(),
             timestamp: updated_at,
             usage: usage.clone(),
+            stop_reason: Some(stop_reason),
+            latency_ms,
         });
 
         let history = claria_core::models::chat_history::ChatHistory {
@@ -574,7 +583,7 @@ pub async fn infra_chat(
         send_stream_event(
             &on_event,
             ChatStreamEvent::Done {
-                stop_reason: outcome.stop_reason,
+                stop_reason: outcome.stop_reason.clone(),
                 usage: usage.clone(),
             },
         );
@@ -582,8 +591,9 @@ pub async fn infra_chat(
         // Audit the infra-chat turn against the AWS account_id (no per-client
         // resource here).
         ctx.record_audit(
-            ctx.audit_event("infra_chat", "infrastructure", "infra")
-                .with_details(usage_audit_details(&model_id, usage.as_ref())),
+            ctx.audit_event("infra_chat", "infrastructure", "infra").with_details(
+                usage_audit_details(&model_id, usage.as_ref(), Some(&outcome.stop_reason)),
+            ),
         )
         .await;
 

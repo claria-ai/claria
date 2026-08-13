@@ -16,6 +16,9 @@ All notable changes to Claria are documented here.
 - Multi-line paragraphs in template exports render their newlines as Word line breaks instead of disappearing
 - Bullet lists exported through a template without its own list formatting carry their numbering definition into the package instead of referencing one that does not exist
 - Exports that could not apply the imported Word template's formatting now say so in the export status instead of silently producing a default-formatted document
+- Audit events record the app version and, for AI turns, the stop reason
+- Writer per-call usage records add stop reason, latency, the output ceiling in effect, a system-prompt digest, and the app version; chat history messages add stop reason and latency
+- The turn-complete console line reports stop reason, latency, and the output ceiling for every AI call
 
 - The scoped Claria IAM policy no longer grants permanent S3 object-version deletion
 - Full infrastructure teardown requires temporary elevated credentials from the configured AWS account

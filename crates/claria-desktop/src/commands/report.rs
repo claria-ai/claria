@@ -360,7 +360,7 @@ pub async fn generate_full_report(
                 let record_context = outcome.record_context.clone();
                 let response = claria_desktop::report_authoring::full_report_response_view(outcome);
                 let mut audit_details =
-                    usage_audit_details(&attempt.model_id, Some(&attempt.usage));
+                    usage_audit_details(&attempt.model_id, Some(&attempt.usage), None);
                 merge_details(
                     &mut audit_details,
                     serde_json::json!({
@@ -408,6 +408,7 @@ pub async fn generate_full_report(
                 let mut audit_details = usage_audit_details(
                     &model_id,
                     attempt.as_ref().map(|value| &value.usage),
+                    None,
                 );
                 merge_details(
                     &mut audit_details,
@@ -488,7 +489,7 @@ pub async fn send_report_message(
                 // is then overridden with the attempt's own aggregate flag
                 // (per-call omissions can leave a partial sum).
                 let mut audit_details =
-                    usage_audit_details(&attempt.model_id, Some(&attempt.usage));
+                    usage_audit_details(&attempt.model_id, Some(&attempt.usage), None);
                 merge_details(
                     &mut audit_details,
                     serde_json::json!({
@@ -524,6 +525,7 @@ pub async fn send_report_message(
                 let mut audit_details = usage_audit_details(
                     &model_id,
                     attempt.as_ref().map(|value| &value.usage),
+                    None,
                 );
                 merge_details(
                     &mut audit_details,

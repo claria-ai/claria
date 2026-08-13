@@ -63,7 +63,10 @@ pub const MAX_CONFIGURABLE_RETAINED_TURNS: u32 = MAX_REPORT_TURNS as u32;
 const MAX_INSTRUCTION_CHARACTERS: usize = 20_000;
 const MAX_REPORT_REFERENCES: usize = 10;
 const MAX_RESOLUTIONS: usize = 100;
-const ATTEMPT_SCHEMA_VERSION: u32 = 1;
+// v2 adds stop_reason, latency_ms, max_output_tokens, system_prompt_sha256,
+// and app_version to ReportCallUsageRecord; v1 records deserialize with the
+// new fields defaulted.
+const ATTEMPT_SCHEMA_VERSION: u32 = 2;
 
 pub const REPORT_CONFLICT_MESSAGE: &str =
     "The report changed on another computer. Reload it before continuing.";
@@ -245,6 +248,24 @@ pub struct ReportCallUsageRecord {
     pub usage: Option<TurnUsage>,
     pub usage_complete: bool,
     pub recorded_at: jiff::Timestamp,
+    /// Wire stop reason of this Converse call (schema v2).
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    /// Wall-clock duration of this Converse call (schema v2).
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
+    /// The enforced output ceiling in effect for this call (schema v2).
+    #[serde(default)]
+    pub max_output_tokens: u32,
+    /// SHA-256 of the system prompt in effect, so quality investigations can
+    /// tell which prompt produced a turn without storing the prompt text
+    /// (schema v2).
+    #[serde(default)]
+    pub system_prompt_sha256: String,
+    /// Workspace crates version in lockstep with the desktop, so this is the
+    /// app version that ran the call (schema v2).
+    #[serde(default)]
+    pub app_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1554,6 +1575,9 @@ struct AttemptProgress {
     converse_calls: u32,
     tool_uses: u32,
     started_at: jiff::Timestamp,
+    /// Digest of the system prompt in effect for this attempt, set by
+    /// `run_turn` once the mode (targeted vs full draft) is known.
+    system_prompt_sha256: String,
 }
 
 impl AttemptProgress {
@@ -1568,6 +1592,7 @@ impl AttemptProgress {
             converse_calls: 0,
             tool_uses: 0,
             started_at,
+            system_prompt_sha256: String::new(),
         }
     }
 
@@ -1739,6 +1764,11 @@ async fn run_turn(
     let mut rounds = 0_u32;
     let mut corrective_round_used = false;
     let mut completion_reminder_used = false;
+    progress.system_prompt_sha256 = sha256_hex(if request.is_full_draft() {
+        FULL_REPORT_SYSTEM_PROMPT
+    } else {
+        REPORT_SYSTEM_PROMPT
+    });
     // One exact CountTokens per turn; later calls estimate appended messages
     // and re-verify only near the budget.
     let mut input_budget = report::ReportInputBudget::new(&progress.model_id);
@@ -1795,6 +1825,8 @@ async fn run_turn(
             progress,
             call_number,
             output.usage.clone(),
+            output.stop_reason,
+            output.latency_ms,
         )
         .await
         .map_err(|error| {
@@ -2186,6 +2218,8 @@ async fn persist_call_usage(
     progress: &AttemptProgress,
     call_number: u32,
     usage: Option<TurnUsage>,
+    stop_reason: claria_bedrock::report::ReportStopReason,
+    latency_ms: Option<u64>,
 ) -> Result<(), StorageError> {
     let record = ReportCallUsageRecord {
         schema_version: ATTEMPT_SCHEMA_VERSION,
@@ -2197,6 +2231,12 @@ async fn persist_call_usage(
         usage_complete: usage.is_some(),
         usage,
         recorded_at: jiff::Timestamp::now(),
+        stop_reason: Some(stop_reason.as_str().to_string()),
+        latency_ms,
+        max_output_tokens: report::REPORT_OUTPUT_TOKEN_RESERVE,
+        system_prompt_sha256: progress.system_prompt_sha256.clone(),
+        // Workspace crates version in lockstep with the desktop binary.
+        app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
     };
     let key = claria_core::s3_keys::report_call_usage(
         progress.client_id,
@@ -3493,6 +3533,15 @@ fn build_untrusted_context(
 /// angle-bracket escaping measurably mangled exactly that kind of prose.
 fn escape_delimiter_characters(value: &str) -> String {
     claria_bedrock::context::escape_delimiter_forgeries(value, &["untrusted_"], "\\u003c")
+}
+
+/// Lowercase hex SHA-256 digest — a PHI-free stand-in for prompt text in
+/// telemetry records.
+fn sha256_hex(text: &str) -> String {
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn sanitize_turn_messages(messages: Vec<ReportProtocolMessage>) -> Vec<ReportProtocolMessage> {

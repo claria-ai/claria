@@ -170,6 +170,7 @@ impl CommandContext {
             resource_id,
             self.cfg.account_id.clone(),
         )
+        .with_app_version(env!("CARGO_PKG_VERSION"))
     }
 
     /// Record an audit event against this context's bucket.
@@ -250,8 +251,9 @@ pub(crate) async fn cached_aws(
 pub(crate) fn usage_audit_details(
     model_id: &str,
     usage: Option<&claria_core::models::turn_usage::TurnUsage>,
+    stop_reason: Option<&str>,
 ) -> serde_json::Value {
-    match usage {
+    let mut details = match usage {
         Some(usage) => serde_json::json!({
             "model_id": usage.model_id,
             "input_tokens": usage.input_tokens,
@@ -262,10 +264,16 @@ pub(crate) fn usage_audit_details(
             "cost_usd": usage.cost_usd,
             "pricing_version": usage.pricing_version,
             "usage_complete": true,
+            "app_version": env!("CARGO_PKG_VERSION"),
         }),
         None => serde_json::json!({
             "model_id": model_id,
             "usage_complete": false,
+            "app_version": env!("CARGO_PKG_VERSION"),
         }),
+    };
+    if let Some(stop_reason) = stop_reason {
+        details["stop_reason"] = serde_json::json!(stop_reason);
     }
+    details
 }
