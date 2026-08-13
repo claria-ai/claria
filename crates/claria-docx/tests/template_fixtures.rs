@@ -1,0 +1,287 @@
+//! Template-export tests against Word-authored fixture packages.
+//!
+//! The fixtures in `fixtures/docx-templates/` carry the constructs desktop
+//! Word emits and docx-rs cannot build — custom-named heading styles with
+//! `w:outlineLvl`, direct run formatting, rsid/proofErr noise, blank spacer
+//! paragraphs, an underlined signature line as the last body paragraph, and
+//! `w:sdt` content controls. The docx-rs-built templates in `render.rs`
+//! cannot exercise those shapes, which is how the v0.22 underline, font,
+//! and spacing regressions shipped green.
+
+use std::io::{Cursor, Read};
+
+use claria_core::models::report::{ReportBlock, ReportContent, ReportDraft, ReportSection};
+use claria_docx::render_report_with_template;
+use quick_xml::{Reader, events::Event};
+use uuid::Uuid;
+
+const CLINICAL_TEMPLATE: &[u8] =
+    include_bytes!("../../../fixtures/docx-templates/clinical-eval.docx");
+const CONTENT_CONTROLS_TEMPLATE: &[u8] =
+    include_bytes!("../../../fixtures/docx-templates/content-controls.docx");
+
+/// One `<w:p>` of the exported document, flattened for assertions.
+#[derive(Debug, Clone)]
+struct Paragraph {
+    style: Option<String>,
+    text: String,
+    in_table: bool,
+    /// Run-level properties seen on any run that carries visible text.
+    text_run_underlined: bool,
+    text_run_bold: bool,
+    text_run_fonts: Vec<String>,
+    line_breaks: usize,
+}
+
+impl Paragraph {
+    fn is_blank(&self) -> bool {
+        self.text.trim().is_empty()
+    }
+}
+
+fn document_xml(package: &[u8]) -> Vec<u8> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(package)).expect("zip package");
+    let mut file = archive.by_name("word/document.xml").expect("document.xml");
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).expect("read document.xml");
+    bytes
+}
+
+fn local(name: &[u8]) -> &[u8] {
+    name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
+}
+
+/// Flatten every paragraph of `word/document.xml` in document order.
+fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
+    let xml = document_xml(package);
+    let mut reader = Reader::from_reader(xml.as_slice());
+    let mut output = Vec::new();
+    let mut buffer = Vec::new();
+    let mut table_depth = 0_usize;
+    let mut current: Option<Paragraph> = None;
+    // Run-property state while inside <w:rPr>.
+    let mut in_rpr = false;
+    let mut run_underline = false;
+    let mut run_bold = false;
+    let mut run_font: Option<String> = None;
+    let mut in_text = false;
+    loop {
+        let event = reader.read_event_into(&mut buffer).expect("fixture XML");
+        match &event {
+            Event::Start(start) | Event::Empty(start) => {
+                let is_empty = matches!(event, Event::Empty(_));
+                match local(start.name().as_ref()) {
+                    b"tbl" if !is_empty => table_depth += 1,
+                    b"p" => {
+                        let paragraph = Paragraph {
+                            style: None,
+                            text: String::new(),
+                            in_table: table_depth > 0,
+                            text_run_underlined: false,
+                            text_run_bold: false,
+                            text_run_fonts: Vec::new(),
+                            line_breaks: 0,
+                        };
+                        if is_empty {
+                            output.push(paragraph);
+                        } else {
+                            current = Some(paragraph);
+                        }
+                    }
+                    b"pStyle" => {
+                        if let (Some(paragraph), Some(value)) =
+                            (&mut current, attribute(start, b"val"))
+                        {
+                            paragraph.style = Some(value);
+                        }
+                    }
+                    b"rPr" => in_rpr = true,
+                    b"u" if in_rpr => run_underline = true,
+                    b"b" if in_rpr => run_bold = true,
+                    b"rFonts" if in_rpr => run_font = attribute(start, b"ascii"),
+                    b"r" if !is_empty => {
+                        run_underline = false;
+                        run_bold = false;
+                        run_font = None;
+                    }
+                    b"br" => {
+                        if let Some(paragraph) = &mut current {
+                            paragraph.line_breaks += 1;
+                        }
+                    }
+                    b"t" if !is_empty => in_text = true,
+                    _ => {}
+                }
+            }
+            Event::Text(text) if in_text => {
+                if let Some(paragraph) = &mut current {
+                    paragraph
+                        .text
+                        .push_str(&text.decode().expect("text"));
+                    paragraph.text_run_underlined |= run_underline;
+                    paragraph.text_run_bold |= run_bold;
+                    if let Some(font) = &run_font
+                        && !paragraph.text_run_fonts.contains(font)
+                    {
+                        paragraph.text_run_fonts.push(font.clone());
+                    }
+                }
+            }
+            Event::End(end) => match local(end.name().as_ref()) {
+                b"tbl" => table_depth = table_depth.saturating_sub(1),
+                b"p" => {
+                    if let Some(paragraph) = current.take() {
+                        output.push(paragraph);
+                    }
+                }
+                b"rPr" => in_rpr = false,
+                b"t" => in_text = false,
+                _ => {}
+            },
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+    output
+}
+
+fn attribute(start: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
+    start.attributes().with_checks(false).flatten().find_map(|attribute| {
+        (local(attribute.key.as_ref()) == name)
+            .then(|| String::from_utf8_lossy(attribute.value.as_ref()).into_owned())
+    })
+}
+
+fn body_paragraph<'a>(paragraphs: &'a [Paragraph], needle: &str) -> &'a Paragraph {
+    paragraphs
+        .iter()
+        .find(|paragraph| paragraph.text.contains(needle))
+        .unwrap_or_else(|| panic!("no paragraph contains {needle:?}"))
+}
+
+fn paragraph(text: &str) -> ReportBlock {
+    ReportBlock::Paragraph {
+        text: text.to_string(),
+    }
+}
+
+fn section(heading: &str, blocks: Vec<ReportBlock>) -> ReportSection {
+    ReportSection {
+        id: Uuid::new_v4(),
+        heading: heading.to_string(),
+        blocks,
+    }
+}
+
+fn draft(title: &str, sections: Vec<ReportSection>) -> ReportDraft {
+    let timestamp = "2026-08-12T00:00:00Z".parse().expect("timestamp");
+    ReportDraft {
+        revision: 1,
+        content: ReportContent {
+            title: title.to_string(),
+            sections,
+        },
+        created_at: timestamp,
+        updated_at: timestamp,
+        last_applied_proposal_id: None,
+    }
+}
+
+/// A generated report that outgrows the template: three sections against the
+/// template's two, more body paragraphs than template exemplars, and a
+/// filled results table.
+fn clinical_growth_draft() -> ReportDraft {
+    draft(
+        "Psychoeducational Evaluation",
+        vec![
+            section(
+                "Reason for Referral",
+                vec![
+                    paragraph("Guardian requested evaluation for attention concerns."),
+                    paragraph("Teacher reports difficulty sustaining attention in class."),
+                ],
+            ),
+            section(
+                "Assessment Results",
+                vec![
+                    paragraph("The BASC-3 was completed by the parent and teacher."),
+                    paragraph("Attention Problems T-score was 72, in the clinically significant range."),
+                    paragraph("Working memory performance fell below the 10th percentile."),
+                    ReportBlock::Table {
+                        rows: vec![
+                            vec!["Domain".to_string(), "Score".to_string()],
+                            vec!["Working Memory".to_string(), "82".to_string()],
+                        ],
+                        has_header: true,
+                        column_widths: None,
+                    },
+                ],
+            ),
+            section(
+                "Summary and Recommendations",
+                vec![
+                    paragraph("Findings are consistent with attention-related difficulties."),
+                    paragraph("Classroom accommodations are recommended."),
+                ],
+            ),
+        ],
+    )
+}
+
+#[test]
+fn clinical_fixture_reconstructs_and_keeps_package_parts() {
+    let output = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
+        .expect("template render");
+
+    // Every non-document part is copied byte-for-byte.
+    let mut source = zip::ZipArchive::new(Cursor::new(CLINICAL_TEMPLATE)).expect("source zip");
+    let mut rendered = zip::ZipArchive::new(Cursor::new(output.as_slice())).expect("output zip");
+    assert_eq!(source.len(), rendered.len());
+    let mut source_styles = String::new();
+    source
+        .by_name("word/styles.xml")
+        .expect("source styles")
+        .read_to_string(&mut source_styles)
+        .expect("read source styles");
+    let mut rendered_styles = String::new();
+    rendered
+        .by_name("word/styles.xml")
+        .expect("rendered styles")
+        .read_to_string(&mut rendered_styles)
+        .expect("read rendered styles");
+    assert_eq!(source_styles, rendered_styles);
+
+    // Every sentinel paragraph and table cell of the draft is present.
+    let flattened = paragraphs(&output);
+    for sentinel in [
+        "Psychoeducational Evaluation",
+        "Teacher reports difficulty sustaining attention in class.",
+        "Attention Problems T-score was 72, in the clinically significant range.",
+        "Findings are consistent with attention-related difficulties.",
+        "Classroom accommodations are recommended.",
+    ] {
+        body_paragraph(&flattened, sentinel);
+    }
+
+    // Table content lands inside the table, and the template's two blank
+    // spacer paragraphs survive the rewrite.
+    assert!(body_paragraph(&flattened, "Working Memory").in_table);
+    assert!(!body_paragraph(&flattened, "Classroom accommodations are recommended.").in_table);
+    let blanks = flattened
+        .iter()
+        .filter(|paragraph| !paragraph.in_table && paragraph.is_blank())
+        .count();
+    assert_eq!(blanks, 2);
+}
+
+#[test]
+fn content_controls_fixture_still_renders_a_complete_report() {
+    let output = render_report_with_template(CONTENT_CONTROLS_TEMPLATE, &clinical_growth_draft())
+        .expect("template render");
+    let flattened = paragraphs(&output);
+    body_paragraph(
+        &flattened,
+        "Findings are consistent with attention-related difficulties.",
+    );
+}
