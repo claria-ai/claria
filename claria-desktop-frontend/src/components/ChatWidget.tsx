@@ -11,6 +11,7 @@ import {
   type SessionUsage,
 } from "../lib/cost";
 import { buildCostLedger } from "../lib/costLedger";
+import { buildChatSessionDiagram } from "../lib/sessionDiagram";
 import { usePreferredModel } from "../lib/usePreferredModel";
 import { usePricingMap } from "../lib/usePricingMap";
 import ChatComposer from "./ChatComposer";
@@ -25,8 +26,17 @@ function isMarketplaceError(error: string): boolean {
   return error.includes("aws-marketplace:") || error.includes("Marketplace");
 }
 
-/** `handleSend` contract: the assistant reply plus its token usage, if known. */
-export type SendResult = { content: string; usage: TurnUsage | null };
+/**
+ * `handleSend` contract: the assistant reply plus its token usage, if
+ * known. `stopReason` is the streamed `done` event's stop reason when the
+ * sender saw one — used by the session flow diagram to flag truncated
+ * (`max_tokens`) turns.
+ */
+export type SendResult = {
+  content: string;
+  usage: TurnUsage | null;
+  stopReason?: string | null;
+};
 
 /**
  * `handleSend` also receives an `onDelta` callback. Senders whose backend
@@ -80,6 +90,10 @@ export default function ChatWidget({
   const [timestampsByIndex, setTimestampsByIndex] = useState<
     Array<string | null>
   >(initialTimestampsByIndex ?? []);
+  // Stop reasons only arrive on live streamed turns; history has none.
+  const [stopReasonByIndex, setStopReasonByIndex] = useState<
+    Array<string | null>
+  >(() => (initialMessages ?? []).map(() => null));
   // Roll up resumed usage for the dedicated session-usage tab. Initial props
   // are plain initial state — a
   // different chat identity remounts the widget via the caller's `key`.
@@ -152,6 +166,21 @@ export default function ChatWidget({
     [assistantTurnTimestamps, assistantTurnUsages, pricingByModel]
   );
 
+  // Three-lane session flow model for the usage panel's diagram.
+  const diagram = useMemo(
+    () =>
+      buildChatSessionDiagram(
+        messages.map((message, index) => ({
+          role: message.role,
+          content: message.content,
+          timestamp: timestampsByIndex[index] ?? null,
+          usage: usageByIndex[index] ?? null,
+          stopReason: stopReasonByIndex[index] ?? null,
+        }))
+      ),
+    [messages, stopReasonByIndex, timestampsByIndex, usageByIndex]
+  );
+
   // Auto-scroll to bottom when messages change or streamed text grows.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -177,10 +206,11 @@ export default function ChatWidget({
     // Pad metadata for the new user message so indices align.
     setUsageByIndex((prev) => [...prev, null]);
     setTimestampsByIndex((prev) => [...prev, new Date().toISOString()]);
+    setStopReasonByIndex((prev) => [...prev, null]);
 
     setSending(true);
     try {
-      const { content, usage } = await onSend(
+      const { content, usage, stopReason } = await onSend(
         selectedModelId,
         updatedMessages,
         (delta) => setStreamText((prev) => (prev ?? "") + delta)
@@ -192,6 +222,7 @@ export default function ChatWidget({
       setMessages([...updatedMessages, assistantMessage]);
       setUsageByIndex((prev) => [...prev, usage]);
       setTimestampsByIndex((prev) => [...prev, new Date().toISOString()]);
+      setStopReasonByIndex((prev) => [...prev, stopReason ?? null]);
       setSession((prev) => accumulateUsage(prev, usage));
     } catch (e) {
       setError(String(e));
@@ -265,6 +296,7 @@ export default function ChatWidget({
             showTurnCosts={showTurnCosts}
             onShowTurnCostsChange={setShowTurnCosts}
             actions={usageActions}
+            diagram={diagram}
           />
         </div>
       ) : (
