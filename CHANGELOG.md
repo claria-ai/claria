@@ -2,6 +2,12 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- An exhausted writer guardrail now reports the tool-use rounds and Bedrock calls it reached, names the Preferences field that raises the one that bound, and warns that raising it costs more
+- A writer request that is already at a guardrail's maximum says so and suggests narrowing the request instead
+- Bedrock failures during a writer turn name the call that failed and its cause, so denied model access, throttling, and unreachable endpoints no longer read identically
+
 ## [0.24.0] — 2026-08-13
 
 - Writer and chat context no longer rewrite angle brackets and ampersands inside clinical text; only sequences that could forge the untrusted-context delimiters are neutralized

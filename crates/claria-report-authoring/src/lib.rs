@@ -71,6 +71,14 @@ const ATTEMPT_SCHEMA_VERSION: u32 = 2;
 pub const REPORT_CONFLICT_MESSAGE: &str =
     "The report changed on another computer. Reload it before continuing.";
 
+/// Where a clinician raises the guardrails below, and the exact field labels
+/// they will read there. These mirror `WRITER_LIMIT_FIELDS` in
+/// `pages/Preferences.tsx`; renaming a field there means renaming it here, or
+/// the failure message sends the reader looking for a control that is gone.
+const WRITER_LIMITS_SECTION: &str = "Preferences \u{2192} Document Writer Limits";
+const TOOL_ROUNDS_FIELD_LABEL: &str = "Tool-use rounds per request";
+const CONVERSE_CALLS_FIELD_LABEL: &str = "Bedrock calls per request";
+
 /// Appended to the visible reply when the final response hit its
 /// output-token limit after a proposal was already staged: the staged work
 /// survives instead of the whole turn being discarded.
@@ -1864,12 +1872,17 @@ async fn run_turn(
         request.is_full_draft(),
     );
     let terminal_text: String;
+    // Named once for the failure messages: `progress` is borrowed mutably
+    // across the loop body, and the model is fixed for the whole attempt.
+    let model_id = progress.model_id.clone();
 
     loop {
         if progress.converse_calls >= limits.max_converse_calls {
-            return Err(TurnRunFailure::new(
-                ReportFailureCode::ToolRoundLimit,
-                "The report assistant exceeded the safe Converse call limit without finishing.",
+            return Err(limit_exhausted_failure(
+                ExhaustedWriterLimit::ConverseCalls,
+                rounds,
+                progress.converse_calls,
+                limits,
             ));
         }
         let call_number = progress.converse_calls.saturating_add(1);
@@ -1897,7 +1910,16 @@ async fn run_turn(
             )
             .await
         }
-        .map_err(map_bedrock_failure)?;
+        .map_err(|error| {
+            map_bedrock_failure(
+                error,
+                FailedReportCall {
+                    number: call_number,
+                    ceiling: limits.max_converse_calls,
+                    model_id: &model_id,
+                },
+            )
+        })?;
         progress.converse_calls = call_number;
         if let Some(usage) = &output.usage {
             merge_usage(&mut progress.usage, usage, call_number == 1);
@@ -1998,9 +2020,16 @@ async fn run_turn(
                 if rounds >= limits.max_tool_rounds
                     || progress.converse_calls >= limits.max_converse_calls
                 {
-                    return Err(TurnRunFailure::new(
-                        ReportFailureCode::ToolRoundLimit,
-                        "The report assistant exceeded the safe tool-use round limit.",
+                    let exhausted = if rounds >= limits.max_tool_rounds {
+                        ExhaustedWriterLimit::ToolRounds
+                    } else {
+                        ExhaustedWriterLimit::ConverseCalls
+                    };
+                    return Err(limit_exhausted_failure(
+                        exhausted,
+                        rounds,
+                        progress.converse_calls,
+                        limits,
                     ));
                 }
                 rounds += 1;
@@ -2227,7 +2256,87 @@ async fn run_turn(
     })
 }
 
-fn map_bedrock_failure(error: BedrockError) -> TurnRunFailure {
+/// Which configured guardrail ended the turn.
+///
+/// Both are raised in the same Preferences section, but naming the wrong one
+/// sends the clinician to a control that cannot change the outcome: every
+/// tool round spends a Converse call, so the call ceiling binds first unless
+/// it stays at least one above the round ceiling.
+#[derive(Debug, Clone, Copy)]
+enum ExhaustedWriterLimit {
+    ToolRounds,
+    ConverseCalls,
+}
+
+/// Report an exhausted writer guardrail with the counts actually reached, the
+/// ceiling that stopped them, and the one Preferences field that moves it.
+///
+/// The counts matter more than the verdict: 39 of 40 rounds spent listing
+/// files is a different problem from 40 of 40 spent writing sections, and a
+/// screenshot of this message should be enough to tell them apart.
+fn limit_exhausted_failure(
+    exhausted: ExhaustedWriterLimit,
+    rounds: u32,
+    calls: u32,
+    limits: ReportTurnLimits,
+) -> TurnRunFailure {
+    let (field, configured, ceiling, cost_note) = match exhausted {
+        ExhaustedWriterLimit::ToolRounds => (
+            TOOL_ROUNDS_FIELD_LABEL,
+            limits.max_tool_rounds,
+            MAX_CONFIGURABLE_TOOL_ROUNDS,
+            "Each added round is another billed model call",
+        ),
+        ExhaustedWriterLimit::ConverseCalls => (
+            CONVERSE_CALLS_FIELD_LABEL,
+            limits.max_converse_calls,
+            MAX_CONFIGURABLE_CONVERSE_CALLS,
+            "Each added call is billed",
+        ),
+    };
+    let advice = if configured >= ceiling {
+        format!(
+            "\"{field}\" is already at its maximum of {ceiling} in {WRITER_LIMITS_SECTION}, so raising it is not an option. Give the writer less to do in one request: attach fewer records, or fill the report a section at a time."
+        )
+    } else {
+        // Raising rounds alone accomplishes nothing when the call ceiling is
+        // only one greater, because the next round would spend the last call.
+        let companion = if matches!(exhausted, ExhaustedWriterLimit::ToolRounds)
+            && limits.max_converse_calls <= limits.max_tool_rounds.saturating_add(1)
+        {
+            format!(
+                " Raise \"{CONVERSE_CALLS_FIELD_LABEL}\" alongside it — it has to stay at least one higher."
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "Raise \"{field}\" in {WRITER_LIMITS_SECTION}; it is set to {configured} and goes up to {ceiling}.{companion} {cost_note}, so raise it a step at a time and check the session cost afterwards."
+        )
+    };
+    TurnRunFailure::new(
+        ReportFailureCode::ToolRoundLimit,
+        format!(
+            "The writer stopped before finishing the report after {rounds} of {} tool-use rounds and {calls} of {} Bedrock calls. Nothing from this turn was applied. {advice}",
+            limits.max_tool_rounds, limits.max_converse_calls
+        ),
+    )
+}
+
+/// The in-flight Converse call a Bedrock failure interrupted.
+///
+/// Which call of how many died is the difference between an entitlement
+/// problem (call 1 of 50, every time) and a flaky call deep into a
+/// whole-report run, so it belongs in the message a clinician screenshots
+/// rather than only in the log they will not open.
+#[derive(Debug, Clone, Copy)]
+struct FailedReportCall<'a> {
+    number: u32,
+    ceiling: u32,
+    model_id: &'a str,
+}
+
+fn map_bedrock_failure(error: BedrockError, call: FailedReportCall<'_>) -> TurnRunFailure {
     if matches!(
         &error,
         BedrockError::SchemaViolation(_) | BedrockError::ResponseParse(_)
@@ -2236,6 +2345,11 @@ fn map_bedrock_failure(error: BedrockError) -> TurnRunFailure {
         // text, and make otherwise opaque provider regressions diagnosable.
         tracing::error!(error = %error, "invalid Bedrock report protocol");
     }
+    let FailedReportCall {
+        number,
+        ceiling,
+        model_id,
+    } = call;
     let failure = match &error {
         BedrockError::ContextBudgetExceeded { .. } => TurnRunFailure::new(
             ReportFailureCode::ContextBudget,
@@ -2243,15 +2357,66 @@ fn map_bedrock_failure(error: BedrockError) -> TurnRunFailure {
         ),
         BedrockError::SchemaViolation(_) | BedrockError::ResponseParse(_) => TurnRunFailure::new(
             ReportFailureCode::InvalidProtocol,
-            "Bedrock returned an invalid report-tool protocol. Nothing from this turn was applied.",
+            format!(
+                "Bedrock returned an invalid report-tool protocol on call {number} of {ceiling}. Nothing from this turn was applied."
+            ),
         ),
         BedrockError::UnsupportedModel(_) => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
             "The selected model is not verified for report tools. Choose a current Claude model.",
         ),
+        // These reached AWS and came back refused. The service code is the
+        // only thing separating "retry", "pick another model", and "call
+        // support", so it decides the message instead of collapsing into one
+        // unactionable sentence.
+        BedrockError::Service {
+            code, request_id, ..
+        } => {
+            let cause = match code.as_str() {
+                "AccessDeniedException" => format!(
+                    "Your AWS account is not permitted to invoke {model_id}. Choose a model the account has Bedrock access to, or request access for this one in the AWS console."
+                ),
+                "ResourceNotFoundException" => format!(
+                    "Bedrock does not offer {model_id} in this account's region. Choose a different model."
+                ),
+                "ThrottlingException" | "ServiceQuotaExceededException" => {
+                    "AWS throttled the request — filling a whole report issues many calls in quick succession. Wait a moment and retry.".to_string()
+                }
+                "ModelNotReadyException" | "ServiceUnavailableException"
+                | "InternalServerException" => {
+                    "Bedrock was temporarily unavailable. Retry in a few minutes.".to_string()
+                }
+                "ModelTimeoutException" => {
+                    "The model did not respond in time. Retry, or fill the report a section at a time if it keeps happening.".to_string()
+                }
+                "ValidationException" => format!(
+                    "Bedrock rejected the request as invalid for {model_id}. The Claria Console log holds the service's reason."
+                ),
+                // Every non-service SDK failure lands here — connect, dispatch,
+                // and timeout alike — so the wording must not pin the blame on
+                // the network when a long generation simply ran out of time.
+                "DispatchFailure" => {
+                    "Claria could not complete the call to Bedrock: the connection failed or the request timed out. Check the network and retry."
+                        .to_string()
+                }
+                other => {
+                    let request_id = request_id.as_deref().unwrap_or("not reported");
+                    format!("Bedrock returned {other} (request ID {request_id}).")
+                }
+            };
+            TurnRunFailure::new(
+                ReportFailureCode::Bedrock,
+                format!(
+                    "Bedrock call {number} of {ceiling} failed. {cause} Usage for the calls that completed was retained."
+                ),
+            )
+            .uncertain_usage()
+        }
         _ => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
-            "Bedrock could not complete the report turn. Completed call usage was retained.",
+            format!(
+                "Bedrock call {number} of {ceiling} could not be completed. Usage for the calls that completed was retained. The Claria Console log holds the underlying error."
+            ),
         )
         .uncertain_usage(),
     };

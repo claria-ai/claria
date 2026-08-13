@@ -1984,7 +1984,32 @@ async fn fifth_tool_round_fails_without_persisting_an_incomplete_turn() {
     )
     .await
     .unwrap_err();
-    assert!(error.to_string().contains("safe tool-use round limit"));
+    // The message has to survive being screenshotted: the counts reached, the
+    // ceilings that stopped them, the field that moves the binding one, and
+    // the warning that moving it costs money.
+    let message = error.to_string();
+    assert!(
+        message.contains("4 of 4 tool-use rounds and 5 of 5 Bedrock calls"),
+        "counts and ceilings missing: {message}"
+    );
+    assert!(
+        message.contains("\"Tool-use rounds per request\""),
+        "binding field not named: {message}"
+    );
+    assert!(
+        message.contains("Preferences \u{2192} Document Writer Limits"),
+        "no route to the setting: {message}"
+    );
+    // 5 calls is only one above 4 rounds, so raising rounds alone would just
+    // move the wall to the call ceiling.
+    assert!(
+        message.contains("\"Bedrock calls per request\" alongside it"),
+        "companion ceiling not called out: {message}"
+    );
+    assert!(
+        message.contains("billed model call"),
+        "no cost warning: {message}"
+    );
     let attempt = error.attempt().expect("attempt metadata");
     assert_eq!(attempt.converse_calls, 5);
     assert_eq!(attempt.usage.input_tokens, 5);
@@ -2009,6 +2034,150 @@ async fn fifth_tool_round_fails_without_persisting_an_incomplete_turn() {
     assert!(workspace.session.turns.is_empty());
     assert!(workspace.session.pending_proposal.is_none());
     assert_eq!(workspace.draft.revision, 0);
+}
+
+/// Tool rounds to spare but no calls left: the message must send the reader to
+/// the call ceiling, because raising rounds would change nothing.
+#[tokio::test]
+async fn exhausting_the_call_ceiling_first_names_the_call_setting() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let responses = (0..3)
+        .map(|index| {
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"toolUse": {
+                    "toolUseId": format!("list-{index}"),
+                    "name": "list_record_files",
+                    "input": {}
+                }}]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 1, "outputTokens": 1}
+            })
+        })
+        .collect();
+    script(&server, responses).await;
+
+    let limits = report_authoring::ReportTurnLimits::try_new(9, 3, 8, 20)
+        .expect("rounds deliberately above calls");
+    let error = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Keep listing forever").with_limits(limits),
+    )
+    .await
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("2 of 9 tool-use rounds and 3 of 3 Bedrock calls"),
+        "counts and ceilings missing: {message}"
+    );
+    assert!(
+        message.contains("\"Bedrock calls per request\" in Preferences"),
+        "binding field not named: {message}"
+    );
+    assert!(
+        !message.contains("\"Tool-use rounds per request\""),
+        "named a setting that would not help: {message}"
+    );
+    assert!(
+        message.contains("Each added call is billed"),
+        "no cost warning: {message}"
+    );
+}
+
+#[tokio::test]
+async fn bedrock_access_denial_names_the_model_and_the_failed_call() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    server
+        .state
+        .write()
+        .await
+        .bedrock_tool_responses
+        .push(ScriptedBedrockResponse::error(
+            403,
+            serde_json::json!({
+                "__type": "AccessDeniedException",
+                "message": "You don't have access to the model with the specified model ID."
+            }),
+        ));
+
+    let error = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Draft it"),
+    )
+    .await
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("Bedrock call 1 of 50 failed"),
+        "failed call position missing: {message}"
+    );
+    assert!(
+        message.contains(MODEL_ID) && message.contains("not permitted to invoke"),
+        "entitlement cause not explained: {message}"
+    );
+    // Entitlement is not a guardrail problem; sending the reader to the writer
+    // limits would waste the trip.
+    assert!(
+        !message.contains("Document Writer Limits"),
+        "misrouted to the writer limits: {message}"
+    );
+}
+
+#[tokio::test]
+async fn bedrock_throttling_counsels_a_retry_rather_than_a_setting() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    // Throttling is retryable, so the SDK burns its own attempts before the
+    // error ever reaches us. Script enough to outlast them.
+    {
+        let mut state = server.state.write().await;
+        for _ in 0..8 {
+            state
+                .bedrock_tool_responses
+                .push(ScriptedBedrockResponse::error(
+                    429,
+                    serde_json::json!({
+                        "__type": "ThrottlingException",
+                        "message": "Too many requests, please wait before trying again."
+                    }),
+                ));
+        }
+    }
+
+    let error = report_authoring::send_report_message(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::ReportMessageRequest::new("Draft it"),
+    )
+    .await
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("AWS throttled the request") && message.contains("retry"),
+        "throttling not distinguished: {message}"
+    );
+    assert!(
+        !message.contains("Too many requests, please wait"),
+        "raw service detail reached the UI: {message}"
+    );
 }
 
 #[tokio::test]
@@ -2461,6 +2630,10 @@ async fn usage_receipts_survive_later_bedrock_failure_with_cache_and_cost() {
     assert!(attempt.usage.cost_usd > 0.0);
     assert!(!attempt.usage_complete);
     assert!(!error.to_string().contains("raw service detail"));
+    assert!(
+        error.to_string().contains("Bedrock call 3 of 50 failed"),
+        "failed call position missing: {error}"
+    );
 
     let usage_key = claria_core::s3_keys::report_call_usage(client_id, attempt.attempt_id, 1);
     let (receipt, _): (report_authoring::ReportCallUsageRecord, String) =
