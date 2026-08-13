@@ -149,10 +149,11 @@ fn parse_styles(xml: &[u8]) -> Result<HashMap<String, StyleRecord>, quick_xml::E
                     }
                     _ => {}
                 }
-                if is_empty && local(name.as_ref()) == b"style" {
-                    if let Some((style_id, record)) = current.take() {
-                        records.insert(style_id, record);
-                    }
+                if is_empty
+                    && local(name.as_ref()) == b"style"
+                    && let Some((style_id, record)) = current.take()
+                {
+                    records.insert(style_id, record);
                 }
             }
             Event::End(end) => {

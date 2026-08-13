@@ -796,8 +796,8 @@ fn strip_direct_decoration(events: &mut [Event<'static>], text_event_index: usiz
         return;
     };
     let mut in_run_properties = false;
-    for index in run_start..text_event_index {
-        let blank = match &events[index] {
+    for event in events[run_start..text_event_index].iter_mut() {
+        let blank = match &*event {
             Event::Start(start) => {
                 let name = start.name();
                 let local = local_name(name.as_ref());
@@ -823,7 +823,7 @@ fn strip_direct_decoration(events: &mut [Event<'static>], text_event_index: usiz
             _ => false,
         };
         if blank {
-            events[index] = Event::Text(BytesText::new("").into_owned());
+            *event = Event::Text(BytesText::new("").into_owned());
         }
     }
 }
