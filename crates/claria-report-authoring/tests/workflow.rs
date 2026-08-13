@@ -2257,7 +2257,10 @@ async fn accepted_report_content_and_focused_tables_stay_in_untrusted_context() 
     // real closing delimiter exists. Changing either is a deliberate
     // quality decision, not a refactor.
     assert!(user_context.contains("\n  \"accepted_report\""));
-    assert_eq!(user_context.matches("</untrusted_report_context>").count(), 1);
+    assert_eq!(
+        user_context.matches("</untrusted_report_context>").count(),
+        1
+    );
     // The system prompt names these exact delimiter tags.
     assert!(report_authoring::report_system_prompt(None).contains("<untrusted_report_context>"));
     let context: serde_json::Value = serde_json::from_str(

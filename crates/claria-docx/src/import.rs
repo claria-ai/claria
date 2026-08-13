@@ -506,7 +506,6 @@ fn nested_heading_was_flattened(paragraph: &Paragraph) -> bool {
         .is_some_and(|level| level > 1)
 }
 
-
 fn paragraph_text(paragraph: &Paragraph) -> String {
     if paragraph.property.run_property.vanish.is_some()
         || paragraph.property.run_property.spec_vanish.is_some()

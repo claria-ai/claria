@@ -116,13 +116,12 @@ fn parse_styles(xml: &[u8]) -> Result<HashMap<String, StyleRecord>, quick_xml::E
                 let name = start.name();
                 match local(name.as_ref()) {
                     b"style" => {
-                        let paragraph_type = attribute(start, b"type")
-                            .is_none_or(|value| value == "paragraph");
+                        let paragraph_type =
+                            attribute(start, b"type").is_none_or(|value| value == "paragraph");
                         if let (true, Some(style_id)) =
                             (paragraph_type, attribute(start, b"styleId"))
                         {
-                            current =
-                                Some((normalize_style(&style_id), StyleRecord::default()));
+                            current = Some((normalize_style(&style_id), StyleRecord::default()));
                         }
                         if !is_empty {
                             style_depth += 1;

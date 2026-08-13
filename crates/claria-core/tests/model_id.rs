@@ -215,8 +215,12 @@ fn adaptive_thinking_and_effort_follow_their_generation_boundaries() {
     }
     // Effort shipped with Opus 4.5 and became tier-wide with 4.6 — Sonnet
     // 4.5 and Haiku 4.5 reject it.
-    assert!(!ModelCapabilities::for_id("us.anthropic.claude-opus-4-20250514-v1:0").effort_parameter);
-    assert!(ModelCapabilities::for_id("us.anthropic.claude-opus-4-5-20251101-v1:0").effort_parameter);
+    assert!(
+        !ModelCapabilities::for_id("us.anthropic.claude-opus-4-20250514-v1:0").effort_parameter
+    );
+    assert!(
+        ModelCapabilities::for_id("us.anthropic.claude-opus-4-5-20251101-v1:0").effort_parameter
+    );
     assert!(
         !ModelCapabilities::for_id("us.anthropic.claude-sonnet-4-5-20250929-v1:0").effort_parameter
     );

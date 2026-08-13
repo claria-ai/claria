@@ -425,8 +425,7 @@ fn template_render_reuses_source_styles_for_new_sections() {
         }],
     });
 
-    let (rendered, _) =
-        render_report_with_template(&template, &report).expect("structural export");
+    let (rendered, _) = render_report_with_template(&template, &report).expect("structural export");
     let round_trip = import_template(&rendered).expect("re-import structural export");
     assert_eq!(round_trip.content.title, report.content.title);
     assert_eq!(round_trip.content.sections.len(), 2);

@@ -163,9 +163,10 @@ fn merge_bullet_numbering(template: &[u8], document_xml: &[u8]) -> Result<Vec<u8
                             "generated numbering definitions are malformed".to_string(),
                         )
                     })?;
-                let merged = insert_before(&text, "</w:numbering>", definitions).ok_or_else(
-                    || DocxError::Render("template numbering.xml is malformed".to_string()),
-                )?;
+                let merged =
+                    insert_before(&text, "</w:numbering>", definitions).ok_or_else(|| {
+                        DocxError::Render("template numbering.xml is malformed".to_string())
+                    })?;
                 entries.push(("word/numbering.xml".to_string(), merged.into_bytes()));
             }
         }
@@ -790,9 +791,9 @@ fn allocate_text(slots: &[TextSlot], target: &str) -> TextAllocation {
 /// underlined heading style) is intentionally preserved.
 fn strip_direct_decoration(events: &mut [Event<'static>], text_event_index: usize) {
     const DECORATION: [&[u8]; 5] = [b"u", b"b", b"i", b"bCs", b"iCs"];
-    let Some(run_start) = events[..text_event_index].iter().rposition(|event| {
-        matches!(event, Event::Start(start) if local_name(start.name().as_ref()) == b"r")
-    }) else {
+    let Some(run_start) = events[..text_event_index].iter().rposition(
+        |event| matches!(event, Event::Start(start) if local_name(start.name().as_ref()) == b"r"),
+    ) else {
         return;
     };
     let mut in_run_properties = false;
@@ -985,13 +986,12 @@ fn generated_span(target: &TargetFlow) -> Result<Vec<Event<'static>>, DocxError>
 }
 
 fn single_target_draft(target: &TargetFlow) -> Result<ReportDraft, DocxError> {
-    let section = |heading: &str, blocks: Vec<ReportBlock>| {
-        claria_core::models::report::ReportSection {
+    let section =
+        |heading: &str, blocks: Vec<ReportBlock>| claria_core::models::report::ReportSection {
             id: uuid::Uuid::new_v4(),
             heading: heading.to_string(),
             blocks,
-        }
-    };
+        };
     let (title, sections) = match (&target.kind, &target.content) {
         (FlowKind::Title, FlowContent::Paragraph(text)) => (text.clone(), Vec::new()),
         (FlowKind::Heading, FlowContent::Paragraph(text)) => {

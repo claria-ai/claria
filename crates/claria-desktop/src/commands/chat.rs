@@ -595,9 +595,12 @@ pub async fn infra_chat(
         // Audit the infra-chat turn against the AWS account_id (no per-client
         // resource here).
         ctx.record_audit(
-            ctx.audit_event("infra_chat", "infrastructure", "infra").with_details(
-                usage_audit_details(&model_id, usage.as_ref(), Some(&outcome.stop_reason)),
-            ),
+            ctx.audit_event("infra_chat", "infrastructure", "infra")
+                .with_details(usage_audit_details(
+                    &model_id,
+                    usage.as_ref(),
+                    Some(&outcome.stop_reason),
+                )),
         )
         .await;
 

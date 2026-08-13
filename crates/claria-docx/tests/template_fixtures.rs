@@ -122,9 +122,7 @@ fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
             }
             Event::Text(text) if in_text => {
                 if let Some(paragraph) = &mut current {
-                    paragraph
-                        .text
-                        .push_str(&text.decode().expect("text"));
+                    paragraph.text.push_str(&text.decode().expect("text"));
                     paragraph.text_run_underlined |= run_underline;
                     paragraph.text_run_bold |= run_bold;
                     if let Some(font) = &run_font
@@ -154,10 +152,14 @@ fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
 }
 
 fn attribute(start: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
-    start.attributes().with_checks(false).flatten().find_map(|attribute| {
-        (local(attribute.key.as_ref()) == name)
-            .then(|| String::from_utf8_lossy(attribute.value.as_ref()).into_owned())
-    })
+    start
+        .attributes()
+        .with_checks(false)
+        .flatten()
+        .find_map(|attribute| {
+            (local(attribute.key.as_ref()) == name)
+                .then(|| String::from_utf8_lossy(attribute.value.as_ref()).into_owned())
+        })
 }
 
 fn body_paragraph<'a>(paragraphs: &'a [Paragraph], needle: &str) -> &'a Paragraph {
@@ -213,7 +215,9 @@ fn clinical_growth_draft() -> ReportDraft {
                 "Assessment Results",
                 vec![
                     paragraph("The BASC-3 was completed by the parent and teacher."),
-                    paragraph("Attention Problems T-score was 72, in the clinically significant range."),
+                    paragraph(
+                        "Attention Problems T-score was 72, in the clinically significant range.",
+                    ),
                     paragraph("Working memory performance fell below the 10th percentile."),
                     ReportBlock::Table {
                         rows: vec![
@@ -306,7 +310,9 @@ fn blank_spacers_follow_the_report_instead_of_piling_at_the_top() {
     // template-length prefix of the generated report, bunching both
     // spacers into the opening paragraphs.
     assert!(blank_indexes[0] > index_of("The BASC-3 was completed by the parent and teacher."));
-    assert!(blank_indexes[1] > index_of("Findings are consistent with attention-related difficulties."));
+    assert!(
+        blank_indexes[1] > index_of("Findings are consistent with attention-related difficulties.")
+    );
 }
 
 #[test]
@@ -322,14 +328,20 @@ fn generated_body_text_never_inherits_label_or_signature_decoration() {
         &flattened,
         "Working memory performance fell below the 10th percentile.",
     );
-    assert!(!body.text_run_underlined, "label underline leaked: {body:?}");
+    assert!(
+        !body.text_run_underlined,
+        "label underline leaked: {body:?}"
+    );
     assert!(!body.text_run_bold, "label bold leaked: {body:?}");
     assert_eq!(body.text_run_fonts, ["Garamond"]);
 
     // The final body paragraph's exemplar is the underlined signature
     // line; direct decoration must be stripped for unrelated text.
     let last = body_paragraph(&flattened, "Classroom accommodations are recommended.");
-    assert!(!last.text_run_underlined, "signature underline leaked: {last:?}");
+    assert!(
+        !last.text_run_underlined,
+        "signature underline leaked: {last:?}"
+    );
 }
 
 #[test]
@@ -371,8 +383,7 @@ fn bullets_stay_numbered_after_a_multi_line_paragraph() {
     // definition, its content-type override, and its document relationship
     // must all be merged into the package — a dangling numId drops the
     // bullet glyphs or makes Word prompt to repair.
-    let mut archive =
-        zip::ZipArchive::new(Cursor::new(output.as_slice())).expect("output zip");
+    let mut archive = zip::ZipArchive::new(Cursor::new(output.as_slice())).expect("output zip");
     let mut numbering = String::new();
     archive
         .by_name("word/numbering.xml")
@@ -429,7 +440,9 @@ fn custom_named_heading_styles_classify_as_headings() {
         );
     }
     assert_eq!(
-        body_paragraph(&flattened, "Psychoeducational Evaluation").style.as_deref(),
+        body_paragraph(&flattened, "Psychoeducational Evaluation")
+            .style
+            .as_deref(),
         Some("Title")
     );
 }
@@ -450,7 +463,10 @@ fn content_controls_fixture_still_renders_a_complete_report() {
     let (output, fidelity) =
         render_report_with_template(CONTENT_CONTROLS_TEMPLATE, &clinical_growth_draft())
             .expect("template render");
-    assert_eq!(fidelity, claria_docx::TemplateRenderFidelity::PlainBodyFallback);
+    assert_eq!(
+        fidelity,
+        claria_docx::TemplateRenderFidelity::PlainBodyFallback
+    );
     let flattened = paragraphs(&output);
     body_paragraph(
         &flattened,
