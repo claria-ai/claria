@@ -15,7 +15,9 @@ use aws_sdk_bedrockruntime::types::{
 use aws_smithy_types::Blob;
 use claria_core::models::{
     report::{
-        ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
+        MAX_BULLET_ITEM_CHARACTERS, MAX_BULLET_ITEMS, MAX_PARAGRAPH_CHARACTERS,
+        MAX_TABLE_CELL_CHARACTERS, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, ReportProtocolBlock,
+        ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
         validate_report_conversation,
     },
     turn_usage::TurnUsage,
@@ -39,14 +41,15 @@ pub const MAX_TOOL_USES_PER_RESPONSE: usize = 100;
 /// aspirational.
 pub const REPORT_OUTPUT_TOKEN_RESERVE: u32 = 8_192;
 
-/// Proposal schema ceilings, derived from [`REPORT_OUTPUT_TOKEN_RESERVE`]:
-/// one response of ≈8k tokens (≈32k characters) must be able to carry a
-/// maximal well-formed proposal, so per-call size limits stay small and the
-/// tool description tells the model to split large rewrites across turns.
-pub const MAX_PROPOSAL_OPERATIONS: u32 = 10;
-/// Maximum blocks per proposed section — sized so a full section fits in
-/// one [`REPORT_OUTPUT_TOKEN_RESERVE`]-bounded response.
-pub const MAX_SECTION_BLOCKS: u32 = 50;
+/// Proposal wire-schema ceilings mirror the domain validators in
+/// `claria-core`, so the tool schema never rejects a proposal the domain
+/// would accept. Shrinking these below the domain caps is a known quality
+/// regression — the model plans its edits around the advertised schema.
+/// Smaller caps do not prevent oversized responses either: those surface as
+/// a MaxTokens stop and are handled by the caller's truncation-salvage path.
+pub const MAX_PROPOSAL_OPERATIONS: usize = claria_core::models::report::MAX_PROPOSAL_OPERATIONS;
+/// Maximum blocks per proposed section — mirrors the domain validator.
+pub const MAX_SECTION_BLOCKS: usize = claria_core::models::report::MAX_SECTION_BLOCKS;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReportConverseOutput {
@@ -665,8 +668,8 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                 "properties": {
                     "kind": {"enum": ["paragraph"]},
                     "text": {
-                        "type": "string", "minLength": 1, "maxLength": 20000,
-                        "description": "Plain paragraph text, at most 20000 characters. No markdown markup is rendered."
+                        "type": "string", "minLength": 1, "maxLength": MAX_PARAGRAPH_CHARACTERS,
+                        "description": format!("Plain paragraph text, at most {MAX_PARAGRAPH_CHARACTERS} characters. No markdown markup is rendered.")
                     }
                 }
             },
@@ -679,8 +682,8 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                     "items": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 100,
-                        "items": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        "maxItems": MAX_BULLET_ITEMS,
+                        "items": {"type": "string", "minLength": 1, "maxLength": MAX_BULLET_ITEM_CHARACTERS},
                         "description": "One plain-text string per bullet, in display order."
                     }
                 }
@@ -694,12 +697,12 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                     "rows": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 200,
+                        "maxItems": MAX_TABLE_ROWS,
                         "items": {
                             "type": "array",
                             "minItems": 1,
-                            "maxItems": 20,
-                            "items": {"type": "string", "maxLength": 5000}
+                            "maxItems": MAX_TABLE_COLUMNS,
+                            "items": {"type": "string", "maxLength": MAX_TABLE_CELL_CHARACTERS}
                         },
                         "description": "Rows in display order; each row is an array of plain-text cells. Every row must have the same number of cells. Leave unknown cells as empty strings rather than inventing values."
                     },
@@ -710,7 +713,7 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                     "column_widths": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 20,
+                        "maxItems": MAX_TABLE_COLUMNS,
                         "items": {"type": "integer", "minimum": 1, "maximum": 10000},
                         "description": "Optional relative column widths (proportions of total table width, not absolute units); one entry per column. Omit for equal widths."
                     }

@@ -29,9 +29,11 @@ pub const MAX_REPORT_SESSION_NAME_CHARACTERS: usize = 120;
 
 const MAX_TITLE_CHARACTERS: usize = 200;
 const MAX_HEADING_CHARACTERS: usize = 200;
-const MAX_PARAGRAPH_CHARACTERS: usize = 20_000;
-const MAX_BULLET_ITEMS: usize = 100;
-const MAX_BULLET_ITEM_CHARACTERS: usize = 2_000;
+// Public so the Bedrock tool schema derives its ceilings from these
+// validators instead of maintaining drifting copies.
+pub const MAX_PARAGRAPH_CHARACTERS: usize = 20_000;
+pub const MAX_BULLET_ITEMS: usize = 100;
+pub const MAX_BULLET_ITEM_CHARACTERS: usize = 2_000;
 const MAX_PROPOSAL_SUMMARY_CHARACTERS: usize = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
