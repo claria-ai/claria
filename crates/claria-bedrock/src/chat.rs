@@ -508,8 +508,14 @@ async fn prepare_chat_request(
             .iter()
             .map(|message| message.content.len() as u64)
             .sum::<u64>();
-    let mut budget =
-        crate::converse::InputTokenBudget::estimated(chat_input_token_budget(model_id));
+    let input_budget_tokens = chat_input_token_budget(model_id);
+    crate::converse::log_model_budget(
+        "chat",
+        model_id,
+        input_budget_tokens,
+        CHAT_MAX_OUTPUT_TOKENS,
+    );
+    let mut budget = crate::converse::InputTokenBudget::estimated(input_budget_tokens);
     budget
         .ensure_within(
             current_chars,
