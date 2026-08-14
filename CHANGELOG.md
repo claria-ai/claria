@@ -17,6 +17,7 @@ All notable changes to Claria are documented here.
 - Stalled-stream protection is configured explicitly rather than inherited, with a grace period chosen for clinic networks
 - A Bedrock response stream that goes silent mid-generation now fails with the reason instead of waiting forever
 - Chat replays a bounded slice of a long conversation to Bedrock instead of re-uploading the whole thread on every turn; the conversation on screen and in the cloud stays complete
+- Chat caches its prompt for an hour on models that support it, so a conversation resumed after seeing a patient reads from cache instead of paying full input rates again
 
 ## [0.24.0] — 2026-08-13
 

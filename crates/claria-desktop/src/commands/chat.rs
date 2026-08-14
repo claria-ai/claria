@@ -379,13 +379,16 @@ pub async fn chat_message(
             load_record_context(&ctx.s3, &ctx.bucket, &client_id, &state.record_cache).await?;
         let full_prompt = assemble_chat_prompt(system_prompt, all_files, &context_filenames);
 
+        // The provider only ever sees the bounded history, so the local
+        // mirror of its cache state has to reason about the same slice.
+        let wire_messages = claria_core::models::chat_history::bounded_chat_history(&messages);
         let cache_strategy = build_cache_strategy(&ctx.cfg, &model_id);
-        let cache_tail = cache_strategy.cache_conversation_tail(&full_prompt, &messages);
+        let cache_tail = cache_strategy.cache_conversation_tail(&full_prompt, wire_messages);
         if cache_tail {
             let cache_state =
                 state
                     .chat_prompt_cache
-                    .classify(chat_uuid, &model_id, &full_prompt, &messages);
+                    .classify(chat_uuid, &model_id, &full_prompt, wire_messages);
             tracing::debug!(
                 chat_id = %chat_uuid,
                 cache_state = cache_state.as_str(),
@@ -421,9 +424,13 @@ pub async fn chat_message(
             latency_ms,
         } = outcome;
         if cache_tail {
-            state
-                .chat_prompt_cache
-                .refresh(chat_uuid, &model_id, &full_prompt, &messages);
+            state.chat_prompt_cache.refresh(
+                chat_uuid,
+                &model_id,
+                &full_prompt,
+                wire_messages,
+                cache_strategy.ttl,
+            );
         }
         send_stream_event(
             &on_event,
@@ -644,18 +651,26 @@ fn assemble_chat_prompt(
 /// inference profile we're about to invoke. Model support comes from the
 /// central capability table in `claria-core`.
 ///
-/// Chats use Bedrock's default five-minute TTL. A small process-local LRU
-/// tracks whether a resumed client chat's exact prefix is still reusable;
-/// paying the doubled one-hour write rate is unnecessary for this workflow.
+/// Chat caches at the one-hour tier wherever the capability table allows
+/// it. Clinical sessions are interrupted by design — a message, a patient,
+/// a reply twenty minutes later — and every gap past five minutes is a full
+/// cache miss on a prefix dominated by the client's record context. The
+/// extended tier doubles the write rate but reads at the same tenth of the
+/// input rate, so it repays the difference on the second reuse and saves
+/// the whole prefix on every one after. Models without the extended tier
+/// fall back to the five-minute default rather than sending a TTL the
+/// service would reject.
 fn build_cache_strategy(cfg: &ClariaConfig, model_id: &str) -> claria_bedrock::chat::CacheStrategy {
     if !cfg.prompt_caching_enabled {
         return claria_bedrock::chat::CacheStrategy::disabled();
     }
     let capabilities = claria_core::model_id::ModelCapabilities::for_id(model_id);
-    claria_bedrock::chat::CacheStrategy::enabled_for_model(
-        capabilities.prompt_caching,
-        claria_core::model_id::CacheTtlChoice::FiveMinutes,
-    )
+    let ttl = if capabilities.supports_extended_cache_ttl {
+        claria_core::model_id::CacheTtlChoice::OneHour
+    } else {
+        claria_core::model_id::CacheTtlChoice::FiveMinutes
+    };
+    claria_bedrock::chat::CacheStrategy::enabled_for_model(capabilities.prompt_caching, ttl)
 }
 
 fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {
