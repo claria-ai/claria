@@ -273,8 +273,17 @@ pub struct ReportInputBudget {
 
 impl ReportInputBudget {
     pub fn new(model_id: &str) -> Self {
+        // One budget per writer turn, so this is also the once-per-turn
+        // record of the context window the capability table resolved.
+        let input_budget_tokens = report_input_token_budget(model_id);
+        converse::log_model_budget(
+            "report",
+            model_id,
+            input_budget_tokens,
+            REPORT_OUTPUT_TOKEN_RESERVE,
+        );
         Self {
-            inner: converse::InputTokenBudget::exact(report_input_token_budget(model_id)),
+            inner: converse::InputTokenBudget::exact(input_budget_tokens),
         }
     }
 }

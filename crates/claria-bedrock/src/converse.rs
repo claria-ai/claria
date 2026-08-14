@@ -325,6 +325,33 @@ pub(crate) fn additional_request_fields(
     json_to_document(&serde_json::Value::Object(fields)).map(Some)
 }
 
+/// Structured observability line for the token budget a request runs under,
+/// emitted once per chat request and once per writer turn.
+///
+/// `context_window_tokens` is what the central capability table resolved for
+/// this model ID, which for any inference profile without an explicit
+/// `:48k` / `:200k` / `:1m` suffix is an assumption. Recording it beside the
+/// budget derived from it is what makes "we are budgeting against a fraction
+/// of the real window" answerable from a console export instead of guessed
+/// at. Fields are model IDs and counts — never prompt or record content.
+pub(crate) fn log_model_budget(
+    operation: &'static str,
+    model_id: &str,
+    input_budget_tokens: u32,
+    output_reserve_tokens: u32,
+) {
+    tracing::info!(
+        target: "claria_bedrock::budget",
+        operation,
+        model_id,
+        context_window_tokens =
+            claria_core::model_id::ModelCapabilities::for_id(model_id).context_window_tokens,
+        input_budget_tokens,
+        output_reserve_tokens,
+        "token budget resolved"
+    );
+}
+
 /// Structured cache/usage observability line for one completed Converse
 /// call, shared by the chat and report flows. `hit_rate` is the fraction of
 /// input tokens served from cache; `cache_ttl` names the write tier, and
