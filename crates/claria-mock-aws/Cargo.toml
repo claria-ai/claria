@@ -11,6 +11,7 @@ axum = "=0.8.9"
 bytes.workspace = true
 clap = { version = "=4.6.1", features = ["derive"] }
 eyre.workspace = true
+futures.workspace = true
 jiff.workspace = true
 percent-encoding.workspace = true
 serde.workspace = true

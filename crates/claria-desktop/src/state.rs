@@ -2,10 +2,13 @@ use std::{
     collections::HashMap,
     num::NonZeroUsize,
     sync::{Arc, Mutex as StdMutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use claria_core::models::chat_history::{ChatMessage, ChatRole};
+use claria_core::{
+    model_id::CacheTtlChoice,
+    models::chat_history::{ChatMessage, ChatRole},
+};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
@@ -33,7 +36,6 @@ pub(crate) struct PendingReportTemplate {
 }
 
 const CHAT_PROMPT_CACHE_CAPACITY: usize = 32;
-const CHAT_PROMPT_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChatPromptCacheState {
@@ -65,6 +67,10 @@ struct CachedChatPrefix {
     message_digest: [u8; 32],
     message_count: usize,
     refreshed_at: Instant,
+    /// The tier the provider entry was written at. Stored rather than
+    /// assumed, so an entry written at one hour is not declared stale on
+    /// the five-minute schedule.
+    ttl: CacheTtlChoice,
 }
 
 /// Process-local knowledge of provider-side five-minute chat cache entries.
@@ -108,7 +114,7 @@ impl ChatPromptCache {
         let Some(cached) = cache.get(&key) else {
             return ChatPromptCacheState::Cold;
         };
-        if now.duration_since(cached.refreshed_at) >= CHAT_PROMPT_CACHE_TTL {
+        if now.duration_since(cached.refreshed_at) >= cached.ttl.window() {
             cache.pop(&key);
             return ChatPromptCacheState::Stale;
         }
@@ -127,8 +133,16 @@ impl ChatPromptCache {
         model_id: &str,
         system_prompt: &str,
         messages: &[ChatMessage],
+        ttl: CacheTtlChoice,
     ) {
-        self.refresh_at(chat_id, model_id, system_prompt, messages, Instant::now());
+        self.refresh_at(
+            chat_id,
+            model_id,
+            system_prompt,
+            messages,
+            ttl,
+            Instant::now(),
+        );
     }
 
     fn refresh_at(
@@ -137,6 +151,7 @@ impl ChatPromptCache {
         model_id: &str,
         system_prompt: &str,
         messages: &[ChatMessage],
+        ttl: CacheTtlChoice,
         now: Instant,
     ) {
         self.inner
@@ -152,6 +167,7 @@ impl ChatPromptCache {
                     message_digest: digest_messages(messages),
                     message_count: messages.len(),
                     refreshed_at: now,
+                    ttl,
                 },
             );
     }
@@ -219,6 +235,8 @@ impl Default for DesktopState {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn message(role: ChatRole, content: &str) -> ChatMessage {
@@ -236,7 +254,14 @@ mod tests {
         let system = "stable record context";
         let first_request = vec![message(ChatRole::User, "First question")];
         let refreshed_at = Instant::now();
-        cache.refresh_at(chat_id, model_id, system, &first_request, refreshed_at);
+        cache.refresh_at(
+            chat_id,
+            model_id,
+            system,
+            &first_request,
+            CacheTtlChoice::FiveMinutes,
+            refreshed_at,
+        );
 
         let resumed_request = vec![
             first_request[0].clone(),
@@ -265,6 +290,48 @@ mod tests {
         );
     }
 
+    /// The mirror expires on the tier the entry was written at. A one-hour
+    /// entry declared stale after five minutes would report a miss on every
+    /// resumed conversation the extended tier exists to serve.
+    #[test]
+    fn a_one_hour_prefix_survives_the_five_minute_mark() {
+        let cache = ChatPromptCache::new();
+        let chat_id = uuid::Uuid::new_v4();
+        let model_id = "us.anthropic.claude-sonnet-4-6";
+        let system = "stable record context";
+        let request = vec![message(ChatRole::User, "First question")];
+        let refreshed_at = Instant::now();
+        cache.refresh_at(
+            chat_id,
+            model_id,
+            system,
+            &request,
+            CacheTtlChoice::OneHour,
+            refreshed_at,
+        );
+
+        assert_eq!(
+            cache.classify_at(
+                chat_id,
+                model_id,
+                system,
+                &request,
+                refreshed_at + Duration::from_secs(20 * 60),
+            ),
+            ChatPromptCacheState::Reusable
+        );
+        assert_eq!(
+            cache.classify_at(
+                chat_id,
+                model_id,
+                system,
+                &request,
+                refreshed_at + Duration::from_secs(60 * 60),
+            ),
+            ChatPromptCacheState::Stale
+        );
+    }
+
     #[test]
     fn changed_context_is_not_mistaken_for_a_reusable_prefix() {
         let cache = ChatPromptCache::new();
@@ -272,7 +339,14 @@ mod tests {
         let model_id = "us.anthropic.claude-sonnet-4-6";
         let request = vec![message(ChatRole::User, "Question")];
         let now = Instant::now();
-        cache.refresh_at(chat_id, model_id, "old context", &request, now);
+        cache.refresh_at(
+            chat_id,
+            model_id,
+            "old context",
+            &request,
+            CacheTtlChoice::FiveMinutes,
+            now,
+        );
 
         assert_eq!(
             cache.classify_at(

@@ -478,15 +478,7 @@ async fn converse_report_with_tool_set(
     let mut stream = response.stream;
     let mut collector = ReportStreamCollector::default();
     loop {
-        // Mid-stream failures carry a raw event frame rather than an HTTP
-        // response, so the full error chain is preserved instead of
-        // collapsing to "unhandled error".
-        let event = stream.recv().await.map_err(|error| {
-            tracing::error!(operation = "report ConverseStream", "Bedrock stream failed");
-            BedrockError::Invocation(
-                aws_sdk_bedrockruntime::error::DisplayErrorContext(&error).to_string(),
-            )
-        })?;
+        let event = converse::recv_stream_event("report ConverseStream", &mut stream).await?;
         let Some(event) = event else { break };
         collector.absorb(event);
     }

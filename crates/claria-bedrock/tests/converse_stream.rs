@@ -11,7 +11,7 @@ use claria_bedrock::{
     converse::StreamCollector,
     error::BedrockError,
 };
-use claria_core::model_id::CacheTtlChoice;
+use claria_core::{model_id::CacheTtlChoice, models::chat_history::MAX_RETAINED_CHAT_MESSAGES};
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 
 const MODEL_ID: &str = "us.anthropic.claude-sonnet-test";
@@ -348,6 +348,101 @@ async fn streamed_context_overflow_is_still_a_typed_error() {
     .await
     .expect_err("context overflow");
     assert!(matches!(error, BedrockError::ContextWindowExceeded));
+}
+
+/// A long conversation is bounded before it reaches the wire. The clinician
+/// keeps the whole thread on screen and in S3; Bedrock stops being asked to
+/// re-read all of it on every turn.
+#[tokio::test]
+async fn a_long_conversation_is_bounded_before_it_reaches_bedrock() {
+    let server = MockServer::spawn().await;
+
+    let mut messages = Vec::new();
+    for index in 0..MAX_RETAINED_CHAT_MESSAGES {
+        messages.push(ChatMessage {
+            role: if index % 2 == 0 {
+                ChatRole::User
+            } else {
+                ChatRole::Assistant
+            },
+            content: format!("turn {index}"),
+        });
+    }
+    messages.push(ChatMessage {
+        role: ChatRole::User,
+        content: "the newest question".to_string(),
+    });
+
+    chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &messages,
+        CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
+        |_| {},
+    )
+    .await
+    .expect("streamed chat");
+
+    let state = server.state.read().await;
+    let sent = state.bedrock_text_requests[0]["messages"]
+        .as_array()
+        .expect("messages array");
+    assert!(
+        sent.len() < messages.len(),
+        "the full history went on the wire: {} messages",
+        sent.len()
+    );
+    // Converse rejects a conversation that opens on an assistant turn.
+    assert_eq!(sent[0]["role"], "user");
+    // The newest message always survives the cut.
+    assert_eq!(
+        sent.last().expect("newest message")["content"][0]["text"],
+        "the newest question"
+    );
+}
+
+/// A stream that opens and then dies has to fail, not hang. Nothing in the
+/// AWS SDK bounds this: the generated `ConverseStream` operation registers
+/// no stalled-stream protection interceptor, and the read timeout covers
+/// only the wait for response headers, which have already arrived by then.
+///
+/// Runs on a paused clock, so the idle bound elapses in virtual time rather
+/// than making the suite wait it out.
+#[tokio::test(start_paused = true)]
+async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
+    let server = MockServer::spawn().await;
+    server.state.write().await.bedrock_stream_stalls = true;
+
+    let mut streamed = String::new();
+    let error = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        CacheStrategy::disabled(),
+        claria_bedrock::converse::ModelTuning::default(),
+        |delta| streamed.push_str(delta),
+    )
+    .await
+    .expect_err("a stalled stream must not hang forever");
+
+    match error {
+        BedrockError::Invocation(message) => {
+            assert!(
+                message.contains("chat ConverseStream"),
+                "the failure does not name the call: {message}"
+            );
+            assert!(
+                message.contains("stopped sending data"),
+                "the failure does not say the connection went silent: {message}"
+            );
+        }
+        other => panic!("expected an invocation error, got {other:?}"),
+    }
+    // Whatever did arrive before the stall reached the reader.
+    assert!(streamed.starts_with("Beginning of a reply"));
 }
 
 #[tokio::test]

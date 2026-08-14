@@ -6,8 +6,8 @@
 //! forcing function that keeps the capability table reviewed.
 
 use claria_core::model_id::{
-    ModelCapabilities, known_claude_family, preferred_counting_model, release_date_stamp,
-    strip_scope_prefix,
+    CacheTtlChoice, ModelCapabilities, known_claude_family, preferred_counting_model,
+    release_date_stamp, strip_scope_prefix,
 };
 
 /// One representative ID per Claude family/generation currently supported.
@@ -287,4 +287,19 @@ fn release_date_stamps_order_across_naming_shapes() {
         20_251_001
     );
     assert_eq!(release_date_stamp("anthropic.claude-sonnet-4-6-v1"), 0);
+}
+
+/// Each tier owns the window callers mirror it against. A local mirror that
+/// expired on the wrong schedule would report a miss on every conversation
+/// the extended tier exists to serve.
+#[test]
+fn each_cache_tier_reports_its_own_window() {
+    assert_eq!(
+        CacheTtlChoice::FiveMinutes.window(),
+        std::time::Duration::from_secs(300)
+    );
+    assert_eq!(
+        CacheTtlChoice::OneHour.window(),
+        std::time::Duration::from_secs(3_600)
+    );
 }

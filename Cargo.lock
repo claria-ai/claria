@@ -1334,6 +1334,7 @@ dependencies = [
  "bytes",
  "clap",
  "eyre",
+ "futures",
  "http-body-util",
  "jiff",
  "percent-encoding",
