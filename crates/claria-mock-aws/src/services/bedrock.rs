@@ -746,14 +746,23 @@ fn encode_converse_stream(
             // The service streams tool input as partial JSON text, never as
             // a structured object; the collector has to concatenate and parse.
             let input = tool.get("input").cloned().unwrap_or_else(|| json!({}));
-            write_chunked_deltas(&mut frames, index, &input.to_string(), |chunk| {
-                json!({"toolUse": {"input": chunk}})
-            })?;
+            write_chunked_deltas(
+                &mut frames,
+                index,
+                &input.to_string(),
+                |chunk| json!({"toolUse": {"input": chunk}}),
+            )?;
         } else if let Some(reasoning) = block.get("reasoningContent") {
-            if let Some(text) = reasoning.pointer("/reasoningText/text").and_then(Value::as_str) {
-                write_chunked_deltas(&mut frames, index, text, |chunk| {
-                    json!({"reasoningContent": {"text": chunk}})
-                })?;
+            if let Some(text) = reasoning
+                .pointer("/reasoningText/text")
+                .and_then(Value::as_str)
+            {
+                write_chunked_deltas(
+                    &mut frames,
+                    index,
+                    text,
+                    |chunk| json!({"reasoningContent": {"text": chunk}}),
+                )?;
             }
             if let Some(signature) = reasoning
                 .pointer("/reasoningText/signature")
