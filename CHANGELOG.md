@@ -16,6 +16,7 @@ All notable changes to Claria are documented here.
 - AWS calls run on an explicit timeout policy: a short connect timeout, a bounded wait for response headers, and no cap on total call duration, so a long generation or a large upload is never cut off for taking time
 - Stalled-stream protection is configured explicitly rather than inherited, with a grace period chosen for clinic networks
 - A Bedrock response stream that goes silent mid-generation now fails with the reason instead of waiting forever
+- Chat replays a bounded slice of a long conversation to Bedrock instead of re-uploading the whole thread on every turn; the conversation on screen and in the cloud stays complete
 
 ## [0.24.0] — 2026-08-13
 

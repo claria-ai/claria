@@ -426,15 +426,7 @@ where
     let mut stream = response.stream;
     let mut collector = StreamCollector::new();
     loop {
-        // Mid-stream failures have a different SdkError shape (raw event
-        // frame, not an HTTP response); keep the full error chain instead of
-        // collapsing to "unhandled error".
-        let event = stream.recv().await.map_err(|error| {
-            tracing::error!(operation = "chat ConverseStream", "Bedrock stream failed");
-            BedrockError::Invocation(
-                aws_sdk_bedrockruntime::error::DisplayErrorContext(&error).to_string(),
-            )
-        })?;
+        let event = crate::converse::recv_stream_event("chat ConverseStream", &mut stream).await?;
         let Some(event) = event else { break };
         if let Some(delta) = collector.absorb(event) {
             on_delta(&delta);
@@ -462,11 +454,10 @@ where
     Ok(outcome)
 }
 
-/// Build the Converse message list and system blocks and enforce the input
-/// budget — the request preparation shared verbatim by the unary and
-/// streaming chat paths so the two can never drift. The returned
-/// [`CacheTtlChoice`] is the TTL carried by the request's cache points
-/// (`None` when the request went out uncached), for usage capture.
+/// Bound the conversation, build the Converse message list and system
+/// blocks, and enforce the input budget. The returned [`CacheTtlChoice`] is
+/// the TTL carried by the request's cache points (`None` when the request
+/// went out uncached), for usage capture.
 async fn prepare_chat_request(
     config: &aws_config::SdkConfig,
     client: &aws_sdk_bedrockruntime::Client,
@@ -482,6 +473,21 @@ async fn prepare_chat_request(
     ),
     BedrockError,
 > {
+    // Bound the replayed conversation before anything else reads it, so the
+    // token estimate, the CountTokens call, the cache gates, and the wire
+    // request all describe the same history. Applied here rather than at
+    // each call site: this is the only path to Bedrock that chat has, and a
+    // caller that forgot would silently re-upload an unbounded history.
+    let submitted_messages = messages.len();
+    let messages = claria_core::models::chat_history::bounded_chat_history(messages);
+    if messages.len() < submitted_messages {
+        info!(
+            submitted_messages,
+            retained_messages = messages.len(),
+            "chat history bounded before the Bedrock request"
+        );
+    }
+
     let mut converse_messages: Vec<Message> = Vec::new();
 
     for msg in messages {
