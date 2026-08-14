@@ -189,24 +189,29 @@ pub(crate) fn bucket_name(cfg: &ClariaConfig) -> String {
 
 /// Helper: load the saved config and the cached AWS clients built from it.
 ///
-/// If the in-memory state is empty, attempts to load from disk first.
-/// Errors if no config is saved yet.
+/// If the in-memory state is empty, attempts to load from disk first. Errors
+/// if no config is saved yet, or with the underlying reason a saved config
+/// could not be loaded.
 pub(crate) async fn load_sdk_config(
     state: &State<'_, DesktopState>,
 ) -> Result<(ClariaConfig, aws_config::SdkConfig, aws_sdk_s3::Client), CommandError> {
     let mut guard = state.config.lock().await;
 
     // Auto-load from disk if the in-memory state hasn't been populated yet.
-    if guard.is_none()
-        && let Ok(cfg) = config_file::load_config()
-    {
-        *guard = Some(cfg);
-    }
-
-    let cfg = guard
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| CommandError::Msg("No config loaded. Complete setup first.".to_string()))?;
+    // `load_config` says "complete setup first" only when there is no config
+    // file at all; a config that exists but cannot be loaded — a build too old
+    // for its `config_version`, corrupt JSON, limits that fail validation —
+    // carries its own reason all the way to the UI. Sending that user through
+    // setup would have them overwrite a config this build merely failed to
+    // parse.
+    let cfg = match guard.as_ref() {
+        Some(cfg) => cfg.clone(),
+        None => {
+            let cfg = config_file::load_config()?;
+            *guard = Some(cfg.clone());
+            cfg
+        }
+    };
     drop(guard);
 
     let (sdk_config, s3) = cached_aws(state, &cfg).await;

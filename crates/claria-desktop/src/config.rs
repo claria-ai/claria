@@ -5,14 +5,22 @@
 //! [`save_config`] applies. Moving secrets into the OS keychain is tracked
 //! in issue #73.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-const CURRENT_VERSION: u32 = 9;
+pub const CURRENT_VERSION: u32 = 9;
+
+/// What the user is told when there is no config on disk at all.
+///
+/// Reserved for exactly that case. A config that exists but cannot be loaded
+/// must surface its own reason instead: this message invites the user to
+/// re-run setup, which overwrites the file, and a config the build merely
+/// failed to parse is not one to overwrite.
+pub const SETUP_REQUIRED: &str = "No config loaded. Complete setup first.";
 
 /// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
 /// because the synced subset lives in S3 and may be read by other machines'
@@ -332,13 +340,15 @@ pub fn has_config() -> bool {
     config_path().map(|p| p.exists()).unwrap_or(false)
 }
 
-pub fn load_config() -> eyre::Result<ClariaConfig> {
-    let path = config_path()?;
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|e| eyre::eyre!("failed to read config at {}: {e}", path.display()))?;
-
+/// Parse raw `config.json` contents: migrate to [`CURRENT_VERSION`],
+/// deserialize, validate. Pure — it touches no files — so every way a config
+/// can fail to load is reachable from a test.
+///
+/// Returns the version found on disk alongside the config, which the caller
+/// needs to decide whether to write the migrated form back.
+fn parse_config(contents: &str) -> eyre::Result<(ClariaConfig, u32)> {
     // Parse as raw JSON so we can run migrations before deserializing.
-    let json: serde_json::Value = serde_json::from_str(&contents)?;
+    let json: serde_json::Value = serde_json::from_str(contents)?;
     let on_disk_version = json
         .get("config_version")
         .and_then(|v| v.as_u64())
@@ -351,9 +361,48 @@ pub fn load_config() -> eyre::Result<ClariaConfig> {
         .validate()
         .map_err(|error| eyre::eyre!(error))?;
 
+    Ok((config, on_disk_version))
+}
+
+/// Read and parse the config at `path`, distinguishing "there is no config"
+/// from "there is one and it could not be loaded".
+///
+/// `Ok(None)` means the file does not exist. Every other failure — a
+/// `config_version` newer than this build understands, corrupt JSON, limits
+/// that no longer validate — comes back as an error carrying its own reason.
+pub fn read_config_at(path: &Path) -> eyre::Result<Option<(ClariaConfig, u32)>> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(eyre::eyre!(
+                "failed to read config at {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    parse_config(&contents).map(Some)
+}
+
+/// The saved config, or the reason there isn't one to hand back.
+///
+/// A missing file yields [`SETUP_REQUIRED`]; a config that exists but cannot
+/// be loaded yields the underlying reason, so a build too old for the config
+/// on disk says so instead of sending the clinician back through setup.
+pub fn load_config() -> eyre::Result<ClariaConfig> {
+    load_config_at(&config_path()?)
+}
+
+/// [`load_config`] against an explicit path. Migrated configs are written
+/// back to the same file so later loads skip the migration chain.
+pub fn load_config_at(path: &Path) -> eyre::Result<ClariaConfig> {
+    let Some((config, on_disk_version)) = read_config_at(path)? else {
+        return Err(eyre::eyre!(SETUP_REQUIRED));
+    };
+
     // Persist the migrated config so subsequent loads don't re-run migrations.
     if on_disk_version < CURRENT_VERSION {
-        save_config(&config)?;
+        save_config_at(path, &config)?;
     }
 
     Ok(config)
@@ -521,6 +570,11 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
 }
 
 pub fn save_config(config: &ClariaConfig) -> eyre::Result<()> {
+    save_config_at(&config_path()?, config)
+}
+
+/// [`save_config`] against an explicit path.
+fn save_config_at(path: &Path, config: &ClariaConfig) -> eyre::Result<()> {
     config
         .report_authoring
         .validate()
@@ -529,18 +583,19 @@ pub fn save_config(config: &ClariaConfig) -> eyre::Result<()> {
         .model_tuning
         .validate()
         .map_err(|error| eyre::eyre!(error))?;
-    let dir = config_dir()?;
-    std::fs::create_dir_all(&dir)?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| eyre::eyre!("config path {} has no parent directory", path.display()))?;
+    std::fs::create_dir_all(dir)?;
 
     // Always write the current version, regardless of what was loaded.
     let mut stamped = config.clone();
     stamped.config_version = CURRENT_VERSION;
 
-    let path = dir.join("config.json");
     let json = serde_json::to_string_pretty(&stamped)?;
 
     // Write to a temp file then rename for atomicity
-    let tmp_path = dir.join("config.json.tmp");
+    let tmp_path = path.with_extension("json.tmp");
     std::fs::write(&tmp_path, json.as_bytes())?;
 
     // Set restrictive permissions on Unix before renaming
@@ -550,7 +605,7 @@ pub fn save_config(config: &ClariaConfig) -> eyre::Result<()> {
         std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
     }
 
-    std::fs::rename(&tmp_path, &path)?;
+    std::fs::rename(&tmp_path, path)?;
 
     tracing::info!(path = %path.display(), "config saved");
     Ok(())
