@@ -1385,6 +1385,153 @@ async fn max_tokens_without_staged_proposal_still_fails() {
     );
 }
 
+/// A response stream that drops mid-generation is retried invisibly: the
+/// identical request is re-sent, the turn completes, and the retry never
+/// counts as a Bedrock call. The severed attempt consumes its scripted
+/// payload, so the script carries the first response twice.
+#[tokio::test]
+async fn full_draft_retries_a_dropped_stream_and_completes() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let record_key = claria_core::s3_keys::client_record_file(client_id, "intake.txt");
+    put(&s3, &record_key, "Readable intake summary").await;
+    server.state.write().await.bedrock_stream_drops = 1;
+
+    let draft_response = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [
+            {"toolUse": {"toolUseId": "title-1", "name": "set_full_draft_title", "input": {
+                "title": "Retried Evaluation"
+            }}},
+            {"toolUse": {"toolUseId": "section-1", "name": "write_full_draft_section", "input": {
+                "section_id": null,
+                "position": 0,
+                "heading": "Summary",
+                "blocks": [{"kind": "paragraph", "text": "Findings written after one retry"}]
+            }}}
+        ]}},
+        "stopReason": "tool_use",
+        "usage": {"inputTokens": 3, "outputTokens": 20, "cacheWriteInputTokens": 100}
+    });
+    script(
+        &server,
+        vec![
+            // Consumed by the attempt whose stream is severed.
+            draft_response.clone(),
+            // The retry re-sends the identical request and gets the draft.
+            draft_response,
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"toolUse": {
+                    "toolUseId": "finish-1", "name": "finish_full_draft", "input": {
+                        "summary": "Finished after a stream retry."
+                    }
+                }}]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 1, "outputTokens": 5, "cacheReadInputTokens": 100}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "The draft is ready."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 6, "cacheReadInputTokens": 120}
+            }),
+        ],
+    )
+    .await;
+
+    let outcome = report_authoring::generate_full_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::FullReportRequest::new("Use a concise clinical style."),
+    )
+    .await
+    .expect("the retried call completes the turn");
+
+    assert_eq!(outcome.workspace.draft.content.title, "Retried Evaluation");
+    assert_eq!(
+        outcome.workspace.draft.content.sections[0].blocks,
+        vec![paragraph("Findings written after one retry")]
+    );
+    // Retries are transport recovery, not Bedrock calls: the ceiling only
+    // counts completed calls.
+    assert_eq!(outcome.attempt.converse_calls, 3);
+
+    let state = server.state.read().await;
+    assert_eq!(state.bedrock_stream_drops, 0, "the drop was consumed");
+    assert_eq!(
+        state.bedrock_stream_request_count, 4,
+        "three completed calls plus the severed attempt"
+    );
+    // The retry re-sent the same conversation state as the stalled attempt.
+    assert_eq!(
+        state.bedrock_tool_requests[0]["messages"],
+        state.bedrock_tool_requests[1]["messages"]
+    );
+}
+
+/// When every attempt at one call is severed, the turn fails with a message
+/// that reports the attempt count and how long Bedrock went unanswered,
+/// instead of the generic could-not-be-completed line.
+#[tokio::test]
+async fn full_draft_dropped_stream_exhausts_retries_with_actionable_error() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let record_key = claria_core::s3_keys::client_record_file(client_id, "intake.txt");
+    put(&s3, &record_key, "Readable intake summary").await;
+    // Over-provisioned on purpose: the AWS SDK's own dispatch-retry layer
+    // can add server requests beyond the writer's three attempts, and each
+    // one consumes a drop and a scripted payload.
+    server.state.write().await.bedrock_stream_drops = 9;
+
+    let draft_response = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"toolUse": {
+            "toolUseId": "title-1", "name": "set_full_draft_title", "input": {"title": "Never delivered"}
+        }}]}},
+        "stopReason": "tool_use",
+        "usage": {"inputTokens": 3, "outputTokens": 20}
+    });
+    // Each severed attempt consumes one scripted payload.
+    script(&server, vec![draft_response; 9]).await;
+
+    let error = report_authoring::generate_full_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        MODEL_ID,
+        report_authoring::FullReportRequest::new("Use a concise clinical style."),
+    )
+    .await
+    .expect_err("three severed attempts must fail the turn");
+
+    assert_eq!(
+        error.failure_code(),
+        Some(report_authoring::ReportFailureCode::Bedrock)
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("Bedrock appears to be having a hard time"),
+        "missing the plain-language cause: {message}"
+    );
+    assert!(
+        message.contains("3 attempts"),
+        "missing the attempt count: {message}"
+    );
+    assert!(
+        message.contains("seconds"),
+        "missing the elapsed wait: {message}"
+    );
+    assert!(
+        message.contains("Try again later"),
+        "missing the next step: {message}"
+    );
+}
+
 #[tokio::test]
 async fn inconsistent_stop_reason_gets_exactly_one_corrective_round() {
     let (server, sdk, s3) = setup().await;

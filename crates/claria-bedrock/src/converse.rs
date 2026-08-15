@@ -226,17 +226,24 @@ pub(crate) async fn recv_stream_event(
         Ok(Ok(event)) => Ok(event),
         Ok(Err(error)) => {
             tracing::error!(operation, "Bedrock stream failed");
-            Err(BedrockError::Invocation(
-                DisplayErrorContext(&error).to_string(),
-            ))
+            Err(BedrockError::StreamInterrupted {
+                operation,
+                message: format!(
+                    "{operation} failed before the response completed: {}",
+                    DisplayErrorContext(&error)
+                ),
+            })
         }
         Err(_elapsed) => {
             let seconds = STREAM_IDLE_TIMEOUT.as_secs();
             tracing::error!(operation, seconds, "Bedrock stream went silent");
-            Err(BedrockError::Invocation(format!(
-                "{operation} stopped sending data for {seconds} seconds and was abandoned. \
-                 The connection to Bedrock was lost mid-response; the request was not completed."
-            )))
+            Err(BedrockError::StreamInterrupted {
+                operation,
+                message: format!(
+                    "{operation} stopped sending data for {seconds} seconds and was abandoned. \
+                     The connection to Bedrock was lost mid-response; the request was not completed."
+                ),
+            })
         }
     }
 }
