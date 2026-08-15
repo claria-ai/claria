@@ -2,6 +2,10 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Pull-request CI compiles, lints, and tests the Rust workspace on Windows alongside Ubuntu, so Windows-only code is validated before a release tag rather than after
+
 ## [0.25.0] — 2026-08-15
 
 - Writer turns stream from Bedrock instead of waiting on one unary response, so a long generation no longer risks an HTTP timeout at the writer's output ceiling
