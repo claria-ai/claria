@@ -2390,7 +2390,7 @@ async fn fifth_tool_round_fails_without_persisting_an_incomplete_turn() {
         "binding field not named: {message}"
     );
     assert!(
-        message.contains("Preferences \u{2192} Document Writer Limits"),
+        message.contains("Preferences \u{2192} Document Writer \u{2192} Writer Limits"),
         "no route to the setting: {message}"
     );
     // 5 calls is only one above 4 rounds, so raising rounds alone would just
@@ -2524,7 +2524,7 @@ async fn bedrock_access_denial_names_the_model_and_the_failed_call() {
     // Entitlement is not a guardrail problem; sending the reader to the writer
     // limits would waste the trip.
     assert!(
-        !message.contains("Document Writer Limits"),
+        !message.contains("Writer Limits"),
         "misrouted to the writer limits: {message}"
     );
 }

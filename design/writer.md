@@ -20,7 +20,7 @@ and export; `claria-desktop` wires commands, preferences, and audit events.
 
 ## Scenario: from empty account to a hydrated report
 
-1. **Upload a template to the account.** Preferences → Writer Templates
+1. **Upload a template to the account.** Preferences → Document Writer → Writer Templates
    stores the redacted `.docx` byte-for-byte at
    `writer_templates/{uuid}.docx` with a metadata sidecar. Import validation
    runs at upload (macros/embeddings/encryption rejected), but nothing is
@@ -44,7 +44,7 @@ and export; `claria-desktop` wires commands, preferences, and audit events.
    record reads on demand, reviewable proposals, and eventually a DOCX
    export rendered back through the stored template package.
 
-**Saved writer prompts.** Preferences → Prompt Library keeps a small
+**Saved writer prompts.** Preferences → Document Writer → Prompt Library keeps a small
 account-wide library of reusable steering instructions
 (`claria-prompts/writer-library/{uuid}.json`), one per phase of a
 clinician's workflow — "fill the history sections", "draft the summary

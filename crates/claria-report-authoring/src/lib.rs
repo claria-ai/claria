@@ -79,7 +79,8 @@ pub const REPORT_CONFLICT_MESSAGE: &str =
 /// they will read there. These mirror `WRITER_LIMIT_FIELDS` in
 /// `pages/Preferences.tsx`; renaming a field there means renaming it here, or
 /// the failure message sends the reader looking for a control that is gone.
-const WRITER_LIMITS_SECTION: &str = "Preferences \u{2192} Document Writer Limits";
+const WRITER_LIMITS_SECTION: &str =
+    "Preferences \u{2192} Document Writer \u{2192} Writer Limits";
 const TOOL_ROUNDS_FIELD_LABEL: &str = "Tool-use rounds per request";
 const CONVERSE_CALLS_FIELD_LABEL: &str = "Bedrock calls per request";
 

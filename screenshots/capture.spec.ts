@@ -54,27 +54,21 @@ test("preferences page", async ({ page }) => {
   await page.waitForSelector("[data-page=preferences]");
   await page.click("[data-page=preferences]");
   await page.waitForSelector("text=Preferences");
-  // Wait for the new Transcription section (rendered open by default) — its
-  // presence confirms the cross-machine sync banner is also rendered above it.
-  await page.waitForSelector("text=Default language");
-  // Expand all the other collapsed sections so the full preferences surface
-  // is visible in the screenshot.
-  await page.click("summary:has-text('PDF Extraction Prompt')");
-  await page.waitForSelector("text=Memo speech model");
+  // Lands on the Claude category with the preferred-model pane open.
   await page.waitForSelector("text=Claude Opus 4.6");
-  await page.click("summary:has-text('Writer Templates')");
-  await page.waitForSelector("text=Comprehensive evaluation");
-  // The saved-prompt library, one reusable instruction per workflow phase.
+  // The Document Writer category is the richest surface: the writer prompt
+  // with its read-only trust rules, the template shelf, and the saved-prompt
+  // library. Content scrolls inside the settings pane, so the capture is the
+  // viewport, not the full page.
+  await page.click("button:has-text('Document Writer')");
+  await page.waitForSelector("text=Claria always appends these trust rules");
+  // Collapse the tall prompt editor so the shelf and library fit the shot.
+  await page.click("summary:has-text('Writer Prompt')");
   await page.click("summary:has-text('Prompt Library')");
   await page.waitForSelector("text=Phase 1 — Referral, background & history");
-  // Writer prompt editors with their read-only trust rules, and the model
-  // tuning knobs.
-  await page.click("summary:has-text('Writer Prompt')");
-  await page.waitForSelector("text=Claria always appends these trust rules");
-  await page.click("summary:has-text('Whole-Report Prompt')");
-  await page.click("summary:has-text('Model Tuning')");
-  await page.waitForSelector("text=Adaptive reasoning");
-  await capture(page, "preferences.png", true);
+  await page.click("summary:has-text('Writer Templates')");
+  await page.waitForSelector("text=Comprehensive evaluation");
+  await capture(page, "preferences.png", false);
 });
 
 test("transcribe wizard", async ({ page }) => {

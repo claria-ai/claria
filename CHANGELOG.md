@@ -2,6 +2,14 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Preferences is reorganized into an Apple-style settings screen: a category sidebar — Claude, Prompts, Document Writer, Transcription, Billing — with the existing accordion panes grouped inside each category
+- Settings search covers category names, pane titles, and field labels with synonyms, and jumps to and highlights the matched control
+- An opt-in search toggle also looks inside the custom prompts, the writer prompt library, and template names
+- On-device transcription is split into models, compute, and advanced decoding panes, each badged "This Mac" to mark machine-local settings
+- The writer's guardrail-exhausted error now routes to Preferences → Document Writer → Writer Limits
+
 ## [0.28.0] — 2026-08-15
 
 - Chat replies now arrive a paragraph at a time instead of a token at a time, so text stops twitching while it is being read and formatting is never caught half-written

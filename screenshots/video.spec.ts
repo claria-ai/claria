@@ -136,14 +136,13 @@ test("preferences", async ({ page }) => {
   await page.waitForSelector("text=Preferences");
   await pause(1000);
 
-  // Expand sections one by one
-  await page.click("summary:has-text('PDF Extraction Prompt')");
-  await pause(1000);
-  await page.click("summary:has-text('Memo Transcription')");
-  await page.waitForSelector("text=Best Quality");
-  await pause(1000);
-  await page.click("summary:has-text('Preferred Model')");
+  // Lands on Claude with the preferred model visible, then walk categories.
   await page.waitForSelector("text=Claude Opus 4.6");
+  await pause(1000);
+  await page.click("button:has-text('Prompts')");
+  await pause(1000);
+  await page.click("button:has-text('Transcription')");
+  await page.waitForSelector("text=Whisper Base English");
   await pause(1500);
 });
 
