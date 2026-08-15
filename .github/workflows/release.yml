@@ -40,7 +40,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: claria-desktop-frontend
-        run: npm ci
+        run: npm ci --no-fund
 
       - name: Build frontend
         working-directory: claria-desktop-frontend
@@ -120,11 +120,11 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: claria-desktop-frontend
-        run: npm ci
+        run: npm ci --no-fund
 
       - name: Install screenshot dependencies
         working-directory: screenshots
-        run: npm ci
+        run: npm ci --no-fund
 
       - name: Install Chromium
         working-directory: screenshots
