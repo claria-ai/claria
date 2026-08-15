@@ -2,6 +2,14 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Four high-severity advisories in the frontend dependency tree are patched, without moving any declared version range
+- Tagged release builds pin the Tauri command-line tool and the release action to exact versions, so an upstream release can no longer change how a build is produced
+- The two build dependencies that need install scripts are approved explicitly, and the approval is recorded in version control
+- The bundle size warning threshold now reflects a bundle the app loads from local disk rather than over a network
+- Builds no longer print funding notices on every dependency install
+
 ## [0.26.0] — 2026-08-15
 
 - Chat and writer streams now tolerate five minutes of Bedrock silence before failing, up from two, so a cold prefill of a large record set no longer aborts the turn
