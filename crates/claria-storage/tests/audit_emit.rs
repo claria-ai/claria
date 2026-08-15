@@ -216,10 +216,11 @@ fn absent_optionals_are_omitted_from_the_wire_form() {
 }
 
 #[test]
-fn pre_v2_objects_still_deserialize() {
-    // A verbatim pre-v2 object: no category, client_id, credential_id or phi,
-    // and the old action spelling. Six-year retention means these stay
-    // readable for the life of the trail.
+fn a_pre_v2_object_is_rejected_rather_than_partially_read() {
+    // v2 is a clean break: `category` is required. A pre-v2 object fails to
+    // deserialize instead of degrading into an event with a made-up category
+    // and an action name no v2 query matches. Deploying v2 means purging
+    // `_audit/` — see the audit module docs.
     let raw = serde_json::json!({
         "event_id": uuid::Uuid::nil(),
         "timestamp": "2026-07-01T00:00:00Z",
@@ -230,14 +231,27 @@ fn pre_v2_objects_still_deserialize() {
         "details": { "input_tokens": 12 },
     });
 
-    let decoded: AuditEvent = serde_json::from_value(raw).expect("pre-v2 object must still read");
+    let decoded = serde_json::from_value::<AuditEvent>(raw);
 
-    assert_eq!(decoded.category, EventCategory::Unspecified);
-    assert_eq!(decoded.client_id, None);
-    assert_eq!(decoded.credential_id, None);
-    assert_eq!(decoded.phi, None);
-    assert_eq!(decoded.app_version, None);
-    // The rename is not mapped on read: a v2 query for "chat.turn" will not
-    // match this object. Both spellings have to be searched.
-    assert_eq!(decoded.action, "chat_message");
+    assert!(
+        decoded.is_err(),
+        "a pre-v2 object must not read as a v2 event: {decoded:?}"
+    );
+}
+
+#[test]
+fn every_category_round_trips_through_its_wire_spelling() {
+    // No catch-all variant exists, so this is the whole set.
+    for (category, wire) in [
+        (EventCategory::Access, "access"),
+        (EventCategory::Mutation, "mutation"),
+        (EventCategory::Ai, "ai"),
+        (EventCategory::Admin, "admin"),
+    ] {
+        assert_eq!(category.as_str(), wire);
+        assert_eq!(
+            serde_json::from_str::<EventCategory>(&format!("\"{wire}\"")).expect("deserialize"),
+            category
+        );
+    }
 }

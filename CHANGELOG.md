@@ -10,7 +10,8 @@ All notable changes to Claria are documented here.
 - An audit event's payload is split in two, and only the half holding counts, sizes, costs and model ids reaches the exported log
 - The exported log no longer carries an audit event's resource identifier, which can hold a filename
 - The exported log now carries an audit event's token counts and cost, so a support export can answer what a turn cost
-- Every audit action was renamed to a noun.verb name; events recorded before this keep their original names, so a search across the retention window has to look for both
+- Every audit action was renamed to a noun.verb name
+- Audit events recorded before this release no longer load, and the audit trail must be cleared when upgrading
 - Values can be marked sensitive so they print as redacted through every formatting path, rather than relying on each log line to leave them out
 
 ## [0.27.0] — 2026-08-15

@@ -55,25 +55,19 @@
 //! [`Action`] rather than a string, an action and its category cannot drift
 //! apart, and a call site cannot invent an action the taxonomy does not know.
 //!
-//! ## Renames from the pre-v2 trail
+//! ## The pre-v2 trail is not readable
 //!
-//! Schema v2 renamed every action that existed before it:
+//! Schema v2 is a clean break. `category` is required, so an object written
+//! before v2 fails to deserialize rather than degrading to a partial event,
+//! and [`read_day`] fails for any day that contains one. The trail was days
+//! old with a single consumer when this landed, so the alternative — an
+//! `Unspecified` category and unmapped action names carried for the whole
+//! six-year retention window, with every query needing two spellings — cost
+//! more than deleting a handful of objects.
 //!
-//! | pre-v2 | v2 |
-//! |---|---|
-//! | `chat_message` | `chat.turn` |
-//! | `infra_chat` | `infra.chat` |
-//! | `extract_document_text` | `record.extract_text` |
-//! | `translate_transcript` | `record.translate` |
-//! | `save_transcript_edits` | `record.transcript_edit` |
-//!
-//! Objects written before v2 still deserialize: the new fields all carry
-//! `#[serde(default)]`, so a pre-v2 object reads back with
-//! [`EventCategory::Unspecified`] and no client, credential or PHI payload.
-//! That variant exists only to absorb them — nothing constructs it. Note that
-//! the renames are not mapped on read: a pre-v2 object keeps its pre-v2
-//! action string, so a query over the six-year retention window has to know
-//! both spellings.
+//! Purge `_audit/` of pre-v2 objects when deploying this. The actions that
+//! were renamed: `chat_message`, `infra_chat`, `extract_document_text`,
+//! `translate_transcript`, `save_transcript_edits`.
 //!
 //! # When per-operator identity arrives
 //!
@@ -103,7 +97,7 @@ use crate::error::StorageError;
 /// The category is what makes "show me every read of this client's records"
 /// a filter, rather than a list of action names that has to be kept in sync
 /// with the code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventCategory {
     /// A read of stored PHI.
@@ -114,9 +108,6 @@ pub enum EventCategory {
     Ai,
     /// A non-PHI operational action.
     Admin,
-    /// Absorbs events written before schema v2. Nothing constructs this.
-    #[default]
-    Unspecified,
 }
 
 impl EventCategory {
@@ -127,7 +118,6 @@ impl EventCategory {
             Self::Mutation => "mutation",
             Self::Ai => "ai",
             Self::Admin => "admin",
-            Self::Unspecified => "unspecified",
         }
     }
 }
@@ -301,9 +291,8 @@ pub struct AuditEvent {
     pub event_id: Uuid,
     pub timestamp: Timestamp,
     pub action: String,
-    /// Which kind of action this is. Defaults to
-    /// [`EventCategory::Unspecified`] so pre-v2 objects still read.
-    #[serde(default)]
+    /// Which kind of action this is. Required: an object without it is not a
+    /// v2 event and does not read at all.
     pub category: EventCategory,
     pub resource_type: String,
     /// Identifies the resource acted on. For record files this is the S3 key
@@ -327,17 +316,17 @@ pub struct AuditEvent {
     /// PHI-bearing payload. Written to S3, never emitted to tracing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phi: Option<serde_json::Value>,
-    /// The app version that recorded the event. `None` on events written
-    /// before this field existed; the caller stamps it (this crate never
-    /// reads its own version so library and desktop releases stay
-    /// independent).
+    /// The app version that recorded the event. The caller stamps it — this
+    /// crate never reads its own version, so library and desktop releases
+    /// stay independent.
     #[serde(default)]
     pub app_version: Option<String>,
 }
 
 impl AuditEvent {
     /// Build an event. `action` carries its own category, so the two cannot
-    /// disagree and [`EventCategory::Unspecified`] is unconstructible.
+    /// disagree and there is no way to reach a category the taxonomy did not
+    /// assign.
     pub fn new(
         action: Action,
         resource_type: impl Into<String>,
