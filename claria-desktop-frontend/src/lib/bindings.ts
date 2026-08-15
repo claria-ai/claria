@@ -716,9 +716,9 @@ async listChatModels() : Promise<Result<ChatModel[], string>> {
  * The `chat_id` is generated on the first message and returned so the
  * frontend can pass it back on subsequent calls.
  */
-async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null, chatName: string | null, contextFilenames: string[], onEvent: TAURI_CHANNEL<ChatStreamEvent>) : Promise<Result<ChatResponse, string>> {
+async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null, chatName: string | null, contextFilenames: string[], streamId: string, onEvent: TAURI_CHANNEL<ChatStreamEvent>) : Promise<Result<ChatResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId, chatName, contextFilenames, onEvent }) };
+    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId, chatName, contextFilenames, streamId, onEvent }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -731,9 +731,9 @@ async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], ch
  * on every message. We build a rich system prompt explaining Claria's
  * operating model and the current infrastructure state, then call Bedrock.
  */
-async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry[], onEvent: TAURI_CHANNEL<ChatStreamEvent>) : Promise<Result<InfraChatResponse, string>> {
+async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry[], streamId: string, onEvent: TAURI_CHANNEL<ChatStreamEvent>) : Promise<Result<InfraChatResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("infra_chat", { modelId, messages, planEntries, onEvent }) };
+    return { status: "ok", data: await TAURI_INVOKE("infra_chat", { modelId, messages, planEntries, streamId, onEvent }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1163,6 +1163,20 @@ async saveConsoleLogs() : Promise<Result<boolean, string>> {
  */
 async logFrontendEvent(level: FrontendLogLevel, message: string) : Promise<void> {
     await TAURI_INVOKE("log_frontend_event", { level, message });
+},
+/**
+ * End an in-flight streamed chat turn early, keeping whatever text arrived.
+ * 
+ * A `stream_id` with no live turn behind it is not an error: the reply may
+ * have completed between the click and this call.
+ */
+async stopChatStream(streamId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_chat_stream", { streamId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -1334,6 +1348,27 @@ export type ChatStreamEvent =
  * Terminal event: the model finished; usage and stop reason are final.
  */
 { kind: "done"; stop_reason: string; usage: TurnUsage | null }
+/**
+ * How much of a chat reply appears at a time.
+ * 
+ * Bedrock streams a few characters per frame. Passing every one of those to
+ * the UI is what makes a reply twitch while it is being read, so the
+ * default releases whole paragraphs; the other two settings are the
+ * extremes on either side of it.
+ */
+export type ChatStreamMode = 
+/**
+ * Every delta, as fast as the service produces it.
+ */
+"token" | 
+/**
+ * A paragraph at a time.
+ */
+"paragraph" | 
+/**
+ * Nothing until the reply is complete.
+ */
+"off"
 export type ClientNameHistoryEntry = { name: string; changed_at: string }
 export type ClientNameUpdate = { id: string; name: string; updated_at: string }
 export type ClientRecordDetails = { id: string; name: string; created_at: string; updated_at: string; file_count: number; storage_bytes: number; storage_bytes_with_history: number; name_history: ClientNameHistoryEntry[] }
@@ -1341,7 +1376,7 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences; chat_streaming: ChatStreamMode }
 /**
  * One poll's worth of new console entries, addressed by a monotonic
  * sequence cursor so the 500ms UI poll ships only new lines.
@@ -1541,7 +1576,7 @@ export type PreferencesPatch = {
  * (only expressible in-process — over IPC use `set_preferred_model`),
  * `None` leaves it unchanged.
  */
-preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null }
+preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null }
 /**
  * What `provision_apply` did.
  * 

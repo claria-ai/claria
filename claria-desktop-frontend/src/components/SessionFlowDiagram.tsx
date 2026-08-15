@@ -406,6 +406,8 @@ function TallyBlock({ tally }: { tally: DiagramTurnTally }) {
         <p className="text-[10px] font-semibold text-red-700">
           Stopped early: hit max tokens
         </p>
+      ) : tally.stopReason === "stopped_by_user" ? (
+        <p className="text-[10px] text-gray-600">You stopped this reply</p>
       ) : tally.stopReason && tally.stopReason !== "end_turn" ? (
         <p className="text-[10px] text-gray-600">Stop: {tally.stopReason}</p>
       ) : null}

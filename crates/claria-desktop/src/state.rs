@@ -5,6 +5,7 @@ use std::{
     time::Instant,
 };
 
+use claria_bedrock::converse::StopSignal;
 use claria_core::{
     model_id::CacheTtlChoice,
     models::chat_history::{ChatMessage, ChatRole},
@@ -208,6 +209,12 @@ pub struct DesktopState {
     /// long enough to write the immutable formatting snapshot; local paths are
     /// never retained.
     pub(crate) pending_report_templates: Arc<Mutex<HashMap<uuid::Uuid, PendingReportTemplate>>>,
+    /// Stop signals for streamed chat turns that are still in flight, keyed
+    /// by the turn id the frontend minted before it invoked the command.
+    /// Entries are registered for the length of one turn and removed on
+    /// every exit path, so a stale Stop press finds nothing and does
+    /// nothing.
+    pub(crate) chat_stops: Arc<StdMutex<HashMap<uuid::Uuid, StopSignal>>>,
     /// Temporary assumed-role credentials, keyed by the opaque handle the
     /// `assume_role` command returned. The secrets never cross the IPC
     /// boundary — the frontend only ever holds the handle — and they expire
@@ -228,6 +235,7 @@ impl Default for DesktopState {
             report_prompt_cache: Arc::new(claria_report_authoring::ReportPromptCache::new()),
             chat_prompt_cache: Arc::new(ChatPromptCache::new()),
             pending_report_templates: Arc::new(Mutex::new(HashMap::new())),
+            chat_stops: Arc::new(StdMutex::new(HashMap::new())),
             assumed_role_credentials: Arc::new(Mutex::new(HashMap::new())),
         }
     }

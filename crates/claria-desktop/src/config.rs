@@ -12,7 +12,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-pub const CURRENT_VERSION: u32 = 9;
+pub const CURRENT_VERSION: u32 = 10;
 
 /// What the user is told when there is no config on disk at all.
 ///
@@ -25,7 +25,7 @@ pub const SETUP_REQUIRED: &str = "No config loaded. Complete setup first.";
 /// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
 /// because the synced subset lives in S3 and may be read by other machines'
 /// builds.
-pub const PREFERENCES_VERSION: u32 = 3;
+pub const PREFERENCES_VERSION: u32 = 4;
 
 fn default_prompt_caching_enabled() -> bool {
     true
@@ -69,6 +69,38 @@ pub struct ClariaConfig {
     /// in v9. Defaults leave every request byte-identical to pre-v9 builds.
     #[serde(default)]
     pub model_tuning: ModelTuningPreferences,
+    /// How incremental chat replies are delivered to the reader. Added in
+    /// v10.
+    #[serde(default)]
+    pub chat_streaming: ChatStreamMode,
+}
+
+/// How much of a chat reply appears at a time.
+///
+/// Bedrock streams a few characters per frame. Passing every one of those to
+/// the UI is what makes a reply twitch while it is being read, so the
+/// default releases whole paragraphs; the other two settings are the
+/// extremes on either side of it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatStreamMode {
+    /// Every delta, as fast as the service produces it.
+    Token,
+    /// A paragraph at a time.
+    #[default]
+    Paragraph,
+    /// Nothing until the reply is complete.
+    Off,
+}
+
+impl ChatStreamMode {
+    pub fn to_pacing(self) -> claria_bedrock::pacing::StreamPacing {
+        match self {
+            Self::Token => claria_bedrock::pacing::StreamPacing::Token,
+            Self::Paragraph => claria_bedrock::pacing::StreamPacing::Paragraph,
+            Self::Off => claria_bedrock::pacing::StreamPacing::Off,
+        }
+    }
 }
 
 /// Opt-in model-tuning knobs. Every knob defaults to "send nothing", and
@@ -254,6 +286,8 @@ pub struct SyncedPreferences {
     pub report_authoring: ReportAuthoringPreferences,
     #[serde(default)]
     pub model_tuning: ModelTuningPreferences,
+    #[serde(default)]
+    pub chat_streaming: ChatStreamMode,
 }
 
 impl SyncedPreferences {
@@ -268,6 +302,7 @@ impl SyncedPreferences {
             transcription: config.transcription.clone(),
             report_authoring: config.report_authoring.clone(),
             model_tuning: config.model_tuning,
+            chat_streaming: config.chat_streaming,
         }
     }
 
@@ -281,6 +316,7 @@ impl SyncedPreferences {
         config.transcription = self.transcription.clone();
         config.report_authoring = self.report_authoring.clone();
         config.model_tuning = self.model_tuning;
+        config.chat_streaming = self.chat_streaming;
     }
 }
 
@@ -316,6 +352,7 @@ pub struct ConfigInfo {
     pub transcription: TranscriptionPreferences,
     pub report_authoring: ReportAuthoringPreferences,
     pub model_tuning: ModelTuningPreferences,
+    pub chat_streaming: ChatStreamMode,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -566,6 +603,22 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v8 → v9 (added model tuning preferences)");
     }
 
+    // v9 → v10: add the chat streaming cadence. Existing installs land on
+    // the new paragraph default rather than the token-by-token behaviour
+    // they had, which is the point of the setting.
+    if from_version < 10 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("chat_streaming")
+            .or_insert(serde_json::json!("paragraph"));
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(10.into()),
+        );
+        tracing::info!("migrated config v9 → v10 (added chat streaming mode)");
+    }
+
     Ok(json)
 }
 
@@ -656,6 +709,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         transcription: config.transcription.clone(),
         report_authoring: config.report_authoring.clone(),
         model_tuning: config.model_tuning,
+        chat_streaming: config.chat_streaming,
     }
 }
 

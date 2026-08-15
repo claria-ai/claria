@@ -151,7 +151,8 @@ export default function ClientChat({
     async (
       modelId: string,
       messages: ChatMessage[],
-      onDelta: (text: string) => void
+      onDelta: (text: string) => void,
+      streamId: string
     ) => {
       const filenames = contextFilesRef.current
         .filter((f) => f.text.length > 0)
@@ -161,6 +162,7 @@ export default function ClientChat({
         clientId,
         modelId,
         messages,
+        streamId,
         chatIdRef.current,
         filenames,
         chatIdRef.current || chatName === "New chat" ? null : chatName,

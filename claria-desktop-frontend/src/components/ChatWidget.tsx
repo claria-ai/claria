@@ -1,10 +1,20 @@
-import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useMemo,
+  type ReactNode,
+} from "react";
 import {
   acceptModelAgreement,
+  stopChatStream,
   type ChatMessage,
   type TurnUsage,
 } from "../lib/tauri";
 import { useChatModels } from "../lib/chatModels";
+import { randomUuid } from "../lib/ids";
+import { isPinnedToBottom } from "../lib/scroll";
 import {
   EMPTY_SESSION_USAGE,
   accumulateUsage,
@@ -39,15 +49,30 @@ export type SendResult = {
 };
 
 /**
- * `handleSend` also receives an `onDelta` callback. Senders whose backend
- * streams call it with each incremental text chunk; senders that don't
- * simply ignore it, and the widget falls back to the awaited result.
+ * `handleSend` also receives an `onDelta` callback and the turn's
+ * `streamId`. Senders whose backend streams call `onDelta` with each
+ * incremental chunk and pass `streamId` to the command so the widget's Stop
+ * button can reach the turn; senders that don't simply ignore both, and the
+ * widget falls back to the awaited result.
  */
 export type SendFn = (
   modelId: string,
   messages: ChatMessage[],
-  onDelta: (text: string) => void
+  onDelta: (text: string) => void,
+  streamId: string
 ) => Promise<SendResult>;
+
+/**
+ * Scroll a container to its newest content, tolerating environments (and
+ * test DOMs) without the scroll-options API.
+ */
+function scrollToBottom(element: HTMLDivElement) {
+  if (typeof element.scrollTo === "function") {
+    element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
+  } else {
+    element.scrollTop = element.scrollHeight;
+  }
+}
 
 export default function ChatWidget({
   onSend,
@@ -110,6 +135,10 @@ export default function ChatWidget({
   // paths in tests) never set it, and the widget falls back to the awaited
   // response.
   const [streamText, setStreamText] = useState<string | null>(null);
+  // Identity of the in-flight turn, minted here so Stop can name it before
+  // the backend has said anything back. `null` between turns.
+  const [streamId, setStreamId] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
   const [activeTab, setActiveTab] = useState<"conversation" | "usage">(
@@ -117,7 +146,12 @@ export default function ChatWidget({
   );
   const [showTurnCosts, setShowTurnCosts] = useState(false);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Whether the reader is following the bottom of the conversation. A ref,
+  // not state: it updates on every scroll event and must not re-render the
+  // transcript while a reply is arriving.
+  const pinnedRef = useRef(true);
+  const [detached, setDetached] = useState(false);
 
   const {
     models: chatModels,
@@ -181,10 +215,41 @@ export default function ChatWidget({
     [messages, stopReasonByIndex, timestampsByIndex, usageByIndex]
   );
 
-  // Auto-scroll to bottom when messages change or streamed text grows.
+  /**
+   * Follow the newest content and resume following it from here on.
+   *
+   * Deliberately instant. A smooth scroll emits its own scroll events all
+   * the way down, which read as the user scrolling away and back; restarted
+   * on every chunk of an arriving reply, it is an animation that never
+   * finishes and the reason the transcript could not be read.
+   */
+  const followLatest = useCallback(() => {
+    pinnedRef.current = true;
+    setDetached(false);
+    if (scrollRef.current) scrollToBottom(scrollRef.current);
+  }, []);
+
+  /**
+   * Reading is a scroll away from the bottom, so a reader who scrolls up
+   * detaches and keeps their place until they come back or ask to.
+   */
+  const handleScroll = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const atBottom = isPinnedToBottom(element);
+    pinnedRef.current = atBottom;
+    setDetached((previous) => (previous === !atBottom ? previous : !atBottom));
+  }, []);
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamText]);
+    if (pinnedRef.current) followLatest();
+  }, [messages, followLatest]);
+
+  useEffect(() => {
+    if (streamText !== null && pinnedRef.current && scrollRef.current) {
+      scrollToBottom(scrollRef.current);
+    }
+  }, [streamText]);
 
   const canSend =
     !sending &&
@@ -207,28 +272,57 @@ export default function ChatWidget({
     setUsageByIndex((prev) => [...prev, null]);
     setTimestampsByIndex((prev) => [...prev, new Date().toISOString()]);
     setStopReasonByIndex((prev) => [...prev, null]);
+    // Sending is an explicit request to be at the bottom, wherever the
+    // reader had scrolled to.
+    followLatest();
 
+    const turnId = randomUuid();
+    setStreamId(turnId);
     setSending(true);
     try {
       const { content, usage, stopReason } = await onSend(
         selectedModelId,
         updatedMessages,
-        (delta) => setStreamText((prev) => (prev ?? "") + delta)
+        (delta) => setStreamText((prev) => (prev ?? "") + delta),
+        turnId
       );
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content,
-      };
-      setMessages([...updatedMessages, assistantMessage]);
-      setUsageByIndex((prev) => [...prev, usage]);
-      setTimestampsByIndex((prev) => [...prev, new Date().toISOString()]);
-      setStopReasonByIndex((prev) => [...prev, stopReason ?? null]);
+      // A turn stopped before the model said anything leaves no reply worth
+      // a bubble — the user's message stands on its own.
+      if (content.length > 0) {
+        const assistantMessage: ChatMessage = {
+          role: "assistant",
+          content,
+        };
+        setMessages([...updatedMessages, assistantMessage]);
+        setUsageByIndex((prev) => [...prev, usage]);
+        setTimestampsByIndex((prev) => [...prev, new Date().toISOString()]);
+        setStopReasonByIndex((prev) => [...prev, stopReason ?? null]);
+      }
       setSession((prev) => accumulateUsage(prev, usage));
     } catch (e) {
       setError(String(e));
     } finally {
       setSending(false);
+      setStreamId(null);
+      setStopping(false);
       setStreamText(null);
+    }
+  }
+
+  /**
+   * End the turn in flight. The command keeps whatever text arrived and
+   * returns normally, so the reply lands in the transcript exactly as a
+   * completed one would — just shorter.
+   */
+  async function handleStop() {
+    if (!streamId || stopping) return;
+    setStopping(true);
+    try {
+      await stopChatStream(streamId);
+    } catch (e) {
+      // The turn is still running; say so rather than leaving a dead button.
+      setError(`Could not stop the reply: ${String(e)}`);
+      setStopping(false);
     }
   }
 
@@ -316,7 +410,11 @@ export default function ChatWidget({
             </div>
           )}
 
-          <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4">
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="flex-1 space-y-4 overflow-y-auto px-6 py-4"
+          >
             {messages.length === 0 && !sending && (
               <ChatEmptyState
                 title={emptyStateTitle}
@@ -334,7 +432,7 @@ export default function ChatWidget({
             ))}
 
             {sending && streamText !== null && (
-              <MessageBubble role="assistant" content={streamText} />
+              <MessageBubble role="assistant" content={streamText} writing />
             )}
 
             {sending && streamText === null && (
@@ -363,14 +461,29 @@ export default function ChatWidget({
               </div>
             )}
 
-            <div ref={messagesEndRef} />
           </div>
+
+          {/* Offered only while a reply is arriving out of view — the reader
+              who scrolled up to re-read something keeps their place. */}
+          {detached && sending && (
+            <div className="relative">
+              <button
+                onClick={() => followLatest()}
+                className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
+              >
+                Jump to latest ↓
+              </button>
+            </div>
+          )}
 
           <div className="border-t border-gray-200 bg-white px-6 py-4">
             <ChatComposer
               value={input}
               onChange={setInput}
               onSend={() => void handleSend()}
+              onStop={() => void handleStop()}
+              canStop={sending && streamId !== null && !stopping}
+              stopLabel={stopping ? "Stopping..." : "Stop"}
               disabled={
                 sending || chatModelsLoading || extraLoading || !selectedModelId
               }

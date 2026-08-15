@@ -16,6 +16,7 @@ import {
   type ReportTurnProgressView,
   type ReportWorkspaceView,
 } from "./tauri";
+import { randomUuid } from "./ids";
 import {
   countReportEdits,
   draftToEdit,
@@ -36,19 +37,6 @@ export type WriterBusy =
   | "applying_template";
 
 export type AgentActivity = { label: string; detail?: string } | null;
-
-function createReportId(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  // Test/webview fallback. This ID is only an idempotency identity; the
-  // backend still validates UUID shape and conditionally creates the object.
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (value) => {
-    const random = Math.floor(Math.random() * 16);
-    const nibble = value === "x" ? random : (random & 0x3) | 0x8;
-    return nibble.toString(16);
-  });
-}
 
 function isReportConflict(message: string): boolean {
   return message.toLowerCase().includes("changed on another computer");
@@ -101,7 +89,7 @@ export function useReportWorkspace({
   expectedReportId?: string | null;
 }) {
   const generationRef = useRef(0);
-  const activeReportIdRef = useRef(expectedReportId ?? createReportId());
+  const activeReportIdRef = useRef(expectedReportId ?? randomUuid());
   const startingNewSessionRef = useRef(expectedReportId == null);
   const [workspace, setWorkspace] = useState<ReportWorkspaceView | null>(null);
   const [loading, setLoading] = useState(true);

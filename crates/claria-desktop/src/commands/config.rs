@@ -143,6 +143,9 @@ pub struct PreferencesPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub model_tuning: Option<claria_desktop::config::ModelTuningPreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub chat_streaming: Option<claria_desktop::config::ChatStreamMode>,
 }
 
 impl PreferencesPatch {
@@ -167,6 +170,9 @@ impl PreferencesPatch {
         }
         if let Some(model_tuning) = self.model_tuning {
             synced.model_tuning = model_tuning;
+        }
+        if let Some(chat_streaming) = self.chat_streaming {
+            synced.chat_streaming = chat_streaming;
         }
     }
 }
@@ -331,6 +337,7 @@ pub async fn save_config(
             transcription: Default::default(),
             report_authoring: Default::default(),
             model_tuning: Default::default(),
+            chat_streaming: Default::default(),
         };
 
         config::save_config(&cfg)?;

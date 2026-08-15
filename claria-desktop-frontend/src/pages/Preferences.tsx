@@ -20,6 +20,7 @@ import {
   deleteWriterTemplate,
   saveWriterLibraryPrompt,
   deleteWriterLibraryPrompt,
+  type ChatStreamMode,
   type ConfigInfo,
   type EffortPreference,
   type ModelTuningPreferences,
@@ -205,10 +206,143 @@ export default function Preferences({
             )}
         </PreferencesSection>
 
+        {/* How much of a chat reply appears at a time */}
+        <ChatStreamingSection />
+
         {/* Opt-in model tuning knobs (adaptive reasoning, effort, temperature) */}
         <ModelTuningSection />
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Chat streaming — how much of a reply appears at a time
+// ---------------------------------------------------------------------------
+
+const CHAT_STREAM_OPTIONS: {
+  value: ChatStreamMode;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "paragraph",
+    label: "A paragraph at a time",
+    description:
+      "The reply appears in finished blocks. Formatting, lists, and tables are never caught half-written.",
+  },
+  {
+    value: "token",
+    label: "Word by word",
+    description:
+      "The reply appears as fast as the model produces it. Nothing arrives sooner overall — it just arrives in smaller pieces.",
+  },
+  {
+    value: "off",
+    label: "All at once",
+    description:
+      "Nothing appears until the reply is finished. Longest wait, no movement on screen.",
+  },
+];
+
+function ChatStreamingSection() {
+  const [snapshot, setSnapshot] = useState<ChatStreamMode | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const info = await fetchCloudPreferences();
+      setSnapshot(info.chat_streaming);
+    } catch (e) {
+      try {
+        const info = await loadConfig();
+        setSnapshot(info.chat_streaming);
+      } catch (fallbackError) {
+        setLoadError(String(fallbackError ?? e));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // One click, one save — there is nothing here to get half-edited, so a
+  // Save button would only add a step.
+  async function choose(mode: ChatStreamMode) {
+    const previous = snapshot;
+    setSnapshot(mode);
+    setSaveError(null);
+    try {
+      const updated = await savePreferencesPatch({ chat_streaming: mode });
+      setSnapshot(updated.chat_streaming);
+    } catch (e) {
+      setSnapshot(previous);
+      setSaveError(String(e));
+    }
+  }
+
+  const active = CHAT_STREAM_OPTIONS.find(
+    (option) => option.value === snapshot
+  );
+
+  return (
+    <PreferencesSection
+      title="Chat Streaming"
+      summary={
+        active ? (
+          <span className="text-xs text-gray-400">{active.label}</span>
+        ) : undefined
+      }
+      contentClassName="border-t border-gray-100 p-4 space-y-3"
+    >
+      {loading ? (
+        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+          <Spinner />
+          <span>Loading chat streaming...</span>
+        </div>
+      ) : snapshot == null ? (
+        <ErrorBanner
+          message={loadError ?? "Could not load the chat streaming setting."}
+          className=""
+        />
+      ) : (
+        <>
+          <p className="text-xs text-gray-500">
+            How a reply reaches you while the model is writing it. Applies to
+            client chat and infrastructure chat; whatever has already arrived
+            is kept if you stop a reply.
+          </p>
+          {CHAT_STREAM_OPTIONS.map((option) => (
+            <label key={option.value} className="flex items-start gap-2">
+              <input
+                type="radio"
+                name="chat-streaming"
+                value={option.value}
+                checked={snapshot === option.value}
+                onChange={() => void choose(option.value)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm text-gray-700 block">
+                  {option.label}
+                </span>
+                <span className="text-xs text-gray-500 block">
+                  {option.description}
+                </span>
+              </span>
+            </label>
+          ))}
+          {saveError && <ErrorBanner message={saveError} className="" />}
+        </>
+      )}
+    </PreferencesSection>
   );
 }
 

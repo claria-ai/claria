@@ -12,6 +12,7 @@ const MessageBubble = memo(function MessageBubble({
   role,
   content,
   usage,
+  writing = false,
 }: {
   role: string;
   content: string;
@@ -21,6 +22,11 @@ const MessageBubble = memo(function MessageBubble({
    * `null` marks a legacy turn without recorded usage.
    */
   usage?: TurnUsage | null;
+  /**
+   * The reply is still arriving. Shows a caret under the text, which is what
+   * says "there is more" during the quiet stretch between two paragraphs.
+   */
+  writing?: boolean;
 }) {
   const isUser = role === "user";
 
@@ -38,6 +44,12 @@ const MessageBubble = memo(function MessageBubble({
             <p className="text-sm whitespace-pre-wrap">{content}</p>
           ) : (
             <MarkdownBlock source={content} />
+          )}
+          {writing && (
+            <span
+              aria-label="Still writing"
+              className="mt-1 inline-block h-3.5 w-1.5 bg-gray-400 motion-safe:animate-pulse"
+            />
           )}
         </div>
         {!isUser && <TurnCostBadge usage={usage} />}

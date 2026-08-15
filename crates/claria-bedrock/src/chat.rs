@@ -96,8 +96,9 @@ use tracing::info;
 use claria_core::model_id::CacheTtlChoice;
 
 use crate::{
-    converse::{StreamCollector, StreamOutcome},
+    converse::{StopSignal, StreamCollector, StreamOutcome},
     error::BedrockError,
+    pacing::{DeltaPacer, StreamPacing},
 };
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -367,15 +368,44 @@ impl CacheStrategy {
     }
 }
 
-/// Send a multi-turn conversation to Bedrock via `ConverseStream`, forwarding
-/// each assistant text delta to `on_delta` as it arrives.
+/// Caching off unless a caller opts in, so a default-constructed
+/// [`ChatStreamOptions`] cannot silently start writing cache entries.
+impl Default for CacheStrategy {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+/// How a streamed chat turn runs, as distinct from what it says.
 ///
-/// The caller provides the full message history, a system prompt, and a
-/// [`CacheStrategy`] controlling placement of the Bedrock `cachePoint`
-/// block. The complete accumulated text, wire stop reason, and usage (from
-/// the trailing `metadata` event, `None` preserved when the service omitted
-/// it) come back in the returned [`StreamOutcome`]. Truncation and context
-/// overflow are typed errors, exactly as on the unary flows.
+/// Groups the provider-side knobs with the two reader-facing controls —
+/// how often text is released, and how the reader ends the turn early — so
+/// adding either does not lengthen the call's argument list.
+#[derive(Debug, Clone, Default)]
+pub struct ChatStreamOptions {
+    /// Placement of Bedrock `cachePoint` blocks on the request.
+    pub cache_strategy: CacheStrategy,
+    /// Opt-in per-request model tuning, already gated by the caller.
+    pub tuning: crate::converse::ModelTuning,
+    /// Cadence at which accumulated text reaches `on_delta`.
+    pub pacing: StreamPacing,
+    /// Fired by the reader's Stop button; a default signal never fires.
+    pub stop: StopSignal,
+}
+
+/// Send a multi-turn conversation to Bedrock via `ConverseStream`, forwarding
+/// assistant text to `on_delta` at the cadence
+/// [`ChatStreamOptions::pacing`] asks for.
+///
+/// The caller provides the full message history, a system prompt, and the
+/// stream options. The complete accumulated text, wire stop reason, and usage
+/// (from the trailing `metadata` event, `None` preserved when the service
+/// omitted it) come back in the returned [`StreamOutcome`]. Truncation and
+/// context overflow are typed errors, exactly as on the unary flows.
+///
+/// Stopping is not an error: the stream is dropped where it stands, the text
+/// that arrived is returned, and the stop reason is
+/// [`crate::converse::STOPPED_BY_USER`].
 ///
 /// This is chat's only Bedrock path — chat is the one surface that renders
 /// incrementally. Extraction, translation, and the report writer keep their
@@ -388,8 +418,7 @@ pub async fn chat_converse_stream<F>(
     model_id: &str,
     system_prompt: &str,
     messages: &[ChatMessage],
-    cache_strategy: CacheStrategy,
-    tuning: crate::converse::ModelTuning,
+    options: ChatStreamOptions,
     mut on_delta: F,
 ) -> Result<StreamOutcome, BedrockError>
 where
@@ -402,7 +431,7 @@ where
         model_id,
         system_prompt,
         messages,
-        cache_strategy,
+        options.cache_strategy,
     )
     .await?;
 
@@ -415,32 +444,54 @@ where
         .inference_config(
             InferenceConfiguration::builder()
                 .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
-                .set_temperature(tuning.temperature)
+                .set_temperature(options.tuning.temperature)
                 .build(),
         )
-        .set_additional_model_request_fields(crate::converse::additional_request_fields(tuning)?)
+        .set_additional_model_request_fields(crate::converse::additional_request_fields(
+            options.tuning,
+        )?)
         .send()
         .await
         .map_err(|error| crate::converse::classify_error("chat ConverseStream", error))?;
 
     let mut stream = response.stream;
     let mut collector = StreamCollector::new();
-    loop {
-        let event = crate::converse::recv_stream_event("chat ConverseStream", &mut stream).await?;
-        let Some(event) = event else { break };
-        if let Some(delta) = collector.absorb(event) {
-            on_delta(&delta);
+    let mut pacer = DeltaPacer::new(options.pacing);
+    let stopped = loop {
+        let event = tokio::select! {
+            biased;
+            () = options.stop.stopped() => break true,
+            event = crate::converse::recv_stream_event("chat ConverseStream", &mut stream) => event?,
+        };
+        let Some(event) = event else { break false };
+        if let Some(delta) = collector.absorb(event)
+            && let Some(chunk) = pacer.push(&delta)
+        {
+            on_delta(&chunk);
         }
-    }
+    };
 
-    let mut outcome = collector.finish(model_id, CHAT_MAX_OUTPUT_TOKENS, cache_ttl)?;
+    let mut outcome = if stopped {
+        // Dropping the stream closes the connection, so the model stops
+        // generating tokens the reader has already said they don't want.
+        drop(stream);
+        tracing::info!(model_id, "chat stream stopped by the reader");
+        collector.finish_stopped(model_id, cache_ttl)
+    } else {
+        collector.finish(model_id, CHAT_MAX_OUTPUT_TOKENS, cache_ttl)?
+    };
     // The reader has already watched the partial answer arrive, so the notice
     // rides the same delta channel as the rest of it — the live view and the
     // persisted history end up with identical text.
     if outcome.stop_reason == StopReason::MaxTokens.as_str() {
         let notice = format!("\n\n{CHAT_TRUNCATED_NOTICE}");
-        on_delta(&notice);
+        if let Some(chunk) = pacer.push(&notice) {
+            on_delta(&chunk);
+        }
         outcome.text.push_str(&notice);
+    }
+    if let Some(remainder) = pacer.flush() {
+        on_delta(&remainder);
     }
     outcome.latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
     crate::converse::log_turn_usage(

@@ -6,7 +6,13 @@
 //! writer all speak to Bedrock through this module so their error and usage
 //! semantics cannot drift apart.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use aws_sdk_bedrockruntime::{
     error::{DisplayErrorContext, ProvideErrorMetadata, SdkError},
@@ -207,6 +213,72 @@ pub struct StreamOutcome {
 /// not that the model is busy.
 pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Stop reason recorded for a turn the reader ended from the UI. Not a
+/// Bedrock value — the service never got to send one — so it is spelled
+/// differently from every wire reason and callers can label it as a choice
+/// rather than a failure.
+pub const STOPPED_BY_USER: &str = "stopped_by_user";
+
+/// Cooperative stop for an in-flight streamed Converse call.
+///
+/// Cloneable and cheap: the caller keeps one copy to fire from a Stop button
+/// and hands another to the stream loop. A default signal is one nobody can
+/// fire, which is what non-interactive callers want.
+///
+/// The stream loop awaits [`Self::stopped`] alongside the next frame rather
+/// than checking between frames — a stream can sit silent for minutes while
+/// the model prefills, and a Stop button that waits for the next token is
+/// not a Stop button.
+#[derive(Debug, Clone, Default)]
+pub struct StopSignal {
+    inner: Arc<StopState>,
+}
+
+#[derive(Debug, Default)]
+struct StopState {
+    stopped: AtomicBool,
+    wake: tokio::sync::Notify,
+}
+
+impl StopSignal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ask the stream loop to stop. Idempotent, and safe to call after the
+    /// turn has already finished.
+    pub fn stop(&self) {
+        self.inner.stopped.store(true, Ordering::Release);
+        self.inner.wake.notify_waiters();
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.inner.stopped.load(Ordering::Acquire)
+    }
+
+    /// Whether two handles name the same signal. Lets a registry of live
+    /// turns drop its own entry without disturbing a newer turn that reused
+    /// the key.
+    pub fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Resolve once [`Self::stop`] has been called; pends forever otherwise.
+    ///
+    /// The waiter is registered before the flag is read, so a `stop` racing
+    /// this call wakes it instead of being missed.
+    pub async fn stopped(&self) {
+        loop {
+            let mut wake = std::pin::pin!(self.inner.wake.notified());
+            wake.as_mut().enable();
+            if self.is_stopped() {
+                return;
+            }
+            wake.await;
+        }
+    }
+}
+
 /// Receive the next frame of a Converse response stream, bounded by
 /// [`STREAM_IDLE_TIMEOUT`]. `Ok(None)` ends the stream.
 ///
@@ -321,6 +393,26 @@ impl StreamCollector {
             usage,
             latency_ms: None,
         })
+    }
+
+    /// Close out a stream the reader stopped from the UI.
+    ///
+    /// Never an error: a missing `messageStop` is exactly what stopping
+    /// means, and the text that did arrive is the answer the reader chose to
+    /// keep. Usage is normally `None` — the trailing `metadata` frame comes
+    /// after the stop reason, so an abandoned stream is unmetered even
+    /// though Bedrock billed the tokens it had already produced.
+    pub fn finish_stopped(
+        self,
+        model_id: &str,
+        cache_ttl: Option<CacheTtlChoice>,
+    ) -> StreamOutcome {
+        StreamOutcome {
+            text: self.text,
+            stop_reason: STOPPED_BY_USER.to_string(),
+            usage: optional_usage(self.usage.as_ref(), model_id, cache_ttl),
+            latency_ms: None,
+        }
     }
 }
 

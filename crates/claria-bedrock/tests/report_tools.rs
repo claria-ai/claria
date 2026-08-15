@@ -1,6 +1,6 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_bedrock::{
-    chat::{CacheStrategy, ChatMessage, ChatRole},
+    chat::{ChatMessage, ChatRole},
     error::BedrockError,
     report::{
         PROPOSE_REPORT_CHANGES_TOOL, ReportInputBudget, ReportStopReason, ReportToolRequest,
@@ -815,8 +815,7 @@ async fn ordinary_chat_still_sends_no_tool_configuration() {
         MODEL_ID,
         "System",
         &messages,
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        claria_bedrock::chat::ChatStreamOptions::default(),
         |_| {},
     )
     .await
