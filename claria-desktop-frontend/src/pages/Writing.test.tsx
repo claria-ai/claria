@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
   exportDocx: vi.fn(),
   listTemplates: vi.fn(),
+  listPrompts: vi.fn(),
   previewTemplate: vi.fn(),
   applyTemplate: vi.fn(),
   discardTemplate: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock("../lib/tauri", () => ({
   resolveReportProposal: mocks.resolve,
   exportReportDocx: mocks.exportDocx,
   listWriterTemplates: mocks.listTemplates,
+  listWriterLibraryPrompts: mocks.listPrompts,
   previewWriterTemplate: mocks.previewTemplate,
   applyReportTemplate: mocks.applyTemplate,
   discardReportTemplatePreview: mocks.discardTemplate,
@@ -207,6 +209,7 @@ function renderWriting(
         clientId={clientId}
         expectedReportId={expectedReportId ?? undefined}
         onManageTemplates={vi.fn()}
+        onManagePrompts={vi.fn()}
       />
     </ChatModelsContext.Provider>
   );
@@ -224,6 +227,7 @@ beforeEach(() => {
   });
   mocks.load.mockResolvedValue(workspace());
   mocks.listTemplates.mockResolvedValue([]);
+  mocks.listPrompts.mockResolvedValue([]);
   mocks.save.mockImplementation(
     (_clientId: string, _reportId: string, revision: number, draft: { title: string; sections: ReportWorkspaceView["draft"]["content"]["sections"] }) => {
       const saved = workspace({ title: draft.title, revision: revision + 1 });
@@ -295,6 +299,30 @@ describe("Writing", () => {
       screen.getByRole("tab", { name: "Write with Claude" })
     );
     expect(screen.getByLabelText("Writing instruction")).toBeDefined();
+  });
+
+  it("prefills the guidance box from a picked saved prompt", async () => {
+    mocks.listPrompts.mockResolvedValue([
+      {
+        schema_version: 1,
+        id: "11111111-1111-4111-8111-111111111111",
+        name: "Phase 1 — history",
+        body: "Fill in Reason for Referral and Background; skip everything else.",
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-01T00:00:00Z",
+      },
+    ]);
+    renderWriting("client-1", null);
+
+    await screen.findByText("Start this report");
+    await userEvent.selectOptions(
+      await screen.findByLabelText("Insert saved prompt"),
+      "11111111-1111-4111-8111-111111111111"
+    );
+    expect(
+      (screen.getByLabelText("Full report guidance") as HTMLTextAreaElement)
+        .value
+    ).toBe("Fill in Reason for Referral and Background; skip everything else.");
   });
 
   it("renders assistant and report Markdown instead of showing markers", async () => {
@@ -1135,7 +1163,11 @@ describe("Writing", () => {
     const rendered = renderWriting("client-a");
     rendered.rerender(
       <ChatModelsContext.Provider value={modelsState}>
-        <Writing clientId="client-b" onManageTemplates={vi.fn()} />
+        <Writing
+          clientId="client-b"
+          onManageTemplates={vi.fn()}
+          onManagePrompts={vi.fn()}
+        />
       </ChatModelsContext.Provider>
     );
 

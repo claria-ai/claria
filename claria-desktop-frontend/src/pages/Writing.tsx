@@ -49,11 +49,13 @@ export default function Writing({
   expectedReportId,
   onLeaveStateChange,
   onManageTemplates,
+  onManagePrompts,
 }: {
   clientId: string;
   expectedReportId?: string | null;
   onLeaveStateChange?: (state: WritingLeaveState) => void;
   onManageTemplates: () => void;
+  onManagePrompts: () => void;
 }) {
   const {
     models: chatModels,
@@ -559,6 +561,7 @@ export default function Writing({
                       currentValue={instruction}
                       disabled={composerDisabled}
                       onPick={insertSavedPrompt}
+                      onManage={onManagePrompts}
                     />
                   </div>
                   <label className="block">
@@ -779,16 +782,15 @@ export default function Writing({
               ))}
             </div>
           )}
-          {writerPrompts.length > 0 && (
-            <div className="mb-2 flex justify-end">
-              <WriterPromptPicker
-                prompts={writerPrompts}
-                currentValue={instruction}
-                disabled={composerDisabled}
-                onPick={insertSavedPrompt}
-              />
-            </div>
-          )}
+          <div className="mb-2 flex justify-end">
+            <WriterPromptPicker
+              prompts={writerPrompts}
+              currentValue={instruction}
+              disabled={composerDisabled}
+              onPick={insertSavedPrompt}
+              onManage={onManagePrompts}
+            />
+          </div>
           <ChatComposer
             composerRef={composerRef}
             ariaLabel="Writing instruction"

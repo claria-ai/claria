@@ -28,16 +28,22 @@ afterEach(() => {
 });
 
 describe("WriterPromptPicker", () => {
-  it("renders nothing while the library is empty", () => {
-    const { container } = render(
+  it("offers the Preferences jump while the library is empty", async () => {
+    const onManage = vi.fn();
+    render(
       <WriterPromptPicker
         prompts={[]}
         currentValue=""
         disabled={false}
         onPick={() => {}}
+        onManage={onManage}
       />
     );
-    expect(container.innerHTML).toBe("");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save reusable prompts…" })
+    );
+    expect(onManage).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText("Insert saved prompt")).toBeNull();
   });
 
   it("prefills the picked prompt body without confirmation when the box is empty", async () => {
@@ -48,6 +54,7 @@ describe("WriterPromptPicker", () => {
         currentValue=""
         disabled={false}
         onPick={onPick}
+        onManage={() => {}}
       />
     );
     await userEvent.selectOptions(
@@ -67,6 +74,7 @@ describe("WriterPromptPicker", () => {
         currentValue="Half-typed thought"
         disabled={false}
         onPick={onPick}
+        onManage={() => {}}
       />
     );
     await userEvent.selectOptions(

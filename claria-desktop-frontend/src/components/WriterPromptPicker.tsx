@@ -5,22 +5,36 @@ import type { WriterPrompt } from "../lib/tauri";
  * library. Picking is a starting point, not a send: the caller receives the
  * body, puts it in the textarea, and the user edits before submitting.
  *
- * Renders nothing while the library is empty — the Preferences manager is
- * the entry point for building one.
+ * While the library is empty it renders a jump to the Preferences manager
+ * instead — the feature would otherwise be invisible until first use.
  */
 export default function WriterPromptPicker({
   prompts,
   currentValue,
   disabled,
   onPick,
+  onManage,
 }: {
   prompts: WriterPrompt[];
   /** The instruction box's current text, guarded before overwriting. */
   currentValue: string;
   disabled: boolean;
   onPick: (body: string) => void;
+  /** Open Preferences → Writer Prompts. */
+  onManage: () => void;
 }) {
-  if (prompts.length === 0) return null;
+  if (prompts.length === 0) {
+    return (
+      <button
+        type="button"
+        onClick={onManage}
+        disabled={disabled}
+        className="text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
+      >
+        Save reusable prompts…
+      </button>
+    );
+  }
 
   function pick(promptId: string) {
     const prompt = prompts.find((candidate) => candidate.id === promptId);

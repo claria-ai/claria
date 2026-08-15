@@ -50,15 +50,15 @@ import { BackButton, TrashIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import { ErrorBanner, LoadingCard } from "../components/StateCards";
 import VersionHistoryModal from "../components/VersionHistoryModal";
-import type { Page } from "../App";
+import type { Page, PreferencesWriterSection } from "../App";
 
 export default function Preferences({
   navigate,
-  openWriterTemplates = false,
+  focusSection = null,
   backPage = "start",
 }: {
   navigate: (page: Page) => void;
-  openWriterTemplates?: boolean;
+  focusSection?: PreferencesWriterSection | null;
   backPage?: Page;
 }) {
   const {
@@ -115,10 +115,10 @@ export default function Preferences({
         <TranscriptionSection />
 
         {/* Managed, redacted templates used by the document writer */}
-        <WriterTemplatesSection defaultOpen={openWriterTemplates} />
+        <WriterTemplatesSection defaultOpen={focusSection === "writer-templates"} />
 
         {/* Saved steering prompts that prefill writer instructions */}
-        <WriterPromptsSection />
+        <WriterPromptsSection defaultOpen={focusSection === "writer-prompts"} />
 
         {/* Agentic document-writer guardrails */}
         <ReportAuthoringSection />
@@ -1356,7 +1356,8 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
   );
 }
 
-function WriterPromptsSection() {
+function WriterPromptsSection({ defaultOpen }: { defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const { prompts, setPrompts, loading, error: loadError, reload } = useWriterPrompts();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -1417,6 +1418,8 @@ function WriterPromptsSection() {
     <PreferencesSection
       title="Writer Prompts"
       summary={<span className="text-xs text-gray-400">{prompts.length} saved</span>}
+      open={open}
+      onToggle={setOpen}
       testId="writer-prompt-manager"
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
