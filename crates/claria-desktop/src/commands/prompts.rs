@@ -11,6 +11,7 @@ use super::{
     },
 };
 use crate::state::DesktopState;
+use claria_storage::audit::actions;
 
 /// Default system prompt, used when no custom prompt has been saved to S3.
 const DEFAULT_SYSTEM_PROMPT: &str = "\
@@ -172,7 +173,7 @@ pub async fn save_prompt(
         )
         .await?;
 
-        ctx.record_audit(ctx.audit_event("prompt_saved", "prompt", &prompt_name))
+        ctx.record_audit(ctx.audit_event(actions::PROMPT_SAVE, "prompt", &prompt_name))
             .await;
 
         Ok(())
@@ -345,7 +346,7 @@ pub async fn restore_prompt_version(
         tracing::info!(prompt_name, version_id, "prompt version restored");
 
         ctx.record_audit(
-            ctx.audit_event("prompt_version_restored", "prompt", &prompt_name)
+            ctx.audit_event(actions::PROMPT_RESTORE, "prompt", &prompt_name)
                 .with_details(serde_json::json!({ "version_id": version_id })),
         )
         .await;

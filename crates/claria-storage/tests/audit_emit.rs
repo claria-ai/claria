@@ -1,15 +1,18 @@
-//! `AuditEvent::emit` is a one-line tracing mirror of the durable S3 event.
-//! It must never carry the details payload or a non-UUID resource id — the
-//! console export is a support artifact in a HIPAA app, and record filenames
-//! or per-event detail JSON do not belong in it. The full payload lives only
-//! in the S3 object.
+//! `AuditEvent::emit` is a one-line tracing mirror of the durable S3 event,
+//! and its field list is a fixed allow-list rather than a filter.
+//!
+//! Schema v2 moved the boundary: `details` is console-safe by contract and is
+//! emitted, while `resource_id` and `phi` are dropped wholesale — the former
+//! because it can hold a filename, the latter because it is where free text
+//! is required to live. The console export is a support artifact in a HIPAA
+//! app; the full payload lives only in the S3 object.
 
 use std::{
     fmt,
     sync::{Arc, Mutex},
 };
 
-use claria_storage::audit::AuditEvent;
+use claria_storage::audit::{AuditEvent, EventCategory, actions};
 use tracing::field::{Field, Visit};
 use tracing_subscriber::{Layer, layer::Context, prelude::*};
 
@@ -62,13 +65,15 @@ fn field<'a>(fields: &'a [(String, String)], name: &str) -> &'a str {
 }
 
 #[test]
-fn emit_is_a_summary_without_the_details_payload() {
+fn emit_carries_the_console_safe_subset() {
+    let client = uuid::Uuid::new_v4();
     let event = AuditEvent::new(
-        "chat_message",
+        actions::CHAT_TURN,
         "client",
         uuid::Uuid::nil().to_string(),
         "123456789012",
     )
+    .with_client_id(client)
     .with_details(serde_json::json!({
         "input_tokens": 1234,
         "cost_usd": 0.0042,
@@ -78,53 +83,161 @@ fn emit_is_a_summary_without_the_details_payload() {
     let (target, fields) = capture(&event);
 
     assert_eq!(target, "claria_storage::audit::trail");
-    assert_eq!(field(&fields, "audit.action"), "chat_message");
+    assert_eq!(field(&fields, "audit.action"), "chat.turn");
+    assert_eq!(field(&fields, "audit.category"), "ai");
     assert_eq!(field(&fields, "audit.resource_type"), "client");
+    assert_eq!(field(&fields, "audit.client_id"), client.to_string());
     assert_eq!(field(&fields, "audit.event_id"), event.event_id.to_string());
-    assert!(
-        !fields.iter().any(|(k, _)| k == "audit.details"),
-        "details payload leaked into the tracing mirror: {fields:?}"
-    );
-    assert!(
-        !fields.iter().any(|(_, v)| v.contains("1234")),
-        "details values leaked into the tracing mirror: {fields:?}"
-    );
+
+    // Cost attribution is the reason details is console-safe: an exported log
+    // has to be able to answer "what did this turn cost".
+    let details = field(&fields, "audit.details");
+    assert!(details.contains("1234"), "{details}");
+    assert!(details.contains("anthropic.claude-sonnet-4"), "{details}");
 }
 
 #[test]
-fn emit_keeps_uuid_resource_ids_and_redacts_the_rest() {
-    let id = uuid::Uuid::new_v4();
+fn emit_never_carries_the_resource_id() {
+    // Even a UUID-shaped resource id stays out. A uniform rule leaves no
+    // per-event judgment for a future call site to get wrong.
     let (_, fields) = capture(&AuditEvent::new(
-        "delete_client",
+        actions::CLIENT_DELETE,
         "client",
-        id.to_string(),
+        uuid::Uuid::new_v4().to_string(),
         "acct",
     ));
-    assert_eq!(field(&fields, "audit.resource_id"), id.to_string());
+    assert!(
+        !fields.iter().any(|(k, _)| k == "audit.resource_id"),
+        "resource_id leaked into the tracing mirror: {fields:?}"
+    );
 
-    // A filename resource_id (legitimate in the durable trail) must not
-    // reach the log line.
+    // A filename resource id is legitimate in the durable trail and must not
+    // reach the log line in any form.
     let (_, fields) = capture(&AuditEvent::new(
-        "extract_document_text",
+        actions::RECORD_EXTRACT_TEXT,
         "record_file",
         "Jane Doe scan.pdf",
         "acct",
     ));
-    assert_eq!(field(&fields, "audit.resource_id"), "<redacted>");
+    assert!(
+        !fields.iter().any(|(_, v)| v.contains("Jane Doe")),
+        "a filename reached the tracing mirror: {fields:?}"
+    );
+}
+
+#[test]
+fn emit_never_carries_the_phi_payload() {
+    let event = AuditEvent::new(actions::RECORD_SEARCH, "client", "abc", "acct")
+        .with_details(serde_json::json!({ "match_count": 3 }))
+        .with_phi(serde_json::json!({ "query": "Jane Doe custody evaluation" }));
+
+    let (_, fields) = capture(&event);
+
+    assert!(
+        !fields.iter().any(|(k, _)| k == "audit.phi"),
+        "phi field leaked into the tracing mirror: {fields:?}"
+    );
+    assert!(
+        !fields.iter().any(|(_, v)| v.contains("Jane Doe")),
+        "phi values leaked into the tracing mirror: {fields:?}"
+    );
+    // The safe half still gets through.
+    assert!(field(&fields, "audit.details").contains("match_count"));
+}
+
+#[test]
+fn an_action_cannot_disagree_with_its_category() {
+    // The category is not a separate argument any call site can pass, so the
+    // only way to get one is through the action constant that owns it.
+    assert_eq!(
+        AuditEvent::new(actions::RECORD_FILE_READ, "record_file", "x", "acct").category,
+        EventCategory::Access
+    );
+    assert_eq!(
+        AuditEvent::new(actions::CLIENT_CREATE, "client", "x", "acct").category,
+        EventCategory::Mutation
+    );
+    assert_eq!(
+        AuditEvent::new(actions::REPORT_TOOL_TURN, "report", "x", "acct").category,
+        EventCategory::Ai
+    );
+    assert_eq!(
+        AuditEvent::new(actions::PROMPT_SAVE, "prompt", "x", "acct").category,
+        EventCategory::Admin
+    );
 }
 
 #[test]
 fn events_round_trip_through_json() {
-    let event = AuditEvent::new("chat_message", "client", "abc", "acct")
-        .with_details(serde_json::json!({ "output_tokens": 7 }));
+    let client = uuid::Uuid::new_v4();
+    let event = AuditEvent::new(actions::CHAT_TURN, "client", "abc", "acct")
+        .with_client_id(client)
+        .with_credential_id(Some("AKIAIOSFODNN7EXAMPLE".to_string()))
+        .with_app_version("9.9.9")
+        .with_details(serde_json::json!({ "output_tokens": 7 }))
+        .with_phi(serde_json::json!({ "query": "secret" }));
 
     let encoded = serde_json::to_string(&event).expect("serialize");
     let decoded: AuditEvent = serde_json::from_str(&encoded).expect("deserialize");
 
     assert_eq!(decoded.event_id, event.event_id);
     assert_eq!(decoded.timestamp, event.timestamp);
-    assert_eq!(decoded.action, event.action);
+    assert_eq!(decoded.action, "chat.turn");
+    assert_eq!(decoded.category, EventCategory::Ai);
+    assert_eq!(decoded.client_id, Some(client));
+    assert_eq!(
+        decoded.credential_id.as_deref(),
+        Some("AKIAIOSFODNN7EXAMPLE")
+    );
+    assert_eq!(decoded.app_version.as_deref(), Some("9.9.9"));
     assert_eq!(decoded.details, event.details);
+    // phi reaches S3 in full — it is only the console that never sees it.
+    assert_eq!(decoded.phi, event.phi);
     // snake_case on the wire, per the project's serialization rule.
     assert!(encoded.contains("\"resource_type\""), "{encoded}");
+}
+
+#[test]
+fn absent_optionals_are_omitted_from_the_wire_form() {
+    let encoded = serde_json::to_string(&AuditEvent::new(
+        actions::PROMPT_SAVE,
+        "prompt",
+        "x",
+        "acct",
+    ))
+    .expect("serialize");
+
+    for absent in ["client_id", "credential_id", "phi"] {
+        assert!(
+            !encoded.contains(absent),
+            "{absent} should be omitted when unset: {encoded}"
+        );
+    }
+}
+
+#[test]
+fn pre_v2_objects_still_deserialize() {
+    // A verbatim pre-v2 object: no category, client_id, credential_id or phi,
+    // and the old action spelling. Six-year retention means these stay
+    // readable for the life of the trail.
+    let raw = serde_json::json!({
+        "event_id": uuid::Uuid::nil(),
+        "timestamp": "2026-07-01T00:00:00Z",
+        "action": "chat_message",
+        "resource_type": "client",
+        "resource_id": "abc",
+        "user_sub": "123456789012",
+        "details": { "input_tokens": 12 },
+    });
+
+    let decoded: AuditEvent = serde_json::from_value(raw).expect("pre-v2 object must still read");
+
+    assert_eq!(decoded.category, EventCategory::Unspecified);
+    assert_eq!(decoded.client_id, None);
+    assert_eq!(decoded.credential_id, None);
+    assert_eq!(decoded.phi, None);
+    assert_eq!(decoded.app_version, None);
+    // The rename is not mapped on read: a v2 query for "chat.turn" will not
+    // match this object. Both spellings have to be searched.
+    assert_eq!(decoded.action, "chat_message");
 }

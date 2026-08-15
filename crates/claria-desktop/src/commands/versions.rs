@@ -7,6 +7,7 @@ use tauri::State;
 
 use super::{CommandContext, CommandError, parse_uuid, run};
 use crate::state::DesktopState;
+use claria_storage::audit::actions;
 
 /// A single version of a file in a client's record.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -153,10 +154,9 @@ pub async fn restore_file_version(
         // The durable audit trail may carry the filename; it lives only in
         // access-controlled S3.
         ctx.record_audit(
-            ctx.audit_event("record_file_version_restored", "record_file", &filename)
-                .with_details(serde_json::json!({
-                    "client_id": id.to_string(),
-                    "version_id": version_id,
+            ctx.audit_event(actions::RECORD_VERSION_RESTORE, "record_file", &filename)
+                .with_client_id(id)
+                .with_details(serde_json::json!({"version_id": version_id,
                 })),
         )
         .await;
@@ -252,8 +252,8 @@ pub async fn restore_deleted_file(
         tracing::info!(client_id = %id, "deleted file restored");
 
         ctx.record_audit(
-            ctx.audit_event("record_file_restored", "record_file", &filename)
-                .with_details(serde_json::json!({ "client_id": id.to_string() })),
+            ctx.audit_event(actions::RECORD_FILE_RESTORE, "record_file", &filename)
+                .with_client_id(id),
         )
         .await;
 
@@ -393,7 +393,7 @@ pub async fn restore_client(
         );
 
         ctx.record_audit(
-            ctx.audit_event("client_restored", "client", id.to_string())
+            ctx.audit_event(actions::CLIENT_RESTORE, "client", id.to_string())
                 .with_details(serde_json::json!({
                     "report_restored": outcome.report_restored,
                 })),

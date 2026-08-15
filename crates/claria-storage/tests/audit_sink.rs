@@ -5,7 +5,7 @@ use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_core::s3_keys;
 use claria_mock_aws::testing::MockServer;
 use claria_storage::{
-    audit::{self as sink, AuditEvent},
+    audit::{self as sink, AuditEvent, actions},
     error::StorageError,
 };
 
@@ -48,7 +48,7 @@ async fn an_event_round_trips_through_s3_with_its_details_intact() {
     let sdk = build_sdk_config(&mock.endpoint);
     create_bucket(&sdk).await;
 
-    let event = AuditEvent::new("chat_message", "client", "abc", "123456789012").with_details(
+    let event = AuditEvent::new(actions::CHAT_TURN, "client", "abc", "123456789012").with_details(
         serde_json::json!({
             "chat_id": "11111111-1111-1111-1111-111111111111",
             "input_tokens": 900,
@@ -70,7 +70,7 @@ async fn an_event_round_trips_through_s3_with_its_details_intact() {
     let got = &read_back[0];
     assert_eq!(got.event_id, event.event_id);
     assert_eq!(got.timestamp, event.timestamp);
-    assert_eq!(got.action, "chat_message");
+    assert_eq!(got.action, "chat.turn");
     assert_eq!(got.user_sub, "123456789012");
     // The payload the old `emit()` dropped is now in durable storage.
     assert_eq!(got.details, event.details);
@@ -83,7 +83,7 @@ async fn each_event_gets_its_own_object_under_the_day_prefix() {
     create_bucket(&sdk).await;
 
     for n in 0..5 {
-        let event = AuditEvent::new("chat_message", "client", "abc", "acct")
+        let event = AuditEvent::new(actions::CHAT_TURN, "client", "abc", "acct")
             .with_details(serde_json::json!({ "turn": n }));
         sink::write_event(&sdk, BUCKET, &event)
             .await
@@ -133,7 +133,7 @@ async fn a_failed_write_is_reported_not_swallowed() {
     let sdk = build_sdk_config(&mock.endpoint);
     // Deliberately no bucket: the audit trail has nowhere to land.
 
-    let event = AuditEvent::new("chat_message", "client", "abc", "acct");
+    let event = AuditEvent::new(actions::CHAT_TURN, "client", "abc", "acct");
     let err = sink::write_event(&sdk, BUCKET, &event)
         .await
         .expect_err("write must fail against a missing bucket");

@@ -13,6 +13,7 @@ use super::{
     records::load_record_context, run, usage_audit_details,
 };
 use crate::state::DesktopState;
+use claria_storage::audit::actions;
 
 /// Response from a chat message, including the persisted chat session ID
 /// and per-turn token usage. Usage is `None` when Bedrock omitted the usage
@@ -445,7 +446,7 @@ pub async fn chat_message(
         let mut audit_details = usage_audit_details(&model_id, usage.as_ref(), Some(&stop_reason));
         audit_details["chat_id"] = serde_json::json!(chat_uuid.to_string());
         ctx.record_audit(
-            ctx.audit_event("chat_message", "client", client_uuid.to_string())
+            ctx.audit_event(actions::CHAT_TURN, "client", client_uuid.to_string())
                 .with_details(audit_details),
         )
         .await;
@@ -602,7 +603,7 @@ pub async fn infra_chat(
         // Audit the infra-chat turn against the AWS account_id (no per-client
         // resource here).
         ctx.record_audit(
-            ctx.audit_event("infra_chat", "infrastructure", "infra")
+            ctx.audit_event(actions::INFRA_CHAT, "infrastructure", "infra")
                 .with_details(usage_audit_details(
                     &model_id,
                     usage.as_ref(),
@@ -811,8 +812,12 @@ pub async fn rename_chat_history(
         })?;
 
         ctx.record_audit(
-            ctx.audit_event("chat_history_renamed", "client", client_id.to_string())
-                .with_details(serde_json::json!({ "chat_id": chat_id.to_string() })),
+            ctx.audit_event(
+                actions::CHAT_HISTORY_RENAME,
+                "client",
+                client_id.to_string(),
+            )
+            .with_details(serde_json::json!({ "chat_id": chat_id.to_string() })),
         )
         .await;
 

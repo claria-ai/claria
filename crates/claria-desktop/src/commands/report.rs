@@ -12,6 +12,7 @@ use claria_core::models::report::{ReportDraft, ReportExportStatus};
 
 use super::{CommandContext, parse_uuid, run, usage_audit_details};
 use crate::state::DesktopState;
+use claria_storage::audit::actions;
 
 /// Overlay `extra`'s fields onto the shared usage details object.
 fn merge_details(base: &mut serde_json::Value, extra: serde_json::Value) {
@@ -118,11 +119,11 @@ pub async fn rename_report_session(
 
         ctx.record_audit(
             ctx.audit_event(
-                "report_session_renamed",
+                actions::REPORT_SESSION_RENAME,
                 "report",
                 workspace.report_id.clone(),
             )
-            .with_details(serde_json::json!({ "client_id": client_id.to_string() })),
+            .with_client_id(client_id),
         )
         .await;
 
@@ -215,13 +216,12 @@ pub async fn revert_report_revision(
 
         ctx.record_audit(
             ctx.audit_event(
-                "report_revision_restored",
+                actions::REPORT_REVISION_RESTORE,
                 "report",
                 workspace.report_id.clone(),
             )
-            .with_details(serde_json::json!({
-                "client_id": client_id.to_string(),
-                "source_revision": revision,
+            .with_client_id(client_id)
+            .with_details(serde_json::json!({"source_revision": revision,
                 "new_revision": workspace.draft.revision
             })),
         )
@@ -258,13 +258,16 @@ pub async fn save_report_draft(
         let workspace = claria_desktop::report_authoring::workspace_view(&workspace);
 
         ctx.record_audit(
-            ctx.audit_event("report_draft_saved", "report", workspace.report_id.clone())
-                .with_details(serde_json::json!({
-                    "client_id": client_id.to_string(),
-                    "report_id": workspace.report_id,
-                    "revision": workspace.draft.revision,
-                    "section_count": workspace.draft.content.sections.len()
-                })),
+            ctx.audit_event(
+                actions::REPORT_DRAFT_SAVE,
+                "report",
+                workspace.report_id.clone(),
+            )
+            .with_client_id(client_id)
+            .with_details(serde_json::json!({"report_id": workspace.report_id,
+                "revision": workspace.draft.revision,
+                "section_count": workspace.draft.content.sections.len()
+            })),
         )
         .await;
 
@@ -298,13 +301,12 @@ pub async fn discard_queued_report_edits(
         let workspace = claria_desktop::report_authoring::workspace_view(&workspace);
         ctx.record_audit(
             ctx.audit_event(
-                "report_queued_edits_discarded",
+                actions::REPORT_QUEUED_EDITS_DISCARD,
                 "report",
                 workspace.report_id.clone(),
             )
-            .with_details(serde_json::json!({
-                "client_id": client_id.to_string(),
-                "revision": workspace.draft.revision,
+            .with_client_id(client_id)
+            .with_details(serde_json::json!({"revision": workspace.draft.revision,
             })),
         )
         .await;
@@ -402,7 +404,7 @@ pub async fn generate_full_report(
                 );
                 ctx.record_audit(
                     ctx.audit_event(
-                        "report_full_draft_generated",
+                        actions::REPORT_FULL_DRAFT,
                         "report",
                         attempt.report_id.to_string(),
                     )
@@ -439,7 +441,7 @@ pub async fn generate_full_report(
                     }),
                 );
                 ctx.record_audit(
-                    ctx.audit_event("report_full_draft_failed", "report", resource_id)
+                    ctx.audit_event(actions::REPORT_FULL_DRAFT_FAILED, "report", resource_id)
                         .with_details(audit_details),
                 )
                 .await;
@@ -523,7 +525,7 @@ pub async fn send_report_message(
                 );
                 ctx.record_audit(
                     ctx.audit_event(
-                        "report_tool_turn_succeeded",
+                        actions::REPORT_TOOL_TURN,
                         "report",
                         attempt.report_id.to_string(),
                     )
@@ -560,7 +562,7 @@ pub async fn send_report_message(
                     }),
                 );
                 ctx.record_audit(
-                    ctx.audit_event("report_tool_turn_failed", "report", resource_id)
+                    ctx.audit_event(actions::REPORT_TOOL_TURN_FAILED, "report", resource_id)
                         .with_details(audit_details),
                 )
                 .await;
@@ -586,8 +588,8 @@ pub async fn resolve_report_proposal(
         let report_id = parse_uuid(&report_id)?;
         let proposal_id = parse_uuid(&proposal_id)?;
         let action = match decision {
-            ReportProposalChoice::Accept => "report_proposal_accepted",
-            ReportProposalChoice::Reject => "report_proposal_rejected",
+            ReportProposalChoice::Accept => actions::REPORT_PROPOSAL_ACCEPT,
+            ReportProposalChoice::Reject => actions::REPORT_PROPOSAL_REJECT,
         };
         let workspace = claria_report_authoring::resolve_report_proposal_for_report(
             &ctx.s3,
@@ -602,9 +604,8 @@ pub async fn resolve_report_proposal(
 
         ctx.record_audit(
             ctx.audit_event(action, "report", workspace.report_id.clone())
-                .with_details(serde_json::json!({
-                    "client_id": client_id.to_string(),
-                    "report_id": workspace.report_id,
+                .with_client_id(client_id)
+                .with_details(serde_json::json!({"report_id": workspace.report_id,
                     "proposal_id": proposal_id.to_string(),
                     "resulting_revision": workspace.draft.revision,
                     "section_count": workspace.draft.content.sections.len()
@@ -732,10 +733,9 @@ pub async fn export_report_docx(
         .is_ok();
 
         ctx.record_audit(
-            ctx.audit_event("report_docx_exported", "report", report_id.to_string())
-                .with_details(serde_json::json!({
-                    "client_id": client_id.to_string(),
-                    "report_id": report_id.to_string(),
+            ctx.audit_event(actions::REPORT_DOCX_EXPORT, "report", report_id.to_string())
+                .with_client_id(client_id)
+                .with_details(serde_json::json!({"report_id": report_id.to_string(),
                     "revision": draft.revision,
                     "section_count": draft.content.sections.len(),
                     "destination": "local_unmanaged_storage"
