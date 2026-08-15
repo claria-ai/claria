@@ -9,7 +9,9 @@ import { ChatModelsContext, type ChatModelsState } from "../lib/chatModels";
 import type { ChatMessage, TurnUsage } from "../lib/tauri";
 import ChatWidget, { type SendResult } from "./ChatWidget";
 
-const stopChatStream = vi.fn(async () => undefined);
+const stopChatStream = vi.fn<(streamId: string) => Promise<void>>(
+  async () => {}
+);
 
 vi.mock("../lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/tauri")>();
