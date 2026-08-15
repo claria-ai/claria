@@ -2,6 +2,14 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- The frontend dev server no longer discovers a dependency late and reloads the page mid-load on a cold start, which could strand the first screenshot and fail the release site update
+- Screenshot capture waits for the dev server to be able to serve the app rather than merely to answer its port
+- A failed capture now carries the dev server's own output, which was previously discarded
+- Screenshot capture retries in CI and always starts its own dev server there instead of reusing whatever holds the port
+- Playwright is pinned to an exact version
+
 ## [0.25.0] — 2026-08-15
 
 - Writer turns stream from Bedrock instead of waiting on one unary response, so a long generation no longer risks an HTTP timeout at the writer's output ceiling
