@@ -240,6 +240,8 @@ The DOM environment is `happy-dom`, not `jsdom`: jsdom does not implement `<dial
 
 Test files have their own TypeScript project (`tsconfig.test.json`) so they can read fixtures off disk with Node's types without those types leaking into the app.
 
+**Typecheck with `npm run build`, never a hand-picked `tsc` invocation.** `npm run build` is `tsc -b && vite build` — the same command the `claria-desktop` build script and CI run, and the only one that covers every referenced project. `tsc --noEmit -p tsconfig.json` checks the app project alone and silently skips the test project, and Vitest never typechecks at all (esbuild strips types without checking them), so a type error in a `.test.tsx` file passes both and then fails `cargo tauri dev`. Run `npm run build` and `npm run lint` before pushing frontend changes.
+
 ### Shared transcript fixtures
 
 `fixtures/transcript-body/` holds `.txt` bodies plus a language-neutral expected parse. Both `crates/claria-transcribe/tests/body_format.rs` and `claria-desktop-frontend/src/lib/transcript.test.ts` read the same files, which is what stops the two implementations of the transcript body grammar drifting. Add a case by writing the pair; both suites glob the directory.
