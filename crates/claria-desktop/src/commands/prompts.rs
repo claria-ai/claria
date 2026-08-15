@@ -1,10 +1,11 @@
 //! Editable prompts stored under `claria-prompts/` in S3, plus their
 //! version history.
 
+use claria_report_authoring::writer_prompts::WriterPrompt;
 use tauri::State;
 
 use super::{
-    CommandContext, CommandError, run,
+    CommandContext, CommandError, parse_uuid, run,
     versions::{
         FileVersion, get_version_text_for_key, list_versions_for_key, restore_version_for_key,
     },
@@ -193,6 +194,88 @@ pub async fn delete_prompt(
 
         claria_storage::objects::delete_object(&ctx.s3, &ctx.bucket, key).await?;
 
+        Ok(())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Writer prompt library commands
+// ---------------------------------------------------------------------------
+
+/// List the saved writer prompts, alphabetically by name.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_writer_library_prompts(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<WriterPrompt>, String> {
+    run("list_writer_library_prompts", async {
+        let ctx = CommandContext::new(&state).await?;
+        Ok(claria_report_authoring::writer_prompts::list(&ctx.s3, &ctx.bucket).await?)
+    })
+    .await
+}
+
+/// Create (no `prompt_id`) or update (with `prompt_id`) one saved writer
+/// prompt.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_writer_library_prompt(
+    state: State<'_, DesktopState>,
+    prompt_id: Option<String>,
+    name: String,
+    body: String,
+) -> Result<WriterPrompt, String> {
+    run("save_writer_library_prompt", async {
+        let ctx = CommandContext::new(&state).await?;
+        let (prompt, action) = match prompt_id {
+            None => (
+                claria_report_authoring::writer_prompts::create(
+                    &ctx.s3,
+                    &ctx.bucket,
+                    uuid::Uuid::new_v4(),
+                    &name,
+                    &body,
+                )
+                .await?,
+                "writer_prompt_created",
+            ),
+            Some(prompt_id) => (
+                claria_report_authoring::writer_prompts::update(
+                    &ctx.s3,
+                    &ctx.bucket,
+                    parse_uuid(&prompt_id)?,
+                    &name,
+                    &body,
+                )
+                .await?,
+                "writer_prompt_updated",
+            ),
+        };
+        ctx.record_audit(ctx.audit_event(action, "writer_prompt", prompt.id.to_string()))
+            .await;
+        Ok(prompt)
+    })
+    .await
+}
+
+/// Delete one saved writer prompt.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_writer_library_prompt(
+    state: State<'_, DesktopState>,
+    prompt_id: String,
+) -> Result<(), String> {
+    run("delete_writer_library_prompt", async {
+        let prompt_id = parse_uuid(&prompt_id)?;
+        let ctx = CommandContext::new(&state).await?;
+        claria_report_authoring::writer_prompts::delete(&ctx.s3, &ctx.bucket, prompt_id).await?;
+        ctx.record_audit(ctx.audit_event(
+            "writer_prompt_deleted",
+            "writer_prompt",
+            prompt_id.to_string(),
+        ))
+        .await;
         Ok(())
     })
     .await

@@ -128,6 +128,7 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `claria-prompts/pdf-extraction.md` | Custom PDF/DOCX extraction prompt |
 | `claria-prompts/report-system-prompt.md` | Custom writer prompt body (targeted edits); fixed trust rules are always appended |
 | `claria-prompts/full-report-system-prompt.md` | Custom whole-report prompt body; fixed trust rules are always appended |
+| `claria-prompts/writer-library/{prompt_uuid}.json` | Saved writer steering prompt that prefills the instruction box |
 | `_cloudtrail/` | CloudTrail audit logs |
 | `_transcribe/{job_name}.json` | Amazon Transcribe job output, read once then deleted |
 | `_state/provisioner.json` | Provisioner state |

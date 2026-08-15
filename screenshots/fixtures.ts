@@ -597,6 +597,35 @@ export const fixtures: Record<string, unknown> = {
     },
   ],
 
+  // The saved prompt library: one reusable steering instruction per phase of
+  // a phased evaluation-report workflow.
+  list_writer_library_prompts: [
+    {
+      schema_version: 1,
+      id: "61111111-1111-4111-8111-111111111111",
+      name: "Phase 1 — Referral, background & history",
+      body: "Fill in the Reason for Referral, Background Information, and Medical/Developmental/Social History sections from the client records. Skip every other section — behavior observations, results, and the summary come in later passes after the family reviews this draft.",
+      created_at: "2026-03-04T10:00:00Z",
+      updated_at: "2026-03-04T10:00:00Z",
+    },
+    {
+      schema_version: 1,
+      id: "62222222-2222-4222-8222-222222222222",
+      name: "Phase 2 — Observations & assessment results",
+      body: "Draft the Behavioral Observations and Assessment Results sections from the newly uploaded observation notes and score reports. Leave the summary untouched.",
+      created_at: "2026-03-04T10:05:00Z",
+      updated_at: "2026-03-11T09:30:00Z",
+    },
+    {
+      schema_version: 1,
+      id: "63333333-3333-4333-8333-333333333333",
+      name: "Phase 3 — Summary & interpretation",
+      body: "Draft the Summary and Clinical Interpretation sections backing my diagnosis of $DIAGNOSIS, integrating the history, observations, and assessment results already in the report.",
+      created_at: "2026-03-04T10:10:00Z",
+      updated_at: "2026-03-04T10:10:00Z",
+    },
+  ],
+
   export_report_docx: {
     exported: false,
     report_id: "99999999-9999-4999-8999-999999999999",
@@ -830,6 +859,17 @@ All 14 resources are currently **in sync** — no drift detected.`,
 // fixture intentionally returns the rich report above so the capture can show
 // both the Writer timeline and its dedicated usage tab.
 fixtures.start_report_workspace = fixtures.load_report_workspace;
+
+// A Writing session before its first turn: with no turns the setup pane
+// shows the template chooser and the whole-report guidance box, which the
+// saved-prompt picker prefills in the phased-workflow capture.
+export const freshWritingWorkspace = {
+  ...(fixtures.load_report_workspace as Record<string, unknown>),
+  turns: [],
+  pending_proposal: null,
+  resolutions: [],
+  last_export: null,
+};
 
 /** Generate 30 days of realistic cost data totaling ~$8. */
 function generateCostData() {

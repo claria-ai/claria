@@ -22,10 +22,13 @@ import {
   type SessionUsage,
 } from "../lib/cost";
 import { buildCostLedger } from "../lib/costLedger";
+import { buildWriterSessionDiagram } from "../lib/sessionDiagram";
 import { usePreferredModel } from "../lib/usePreferredModel";
 import { usePricingMap } from "../lib/usePricingMap";
 import { useReportWorkspace } from "../lib/useReportWorkspace";
+import { useWriterPrompts } from "../lib/useWriterPrompts";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
+import WriterPromptPicker from "../components/WriterPromptPicker";
 import {
   readWritingComposerDraft,
   reportBlockReferencePreview,
@@ -47,11 +50,13 @@ export default function Writing({
   expectedReportId,
   onLeaveStateChange,
   onManageTemplates,
+  onManagePrompts,
 }: {
   clientId: string;
   expectedReportId?: string | null;
   onLeaveStateChange?: (state: WritingLeaveState) => void;
   onManageTemplates: () => void;
+  onManagePrompts: () => void;
 }) {
   const {
     models: chatModels,
@@ -130,6 +135,15 @@ export default function Writing({
     error: templatesError,
     reload: reloadTemplates,
   } = useWriterTemplates();
+
+  const { prompts: writerPrompts } = useWriterPrompts();
+
+  // Picking a saved prompt is a prefill, not a send: the body lands in the
+  // instruction box for editing (e.g. replacing a $DIAGNOSIS placeholder).
+  function insertSavedPrompt(body: string) {
+    setInstruction(body);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
 
   // The user's explicit template choice, falling back to the first template
   // while the choice is unset or no longer exists.
@@ -215,6 +229,16 @@ export default function Writing({
   const ledger = useMemo(
     () => buildCostLedger(turnUsages, pricingByModel, turnTimestamps),
     [turnTimestamps, turnUsages, pricingByModel]
+  );
+
+  // Three-lane session flow model for the usage panel's diagram.
+  const diagram = useMemo(
+    () =>
+      buildWriterSessionDiagram(
+        workspace?.turns ?? [],
+        workspace?.resolutions ?? []
+      ),
+    [workspace?.turns, workspace?.resolutions]
   );
 
   const addReference = useCallback(
@@ -539,10 +563,20 @@ export default function Writing({
                       </p>
                     </div>
                   </div>
-                  <label className="block">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] font-medium text-gray-600">
                       Guidance <span className="font-normal text-gray-400">· optional</span>
                     </span>
+                    <WriterPromptPicker
+                      prompts={writerPrompts}
+                      currentValue={instruction}
+                      disabled={composerDisabled}
+                      onPick={insertSavedPrompt}
+                      onManage={onManagePrompts}
+                    />
+                  </div>
+                  <label className="block">
+                    <span className="sr-only">Full report guidance</span>
                     <textarea
                       ref={composerRef}
                       aria-label="Full report guidance"
@@ -620,6 +654,7 @@ export default function Writing({
               showTurnCosts={showTurnCosts}
               onShowTurnCostsChange={setShowTurnCosts}
               turnCostsLabel="Writing timeline"
+              diagram={diagram}
             />
           </div>
         )}
@@ -759,6 +794,15 @@ export default function Writing({
               ))}
             </div>
           )}
+          <div className="mb-2 flex justify-end">
+            <WriterPromptPicker
+              prompts={writerPrompts}
+              currentValue={instruction}
+              disabled={composerDisabled}
+              onPick={insertSavedPrompt}
+              onManage={onManagePrompts}
+            />
+          </div>
           <ChatComposer
             composerRef={composerRef}
             ariaLabel="Writing instruction"

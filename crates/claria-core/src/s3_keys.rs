@@ -195,6 +195,14 @@ pub const FULL_REPORT_SYSTEM_PROMPT: &str = "claria-prompts/full-report-system-p
 /// Used as a read fallback so existing buckets keep working.
 pub const LEGACY_SYSTEM_PROMPT: &str = "system-prompt.md";
 
+/// Reusable writer steering prompts the user picks to prefill an
+/// instruction, one JSON object per prompt.
+pub const WRITER_PROMPT_LIBRARY_PREFIX: &str = "claria-prompts/writer-library/";
+
+pub fn writer_library_prompt(prompt_id: Uuid) -> String {
+    format!("{WRITER_PROMPT_LIBRARY_PREFIX}{prompt_id}.json")
+}
+
 pub const PROVISIONER_STATE: &str = "_state/provisioner.json";
 
 /// Scratch space for Amazon Transcribe job output. Written by Transcribe

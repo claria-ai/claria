@@ -42,6 +42,7 @@ Screenshots are written to `output/` at 2× resolution (Retina):
 - `client-record-settings.png` — Client record settings
 - `client-chat.png` — Existing text-only client chat with AI response
 - `client-writing.png` — Writing workspace with a pending proposal
+- `writing-prompt-library.png` — Writing setup pane with a saved phase prompt prefilled into the whole-report guidance box
 - `transcribe-wizard.png` — Transcription setup wizard
 - `transcript-editor.png` — Transcript editor
 - `memo-recording.png` — Voice memo recording in progress

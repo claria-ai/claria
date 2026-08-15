@@ -52,6 +52,7 @@ import type {
   TranscribeMemoResult,
   TranscribeOptionsOverrides,
   UpdateCheck,
+  WriterPrompt,
   WriterTemplateView,
   WriterTrustRules,
 } from "./bindings";
@@ -779,6 +780,29 @@ export async function getPromptVersion(promptName: string, versionId: string): P
 
 export async function restorePromptVersion(promptName: string, versionId: string): Promise<void> {
   unwrap(await commands.restorePromptVersion(promptName, versionId));
+}
+
+// ---------------------------------------------------------------------------
+// Writer prompt library wrappers — reusable steering prompts the user picks
+// to prefill a writer instruction
+// ---------------------------------------------------------------------------
+
+export type { WriterPrompt } from "./bindings";
+
+export async function listWriterLibraryPrompts(): Promise<WriterPrompt[]> {
+  return unwrap(await commands.listWriterLibraryPrompts());
+}
+
+export async function saveWriterLibraryPrompt(
+  promptId: string | null,
+  name: string,
+  body: string
+): Promise<WriterPrompt> {
+  return unwrap(await commands.saveWriterLibraryPrompt(promptId, name, body));
+}
+
+export async function deleteWriterLibraryPrompt(promptId: string): Promise<void> {
+  unwrap(await commands.deleteWriterLibraryPrompt(promptId));
 }
 
 // ---------------------------------------------------------------------------

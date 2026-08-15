@@ -7,6 +7,7 @@ import {
   type SessionUsage,
 } from "../lib/cost";
 import { buildCostLedger } from "../lib/costLedger";
+import { buildChatSessionDiagram } from "../lib/sessionDiagram";
 import type { ModelPricing, TurnUsage } from "../lib/tauri";
 import SessionUsagePanel from "./SessionUsagePanel";
 
@@ -65,5 +66,49 @@ describe("SessionUsagePanel", () => {
 
     await userEvent.click(screen.getByLabelText("Show turn costs"));
     expect(onShowTurnCostsChange).toHaveBeenCalledWith(true);
+  });
+
+  it("renders the session flow diagram beneath the cards when given a model", () => {
+    const turn = usage({});
+    const session = accumulateUsage(EMPTY_SESSION_USAGE, turn);
+    const diagram = buildChatSessionDiagram([
+      { role: "user", content: "Question", timestamp: "2026-08-11T12:00:00Z" },
+      {
+        role: "assistant",
+        content: "Answer",
+        timestamp: "2026-08-11T12:00:02Z",
+        usage: turn,
+      },
+    ]);
+    const { container } = render(
+      <SessionUsagePanel
+        session={session}
+        ledger={buildCostLedger([turn], pricing)}
+        showTurnCosts={false}
+        onShowTurnCostsChange={vi.fn()}
+        diagram={diagram}
+      />
+    );
+
+    expect(screen.getByText("Session flow")).toBeDefined();
+    expect(screen.getByLabelText("Include PHI")).toBeDefined();
+    // PHI stays out of the DOM until the toggle is used.
+    expect(container.textContent).not.toContain("Question");
+    expect(container.textContent).not.toContain("Answer");
+  });
+
+  it("keeps the no-usage empty state alongside the diagram's own empty state", () => {
+    render(
+      <SessionUsagePanel
+        session={EMPTY_SESSION_USAGE}
+        ledger={buildCostLedger([], pricing)}
+        showTurnCosts={false}
+        onShowTurnCostsChange={vi.fn()}
+        diagram={buildChatSessionDiagram([])}
+      />
+    );
+
+    expect(screen.getByText("No usage yet")).toBeDefined();
+    expect(screen.getByText("No turns yet")).toBeDefined();
   });
 });

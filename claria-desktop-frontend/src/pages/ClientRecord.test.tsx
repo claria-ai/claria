@@ -108,7 +108,7 @@ function renderClient(navigate = vi.fn(), onNameChanged = vi.fn()) {
         clientId="client-1"
         clientName="Ada"
         onClientNameChanged={onNameChanged}
-        onManageWriterTemplates={vi.fn()}
+        onManageWriterSection={vi.fn()}
       />
     </ChatModelsContext.Provider>
   );

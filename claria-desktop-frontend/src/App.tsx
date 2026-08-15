@@ -28,12 +28,16 @@ export type Page =
   | "preferences"
   | "about";
 
+/** Preferences accordion a "Manage …" jump from the Writing tab opens. */
+export type PreferencesWriterSection = "writer-templates" | "writer-prompts";
+
 export default function App() {
   const [page, setPage] = useState<Page>("loading");
   const [configExists, setConfigExists] = useState(false);
   const [activeClientId, setActiveClientId] = useState<string | null>(null);
   const [activeClientName, setActiveClientName] = useState<string | null>(null);
-  const [openWriterTemplates, setOpenWriterTemplates] = useState(false);
+  const [preferencesFocus, setPreferencesFocus] =
+    useState<PreferencesWriterSection | null>(null);
   const [preferencesReturnPage, setPreferencesReturnPage] =
     useState<Page>("start");
 
@@ -96,7 +100,7 @@ export default function App() {
         refreshChatModels();
       }
       if (target === "preferences") {
-        setOpenWriterTemplates(false);
+        setPreferencesFocus(null);
         setPreferencesReturnPage("start");
       }
       setPage(target);
@@ -156,8 +160,8 @@ export default function App() {
           clientId={activeClientId}
           clientName={activeClientName ?? "Client"}
           onClientNameChanged={setActiveClientName}
-          onManageWriterTemplates={() => {
-            setOpenWriterTemplates(true);
+          onManageWriterSection={(section) => {
+            setPreferencesFocus(section);
             setPreferencesReturnPage("client-record");
             setPage("preferences");
           }}
@@ -167,7 +171,7 @@ export default function App() {
       {page === "preferences" && (
         <Preferences
           navigate={navigate}
-          openWriterTemplates={openWriterTemplates}
+          focusSection={preferencesFocus}
           backPage={preferencesReturnPage}
         />
       )}

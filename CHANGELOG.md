@@ -8,6 +8,10 @@ All notable changes to Claria are documented here.
 - A deferred section keeps its heading and place in the draft as an empty placeholder, shown greyed in the canvas and left out of Word exports until content is written into it
 - Writing into a deferred section — by proposal, whole-report rewrite, or hand edit — un-defers it
 - The whole-report finalizer still requires an explicit decision for every supplied section: written or skipped, nothing dropped silently
+- The writer gains a saved-prompt library: reusable steering instructions managed in Preferences, one per phase of a report workflow
+- A picker beside the writer's guidance box and composer prefills a saved prompt for editing before it is sent
+- Saved prompts are stored in managed S3 storage and shared across all clients, with a reminder to use placeholders instead of client details
+- The screenshot suite captures the writer setup pane with a saved phase prompt prefilled into the guidance box, for the release site's Report Writer section
 - The frontend dev server no longer discovers a dependency late and reloads the page mid-load on a cold start, which could strand the first screenshot and fail the release site update
 - Screenshot capture waits for the dev server to be able to serve the app rather than merely to answer its port
 - A failed capture now carries the dev server's own output, which was previously discarded
@@ -21,6 +25,8 @@ All notable changes to Claria are documented here.
 - The Tauri JavaScript API is pinned exactly, so the half of the pair that talks to the Rust runtime can no longer drift on an unrelated install
 - Local transcription's settings file and model downloads are restricted to the account Claria runs as on Windows, where they were previously left at whatever permissions the folder handed out
 - Restricting a file to the current user now fails loudly on every platform instead of reporting success it did not achieve
+- The costs-and-cache tab gains a scrollable three-lane diagram of each session turn — user messages, model replies and tool calls, and Claria state changes — with token, cost, size, and duration tallies
+- The diagram shows no clinical content by default; an Include PHI checkbox, off on every open, reveals truncated excerpts, tool summaries, and record filenames
 
 ## [0.26.0] — 2026-08-15
 
