@@ -227,6 +227,7 @@ fn table_and_template_review_metadata_are_exposed_without_source_identity() {
             ReportContent {
                 title: "Imported".to_string(),
                 sections: vec![ReportSection {
+                    skipped: false,
                     id: Uuid::new_v4(),
                     heading: "Scores".to_string(),
                     blocks: vec![ReportBlock::Table {

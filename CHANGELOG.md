@@ -4,6 +4,10 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Whole-report generation can now defer template sections the user's guidance leaves for a later pass, instead of being forced to write every section
+- A deferred section keeps its heading and place in the draft as an empty placeholder, shown greyed in the canvas and left out of Word exports until content is written into it
+- Writing into a deferred section — by proposal, whole-report rewrite, or hand edit — un-defers it
+- The whole-report finalizer still requires an explicit decision for every supplied section: written or skipped, nothing dropped silently
 - The writer gains a saved-prompt library: reusable steering instructions managed in Preferences, one per phase of a report workflow
 - A picker beside the writer's guidance box and composer prefills a saved prompt for editing before it is sent
 - Saved prompts are stored in managed S3 storage and shared across all clients, with a reminder to use placeholders instead of client details

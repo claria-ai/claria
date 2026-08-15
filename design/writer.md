@@ -72,8 +72,9 @@ flowchart TD
         L{"Converse round<br/>(max_tokens = 32k)"}
         TT["set_full_draft_title (1 call)"]
         W["write_full_draft_section<br/>one call per section, N calls"]
+        SK["skip_full_draft_section<br/>per user-deferred section"]
         F["finish_full_draft (1 call)"]
-        V["Validate candidate:<br/>every template section_id written?"]
+        V["Validate candidate:<br/>every template section_id<br/>written or skipped?"]
         REV["Atomic save: revision 1"]
     end
 
@@ -92,6 +93,7 @@ flowchart TD
     S --> C --> P --> X --> L
     L --> TT --> L
     L --> W --> L
+    L --> SK --> L
     L --> F --> V --> REV
     REV --> I --> RD --> PR --> ACC
     ACC -- yes --> REVN --> I
@@ -105,12 +107,20 @@ Whole-report generation is deliberately **one tool call per section**, not
 one call for the document:
 
 - `set_full_draft_title` — always exactly one call.
-- `write_full_draft_section` — one call for **every** section. The
-  finalizer refuses unless every section id present in the template skeleton
-  has been rewritten (so stale template facts cannot survive by omission),
-  plus one call per genuinely new section. A ten-section evaluation template
-  is ten calls minimum.
-- `finish_full_draft` — one call.
+- `write_full_draft_section` — one call for **every** section the draft
+  actually writes, plus one call per genuinely new section.
+- `skip_full_draft_section` — one call per section the user's guidance
+  defers to a later pass (e.g. "leave the summary until I supply a
+  diagnosis"). A skipped section re-enters the saved revision as an **empty
+  placeholder**: its heading and template position survive, its boilerplate
+  body does not, and DOCX export omits it entirely until content is written
+  into it. Writing into a deferred section — a later full-draft write, an
+  accepted `replace_section` proposal, or a hand edit — un-defers it.
+- `finish_full_draft` — one call. The finalizer refuses unless **every**
+  section id present in the template skeleton has been written **or
+  explicitly skipped** — an undecided section is an error, so stale template
+  facts cannot survive and nothing disappears silently. A ten-section
+  evaluation template is ten decisions minimum.
 
 So a typical templated report is N+2 calls at minimum, spread across several
 Converse rounds: each response is capped at the 32k output reserve, and a

@@ -125,6 +125,7 @@ export function draftToEdit(draft: ReportDraft): ReportDraftEdit {
       id: section.id,
       heading: section.heading,
       blocks: section.blocks.map(cloneBlock),
+      skipped: section.skipped ?? false,
     })),
   };
 }
@@ -136,6 +137,7 @@ export function cloneReportEdit(edit: ReportDraftEdit): ReportDraftEdit {
       id: section.id,
       heading: section.heading,
       blocks: section.blocks.map(cloneBlock),
+      skipped: section.skipped ?? false,
     })),
   };
 }

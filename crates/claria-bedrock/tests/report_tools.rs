@@ -167,9 +167,17 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
         vec![
             "set_full_draft_title",
             "write_full_draft_section",
+            "skip_full_draft_section",
             "finish_full_draft"
         ]
     );
+    let skip = &tools[2]["toolSpec"]["inputSchema"]["json"];
+    assert_eq!(skip["required"], serde_json::json!(["section_id"]));
+    let skip_description = tools[2]["toolSpec"]["description"]
+        .as_str()
+        .expect("skip description");
+    assert!(skip_description.contains("written or skipped"));
+    assert!(skip_description.contains("never to shorten the job"));
     let section = &tools[1]["toolSpec"]["inputSchema"]["json"];
     assert_eq!(
         section["properties"]["blocks"]["maxItems"],

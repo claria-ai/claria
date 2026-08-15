@@ -232,6 +232,247 @@ async fn full_report_generation_preloads_records_and_atomically_saves_one_draft(
 }
 
 #[tokio::test]
+async fn full_draft_defers_skipped_sections_as_placed_empty_placeholders() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "intake.txt"),
+        "Referred by pediatrician for attention concerns.",
+    )
+    .await;
+
+    let referral_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let background_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let summary_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let template_section = |id: &str, heading: &str| ReportSection {
+        id: id.parse().unwrap(),
+        heading: heading.to_string(),
+        blocks: vec![ReportBlock::Paragraph {
+            text: "Template boilerplate.".to_string(),
+        }],
+        skipped: false,
+    };
+    report_authoring::save_report_draft(
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        ReportContent {
+            title: "Evaluation Template".to_string(),
+            sections: vec![
+                template_section(referral_id, "Reason for Referral"),
+                template_section(background_id, "Background"),
+                template_section(summary_id, "Summary and Clinical Interpretation"),
+            ],
+        },
+    )
+    .await
+    .expect("seed template-shaped draft");
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "title-1", "name": "set_full_draft_title", "input": {
+                        "title": "Psychoeducational Evaluation"
+                    }}},
+                    {"toolUse": {"toolUseId": "section-1", "name": "write_full_draft_section", "input": {
+                        "section_id": referral_id,
+                        "position": 0,
+                        "heading": "Reason for Referral",
+                        "blocks": [{"kind": "paragraph", "text": "Referred for attention concerns."}]
+                    }}},
+                    {"toolUse": {"toolUseId": "section-2", "name": "write_full_draft_section", "input": {
+                        "section_id": background_id,
+                        "position": 1,
+                        "heading": "Background",
+                        "blocks": [{"kind": "paragraph", "text": "Documented developmental history."}]
+                    }}},
+                    {"toolUse": {"toolUseId": "skip-1", "name": "skip_full_draft_section", "input": {
+                        "section_id": summary_id
+                    }}}
+                ]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 5, "outputTokens": 30}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"toolUse": {
+                    "toolUseId": "finish-1", "name": "finish_full_draft", "input": {
+                        "summary": "Drafted referral and background; deferred the summary per guidance."
+                    }
+                }}]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 2, "outputTokens": 6}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "Drafted two sections; the summary is deferred for your later diagnosis pass."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 6}
+            }),
+        ],
+    )
+    .await;
+
+    let outcome = report_authoring::generate_full_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        1,
+        MODEL_ID,
+        report_authoring::FullReportRequest::new(
+            "Fill referral and background; skip the summary until I supply a diagnosis.",
+        ),
+    )
+    .await
+    .expect("generate partial full report");
+
+    assert_eq!(outcome.workspace.draft.revision, 2);
+    let sections = &outcome.workspace.draft.content.sections;
+    assert_eq!(sections.len(), 3);
+    assert_eq!(sections[0].heading, "Reason for Referral");
+    assert!(!sections[0].skipped);
+    assert_eq!(sections[1].heading, "Background");
+    let deferred = &sections[2];
+    assert_eq!(deferred.id.to_string(), summary_id);
+    assert_eq!(deferred.heading, "Summary and Clinical Interpretation");
+    assert!(deferred.skipped);
+    assert!(deferred.blocks.is_empty());
+
+    // The finalize result the model saw reports the deferral count, and the
+    // deferred placeholder rides into the next turn's report context.
+    let state = server.state.read().await;
+    let finish_round = state.bedrock_tool_requests[2].to_string();
+    assert!(finish_round.contains("\"skipped_section_count\":1"));
+    drop(state);
+
+    let reloaded = report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("reload deferred draft");
+    assert_eq!(reloaded.draft.content, outcome.workspace.draft.content);
+}
+
+#[tokio::test]
+async fn full_draft_finisher_requires_a_decision_for_every_supplied_section() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "history.txt"),
+        "Documented history of services.",
+    )
+    .await;
+
+    let written_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    let undecided_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    report_authoring::save_report_draft(
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        ReportContent {
+            title: "Evaluation Template".to_string(),
+            sections: vec![
+                ReportSection {
+                    id: written_id.parse().unwrap(),
+                    heading: "History".to_string(),
+                    blocks: vec![ReportBlock::Paragraph {
+                        text: "Boilerplate history.".to_string(),
+                    }],
+                    skipped: false,
+                },
+                ReportSection {
+                    id: undecided_id.parse().unwrap(),
+                    heading: "Observations".to_string(),
+                    blocks: vec![ReportBlock::Paragraph {
+                        text: "Boilerplate observations.".to_string(),
+                    }],
+                    skipped: false,
+                },
+            ],
+        },
+    )
+    .await
+    .expect("seed two-section draft");
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "title-1", "name": "set_full_draft_title", "input": {
+                        "title": "Evaluation"
+                    }}},
+                    {"toolUse": {"toolUseId": "section-1", "name": "write_full_draft_section", "input": {
+                        "section_id": written_id,
+                        "position": 0,
+                        "heading": "History",
+                        "blocks": [{"kind": "paragraph", "text": "Written history."}]
+                    }}},
+                    {"toolUse": {"toolUseId": "finish-early", "name": "finish_full_draft", "input": {
+                        "summary": "Finished after one section."
+                    }}}
+                ]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 4, "outputTokens": 20}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "skip-1", "name": "skip_full_draft_section", "input": {
+                        "section_id": undecided_id
+                    }}},
+                    {"toolUse": {"toolUseId": "finish-1", "name": "finish_full_draft", "input": {
+                        "summary": "Deferred observations, then finished."
+                    }}}
+                ]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 2, "outputTokens": 10}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "History is written; observations are deferred."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 5}
+            }),
+        ],
+    )
+    .await;
+
+    let outcome = report_authoring::generate_full_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        1,
+        MODEL_ID,
+        report_authoring::FullReportRequest::new(
+            "Write the history; leave observations for later.",
+        ),
+    )
+    .await
+    .expect("generate after corrected finish");
+
+    // The premature finish was refused with the undecided section named, and
+    // the model's corrective round then deferred it explicitly.
+    let state = server.state.read().await;
+    let second_request = state.bedrock_tool_requests[1].to_string();
+    assert!(
+        second_request.contains("Write or explicitly skip every supplied report/template section")
+    );
+    assert!(second_request.contains(undecided_id));
+    drop(state);
+
+    let sections = &outcome.workspace.draft.content.sections;
+    assert_eq!(sections.len(), 2);
+    assert!(!sections[0].skipped);
+    assert!(sections[1].skipped);
+    assert_eq!(sections[1].heading, "Observations");
+}
+
+#[tokio::test]
 async fn transient_prompt_lru_reuses_exact_protocol_after_writer_reload() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();
@@ -501,11 +742,13 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
             title: "Manual report".to_string(),
             sections: vec![
                 ReportSection {
+                    skipped: false,
                     id: Uuid::new_v4(),
                     heading: "First".to_string(),
                     blocks: vec![paragraph("One")],
                 },
                 ReportSection {
+                    skipped: false,
                     id: Uuid::new_v4(),
                     heading: "Second".to_string(),
                     blocks: vec![paragraph("Two")],
@@ -555,11 +798,13 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
             title: "Manual report".to_string(),
             sections: vec![
                 ReportSection {
+                    skipped: false,
                     id: second_id,
                     heading: "Second".to_string(),
                     blocks: vec![paragraph("Two")],
                 },
                 ReportSection {
+                    skipped: false,
                     id: first_id,
                     heading: "First".to_string(),
                     blocks: vec![paragraph("One")],
@@ -835,6 +1080,7 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
             content: ReportContent {
                 title: "Imported template".to_string(),
                 sections: vec![ReportSection {
+                    skipped: false,
                     id: Uuid::new_v4(),
                     heading: "Scores".to_string(),
                     blocks: vec![ReportBlock::Table {
@@ -2507,6 +2753,7 @@ async fn accepted_report_content_and_focused_tables_stay_in_untrusted_context() 
         ReportContent {
             title: malicious.to_string(),
             sections: vec![ReportSection {
+                skipped: false,
                 id: section_id,
                 heading: "Findings".to_string(),
                 blocks: vec![

@@ -153,6 +153,12 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
                     "write_full_draft_section schema must require section_id, position, heading, and blocks",
                 );
             }
+            "skip_full_draft_section"
+                if required != std::collections::HashSet::from(["section_id"])
+                    || !properties.contains_key("section_id") =>
+            {
+                return Err("skip_full_draft_section schema must require section_id");
+            }
             "finish_full_draft"
                 if required != std::collections::HashSet::from(["summary"])
                     || !properties.contains_key("summary") =>
@@ -171,6 +177,7 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
     let full_draft_tools = [
         "set_full_draft_title",
         "write_full_draft_section",
+        "skip_full_draft_section",
         "finish_full_draft",
     ];
     if names != targeted_tools && names != full_draft_tools {

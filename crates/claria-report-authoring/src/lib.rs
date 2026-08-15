@@ -22,7 +22,7 @@ use claria_bedrock::{
     report::{
         self, FinishFullDraftRequest, ProposeReportChangesRequest, ReportBlockRequest,
         ReportProposalOperationRequest, ReportStopReason, ReportToolCall, ReportToolRequest,
-        SetFullDraftTitleRequest, WriteFullDraftSectionRequest,
+        SetFullDraftTitleRequest, SkipFullDraftSectionRequest, WriteFullDraftSectionRequest,
     },
 };
 use claria_core::models::{
@@ -199,7 +199,10 @@ You are an interactive report-writing assistant. You cannot modify the accepted 
 Use only the report tools configured by Claria. Use list_record_files and read_record_file when the user's request depends on client records. Never access or invent keys, other clients, chat history, or hidden report state.
 
 # Proposals
-To suggest a write, call propose_report_changes with typed operations. A successful proposal tool result means only that the proposal is pending user acceptance; it is not saved or applied. Do not say it was saved. Ask or answer in text when no draft change is appropriate.";
+To suggest a write, call propose_report_changes with typed operations. A successful proposal tool result means only that the proposal is pending user acceptance; it is not saved or applied. Do not say it was saved. Ask or answer in text when no draft change is appropriate.
+
+# Deferred sections
+A section marked \"skipped\": true in the accepted report is a deferred placeholder: its heading holds a place, its body is intentionally empty, and exports omit it. When asked what remains unwritten, list these sections. Fill one with a replace_section operation, which un-defers it.";
 
 /// Fixed trust-boundary rules for the targeted-edit prompt. Appended to
 /// every composed prompt after the (possibly customized) body — a custom
@@ -221,10 +224,10 @@ pub const FULL_REPORT_SYSTEM_PROMPT_BODY: &str = "\
 You are creating a complete clinical report working draft in one uninterrupted job. The user explicitly requested whole-document generation; do not ask them to approve sections or send follow-up turns while drafting.
 
 # Complete draft workflow
-Call set_full_draft_title once. Then call write_full_draft_section for every section needed in the complete report, using as many tool calls and rounds as necessary. Copy every existing section_id exactly and write every supplied template/report section so stale client facts cannot survive. Use null only for genuinely new sections. Preserve useful template headings, table structure, and row meaning. When the candidate is complete, call finish_full_draft. Do not finish early, do not use prose as a substitute for tool calls, and do not propose reviewable changes in this mode.
+Call set_full_draft_title once. Then call write_full_draft_section for every section needed in the complete report, using as many tool calls and rounds as necessary. Copy every existing section_id exactly; every supplied template/report section must be written or explicitly skipped so stale client facts cannot survive. Call skip_full_draft_section only for sections the user's guidance directs you to leave for a later pass — a skipped section keeps its heading as an empty deferred placeholder and is omitted from exports; never skip to shorten the job. Use null only for genuinely new sections. Preserve useful template headings, table structure, and row meaning. When the candidate is complete, call finish_full_draft. Do not finish early, do not use prose as a substitute for tool calls, and do not propose reviewable changes in this mode.
 
 # Result
-The tools modify only an isolated candidate while you work. A successful finish_full_draft causes Claria to validate the candidate and save one atomic, versioned working-draft revision. After finalization, briefly summarize what was drafted and which unavailable records, if any, still need extraction.";
+The tools modify only an isolated candidate while you work. A successful finish_full_draft causes Claria to validate the candidate and save one atomic, versioned working-draft revision. After finalization, briefly summarize what was drafted, which sections were deferred for a later pass, and which unavailable records, if any, still need extraction.";
 
 /// Fixed trust-boundary rules for the whole-document prompt.
 pub const FULL_REPORT_TRUST_RULES: &str = "\
@@ -2091,6 +2094,9 @@ async fn run_turn(
                         claria_bedrock::report::WRITE_FULL_DRAFT_SECTION_TOOL => {
                             Some("Complete report section".to_string())
                         }
+                        claria_bedrock::report::SKIP_FULL_DRAFT_SECTION_TOOL => {
+                            Some("Deferred report section".to_string())
+                        }
                         claria_bedrock::report::FINISH_FULL_DRAFT_TOOL => {
                             Some("Complete working draft".to_string())
                         }
@@ -3133,6 +3139,7 @@ struct ExecutedTool {
 struct FullDraftCandidate {
     required_section_ids: HashSet<Uuid>,
     touched_section_ids: HashSet<Uuid>,
+    skipped_section_ids: HashSet<Uuid>,
     title: Option<String>,
     sections: Vec<ReportSection>,
     finalized_summary: Option<String>,
@@ -3149,6 +3156,7 @@ impl FullDraftCandidate {
                 .map(|section| section.id)
                 .collect(),
             touched_section_ids: HashSet::new(),
+            skipped_section_ids: HashSet::new(),
             title: None,
             sections: Vec::new(),
             finalized_summary: None,
@@ -3291,6 +3299,9 @@ impl<'a> ToolExecutionContext<'a> {
             ReportToolRequest::WriteFullDraftSection(request) => {
                 Ok(self.write_full_draft_section(request))
             }
+            ReportToolRequest::SkipFullDraftSection(request) => {
+                Ok(self.skip_full_draft_section(request))
+            }
             ReportToolRequest::FinishFullDraft(request) => Ok(self.finish_full_draft(request)),
         }
     }
@@ -3390,6 +3401,7 @@ impl<'a> ToolExecutionContext<'a> {
                 id: section_id,
                 heading: request.heading,
                 blocks: request.blocks.into_iter().map(block_from_request).collect(),
+                skipped: false,
             },
         );
         let proposed = ReportContent {
@@ -3414,6 +3426,8 @@ impl<'a> ToolExecutionContext<'a> {
         };
         candidate.sections = sections;
         candidate.touched_section_ids.insert(section_id);
+        // A write is the stronger decision: it overrides an earlier skip.
+        candidate.skipped_section_ids.remove(&section_id);
         ExecutedTool {
             status: ReportToolResultStatus::Success,
             content: serde_json::json!({
@@ -3422,6 +3436,47 @@ impl<'a> ToolExecutionContext<'a> {
                 "position": position,
                 "block_count": block_count,
                 "section_count": section_count
+            }),
+        }
+    }
+
+    fn skip_full_draft_section(&mut self, request: SkipFullDraftSectionRequest) -> ExecutedTool {
+        let Some(candidate) = self.full_draft.as_mut() else {
+            return tool_error(
+                "tool_not_available",
+                "skip_full_draft_section is available only during explicit full-draft generation.",
+            );
+        };
+        if candidate.finalized_summary.is_some() {
+            return tool_error(
+                "full_draft_already_finalized",
+                "The complete draft is already finalized; do not modify it again.",
+            );
+        }
+        let Ok(section_id) = request.section_id.parse::<Uuid>() else {
+            return tool_error(
+                "invalid_section_id",
+                "section_id must be a copied 36-character UUID.",
+            );
+        };
+        if !candidate.required_section_ids.contains(&section_id) {
+            return tool_error(
+                "invented_section_id",
+                "Only a supplied template/report section can be skipped. Copy its ID exactly from the untrusted context; sections you added yourself should simply not be written.",
+            );
+        }
+        if candidate.touched_section_ids.contains(&section_id) {
+            return tool_error(
+                "section_already_written",
+                "This section was already written in this draft; a skip cannot override a write. The written section stands.",
+            );
+        }
+        candidate.skipped_section_ids.insert(section_id);
+        ExecutedTool {
+            status: ReportToolResultStatus::Success,
+            content: serde_json::json!({
+                "status": "section_skipped",
+                "section_id": section_id.to_string()
             }),
         }
     }
@@ -3460,6 +3515,7 @@ impl<'a> ToolExecutionContext<'a> {
         let mut missing = candidate
             .required_section_ids
             .difference(&candidate.touched_section_ids)
+            .filter(|id| !candidate.skipped_section_ids.contains(id))
             .copied()
             .collect::<Vec<_>>();
         missing.sort();
@@ -3467,7 +3523,7 @@ impl<'a> ToolExecutionContext<'a> {
             return tool_error(
                 "full_draft_incomplete",
                 &format!(
-                    "Write every supplied report/template section before finishing. Missing section IDs: {}",
+                    "Write or explicitly skip every supplied report/template section before finishing. Undecided section IDs: {}",
                     missing
                         .iter()
                         .map(Uuid::to_string)
@@ -3476,10 +3532,12 @@ impl<'a> ToolExecutionContext<'a> {
                 ),
             );
         }
-        let content = ReportContent {
-            title,
-            sections: candidate.sections.clone(),
-        };
+        let sections = merge_skipped_placeholders(
+            &candidate.sections,
+            &candidate.skipped_section_ids,
+            &self.workspace.draft.content.sections,
+        );
+        let content = ReportContent { title, sections };
         if let Err(error) = validate_report_content(&content) {
             return tool_error(
                 "invalid_full_draft",
@@ -3487,18 +3545,21 @@ impl<'a> ToolExecutionContext<'a> {
             );
         }
         let section_count = content.sections.len();
+        let skipped_section_count = candidate.skipped_section_ids.len();
         let Some(candidate) = self.full_draft.as_mut() else {
             return tool_error(
                 "tool_not_available",
                 "The full-draft candidate is no longer available.",
             );
         };
+        candidate.sections = content.sections;
         candidate.finalized_summary = Some(request.summary);
         ExecutedTool {
             status: ReportToolResultStatus::Success,
             content: serde_json::json!({
                 "status": "full_draft_finalized",
                 "section_count": section_count,
+                "skipped_section_count": skipped_section_count,
                 "base_revision": self.workspace.draft.revision
             }),
         }
@@ -3633,6 +3694,47 @@ impl<'a> ToolExecutionContext<'a> {
     }
 }
 
+/// Merge deferred-section placeholders into the written full-draft sections.
+///
+/// Written sections keep the model's chosen order. Each skipped supplied
+/// section re-enters as an empty `skipped` placeholder carrying its supplied
+/// heading and ID, positioned after the nearest earlier supplied section
+/// already present in the result — so consecutive skips keep their supplied
+/// relative order, and a skip with no earlier surviving neighbor lands at
+/// the front.
+fn merge_skipped_placeholders(
+    written: &[ReportSection],
+    skipped_section_ids: &HashSet<Uuid>,
+    supplied: &[ReportSection],
+) -> Vec<ReportSection> {
+    let mut sections = written.to_vec();
+    for (supplied_index, supplied_section) in supplied.iter().enumerate() {
+        if !skipped_section_ids.contains(&supplied_section.id) {
+            continue;
+        }
+        let insert_at = supplied[..supplied_index]
+            .iter()
+            .rev()
+            .find_map(|prior| {
+                sections
+                    .iter()
+                    .position(|section| section.id == prior.id)
+                    .map(|position| position + 1)
+            })
+            .unwrap_or(0);
+        sections.insert(
+            insert_at,
+            ReportSection {
+                id: supplied_section.id,
+                heading: supplied_section.heading.clone(),
+                blocks: Vec::new(),
+                skipped: true,
+            },
+        );
+    }
+    sections
+}
+
 fn list_record_files_result(inventory: &[RecordInventoryEntry]) -> ExecutedTool {
     let mut files: Vec<serde_json::Value> = inventory
         .iter()
@@ -3711,6 +3813,7 @@ fn operation_from_request(
                 id: Uuid::new_v4(),
                 heading,
                 blocks: blocks.into_iter().map(block_from_request).collect(),
+                skipped: false,
             },
         }),
         ReportProposalOperationRequest::ReplaceSection {
@@ -3992,6 +4095,7 @@ fn sanitize_tool_result(
         Some(report::PROPOSE_REPORT_CHANGES_TOOL)
         | Some(report::SET_FULL_DRAFT_TITLE_TOOL)
         | Some(report::WRITE_FULL_DRAFT_SECTION_TOOL)
+        | Some(report::SKIP_FULL_DRAFT_SECTION_TOOL)
         | Some(report::FINISH_FULL_DRAFT_TOOL) => content.clone(),
         _ => serde_json::json!({"status": "succeeded", "content_retained": false}),
     }

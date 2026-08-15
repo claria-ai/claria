@@ -248,6 +248,18 @@ export function ReportDocument({
         <div className="space-y-8">
           {content.sections.map((section) => (
             <section key={section.id}>
+              {section.skipped ? (
+                <div data-testid="deferred-section">
+                  <h2 className="text-xl font-semibold text-gray-400 mb-1">
+                    <InlineMarkdown text={section.heading} />
+                  </h2>
+                  <p className="text-xs text-gray-400 italic">
+                    Deferred — not written yet. This section is left out of
+                    exports until content is written into it.
+                  </p>
+                </div>
+              ) : (
+              <>
               <h2 className="text-xl font-semibold text-gray-900 mb-3">
                 <InlineMarkdown text={section.heading} />
               </h2>
@@ -306,6 +318,8 @@ export function ReportDocument({
                   );
                 })}
               </div>
+              </>
+              )}
             </section>
           ))}
         </div>
@@ -468,6 +482,12 @@ function EditableReport({
             disabled={disabled}
             className="text-xl font-semibold text-gray-900 mb-3"
           />
+          {section.skipped && (
+            <p className="text-xs text-gray-400 italic mb-3" data-testid="deferred-section-editing">
+              Deferred — adding content un-defers this section; until then it
+              is left out of exports.
+            </p>
+          )}
 
           <div className="absolute -right-8 top-0 opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100 flex flex-col bg-white border border-gray-200 rounded shadow-sm">
             <ReorderButtons

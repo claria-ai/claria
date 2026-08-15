@@ -18,6 +18,7 @@ ReportDraft
    └─ sections: Vec<ReportSection>
       ├─ id: Uuid            ← stable identity edits address
       ├─ heading: String
+      ├─ skipped: bool       ← deferred placeholder: empty body, elided from export
       └─ blocks: Vec<ReportBlock>
          ├─ Paragraph  { text }                        ← plain text, \n allowed
          ├─ BulletList { items: Vec<String> }          ← single level
@@ -57,9 +58,13 @@ apply — the user's own edits win.
 
 **Whole-report (atomic).** Full-draft generation builds an isolated
 `FullDraftCandidate`; `write_full_draft_section` calls mutate only the
-candidate. Finalization validates the complete content — including that
-every section id present when generation started was rewritten — and then
-saves it as **one** revision via `replace_content`.
+candidate, and `skip_full_draft_section` records a user-directed deferral.
+Finalization validates the complete content — including that every section
+id present when generation started was written **or explicitly skipped** —
+merges each skipped section back in as an empty `skipped` placeholder at
+its template-relative position, and then saves it all as **one** revision
+via `replace_content`. A `replace_section` that later writes content into a
+deferred section clears its `skipped` flag.
 
 The user's inline edits are a third writer: the frontend folds unsaved
 edits into a draft-save, which is just another revision. Revisions are
@@ -70,7 +75,10 @@ never rewritten).
 ## Rendering out on demand
 
 Export loads a snapshot (draft + optional template source) and picks one of
-two renderers in `claria-docx`:
+two renderers in `claria-docx`. Both renderers first drop `skipped`
+sections — a deferred section holds its place in the draft and the canvas,
+but the exported document contains no trace of it until content is written
+into it:
 
 **Plain renderer** (`render_report`) — no template. Builds a fresh package
 with docx-rs: Times New Roman 12pt `Normal`, centered bold `Title`, bold
