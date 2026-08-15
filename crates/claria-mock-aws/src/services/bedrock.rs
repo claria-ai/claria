@@ -678,6 +678,14 @@ async fn converse_stream(path: &str, body: Value, state: SharedState) -> Respons
         plain_converse_payload(body, state.clone()).await
     };
     state.write().await.bedrock_stream_request_count += 1;
+
+    if state.read().await.bedrock_stream_stalls {
+        return match stalled_converse_stream() {
+            Ok(response) => response,
+            Err(error) => encoding_failure(error),
+        };
+    }
+
     if status != StatusCode::OK {
         return (
             status,
@@ -694,17 +702,54 @@ async fn converse_stream(path: &str, body: Value, state: SharedState) -> Respons
             frames,
         )
             .into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [("content-type", "application/json")],
-            json!({
-                "message": format!("failed to encode event stream: {error}"),
-                "__type": "InternalServerException"
-            })
-            .to_string(),
-        )
-            .into_response(),
+        Err(error) => encoding_failure(error),
     }
+}
+
+fn encoding_failure(error: aws_smithy_eventstream::error::Error) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [("content-type", "application/json")],
+        json!({
+            "message": format!("failed to encode event stream: {error}"),
+            "__type": "InternalServerException"
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+/// A `ConverseStream` response that starts and then dies: the opening frame
+/// and one text delta arrive, and the body never completes.
+///
+/// The request stays open indefinitely, so a caller with no idle bound of
+/// its own waits forever. Nothing in the AWS SDK rescues it — the streaming
+/// Bedrock operations carry no stalled-stream protection interceptor, and
+/// the read timeout covers only the wait for response headers, which
+/// already arrived.
+fn stalled_converse_stream() -> Result<Response, aws_smithy_eventstream::error::Error> {
+    use futures::StreamExt;
+
+    let mut frames = Vec::new();
+    write_event(&mut frames, "messageStart", &json!({"role": "assistant"}))?;
+    write_event(
+        &mut frames,
+        "contentBlockDelta",
+        &json!({"contentBlockIndex": 0, "delta": {"text": "Beginning of a reply that "}}),
+    )?;
+
+    let opening = futures::stream::once(async move {
+        Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from(frames))
+    });
+    let never_ends = futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
+    let body = axum::body::Body::from_stream(opening.chain(never_ends));
+
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/vnd.amazon.eventstream")],
+        body,
+    )
+        .into_response())
 }
 
 /// Decompose a unary Converse JSON payload into encoded event-stream frames.

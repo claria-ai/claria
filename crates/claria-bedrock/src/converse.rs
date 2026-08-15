@@ -187,6 +187,57 @@ pub struct StreamOutcome {
     pub latency_ms: Option<u64>,
 }
 
+/// Longest silence tolerated between two frames of a Bedrock response
+/// stream before the connection is treated as dead.
+///
+/// The AWS SDK's stalled-stream protection does not cover this: the
+/// generated `ConverseStream` operation registers no
+/// `StalledStreamProtectionInterceptor`, unlike every unary operation. With
+/// no read timeout on the body either — the SDK's read timeout bounds only
+/// the wait for response headers — a `ConverseStream` whose socket dies
+/// mid-generation would otherwise hang forever.
+///
+/// Sized for the quiet stretches a live stream really has: the wait for the
+/// first frame while a full context window prefills, and the gaps between
+/// reasoning deltas while the model thinks. Frames flow continuously
+/// throughout generation, so two silent minutes means the connection is
+/// gone, not that the model is busy.
+pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Receive the next frame of a Converse response stream, bounded by
+/// [`STREAM_IDLE_TIMEOUT`]. `Ok(None)` ends the stream.
+///
+/// Shared by the chat and writer stream loops so their idle bound and their
+/// mid-stream error shape cannot drift. Mid-stream failures carry a raw
+/// event frame rather than an HTTP response, so the full
+/// [`DisplayErrorContext`] chain is preserved instead of collapsing to
+/// "unhandled error".
+pub(crate) async fn recv_stream_event(
+    operation: &'static str,
+    stream: &mut aws_sdk_bedrockruntime::primitives::event_stream::EventReceiver<
+        ConverseStreamOutput,
+        aws_sdk_bedrockruntime::types::error::ConverseStreamOutputError,
+    >,
+) -> Result<Option<ConverseStreamOutput>, BedrockError> {
+    match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.recv()).await {
+        Ok(Ok(event)) => Ok(event),
+        Ok(Err(error)) => {
+            tracing::error!(operation, "Bedrock stream failed");
+            Err(BedrockError::Invocation(
+                DisplayErrorContext(&error).to_string(),
+            ))
+        }
+        Err(_elapsed) => {
+            let seconds = STREAM_IDLE_TIMEOUT.as_secs();
+            tracing::error!(operation, seconds, "Bedrock stream went silent");
+            Err(BedrockError::Invocation(format!(
+                "{operation} stopped sending data for {seconds} seconds and was abandoned. \
+                 The connection to Bedrock was lost mid-response; the request was not completed."
+            )))
+        }
+    }
+}
+
 /// Accumulates a `ConverseStream` response: text deltas, the stop reason
 /// from `messageStop`, and usage from the trailing `metadata` event.
 ///

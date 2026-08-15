@@ -36,6 +36,18 @@ impl CacheTtlChoice {
             Self::OneHour => "one_hour",
         }
     }
+
+    /// How long Bedrock keeps a cache entry written at this tier.
+    ///
+    /// Callers that mirror provider cache state locally read the window
+    /// from here rather than hardcoding one, so a flow that moves to a
+    /// different tier cannot leave its mirror expiring on the old schedule.
+    pub const fn window(self) -> std::time::Duration {
+        match self {
+            Self::FiveMinutes => std::time::Duration::from_secs(5 * 60),
+            Self::OneHour => std::time::Duration::from_secs(60 * 60),
+        }
+    }
 }
 
 /// Strip a cross-region inference-profile scope prefix (`us.`, `eu.`,

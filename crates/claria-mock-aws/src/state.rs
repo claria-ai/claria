@@ -70,6 +70,12 @@ pub struct MockState {
     pub bedrock_text_requests: Vec<serde_json::Value>,
     /// How many of the captured plain requests arrived via `ConverseStream`.
     pub bedrock_stream_request_count: usize,
+    /// Fault injection: `ConverseStream` sends an opening frame and one text
+    /// delta, then holds the connection open forever without finishing.
+    /// Reproduces a socket that dies mid-generation — the one failure the
+    /// AWS SDK does not cover, since the generated streaming operations
+    /// register no stalled-stream protection interceptor.
+    pub bedrock_stream_stalls: bool,
     /// Raw tool-configured Converse request bodies, in wire order.
     pub bedrock_tool_requests: Vec<serde_json::Value>,
     /// Decoded model IDs for the captured tool-configured requests.
