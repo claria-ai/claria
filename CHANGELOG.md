@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.27.0] — 2026-08-15
 
 - Whole-report generation can now defer template sections the user's guidance leaves for a later pass, instead of being forced to write every section
 - A deferred section keeps its heading and place in the draft as an empty placeholder, shown greyed in the canvas and left out of Word exports until content is written into it
