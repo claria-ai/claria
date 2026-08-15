@@ -199,10 +199,13 @@ pub struct StreamOutcome {
 ///
 /// Sized for the quiet stretches a live stream really has: the wait for the
 /// first frame while a full context window prefills, and the gaps between
-/// reasoning deltas while the model thinks. Frames flow continuously
-/// throughout generation, so two silent minutes means the connection is
-/// gone, not that the model is busy.
-pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// reasoning deltas while the model thinks. The first-frame wait dominates —
+/// a cross-region profile can miss the prompt cache and re-prefill the whole
+/// input cold, and a field failure showed that wait exceeding the two
+/// minutes this was originally set to. Frames flow continuously once
+/// generation starts, so five silent minutes means the connection is gone,
+/// not that the model is busy.
+pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Receive the next frame of a Converse response stream, bounded by
 /// [`STREAM_IDLE_TIMEOUT`]. `Ok(None)` ends the stream.
@@ -223,17 +226,24 @@ pub(crate) async fn recv_stream_event(
         Ok(Ok(event)) => Ok(event),
         Ok(Err(error)) => {
             tracing::error!(operation, "Bedrock stream failed");
-            Err(BedrockError::Invocation(
-                DisplayErrorContext(&error).to_string(),
-            ))
+            Err(BedrockError::StreamInterrupted {
+                operation,
+                message: format!(
+                    "{operation} failed before the response completed: {}",
+                    DisplayErrorContext(&error)
+                ),
+            })
         }
         Err(_elapsed) => {
             let seconds = STREAM_IDLE_TIMEOUT.as_secs();
             tracing::error!(operation, seconds, "Bedrock stream went silent");
-            Err(BedrockError::Invocation(format!(
-                "{operation} stopped sending data for {seconds} seconds and was abandoned. \
-                 The connection to Bedrock was lost mid-response; the request was not completed."
-            )))
+            Err(BedrockError::StreamInterrupted {
+                operation,
+                message: format!(
+                    "{operation} stopped sending data for {seconds} seconds and was abandoned. \
+                     The connection to Bedrock was lost mid-response; the request was not completed."
+                ),
+            })
         }
     }
 }

@@ -374,14 +374,12 @@ fn validate_number(name: &str, value: f32, minimum: f32, maximum: f32) -> Result
     Ok(())
 }
 
+/// Restrict a file Claria just created to the account it runs as. These paths
+/// are Claria's own application data directory, so they are safe to name in
+/// the error.
 fn set_private_permissions(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("failed to protect {}: {error}", path.display()))?;
-    }
-    Ok(())
+    claria_desktop::local_export::set_private_permissions(path)
+        .map_err(|error| format!("failed to protect {}: {error:#}", path.display()))
 }
 
 fn model_is_downloaded(id: LocalModelId) -> bool {

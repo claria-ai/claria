@@ -1887,39 +1887,66 @@ async fn run_turn(
         }
         let call_number = progress.converse_calls.saturating_add(1);
         request.emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
-        let output = if request.is_full_draft() {
-            report::converse_full_report_with_tool_limit(
-                sdk_config,
-                &progress.model_id,
-                &system_prompt,
-                &protocol,
-                limits.max_tool_uses_per_response as usize,
-                &mut input_budget,
-                request.model_tuning,
-            )
-            .await
-        } else {
-            report::converse_report_with_tool_limit(
-                sdk_config,
-                &progress.model_id,
-                &system_prompt,
-                &protocol,
-                limits.max_tool_uses_per_response as usize,
-                &mut input_budget,
-                request.model_tuning,
-            )
-            .await
-        }
-        .map_err(|error| {
-            map_bedrock_failure(
-                error,
-                FailedReportCall {
-                    number: call_number,
-                    ceiling: limits.max_converse_calls,
-                    model_id: &model_id,
-                },
-            )
-        })?;
+        // One Bedrock call, with bounded retries when its response stream
+        // stalls or drops. A failed attempt commits nothing — `protocol`
+        // still holds only completed messages — so re-sending the identical
+        // request is safe, and a quick retry re-reads the prompt cache the
+        // previous completed call wrote moments earlier.
+        let call_started = tokio::time::Instant::now();
+        let mut interruptions = 0_u32;
+        let output = loop {
+            let attempt = if request.is_full_draft() {
+                report::converse_full_report_with_tool_limit(
+                    sdk_config,
+                    &progress.model_id,
+                    &system_prompt,
+                    &protocol,
+                    limits.max_tool_uses_per_response as usize,
+                    &mut input_budget,
+                    request.model_tuning,
+                )
+                .await
+            } else {
+                report::converse_report_with_tool_limit(
+                    sdk_config,
+                    &progress.model_id,
+                    &system_prompt,
+                    &protocol,
+                    limits.max_tool_uses_per_response as usize,
+                    &mut input_budget,
+                    request.model_tuning,
+                )
+                .await
+            };
+            match attempt {
+                Ok(output) => break output,
+                Err(error)
+                    if error.is_interrupted_before_completion()
+                        && interruptions < STREAM_INTERRUPTION_RETRIES =>
+                {
+                    interruptions += 1;
+                    tracing::warn!(
+                        call_number,
+                        failed_attempts = interruptions,
+                        error = %error,
+                        "Bedrock stream interrupted; retrying the call"
+                    );
+                    tokio::time::sleep(STREAM_INTERRUPTION_RETRY_DELAY).await;
+                }
+                Err(error) => {
+                    return Err(map_bedrock_failure(
+                        error,
+                        FailedReportCall {
+                            number: call_number,
+                            ceiling: limits.max_converse_calls,
+                            model_id: &model_id,
+                        },
+                        interruptions.saturating_add(1),
+                        call_started.elapsed(),
+                    ));
+                }
+            }
+        };
         progress.converse_calls = call_number;
         if let Some(usage) = &output.usage {
             merge_usage(&mut progress.usage, usage, call_number == 1);
@@ -2336,7 +2363,39 @@ struct FailedReportCall<'a> {
     model_id: &'a str,
 }
 
-fn map_bedrock_failure(error: BedrockError, call: FailedReportCall<'_>) -> TurnRunFailure {
+/// Retries granted to one Bedrock call whose request never completed —
+/// three attempts in total, then the turn fails with a message that reports
+/// how long Bedrock went unanswered. Only interruptions before completion
+/// (a broken response stream, or a request that never got a response) are
+/// retried: they are the failures where nothing was committed and the
+/// identical request is known to be safe to re-send. A refused request —
+/// throttled, denied, invalid — is answered, not interrupted, and fails
+/// the turn immediately as before.
+const STREAM_INTERRUPTION_RETRIES: u32 = 2;
+
+/// Pause between interrupted attempts, long enough for a transient network
+/// drop to clear and short enough to stay inside the 5-minute window of the
+/// prompt cache written by the previous completed call.
+const STREAM_INTERRUPTION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Human phrasing of how long a failed call was retried for, in the
+/// user-facing failure message: seconds under two minutes, whole minutes
+/// (rounded up) beyond.
+fn elapsed_phrase(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 120 {
+        format!("{seconds} seconds")
+    } else {
+        format!("{} minutes", seconds.div_ceil(60))
+    }
+}
+
+fn map_bedrock_failure(
+    error: BedrockError,
+    call: FailedReportCall<'_>,
+    attempts: u32,
+    elapsed: std::time::Duration,
+) -> TurnRunFailure {
     if matches!(
         &error,
         BedrockError::SchemaViolation(_) | BedrockError::ResponseParse(_)
@@ -2365,6 +2424,19 @@ fn map_bedrock_failure(error: BedrockError, call: FailedReportCall<'_>) -> TurnR
             ReportFailureCode::Bedrock,
             "The selected model is not verified for report tools. Choose a current Claude model.",
         ),
+        // Every attempt at this call went out and got no complete response
+        // back — the stream stalled or dropped, or the request never got a
+        // response at all — so retrying now is unlikely to help and the
+        // wait is the actionable fact. Must precede the `Service` arm,
+        // which would otherwise claim the DispatchFailure-coded shape.
+        _ if error.is_interrupted_before_completion() => TurnRunFailure::new(
+            ReportFailureCode::Bedrock,
+            format!(
+                "Bedrock appears to be having a hard time: {attempts} attempts at call {number} of {ceiling} got no response over the last {}. Try again later. Usage for the calls that completed was retained.",
+                elapsed_phrase(elapsed)
+            ),
+        )
+        .uncertain_usage(),
         // These reached AWS and came back refused. The service code is the
         // only thing separating "retry", "pick another model", and "call
         // support", so it decides the message instead of collapsing into one

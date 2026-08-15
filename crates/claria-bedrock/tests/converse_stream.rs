@@ -413,7 +413,7 @@ async fn a_long_conversation_is_bounded_before_it_reaches_bedrock() {
 #[tokio::test(start_paused = true)]
 async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
     let server = MockServer::spawn().await;
-    server.state.write().await.bedrock_stream_stalls = true;
+    server.state.write().await.bedrock_stream_stalls = 1;
 
     let mut streamed = String::new();
     let error = chat_converse_stream(
@@ -429,7 +429,8 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
     .expect_err("a stalled stream must not hang forever");
 
     match error {
-        BedrockError::Invocation(message) => {
+        BedrockError::StreamInterrupted { operation, message } => {
+            assert_eq!(operation, "chat ConverseStream");
             assert!(
                 message.contains("chat ConverseStream"),
                 "the failure does not name the call: {message}"
@@ -439,7 +440,7 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
                 "the failure does not say the connection went silent: {message}"
             );
         }
-        other => panic!("expected an invocation error, got {other:?}"),
+        other => panic!("expected a stream-interrupted error, got {other:?}"),
     }
     // Whatever did arrive before the stall reached the reader.
     assert!(streamed.starts_with("Beginning of a reply"));

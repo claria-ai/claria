@@ -5,6 +5,15 @@ pub enum BedrockError {
     #[error("model invocation failed: {0}")]
     Invocation(String),
 
+    /// The response stream stalled or dropped before `messageStop`. Nothing
+    /// from the call is committed, so re-sending the identical request is
+    /// safe — the writer loop retries on exactly this variant.
+    #[error("{message}")]
+    StreamInterrupted {
+        operation: &'static str,
+        message: String,
+    },
+
     #[error("response parsing failed: {0}")]
     ResponseParse(String),
 
@@ -52,4 +61,20 @@ pub enum BedrockError {
 
     #[error("model agreement error: {0}")]
     Agreement(String),
+}
+
+impl BedrockError {
+    /// True for failures where the request is known not to have completed:
+    /// the response stream broke before `messageStop`, or the request never
+    /// received a response at all (connect, dispatch, and client-timeout
+    /// failures, which [`classify_error`](crate::converse) labels
+    /// `DispatchFailure`). Nothing from such a call is committed, so
+    /// re-sending the identical request is safe.
+    pub fn is_interrupted_before_completion(&self) -> bool {
+        match self {
+            Self::StreamInterrupted { .. } => true,
+            Self::Service { code, .. } => code == "DispatchFailure",
+            _ => false,
+        }
+    }
 }

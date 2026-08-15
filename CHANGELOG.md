@@ -9,6 +9,21 @@ All notable changes to Claria are documented here.
 - A failed capture now carries the dev server's own output, which was previously discarded
 - Screenshot capture retries in CI and always starts its own dev server there instead of reusing whatever holds the port
 - Playwright is pinned to an exact version
+- Four high-severity advisories in the frontend dependency tree are patched, without moving any declared version range
+- Tagged release builds pin the Tauri command-line tool and the release action to exact versions, so an upstream release can no longer change how a build is produced
+- The two build dependencies that need install scripts are approved explicitly, and the approval is recorded in version control
+- The bundle size warning threshold now reflects a bundle the app loads from local disk rather than over a network
+- Builds no longer print funding notices on every dependency install
+- The Tauri JavaScript API is pinned exactly, so the half of the pair that talks to the Rust runtime can no longer drift on an unrelated install
+- Local transcription's settings file and model downloads are restricted to the account Claria runs as on Windows, where they were previously left at whatever permissions the folder handed out
+- Restricting a file to the current user now fails loudly on every platform instead of reporting success it did not achieve
+
+## [0.26.0] — 2026-08-15
+
+- Chat and writer streams now tolerate five minutes of Bedrock silence before failing, up from two, so a cold prefill of a large record set no longer aborts the turn
+- A writer Bedrock call whose connection breaks before a response completes is retried up to twice before the turn fails
+- When every retry goes unanswered, the writer error now reports the attempt count and how long Bedrock was silent, and says to try again later
+- Pull-request CI compiles, lints, and tests the Rust workspace on Windows alongside Ubuntu, so Windows-only code is validated before a release tag rather than after
 
 ## [0.25.0] — 2026-08-15
 
