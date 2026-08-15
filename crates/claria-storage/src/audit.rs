@@ -273,6 +273,15 @@ pub mod actions {
     pub const PROMPT_DELETE: Action = admin("prompt.delete");
     /// A custom prompt was reset to the built-in default.
     pub const PROMPT_RESTORE: Action = admin("prompt.restore");
+    /// A saved writer steering prompt was created. These are shared across
+    /// clients and are meant to carry placeholders rather than client
+    /// details, which is why they are administrative and not a record
+    /// mutation.
+    pub const WRITER_PROMPT_CREATE: Action = admin("writer_prompt.create");
+    /// A saved writer steering prompt was edited.
+    pub const WRITER_PROMPT_UPDATE: Action = admin("writer_prompt.update");
+    /// A saved writer steering prompt was deleted.
+    pub const WRITER_PROMPT_DELETE: Action = admin("writer_prompt.delete");
     /// The Claria Console log was exported to a file.
     pub const CONSOLE_EXPORT: Action = admin("console.export");
 }

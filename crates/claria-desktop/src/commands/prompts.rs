@@ -239,7 +239,7 @@ pub async fn save_writer_library_prompt(
                     &body,
                 )
                 .await?,
-                "writer_prompt_created",
+                actions::WRITER_PROMPT_CREATE,
             ),
             Some(prompt_id) => (
                 claria_report_authoring::writer_prompts::update(
@@ -250,7 +250,7 @@ pub async fn save_writer_library_prompt(
                     &body,
                 )
                 .await?,
-                "writer_prompt_updated",
+                actions::WRITER_PROMPT_UPDATE,
             ),
         };
         ctx.record_audit(ctx.audit_event(action, "writer_prompt", prompt.id.to_string()))
@@ -272,7 +272,7 @@ pub async fn delete_writer_library_prompt(
         let ctx = CommandContext::new(&state).await?;
         claria_report_authoring::writer_prompts::delete(&ctx.s3, &ctx.bucket, prompt_id).await?;
         ctx.record_audit(ctx.audit_event(
-            "writer_prompt_deleted",
+            actions::WRITER_PROMPT_DELETE,
             "writer_prompt",
             prompt_id.to_string(),
         ))
