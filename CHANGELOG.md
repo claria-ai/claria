@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.26.0] — 2026-08-15
 
 - Chat and writer streams now tolerate five minutes of Bedrock silence before failing, up from two, so a cold prefill of a large record set no longer aborts the turn
 - A writer Bedrock call whose connection breaks before a response completes is retried up to twice before the turn fails
