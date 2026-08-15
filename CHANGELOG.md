@@ -2,6 +2,10 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Chat and writer streams now tolerate five minutes of Bedrock silence before failing, up from two, so a cold prefill of a large record set no longer aborts the turn
+
 ## [0.25.0] — 2026-08-15
 
 - Writer turns stream from Bedrock instead of waiting on one unary response, so a long generation no longer risks an HTTP timeout at the writer's output ceiling
