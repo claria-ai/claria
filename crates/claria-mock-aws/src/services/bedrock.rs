@@ -19,7 +19,7 @@ pub async fn dispatch(method: &Method, path: &str, body: Value, state: SharedSta
         if method != Method::POST {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
-        return converse_stream(body, state).await;
+        return converse_stream(path, body, state).await;
     }
     if path.starts_with("/model/") && path.ends_with("/count-tokens") {
         if method != Method::POST {
@@ -423,51 +423,62 @@ async fn converse(path: &str, body: Value, state: SharedState) -> Response {
         if let Err(message) = validate_report_request(&body) {
             return validation_error(message);
         }
-        let model_id = path
-            .strip_prefix("/model/")
-            .and_then(|rest| rest.strip_suffix("/converse"))
-            .map(|value| {
-                percent_encoding::percent_decode_str(value)
-                    .decode_utf8_lossy()
-                    .to_string()
-            })
-            .unwrap_or_default();
-        let scripted = {
-            let mut st = state.write().await;
-            st.bedrock_tool_model_ids.push(model_id);
-            st.bedrock_tool_requests.push(body.clone());
-            if st.bedrock_tool_responses.is_empty() {
-                None
-            } else {
-                Some(st.bedrock_tool_responses.remove(0))
-            }
-        };
-
-        return match scripted {
-            Some(scripted) => {
-                let status = StatusCode::from_u16(scripted.status)
-                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                (
-                    status,
-                    [("content-type", "application/json")],
-                    scripted.body.to_string(),
-                )
-                    .into_response()
-            }
-            None => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [("content-type", "application/json")],
-                json!({
-                    "message": "No scripted tool-configured Converse response",
-                    "__type": "InternalServerException"
-                })
-                .to_string(),
-            )
-                .into_response(),
-        };
+        let (status, payload) = tool_converse_payload(path, "/converse", body, state).await;
+        return (
+            status,
+            [("content-type", "application/json")],
+            payload.to_string(),
+        )
+            .into_response();
     }
 
     plain_converse(body, state).await
+}
+
+/// Pop the next scripted tool-configured Converse payload, capturing the
+/// request and its model ID.
+///
+/// Shared by the unary and streaming endpoints so a test scripts one JSON
+/// body and the mock delivers it in whichever shape the caller asked for.
+async fn tool_converse_payload(
+    path: &str,
+    suffix: &str,
+    body: Value,
+    state: SharedState,
+) -> (StatusCode, Value) {
+    let model_id = path
+        .strip_prefix("/model/")
+        .and_then(|rest| rest.strip_suffix(suffix))
+        .map(|value| {
+            percent_encoding::percent_decode_str(value)
+                .decode_utf8_lossy()
+                .to_string()
+        })
+        .unwrap_or_default();
+    let scripted = {
+        let mut st = state.write().await;
+        st.bedrock_tool_model_ids.push(model_id);
+        st.bedrock_tool_requests.push(body);
+        if st.bedrock_tool_responses.is_empty() {
+            None
+        } else {
+            Some(st.bedrock_tool_responses.remove(0))
+        }
+    };
+
+    match scripted {
+        Some(scripted) => (
+            StatusCode::from_u16(scripted.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            scripted.body,
+        ),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "message": "No scripted tool-configured Converse response",
+                "__type": "InternalServerException"
+            }),
+        ),
+    }
 }
 
 /// Respond to a Converse request whose `toolChoice` forces a specific tool.
@@ -651,13 +662,21 @@ const STREAM_DELTA_CHARS: usize = 24;
 
 /// Respond to `ConverseStream` with real AWS event-stream frames.
 ///
-/// The plain script FIFO and canned response are shared with the unary
-/// endpoint; a 200 payload is decomposed into `messageStart`, chunked
-/// `contentBlockDelta`s, `contentBlockStop`, `messageStop`, and a trailing
-/// `metadata` event. Non-200 scripted responses return as ordinary JSON
-/// errors, which the SDK surfaces before streaming begins.
-async fn converse_stream(body: Value, state: SharedState) -> Response {
-    let (status, payload) = plain_converse_payload(body, state.clone()).await;
+/// Both script FIFOs are shared with the unary endpoint — tool-configured
+/// requests draw from the report script, everything else from the plain one
+/// — and a 200 payload is decomposed into `messageStart`, per-block
+/// start/delta/stop events, `messageStop`, and a trailing `metadata` event.
+/// Non-200 scripted responses return as ordinary JSON errors, which the SDK
+/// surfaces before streaming begins.
+async fn converse_stream(path: &str, body: Value, state: SharedState) -> Response {
+    let (status, payload) = if body.get("toolConfig").is_some() {
+        if let Err(message) = validate_report_request(&body) {
+            return validation_error(message);
+        }
+        tool_converse_payload(path, "/converse-stream", body, state.clone()).await
+    } else {
+        plain_converse_payload(body, state.clone()).await
+    };
     state.write().await.bedrock_stream_request_count += 1;
     if status != StatusCode::OK {
         return (
@@ -689,39 +708,92 @@ async fn converse_stream(body: Value, state: SharedState) -> Response {
 }
 
 /// Decompose a unary Converse JSON payload into encoded event-stream frames.
+///
+/// Every content block the report protocol can carry is reproduced in its
+/// streaming shape — text and tool-use input arrive split across several
+/// deltas, exactly as the service splits them, so a collector that only
+/// works on whole blocks fails here rather than in production.
 fn encode_converse_stream(
     payload: &Value,
 ) -> Result<Vec<u8>, aws_smithy_eventstream::error::Error> {
-    let text: String = payload
-        .pointer("/output/message/content")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .collect();
     let stop_reason = payload
         .get("stopReason")
         .and_then(Value::as_str)
         .unwrap_or("end_turn");
+    let blocks = payload
+        .pointer("/output/message/content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
     let mut frames = Vec::new();
     write_event(&mut frames, "messageStart", &json!({"role": "assistant"}))?;
-    let chars: Vec<char> = text.chars().collect();
-    for chunk in chars.chunks(STREAM_DELTA_CHARS) {
+    for (index, block) in blocks.iter().enumerate() {
+        if let Some(text) = block.get("text").and_then(Value::as_str) {
+            write_chunked_deltas(&mut frames, index, text, |chunk| json!({"text": chunk}))?;
+        } else if let Some(tool) = block.get("toolUse") {
+            write_event(
+                &mut frames,
+                "contentBlockStart",
+                &json!({
+                    "contentBlockIndex": index,
+                    "start": {"toolUse": {
+                        "toolUseId": tool.get("toolUseId").and_then(Value::as_str).unwrap_or(""),
+                        "name": tool.get("name").and_then(Value::as_str).unwrap_or(""),
+                    }}
+                }),
+            )?;
+            // The service streams tool input as partial JSON text, never as
+            // a structured object; the collector has to concatenate and parse.
+            let input = tool.get("input").cloned().unwrap_or_else(|| json!({}));
+            write_chunked_deltas(
+                &mut frames,
+                index,
+                &input.to_string(),
+                |chunk| json!({"toolUse": {"input": chunk}}),
+            )?;
+        } else if let Some(reasoning) = block.get("reasoningContent") {
+            if let Some(text) = reasoning
+                .pointer("/reasoningText/text")
+                .and_then(Value::as_str)
+            {
+                write_chunked_deltas(
+                    &mut frames,
+                    index,
+                    text,
+                    |chunk| json!({"reasoningContent": {"text": chunk}}),
+                )?;
+            }
+            if let Some(signature) = reasoning
+                .pointer("/reasoningText/signature")
+                .and_then(Value::as_str)
+            {
+                write_event(
+                    &mut frames,
+                    "contentBlockDelta",
+                    &json!({
+                        "contentBlockIndex": index,
+                        "delta": {"reasoningContent": {"signature": signature}}
+                    }),
+                )?;
+            }
+            if let Some(redacted) = reasoning.get("redactedContent").and_then(Value::as_str) {
+                write_event(
+                    &mut frames,
+                    "contentBlockDelta",
+                    &json!({
+                        "contentBlockIndex": index,
+                        "delta": {"reasoningContent": {"redactedContent": redacted}}
+                    }),
+                )?;
+            }
+        }
         write_event(
             &mut frames,
-            "contentBlockDelta",
-            &json!({
-                "contentBlockIndex": 0,
-                "delta": {"text": chunk.iter().collect::<String>()}
-            }),
+            "contentBlockStop",
+            &json!({"contentBlockIndex": index}),
         )?;
     }
-    write_event(
-        &mut frames,
-        "contentBlockStop",
-        &json!({"contentBlockIndex": 0}),
-    )?;
     write_event(
         &mut frames,
         "messageStop",
@@ -735,6 +807,26 @@ fn encode_converse_stream(
         )?;
     }
     Ok(frames)
+}
+
+/// Split `text` into [`STREAM_DELTA_CHARS`]-sized `contentBlockDelta` events,
+/// wrapping each chunk in the delta shape `build` returns.
+fn write_chunked_deltas(
+    buffer: &mut Vec<u8>,
+    index: usize,
+    text: &str,
+    build: impl Fn(&str) -> Value,
+) -> Result<(), aws_smithy_eventstream::error::Error> {
+    let chars: Vec<char> = text.chars().collect();
+    for chunk in chars.chunks(STREAM_DELTA_CHARS) {
+        let chunk: String = chunk.iter().collect();
+        write_event(
+            buffer,
+            "contentBlockDelta",
+            &json!({"contentBlockIndex": index, "delta": build(&chunk)}),
+        )?;
+    }
+    Ok(())
 }
 
 /// Frame one event with the standard `:message-type`/`:event-type`/

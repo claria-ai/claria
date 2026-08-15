@@ -2,6 +2,18 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Writer turns stream from Bedrock instead of waiting on one unary response, so a long generation no longer risks an HTTP timeout at the writer's output ceiling
+- A chat reply cut off at the output limit keeps the text the reader watched arrive and says why it stops there, instead of discarding the whole answer
+- Chat answers can run to a full clinical section before hitting the output limit, matching the writer's ceiling
+- An exhausted writer guardrail now reports the tool-use rounds and Bedrock calls it reached, names the Preferences field that raises the one that bound, and warns that raising it costs more
+- A writer request that is already at a guardrail's maximum says so and suggests narrowing the request instead
+- Bedrock failures during a writer turn name the call that failed and its cause, so denied model access, throttling, and unreachable endpoints no longer read identically
+- A saved configuration that cannot be loaded now reports why, instead of telling the clinician to complete setup and inviting them to overwrite it
+- Running an older Claria against a newer configuration says the build is out of date and to update
+- Each chat request and writer turn logs the context window resolved for the model alongside the input budget and output reserve derived from it
+
 ## [0.24.0] — 2026-08-13
 
 - Writer and chat context no longer rewrite angle brackets and ampersands inside clinical text; only sequences that could forge the untrusted-context delimiters are neutralized

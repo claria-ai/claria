@@ -7,10 +7,14 @@
 
 use std::collections::HashSet;
 
+use std::collections::BTreeMap;
+
 use aws_sdk_bedrockruntime::types::{
-    ContentBlock, ConversationRole, ConverseTokensRequest, InferenceConfiguration, Message,
-    ReasoningContentBlock, ReasoningTextBlock, SystemContentBlock, Tool, ToolConfiguration,
-    ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolResultStatus, ToolSpecification,
+    ContentBlock, ContentBlockDelta, ContentBlockStart, ConversationRole, ConverseStreamOutput,
+    ConverseTokensRequest, InferenceConfiguration, Message, ReasoningContentBlock,
+    ReasoningContentBlockDelta, ReasoningTextBlock, StopReason, SystemContentBlock, Tool,
+    ToolConfiguration, ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolResultStatus,
+    ToolSpecification, ToolUseBlock,
 };
 use aws_smithy_types::Blob;
 use claria_core::models::{
@@ -269,8 +273,17 @@ pub struct ReportInputBudget {
 
 impl ReportInputBudget {
     pub fn new(model_id: &str) -> Self {
+        // One budget per writer turn, so this is also the once-per-turn
+        // record of the context window the capability table resolved.
+        let input_budget_tokens = report_input_token_budget(model_id);
+        converse::log_model_budget(
+            "report",
+            model_id,
+            input_budget_tokens,
+            REPORT_OUTPUT_TOKEN_RESERVE,
+        );
         Self {
-            inner: converse::InputTokenBudget::exact(report_input_token_budget(model_id)),
+            inner: converse::InputTokenBudget::exact(input_budget_tokens),
         }
     }
 }
@@ -439,9 +452,14 @@ async fn converse_report_with_tool_set(
         (vec![system], sdk_messages)
     };
 
+    // Streamed, not unary: the writer's output ceiling is far above the
+    // point where a non-streaming Converse call risks an HTTP timeout while
+    // the model generates. Nothing is forwarded incrementally — the loop
+    // needs a whole message before it can execute tool calls — but the
+    // connection carries frames throughout instead of idling.
     let started = std::time::Instant::now();
     let response = client
-        .converse()
+        .converse_stream()
         .model_id(model_id)
         .set_system(Some(system_blocks))
         .set_messages(Some(converse_messages))
@@ -455,20 +473,27 @@ async fn converse_report_with_tool_set(
         .set_additional_model_request_fields(converse::additional_request_fields(tuning)?)
         .send()
         .await
-        .map_err(|error| converse::classify_error("report Converse", error))?;
+        .map_err(|error| converse::classify_error("report ConverseStream", error))?;
+
+    let mut stream = response.stream;
+    let mut collector = ReportStreamCollector::default();
+    loop {
+        // Mid-stream failures carry a raw event frame rather than an HTTP
+        // response, so the full error chain is preserved instead of
+        // collapsing to "unhandled error".
+        let event = stream.recv().await.map_err(|error| {
+            tracing::error!(operation = "report ConverseStream", "Bedrock stream failed");
+            BedrockError::Invocation(
+                aws_sdk_bedrockruntime::error::DisplayErrorContext(&error).to_string(),
+            )
+        })?;
+        let Some(event) = event else { break };
+        collector.absorb(event);
+    }
+    let (streamed_content, streamed_stop_reason, streamed_usage) = collector.finish()?;
     let latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
 
-    let output_message = response
-        .output()
-        .and_then(|output| output.as_message().ok())
-        .ok_or_else(|| BedrockError::ResponseParse("no message in report response".to_string()))?;
-    if output_message.role() != &ConversationRole::Assistant {
-        return Err(BedrockError::ResponseParse(
-            "report response message did not have assistant role".to_string(),
-        ));
-    }
-
-    let mut content = Vec::with_capacity(output_message.content().len());
+    let mut content = Vec::with_capacity(streamed_content.len());
     let mut tool_calls = Vec::new();
     let mut tool_ids: HashSet<String> = messages
         .iter()
@@ -478,7 +503,7 @@ async fn converse_report_with_tool_set(
             _ => None,
         })
         .collect();
-    for block in output_message.content() {
+    for block in &streamed_content {
         match block {
             // Bedrock can emit an empty text block next to a valid tool use.
             // It carries no semantic content and cannot be sent back because
@@ -562,11 +587,11 @@ async fn converse_report_with_tool_set(
     // to a tool use) is deliberately NOT an error here: the report loop
     // attempts a corrective tool-result round before failing, so the
     // inconsistency must reach it as data via `stop_tool_mismatch`.
-    let stop_reason = map_stop_reason(response.stop_reason());
+    let stop_reason = map_stop_reason(&streamed_stop_reason);
 
-    let usage = converse::optional_usage(response.usage(), model_id, None);
+    let usage = converse::optional_usage(streamed_usage.as_ref(), model_id, None);
     converse::log_turn_usage(
-        "report Converse",
+        "report ConverseStream",
         model_id,
         usage.as_ref(),
         Some(stop_reason.as_str()),
@@ -1024,6 +1049,157 @@ fn protocol_block_to_sdk(block: &ReportProtocolBlock) -> Result<ContentBlock, Be
                 .map_err(|error| BedrockError::Invocation(error.to_string()))?;
             Ok(ContentBlock::ToolResult(result))
         }
+    }
+}
+
+/// One content block being assembled from `ConverseStream` events, keyed by
+/// its `contentBlockIndex`. Text, tool input, and reasoning all arrive split
+/// across an arbitrary number of deltas, so every field accumulates.
+#[derive(Debug, Default)]
+struct PartialReportBlock {
+    text: String,
+    reasoning_text: String,
+    reasoning_signature: Option<String>,
+    reasoning_redacted: Option<Vec<u8>>,
+    tool: Option<PartialToolUse>,
+}
+
+#[derive(Debug)]
+struct PartialToolUse {
+    tool_use_id: String,
+    name: String,
+    /// Concatenated partial JSON. The service streams tool input as text
+    /// fragments that are only valid JSON once joined.
+    input: String,
+}
+
+/// Folds a `ConverseStream` response back into the same `ContentBlock` list
+/// the unary path returns, so the protocol validation below has exactly one
+/// implementation regardless of transport.
+#[derive(Debug, Default)]
+struct ReportStreamCollector {
+    blocks: BTreeMap<usize, PartialReportBlock>,
+    stop_reason: Option<StopReason>,
+    usage: Option<aws_sdk_bedrockruntime::types::TokenUsage>,
+}
+
+impl ReportStreamCollector {
+    fn absorb(&mut self, event: ConverseStreamOutput) {
+        match event {
+            ConverseStreamOutput::ContentBlockStart(event) => {
+                let index = event.content_block_index() as usize;
+                if let Some(ContentBlockStart::ToolUse(start)) = event.start() {
+                    self.blocks.entry(index).or_default().tool = Some(PartialToolUse {
+                        tool_use_id: start.tool_use_id().to_string(),
+                        name: start.name().to_string(),
+                        input: String::new(),
+                    });
+                }
+            }
+            ConverseStreamOutput::ContentBlockDelta(event) => {
+                let index = event.content_block_index() as usize;
+                let Some(delta) = event.delta() else { return };
+                let block = self.blocks.entry(index).or_default();
+                match delta {
+                    ContentBlockDelta::Text(text) => block.text.push_str(text),
+                    ContentBlockDelta::ToolUse(tool) => {
+                        // A tool delta before its start event would lose the
+                        // ID and name; the service never does that, and the
+                        // finalizer rejects a nameless tool if it ever does.
+                        if let Some(partial) = block.tool.as_mut() {
+                            partial.input.push_str(tool.input());
+                        }
+                    }
+                    ContentBlockDelta::ReasoningContent(reasoning) => match reasoning {
+                        ReasoningContentBlockDelta::Text(text) => {
+                            block.reasoning_text.push_str(text)
+                        }
+                        ReasoningContentBlockDelta::Signature(signature) => {
+                            block.reasoning_signature = Some(signature.clone())
+                        }
+                        ReasoningContentBlockDelta::RedactedContent(data) => {
+                            block.reasoning_redacted = Some(data.as_ref().to_vec())
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            ConverseStreamOutput::MessageStop(event) => {
+                self.stop_reason = Some(event.stop_reason().clone());
+            }
+            ConverseStreamOutput::Metadata(event) => {
+                self.usage = event.usage().cloned();
+            }
+            _ => {}
+        }
+    }
+
+    /// Rebuild the assistant message in wire order. A missing `messageStop`
+    /// is a protocol error rather than a silently-complete turn.
+    fn finish(
+        self,
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            StopReason,
+            Option<aws_sdk_bedrockruntime::types::TokenUsage>,
+        ),
+        BedrockError,
+    > {
+        let stop_reason = self.stop_reason.ok_or_else(|| {
+            BedrockError::ResponseParse(
+                "the report response stream ended without a messageStop event".to_string(),
+            )
+        })?;
+
+        let mut content = Vec::with_capacity(self.blocks.len());
+        for (_, block) in self.blocks {
+            if let Some(tool) = block.tool {
+                // An empty input stream is a tool called with no arguments.
+                let raw = if tool.input.trim().is_empty() {
+                    "{}"
+                } else {
+                    tool.input.as_str()
+                };
+                let input: serde_json::Value = serde_json::from_str(raw).map_err(|error| {
+                    BedrockError::ResponseParse(format!(
+                        "tool use {} streamed input that is not valid JSON: {error}",
+                        tool.tool_use_id
+                    ))
+                })?;
+                content.push(ContentBlock::ToolUse(
+                    ToolUseBlock::builder()
+                        .tool_use_id(tool.tool_use_id)
+                        .name(tool.name)
+                        .input(converse::json_to_document(&input)?)
+                        .build()
+                        .map_err(|error| BedrockError::ResponseParse(error.to_string()))?,
+                ));
+                continue;
+            }
+            if let Some(data) = block.reasoning_redacted {
+                content.push(ContentBlock::ReasoningContent(
+                    ReasoningContentBlock::RedactedContent(Blob::new(data)),
+                ));
+                continue;
+            }
+            if !block.reasoning_text.is_empty() {
+                content.push(ContentBlock::ReasoningContent(
+                    ReasoningContentBlock::ReasoningText(
+                        ReasoningTextBlock::builder()
+                            .text(block.reasoning_text)
+                            .set_signature(block.reasoning_signature)
+                            .build()
+                            .map_err(|error| BedrockError::ResponseParse(error.to_string()))?,
+                    ),
+                ));
+                continue;
+            }
+            content.push(ContentBlock::Text(block.text));
+        }
+
+        Ok((content, stop_reason, self.usage))
     }
 }
 

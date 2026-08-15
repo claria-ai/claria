@@ -79,38 +79,8 @@ async fn chat_sets_max_tokens_and_skips_counting_far_from_budget() {
     assert!(state.bedrock_count_token_requests.is_empty());
 }
 
-#[tokio::test]
-async fn chat_truncation_is_a_typed_error() {
-    let server = MockServer::spawn().await;
-    server
-        .state
-        .write()
-        .await
-        .bedrock_text_responses
-        .push(ScriptedBedrockResponse::success(serde_json::json!({
-            "output": {"message": {"role": "assistant", "content": [{"text": "partial"}]}},
-            "stopReason": "max_tokens",
-            "usage": {"inputTokens": 10, "outputTokens": 8192}
-        })));
-
-    let error = chat_converse_stream(
-        &sdk_config(&server.endpoint),
-        MODEL_ID,
-        "System prompt",
-        &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
-        |_| {},
-    )
-    .await
-    .expect_err("truncation");
-    assert!(matches!(
-        error,
-        BedrockError::ResponseTruncated {
-            max_output_tokens
-        } if max_output_tokens == CHAT_MAX_OUTPUT_TOKENS
-    ));
-}
+// Truncation salvage and context-overflow failure are asserted in
+// `converse_stream.rs`, alongside the rest of the streaming contract.
 
 #[tokio::test]
 async fn chat_context_overflow_maps_to_friendly_error() {

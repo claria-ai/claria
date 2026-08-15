@@ -175,8 +175,9 @@ pub struct StreamOutcome {
     /// The full accumulated assistant text.
     pub text: String,
     /// The wire stop reason (e.g. `end_turn`), for the caller's terminal
-    /// stream event. Always a complete-response reason — truncation and
-    /// overflow already surfaced as errors in [`StreamCollector::finish`].
+    /// stream event. `max_tokens` reaches the caller as a value rather than
+    /// an error — see [`StreamCollector::finish`] — so a truncated answer
+    /// can be kept and labelled. Every other incomplete reason still fails.
     pub stop_reason: String,
     /// Per-turn usage from the trailing `metadata` event; `None` preserved
     /// when the service omitted it (see [`optional_usage`]).
@@ -228,10 +229,16 @@ impl StreamCollector {
     }
 
     /// Close out the stream: a missing `messageStop` is a protocol error,
-    /// truncation and context overflow become the same typed errors as the
-    /// unary path, and an omitted usage block stays `None`. `cache_ttl` is
-    /// the TTL the request's cache points carried (`None` when uncached),
-    /// recorded on the usage so cache writes price at the right tier.
+    /// context overflow becomes the same typed error as the unary path, and
+    /// an omitted usage block stays `None`. `cache_ttl` is the TTL the
+    /// request's cache points carried (`None` when uncached), recorded on
+    /// the usage so cache writes price at the right tier.
+    ///
+    /// Truncation is the one incomplete reason that survives: the text has
+    /// already been streamed to the reader, so discarding it deletes an
+    /// answer they watched arrive. It returns as a `max_tokens` stop reason
+    /// for the caller to label. Context overflow has no partial worth
+    /// keeping, and the unary path is unchanged.
     pub fn finish(
         self,
         model_id: &str,
@@ -243,7 +250,9 @@ impl StreamCollector {
                 "the response stream ended without a messageStop event".to_string(),
             )
         })?;
-        ensure_complete_text_response(&stop_reason, max_output_tokens)?;
+        if !matches!(stop_reason, StopReason::MaxTokens) {
+            ensure_complete_text_response(&stop_reason, max_output_tokens)?;
+        }
         let usage = optional_usage(self.usage.as_ref(), model_id, cache_ttl);
         Ok(StreamOutcome {
             text: self.text,
@@ -314,6 +323,33 @@ pub(crate) fn additional_request_fields(
         return Ok(None);
     }
     json_to_document(&serde_json::Value::Object(fields)).map(Some)
+}
+
+/// Structured observability line for the token budget a request runs under,
+/// emitted once per chat request and once per writer turn.
+///
+/// `context_window_tokens` is what the central capability table resolved for
+/// this model ID, which for any inference profile without an explicit
+/// `:48k` / `:200k` / `:1m` suffix is an assumption. Recording it beside the
+/// budget derived from it is what makes "we are budgeting against a fraction
+/// of the real window" answerable from a console export instead of guessed
+/// at. Fields are model IDs and counts — never prompt or record content.
+pub(crate) fn log_model_budget(
+    operation: &'static str,
+    model_id: &str,
+    input_budget_tokens: u32,
+    output_reserve_tokens: u32,
+) {
+    tracing::info!(
+        target: "claria_bedrock::budget",
+        operation,
+        model_id,
+        context_window_tokens =
+            claria_core::model_id::ModelCapabilities::for_id(model_id).context_window_tokens,
+        input_budget_tokens,
+        output_reserve_tokens,
+        "token budget resolved"
+    );
 }
 
 /// Structured cache/usage observability line for one completed Converse
