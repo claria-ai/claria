@@ -4,6 +4,7 @@ import {
   type ClientWorkspaceTab,
   type ClientWorkspaceView,
 } from "../components/ClientWorkspaceTabs";
+import { type PreferencesWriterSection } from "../App";
 import { type ResumeChat } from "../pages/ClientChat";
 import { type WritingLeaveState } from "../pages/Writing";
 import { type ChatHistoryDetail } from "./tauri";
@@ -23,7 +24,7 @@ const cleanWritingState: WritingLeaveState = {
  */
 export function useClientWorkspace(
   onBack: () => void,
-  onManageWriterTemplates: () => void
+  onManageWriterSection: (section: PreferencesWriterSection) => void
 ) {
   const [activeView, setActiveView] =
     useState<ClientWorkspaceView>("record");
@@ -98,8 +99,8 @@ export function useClientWorkspace(
     if (mayLeaveWriting()) onBack();
   }
 
-  function manageWriterTemplates() {
-    if (mayLeaveWriting()) onManageWriterTemplates();
+  function manageWriterSection(section: PreferencesWriterSection) {
+    if (mayLeaveWriting()) onManageWriterSection(section);
   }
 
   useEffect(() => {
@@ -153,7 +154,7 @@ export function useClientWorkspace(
     openSettings,
     selectTab,
     back,
-    manageWriterTemplates,
+    manageWriterSection,
     updateWritingLeaveState: setWritingLeaveState,
   };
 }

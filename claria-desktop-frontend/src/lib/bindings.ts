@@ -871,6 +871,40 @@ async restorePromptVersion(promptName: string, versionId: string) : Promise<Resu
 }
 },
 /**
+ * List the saved writer prompts, alphabetically by name.
+ */
+async listWriterLibraryPrompts() : Promise<Result<WriterPrompt[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_writer_library_prompts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Create (no `prompt_id`) or update (with `prompt_id`) one saved writer
+ * prompt.
+ */
+async saveWriterLibraryPrompt(promptId: string | null, name: string, body: string) : Promise<Result<WriterPrompt, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_writer_library_prompt", { promptId, name, body }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete one saved writer prompt.
+ */
+async deleteWriterLibraryPrompt(promptId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_writer_library_prompt", { promptId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List all versions of a specific file in a client's record.
  */
 async listFileVersions(clientId: string, filename: string) : Promise<Result<FileVersion[], string>> {
@@ -1792,6 +1826,7 @@ pricing_version: number }
  * Result of checking for a newer release on GitHub.
  */
 export type UpdateCheck = { current_version: string; latest_version: string; update_available: boolean; release_url: string }
+export type WriterPrompt = { schema_version: number; id: string; name: string; body: string; created_at: string; updated_at: string }
 export type WriterTemplateView = { id: string; name: string; size: number; uploaded_at: string; use_count: number }
 /**
  * The fixed trust-boundary rules Claria appends to every writer prompt —

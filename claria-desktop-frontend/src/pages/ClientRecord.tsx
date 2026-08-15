@@ -4,7 +4,7 @@ import ClientChat from "./ClientChat";
 import ClientRecordSettings from "./ClientRecordSettings";
 import RecordTab from "./RecordTab";
 import Writing from "./Writing";
-import type { Page } from "../App";
+import type { Page, PreferencesWriterSection } from "../App";
 
 /** Compose one client's Record, Chat, and Writing workspaces. */
 export default function ClientRecord({
@@ -12,17 +12,17 @@ export default function ClientRecord({
   clientId,
   clientName,
   onClientNameChanged,
-  onManageWriterTemplates,
+  onManageWriterSection,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
   clientName: string;
   onClientNameChanged: (name: string) => void;
-  onManageWriterTemplates: () => void;
+  onManageWriterSection: (section: PreferencesWriterSection) => void;
 }) {
   const workspace = useClientWorkspace(
     () => navigate("clients"),
-    onManageWriterTemplates
+    onManageWriterSection
   );
 
   return (
@@ -58,7 +58,8 @@ export default function ClientRecord({
           clientId={clientId}
           expectedReportId={workspace.expectedReportId}
           onLeaveStateChange={workspace.updateWritingLeaveState}
-          onManageTemplates={workspace.manageWriterTemplates}
+          onManageTemplates={() => workspace.manageWriterSection("writer-templates")}
+          onManagePrompts={() => workspace.manageWriterSection("writer-prompts")}
         />
       )}
     </ClientWorkspaceTabs>

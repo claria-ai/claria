@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { buildInitScript } from "./tauri-mock.js";
-import { driftedPlan } from "./fixtures.js";
+import { driftedPlan, freshWritingWorkspace } from "./fixtures.js";
 
 const BASE_URL = process.env.CLARIA_TEST_URL ?? "http://localhost:1420";
 const SCREENSHOT_TIME = new Date("2026-03-03T20:00:00Z");
@@ -64,6 +64,9 @@ test("preferences page", async ({ page }) => {
   await page.waitForSelector("text=Claude Opus 4.6");
   await page.click("summary:has-text('Writer Templates')");
   await page.waitForSelector("text=Comprehensive evaluation");
+  // The saved-prompt library, one reusable instruction per workflow phase.
+  await page.click("summary:has-text('Prompt Library')");
+  await page.waitForSelector("text=Phase 1 — Referral, background & history");
   // Writer prompt editors with their read-only trust rules, and the model
   // tuning knobs.
   await page.click("summary:has-text('Writer Prompt')");
@@ -155,6 +158,41 @@ test("client writing", async ({ page }) => {
   await page.waitForSelector("[data-testid=report-proposal]");
   await page.waitForTimeout(300);
   await capture(page, "client-writing.png", true);
+});
+
+test("client writing prompt library", async ({ page }) => {
+  // A session before its first turn, so the setup pane offers whole-report
+  // generation; the saved-prompt picker prefills the guidance box with the
+  // first phase of a phased report workflow.
+  await page.addInitScript({
+    content: buildInitScript({
+      load_report_workspace: freshWritingWorkspace,
+      start_report_workspace: freshWritingWorkspace,
+    }),
+  });
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-page=clients]");
+  await page.click("[data-page=clients]");
+  await page.waitForSelector("[data-client]");
+  await page.click("[data-client]:first-child");
+  await page.waitForSelector("[data-tab=writing]");
+  await page.click("[data-tab=writing]");
+  await page.waitForSelector("text=Fill the whole report");
+  await page.selectOption('select[aria-label="Insert saved prompt"]', {
+    label: "Phase 1 — Referral, background & history",
+  });
+  const guidance = page.getByLabel("Full report guidance");
+  await expect(guidance).toHaveValue(/Reason for Referral/);
+  // Prefill focuses the textarea with the caret at the end; show the
+  // instruction from its first line.
+  await guidance.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.setSelectionRange(0, 0);
+    textarea.scrollTop = 0;
+    textarea.blur();
+  });
+  await page.waitForTimeout(300);
+  await capture(page, "writing-prompt-library.png", true);
 });
 
 test("client chat", async ({ page }) => {

@@ -6,6 +6,7 @@
 //! and persisted domain types stay in `claria-core`.
 
 mod error;
+pub mod writer_prompts;
 pub mod writer_templates;
 
 use std::{
@@ -60,7 +61,10 @@ pub const MAX_CONFIGURABLE_CONVERSE_CALLS: u32 = MAX_CONFIGURABLE_TOOL_ROUNDS + 
 pub const MAX_CONFIGURABLE_TOOL_USES_PER_RESPONSE: u32 =
     claria_bedrock::report::MAX_TOOL_USES_PER_RESPONSE as u32;
 pub const MAX_CONFIGURABLE_RETAINED_TURNS: u32 = MAX_REPORT_TURNS as u32;
-const MAX_INSTRUCTION_CHARACTERS: usize = 20_000;
+/// Ceiling for one writer instruction or whole-report guidance message.
+/// Public because saved library prompts prefill the instruction box, so
+/// their body ceiling is this ceiling.
+pub const MAX_INSTRUCTION_CHARACTERS: usize = 20_000;
 const MAX_REPORT_REFERENCES: usize = 10;
 const MAX_RESOLUTIONS: usize = 100;
 // v2 adds stop_reason, latency_ms, max_output_tokens, system_prompt_sha256,

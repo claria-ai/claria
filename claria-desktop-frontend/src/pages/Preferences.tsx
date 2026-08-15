@@ -18,6 +18,8 @@ import {
   uploadWriterTemplate,
   renameWriterTemplate,
   deleteWriterTemplate,
+  saveWriterLibraryPrompt,
+  deleteWriterLibraryPrompt,
   type ConfigInfo,
   type EffortPreference,
   type ModelTuningPreferences,
@@ -31,12 +33,14 @@ import {
   type ReportAuthoringPreferences,
   type TranscriptionLanguage,
   type TranscriptionPreferences,
+  type WriterPrompt,
   type WriterTemplateView,
 } from "../lib/tauri";
 import { logFrontendEvent } from "../lib/logBridge";
 import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
+import { useWriterPrompts } from "../lib/useWriterPrompts";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
 import { formatDateTime, formatFileSize } from "../lib/format";
 import { promptVersions } from "../lib/versions";
@@ -46,15 +50,15 @@ import { BackButton, TrashIcon } from "../components/icons";
 import Spinner from "../components/Spinner";
 import { ErrorBanner, LoadingCard } from "../components/StateCards";
 import VersionHistoryModal from "../components/VersionHistoryModal";
-import type { Page } from "../App";
+import type { Page, PreferencesWriterSection } from "../App";
 
 export default function Preferences({
   navigate,
-  openWriterTemplates = false,
+  focusSection = null,
   backPage = "start",
 }: {
   navigate: (page: Page) => void;
-  openWriterTemplates?: boolean;
+  focusSection?: PreferencesWriterSection | null;
   backPage?: Page;
 }) {
   const {
@@ -111,7 +115,10 @@ export default function Preferences({
         <TranscriptionSection />
 
         {/* Managed, redacted templates used by the document writer */}
-        <WriterTemplatesSection defaultOpen={openWriterTemplates} />
+        <WriterTemplatesSection defaultOpen={focusSection === "writer-templates"} />
+
+        {/* Saved steering prompts that prefill writer instructions */}
+        <WriterPromptsSection defaultOpen={focusSection === "writer-prompts"} />
 
         {/* Agentic document-writer guardrails */}
         <ReportAuthoringSection />
@@ -1345,6 +1352,197 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
             className=""
           />
         )}
+    </PreferencesSection>
+  );
+}
+
+function WriterPromptsSection({ defaultOpen }: { defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const { prompts, setPrompts, loading, error: loadError, reload } = useWriterPrompts();
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  /** null = closed, "new" = creating, otherwise the id being edited. */
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const error = loadError ?? actionError;
+
+  function openEditor(prompt: WriterPrompt | null) {
+    setEditing(prompt?.id ?? "new");
+    setDraftName(prompt?.name ?? "");
+    setDraftBody(prompt?.body ?? "");
+    setActionError(null);
+  }
+
+  async function saveDraft() {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const saved = await saveWriterLibraryPrompt(
+        editing === "new" ? null : editing,
+        draftName,
+        draftBody
+      );
+      setPrompts((current) => {
+        const rest = current.filter((prompt) => prompt.id !== saved.id);
+        return [...rest, saved].sort((left, right) =>
+          left.name.toLowerCase().localeCompare(right.name.toLowerCase())
+        );
+      });
+      setEditing(null);
+    } catch (reason) {
+      setActionError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(prompt: WriterPrompt) {
+    if (!window.confirm(`Delete the saved prompt "${prompt.name}"?`)) {
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      await deleteWriterLibraryPrompt(prompt.id);
+      setPrompts((current) => current.filter((candidate) => candidate.id !== prompt.id));
+      if (editing === prompt.id) setEditing(null);
+    } catch (reason) {
+      setActionError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <PreferencesSection
+      title="Prompt Library"
+      summary={<span className="text-xs text-gray-400">{prompts.length} saved</span>}
+      open={open}
+      onToggle={setOpen}
+      testId="writer-prompt-manager"
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-sm text-gray-700">
+            Save the writer instructions you reuse — one for each phase of a
+            report. Picking one in a Writing session fills the instruction
+            box, where you can still edit it before sending.
+          </p>
+          <p className="text-xs text-amber-700 mt-1">
+            Saved prompts are shared across all clients. Write placeholders
+            like $DIAGNOSIS instead of client names or other identifying
+            details.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => openEditor(null)}
+          disabled={busy || editing !== null}
+          className="shrink-0 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+        >
+          New prompt
+        </button>
+      </div>
+
+      {editing !== null && (
+        <div
+          className="rounded-lg border border-blue-200 bg-blue-50/40 p-3 space-y-2"
+          data-testid="writer-prompt-editor"
+        >
+          <input
+            type="text"
+            value={draftName}
+            onChange={(event) => setDraftName(event.target.value)}
+            placeholder="Prompt name (e.g. Phase 1 — history sections)"
+            aria-label="Saved prompt name"
+            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+          />
+          <textarea
+            value={draftBody}
+            onChange={(event) => setDraftBody(event.target.value)}
+            placeholder="The instruction to prefill, e.g. Fill in Reason for Referral, Background, and Medical/Social History from the records; skip everything else."
+            aria-label="Saved prompt text"
+            rows={5}
+            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm font-mono"
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setEditing(null)}
+              disabled={busy}
+              className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void saveDraft()}
+              disabled={busy || draftName.trim() === "" || draftBody.trim() === ""}
+              className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              {busy ? "Saving…" : "Save prompt"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-sm text-gray-500">
+          <Spinner /> Loading saved prompts…
+        </div>
+      ) : prompts.length === 0 && editing === null ? (
+        <p className="rounded-lg border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">
+          No saved prompts yet.
+        </p>
+      ) : (
+        prompts.length > 0 && (
+          <div className="divide-y divide-gray-100 rounded-lg border border-gray-200">
+            {prompts.map((prompt) => (
+              <div key={prompt.id} className="flex items-center gap-3 p-3">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-gray-900">
+                    {prompt.name}
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-gray-400">
+                    {prompt.body}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openEditor(prompt)}
+                  disabled={busy || editing !== null}
+                  className="rounded px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-40"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void remove(prompt)}
+                  disabled={busy}
+                  aria-label={`Delete ${prompt.name}`}
+                  title="Delete saved prompt"
+                  className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+
+      {error && (
+        <ErrorBanner
+          message={error}
+          onRetry={() => {
+            setActionError(null);
+            void reload();
+          }}
+          className=""
+        />
+      )}
     </PreferencesSection>
   );
 }
