@@ -501,11 +501,13 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
             title: "Manual report".to_string(),
             sections: vec![
                 ReportSection {
+                    skipped: false,
                     id: Uuid::new_v4(),
                     heading: "First".to_string(),
                     blocks: vec![paragraph("One")],
                 },
                 ReportSection {
+                    skipped: false,
                     id: Uuid::new_v4(),
                     heading: "Second".to_string(),
                     blocks: vec![paragraph("Two")],
@@ -555,11 +557,13 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
             title: "Manual report".to_string(),
             sections: vec![
                 ReportSection {
+                    skipped: false,
                     id: second_id,
                     heading: "Second".to_string(),
                     blocks: vec![paragraph("Two")],
                 },
                 ReportSection {
+                    skipped: false,
                     id: first_id,
                     heading: "First".to_string(),
                     blocks: vec![paragraph("One")],
@@ -835,6 +839,7 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
             content: ReportContent {
                 title: "Imported template".to_string(),
                 sections: vec![ReportSection {
+                    skipped: false,
                     id: Uuid::new_v4(),
                     heading: "Scores".to_string(),
                     blocks: vec![ReportBlock::Table {
@@ -2507,6 +2512,7 @@ async fn accepted_report_content_and_focused_tables_stay_in_untrusted_context() 
         ReportContent {
             title: malicious.to_string(),
             sections: vec![ReportSection {
+                skipped: false,
                 id: section_id,
                 heading: "Findings".to_string(),
                 blocks: vec![

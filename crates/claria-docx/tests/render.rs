@@ -20,6 +20,7 @@ fn draft() -> ReportDraft {
             title: "Evaluation & Plan <Final>".to_string(),
             sections: vec![
                 ReportSection {
+                    skipped: false,
                     id: "11111111-1111-4111-8111-111111111111".parse().unwrap(),
                     heading: "History — 東京".to_string(),
                     blocks: vec![ReportBlock::Paragraph {
@@ -27,6 +28,7 @@ fn draft() -> ReportDraft {
                     }],
                 },
                 ReportSection {
+                    skipped: false,
                     id: "22222222-2222-4222-8222-222222222222".parse().unwrap(),
                     heading: "Recommendations".to_string(),
                     blocks: vec![ReportBlock::BulletList {
@@ -418,6 +420,7 @@ fn template_render_reuses_source_styles_for_new_sections() {
     let mut report = draft();
     report.content = imported.content;
     report.content.sections.push(ReportSection {
+        skipped: false,
         id: "33333333-3333-4333-8333-333333333333".parse().unwrap(),
         heading: "Added section".to_string(),
         blocks: vec![ReportBlock::Paragraph {

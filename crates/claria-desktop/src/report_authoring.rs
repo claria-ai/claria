@@ -306,6 +306,8 @@ pub struct ReportSectionEdit {
     pub id: Option<String>,
     pub heading: String,
     pub blocks: Vec<ReportBlock>,
+    #[serde(default)]
+    pub skipped: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -380,10 +382,14 @@ pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String>
             if !seen.insert(id) {
                 return Err(format!("Duplicate report section ID: {id}"));
             }
+            // Hand-writing content into a deferred section un-defers it,
+            // even if the frontend forgot to clear the flag.
+            let skipped = section.skipped && section.blocks.is_empty();
             Ok(ReportSection {
                 id,
                 heading: section.heading,
                 blocks: section.blocks,
+                skipped,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

@@ -35,6 +35,7 @@ pub const READ_RECORD_FILE_TOOL: &str = "read_record_file";
 pub const PROPOSE_REPORT_CHANGES_TOOL: &str = "propose_report_changes";
 pub const SET_FULL_DRAFT_TITLE_TOOL: &str = "set_full_draft_title";
 pub const WRITE_FULL_DRAFT_SECTION_TOOL: &str = "write_full_draft_section";
+pub const SKIP_FULL_DRAFT_SECTION_TOOL: &str = "skip_full_draft_section";
 pub const FINISH_FULL_DRAFT_TOOL: &str = "finish_full_draft";
 pub const DEFAULT_MAX_TOOL_USES_PER_RESPONSE: usize = 80;
 pub const MAX_TOOL_USES_PER_RESPONSE: usize = 100;
@@ -144,6 +145,7 @@ pub enum ReportToolRequest {
     ProposeReportChanges(ProposeReportChangesRequest),
     SetFullDraftTitle(SetFullDraftTitleRequest),
     WriteFullDraftSection(WriteFullDraftSectionRequest),
+    SkipFullDraftSection(SkipFullDraftSectionRequest),
     FinishFullDraft(FinishFullDraftRequest),
 }
 
@@ -184,6 +186,14 @@ pub struct WriteFullDraftSectionRequest {
     pub position: u32,
     pub heading: String,
     pub blocks: Vec<ReportBlockRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SkipFullDraftSectionRequest {
+    /// An existing section ID copied from the supplied report structure —
+    /// only supplied sections can be deferred, never new ones.
+    pub section_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -250,6 +260,9 @@ pub fn decode_tool_request(call: &ReportToolCall) -> Result<ReportToolRequest, B
             .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
         WRITE_FULL_DRAFT_SECTION_TOOL => serde_json::from_value(call.input.clone())
             .map(ReportToolRequest::WriteFullDraftSection)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        SKIP_FULL_DRAFT_SECTION_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::SkipFullDraftSection)
             .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
         FINISH_FULL_DRAFT_TOOL => serde_json::from_value(call.input.clone())
             .map(ReportToolRequest::FinishFullDraft)
@@ -893,6 +906,17 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
             }
         }
     });
+    let skip_full_section_schema = serde_json::json!({
+        "type": "object",
+        "required": ["section_id"],
+        "additionalProperties": false,
+        "properties": {
+            "section_id": {
+                "type": "string", "minLength": 36, "maxLength": 36,
+                "description": "The 36-character UUID of a supplied template/report section, copied exactly. Only supplied sections can be skipped — never pass an invented ID or the ID of a section you already wrote."
+            }
+        }
+    });
     let finish_full_draft_schema = serde_json::json!({
         "type": "object",
         "required": ["summary"],
@@ -949,10 +973,21 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                 full_section_schema,
             )?,
             tool(
+                SKIP_FULL_DRAFT_SECTION_TOOL,
+                "Explicitly defer one supplied template/report section instead of writing it — only \
+                 when the user's guidance directs that it be left for a later pass, never to shorten \
+                 the job. The section keeps its heading and place in the document, its body stays \
+                 empty, and exports omit it until a later edit writes content into it. Every supplied \
+                 section must be either written or skipped before finish_full_draft; a later \
+                 write_full_draft_section with the same section_id overrides the skip.",
+                skip_full_section_schema,
+            )?,
+            tool(
                 FINISH_FULL_DRAFT_TOOL,
-                "Validate and finalize the isolated full-draft candidate after the title and every \
-                 supplied template/report section have been written. A successful result authorizes \
-                 the host to atomically save one new working-draft revision without a proposal gate.",
+                "Validate and finalize the isolated full-draft candidate after the title has been set \
+                 and every supplied template/report section has been written or explicitly skipped. A \
+                 successful result authorizes the host to atomically save one new working-draft \
+                 revision without a proposal gate.",
                 finish_full_draft_schema,
             )?,
         ],

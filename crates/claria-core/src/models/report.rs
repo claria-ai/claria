@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{error::CoreError, models::turn_usage::TurnUsage};
 
-pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 5;
+pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 6;
 pub const MAX_REPORT_SECTIONS: usize = 100;
 pub const MAX_SECTION_BLOCKS: usize = 200;
 pub const MAX_TABLE_ROWS: usize = 200;
@@ -80,6 +80,15 @@ pub struct ReportSection {
     pub id: Uuid,
     pub heading: String,
     pub blocks: Vec<ReportBlock>,
+    /// An explicitly deferred template section: the heading keeps its place
+    /// in the document, the body stays empty, and export omits the section
+    /// entirely until a later edit writes content into it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skipped: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
@@ -482,6 +491,8 @@ impl ReportDraft {
                         .ok_or_else(|| invalid(format!("section {section_id} does not exist")))?;
                     section.heading.clone_from(heading);
                     section.blocks.clone_from(blocks);
+                    // Writing into a section is what un-defers it.
+                    section.skipped = false;
                 }
                 ReportOperation::RemoveSection { section_id } => {
                     let index = candidate
@@ -646,18 +657,23 @@ pub fn decode_report_workspace(bytes: &[u8]) -> Result<ReportWorkspace, CoreErro
     }
     // Versions through 4 predate durable, text-free provenance for records
     // preloaded by whole-report generation.
-    if schema_version.is_some_and(|version| version <= 4) {
-        if let Some(turns) = value
+    if schema_version.is_some_and(|version| version <= 4)
+        && let Some(turns) = value
             .pointer_mut("/session/turns")
             .and_then(serde_json::Value::as_array_mut)
-        {
-            for turn in turns {
-                if let Some(turn) = turn.as_object_mut() {
-                    turn.entry("record_context_files")
-                        .or_insert_with(|| serde_json::json!([]));
-                }
+    {
+        for turn in turns {
+            if let Some(turn) = turn.as_object_mut() {
+                turn.entry("record_context_files")
+                    .or_insert_with(|| serde_json::json!([]));
             }
         }
+    }
+    // Versions through 5 predate per-section skip status. The field is
+    // additive (`#[serde(default)]`), so only the version stamp is needed —
+    // the bump exists so older builds, which would silently drop skip flags
+    // and export deferred sections, refuse these workspaces instead.
+    if schema_version.is_some_and(|version| version <= 5) {
         value["schema_version"] = serde_json::json!(REPORT_WORKSPACE_SCHEMA_VERSION);
     }
     let workspace: ReportWorkspace = serde_json::from_value(value)?;
@@ -778,6 +794,9 @@ fn validate_section(section: &ReportSection) -> Result<(), CoreError> {
         return Err(invalid("section ID must not be nil"));
     }
     validate_nonempty_text("section heading", &section.heading, MAX_HEADING_CHARACTERS)?;
+    if section.skipped && !section.blocks.is_empty() {
+        return Err(invalid("a skipped section must have an empty body"));
+    }
     validate_blocks(&section.blocks)
 }
 

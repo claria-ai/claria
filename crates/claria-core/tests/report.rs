@@ -27,6 +27,7 @@ fn paragraph(text: &str) -> ReportBlock {
 
 fn section(id: Uuid, heading: &str, text: &str) -> ReportSection {
     ReportSection {
+        skipped: false,
         id,
         heading: heading.to_string(),
         blocks: vec![paragraph(text)],
@@ -351,6 +352,7 @@ fn limits_and_empty_text_are_rejected() {
     let invalid_bullets = ReportOperation::AddSection {
         position: 0,
         section: ReportSection {
+            skipped: false,
             id: Uuid::new_v4(),
             heading: "Findings".to_string(),
             blocks: vec![ReportBlock::BulletList { items: vec![] }],
@@ -371,6 +373,7 @@ fn structured_tables_validate_shape_widths_and_empty_cells() {
     let valid = ReportContent {
         title: "Assessment".to_string(),
         sections: vec![ReportSection {
+            skipped: false,
             id: Uuid::new_v4(),
             heading: "Scores".to_string(),
             blocks: vec![ReportBlock::Table {
@@ -419,6 +422,7 @@ fn structured_tables_validate_shape_widths_and_empty_cells() {
     let too_many_cells = ReportContent {
         title: "Assessment".to_string(),
         sections: vec![ReportSection {
+            skipped: false,
             id: Uuid::new_v4(),
             heading: "Large tables".to_string(),
             blocks: (0..6)
@@ -485,6 +489,7 @@ fn unresolved_template_markers_are_counted_across_tables() {
     let content = ReportContent {
         title: "Report for {{client}}".to_string(),
         sections: vec![ReportSection {
+            skipped: false,
             id: Uuid::new_v4(),
             heading: "[DATE]".to_string(),
             blocks: vec![ReportBlock::Table {

@@ -90,6 +90,7 @@ pub fn render_report_with_template(
 ) -> Result<(Vec<u8>, TemplateRenderFidelity), DocxError> {
     validate_report_content(&draft.content)
         .map_err(|error| DocxError::Render(error.to_string()))?;
+    let draft = &crate::render::exportable_draft(draft);
     // Reuse the bounded package preflight and parser before retaining any part
     // of an uploaded package in an exported report.
     let imported = import_template(template)?;
@@ -991,6 +992,7 @@ fn single_target_draft(target: &TargetFlow) -> Result<ReportDraft, DocxError> {
             id: uuid::Uuid::new_v4(),
             heading: heading.to_string(),
             blocks,
+            skipped: false,
         };
     let (title, sections) = match (&target.kind, &target.content) {
         (FlowKind::Title, FlowContent::Paragraph(text)) => (text.clone(), Vec::new()),
@@ -1072,6 +1074,7 @@ fn draft_from_targets(targets: &[TargetFlow]) -> Result<ReportDraft, DocxError> 
                     id: uuid::Uuid::new_v4(),
                     heading: heading.clone(),
                     blocks: Vec::new(),
+                    skipped: false,
                 });
             }
             (FlowKind::Body, FlowContent::Paragraph(text)) => {

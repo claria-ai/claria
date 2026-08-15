@@ -375,6 +375,14 @@ pub async fn generate_full_report(
                         "turn_id": response.turn_id,
                         "revision": response.workspace.draft.revision,
                         "section_count": response.workspace.draft.content.sections.len(),
+                        "skipped_section_count": response
+                            .workspace
+                            .draft
+                            .content
+                            .sections
+                            .iter()
+                            .filter(|section| section.skipped)
+                            .count(),
                         "converse_calls": attempt.converse_calls,
                         "tool_uses": attempt.tool_uses,
                         "usage_complete": attempt.usage_complete,

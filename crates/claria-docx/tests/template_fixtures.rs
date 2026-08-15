@@ -177,6 +177,7 @@ fn paragraph(text: &str) -> ReportBlock {
 
 fn section(heading: &str, blocks: Vec<ReportBlock>) -> ReportSection {
     ReportSection {
+        skipped: false,
         id: Uuid::new_v4(),
         heading: heading.to_string(),
         blocks,

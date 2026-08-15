@@ -433,6 +433,7 @@ impl ImportBuilder {
                 id: Uuid::new_v4(),
                 heading,
                 blocks: std::mem::take(&mut self.current_blocks),
+                skipped: false,
             });
         }
     }
