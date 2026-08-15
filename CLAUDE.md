@@ -206,7 +206,12 @@ If you ever see the WebView die on startup, the first thing to check is the inst
 grep '"version"' claria-desktop-frontend/node_modules/@tauri-apps/api/package.json
 ```
 
-It must match the `tauri = "=X.Y.Z"` pin in `crates/claria-desktop/Cargo.toml`. Tauri's Rust crate and JS package are released in lockstep and must be bumped together.
+It must be on the same minor line as the `tauri = "=X.Y.Z"` pin in
+`crates/claria-desktop/Cargo.toml`. The two are not published in lockstep and
+their patch numbers routinely diverge — the crate has shipped 2.11.5 while
+npm's `@tauri-apps/api` stops at 2.11.1 — so match `X.Y` and take the newest
+patch npm offers rather than hunting for a version number that does not exist.
+Both are pinned exactly; bump them together and re-run `npm install`.
 
 ## Local Build Environment
 
