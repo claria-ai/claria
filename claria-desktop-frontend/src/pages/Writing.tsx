@@ -25,7 +25,9 @@ import { buildCostLedger } from "../lib/costLedger";
 import { usePreferredModel } from "../lib/usePreferredModel";
 import { usePricingMap } from "../lib/usePricingMap";
 import { useReportWorkspace } from "../lib/useReportWorkspace";
+import { useWriterPrompts } from "../lib/useWriterPrompts";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
+import WriterPromptPicker from "../components/WriterPromptPicker";
 import {
   readWritingComposerDraft,
   reportBlockReferencePreview,
@@ -130,6 +132,15 @@ export default function Writing({
     error: templatesError,
     reload: reloadTemplates,
   } = useWriterTemplates();
+
+  const { prompts: writerPrompts } = useWriterPrompts();
+
+  // Picking a saved prompt is a prefill, not a send: the body lands in the
+  // instruction box for editing (e.g. replacing a $DIAGNOSIS placeholder).
+  function insertSavedPrompt(body: string) {
+    setInstruction(body);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
 
   // The user's explicit template choice, falling back to the first template
   // while the choice is unset or no longer exists.
@@ -539,10 +550,19 @@ export default function Writing({
                       </p>
                     </div>
                   </div>
-                  <label className="block">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] font-medium text-gray-600">
                       Guidance <span className="font-normal text-gray-400">· optional</span>
                     </span>
+                    <WriterPromptPicker
+                      prompts={writerPrompts}
+                      currentValue={instruction}
+                      disabled={composerDisabled}
+                      onPick={insertSavedPrompt}
+                    />
+                  </div>
+                  <label className="block">
+                    <span className="sr-only">Full report guidance</span>
                     <textarea
                       ref={composerRef}
                       aria-label="Full report guidance"
@@ -757,6 +777,16 @@ export default function Writing({
                   </button>
                 </span>
               ))}
+            </div>
+          )}
+          {writerPrompts.length > 0 && (
+            <div className="mb-2 flex justify-end">
+              <WriterPromptPicker
+                prompts={writerPrompts}
+                currentValue={instruction}
+                disabled={composerDisabled}
+                onPick={insertSavedPrompt}
+              />
             </div>
           )}
           <ChatComposer

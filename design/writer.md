@@ -44,6 +44,16 @@ and export; `claria-desktop` wires commands, preferences, and audit events.
    record reads on demand, reviewable proposals, and eventually a DOCX
    export rendered back through the stored template package.
 
+**Saved writer prompts.** Preferences → Writer Prompts keeps a small
+account-wide library of reusable steering instructions
+(`claria-prompts/writer-library/{uuid}.json`), one per phase of a
+clinician's workflow — "fill the history sections", "draft the summary
+backing my diagnosis of $DIAGNOSIS". A picker beside the guidance box and
+the targeted composer prefills the instruction, which the user edits before
+sending. A picked prompt is ordinary user input: it never touches the
+system prompt, the trust rules, or the turn loop, and its ceiling is the
+instruction ceiling so a saved prompt is always submittable.
+
 ```mermaid
 flowchart TD
     subgraph Account["Account setup"]

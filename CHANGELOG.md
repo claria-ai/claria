@@ -4,6 +4,9 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- The writer gains a saved-prompt library: reusable steering instructions managed in Preferences, one per phase of a report workflow
+- A picker beside the writer's guidance box and composer prefills a saved prompt for editing before it is sent
+- Saved prompts are stored in managed S3 storage and shared across all clients, with a reminder to use placeholders instead of client details
 - The frontend dev server no longer discovers a dependency late and reloads the page mid-load on a cold start, which could strand the first screenshot and fail the release site update
 - Screenshot capture waits for the dev server to be able to serve the app rather than merely to answer its port
 - A failed capture now carries the dev server's own output, which was previously discarded
