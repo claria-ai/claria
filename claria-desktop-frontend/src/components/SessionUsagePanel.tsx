@@ -1,11 +1,15 @@
 import type { ReactNode } from "react";
 import { formatCost, formatTokens, type SessionUsage } from "../lib/cost";
 import type { CostLedger } from "../lib/costLedger";
+import type { SessionDiagramModel } from "../lib/sessionDiagram";
 import CostExplanation from "./CostExplanation";
+import SessionFlowDiagram from "./SessionFlowDiagram";
 
 /**
  * The single home for session cost and prompt-cache information. Chat and
- * Writing both use this panel so their default conversation views stay quiet.
+ * Writing both use this panel so their default conversation views stay
+ * quiet. Callers that pass a `diagram` model additionally get the
+ * three-lane session flow diagram beneath the cards.
  */
 export default function SessionUsagePanel({
   session,
@@ -14,6 +18,7 @@ export default function SessionUsagePanel({
   onShowTurnCostsChange,
   turnCostsLabel = "conversation",
   actions,
+  diagram,
 }: {
   session: SessionUsage;
   ledger: CostLedger;
@@ -21,6 +26,7 @@ export default function SessionUsagePanel({
   onShowTurnCostsChange: (show: boolean) => void;
   turnCostsLabel?: string;
   actions?: ReactNode;
+  diagram?: SessionDiagramModel;
 }) {
   const totalTurns = ledger.entries.length + ledger.unmeteredTurns;
   const cacheReadCostUnknown = ledger.entries.some(
@@ -116,6 +122,8 @@ export default function SessionUsagePanel({
             <CostExplanation ledger={ledger} />
           </>
         )}
+
+        {diagram && <SessionFlowDiagram model={diagram} />}
       </div>
     </div>
   );

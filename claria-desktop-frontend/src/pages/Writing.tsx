@@ -22,6 +22,7 @@ import {
   type SessionUsage,
 } from "../lib/cost";
 import { buildCostLedger } from "../lib/costLedger";
+import { buildWriterSessionDiagram } from "../lib/sessionDiagram";
 import { usePreferredModel } from "../lib/usePreferredModel";
 import { usePricingMap } from "../lib/usePricingMap";
 import { useReportWorkspace } from "../lib/useReportWorkspace";
@@ -215,6 +216,16 @@ export default function Writing({
   const ledger = useMemo(
     () => buildCostLedger(turnUsages, pricingByModel, turnTimestamps),
     [turnTimestamps, turnUsages, pricingByModel]
+  );
+
+  // Three-lane session flow model for the usage panel's diagram.
+  const diagram = useMemo(
+    () =>
+      buildWriterSessionDiagram(
+        workspace?.turns ?? [],
+        workspace?.resolutions ?? []
+      ),
+    [workspace?.turns, workspace?.resolutions]
   );
 
   const addReference = useCallback(
@@ -620,6 +631,7 @@ export default function Writing({
               showTurnCosts={showTurnCosts}
               onShowTurnCostsChange={setShowTurnCosts}
               turnCostsLabel="Writing timeline"
+              diagram={diagram}
             />
           </div>
         )}

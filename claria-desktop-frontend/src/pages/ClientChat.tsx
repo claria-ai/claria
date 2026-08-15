@@ -156,6 +156,7 @@ export default function ClientChat({
       const filenames = contextFilesRef.current
         .filter((f) => f.text.length > 0)
         .map((f) => f.filename);
+      let stopReason: string | null = null;
       const response = await chatMessage(
         clientId,
         modelId,
@@ -165,12 +166,13 @@ export default function ClientChat({
         chatIdRef.current || chatName === "New chat" ? null : chatName,
         (event) => {
           if (event.kind === "delta") onDelta(event.text);
+          else if (event.kind === "done") stopReason = event.stop_reason;
         }
       );
       chatIdRef.current = response.chat_id;
       setChatName(response.chat_name);
       setHasPersistedChat(true);
-      return { content: response.content, usage: response.usage };
+      return { content: response.content, usage: response.usage, stopReason };
     },
     [clientId, chatName]
   );
