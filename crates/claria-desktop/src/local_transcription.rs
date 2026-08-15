@@ -374,6 +374,11 @@ fn validate_number(name: &str, value: f32, minimum: f32, maximum: f32) -> Result
     Ok(())
 }
 
+// Windows leaves `path` unread because this function does nothing there — the
+// file keeps whatever its folder handed out. That is a real gap, not a lint
+// artifact, and #89 closes it with a protected DACL. The allow keeps the gap
+// stated rather than disguised as a `_path` rename, and goes away with #89.
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn set_private_permissions(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
