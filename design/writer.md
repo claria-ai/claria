@@ -44,7 +44,7 @@ and export; `claria-desktop` wires commands, preferences, and audit events.
    record reads on demand, reviewable proposals, and eventually a DOCX
    export rendered back through the stored template package.
 
-**Saved writer prompts.** Preferences → Writer Prompts keeps a small
+**Saved writer prompts.** Preferences → Prompt Library keeps a small
 account-wide library of reusable steering instructions
 (`claria-prompts/writer-library/{uuid}.json`), one per phase of a
 clinician's workflow — "fill the history sections", "draft the summary

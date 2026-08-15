@@ -1416,7 +1416,7 @@ function WriterPromptsSection({ defaultOpen }: { defaultOpen: boolean }) {
 
   return (
     <PreferencesSection
-      title="Writer Prompts"
+      title="Prompt Library"
       summary={<span className="text-xs text-gray-400">{prompts.length} saved</span>}
       open={open}
       onToggle={setOpen}
@@ -1426,9 +1426,9 @@ function WriterPromptsSection({ defaultOpen }: { defaultOpen: boolean }) {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-sm text-gray-700">
-            Save the writer instructions you reuse — one per phase of your
-            report workflow. Picking one in a Writing session fills the
-            instruction box, where you can still edit it before sending.
+            Save the writer instructions you reuse — one for each phase of a
+            report. Picking one in a Writing session fills the instruction
+            box, where you can still edit it before sending.
           </p>
           <p className="text-xs text-amber-700 mt-1">
             Saved prompts are shared across all clients. Write placeholders
