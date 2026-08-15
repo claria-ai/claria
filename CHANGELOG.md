@@ -9,6 +9,7 @@ All notable changes to Claria are documented here.
 - The two build dependencies that need install scripts are approved explicitly, and the approval is recorded in version control
 - The bundle size warning threshold now reflects a bundle the app loads from local disk rather than over a network
 - Builds no longer print funding notices on every dependency install
+- The Tauri JavaScript API is pinned exactly, so the half of the pair that talks to the Rust runtime can no longer drift on an unrelated install
 
 ## [0.25.0] — 2026-08-15
 
