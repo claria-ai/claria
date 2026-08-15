@@ -10,6 +10,13 @@ All notable changes to Claria are documented here.
 - The bundle size warning threshold now reflects a bundle the app loads from local disk rather than over a network
 - Builds no longer print funding notices on every dependency install
 
+## [0.26.0] — 2026-08-15
+
+- Chat and writer streams now tolerate five minutes of Bedrock silence before failing, up from two, so a cold prefill of a large record set no longer aborts the turn
+- A writer Bedrock call whose connection breaks before a response completes is retried up to twice before the turn fails
+- When every retry goes unanswered, the writer error now reports the attempt count and how long Bedrock was silent, and says to try again later
+- Pull-request CI compiles, lints, and tests the Rust workspace on Windows alongside Ubuntu, so Windows-only code is validated before a release tag rather than after
+
 ## [0.25.0] — 2026-08-15
 
 - Writer turns stream from Bedrock instead of waiting on one unary response, so a long generation no longer risks an HTTP timeout at the writer's output ceiling

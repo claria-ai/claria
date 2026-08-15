@@ -677,10 +677,27 @@ async fn converse_stream(path: &str, body: Value, state: SharedState) -> Respons
     } else {
         plain_converse_payload(body, state.clone()).await
     };
-    state.write().await.bedrock_stream_request_count += 1;
-
-    if state.read().await.bedrock_stream_stalls {
+    let (stall, drop_body) = {
+        let mut state = state.write().await;
+        state.bedrock_stream_request_count += 1;
+        if state.bedrock_stream_stalls > 0 {
+            state.bedrock_stream_stalls -= 1;
+            (true, false)
+        } else if state.bedrock_stream_drops > 0 {
+            state.bedrock_stream_drops -= 1;
+            (false, true)
+        } else {
+            (false, false)
+        }
+    };
+    if stall {
         return match stalled_converse_stream() {
+            Ok(response) => response,
+            Err(error) => encoding_failure(error),
+        };
+    }
+    if drop_body {
+        return match dropped_converse_stream() {
             Ok(response) => response,
             Err(error) => encoding_failure(error),
         };
@@ -743,6 +760,44 @@ fn stalled_converse_stream() -> Result<Response, aws_smithy_eventstream::error::
     });
     let never_ends = futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
     let body = axum::body::Body::from_stream(opening.chain(never_ends));
+
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/vnd.amazon.eventstream")],
+        body,
+    )
+        .into_response())
+}
+
+/// A `ConverseStream` response whose connection dies mid-body: the opening
+/// frame and one text delta arrive, then the body errors out, which reaches
+/// the client as an abruptly severed stream rather than a clean end.
+///
+/// Unlike [`stalled_converse_stream`], the failure is immediate, so retry
+/// paths can be exercised in real time instead of a paused clock — which
+/// matters because a paused clock races real network I/O against the SDK's
+/// connect-timeout timers.
+fn dropped_converse_stream() -> Result<Response, aws_smithy_eventstream::error::Error> {
+    use futures::StreamExt;
+
+    let mut frames = Vec::new();
+    write_event(&mut frames, "messageStart", &json!({"role": "assistant"}))?;
+    write_event(
+        &mut frames,
+        "contentBlockDelta",
+        &json!({"contentBlockIndex": 0, "delta": {"text": "Beginning of a reply that "}}),
+    )?;
+
+    let opening = futures::stream::once(async move {
+        Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from(frames))
+    });
+    let severed = futures::stream::once(async {
+        Err::<bytes::Bytes, std::io::Error>(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "mock connection dropped mid-response",
+        ))
+    });
+    let body = axum::body::Body::from_stream(opening.chain(severed));
 
     Ok((
         StatusCode::OK,
