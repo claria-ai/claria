@@ -151,6 +151,74 @@ fn version_four_turns_default_preloaded_record_provenance() {
 }
 
 #[test]
+fn version_five_workspaces_migrate_and_sections_default_to_written() {
+    let mut workspace = workspace();
+    workspace.draft.content.sections = vec![section(Uuid::new_v4(), "History", "Documented.")];
+    let mut value = serde_json::to_value(workspace).expect("workspace JSON");
+    value["schema_version"] = serde_json::json!(5);
+    value["draft"]["content"]["sections"][0]
+        .as_object_mut()
+        .expect("section")
+        .remove("skipped");
+
+    let decoded = decode_report_workspace(&serde_json::to_vec(&value).unwrap())
+        .expect("decode version five workspace");
+    assert_eq!(decoded.schema_version, REPORT_WORKSPACE_SCHEMA_VERSION);
+    assert!(!decoded.draft.content.sections[0].skipped);
+}
+
+#[test]
+fn skipped_sections_must_be_empty_and_pass_with_bare_headings() {
+    let deferred = ReportSection {
+        id: Uuid::new_v4(),
+        heading: "Summary and Clinical Interpretation".to_string(),
+        blocks: Vec::new(),
+        skipped: true,
+    };
+    let content = ReportContent {
+        title: "Assessment".to_string(),
+        sections: vec![deferred.clone()],
+    };
+    validate_report_content(&content).expect("bare deferred section is valid");
+
+    let content = ReportContent {
+        title: "Assessment".to_string(),
+        sections: vec![ReportSection {
+            blocks: vec![paragraph("Contradiction")],
+            ..deferred
+        }],
+    };
+    let error = validate_report_content(&content).unwrap_err();
+    assert!(error.to_string().contains("skipped section"));
+}
+
+#[test]
+fn replacing_a_deferred_section_un_defers_it() {
+    let mut workspace = workspace();
+    let deferred_id = Uuid::new_v4();
+    workspace.draft.content.sections = vec![ReportSection {
+        id: deferred_id,
+        heading: "Observations".to_string(),
+        blocks: Vec::new(),
+        skipped: true,
+    }];
+
+    let replaced = workspace
+        .draft
+        .preview(&[ReportOperation::ReplaceSection {
+            section_id: deferred_id,
+            heading: "Observations".to_string(),
+            blocks: vec![paragraph("Attended two sessions.")],
+        }])
+        .expect("replace deferred section");
+    assert!(!replaced.sections[0].skipped);
+    assert_eq!(
+        replaced.sections[0].blocks,
+        vec![paragraph("Attended two sessions.")]
+    );
+}
+
+#[test]
 fn writer_session_name_is_trimmed_and_validated() {
     let mut workspace = workspace();
     workspace

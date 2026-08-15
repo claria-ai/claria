@@ -1604,8 +1604,14 @@ export type ReportProposalResolution = { proposal_id: string; decision: ReportPr
  */
 export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperation[]; proposed_content: ReportContent; created_at: string }
 export type ReportRevisionView = { revision: number; title: string; updated_at: string }
-export type ReportSection = { id: string; heading: string; blocks: ReportBlock[] }
-export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlock[] }
+export type ReportSection = { id: string; heading: string; blocks: ReportBlock[]; 
+/**
+ * An explicitly deferred template section: the heading keeps its place
+ * in the document, the body stays empty, and export omits the section
+ * entirely until a later edit writes content into it.
+ */
+skipped?: boolean }
+export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlock[]; skipped?: boolean }
 export type ReportTemplateImportView = { writer_template_id: string | null; writer_template_name: string | null; imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
 export type ReportTemplatePreview = { import_id: string; content: ReportContent; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
 export type ReportTemplateStatsView = { sections: number; paragraphs: number; bullet_lists: number; tables: number; table_cells: number; placeholder_count: number }

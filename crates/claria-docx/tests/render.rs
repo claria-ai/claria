@@ -220,6 +220,71 @@ fn libreoffice_can_open_the_generated_document() {
 }
 
 #[test]
+fn deferred_sections_are_left_out_of_both_exports() {
+    // Plain renderer: the deferred heading must not reach the document.
+    let mut report = draft();
+    report.content.sections.insert(
+        1,
+        ReportSection {
+            id: "33333333-3333-4333-8333-333333333333".parse().unwrap(),
+            heading: "Summary and Clinical Interpretation".to_string(),
+            blocks: Vec::new(),
+            skipped: true,
+        },
+    );
+    let bytes = render_report(&report).expect("render with deferred section");
+    let document = entry(&bytes, "word/document.xml");
+    assert!(document.contains("Recommendations"));
+    assert!(!document.contains("Summary and Clinical Interpretation"));
+
+    // Template renderer: deferring one of the template's own sections elides
+    // its heading and boilerplate while the other sections keep rendering.
+    let template = {
+        let document = Docx::new()
+            .add_paragraph(
+                Paragraph::new()
+                    .style("Title")
+                    .add_run(Run::new().add_text("Evaluation Template")),
+            )
+            .add_paragraph(
+                Paragraph::new()
+                    .style("Heading1")
+                    .add_run(Run::new().add_text("Identifying Information")),
+            )
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Client details here")))
+            .add_paragraph(
+                Paragraph::new()
+                    .style("Heading1")
+                    .add_run(Run::new().add_text("Clinical Interpretation")),
+            )
+            .add_paragraph(
+                Paragraph::new().add_run(Run::new().add_text("Interpretation boilerplate")),
+            );
+        let mut output = Cursor::new(Vec::new());
+        document.build().pack(&mut output).expect("pack template");
+        output.into_inner()
+    };
+    let imported = import_template(&template).expect("import template");
+    let mut report = draft();
+    report.content = imported.content;
+    let deferred = report
+        .content
+        .sections
+        .iter_mut()
+        .find(|section| section.heading == "Clinical Interpretation")
+        .expect("imported interpretation section");
+    deferred.blocks.clear();
+    deferred.skipped = true;
+    let (rendered, _) =
+        render_report_with_template(&template, &report).expect("template export with deferral");
+    let rendered_document = entry(&rendered, "word/document.xml");
+    assert!(rendered_document.contains("Identifying Information"));
+    assert!(rendered_document.contains("Client details here"));
+    assert!(!rendered_document.contains("Clinical Interpretation"));
+    assert!(!rendered_document.contains("Interpretation boilerplate"));
+}
+
+#[test]
 fn template_render_retains_spacing_fonts_runs_and_blank_paragraphs() {
     let body_fonts = RunFonts::new()
         .ascii("Aptos")

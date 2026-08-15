@@ -28,10 +28,14 @@ is *data*, delivered to the model inside `<untrusted_report_context>` with
 carryover has been reviewed for the current revision).
 
 **Hydration is judgment, not substitution.** The whole-report prompt tells
-the model to rewrite every supplied section — copying each `section_id`
-exactly so no template section survives by omission — while preserving
-useful headings, table structure, and row meaning, and leaving unknown
-cells blank rather than inventing values. In practice the model carries
+the model to decide every supplied section — copying each `section_id`
+exactly and either rewriting it or, when the user's guidance defers it to a
+later pass, explicitly skipping it, so no template section survives by
+omission — while preserving useful headings, table structure, and row
+meaning, and leaving unknown cells blank rather than inventing values. A
+skipped section keeps its heading as an empty deferred placeholder; its
+boilerplate body is dropped rather than carried, and export omits the
+section until content is written into it. In practice the model carries
 forward structural text (section headings, table header rows, standing
 boilerplate that still applies) and replaces narrative content with
 client-specific text drawn from the record snapshot. Underscores, `[Name]`,

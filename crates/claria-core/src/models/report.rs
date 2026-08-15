@@ -83,12 +83,8 @@ pub struct ReportSection {
     /// An explicitly deferred template section: the heading keeps its place
     /// in the document, the body stays empty, and export omits the section
     /// entirely until a later edit writes content into it.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub skipped: bool,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]

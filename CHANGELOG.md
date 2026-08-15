@@ -4,6 +4,10 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Whole-report generation can now defer template sections the user's guidance leaves for a later pass, instead of being forced to write every section
+- A deferred section keeps its heading and place in the draft as an empty placeholder, shown greyed in the canvas and left out of Word exports until content is written into it
+- Writing into a deferred section — by proposal, whole-report rewrite, or hand edit — un-defers it
+- The whole-report finalizer still requires an explicit decision for every supplied section: written or skipped, nothing dropped silently
 - The frontend dev server no longer discovers a dependency late and reloads the page mid-load on a cold start, which could strand the first screenshot and fail the release site update
 - Screenshot capture waits for the dev server to be able to serve the app rather than merely to answer its port
 - A failed capture now carries the dev server's own output, which was previously discarded
