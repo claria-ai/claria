@@ -374,19 +374,12 @@ fn validate_number(name: &str, value: f32, minimum: f32, maximum: f32) -> Result
     Ok(())
 }
 
-// Windows leaves `path` unread because this function does nothing there — the
-// file keeps whatever its folder handed out. That is a real gap, not a lint
-// artifact, and #89 closes it with a protected DACL. The allow keeps the gap
-// stated rather than disguised as a `_path` rename, and goes away with #89.
-#[cfg_attr(not(unix), allow(unused_variables))]
+/// Restrict a file Claria just created to the account it runs as. These paths
+/// are Claria's own application data directory, so they are safe to name in
+/// the error.
 fn set_private_permissions(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("failed to protect {}: {error}", path.display()))?;
-    }
-    Ok(())
+    claria_desktop::local_export::set_private_permissions(path)
+        .map_err(|error| format!("failed to protect {}: {error:#}", path.display()))
 }
 
 fn model_is_downloaded(id: LocalModelId) -> bool {
