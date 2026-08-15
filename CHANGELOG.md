@@ -4,6 +4,11 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- The frontend dev server no longer discovers a dependency late and reloads the page mid-load on a cold start, which could strand the first screenshot and fail the release site update
+- Screenshot capture waits for the dev server to be able to serve the app rather than merely to answer its port
+- A failed capture now carries the dev server's own output, which was previously discarded
+- Screenshot capture retries in CI and always starts its own dev server there instead of reusing whatever holds the port
+- Playwright is pinned to an exact version
 - Four high-severity advisories in the frontend dependency tree are patched, without moving any declared version range
 - Tagged release builds pin the Tauri command-line tool and the release action to exact versions, so an upstream release can no longer change how a build is produced
 - The two build dependencies that need install scripts are approved explicitly, and the approval is recorded in version control

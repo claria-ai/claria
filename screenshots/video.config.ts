@@ -23,8 +23,11 @@ export default defineConfig({
   webServer: {
     command: "npm run dev",
     cwd: "../claria-desktop-frontend",
-    url: "http://localhost:1420",
-    reuseExistingServer: true,
+    // Same readiness and reuse rules as playwright.config.ts.
+    url: "http://localhost:1420/src/main.tsx",
+    reuseExistingServer: !process.env.CI,
     timeout: 30_000,
+    stdout: "pipe",
+    stderr: "pipe",
   },
 });
