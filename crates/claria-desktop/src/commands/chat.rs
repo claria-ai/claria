@@ -1,9 +1,15 @@
 //! Chat commands — record chat, infra chat, persisted chat history, and
 //! context token counting.
 
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, MutexGuard},
+};
+
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use claria_bedrock::{chat::ChatStreamOptions, converse::StopSignal};
 use claria_core::models::chat_history::{ChatMessage, ChatRole};
 use claria_desktop::config::ClariaConfig;
 use claria_provisioner::PlanEntry;
@@ -46,6 +52,79 @@ pub enum ChatStreamEvent {
 /// carries the complete response for persistence).
 fn send_stream_event(channel: &tauri::ipc::Channel<ChatStreamEvent>, event: ChatStreamEvent) {
     let _ = channel.send(event);
+}
+
+/// Live stop signals, keyed by the turn id the frontend minted.
+type StopRegistry = Mutex<HashMap<uuid::Uuid, StopSignal>>;
+
+/// The registry is only ever held across map operations, never across an
+/// await, so a poisoned lock means a panic elsewhere rather than torn state —
+/// recover the map instead of taking the process down with it.
+fn lock_stops(registry: &StopRegistry) -> MutexGuard<'_, HashMap<uuid::Uuid, StopSignal>> {
+    registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A turn's stop signal, registered for as long as its stream runs.
+///
+/// The registration is an RAII guard rather than a pair of calls because
+/// every `?` in a command body is an exit path; a leaked entry would keep a
+/// finished turn's id addressable and grow the map for the life of the
+/// process.
+struct StopRegistration {
+    registry: Arc<StopRegistry>,
+    stream_id: uuid::Uuid,
+    signal: StopSignal,
+}
+
+impl StopRegistration {
+    /// Register a fresh signal for `stream_id`. A repeated id replaces the
+    /// previous entry, which can only happen if the frontend reused one.
+    fn open(state: &DesktopState, stream_id: &str) -> Result<Self, CommandError> {
+        let stream_id = parse_uuid(stream_id)?;
+        let signal = StopSignal::new();
+        let registry = state.chat_stops.clone();
+        lock_stops(&registry).insert(stream_id, signal.clone());
+        Ok(Self {
+            registry,
+            stream_id,
+            signal,
+        })
+    }
+}
+
+impl Drop for StopRegistration {
+    fn drop(&mut self) {
+        let mut registry = lock_stops(&self.registry);
+        // Only ever retire this turn's own signal — a reused id would
+        // otherwise let a finishing turn deregister a running one.
+        if registry
+            .get(&self.stream_id)
+            .is_some_and(|current| current.is_same(&self.signal))
+        {
+            registry.remove(&self.stream_id);
+        }
+    }
+}
+
+/// End an in-flight streamed chat turn early, keeping whatever text arrived.
+///
+/// A `stream_id` with no live turn behind it is not an error: the reply may
+/// have completed between the click and this call.
+#[tauri::command]
+#[specta::specta]
+pub fn stop_chat_stream(state: State<'_, DesktopState>, stream_id: String) -> Result<(), String> {
+    super::flatten(
+        "stop_chat_stream",
+        parse_uuid(&stream_id).map(|id| match lock_stops(&state.chat_stops).get(&id) {
+            Some(signal) => {
+                signal.stop();
+                tracing::info!(stream_id = %id, "stopping chat stream");
+            }
+            None => tracing::debug!(stream_id = %id, "no chat stream to stop"),
+        }),
+    )
 }
 
 /// Response from an infrastructure chat turn. Infra chat does not persist
@@ -321,10 +400,12 @@ pub async fn chat_message(
     chat_id: Option<String>,
     chat_name: Option<String>,
     context_filenames: Vec<String>,
+    stream_id: String,
     on_event: tauri::ipc::Channel<ChatStreamEvent>,
 ) -> Result<ChatResponse, String> {
     run("chat_message", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
         let client_uuid = parse_uuid(&client_id)?;
         let now = jiff::Timestamp::now();
         let (chat_uuid, chat_name, created_at, expected_etag, stored_prefix) = match &chat_id {
@@ -396,17 +477,21 @@ pub async fn chat_message(
             );
         }
 
-        // Stream deltas to the frontend as they arrive; the complete text
-        // still comes back here so history persistence and audit are
-        // identical to the unary path. Delta content is PHI — never logged.
-        let tuning = super::model_tuning_for(&ctx.cfg, &model_id);
+        // Stream text to the frontend at the clinician's chosen cadence; the
+        // complete text still comes back here so history persistence and
+        // audit are identical to the unary path. Delta content is PHI —
+        // never logged.
         let outcome = claria_bedrock::chat::chat_converse_stream(
             &ctx.sdk_config,
             &model_id,
             &full_prompt,
             &messages,
-            cache_strategy,
-            tuning,
+            ChatStreamOptions {
+                cache_strategy,
+                tuning: super::model_tuning_for(&ctx.cfg, &model_id),
+                pacing: ctx.cfg.chat_streaming.to_pacing(),
+                stop: stop.signal.clone(),
+            },
             |delta| {
                 send_stream_event(
                     &on_event,
@@ -563,23 +648,26 @@ pub async fn infra_chat(
     model_id: String,
     messages: Vec<ChatMessage>,
     plan_entries: Vec<PlanEntry>,
+    stream_id: String,
     on_event: tauri::ipc::Channel<ChatStreamEvent>,
 ) -> Result<InfraChatResponse, String> {
     run("infra_chat", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
 
         let system_prompt = build_infra_system_prompt(&plan_entries);
 
-        let cache_strategy = build_cache_strategy(&ctx.cfg, &model_id);
-
-        let tuning = super::model_tuning_for(&ctx.cfg, &model_id);
         let outcome = claria_bedrock::chat::chat_converse_stream(
             &ctx.sdk_config,
             &model_id,
             &system_prompt,
             &messages,
-            cache_strategy,
-            tuning,
+            ChatStreamOptions {
+                cache_strategy: build_cache_strategy(&ctx.cfg, &model_id),
+                tuning: super::model_tuning_for(&ctx.cfg, &model_id),
+                pacing: ctx.cfg.chat_streaming.to_pacing(),
+                stop: stop.signal.clone(),
+            },
             |delta| {
                 send_stream_event(
                     &on_event,

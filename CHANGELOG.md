@@ -2,6 +2,16 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Chat replies now arrive a paragraph at a time instead of a token at a time, so text stops twitching while it is being read and formatting is never caught half-written
+- A new Chat Streaming preference chooses between a paragraph at a time, word by word, and nothing until the reply is finished
+- A reply that runs on without closing a paragraph is released at the nearest word break rather than held to the end of the turn
+- Scrolling up during a reply now keeps your place; Claria only follows the bottom of the conversation while you are already there, and offers a jump-to-latest button when you are not
+- Chat gains a Stop button, live while a reply is arriving and greyed out otherwise
+- Stopping keeps the text that arrived, saves it to the chat history, and drops the connection so the model stops generating
+- A stopped turn is marked in the session diagram and is not billed a token count, because the reply's usage report never arrives
+
 ## [0.27.0] — 2026-08-15
 
 - Whole-report generation can now defer template sections the user's guidance leaves for a later pass, instead of being forced to write every section

@@ -7,6 +7,7 @@ pub mod context;
 pub mod converse;
 pub mod error;
 pub mod extract;
+pub mod pacing;
 pub mod report;
 pub mod tokens;
 pub mod translate;

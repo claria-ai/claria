@@ -76,6 +76,7 @@ export type {
   ChatResponse,
   ChatRole,
   ChatStreamEvent,
+  ChatStreamMode,
   ClientNameHistoryEntry,
   ClientNameUpdate,
   ClientRecordDetails,
@@ -686,6 +687,7 @@ export async function chatMessage(
   clientId: string,
   modelId: string,
   messages: ChatMessage[],
+  streamId: string,
   chatId?: string | null,
   contextFilenames?: string[],
   chatName?: string | null,
@@ -699,6 +701,7 @@ export async function chatMessage(
       chatId ?? null,
       chatName ?? null,
       contextFilenames ?? [],
+      streamId,
       chatStreamChannel(onEvent)
     )
   );
@@ -708,6 +711,7 @@ export async function infraChat(
   modelId: string,
   messages: ChatMessage[],
   planEntries: PlanEntry[],
+  streamId: string,
   onEvent?: (event: ChatStreamEvent) => void
 ): Promise<InfraChatResponse> {
   return unwrap(
@@ -715,9 +719,20 @@ export async function infraChat(
       modelId,
       messages,
       planEntries,
+      streamId,
       chatStreamChannel(onEvent)
     )
   );
+}
+
+/**
+ * End the in-flight turn identified by `streamId`. Whatever text already
+ * arrived is kept, and the command that is streaming it returns normally
+ * with a `stopped_by_user` stop reason. Safe to call for a turn that has
+ * already finished.
+ */
+export async function stopChatStream(streamId: string): Promise<void> {
+  unwrap(await commands.stopChatStream(streamId));
 }
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {

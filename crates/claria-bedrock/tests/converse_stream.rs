@@ -7,14 +7,28 @@ use aws_sdk_bedrockruntime::types::{
     MessageStopEvent, StopReason, TokenUsage,
 };
 use claria_bedrock::{
-    chat::{CHAT_TRUNCATED_NOTICE, CacheStrategy, ChatMessage, ChatRole, chat_converse_stream},
-    converse::StreamCollector,
+    chat::{
+        CHAT_TRUNCATED_NOTICE, CacheStrategy, ChatMessage, ChatRole, ChatStreamOptions,
+        chat_converse_stream,
+    },
+    converse::{STOPPED_BY_USER, StopSignal, StreamCollector},
     error::BedrockError,
+    pacing::StreamPacing,
 };
 use claria_core::{model_id::CacheTtlChoice, models::chat_history::MAX_RETAINED_CHAT_MESSAGES};
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 
 const MODEL_ID: &str = "us.anthropic.claude-sonnet-test";
+
+/// Options that forward every delta, so a test that asserts on individual
+/// deltas is reading the stream and not the pacer.
+fn token_paced(cache_strategy: CacheStrategy) -> ChatStreamOptions {
+    ChatStreamOptions {
+        cache_strategy,
+        pacing: StreamPacing::Token,
+        ..ChatStreamOptions::default()
+    }
+}
 
 fn sdk_config(endpoint: &str) -> aws_config::SdkConfig {
     let credentials = Credentials::new("test", "test", None, None, "test");
@@ -142,8 +156,7 @@ async fn streamed_chat_forwards_deltas_and_returns_the_full_text() {
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        token_paced(CacheStrategy::disabled()),
         |delta| deltas.push(delta.to_string()),
     )
     .await
@@ -176,8 +189,10 @@ async fn one_hour_chat_caching_marks_system_and_conversation_tail() {
         MODEL_ID,
         &system_prompt,
         &user_messages("Hello"),
-        CacheStrategy::enabled_for_model(true, CacheTtlChoice::OneHour),
-        claria_bedrock::converse::ModelTuning::default(),
+        token_paced(CacheStrategy::enabled_for_model(
+            true,
+            CacheTtlChoice::OneHour,
+        )),
         |_| {},
     )
     .await
@@ -217,8 +232,10 @@ async fn five_minute_chat_caching_omits_the_ttl_field() {
         MODEL_ID,
         &system_prompt,
         &user_messages("Hello"),
-        CacheStrategy::enabled_for_model(true, CacheTtlChoice::FiveMinutes),
-        claria_bedrock::converse::ModelTuning::default(),
+        token_paced(CacheStrategy::enabled_for_model(
+            true,
+            CacheTtlChoice::FiveMinutes,
+        )),
         |_| {},
     )
     .await
@@ -254,8 +271,7 @@ async fn uncached_chat_records_no_ttl() {
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        token_paced(CacheStrategy::disabled()),
         |_| {},
     )
     .await
@@ -293,8 +309,7 @@ async fn streamed_truncation_keeps_the_answer_and_labels_it() {
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        token_paced(CacheStrategy::disabled()),
         |delta| streamed.push_str(delta),
     )
     .await
@@ -341,8 +356,7 @@ async fn streamed_context_overflow_is_still_a_typed_error() {
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        token_paced(CacheStrategy::disabled()),
         |_| {},
     )
     .await
@@ -378,8 +392,7 @@ async fn a_long_conversation_is_bounded_before_it_reaches_bedrock() {
         MODEL_ID,
         "System prompt",
         &messages,
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        token_paced(CacheStrategy::disabled()),
         |_| {},
     )
     .await
@@ -421,8 +434,7 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        token_paced(CacheStrategy::disabled()),
         |delta| streamed.push_str(delta),
     )
     .await
@@ -446,6 +458,191 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
     assert!(streamed.starts_with("Beginning of a reply"));
 }
 
+/// Paragraph pacing is what a clinician sees by default: the reply lands in
+/// readable blocks instead of one twitch per token, and the text is
+/// identical either way.
+#[tokio::test]
+async fn paragraph_pacing_delivers_whole_paragraphs() {
+    let reply = "The first paragraph runs on for a while so it spans several \
+                 wire deltas.\n\nThe second paragraph is also comfortably longer \
+                 than one delta.\n\nDone.";
+    let server = MockServer::spawn().await;
+    server
+        .state
+        .write()
+        .await
+        .bedrock_text_responses
+        .push(ScriptedBedrockResponse {
+            status: 200,
+            body: serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": reply}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 10, "outputTokens": 40}
+            }),
+        });
+
+    let mut chunks: Vec<String> = Vec::new();
+    let outcome = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        ChatStreamOptions {
+            pacing: StreamPacing::Paragraph,
+            ..ChatStreamOptions::default()
+        },
+        |chunk| chunks.push(chunk.to_string()),
+    )
+    .await
+    .expect("streamed chat");
+
+    assert_eq!(
+        chunks,
+        vec![
+            "The first paragraph runs on for a while so it spans several wire deltas.\n\n",
+            "The second paragraph is also comfortably longer than one delta.\n\n",
+            "Done.",
+        ]
+    );
+    assert_eq!(chunks.concat(), outcome.text);
+}
+
+/// Streaming off restores the pre-streaming experience: the reply appears
+/// once, whole, from the command's return value.
+#[tokio::test]
+async fn pacing_off_forwards_nothing_but_still_returns_the_reply() {
+    let server = MockServer::spawn().await;
+    let mut chunks: Vec<String> = Vec::new();
+    let outcome = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        ChatStreamOptions {
+            pacing: StreamPacing::Off,
+            ..ChatStreamOptions::default()
+        },
+        |chunk| chunks.push(chunk.to_string()),
+    )
+    .await
+    .expect("streamed chat");
+
+    assert!(chunks.is_empty(), "text leaked to the reader: {chunks:?}");
+    assert!(outcome.text.contains("I understand your question"));
+}
+
+/// Stopping is a choice, not a failure: the text that arrived is kept, the
+/// turn is labelled as the reader's doing, and the call returns instead of
+/// sitting out the idle bound.
+///
+/// Runs against a stream that goes silent after its first delta — the case
+/// where Stop has to interrupt a parked read rather than slot between two
+/// frames. The first delta hands the reader's cue to a separate task, so the
+/// stop lands while the stream loop is waiting, not while it is running.
+/// Without that interrupt this test hangs for five minutes and then fails.
+#[tokio::test]
+async fn a_stopped_stream_keeps_what_arrived_and_returns_at_once() {
+    let server = MockServer::spawn().await;
+    server.state.write().await.bedrock_stream_stalls = 1;
+
+    let stop = StopSignal::new();
+    let stopper = stop.clone();
+    let (reader_stopped, cue) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let _ = cue.await;
+        stopper.stop();
+    });
+
+    let mut reader_stopped = Some(reader_stopped);
+    let mut streamed = String::new();
+    let outcome = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        ChatStreamOptions {
+            pacing: StreamPacing::Token,
+            stop,
+            ..ChatStreamOptions::default()
+        },
+        |delta| {
+            streamed.push_str(delta);
+            if let Some(cue) = reader_stopped.take() {
+                let _ = cue.send(());
+            }
+        },
+    )
+    .await
+    .expect("stopping a stream is not an error");
+
+    assert_eq!(outcome.stop_reason, STOPPED_BY_USER);
+    assert!(
+        outcome.text.starts_with("Beginning of a reply"),
+        "the partial answer was discarded: {}",
+        outcome.text
+    );
+    assert_eq!(streamed, outcome.text);
+    // The trailing metadata frame never arrived, so the turn is unmetered.
+    assert!(outcome.usage.is_none());
+}
+
+/// Stopping part-way through a paced reply keeps the paragraphs already read
+/// and releases whatever the pacer was still holding, so the bubble on
+/// screen and the text that gets persisted are the same characters.
+#[tokio::test]
+async fn stopping_a_paced_reply_flushes_what_was_held() {
+    let reply = "First paragraph, long enough to span several wire deltas.\n\n\
+                 Second paragraph, which the reader never asked to see.\n\n\
+                 Third paragraph, likewise.";
+    let server = MockServer::spawn().await;
+    server
+        .state
+        .write()
+        .await
+        .bedrock_text_responses
+        .push(ScriptedBedrockResponse {
+            status: 200,
+            body: serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": reply}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 10, "outputTokens": 40}
+            }),
+        });
+
+    let stop = StopSignal::new();
+    let stopper = stop.clone();
+    let mut streamed = String::new();
+    let outcome = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        ChatStreamOptions {
+            pacing: StreamPacing::Paragraph,
+            stop,
+            ..ChatStreamOptions::default()
+        },
+        // The reader stops as soon as the first paragraph appears.
+        |chunk| {
+            streamed.push_str(chunk);
+            stopper.stop();
+        },
+    )
+    .await
+    .expect("stopping a stream is not an error");
+
+    assert_eq!(outcome.stop_reason, STOPPED_BY_USER);
+    assert!(
+        streamed.starts_with("First paragraph"),
+        "the first paragraph never reached the reader: {streamed}"
+    );
+    assert!(
+        streamed.len() < reply.len(),
+        "the whole reply arrived anyway, so nothing was stopped"
+    );
+    assert_eq!(streamed, outcome.text);
+}
+
 #[tokio::test]
 async fn streamed_service_errors_keep_their_classification() {
     let server = MockServer::spawn().await;
@@ -467,8 +664,7 @@ async fn streamed_service_errors_keep_their_classification() {
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        token_paced(CacheStrategy::disabled()),
         |_| {},
     )
     .await
