@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.28.0] — 2026-08-15
 
 - Chat replies now arrive a paragraph at a time instead of a token at a time, so text stops twitching while it is being read and formatting is never caught half-written
 - A new Chat Streaming preference chooses between a paragraph at a time, word by word, and nothing until the reply is finished

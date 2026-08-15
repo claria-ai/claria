@@ -1211,7 +1211,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claria-bedrock"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "claria-billing"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aws-config",
  "aws-sdk-costexplorer",
@@ -1249,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "claria-core"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "jiff",
  "serde",
@@ -1261,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "claria-desktop"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "claria-docx"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "claria-core",
  "docx-rs",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "claria-mock-aws"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aws-smithy-eventstream",
  "aws-smithy-types",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "claria-provisioner"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "claria-records"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "claria-report-authoring"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "claria-storage"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "claria-transcribe"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
