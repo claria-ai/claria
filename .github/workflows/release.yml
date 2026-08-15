@@ -81,13 +81,29 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # tauri-action is pinned by commit SHA, not by the floating `@v0` tag, so an
+      # upstream release can't change how a tagged build is produced. This SHA is
+      # what `@v0` already resolved to, so the pin is behaviourally a no-op today.
+      #
+      # `tauriScript` pins the Tauri CLI. Left to itself the action falls through to
+      # `npm install -g @tauri-apps/cli@v2` — a floating major against a Rust side
+      # pinned to `tauri = "=2.11.5"`. It has no input for the CLI version, and it
+      # only looks for a local `@tauri-apps/cli` in `<projectPath>/package.json`,
+      # which for a Rust crate directory does not exist; a devDependency in
+      # claria-desktop-frontend is never consulted. Overriding the runner command is
+      # the only lever it offers. `npx` rather than `npm exec` because the action
+      # injects a literal `--` into the arguments when the runner binary is `npm`.
+      #
+      # 2.11.4 is the newest published CLI: the CLI and the `tauri` crate are not
+      # released in lockstep, and there is no 2.11.5 on npm.
       - name: Build and release
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/claria-desktop
+          tauriScript: npx --yes @tauri-apps/cli@2.11.4
           tagName: ${{ github.ref_name }}
           releaseName: "Claria ${{ github.ref_name }}"
           releaseBody: ${{ steps.changelog.outputs.body }}
