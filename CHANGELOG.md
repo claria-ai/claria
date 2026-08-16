@@ -16,6 +16,8 @@ All notable changes to Claria are documented here.
 - Extracted durable writer storage into its own crate, dropping the Bedrock dependency from client-record lifecycle code
 - Renamed the report-authoring crate to report-pipeline now that storage lives in its own crate
 - Added a durable per-section drafting-run record so interrupted report generation can resume
+- Skipped report sections now keep a copy of their template body, and sections carry authorship metadata
+- Template copies stay out of Word exports and out of everything sent to the model
 
 ## [0.28.0] — 2026-08-15
 

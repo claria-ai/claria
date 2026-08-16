@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{error::CoreError, models::turn_usage::TurnUsage};
 
-pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 6;
+pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 7;
 pub const MAX_REPORT_SECTIONS: usize = 100;
 pub const MAX_SECTION_BLOCKS: usize = 200;
 pub const MAX_TABLE_ROWS: usize = 200;
@@ -52,6 +52,11 @@ pub struct ReportWorkspace {
     /// client workspace; managed template sources live under `writer_templates/`.
     #[serde(default)]
     pub template_import: Option<ReportTemplateImport>,
+    /// The drafting run that currently owns this workspace: either in progress
+    /// or stopped with durable partial state. Later work refuses mutating
+    /// operations while it is set; nothing enforces that yet.
+    #[serde(default)]
+    pub active_run_id: Option<Uuid>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -87,6 +92,38 @@ pub struct ReportSection {
     /// entirely until a later edit writes content into it.
     #[serde(default)]
     pub skipped: bool,
+    /// Immutable copy of the imported template body for this section, stamped
+    /// when the template is applied. It is never exported and never sent to a
+    /// model as accepted content; the preview renders it greyed-out while the
+    /// section is `skipped`, and it survives a fill so a later "rewrite from
+    /// the template" still has the original text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_blocks: Option<Vec<ReportBlock>>,
+    /// Who last wrote this section, and at which revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorship: Option<SectionAuthorship>,
+}
+
+/// The latest authorship stamp for one section — not a log, and not per-block.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+pub struct SectionAuthorship {
+    pub kind: AuthorshipKind,
+    /// Draft revision this stamp describes. Never newer than the accepted
+    /// draft it rides on.
+    pub revision: u64,
+    pub model_id: Option<String>,
+    pub run_id: Option<Uuid>,
+    #[specta(type = String)]
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorshipKind {
+    Template,
+    ModelGenerated,
+    ModelRevised,
+    HumanEdited,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
@@ -348,6 +385,7 @@ impl ReportWorkspace {
             },
             session: ReportSession::default(),
             template_import: None,
+            active_run_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -378,6 +416,20 @@ impl ReportWorkspace {
             MAX_REPORT_SESSION_NAME_CHARACTERS,
         )?;
         self.draft.validate()?;
+        // Section authorship is checked here rather than in the section
+        // validator, which cannot see the revision the stamp must not outrun.
+        if self
+            .draft
+            .content
+            .sections
+            .iter()
+            .filter_map(|section| section.authorship.as_ref())
+            .any(|authorship| authorship.revision > self.draft.revision)
+        {
+            return Err(invalid(
+                "section authorship is newer than the accepted report",
+            ));
+        }
         self.session.validate(self)?;
         if let Some(template) = &self.template_import {
             validate_template_import(template, self)?;
@@ -489,7 +541,10 @@ impl ReportDraft {
                         .ok_or_else(|| invalid(format!("section {section_id} does not exist")))?;
                     section.heading.clone_from(heading);
                     section.blocks.clone_from(blocks);
-                    // Writing into a section is what un-defers it.
+                    // Writing into a section is what un-defers it. The
+                    // section is edited in place so its template copy
+                    // survives the fill and a later rewrite still has the
+                    // original body to work from.
                     section.skipped = false;
                 }
                 ReportOperation::RemoveSection { section_id } => {
@@ -667,11 +722,12 @@ pub fn decode_report_workspace(bytes: &[u8]) -> Result<ReportWorkspace, CoreErro
             }
         }
     }
-    // Versions through 5 predate per-section skip status. The field is
-    // additive (`#[serde(default)]`), so only the version stamp is needed —
-    // the bump exists so older builds, which would silently drop skip flags
-    // and export deferred sections, refuse these workspaces instead.
-    if schema_version.is_some_and(|version| version <= 5) {
+    // Versions through 6 predate per-section template copies, authorship
+    // stamps, and the active drafting run. Every added field is additive
+    // (`#[serde(default)]`), so only the version stamp is needed — the bump
+    // exists so older builds, which would silently drop template copies and
+    // authorship on their next write, refuse these workspaces instead.
+    if schema_version.is_some_and(|version| version <= 6) {
         value["schema_version"] = serde_json::json!(REPORT_WORKSPACE_SCHEMA_VERSION);
     }
     let workspace: ReportWorkspace = serde_json::from_value(value)?;
@@ -685,6 +741,29 @@ fn default_report_session_name() -> String {
 
 pub fn validate_report_content(content: &ReportContent) -> Result<(), CoreError> {
     validate_content(content)
+}
+
+/// Serialize report content for a model prompt.
+///
+/// Template copies and authorship stamps are host bookkeeping: the model must
+/// never read a section's template body as accepted content, and neither field
+/// belongs in a prompt it would only bloat. The section shape is written out
+/// field by field so a field added to [`ReportSection`] later has to be
+/// admitted here deliberately rather than leaking into every prompt.
+pub fn prompt_content_view(content: &ReportContent) -> serde_json::Value {
+    serde_json::json!({
+        "title": content.title,
+        "sections": content
+            .sections
+            .iter()
+            .map(|section| serde_json::json!({
+                "id": section.id,
+                "heading": section.heading,
+                "blocks": section.blocks,
+                "skipped": section.skipped
+            }))
+            .collect::<Vec<_>>()
+    })
 }
 
 pub fn validate_report_summary(summary: &str) -> Result<(), CoreError> {
@@ -749,6 +828,11 @@ fn validate_content(content: &ReportContent) -> Result<(), CoreError> {
     let mut ids = HashSet::with_capacity(content.sections.len());
     let mut total_characters = content.title.chars().count();
     let mut total_table_cells = 0_usize;
+    // Only authored bodies count toward the document-wide ceilings below.
+    // A section's `template_blocks` are validated block by block but excluded
+    // here: they are never exported and never sent to a model, so they cost
+    // neither Word XML nor prompt tokens, and the per-section block and
+    // paragraph ceilings already bound how large one copy can grow.
     for section in &content.sections {
         validate_section(section)?;
         if !ids.insert(section.id) {
@@ -794,6 +878,9 @@ fn validate_section(section: &ReportSection) -> Result<(), CoreError> {
     validate_nonempty_text("section heading", &section.heading, MAX_HEADING_CHARACTERS)?;
     if section.skipped && !section.blocks.is_empty() {
         return Err(invalid("a skipped section must have an empty body"));
+    }
+    if let Some(template_blocks) = &section.template_blocks {
+        validate_blocks(template_blocks)?;
     }
     validate_blocks(&section.blocks)
 }

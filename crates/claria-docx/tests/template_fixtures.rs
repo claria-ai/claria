@@ -178,6 +178,8 @@ fn paragraph(text: &str) -> ReportBlock {
 fn section(heading: &str, blocks: Vec<ReportBlock>) -> ReportSection {
     ReportSection {
         skipped: false,
+        template_blocks: None,
+        authorship: None,
         id: Uuid::new_v4(),
         heading: heading.to_string(),
         blocks,

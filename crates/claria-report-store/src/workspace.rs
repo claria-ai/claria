@@ -5,8 +5,9 @@ use aws_sdk_s3::Client as S3Client;
 use claria_core::models::{
     client::Client,
     report::{
-        ReportContent, ReportExport, ReportExportStatus, ReportProposalDecision,
-        ReportProposalResolution, ReportTemplateImport, ReportWorkspace, decode_report_workspace,
+        AuthorshipKind, ReportContent, ReportExport, ReportExportStatus, ReportProposalDecision,
+        ReportProposalResolution, ReportTemplateImport, ReportWorkspace, SectionAuthorship,
+        decode_report_workspace,
     },
 };
 use claria_storage::error::StorageError;
@@ -217,13 +218,30 @@ async fn save_report_draft_loaded(
     bucket: &str,
     mut loaded: LoadedWorkspace,
     expected_revision: u64,
-    content: ReportContent,
+    mut content: ReportContent,
 ) -> Result<ReportWorkspace, ReportStoreError> {
     ensure_revision(&loaded.workspace, expected_revision)?;
     if loaded.workspace.session.pending_proposal.is_some() {
         return Err(ReportStoreError::InvalidInput(
             "Accept or reject the pending proposal before editing the report.".to_string(),
         ));
+    }
+    // A hand edit arrives without template copies, because the editor never
+    // shows them. Re-attach each surviving section's copy so editing one
+    // section does not throw away the template body of the whole document.
+    // The authorship stamp is deliberately not carried across: a stale stamp
+    // would credit the previous author for the user's text.
+    for section in &mut content.sections {
+        if section.template_blocks.is_none() {
+            section.template_blocks = loaded
+                .workspace
+                .draft
+                .content
+                .sections
+                .iter()
+                .find(|existing| existing.id == section.id)
+                .and_then(|existing| existing.template_blocks.clone());
+        }
     }
 
     let now = jiff::Timestamp::now();
@@ -332,6 +350,21 @@ async fn apply_report_template_loaded(
         .draft
         .replace_content(expected_revision, application.content, now)
         .map_err(|error| ReportStoreError::InvalidInput(error.to_string()))?;
+    // Keep an immutable copy of what the template supplied for each section.
+    // Skipping a section drops its authored body, and rewriting one replaces
+    // it; either way the original stays available for the greyed-out preview
+    // and for a later rewrite from the template.
+    let template_revision = loaded.workspace.draft.revision;
+    for section in &mut loaded.workspace.draft.content.sections {
+        section.template_blocks = Some(section.blocks.clone());
+        section.authorship = Some(SectionAuthorship {
+            kind: AuthorshipKind::Template,
+            revision: template_revision,
+            model_id: None,
+            run_id: None,
+            updated_at: now,
+        });
+    }
     loaded.workspace.template_import = Some(ReportTemplateImport {
         source_sha256: application.source_sha256,
         writer_template_id: Some(application.writer_template_id),

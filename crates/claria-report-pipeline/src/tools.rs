@@ -300,6 +300,8 @@ impl<'a> ToolExecutionContext<'a> {
                 heading: request.heading,
                 blocks: request.blocks.into_iter().map(block_from_request).collect(),
                 skipped: false,
+                template_blocks: None,
+                authorship: None,
             },
         );
         let proposed = ReportContent {
@@ -596,10 +598,11 @@ impl<'a> ToolExecutionContext<'a> {
 ///
 /// Written sections keep the model's chosen order. Each skipped supplied
 /// section re-enters as an empty `skipped` placeholder carrying its supplied
-/// heading and ID, positioned after the nearest earlier supplied section
-/// already present in the result — so consecutive skips keep their supplied
-/// relative order, and a skip with no earlier surviving neighbor lands at
-/// the front.
+/// heading, ID, template copy, and authorship, positioned after the nearest
+/// earlier supplied section already present in the result — so consecutive
+/// skips keep their supplied relative order, and a skip with no earlier
+/// surviving neighbor lands at the front. The authored body stays empty; the
+/// template copy is what the greyed-out preview renders.
 fn merge_skipped_placeholders(
     written: &[ReportSection],
     skipped_section_ids: &HashSet<Uuid>,
@@ -627,6 +630,8 @@ fn merge_skipped_placeholders(
                 heading: supplied_section.heading.clone(),
                 blocks: Vec::new(),
                 skipped: true,
+                template_blocks: supplied_section.template_blocks.clone(),
+                authorship: supplied_section.authorship.clone(),
             },
         );
     }
@@ -712,6 +717,8 @@ fn operation_from_request(
                 heading,
                 blocks: blocks.into_iter().map(block_from_request).collect(),
                 skipped: false,
+                template_blocks: None,
+                authorship: None,
             },
         }),
         ReportProposalOperationRequest::ReplaceSection {

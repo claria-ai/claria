@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use claria_bedrock::report;
 use claria_core::models::report::{
     ReportBlock, ReportProtocolBlock, ReportProtocolMessage, ReportToolResultStatus,
-    ReportWorkspace,
+    ReportWorkspace, prompt_content_view,
 };
 use sha2::{Digest, Sha256};
 
@@ -82,7 +82,9 @@ pub(crate) fn build_untrusted_context(
     });
     let value = serde_json::json!({
         "accepted_revision": workspace.draft.revision,
-        "accepted_report": workspace.draft.content,
+        // Template copies and authorship stamps are host bookkeeping: the
+        // model must not read a section's template body as accepted content.
+        "accepted_report": prompt_content_view(&workspace.draft.content),
         "template_import": template_context,
         "report_changed_since_last_assistant_turn": workspace
             .session
