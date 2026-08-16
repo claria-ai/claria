@@ -77,6 +77,7 @@ import {
 } from "../lib/preferencesSearchContent";
 import EditableName from "../components/EditableName";
 import PreferencesSection from "../components/PreferencesSection";
+import ProgressBar from "../components/ProgressBar";
 import {
   BackButton,
   ComposeIcon,
@@ -1748,12 +1749,14 @@ function ModelGroup({
                 </div>
               </div>
               {modelProgress && (
-                <div className="mt-2 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-600 transition-[width]"
-                    style={{ width: `${percent}%` }}
-                  />
-                </div>
+                <ProgressBar
+                  className="mt-2"
+                  value={modelProgress.downloaded_bytes}
+                  max={modelProgress.total_bytes}
+                  label={`Downloading ${model.label}`}
+                  valueText={`${percent}%`}
+                  showValueText={false}
+                />
               )}
             </div>
           );

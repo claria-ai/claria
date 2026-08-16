@@ -12,6 +12,8 @@ All notable changes to Claria are documented here.
 - The Preferences sidebar can export the synced preferences file for support or backup, and import one back after validation
 - Preferences file history lists past versions with view, restore, and a two-version diff; imports and restores keep the replaced values one version back
 - Transcription and chat-streaming edits now save once when you leave the section or close the screen, instead of writing a preferences version on every click
+- Model download progress is announced to screen readers as a labelled progress bar
+- The writer's proposal diff is now built from shared primitives so other panes can render the same comparison
 
 ## [0.28.0] — 2026-08-15
 
