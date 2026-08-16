@@ -16,6 +16,10 @@ const mocks = vi.hoisted(() => ({
   abandonDraftRun: vi.fn(),
   stopStream: vi.fn(),
   logFrontendEvent: vi.fn(),
+  loadConfig: vi.fn(),
+  generateDraftPlan: vi.fn(),
+  updateDraftPlan: vi.fn(),
+  startDraftRun: vi.fn(),
 }));
 
 vi.mock("./logBridge", () => ({ logFrontendEvent: mocks.logFrontendEvent }));
@@ -26,6 +30,10 @@ vi.mock("./tauri", () => ({
   generateFullReport: mocks.generate,
   loadDraftRun: mocks.loadDraftRun,
   resumeDraftRun: mocks.resumeDraftRun,
+  loadConfig: mocks.loadConfig,
+  generateDraftPlan: mocks.generateDraftPlan,
+  updateDraftPlan: mocks.updateDraftPlan,
+  startDraftRun: mocks.startDraftRun,
   finalizePartialDraft: mocks.finalizePartialDraft,
   abandonDraftRun: mocks.abandonDraftRun,
   stopStream: mocks.stopStream,
@@ -211,6 +219,9 @@ beforeEach(() => {
   mocks.load.mockResolvedValue(workspace());
   mocks.loadDraftRun.mockResolvedValue(null);
   mocks.stopStream.mockResolvedValue(undefined);
+  mocks.loadConfig.mockResolvedValue({
+    draft_pipeline: { plan_gate: "gated" },
+  });
 });
 
 describe("useReportWorkspace drafting runs", () => {
@@ -404,7 +415,7 @@ describe("useReportWorkspace drafting runs", () => {
     await waitFor(() => expect(hook.result.current.run.outcome).toBe("stopped"));
 
     await act(async () => {
-      await hook.result.current.resumeRun("  Tighten the summary.  ");
+      await hook.result.current.resumeRun([], "  Tighten the summary.  ");
     });
 
     expect(mocks.resumeDraftRun).toHaveBeenCalledWith(
@@ -413,6 +424,7 @@ describe("useReportWorkspace drafting runs", () => {
       RUN_ID,
       "Tighten the summary.",
       "model-9",
+      expect.any(String),
       expect.any(Function)
     );
     expect(hook.result.current.run.outcome).toBeNull();
@@ -426,7 +438,7 @@ describe("useReportWorkspace drafting runs", () => {
     await waitFor(() => expect(hook.result.current.run.outcome).toBe("stopped"));
 
     await act(async () => {
-      await hook.result.current.resumeRun("   ");
+      await hook.result.current.resumeRun([], "   ");
     });
 
     expect(mocks.resumeDraftRun.mock.calls[0][3]).toBeNull();

@@ -10,7 +10,10 @@ use tauri::State;
 
 use claria_desktop::report_authoring::{FullReportGenerationResponse, ReportTurnProgressView};
 
-use super::{CommandContext, CommandError, merge_details, parse_uuid, run, usage_audit_details};
+use super::{
+    CommandContext, CommandError, merge_details, parse_uuid, run, streams::StopRegistration,
+    usage_audit_details,
+};
 use crate::state::DesktopState;
 
 /// Resolve the model for one supporting role against what this account can
@@ -44,16 +47,22 @@ async fn role_model_id(
 /// under a plan being reviewed. A plan pass that fails releases that hold.
 #[tauri::command]
 #[specta::specta]
+// Tauri command parameters are the typed IPC contract; report identity, the
+// stop stream, and the progress channel legitimately take this past clippy's
+// ceiling.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_draft_plan(
     state: State<'_, DesktopState>,
     client_id: String,
     report_id: String,
     expected_revision: u64,
     instructions: String,
+    stream_id: String,
     on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
 ) -> Result<DraftRun, String> {
     run("generate_draft_plan", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         // The writing model is only fixed when the clinician presses Start,
@@ -81,7 +90,9 @@ pub async fn generate_draft_plan(
                 planner_model_id: &planner_model_id,
                 writer_model_id: &writer_model_id,
             },
-            claria_report_pipeline::DraftPlanRequest::new(&instructions).with_progress(&progress),
+            claria_report_pipeline::DraftPlanRequest::new(&instructions)
+                .with_progress(&progress)
+                .with_stop(&stop.signal),
         )
         .await?;
         ctx.record_audit(
@@ -145,10 +156,12 @@ pub async fn start_draft_run(
     report_id: String,
     run_id: String,
     model_id: String,
+    stream_id: String,
     on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
 ) -> Result<FullReportGenerationResponse, String> {
     run("start_draft_run", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let run_id = parse_uuid(&run_id)?;
@@ -171,7 +184,8 @@ pub async fn start_draft_run(
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
                 .with_system_prompt_body(&prompt_body)
-                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id))
+                .with_stop(&stop.signal),
         )
         .await?;
         let attempt = outcome.attempt.clone();
@@ -205,9 +219,9 @@ pub async fn start_draft_run(
 /// instructions is decided in code: keep what landed, draft the rest.
 ///
 /// This resumes directly whatever the plan-gate preference says. The gate is
-/// a frontend decision: showing the re-plan before executing it means calling
-/// the planning pass on its own first, which the pane does, and there is no
-/// second command for "resume without re-planning".
+/// a frontend decision: the pane edits the run's plan through
+/// `update_draft_plan` before calling this, and there is no second command
+/// for "resume without re-planning".
 #[tauri::command]
 #[specta::specta]
 // Tauri command parameters are the typed IPC contract; report identity, the
@@ -220,10 +234,12 @@ pub async fn resume_draft_run(
     run_id: String,
     updated_instructions: Option<String>,
     model_id: String,
+    stream_id: String,
     on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
 ) -> Result<FullReportGenerationResponse, String> {
     run("resume_draft_run", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let run_id = parse_uuid(&run_id)?;
@@ -250,7 +266,8 @@ pub async fn resume_draft_run(
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
                 .with_system_prompt_body(&prompt_body)
-                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id))
+                .with_stop(&stop.signal),
         )
         .await?;
         let attempt = outcome.attempt.clone();

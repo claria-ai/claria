@@ -47,6 +47,11 @@ export function buildInitScript(
           max_tool_uses_per_response: 80,
           max_retained_turns: 200,
         },
+        draft_pipeline: {
+          plan_gate: "gated",
+          planner_model_id: null,
+          reviewer_model_id: null,
+        },
       }` : "null"};
       window.__REPORT_COMMANDS__ = [];
       window.__REPORT_INVOCATIONS__ = [];
@@ -203,9 +208,13 @@ export function buildInitScript(
         skipped: false,
         blocks: [{ kind: "paragraph", text: "Drafted " + source.heading + " from the client records." }],
       });
+      const DRAFT_RUN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
       const recordDraftRun = (drafted, modelId) => {
-        const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const runId = DRAFT_RUN_ID;
         const draftedIds = new Set(drafted.map((section) => section.id));
+        // A stopped run keeps the plan it was drafted against; the resume gate
+        // reads its scope and evidence back.
+        const planned = draftRuns.get(reportWorkspace.report_id);
         draftRuns.set(reportWorkspace.report_id, {
           schema_version: 1,
           run_id: runId,
@@ -213,7 +222,7 @@ export function buildInitScript(
           client_id: reportWorkspace.client_id,
           base_revision: reportWorkspace.draft.revision,
           status: "stopped",
-          plan: null,
+          plan: planned ? planned.plan : null,
           title: "Complete Generated Evaluation",
           sections: reportWorkspace.draft.content.sections.map((section, position) => ({
             section_id: section.id,
@@ -371,6 +380,11 @@ export function buildInitScript(
                 max_tool_uses_per_response: 80,
                 max_retained_turns: 200,
               },
+              draft_pipeline: {
+                plan_gate: "gated",
+                planner_model_id: null,
+                reviewer_model_id: null,
+              },
             };
             configSaved = true;
             return null;
@@ -432,6 +446,11 @@ export function buildInitScript(
                 max_converse_calls: 50,
                 max_tool_uses_per_response: 80,
                 max_retained_turns: 200,
+              },
+              draft_pipeline: {
+                plan_gate: "gated",
+                planner_model_id: null,
+                reviewer_model_id: null,
               },
             };
             configSaved = true;
@@ -823,6 +842,184 @@ export function buildInitScript(
               usage_complete: true,
               converse_calls: 2,
               tool_uses: 2,
+              included_record_files: 3,
+              unavailable_record_files: 0,
+              record_characters: 6400,
+            };
+          }
+          if (cmd === "generate_draft_plan") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            if (reportWorkspace.pending_proposal) throw "Accept or reject the pending proposal before starting another writer action.";
+            const sections = reportWorkspace.draft.content.sections;
+            if (sections.length === 0) throw "This report has no sections to plan. Apply a template, or write a section, before planning a whole-report draft.";
+            const emitPlan = progressEmitter(args.onProgress);
+            emitPlan({ kind: "plan_ready", section_count: sections.length });
+            const now = new Date().toISOString();
+            const run = {
+              schema_version: 1,
+              run_id: DRAFT_RUN_ID,
+              report_id: reportWorkspace.report_id,
+              client_id: reportWorkspace.client_id,
+              base_revision: reportWorkspace.draft.revision,
+              status: "awaiting_approval",
+              title: null,
+              plan: {
+                model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                user_edited: false,
+                approved_at: null,
+                plan_warnings: ["unresolved_evidence:assessment-scores.json"],
+                created_at: now,
+                entries: sections.map((section, position) => ({
+                  section_id: section.id,
+                  heading: section.heading,
+                  intent: "draft",
+                  required: true,
+                  scope: "Cover " + section.heading + " from the client records.",
+                  evidence: position === 0
+                    ? [{ filename: "intake-parent-interview.txt", note: null }]
+                    : [],
+                  instruction: null,
+                })),
+              },
+              sections: sections.map((section, position) => ({
+                section_id: section.id,
+                heading: section.heading,
+                position,
+                state: "pending",
+                blocks: [],
+                citations: [],
+                attempts: 0,
+                error: null,
+                updated_at: now,
+              })),
+              instructions: [{ text: args.instructions, added_at: now }],
+              writer_model_id: savedConfig ? savedConfig.preferred_model_id : "us.anthropic.claude-sonnet-4-20250514-v1:0",
+              finalized_revision: null,
+              partial: false,
+              created_at: now,
+              updated_at: now,
+            };
+            draftRuns.set(reportWorkspace.report_id, run);
+            return structuredClone(run);
+          }
+          if (cmd === "update_draft_plan") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            const run = draftRuns.get(args.reportId);
+            if (!run || run.run_id !== args.runId) throw "That drafting run is no longer available.";
+            if (!run.plan) throw "This drafting run has no plan to edit yet.";
+            for (const edit of args.edits) {
+              const entry = run.plan.entries.find((row) => row.section_id === edit.section_id);
+              if (!entry) throw "Section " + edit.section_id + " is not part of this plan.";
+              if (edit.intent !== undefined) entry.intent = edit.intent;
+              if (edit.scope !== undefined) entry.scope = edit.scope;
+              if (edit.evidence !== undefined) entry.evidence = edit.evidence;
+              if (edit.instruction !== undefined) {
+                entry.instruction = edit.instruction.trim() === "" ? null : edit.instruction;
+              }
+            }
+            run.plan.user_edited = true;
+            return structuredClone(run);
+          }
+          if (cmd === "start_draft_run") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            const run = draftRuns.get(args.reportId);
+            if (!run || run.run_id !== args.runId) throw "That drafting run is no longer available.";
+            run.status = "drafting";
+            const emitProgress = progressEmitter(args.onProgress);
+            const entries = run.plan.entries;
+            emitProgress({ kind: "plan_ready", section_count: entries.length });
+            emitProgress({ kind: "title_set", title: "Complete Generated Evaluation" });
+            const byId = new Map(reportWorkspace.draft.content.sections.map((section) => [section.id, section]));
+            const landed = [];
+            let decided = 0;
+            let stopped = false;
+            for (let position = 0; position < entries.length; position += 1) {
+              const entry = entries[position];
+              const source = byId.get(entry.section_id);
+              if (entry.intent === "skip") {
+                decided += 1;
+                emitProgress({
+                  kind: "section_skipped",
+                  section_id: entry.section_id,
+                  drafted: decided,
+                  total: entries.length,
+                });
+                continue;
+              }
+              await untilTrue(() =>
+                window.__DRAFT_STEP__ > position || stoppedStreams.has(args.streamId));
+              if (stoppedStreams.has(args.streamId)) { stopped = true; break; }
+              emitProgress({
+                kind: "section_started",
+                section_id: entry.section_id,
+                index: position,
+                total: entries.length,
+              });
+              const written = draftedSection(source);
+              landed.push(written);
+              decided += 1;
+              emitProgress({
+                kind: "section_completed",
+                section_id: entry.section_id,
+                section: written,
+                drafted: decided,
+                total: entries.length,
+              });
+            }
+            if (stopped) {
+              recordDraftRun(landed, args.modelId);
+              throw "start_draft_run failed: The report writer could not finish this draft. The draft run was stopped.";
+            }
+            await untilTrue(() => window.__DRAFT_RESOLVE__ === true);
+            draftRuns.delete(args.reportId);
+            const written = entries.map((entry) => {
+              const finished = landed.find((section) => section.id === entry.section_id);
+              const source = byId.get(entry.section_id);
+              return finished ?? { ...structuredClone(source), blocks: [], skipped: true, template_blocks: structuredClone(source.blocks) };
+            });
+            commitDraftedSections(written, "Complete Generated Evaluation");
+            const finishedAt = new Date().toISOString();
+            reportWorkspace = {
+              ...reportWorkspace,
+              turns: [...reportWorkspace.turns, {
+                id: "turn-planned-1",
+                model_id: args.modelId,
+                timeline: [
+                  { kind: "message", role: "user", text: "Draft the report from the approved plan.", created_at: finishedAt },
+                  toolActivity("write_full_draft_section", "section-planned-1", "Staged complete report section", { section_id: null, position: 0, block_count: 1, content_retained: false }, { status: "section_staged", section_count: landed.length }),
+                  toolActivity("finish_full_draft", "finish-planned-1", "Finalized complete working draft", { summary_retained: false }, { status: "full_draft_finalized", section_count: landed.length }),
+                  { kind: "message", role: "assistant", text: "The complete working draft is ready.", created_at: finishedAt },
+                ],
+                usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.01599, pricing_version: 5 },
+                usage_complete: true,
+                converse_calls: 3,
+                tool_uses: 3,
+                context_files: [
+                  { filename: "intake-parent-interview.txt", available: true },
+                  { filename: "teacher-observation.txt", available: true },
+                  { filename: "assessment-scores.json", available: true },
+                ],
+                context_reads: [],
+                created_at: finishedAt,
+                completed_at: finishedAt,
+              }],
+              pending_proposal: null,
+              updated_at: finishedAt,
+            };
+            rememberReportDraft();
+            return {
+              workspace: structuredClone(reportWorkspace),
+              turn_id: "turn-planned-1",
+              attempt_id: "attempt-planned-1",
+              assistant_text: "The complete working draft is ready.",
+              usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 4200, cache_write_input_tokens: 3600, cache_ttl: null, cost_usd: 0.01599, pricing_version: 5 },
+              usage_complete: true,
+              converse_calls: 3,
+              tool_uses: 3,
               included_record_files: 3,
               unavailable_record_files: 0,
               record_characters: 6400,

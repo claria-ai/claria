@@ -648,9 +648,9 @@ async abandonDraftRun(clientId: string, reportId: string, runId: string) : Promi
  * report for the whole gate window, so nothing can edit the report out from
  * under a plan being reviewed. A plan pass that fails releases that hold.
  */
-async generateDraftPlan(clientId: string, reportId: string, expectedRevision: number, instructions: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<DraftRun, string>> {
+async generateDraftPlan(clientId: string, reportId: string, expectedRevision: number, instructions: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<DraftRun, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("generate_draft_plan", { clientId, reportId, expectedRevision, instructions, onProgress }) };
+    return { status: "ok", data: await TAURI_INVOKE("generate_draft_plan", { clientId, reportId, expectedRevision, instructions, streamId, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -670,9 +670,9 @@ async updateDraftPlan(clientId: string, reportId: string, runId: string, edits: 
 /**
  * Approve the plan and draft the report it describes.
  */
-async startDraftRun(clientId: string, reportId: string, runId: string, modelId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+async startDraftRun(clientId: string, reportId: string, runId: string, modelId: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_draft_run", { clientId, reportId, runId, modelId, onProgress }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_draft_run", { clientId, reportId, runId, modelId, streamId, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -686,13 +686,13 @@ async startDraftRun(clientId: string, reportId: string, runId: string, modelId: 
  * instructions is decided in code: keep what landed, draft the rest.
  * 
  * This resumes directly whatever the plan-gate preference says. The gate is
- * a frontend decision: showing the re-plan before executing it means calling
- * the planning pass on its own first, which the pane does, and there is no
- * second command for "resume without re-planning".
+ * a frontend decision: the pane edits the run's plan through
+ * `update_draft_plan` before calling this, and there is no second command
+ * for "resume without re-planning".
  */
-async resumeDraftRun(clientId: string, reportId: string, runId: string, updatedInstructions: string | null, modelId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+async resumeDraftRun(clientId: string, reportId: string, runId: string, updatedInstructions: string | null, modelId: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("resume_draft_run", { clientId, reportId, runId, updatedInstructions, modelId, onProgress }) };
+    return { status: "ok", data: await TAURI_INVOKE("resume_draft_run", { clientId, reportId, runId, updatedInstructions, modelId, streamId, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

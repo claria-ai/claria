@@ -297,6 +297,7 @@ pub async fn update_draft_plan(
     let plan = run.run.plan.as_mut().ok_or_else(|| {
         ReportPipelineError::InvalidInput("This drafting run has no plan to edit yet.".to_string())
     })?;
+    let mut edited_intents: Vec<(Uuid, SectionIntent)> = Vec::new();
     for edit in edits {
         let entry = plan
             .entries
@@ -310,6 +311,7 @@ pub async fn update_draft_plan(
             })?;
         if let Some(intent) = edit.intent {
             entry.intent = intent;
+            edited_intents.push((edit.section_id, intent));
         }
         if let Some(scope) = &edit.scope {
             if scope.chars().count() > MAX_PLAN_SCOPE_CHARACTERS {
@@ -340,6 +342,29 @@ pub async fn update_draft_plan(
         }
     }
     plan.user_edited = true;
+
+    // An interrupted run is decided by its section states: picking it back up
+    // re-derives the plan from them, so a directive changed at the resume gate
+    // has to land on the section or the resume pass would recompute it away.
+    // A fresh gate needs none of this — nothing has been written yet, and
+    // `start_draft_run` seeds the sections from the whole approved plan.
+    if matches!(
+        run.run.status,
+        DraftRunStatus::Stopped | DraftRunStatus::Failed
+    ) {
+        let now = jiff::Timestamp::now();
+        for (section_id, intent) in edited_intents {
+            if let Some(section) = run
+                .run
+                .sections
+                .iter_mut()
+                .find(|section| section.section_id == section_id)
+            {
+                apply_intent_to_section(section, intent, now);
+            }
+        }
+    }
+
     save_draft_run(s3, bucket, &mut run).await?;
     Ok(run.run.clone())
 }
@@ -1181,25 +1206,33 @@ fn apply_plan_to_sections(run: &mut DraftRun, now: jiff::Timestamp) {
         else {
             continue;
         };
-        match entry.intent {
-            SectionIntent::Skip if section.state != RunSectionState::Skipped => {
-                section.state = RunSectionState::Skipped;
-                section.blocks.clear();
-                section.citations.clear();
-                section.error = None;
-                section.updated_at = now;
-            }
-            SectionIntent::Draft | SectionIntent::Rewrite
-                if section.state != RunSectionState::Pending =>
-            {
-                section.state = RunSectionState::Pending;
-                section.blocks.clear();
-                section.citations.clear();
-                section.error = None;
-                section.updated_at = now;
-            }
-            _ => {}
+        apply_intent_to_section(section, entry.intent, now);
+    }
+}
+
+/// Carry one plan row's decision onto the section it names.
+///
+/// `keep` deliberately touches nothing, and a directive a section is already
+/// in is not a write — re-applying a plan must not restamp `updated_at`.
+fn apply_intent_to_section(section: &mut RunSection, intent: SectionIntent, now: jiff::Timestamp) {
+    match intent {
+        SectionIntent::Skip if section.state != RunSectionState::Skipped => {
+            section.state = RunSectionState::Skipped;
+            section.blocks.clear();
+            section.citations.clear();
+            section.error = None;
+            section.updated_at = now;
         }
+        SectionIntent::Draft | SectionIntent::Rewrite
+            if section.state != RunSectionState::Pending =>
+        {
+            section.state = RunSectionState::Pending;
+            section.blocks.clear();
+            section.citations.clear();
+            section.error = None;
+            section.updated_at = now;
+        }
+        _ => {}
     }
 }
 

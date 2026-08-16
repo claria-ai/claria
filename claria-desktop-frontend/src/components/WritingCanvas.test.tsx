@@ -104,7 +104,7 @@ function renderCanvas({
   runError?: string | null;
   canStopRun?: boolean;
   onStopRun?: () => void;
-  onResumeRun?: (instructions?: string) => void;
+  onResumeRun?: () => void;
   onKeepPartialDraft?: () => void;
   onDiscardRun?: () => void;
 }) {
@@ -539,7 +539,7 @@ describe("WritingCanvas stopped run banner", () => {
     expect(banner.textContent).toContain("Stopped — 4 of 9 sections drafted");
   });
 
-  it("starts back up with the instructions the reader typed", async () => {
+  it("hands starting back up to the draft run pane", async () => {
     const user = userEvent.setup();
     const onResumeRun = vi.fn();
     renderCanvas({
@@ -548,13 +548,14 @@ describe("WritingCanvas stopped run banner", () => {
       onResumeRun,
     });
 
-    await user.type(
-      screen.getByLabelText("Instructions for picking the draft back up"),
-      "Tighten the summary."
-    );
+    // The banner reports the outcome; what to change before picking back up
+    // is the plan's question, and it is asked in the Draft run pane.
+    expect(
+      screen.queryByLabelText("Updated instructions for this run")
+    ).toBeNull();
     await user.click(screen.getByRole("button", { name: "Start back up" }));
 
-    expect(onResumeRun).toHaveBeenCalledWith("Tighten the summary.");
+    expect(onResumeRun).toHaveBeenCalledTimes(1);
   });
 
   it("confirms before keeping the partial draft", async () => {

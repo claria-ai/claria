@@ -156,7 +156,7 @@ test("Writing is lazy, proposal-based, editable, referenceable, and exportable",
   });
 });
 
-test("whole-report generation preloads records and saves one direct draft revision", async ({
+test("a planned whole-report draft is reviewed at the gate, then saved in one revision", async ({
   page,
 }) => {
   await page.goto(BASE_URL);
@@ -184,11 +184,33 @@ test("whole-report generation preloads records and saves one direct draft revisi
     .getByRole("button", { name: "Fill whole report" })
     .click();
 
+  // The gate: the plan is readable and editable, and nothing is written yet.
+  await expect(
+    page.getByText("Plan ready — review before drafting"),
+  ).toBeVisible();
+  await expect(page.getByTestId("plan-warnings")).toContainText(
+    "unresolved_evidence:assessment-scores.json",
+  );
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Imported Evaluation Template",
+  );
+  await page
+    .getByTestId("draft-plan-card")
+    .filter({ hasText: "Assessment Scores" })
+    .locator("summary")
+    .click();
+  await page
+    .getByLabel("Scope for Assessment Scores")
+    .fill("Only the attention measures.");
+  await page
+    .getByRole("button", { name: "Start drafting (1 sections)" })
+    .click();
+
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Complete Generated Evaluation",
   );
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
-    "Complete generated report content from every readable record.",
+    "Drafted Assessment Scores from the client records.",
   );
   await expect(page.getByTestId("report-proposal")).toHaveCount(0);
   await expect(
@@ -232,13 +254,31 @@ test("whole-report generation preloads records and saves one direct draft revisi
     }).__REPORT_INVOCATIONS__,
   );
   expect(
-    invocations.find((invocation) => invocation.cmd === "generate_full_report")
+    invocations.find((invocation) => invocation.cmd === "generate_draft_plan")
       ?.args,
   ).toMatchObject({
     expectedRevision: 1,
-    modelId: "us.anthropic.claude-sonnet-4-20250514-v1:0",
-    guidance: "Use a concise clinical style.",
+    instructions: "Use a concise clinical style.",
   });
+  // Only the row the reader touched travels back to the plan.
+  expect(
+    invocations.find((invocation) => invocation.cmd === "update_draft_plan")
+      ?.args.edits,
+  ).toEqual([
+    {
+      section_id: "66666666-6666-4666-8666-666666666666",
+      scope: "Only the attention measures.",
+    },
+  ]);
+  expect(
+    invocations.find((invocation) => invocation.cmd === "start_draft_run")?.args,
+  ).toMatchObject({
+    runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    modelId: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  });
+  expect(
+    invocations.some((invocation) => invocation.cmd === "generate_full_report"),
+  ).toBe(false);
 });
 
 test("sections land while the draft runs, and Stop keeps the ones already saved", async ({
@@ -277,10 +317,23 @@ test("sections land while the draft runs, and Stop keeps the ones already saved"
     .getByRole("button", { name: "Fill whole report" })
     .click();
 
+  // The plan first. Narrowing one section's scope proves the gate's edits
+  // reach the backend before a single section is written.
+  await expect(
+    page.getByText("Plan ready \u2014 review before drafting"),
+  ).toBeVisible();
+  await page
+    .getByTestId("draft-plan-card")
+    .filter({ hasText: "Background" })
+    .locator("summary")
+    .click();
+  await page.getByLabel("Scope for Background").fill("Only the school history.");
+  await page.getByRole("button", { name: "Start drafting (3 sections)" }).click();
+
   const canvas = page.getByTestId("accepted-report-canvas");
-  const progress = page.getByRole("progressbar", {
-    name: "Report sections drafted",
-  });
+  const progress = page
+    .getByTestId("draft-run-progress")
+    .getByRole("progressbar", { name: "Report sections drafted" });
   const releaseSection = async (step: number) => {
     await page.evaluate((value) => {
       (window as unknown as { __DRAFT_STEP__: number }).__DRAFT_STEP__ = value;
@@ -305,7 +358,11 @@ test("sections land while the draft runs, and Stop keeps the ones already saved"
   await expect(progress).toHaveAttribute("aria-valuetext", "2 of 3 drafted");
   await expect(canvas).toContainText("Template summary text.");
 
-  await page.getByRole("button", { name: "Stop run" }).click();
+  // Both the run pane and the canvas strip carry Stop; either one ends it.
+  await page
+    .getByTestId("draft-run-pane")
+    .getByRole("button", { name: "Stop run" })
+    .click();
 
   const banner = page.getByTestId("draft-run-banner");
   await expect(banner).toContainText(
@@ -322,26 +379,55 @@ test("sections land while the draft runs, and Stop keeps the ones already saved"
       __REPORT_INVOCATIONS__: Array<{ cmd: string; args: Record<string, unknown> }>;
     }).__REPORT_INVOCATIONS__,
   );
-  const generation = invocations.find(
-    (invocation) => invocation.cmd === "generate_full_report",
+  const started = invocations.find(
+    (invocation) => invocation.cmd === "start_draft_run",
   );
   const stop = invocations.find((invocation) => invocation.cmd === "stop_stream");
-  expect(stop?.args.streamId).toBe(generation?.args.streamId);
+  expect(stop?.args.streamId).toBe(started?.args.streamId);
+  expect(
+    invocations.find((invocation) => invocation.cmd === "update_draft_plan")
+      ?.args.edits,
+  ).toEqual([
+    {
+      section_id: "a2222222-2222-4222-8222-222222222222",
+      scope: "Only the school history.",
+    },
+  ]);
 
+  // Starting back up asks the plan's question again, this time about a
+  // section that already landed.
   await banner.getByRole("button", { name: "Start back up" }).click();
+  const referral = page
+    .getByTestId("draft-plan-card")
+    .filter({ hasText: "Reason for Referral" });
+  await referral.locator("summary").click();
+  await expect(referral.getByRole("radio", { name: "Keep" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await referral.getByRole("radio", { name: "Rewrite" }).click();
+  await page.getByRole("button", { name: "Start back up (2 remaining)" }).click();
+
   await expect(canvas).toContainText(
     "Drafted Summary from the client records.",
   );
   await expect(page.getByTestId("draft-run-banner")).toHaveCount(0);
 
-  const resumed = await page.evaluate(() =>
+  const afterResume = await page.evaluate(() =>
     (window as unknown as {
       __REPORT_INVOCATIONS__: Array<{ cmd: string; args: Record<string, unknown> }>;
-    }).__REPORT_INVOCATIONS__.find(
-      (invocation) => invocation.cmd === "resume_draft_run",
-    ),
+    }).__REPORT_INVOCATIONS__,
   );
-  expect(resumed?.args).toMatchObject({
+  const planEdits = afterResume.filter(
+    (invocation) => invocation.cmd === "update_draft_plan",
+  );
+  expect(planEdits[planEdits.length - 1]?.args.edits).toEqual([
+    { section_id: "a1111111-1111-4111-8111-111111111111", intent: "rewrite" },
+  ]);
+  expect(
+    afterResume.find((invocation) => invocation.cmd === "resume_draft_run")
+      ?.args,
+  ).toMatchObject({
     runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     updatedInstructions: null,
   });
@@ -352,7 +438,20 @@ test("Editor History resumes a specific Writing session", async ({ page }) => {
   await page.getByRole("button", { name: "Client Files" }).click();
   await page.getByText("Jane Doe").click();
   await page.locator('[data-tab="writing"]').click();
+  // A whole-report draft is planned against the report's sections, so the
+  // session needs a template before it has anything to plan.
+  await page.getByRole("button", { name: "Apply template" }).click();
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Imported Evaluation Template",
+  );
   await page.getByRole("button", { name: "Fill whole report" }).click();
+  await page
+    .getByRole("dialog", { name: "Replace the working draft?" })
+    .getByRole("button", { name: "Fill whole report" })
+    .click();
+  await page
+    .getByRole("button", { name: "Start drafting (1 sections)" })
+    .click();
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Complete Generated Evaluation",
   );

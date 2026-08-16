@@ -43,6 +43,9 @@ All notable changes to Claria are documented here.
 - Each section is marked in the preview while a draft runs — waiting, writing, drafted, skipped, or failed with the reason
 - A stopped or failed draft offers to start back up, keep what it wrote, or be discarded, and survives closing the app
 - Leaving Writing during a draft run now points at Stop instead of asking you to wait
+- The writer now shows an editable section plan before drafting, with per-section scope, evidence, and skip control, and resumes stopped runs from the same view
+- A new Draft runs preference chooses whether the plan waits for review or drafting starts as soon as it lands, and picks the models that plan and review
+- A resumed draft run can now be stopped like the first attempt
 
 ## [0.28.0] — 2026-08-15
 

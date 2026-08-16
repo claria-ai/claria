@@ -888,6 +888,80 @@ async fn a_resume_with_no_new_instructions_skips_the_planner() {
 }
 
 #[tokio::test]
+async fn a_resume_gate_directive_survives_the_deterministic_re_plan() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let run_id = seed_interrupted_run(&s3, client_id, report_id).await;
+
+    // The clinician asks for a section that already landed to be written
+    // again. A resume with no new instructions re-derives its plan from the
+    // section states, so the directive has to reach them.
+    pipeline::update_draft_plan(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        &[PlanEntryEdit {
+            section_id: REFERRAL_ID.parse().expect("section UUID"),
+            intent: Some(SectionIntent::Rewrite),
+            ..Default::default()
+        }],
+    )
+    .await
+    .expect("the resume-gate edit applies");
+
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                write_call(
+                    "section-1",
+                    REFERRAL_ID,
+                    0,
+                    "Reason for Referral",
+                    "Rewritten referral paragraph.",
+                ),
+            ]),
+            tool_round(vec![write_call(
+                "section-2",
+                SUMMARY_ID,
+                1,
+                "Summary and Clinical Interpretation",
+                "Findings match the referral question.",
+            )]),
+            tool_round(vec![finish_call("finish-1", "Picked the run back up.")]),
+            closing_text("Done."),
+        ],
+    )
+    .await;
+
+    let outcome = pipeline::resume_planned_draft_run(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        PLANNER_MODEL_ID,
+        WRITER_MODEL_ID,
+        pipeline::FullReportRequest::new(""),
+    )
+    .await
+    .expect("resume after a gate edit");
+
+    let run = only_run(&s3, client_id, report_id).await;
+    let plan = run.plan.as_ref().expect("plan");
+    assert_eq!(entry(plan, REFERRAL_ID).intent, SectionIntent::Draft);
+    assert_eq!(
+        outcome.workspace.draft.content.sections[0].blocks,
+        vec![paragraph("Rewritten referral paragraph.")]
+    );
+}
+
+#[tokio::test]
 async fn a_resume_with_new_instructions_re_plans_through_the_model() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();

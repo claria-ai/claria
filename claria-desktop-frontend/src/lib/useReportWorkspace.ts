@@ -13,7 +13,9 @@ import {
   discardReportTemplatePreview,
   exportReportDocx,
   finalizePartialDraft,
+  generateDraftPlan,
   generateFullReport,
+  loadConfig,
   loadDraftRun,
   loadReportWorkspace,
   previewWriterTemplate,
@@ -22,15 +24,20 @@ import {
   resumeDraftRun,
   saveReportDraft,
   sendReportMessage,
+  startDraftRun,
   startReportWorkspace,
   stopStream,
+  updateDraftPlan,
   type DraftRun,
   type FullReportGenerationResponse,
+  type PlanEntryEdit,
   type ReportDraftEdit,
   type ReportTurnProgressView,
   type ReportWorkspaceView,
 } from "./tauri";
+import type { DraftPlanMode } from "./draftPlan";
 import { randomUuid } from "./ids";
+import { useAsyncLoad } from "./useAsyncLoad";
 import {
   countReportEdits,
   draftToEdit,
@@ -51,10 +58,18 @@ export type WriterBusy =
   | "saving"
   | "discarding"
   | "sending"
+  | "planning"
   | "generating"
   | "resolving"
   | "exporting"
   | "applying_template";
+
+/** What the Draft run pane shows, or `null` when this report has no run. */
+export type DraftPaneState = {
+  mode: DraftPlanMode;
+  /** The run behind the pane; `null` only while the plan pass is still out. */
+  run: DraftRun | null;
+} | null;
 
 export type AgentActivity = { label: string; detail?: string } | null;
 
@@ -110,6 +125,11 @@ function agentActivityForTool(name: string, context: string | null) {
   }
   if (name === "read_record_file") {
     return { label: "Reading client context", detail: context ?? undefined };
+  }
+  // The targeted-edit context restructure ships on a sibling branch; until it
+  // merges no turn emits this name, and the label is inert.
+  if (name === "read_report_section") {
+    return { label: "Reading a report section", detail: context ?? undefined };
   }
   if (name === "propose_report_changes") {
     return { label: "Drafting a reviewable proposal" };
@@ -227,12 +247,28 @@ export function useReportWorkspace({
   const [agentActivity, setAgentActivity] = useState<AgentActivity>(null);
   const [liveContext, setLiveContext] = useState<ContextPill[]>([]);
   const [run, dispatchRun] = useReducer(runReducer, undefined, emptyDraftRun);
+  const [draftPane, setDraftPane] = useState<DraftPaneState>(null);
   // The durable run behind `run.runId`: resume needs its writer model, and
   // finalize and abandon need its ID after the reducer has moved on.
   const resumableRunRef = useRef<DraftRun | null>(null);
-  // Minted before `generate_full_report` is invoked so the run can be
-  // stopped; `resume_draft_run` takes no stream, so a resumed run cannot.
+  // Minted before every run command is invoked, so Stop is live from the
+  // moment the run is — planning, drafting, and picking back up alike.
   const streamIdRef = useRef<string | null>(null);
+
+  // Whether a planned draft stops at the gate is a saved preference, read
+  // once per writer surface. Gated is the safe reading of an unknown answer:
+  // it never starts an expensive draft nobody approved.
+  const configLoad = useAsyncLoad(() => loadConfig(), []);
+  const configError = configLoad.error;
+  useEffect(() => {
+    if (configError) {
+      logFrontendEvent(
+        "warn",
+        `Writer plan-gate preference unavailable, gating the draft: ${configError}`
+      );
+    }
+  }, [configError]);
+  const planGate = configLoad.data?.draft_pipeline.plan_gate ?? "gated";
 
   const baseline = useMemo(
     () => (workspace ? draftToEdit(workspace.draft) : null),
@@ -253,8 +289,22 @@ export function useReportWorkspace({
 
   // Actions outlive the renders that created them; they read the latest
   // state through this ref so they can stay referentially stable.
-  const stateRef = useRef({ workspace, edit, dirty, busy, validationErrors });
-  stateRef.current = { workspace, edit, dirty, busy, validationErrors };
+  const stateRef = useRef({
+    workspace,
+    edit,
+    dirty,
+    busy,
+    validationErrors,
+    planGate,
+  });
+  stateRef.current = {
+    workspace,
+    edit,
+    dirty,
+    busy,
+    validationErrors,
+    planGate,
+  };
 
   const showActionError = useCallback((error: unknown) => {
     const message = String(error);
@@ -283,12 +333,21 @@ export function useReportWorkspace({
       }
       if (generation !== generationRef.current) return null;
       const hydrated = durable ? runStateFromDraftRun(durable) : null;
+      if (durable && durable.status === "awaiting_approval" && durable.plan) {
+        // A plan the reader never answered still holds the report. Offering
+        // it back is the only way out of that hold that is not a refusal.
+        resumableRunRef.current = durable;
+        setDraftPane({ mode: "plan-gate", run: durable });
+        return null;
+      }
       if (!durable || !hydrated?.outcome) {
         resumableRunRef.current = null;
+        setDraftPane(null);
         return null;
       }
       resumableRunRef.current = durable;
       dispatchRun({ kind: "hydrated", state: hydrated });
+      setDraftPane({ mode: "resume-gate", run: durable });
       return hydrated.outcome;
     },
     [clientId]
@@ -314,6 +373,7 @@ export function useReportWorkspace({
       setEdit(draftToEdit(result.draft));
       setEditing(false);
       resumableRunRef.current = null;
+      setDraftPane(null);
       dispatchRun({ kind: "cleared" });
       // A run stopped before the app was closed is still resumable, so the
       // banner has to survive a restart, not just a re-render.
@@ -587,6 +647,7 @@ export function useReportWorkspace({
         setEditing(false);
         setConflict(false);
         resumableRunRef.current = null;
+        setDraftPane(null);
         dispatchRun({ kind: "cleared" });
         const unavailable =
           result.unavailable_record_files > 0
@@ -617,7 +678,10 @@ export function useReportWorkspace({
           setConflict(false);
           return false;
         }
-        if (!outcome) dispatchRun({ kind: "cleared" });
+        if (!outcome) {
+          dispatchRun({ kind: "cleared" });
+          setDraftPane(null);
+        }
         showActionError(error);
         return false;
       } finally {
@@ -694,6 +758,182 @@ export function useReportWorkspace({
   );
 
   /**
+   * Flush the reader's gate edits, then draft the plan they approved.
+   *
+   * The edits go in one batched call carrying only the rows that changed, and
+   * the run it returns replaces the pane's copy — so the plan shown beside the
+   * progress is the plan the writer was actually handed.
+   */
+  const startPlannedRun = useCallback(
+    async (
+      modelId: string,
+      planned: DraftRun,
+      edits: PlanEntryEdit[]
+    ): Promise<boolean> => {
+      const current = stateRef.current.workspace;
+      if (!current) return false;
+      const generation = generationRef.current;
+      const streamId = randomUuid();
+      streamIdRef.current = streamId;
+      setBusy("generating");
+      setActionError(null);
+      setLiveContext([]);
+      setAgentActivity({
+        label: "Preparing the complete report",
+        detail: "Loading every readable client record",
+      });
+      setSaveStatus("Drafting the report from the plan you approved…");
+      logFrontendEvent("info", "Writer planned drafting run requested");
+
+      let approved = planned;
+      if (edits.length > 0) {
+        try {
+          approved = await updateDraftPlan(
+            clientId,
+            current.report_id,
+            planned.run_id,
+            edits
+          );
+        } catch (error) {
+          if (generation !== generationRef.current) return false;
+          showActionError(error);
+          setSaveStatus(null);
+          setAgentActivity(null);
+          setBusy(null);
+          streamIdRef.current = null;
+          return false;
+        }
+        if (generation !== generationRef.current) return false;
+      }
+      resumableRunRef.current = approved;
+      setDraftPane({ mode: "running", run: approved });
+      dispatchRun({ kind: "started" });
+      return settleRun(
+        generation,
+        startDraftRun(
+          clientId,
+          current.report_id,
+          approved.run_id,
+          modelId,
+          streamId,
+          (progress) => {
+            if (generation === generationRef.current) handleAgentProgress(progress);
+          }
+        )
+      );
+    },
+    [clientId, handleAgentProgress, settleRun, showActionError]
+  );
+
+  /**
+   * Plan a whole-report draft from every readable record.
+   *
+   * Where the plan lands is the reader's saved preference: gated leaves it in
+   * the Draft run pane to be read and edited, auto-start hands it straight to
+   * the writer. The chaining lives here rather than in a backend command so
+   * each command stays one job.
+   */
+  const planRun = useCallback(
+    async (modelId: string, guidance: string): Promise<boolean> => {
+      const { busy: currentBusy } = stateRef.current;
+      if (currentBusy !== null) return false;
+      const generation = generationRef.current;
+      // Minted before the first render of the busy state, so Stop is live
+      // from the moment the plan pass is.
+      const streamId = randomUuid();
+      streamIdRef.current = streamId;
+      setBusy("planning");
+      setActionError(null);
+      setLiveContext([]);
+      dispatchRun({ kind: "started" });
+      setDraftPane({ mode: "running", run: null });
+      setAgentActivity({
+        label: "Planning the report",
+        detail: "Deciding what each section needs",
+      });
+      setSaveStatus(
+        stateRef.current.dirty
+          ? "Saving your report edits before planning the complete draft…"
+          : "Reading every readable record to plan the complete draft…"
+      );
+      logFrontendEvent("info", "Writer draft plan requested");
+
+      const abandonAttempt = (error: unknown) => {
+        showActionError(error);
+        setSaveStatus(null);
+        setLiveContext([]);
+        setDraftPane(null);
+        dispatchRun({ kind: "cleared" });
+        setAgentActivity(null);
+        setBusy(null);
+        streamIdRef.current = null;
+      };
+
+      let current: ReportWorkspaceView;
+      try {
+        current = await persistCurrentEdit();
+      } catch (error) {
+        if (generation !== generationRef.current) return false;
+        abandonAttempt(error);
+        return false;
+      }
+      if (generation !== generationRef.current) return false;
+
+      let planned: DraftRun;
+      try {
+        planned = await generateDraftPlan(
+          clientId,
+          current.report_id,
+          current.draft.revision,
+          guidance,
+          streamId,
+          (progress) => {
+            if (generation === generationRef.current) handleAgentProgress(progress);
+          }
+        );
+      } catch (error) {
+        const diagnostic =
+          error instanceof Error ? (error.stack ?? error.message) : String(error);
+        logFrontendEvent("error", `Writer draft planning failed: ${diagnostic}`);
+        if (generation !== generationRef.current) return false;
+        abandonAttempt(error);
+        return false;
+      }
+      if (generation !== generationRef.current) return false;
+
+      if (stateRef.current.planGate === "gated") {
+        resumableRunRef.current = planned;
+        setDraftPane({ mode: "plan-gate", run: planned });
+        // The plan pass moved the counters; the gate is not drafting, so the
+        // canvas goes quiet again until the reader approves.
+        dispatchRun({ kind: "cleared" });
+        setAgentActivity(null);
+        setBusy(null);
+        streamIdRef.current = null;
+        setSaveStatus(
+          `Plan ready. Review ${planned.sections.length} section${planned.sections.length === 1 ? "" : "s"} before drafting starts.`
+        );
+        return true;
+      }
+      return startPlannedRun(modelId, planned, []);
+    },
+    [
+      clientId,
+      handleAgentProgress,
+      persistCurrentEdit,
+      showActionError,
+      startPlannedRun,
+    ]
+  );
+
+  /** Show the interrupted run's plan so its directives can be changed. */
+  const openResumeGate = useCallback(() => {
+    const durable = resumableRunRef.current;
+    if (!durable) return;
+    setDraftPane({ mode: "resume-gate", run: durable });
+  }, []);
+
+  /**
    * Ask the backend to end the run. Nothing here decides the outcome — the
    * in-flight command settling does, which is what makes a stop that loses
    * its race with a finishing run leave the finished revision standing.
@@ -708,15 +948,22 @@ export function useReportWorkspace({
     });
   }, []);
 
+  /**
+   * Pick the interrupted run back up, carrying whatever the reader changed at
+   * the resume gate. Changing nothing is one command and one round trip: the
+   * backend's own deterministic defaults are already what the gate showed.
+   */
   const resumeRun = useCallback(
-    async (instructions?: string): Promise<boolean> => {
+    async (
+      edits: PlanEntryEdit[] = [],
+      instructions = ""
+    ): Promise<boolean> => {
       const { workspace: current, busy: currentBusy } = stateRef.current;
       const durable = resumableRunRef.current;
       if (!current || currentBusy !== null || !durable) return false;
       const generation = generationRef.current;
-      // Resume owns no stream: the backend command takes none, so Stop stays
-      // off rather than pretending to work.
-      streamIdRef.current = null;
+      const streamId = randomUuid();
+      streamIdRef.current = streamId;
       setBusy("generating");
       setActionError(null);
       setLiveContext([]);
@@ -727,22 +974,46 @@ export function useReportWorkspace({
       });
       setSaveStatus("Picking the interrupted draft back up…");
       logFrontendEvent("info", "Writer drafting run resume requested");
-      const trimmed = instructions?.trim() ?? "";
+
+      let approved = durable;
+      if (edits.length > 0) {
+        try {
+          approved = await updateDraftPlan(
+            clientId,
+            current.report_id,
+            durable.run_id,
+            edits
+          );
+        } catch (error) {
+          if (generation !== generationRef.current) return false;
+          showActionError(error);
+          setSaveStatus(null);
+          setAgentActivity(null);
+          setBusy(null);
+          streamIdRef.current = null;
+          return false;
+        }
+        if (generation !== generationRef.current) return false;
+        resumableRunRef.current = approved;
+      }
+      setDraftPane({ mode: "running", run: approved });
+      const trimmed = instructions.trim();
       return settleRun(
         generation,
         resumeDraftRun(
           clientId,
           current.report_id,
-          durable.run_id,
+          approved.run_id,
           trimmed === "" ? null : trimmed,
-          durable.writer_model_id,
+          approved.writer_model_id,
+          streamId,
           (progress) => {
             if (generation === generationRef.current) handleAgentProgress(progress);
           }
         )
       );
     },
-    [clientId, handleAgentProgress, settleRun]
+    [clientId, handleAgentProgress, settleRun, showActionError]
   );
 
   /** Keep what an interrupted run wrote; undone sections become skipped. */
@@ -766,6 +1037,7 @@ export function useReportWorkspace({
       setEditing(false);
       setConflict(false);
       resumableRunRef.current = null;
+      setDraftPane(null);
       dispatchRun({ kind: "cleared" });
       setSaveStatus(
         `Kept the partial draft as revision ${result.draft.revision}. Sections the run never wrote are marked skipped.`
@@ -802,6 +1074,7 @@ export function useReportWorkspace({
       setEditing(false);
       setConflict(false);
       resumableRunRef.current = null;
+      setDraftPane(null);
       dispatchRun({ kind: "cleared" });
       setSaveStatus(
         `Discarded the interrupted draft. The report is unchanged at revision ${result.draft.revision}.`
@@ -1027,15 +1300,26 @@ export function useReportWorkspace({
     agentActivity,
     liveContext,
     run,
-    // Only a run started here owns a stream, so only that run can be stopped.
-    canStopRun: busy === "generating" && !run.stopping && streamIdRef.current !== null,
+    draftPane,
+    planGate,
+    // Every run command mints a stream, so any run this hook started can be
+    // stopped — including one it picked back up.
+    canStopRun:
+      (busy === "generating" || busy === "planning") &&
+      !run.stopping &&
+      streamIdRef.current !== null,
     load,
     beginEdit,
     cancelEdit,
     save,
     discardQueuedEdits,
     send,
+    // The legacy un-gated path. The writer surface plans instead, but the
+    // wrapper and its command stay available.
     generateFullDraft,
+    planRun,
+    startPlannedRun,
+    openResumeGate,
     stopRun,
     resumeRun,
     keepPartialDraft,

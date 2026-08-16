@@ -34,6 +34,13 @@ const mocks = vi.hoisted(() => ({
   finalizePartialDraft: vi.fn(),
   abandonDraftRun: vi.fn(),
   stopStream: vi.fn(),
+  loadConfig: vi.fn(),
+  generateDraftPlan: vi.fn(),
+  updateDraftPlan: vi.fn(),
+  startDraftRun: vi.fn(),
+  listRecordFiles: vi.fn(),
+  deleteRecordFile: vi.fn(),
+  uploadRecordFile: vi.fn(),
 }));
 
 vi.mock("../lib/logBridge", () => ({
@@ -66,6 +73,13 @@ vi.mock("../lib/tauri", () => ({
   finalizePartialDraft: mocks.finalizePartialDraft,
   abandonDraftRun: mocks.abandonDraftRun,
   stopStream: mocks.stopStream,
+  loadConfig: mocks.loadConfig,
+  generateDraftPlan: mocks.generateDraftPlan,
+  updateDraftPlan: mocks.updateDraftPlan,
+  startDraftRun: mocks.startDraftRun,
+  listRecordFiles: mocks.listRecordFiles,
+  deleteRecordFile: mocks.deleteRecordFile,
+  uploadRecordFile: mocks.uploadRecordFile,
 }));
 
 import Writing from "./Writing";
@@ -81,6 +95,7 @@ const modelsState: ChatModelsState = {
   setPreferredModelId: () => {},
 };
 const SECTION_ID = "11111111-1111-4111-8111-111111111111";
+const SECTION_ID_2 = "22222222-2222-4222-8222-222222222222";
 
 function workspace({
   title = "Accepted report title",
@@ -293,8 +308,100 @@ beforeEach(() => {
   });
   mocks.loadDraftRun.mockResolvedValue(null);
   mocks.stopStream.mockResolvedValue(undefined);
+  mocks.loadConfig.mockResolvedValue({
+    draft_pipeline: {
+      plan_gate: "gated",
+      planner_model_id: null,
+      reviewer_model_id: null,
+    },
+  });
+  mocks.listRecordFiles.mockResolvedValue([
+    { filename: "intake.txt", size: 10, uploaded_at: null },
+    { filename: "teacher-observation.txt", size: 10, uploaded_at: null },
+  ]);
+  mocks.generateDraftPlan.mockResolvedValue(plannedRun());
+  mocks.updateDraftPlan.mockImplementation(async () => plannedRun());
+  mocks.startDraftRun.mockResolvedValue({
+    ...turnResponse(generated),
+    workspace: generated,
+    included_record_files: 2,
+    unavailable_record_files: 1,
+    record_characters: 12872,
+  });
   vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
 });
+
+/** The plan a fresh gate shows: two sections, one already scoped. */
+function plannedRun(warnings: string[] = []) {
+  return {
+    schema_version: 1,
+    run_id: RUN_ID,
+    report_id: "report-1",
+    client_id: "client-1",
+    base_revision: 0,
+    status: "awaiting_approval",
+    plan: {
+      model_id: "planner-1",
+      user_edited: false,
+      approved_at: null,
+      plan_warnings: warnings,
+      created_at: "2026-08-01T00:02:00Z",
+      entries: [
+        {
+          section_id: SECTION_ID,
+          heading: "Findings",
+          intent: "draft",
+          required: true,
+          scope: "Summarise the assessment results.",
+          evidence: [{ filename: "intake.txt", note: null }],
+          instruction: null,
+        },
+        {
+          section_id: SECTION_ID_2,
+          heading: "Summary",
+          intent: "draft",
+          required: true,
+          scope: "Close the report.",
+          evidence: [],
+          instruction: null,
+        },
+      ],
+    },
+    title: null,
+    sections: [
+      {
+        section_id: SECTION_ID,
+        heading: "Findings",
+        position: 0,
+        state: "pending",
+        blocks: [],
+        citations: [],
+        attempts: 0,
+        error: null,
+        updated_at: "2026-08-01T00:02:00Z",
+      },
+      {
+        section_id: SECTION_ID_2,
+        heading: "Summary",
+        position: 1,
+        state: "pending",
+        blocks: [],
+        citations: [],
+        attempts: 0,
+        error: null,
+        updated_at: "2026-08-01T00:02:00Z",
+      },
+    ],
+    instructions: [
+      { text: "Use a concise clinical style", added_at: "2026-08-01T00:02:00Z" },
+    ],
+    writer_model_id: "model-1",
+    finalized_revision: null,
+    partial: false,
+    created_at: "2026-08-01T00:02:00Z",
+    updated_at: "2026-08-01T00:02:00Z",
+  };
+}
 
 const RUN_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
@@ -635,7 +742,7 @@ describe("Writing", () => {
     );
   });
 
-  it("fills the whole report in one direct versioned generation action", async () => {
+  it("plans the whole report and waits at the gate before drafting", async () => {
     renderWriting();
     await screen.findByText("Accepted report title");
     await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
@@ -653,16 +760,39 @@ describe("Writing", () => {
     expect(confirmation.textContent).toContain(
       "current revision will remain available"
     );
-    expect(mocks.generate).not.toHaveBeenCalled();
+    expect(mocks.generateDraftPlan).not.toHaveBeenCalled();
     await userEvent.click(
       within(confirmation).getByRole("button", { name: "Fill whole report" })
     );
-    expect(mocks.generate).toHaveBeenCalledWith(
+    expect(mocks.generateDraftPlan).toHaveBeenCalledWith(
       "client-1",
       "report-1",
       0,
-      "model-1",
       "Use a concise clinical style",
+      expect.any(String),
+      expect.any(Function)
+    );
+    // The gate stops here: nothing is drafted until the plan is approved.
+    expect(await screen.findByText("Plan ready — review before drafting")).toBeDefined();
+    expect(mocks.startDraftRun).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("tab", { name: "Draft run" }).getAttribute("aria-selected")
+    ).toBe("true");
+    expect(screen.getAllByTestId("draft-plan-card")).toHaveLength(2);
+    expect(
+      (screen.getByLabelText("Scope for Findings") as HTMLTextAreaElement).value
+    ).toBe("Summarise the assessment results.");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start drafting (2 sections)" })
+    );
+    // Nothing changed, so the plan is not rewritten before it runs.
+    expect(mocks.updateDraftPlan).not.toHaveBeenCalled();
+    expect(mocks.startDraftRun).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      RUN_ID,
+      "model-1",
       expect.any(String),
       expect.any(Function)
     );
@@ -690,7 +820,9 @@ describe("Writing", () => {
   });
 
   it("surfaces and logs whole-report failures beside the action", async () => {
-    mocks.generate.mockRejectedValue(new Error("Bedrock request unavailable"));
+    mocks.generateDraftPlan.mockRejectedValue(
+      new Error("Bedrock request unavailable")
+    );
     renderWriting();
     await screen.findByText("Accepted report title");
     await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
@@ -709,7 +841,7 @@ describe("Writing", () => {
     expect(alert.textContent).toContain("Bedrock request unavailable");
     expect(mocks.logFrontend).toHaveBeenCalledWith(
       "error",
-      expect.stringContaining("Writer whole-report generation failed")
+      expect.stringContaining("Writer draft planning failed")
     );
   });
 
@@ -1256,18 +1388,27 @@ describe("Writing", () => {
 });
 
 describe("Writing drafting runs", () => {
-  /** Start a fill and hand back the channel and the settle handles. */
+  /**
+   * Start a run through the auto-start preference — plan, then straight into
+   * drafting — and hand back the channel and the settle handles.
+   */
   async function startFill() {
+    mocks.loadConfig.mockResolvedValue({
+      draft_pipeline: {
+        plan_gate: "auto_start",
+        planner_model_id: null,
+        reviewer_model_id: null,
+      },
+    });
     let emit: ((progress: unknown) => void) | undefined;
     let settle: ((response: unknown) => void) | undefined;
     let fail: ((error: unknown) => void) | undefined;
-    mocks.generate.mockImplementation(
+    mocks.startDraftRun.mockImplementation(
       (
         _clientId: string,
         _reportId: string,
-        _revision: number,
+        _runId: string,
         _modelId: string,
-        _guidance: string,
         _streamId: string,
         onProgress?: (progress: unknown) => void
       ) => {
@@ -1318,7 +1459,7 @@ describe("Writing drafting runs", () => {
     expect(canvas.textContent).toContain("Landed mid-run.");
     expect(canvas.textContent).toContain("Psychoeducational Evaluation");
     expect(
-      screen
+      within(screen.getByTestId("draft-run-progress"))
         .getByRole("progressbar", { name: "Report sections drafted" })
         .getAttribute("aria-valuetext")
     ).toBe("1 of 3 drafted");
@@ -1343,7 +1484,7 @@ describe("Writing drafting runs", () => {
     await userEvent.click(stop);
 
     expect(mocks.stopStream).toHaveBeenCalledWith(
-      mocks.generate.mock.calls[0][5]
+      mocks.startDraftRun.mock.calls[0][4]
     );
     // Both stop surfaces go quiet once the request is in flight.
     expect(
@@ -1355,7 +1496,7 @@ describe("Writing drafting runs", () => {
     ).toBe(true);
 
     await act(async () => {
-      run.fail("generate_full_report failed: The draft run was stopped.");
+      run.fail("start_draft_run failed: The draft run was stopped.");
     });
   });
 
@@ -1364,7 +1505,7 @@ describe("Writing drafting runs", () => {
     mocks.loadDraftRun.mockResolvedValue(stoppedRun());
 
     await act(async () => {
-      run.fail("generate_full_report failed: The draft run was stopped.");
+      run.fail("start_draft_run failed: The draft run was stopped.");
     });
 
     const banner = await screen.findByTestId("draft-run-banner");
@@ -1389,18 +1530,26 @@ describe("Writing drafting runs", () => {
     });
 
     await act(async () => {
-      run.fail("generate_full_report failed: The draft run was stopped.");
+      run.fail("start_draft_run failed: The draft run was stopped.");
     });
     await screen.findByTestId("draft-run-banner");
 
+    // The banner routes to the pane; picking back up unchanged is one click
+    // and one command from there.
     await userEvent.click(screen.getByRole("button", { name: "Start back up" }));
+    await screen.findByTestId("draft-run-pane");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start back up (1 remaining)" })
+    );
 
+    expect(mocks.updateDraftPlan).not.toHaveBeenCalled();
     expect(mocks.resumeDraftRun).toHaveBeenCalledWith(
       "client-1",
       "report-1",
       RUN_ID,
       null,
       "model-1",
+      expect.any(String),
       expect.any(Function)
     );
     expect(await screen.findByText("Resumed report")).toBeDefined();
@@ -1414,7 +1563,7 @@ describe("Writing drafting runs", () => {
     );
 
     await act(async () => {
-      run.fail("generate_full_report failed: The draft run was stopped.");
+      run.fail("start_draft_run failed: The draft run was stopped.");
     });
     await screen.findByTestId("draft-run-banner");
 
@@ -1443,7 +1592,7 @@ describe("Writing drafting runs", () => {
     mocks.abandonDraftRun.mockResolvedValue(workspace());
 
     await act(async () => {
-      run.fail("generate_full_report failed: The draft run was stopped.");
+      run.fail("start_draft_run failed: The draft run was stopped.");
     });
     await screen.findByTestId("draft-run-banner");
 
@@ -1486,5 +1635,247 @@ describe("Writing drafting runs", () => {
     const banner = await screen.findByTestId("draft-run-banner");
     expect(banner.textContent).toContain("The model stopped responding");
     expect(banner.textContent).toContain("Stopped — 1 of 2 sections drafted");
+  });
+});
+
+describe("Writing plan gate", () => {
+  /** Plan a draft and land at the gate. */
+  async function openGate(run = plannedRun()) {
+    mocks.generateDraftPlan.mockResolvedValue(run);
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Fill whole report" })
+    );
+    await userEvent.click(
+      within(
+        screen.getByRole("dialog", { name: "Replace the working draft?" })
+      ).getByRole("button", { name: "Fill whole report" })
+    );
+    return screen.findByTestId("draft-run-pane");
+  }
+
+  function cardFor(heading: string) {
+    const card = screen
+      .getAllByTestId("draft-plan-card")
+      .find((element) => element.textContent?.includes(heading));
+    if (!card) throw new Error(`No plan card for ${heading}`);
+    return card;
+  }
+
+  it("sends only the rows the reader changed, then drafts", async () => {
+    await openGate();
+
+    const scope = screen.getByLabelText("Scope for Findings");
+    await userEvent.clear(scope);
+    await userEvent.type(scope, "Only the cognitive results.");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Remove intake.txt from Findings" })
+    );
+    await userEvent.click(
+      within(
+        within(cardFor("Summary")).getByRole("radiogroup", {
+          name: "Directive for Summary",
+        })
+      ).getByRole("radio", { name: "Skip" })
+    );
+
+    // Skipping a row takes it out of the count the button promises.
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start drafting (1 sections)" })
+    );
+
+    expect(mocks.updateDraftPlan).toHaveBeenCalledTimes(1);
+    expect(mocks.updateDraftPlan).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      RUN_ID,
+      [
+        {
+          section_id: SECTION_ID,
+          scope: "Only the cognitive results.",
+          evidence: [],
+        },
+        { section_id: SECTION_ID_2, intent: "skip" },
+      ]
+    );
+    expect(mocks.startDraftRun).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      RUN_ID,
+      "model-1",
+      expect.any(String),
+      expect.any(Function)
+    );
+  });
+
+  it("attaches a record to a section from the evidence picker", async () => {
+    await openGate();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Add evidence to Summary" })
+    );
+    await userEvent.click(
+      within(
+        screen.getByLabelText("Records available to Summary")
+      ).getByRole("button", { name: "teacher-observation.txt" })
+    );
+
+    expect(
+      within(screen.getByLabelText("Evidence for Summary")).getByText(
+        "teacher-observation.txt"
+      )
+    ).toBeDefined();
+    expect(mocks.listRecordFiles).toHaveBeenCalledWith("client-1");
+  });
+
+  it("shows what the host could not verify about the plan", async () => {
+    await openGate(
+      plannedRun(["unresolved_evidence:intake.txt", "duplicate_anchor:Summary"])
+    );
+
+    const warnings = screen.getByTestId("plan-warnings");
+    expect(warnings.textContent).toContain(
+      "Some evidence quotes could not be verified"
+    );
+    expect(warnings.textContent).toContain("unresolved_evidence:intake.txt");
+  });
+
+  it("discards the plan after confirming, and nothing is drafted", async () => {
+    mocks.abandonDraftRun.mockResolvedValue(workspace());
+    await openGate();
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel plan" }));
+    const dialog = screen.getByRole("dialog", { name: "Cancel this plan?" });
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Cancel plan" })
+    );
+
+    expect(mocks.abandonDraftRun).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      RUN_ID
+    );
+    expect(mocks.startDraftRun).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.queryByRole("tab", { name: "Draft run" })).toBeNull()
+    );
+  });
+
+  it("starts drafting without a gate when the preference says so", async () => {
+    mocks.loadConfig.mockResolvedValue({
+      draft_pipeline: {
+        plan_gate: "auto_start",
+        planner_model_id: null,
+        reviewer_model_id: null,
+      },
+    });
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Fill whole report" })
+    );
+    await userEvent.click(
+      within(
+        screen.getByRole("dialog", { name: "Replace the working draft?" })
+      ).getByRole("button", { name: "Fill whole report" })
+    );
+
+    expect(await screen.findByText("Generated complete report")).toBeDefined();
+    expect(mocks.generateDraftPlan).toHaveBeenCalled();
+    expect(mocks.startDraftRun).toHaveBeenCalled();
+    expect(mocks.updateDraftPlan).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: /^Start drafting/ })
+    ).toBeNull();
+  });
+
+  it("defaults every resumed row from what the interrupted run landed", async () => {
+    const stopped = stoppedRun();
+    mocks.loadDraftRun.mockResolvedValue({
+      ...stopped,
+      sections: [
+        stopped.sections[0],
+        {
+          ...stopped.sections[1],
+          state: "failed",
+          error: "section_attempts_exhausted",
+        },
+      ],
+    });
+    renderWriting();
+
+    await screen.findByTestId("draft-run-banner");
+    await userEvent.click(screen.getByRole("button", { name: "Start back up" }));
+    await screen.findByTestId("draft-run-pane");
+
+    const findings = screen
+      .getAllByTestId("draft-plan-card")
+      .find((card) => card.textContent?.includes("Findings"))!;
+    const summary = screen
+      .getAllByTestId("draft-plan-card")
+      .find((card) => card.textContent?.includes("Summary"))!;
+    expect(
+      within(findings)
+        .getByRole("radio", { name: "Keep" })
+        .getAttribute("aria-checked")
+    ).toBe("true");
+    expect(
+      within(summary)
+        .getByRole("radio", { name: "Draft" })
+        .getAttribute("aria-checked")
+    ).toBe("true");
+    expect(summary.textContent).toContain("Failed: section_attempts_exhausted");
+    expect(
+      screen.getByRole("button", { name: "Start back up (1 remaining)" })
+    ).toBeDefined();
+  });
+
+  it("carries resume-gate directives and instructions into the resume", async () => {
+    mocks.loadDraftRun.mockResolvedValue(stoppedRun());
+    mocks.resumeDraftRun.mockResolvedValue({
+      ...turnResponse(workspace({ title: "Resumed report", revision: 1 })),
+      workspace: workspace({ title: "Resumed report", revision: 1 }),
+      included_record_files: 2,
+      unavailable_record_files: 0,
+      record_characters: 10,
+    });
+    renderWriting();
+
+    await screen.findByTestId("draft-run-banner");
+    await userEvent.click(screen.getByRole("button", { name: "Start back up" }));
+    await screen.findByTestId("draft-run-pane");
+
+    const findings = screen
+      .getAllByTestId("draft-plan-card")
+      .find((card) => card.textContent?.includes("Findings"))!;
+    await userEvent.click(
+      within(findings).getByRole("radio", { name: "Rewrite" })
+    );
+    await userEvent.type(
+      screen.getByLabelText("Updated instructions for this run"),
+      "Tighten the summary."
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start back up (2 remaining)" })
+    );
+
+    expect(mocks.updateDraftPlan).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      RUN_ID,
+      [{ section_id: SECTION_ID, intent: "rewrite" }]
+    );
+    expect(mocks.resumeDraftRun).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      RUN_ID,
+      "Tighten the summary.",
+      "model-1",
+      expect.any(String),
+      expect.any(Function)
+    );
   });
 });

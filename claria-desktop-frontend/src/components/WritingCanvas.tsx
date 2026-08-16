@@ -123,7 +123,8 @@ function WritingCanvas({
   runError?: string | null;
   canStopRun?: boolean;
   onStopRun?: () => void;
-  onResumeRun?: (instructions?: string) => void;
+  /** Take the reader to the Draft run pane to decide how it picks back up. */
+  onResumeRun?: () => void;
   onKeepPartialDraft?: () => void;
   onDiscardRun?: () => void;
 }) {
@@ -566,11 +567,10 @@ function DraftRunBanner({
   run: DraftRunUiState;
   error: string | null;
   busy: boolean;
-  onResume?: (instructions?: string) => void;
+  onResume?: () => void;
   onKeepPartial?: () => void;
   onDiscard?: () => void;
 }) {
-  const [instructions, setInstructions] = useState("");
   const [confirming, setConfirming] = useState<"keep" | "discard" | null>(null);
   const total = run.total ?? run.sections.size;
 
@@ -585,25 +585,11 @@ function DraftRunBanner({
       <p className="text-xs text-amber-900">
         {`Stopped — ${run.drafted} of ${total} sections drafted and saved. Undone sections are unchanged.`}
       </p>
-      {onResume && (
-        <label className="mt-2 block">
-          <span className="sr-only">Instructions for picking the draft back up</span>
-          <input
-            type="text"
-            aria-label="Instructions for picking the draft back up"
-            value={instructions}
-            onChange={(event) => setInstructions(event.currentTarget.value)}
-            disabled={busy}
-            placeholder="Optional: what should change when it starts back up?"
-            className="w-full rounded-md border border-amber-200 bg-white px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:bg-gray-50"
-          />
-        </label>
-      )}
       <div className="mt-2 flex flex-wrap gap-2">
         {onResume && (
           <button
             type="button"
-            onClick={() => onResume(instructions)}
+            onClick={onResume}
             disabled={busy}
             className="rounded-md bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
           >

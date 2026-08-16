@@ -3,6 +3,7 @@ import { useChatModels } from "../lib/chatModels";
 import ChatComposer from "../components/ChatComposer";
 import ChatEmptyState from "../components/ChatEmptyState";
 import ContextPills from "../components/ContextPills";
+import DraftPlanPanel from "../components/DraftPlanPanel";
 import { buildContextPills } from "../lib/contextPills";
 import EditableName from "../components/EditableName";
 import ModelSelect from "../components/ModelSelect";
@@ -35,7 +36,7 @@ import {
   writeWritingComposerDraft,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
-import type { ReportWorkspaceView } from "../lib/tauri";
+import type { PlanEntryEdit, ReportWorkspaceView } from "../lib/tauri";
 
 export type WritingLeaveState = {
   /** Any work that would be lost when the desktop app closes. */
@@ -92,9 +93,9 @@ export default function Writing({
   const [fullDraftConfirmationOpen, setFullDraftConfirmationOpen] =
     useState(false);
   const [chosenTemplateId, setChosenTemplateId] = useState("");
-  const [activePane, setActivePane] = useState<"setup" | "write" | "usage">(
-    expectedReportId ? "write" : "setup"
-  );
+  const [chosenPane, setActivePane] = useState<
+    "setup" | "write" | "usage" | "draft"
+  >(expectedReportId ? "write" : "setup");
   const [showTurnCosts, setShowTurnCosts] = useState(false);
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const proposalStartRef = useRef<HTMLDivElement | null>(null);
@@ -119,6 +120,7 @@ export default function Writing({
     agentActivity,
     liveContext,
     run,
+    draftPane,
     canStopRun,
     load,
     beginEdit,
@@ -126,7 +128,9 @@ export default function Writing({
     save,
     discardQueuedEdits,
     send,
-    generateFullDraft,
+    planRun,
+    startPlannedRun,
+    openResumeGate,
     stopRun,
     resumeRun,
     keepPartialDraft,
@@ -137,6 +141,11 @@ export default function Writing({
     renameSession,
     applyReverted,
   } = useReportWorkspace({ clientId, expectedReportId });
+
+  // A run that finished, was discarded, or was picked back up takes its pane
+  // with it; the reader lands on the timeline rather than on nothing.
+  const activePane =
+    chosenPane === "draft" && !draftPane ? "write" : chosenPane;
 
   const {
     templates: writerTemplates,
@@ -359,15 +368,29 @@ export default function Writing({
       return;
     }
     setFullDraftConfirmationOpen(false);
-    const generated = await generateFullDraft(
-      selectedModelId,
-      instruction.trim()
-    );
-    if (generated) {
+    // The plan lands in its own pane whichever way the preference points:
+    // gated it waits there, auto-start it draws the progress.
+    setActivePane("draft");
+    const planned = await planRun(selectedModelId, instruction.trim());
+    if (planned) {
       setInstruction("");
       setQueuedReferences([]);
-      setActivePane("write");
+      return;
     }
+    // Nothing was planned, so there is no pane to stand on: the failure
+    // belongs back beside the action that asked for it.
+    setActivePane("setup");
+  }
+
+  /** Approve the plan the Draft run pane is showing. */
+  async function handleStartPlan(edits: PlanEntryEdit[], instructions: string) {
+    const planned = draftPane?.run;
+    if (!planned || !selectedModelId) return;
+    if (draftPane.mode === "resume-gate") {
+      await resumeRun(edits, instructions);
+      return;
+    }
+    await startPlannedRun(selectedModelId, planned, edits);
   }
 
   async function handleApplyTemplate() {
@@ -453,6 +476,9 @@ export default function Writing({
           tabs={[
             { id: "setup", label: "Get started" },
             { id: "write", label: "Write with Claude" },
+            // Only a report with a run — live, waiting at the gate, or
+            // interrupted — has a run to show.
+            ...(draftPane ? [{ id: "draft" as const, label: "Draft run" }] : []),
             {
               id: "usage",
               label: "Costs and cache",
@@ -606,7 +632,11 @@ export default function Writing({
                       disabled={composerDisabled}
                       className="rounded-md bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
                     >
-                      {busy === "generating" ? "Filling…" : "Fill whole report"}
+                      {busy === "planning"
+                        ? "Planning…"
+                        : busy === "generating"
+                          ? "Filling…"
+                          : "Fill whole report"}
                     </button>
                   </div>
                   {actionError && (
@@ -649,6 +679,34 @@ export default function Writing({
                 </p>
               )}
             </div>
+          </div>
+        )}
+
+        {activePane === "draft" && draftPane && (
+          <div
+            id="writer-session-panel-draft"
+            role="tabpanel"
+            aria-labelledby="writer-session-tab-draft"
+            className="flex min-h-0 flex-1 flex-col"
+            data-testid="draft-run-pane"
+          >
+            <DraftPlanPanel
+              // The pane owns unsaved plan edits, so a new run or a new
+              // question gets a new pane rather than a reconciled one.
+              key={`${draftPane.run?.run_id ?? "planning"}:${draftPane.mode}`}
+              clientId={clientId}
+              run={draftPane.run}
+              runState={run}
+              mode={draftPane.mode}
+              busy={controlsBusy}
+              error={actionError}
+              canStop={canStopRun}
+              onStop={stopRun}
+              onStart={(edits, instructions) =>
+                void handleStartPlan(edits, instructions)
+              }
+              onCancelPlan={() => void discardRun()}
+            />
           </div>
         )}
 
@@ -856,7 +914,10 @@ export default function Writing({
         runError={actionError}
         canStopRun={canStopRun}
         onStopRun={stopRun}
-        onResumeRun={resumeRun}
+        onResumeRun={() => {
+          openResumeGate();
+          setActivePane("draft");
+        }}
         onKeepPartialDraft={keepPartialDraft}
         onDiscardRun={discardRun}
       />

@@ -94,6 +94,7 @@ export type {
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  DraftPipelinePreferences,
   DraftPlanEntry,
   DraftRun,
   DraftRunStatus,
@@ -116,6 +117,8 @@ export type {
   ModelPricing,
   NewCredentialsInfo,
   PlanEntry,
+  PlanEntryEdit,
+  PlanGateMode,
   PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
@@ -631,12 +634,16 @@ export async function abandonDraftRun(
 /**
  * Plan a whole-report draft and leave it at the gate. The report is held by
  * the returned run until the plan is started or the run is abandoned.
+ *
+ * `streamId` is minted by the caller before invoking, so the plan pass can be
+ * stopped with {@link stopStream}.
  */
 export async function generateDraftPlan(
   clientId: string,
   reportId: string,
   expectedRevision: number,
   instructions: string,
+  streamId: string,
   onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<DraftRun> {
   const channel = new Channel<ReportTurnProgressView>();
@@ -647,6 +654,7 @@ export async function generateDraftPlan(
       reportId,
       expectedRevision,
       instructions,
+      streamId,
       channel
     )
   );
@@ -664,24 +672,39 @@ export async function updateDraftPlan(
   );
 }
 
-/** Approve the plan and draft the report it describes. */
+/**
+ * Approve the plan and draft the report it describes. `streamId` is minted by
+ * the caller before invoking, so the run can be stopped with
+ * {@link stopStream}; a stopped run keeps every section it had already saved.
+ */
 export async function startDraftRun(
   clientId: string,
   reportId: string,
   runId: string,
   modelId: string,
+  streamId: string,
   onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<FullReportGenerationResponse> {
   const channel = new Channel<ReportTurnProgressView>();
   if (onProgress) channel.onmessage = onProgress;
   return unwrap(
-    await commands.startDraftRun(clientId, reportId, runId, modelId, channel)
+    await commands.startDraftRun(
+      clientId,
+      reportId,
+      runId,
+      modelId,
+      streamId,
+      channel
+    )
   );
 }
 
 /**
  * Pick an interrupted drafting run back up. Passing instructions re-plans the
  * run through the planning model first; passing none decides it in code.
+ *
+ * `streamId` is minted by the caller before invoking, so a resumed run can be
+ * stopped with {@link stopStream} exactly like the first attempt.
  */
 export async function resumeDraftRun(
   clientId: string,
@@ -689,6 +712,7 @@ export async function resumeDraftRun(
   runId: string,
   updatedInstructions: string | null,
   modelId: string,
+  streamId: string,
   onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<FullReportGenerationResponse> {
   const channel = new Channel<ReportTurnProgressView>();
@@ -700,6 +724,7 @@ export async function resumeDraftRun(
       runId,
       updatedInstructions,
       modelId,
+      streamId,
       channel
     )
   );
