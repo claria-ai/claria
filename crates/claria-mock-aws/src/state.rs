@@ -97,6 +97,13 @@ pub struct MockState {
     /// in real time. Checked after `bedrock_stream_stalls`; a dropped
     /// response still consumes its scripted payload.
     pub bedrock_stream_drops: u32,
+    /// Fault injection: the next N `ConverseStream` responses answer with
+    /// headers and then never send a frame at all. Reproduces a request the
+    /// service accepted and never began — the failure a mid-stream idle
+    /// bound cannot describe, because nothing was ever in flight to
+    /// interrupt. Checked after `bedrock_stream_drops`; a silent response
+    /// still consumes its scripted payload.
+    pub bedrock_stream_silences: u32,
     /// Raw tool-configured Converse request bodies, in wire order.
     pub bedrock_tool_requests: Vec<serde_json::Value>,
     /// Decoded model IDs for the captured tool-configured requests.

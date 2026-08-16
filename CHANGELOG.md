@@ -40,6 +40,9 @@ All notable changes to Claria are documented here.
 - Cited record quotes are re-read from the records themselves, so a citation that no longer resolves is named with the file it came from
 - Export is unaffected by the completion check, which reports rather than blocks
 - Raised the planner's output ceiling so plans for long reports no longer fail partway through
+- Planning now survives a dropped or stalled Bedrock connection by sending the request again
+- A Bedrock call that never starts responding now fails after ninety seconds instead of waiting indefinitely
+- A response that goes silent part-way through is abandoned after a minute rather than five
 
 ## [0.28.0] — 2026-08-15
 
