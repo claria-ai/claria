@@ -322,17 +322,7 @@ async fn run_parallel_draft(
             TurnRunFailure::new(ReportFailureCode::InvalidProtocol, error.to_string())
         })?;
 
-    // The run is the authority on its own guidance: a gated draft was planned
-    // against instructions typed at the plan step, and the Start button that
-    // follows carries none of its own.
-    let guidance = run
-        .run
-        .instructions
-        .first()
-        .map_or(request.guidance.trim(), |instruction| {
-            instruction.text.as_str()
-        })
-        .to_string();
+    let guidance = run_guidance(&run.run, request.guidance.trim());
     let base = loaded.workspace.draft.content.clone();
     let template = template_context(&loaded.workspace, &base)
         .map_err(|message| TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message))?;
@@ -481,6 +471,25 @@ async fn run_parallel_draft(
         state,
     )
     .await
+}
+
+/// Everything the clinician has asked this run for, oldest first.
+///
+/// The run is the authority on its own guidance: a gated draft was planned
+/// against instructions typed at the plan step, and the Start button that
+/// follows carries none of its own. Instructions added at a resume are here
+/// too. A re-plan folds most of what they say into the per-section rows, but
+/// only most: a run-wide "keep it under two pages" has no row to live on, and
+/// a branch that never saw it would write as though it had never been said.
+fn run_guidance(run: &DraftRun, fallback: &str) -> String {
+    if run.instructions.is_empty() {
+        return fallback.to_string();
+    }
+    run.instructions
+        .iter()
+        .map(|instruction| instruction.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Carry out the plan rows nobody needs a model for.
