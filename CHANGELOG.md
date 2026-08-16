@@ -39,6 +39,7 @@ All notable changes to Claria are documented here.
 - A deterministic completion check now verifies sections, citations, placeholders, and open findings — no model opinion involved
 - Cited record quotes are re-read from the records themselves, so a citation that no longer resolves is named with the file it came from
 - Export is unaffected by the completion check, which reports rather than blocks
+- Raised the planner's output ceiling so plans for long reports no longer fail partway through
 
 ## [0.28.0] — 2026-08-15
 
