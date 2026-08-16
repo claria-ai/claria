@@ -15,7 +15,10 @@ use claria_bedrock::{
     error::BedrockError,
     pacing::StreamPacing,
 };
-use claria_core::{model_id::CacheTtlChoice, models::chat_history::MAX_RETAINED_CHAT_MESSAGES};
+use claria_core::{
+    model_id::{CacheTtlChoice, ModelCapabilities},
+    models::chat_history::MAX_RETAINED_CHAT_MESSAGES,
+};
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 
 const MODEL_ID: &str = "us.anthropic.claude-sonnet-test";
@@ -190,7 +193,7 @@ async fn one_hour_chat_caching_marks_system_and_conversation_tail() {
         &system_prompt,
         &user_messages("Hello"),
         token_paced(CacheStrategy::enabled_for_model(
-            true,
+            ModelCapabilities::for_id(MODEL_ID),
             CacheTtlChoice::OneHour,
         )),
         |_| {},
@@ -233,7 +236,7 @@ async fn five_minute_chat_caching_omits_the_ttl_field() {
         &system_prompt,
         &user_messages("Hello"),
         token_paced(CacheStrategy::enabled_for_model(
-            true,
+            ModelCapabilities::for_id(MODEL_ID),
             CacheTtlChoice::FiveMinutes,
         )),
         |_| {},

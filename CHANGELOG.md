@@ -18,6 +18,9 @@ All notable changes to Claria are documented here.
 - Added a durable per-section drafting-run record so interrupted report generation can resume
 - Skipped report sections now keep a copy of their template body, and sections carry authorship metadata
 - Template copies stay out of Word exports and out of everything sent to the model
+- Prompt-cache checkpoints now respect each model's real minimum prefix size, and cache TTL is threaded through report usage records
+- Writer turns are labelled by kind in the cache logs, separating targeted edits from whole-draft runs
+- Bedrock throttling and capacity errors can now be retried with backoff, while an exhausted account quota still fails immediately
 
 ## [0.28.0] — 2026-08-15
 

@@ -77,4 +77,26 @@ impl BedrockError {
             _ => false,
         }
     }
+
+    /// True when Bedrock is asking the caller to slow down or come back,
+    /// rather than reporting anything wrong with the request: the same
+    /// bytes sent again later can succeed.
+    ///
+    /// Covers `ThrottlingException` (rate limit), `ServiceUnavailableException`
+    /// and HTTP 503 (capacity), `ModelNotReadyException` (a profile still
+    /// warming), and HTTP 429 for services that throttle by status without a
+    /// recognised code.
+    ///
+    /// `ServiceQuotaExceededException` is deliberately absent. An account
+    /// quota does not clear on a backoff timer, so retrying it burns the
+    /// user's time and hides the one error whose fix is a quota increase.
+    pub fn is_retryable_throttle(&self) -> bool {
+        let Self::Service { code, status, .. } = self else {
+            return false;
+        };
+        matches!(
+            code.as_str(),
+            "ThrottlingException" | "ServiceUnavailableException" | "ModelNotReadyException"
+        ) || matches!(status, Some(429 | 503))
+    }
 }

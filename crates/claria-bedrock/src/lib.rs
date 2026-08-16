@@ -9,5 +9,6 @@ pub mod error;
 pub mod extract;
 pub mod pacing;
 pub mod report;
+pub mod retry;
 pub mod tokens;
 pub mod translate;

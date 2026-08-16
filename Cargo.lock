@@ -1218,6 +1218,7 @@ dependencies = [
  "aws-sdk-bedrock",
  "aws-sdk-bedrockruntime",
  "aws-smithy-types",
+ "backon",
  "claria-billing",
  "claria-core",
  "claria-mock-aws",
