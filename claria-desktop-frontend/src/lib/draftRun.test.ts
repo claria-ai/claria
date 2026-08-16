@@ -112,6 +112,7 @@ describe("emptyDraftRun", () => {
       reviewTotal: null,
       planned: 0,
       planTotal: null,
+      retrying: null,
     });
   });
 
@@ -394,6 +395,83 @@ describe("reduceDraftRun", () => {
     const state = apply([event]);
 
     expect(reduceDraftRun(state, event)).toBe(state);
+  });
+
+  it("names the call being re-sent so a backoff is not read as a stall", () => {
+    const state = apply([
+      { kind: "model_call_started", call_number: 1 },
+      {
+        kind: "model_call_retrying",
+        call_number: 1,
+        attempt: 2,
+        max_attempts: 4,
+        delay_ms: 1000,
+      },
+    ]);
+
+    expect(state.retrying).toEqual({
+      callNumber: 1,
+      attempt: 2,
+      maxAttempts: 4,
+    });
+  });
+
+  it("retires the retry line the moment a call is on the wire again", () => {
+    const retrying = apply([
+      {
+        kind: "model_call_retrying",
+        call_number: 2,
+        attempt: 3,
+        max_attempts: 4,
+        delay_ms: 2000,
+      },
+    ]);
+
+    expect(
+      reduceDraftRun(retrying, { kind: "model_call_started", call_number: 2 })
+        .retrying
+    ).toBeNull();
+  });
+
+  it("retires the retry line on the section the re-sent call produced", () => {
+    const retrying = apply([
+      {
+        kind: "model_call_retrying",
+        call_number: 4,
+        attempt: 2,
+        max_attempts: 3,
+        delay_ms: 2000,
+      },
+    ]);
+    const drafting = reduceDraftRun(retrying, {
+      kind: "section_started",
+      section_id: REFERRAL,
+      index: 0,
+      total: 3,
+    });
+
+    expect(drafting.retrying).toBeNull();
+    expect(drafting.sections.get(REFERRAL)?.status).toBe("drafting");
+  });
+
+  it("leaves a retry standing for an event that says nothing about the call", () => {
+    const retrying = apply([
+      {
+        kind: "model_call_retrying",
+        call_number: 1,
+        attempt: 2,
+        max_attempts: 4,
+        delay_ms: 1000,
+      },
+    ]);
+    const unknown = reduceDraftRun(retrying, {
+      kind: "tool_started",
+      name: "read_record_file",
+      context: null,
+    });
+
+    expect(unknown).toBe(retrying);
+    expect(unknown.retrying?.attempt).toBe(2);
   });
 
   it("leaves a run's sections alone while a review counts beside them", () => {

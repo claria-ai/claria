@@ -163,6 +163,15 @@ pub enum ReportTurnProgressView {
     ModelCallStarted {
         call_number: u32,
     },
+    /// The last announced call never landed and the identical request is
+    /// going out again. `attempt` is the one about to be made, so the first
+    /// retry reports 2 of `max_attempts`.
+    ModelCallRetrying {
+        call_number: u32,
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+    },
     ToolStarted {
         name: String,
         context: Option<String>,
@@ -241,6 +250,17 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
             claria_report_pipeline::ReportTurnProgress::ModelCallStarted { call_number } => {
                 Self::ModelCallStarted { call_number }
             }
+            claria_report_pipeline::ReportTurnProgress::ModelCallRetrying {
+                call_number,
+                attempt,
+                max_attempts,
+                delay_ms,
+            } => Self::ModelCallRetrying {
+                call_number,
+                attempt,
+                max_attempts,
+                delay_ms,
+            },
             claria_report_pipeline::ReportTurnProgress::ToolStarted { name, context } => {
                 Self::ToolStarted { name, context }
             }

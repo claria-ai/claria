@@ -356,6 +356,15 @@ function WritingCanvas({
                   />
                 )
               )}
+              {/* The bar stops moving while a call is re-sent, so the strip
+                  says why rather than leaving the reader to guess. */}
+              {run.retrying && (
+                <StatusChip
+                  tone="warning"
+                  animated
+                  label={`Reconnecting — attempt ${run.retrying.attempt} of ${run.retrying.maxAttempts}`}
+                />
+              )}
               {onStopRun && (
                 <button
                   type="button"
