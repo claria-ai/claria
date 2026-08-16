@@ -85,10 +85,10 @@ async fn seed_client(s3: &aws_sdk_s3::Client) -> (Uuid, String, String, String) 
     put_text(s3, &second, "second record").await;
     let chat = claria_core::s3_keys::chat_history(client_id, Uuid::new_v4());
     put_text(s3, &chat, "existing text-only chat history").await;
-    let workspace = claria_report_authoring::load_report_workspace(s3, BUCKET, client_id)
+    let workspace = claria_report_store::load_report_workspace(s3, BUCKET, client_id)
         .await
         .expect("workspace");
-    claria_report_authoring::save_report_draft(
+    claria_report_store::save_report_draft(
         s3,
         BUCKET,
         client_id,
@@ -128,7 +128,7 @@ async fn partial_child_deletion_is_compensated_before_the_client_remains_visible
     assert_current(&s3, &first).await;
     assert_current(&s3, &second).await;
     assert_current(&s3, &chat).await;
-    let workspace = claria_report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+    let workspace = claria_report_store::load_report_workspace(&s3, BUCKET, client_id)
         .await
         .expect("restored report");
     assert_eq!(workspace.draft.content.title, "Lifecycle report");
@@ -180,10 +180,10 @@ async fn restore_keeps_records_and_chat_deleted_without_report_rollback() {
         ));
     }
 
-    let workspace = claria_report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+    let workspace = claria_report_store::load_report_workspace(&s3, BUCKET, client_id)
         .await
         .expect("restored report");
-    let edited = claria_report_authoring::save_report_draft(
+    let edited = claria_report_store::save_report_draft(
         &s3,
         BUCKET,
         client_id,
@@ -201,7 +201,7 @@ async fn restore_keeps_records_and_chat_deleted_without_report_rollback() {
         .await
         .expect("retried restore");
     let after_retry: ReportWorkspace =
-        claria_report_authoring::load_report_workspace(&s3, BUCKET, client_id)
+        claria_report_store::load_report_workspace(&s3, BUCKET, client_id)
             .await
             .expect("load after retry");
     assert_eq!(after_retry.draft.revision, 2);

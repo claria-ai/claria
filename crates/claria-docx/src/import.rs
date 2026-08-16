@@ -434,6 +434,8 @@ impl ImportBuilder {
                 heading,
                 blocks: std::mem::take(&mut self.current_blocks),
                 skipped: false,
+                template_blocks: None,
+                authorship: None,
             });
         }
     }

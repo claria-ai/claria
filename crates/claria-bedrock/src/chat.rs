@@ -274,6 +274,11 @@ async fn fetch_us_inference_profiles(
 /// window minus this reserve — is what the writer has run on since.
 pub const CHAT_MAX_OUTPUT_TOKENS: u32 = 32_768;
 
+/// The request-family label chat's budget, usage, and stream failures carry.
+/// A fixed operation name, never derived from user input, and the same
+/// string in the logs and in the error a reader is shown.
+pub(crate) const CHAT_OPERATION: &str = "chat";
+
 /// Appended to a chat reply that hit [`CHAT_MAX_OUTPUT_TOKENS`] before
 /// finishing. The partial answer is kept — it already streamed to the
 /// reader — and this says why it stops where it does.
@@ -301,28 +306,46 @@ pub fn chat_input_token_budget(model_id: &str) -> u32 {
 pub struct CacheStrategy {
     /// Whether prompt caching is enabled at all (config-flag controlled).
     pub enabled: bool,
-    /// Whether the model family is known to support prompt caching.
-    /// `claria-bedrock` does not maintain this catalogue itself; the
-    /// caller (claria-desktop) decides based on the configured model.
+    /// Whether the model family is known to support prompt caching, read
+    /// from the capability table the strategy was built against.
     pub model_supports_caching: bool,
     /// TTL applied to every cache point this strategy emits. `FiveMinutes`
     /// is the server default and stays off the wire.
     pub ttl: CacheTtlChoice,
+    /// Estimated-token floor a prefix must clear before a `cachePoint` is
+    /// worth emitting: this model's real
+    /// [`min_cache_prefix_tokens`](claria_core::model_id::ModelCapabilities::min_cache_prefix_tokens)
+    /// with [`CacheStrategy::PREFIX_ESTIMATE_SLACK_PERCENT`] applied.
+    pub min_prefix_tokens: u32,
 }
 
 impl CacheStrategy {
-    /// Minimum estimated prefix tokens before we emit a `cachePoint`:
-    /// Bedrock's 1,024-token floor plus 18% slack for tokenizer estimate
-    /// error.
-    pub const MIN_PREFIX_TOKENS: u32 = 1200;
+    /// Slack applied to the model's real cacheable-prefix floor before it is
+    /// compared against the ~4-chars-per-token estimate, as a percentage.
+    ///
+    /// The estimate can undercount, and a `cachePoint` under the real floor
+    /// caches nothing while still looking placed, so the gate asks for 18%
+    /// more than the floor before emitting one. That is the same margin the
+    /// old fixed 1,200-token gate carried over the 1,024-token minimum it
+    /// assumed for every model.
+    pub const PREFIX_ESTIMATE_SLACK_PERCENT: u32 = 118;
 
-    /// Caching ON when `model_supports_caching`, with `ttl` on every cache
-    /// point; the token floor still applies per prompt.
-    pub fn enabled_for_model(model_supports_caching: bool, ttl: CacheTtlChoice) -> Self {
+    /// Caching ON for a model the capability table describes, with `ttl` on
+    /// every cache point. Both the caching-support gate and the per-model
+    /// prefix floor come from `capabilities`, so the two cannot disagree
+    /// about which model the strategy is for.
+    pub fn enabled_for_model(
+        capabilities: claria_core::model_id::ModelCapabilities,
+        ttl: CacheTtlChoice,
+    ) -> Self {
         Self {
             enabled: true,
-            model_supports_caching,
+            model_supports_caching: capabilities.prompt_caching,
             ttl,
+            min_prefix_tokens: capabilities
+                .min_cache_prefix_tokens
+                .saturating_mul(Self::PREFIX_ESTIMATE_SLACK_PERCENT)
+                / 100,
         }
     }
 
@@ -332,21 +355,24 @@ impl CacheStrategy {
             enabled: false,
             model_supports_caching: false,
             ttl: CacheTtlChoice::FiveMinutes,
+            // A floor nothing clears, so the gate stays closed even if the
+            // flags above were flipped without rebuilding the strategy.
+            min_prefix_tokens: u32::MAX,
         }
     }
 
     /// Whether to emit a `cachePoint` after the system prefix.
     ///
     /// Uses a cheap char-based estimate of `len/4 ≈ tokens` (English/code/
-    /// XML averages). If the estimate falls below [`Self::MIN_PREFIX_TOKENS`]
-    /// we skip the marker — Bedrock would silently no-op anyway and the log
-    /// line is confusing.
+    /// XML averages). If the estimate falls below
+    /// [`Self::min_prefix_tokens`] we skip the marker — Bedrock would
+    /// silently no-op anyway and the log line is confusing.
     pub fn cache_system_prefix(&self, system_prompt: &str) -> bool {
         if !self.enabled || !self.model_supports_caching {
             return false;
         }
         let est_tokens = (system_prompt.len() / 4) as u32;
-        est_tokens >= Self::MIN_PREFIX_TOKENS
+        est_tokens >= self.min_prefix_tokens
     }
 
     /// Whether to emit a `cachePoint` at the conversation tail so the next
@@ -364,7 +390,7 @@ impl CacheStrategy {
                 .iter()
                 .map(|message| message.content.len())
                 .sum::<usize>();
-        (chars / 4) as u32 >= Self::MIN_PREFIX_TOKENS
+        (chars / 4) as u32 >= self.min_prefix_tokens
     }
 }
 
@@ -436,23 +462,26 @@ where
     .await?;
 
     let started = std::time::Instant::now();
-    let response = client
-        .converse_stream()
-        .model_id(model_id)
-        .set_system(Some(system_blocks))
-        .set_messages(Some(converse_messages))
-        .inference_config(
-            InferenceConfiguration::builder()
-                .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
-                .set_temperature(options.tuning.temperature)
-                .build(),
-        )
-        .set_additional_model_request_fields(crate::converse::additional_request_fields(
-            options.tuning,
-        )?)
-        .send()
-        .await
-        .map_err(|error| crate::converse::classify_error("chat ConverseStream", error))?;
+    let response = crate::converse::start_converse_stream(
+        CHAT_OPERATION,
+        crate::converse::StreamBounds::conversational(),
+        client
+            .converse_stream()
+            .model_id(model_id)
+            .set_system(Some(system_blocks))
+            .set_messages(Some(converse_messages))
+            .inference_config(
+                InferenceConfiguration::builder()
+                    .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
+                    .set_temperature(options.tuning.temperature)
+                    .build(),
+            )
+            .set_additional_model_request_fields(crate::converse::additional_request_fields(
+                options.tuning,
+            )?)
+            .send(),
+    )
+    .await?;
 
     let mut stream = response.stream;
     let mut collector = StreamCollector::new();
@@ -461,7 +490,11 @@ where
         let event = tokio::select! {
             biased;
             () = options.stop.stopped() => break true,
-            event = crate::converse::recv_stream_event("chat ConverseStream", &mut stream) => event?,
+            event = crate::converse::recv_stream_event(
+                CHAT_OPERATION,
+                crate::converse::StreamBounds::conversational(),
+                &mut stream,
+            ) => event?,
         };
         let Some(event) = event else { break false };
         if let Some(delta) = collector.absorb(event)
@@ -495,7 +528,7 @@ where
     }
     outcome.latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
     crate::converse::log_turn_usage(
-        "chat ConverseStream",
+        CHAT_OPERATION,
         model_id,
         outcome.usage.as_ref(),
         Some(&outcome.stop_reason),
@@ -567,7 +600,7 @@ async fn prepare_chat_request(
             .sum::<u64>();
     let input_budget_tokens = chat_input_token_budget(model_id);
     crate::converse::log_model_budget(
-        "chat",
+        CHAT_OPERATION,
         model_id,
         input_budget_tokens,
         CHAT_MAX_OUTPUT_TOKENS,

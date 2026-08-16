@@ -18,8 +18,7 @@ pub async fn list_writer_templates(
 ) -> Result<Vec<WriterTemplateView>, String> {
     run("list_writer_templates", async {
         let ctx = CommandContext::new(&state).await?;
-        let templates =
-            claria_report_authoring::writer_templates::list(&ctx.s3, &ctx.bucket).await?;
+        let templates = claria_report_store::template_library::list(&ctx.s3, &ctx.bucket).await?;
         Ok(templates.into_iter().map(writer_template_view).collect())
     })
     .await
@@ -70,22 +69,16 @@ pub async fn upload_writer_template(
             })??;
 
         let ctx = CommandContext::new(&state).await?;
-        let templates =
-            claria_report_authoring::writer_templates::list(&ctx.s3, &ctx.bucket).await?;
+        let templates = claria_report_store::template_library::list(&ctx.s3, &ctx.bucket).await?;
         let existing: Vec<String> = templates
             .iter()
             .map(|template| template.metadata.name.clone())
             .collect();
         let name = next_ordinal_name("Writer Template", &existing);
         let id = uuid::Uuid::new_v4();
-        let template = claria_report_authoring::writer_templates::create(
-            &ctx.s3,
-            &ctx.bucket,
-            id,
-            &name,
-            bytes,
-        )
-        .await?;
+        let template =
+            claria_report_store::template_library::create(&ctx.s3, &ctx.bucket, id, &name, bytes)
+                .await?;
 
         ctx.record_audit(
             ctx.audit_event(
@@ -111,13 +104,9 @@ pub async fn rename_writer_template(
     run("rename_writer_template", async {
         let template_id = parse_uuid(&template_id)?;
         let ctx = CommandContext::new(&state).await?;
-        let template = claria_report_authoring::writer_templates::rename(
-            &ctx.s3,
-            &ctx.bucket,
-            template_id,
-            &name,
-        )
-        .await?;
+        let template =
+            claria_report_store::template_library::rename(&ctx.s3, &ctx.bucket, template_id, &name)
+                .await?;
         ctx.record_audit(ctx.audit_event(
             "writer_template_renamed",
             "writer_template",
@@ -138,8 +127,7 @@ pub async fn delete_writer_template(
     run("delete_writer_template", async {
         let template_id = parse_uuid(&template_id)?;
         let ctx = CommandContext::new(&state).await?;
-        claria_report_authoring::writer_templates::delete(&ctx.s3, &ctx.bucket, template_id)
-            .await?;
+        claria_report_store::template_library::delete(&ctx.s3, &ctx.bucket, template_id).await?;
         ctx.record_audit(ctx.audit_event(
             "writer_template_deleted",
             "writer_template",
@@ -163,7 +151,7 @@ pub async fn preview_writer_template(
         let client_id = parse_uuid(&client_id)?;
         let template_id = parse_uuid(&template_id)?;
         let ctx = CommandContext::new(&state).await?;
-        let (metadata, bytes) = claria_report_authoring::writer_templates::load_docx_with_metadata(
+        let (metadata, bytes) = claria_report_store::template_library::load_docx_with_metadata(
             &ctx.s3,
             &ctx.bucket,
             template_id,
@@ -237,7 +225,7 @@ pub async fn apply_report_template(
         let ctx = CommandContext::new(&state).await?;
         let warning_count = imported.warnings.len();
         let stats = imported.stats.clone();
-        claria_report_authoring::store_report_template_source(
+        claria_report_store::store_report_template_source(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -245,13 +233,13 @@ pub async fn apply_report_template(
             source_docx,
         )
         .await?;
-        let workspace = claria_report_authoring::apply_report_template_for_report(
+        let workspace = claria_report_store::apply_report_template_for_report(
             &ctx.s3,
             &ctx.bucket,
             client_id,
             report_id,
             expected_revision,
-            claria_report_authoring::ReportTemplateApplication {
+            claria_report_store::ReportTemplateApplication {
                 content: imported.content,
                 source_sha256: imported.source_sha256,
                 writer_template_id,
@@ -265,7 +253,7 @@ pub async fn apply_report_template(
             .lock()
             .await
             .remove(&import_id);
-        if let Err(error) = claria_report_authoring::writer_templates::increment_usage(
+        if let Err(error) = claria_report_store::template_library::increment_usage(
             &ctx.s3,
             &ctx.bucket,
             writer_template_id,

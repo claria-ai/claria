@@ -993,6 +993,8 @@ fn single_target_draft(target: &TargetFlow) -> Result<ReportDraft, DocxError> {
             heading: heading.to_string(),
             blocks,
             skipped: false,
+            template_blocks: None,
+            authorship: None,
         };
     let (title, sections) = match (&target.kind, &target.content) {
         (FlowKind::Title, FlowContent::Paragraph(text)) => (text.clone(), Vec::new()),
@@ -1075,6 +1077,8 @@ fn draft_from_targets(targets: &[TargetFlow]) -> Result<ReportDraft, DocxError> 
                     heading: heading.clone(),
                     blocks: Vec::new(),
                     skipped: false,
+                    template_blocks: None,
+                    authorship: None,
                 });
             }
             (FlowKind::Body, FlowContent::Paragraph(text)) => {

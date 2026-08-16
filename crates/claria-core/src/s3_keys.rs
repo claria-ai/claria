@@ -140,6 +140,37 @@ pub fn report_session_workspace(client_id: Uuid, report_id: Uuid) -> String {
     format!("{}{report_id}.json", report_sessions_prefix(client_id))
 }
 
+/// Every drafting run recorded for one Writing session.
+///
+/// Runs nest under [`report_authoring_client_prefix`], the prefix the client
+/// delete/restore lifecycle already sweeps, so they follow their client
+/// without any separate lifecycle wiring.
+pub fn report_draft_runs_prefix(client_id: Uuid, report_id: Uuid) -> String {
+    format!(
+        "{}runs/{report_id}/",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
+/// One resumable drafting run. The object is rewritten after every section the
+/// writer lands, so its version history is long and is never listed by the UI.
+pub fn report_draft_run(client_id: Uuid, report_id: Uuid, run_id: Uuid) -> String {
+    format!(
+        "{}{run_id}.json",
+        report_draft_runs_prefix(client_id, report_id)
+    )
+}
+
+/// Every review finding recorded against one Writing session, in one object.
+/// It sits under the client prefix so the client delete/restore lifecycle
+/// sweeps it along with the workspace it describes.
+pub fn report_findings(client_id: Uuid, report_id: Uuid) -> String {
+    format!(
+        "{}findings/{report_id}.json",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
 pub fn report_attempt(client_id: Uuid, attempt_id: Uuid) -> String {
     format!(
         "{}attempts/{attempt_id}.json",

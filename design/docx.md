@@ -58,7 +58,8 @@ apply — the user's own edits win.
 
 **Whole-report (atomic).** Full-draft generation builds an isolated
 `FullDraftCandidate`; `write_full_draft_section` calls mutate only the
-candidate, and `skip_full_draft_section` records a user-directed deferral.
+candidate, `skip_full_draft_section` records a user-directed deferral, and
+`mark_section_failed` records a section the records could not support.
 Finalization validates the complete content — including that every section
 id present when generation started was written **or explicitly skipped** —
 merges each skipped section back in as an empty `skipped` placeholder at

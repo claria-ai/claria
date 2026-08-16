@@ -51,16 +51,18 @@ follows the clinician across machines.
 
 ## Stopping
 
-Three layers, keyed by a turn id the frontend mints before it invokes
-anything:
+Three layers, keyed by a stream id the frontend mints before it invokes
+anything. The layers are shared with every other surface that drives
+Bedrock through a long-running command — the writer's targeted turns and
+its whole-report drafting runs use exactly this machinery:
 
-1. `ChatWidget` generates `streamId` per turn and passes it to `onSend`,
-   which hands it to `chat_message` / `infra_chat`. Stop calls
-   `stop_chat_stream(streamId)`.
+1. The caller generates `streamId` per unit of work and passes it to the
+   command. `ChatWidget` does it per turn, through `onSend` into
+   `chat_message` / `infra_chat`. Stop calls `stop_stream(streamId)`.
 2. The command registers a `StopSignal` under that id in
-   `DesktopState::chat_stops` for the length of the turn. The registration
-   is an RAII guard — every `?` in a command body is an exit path, and a
-   leaked entry would keep a finished turn addressable.
+   `DesktopState::stream_stops` for the length of the call, via the RAII
+   guard in `commands/streams.rs` — every `?` in a command body is an exit
+   path, and a leaked entry would keep finished work addressable.
 3. The stream loop selects on the signal alongside the next frame. It has
    to be a `select!` rather than a check between frames: a stream can sit
    silent for minutes while a large context prefills, and a Stop button
@@ -76,8 +78,14 @@ The trailing `metadata` frame arrives after the stop reason, so an
 abandoned stream reports no usage: a stopped turn is unmetered even though
 Bedrock billed the tokens it had already produced.
 
-A `stream_id` with no live turn behind it is a no-op, not an error — the
-reply may have finished between the click and the call.
+A `stream_id` with no live stream behind it is a no-op, not an error — the
+work may have finished between the click and the call.
+
+What differs per surface is what a stop is worth keeping, not how it is
+delivered. Chat keeps the half-answer it streamed. The writer discards a
+partially streamed response whole — half a tool call is not a section — and
+keeps its durable state instead; `design/writer.md` has that bargain in
+full.
 
 ## Scrolling
 

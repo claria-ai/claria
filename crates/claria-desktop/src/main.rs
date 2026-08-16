@@ -112,8 +112,19 @@ fn main() -> Result<()> {
         report_template_commands::apply_report_template,
         report_template_commands::discard_report_template_preview,
         commands::generate_full_report,
+        commands::load_draft_run,
+        commands::finalize_partial_draft,
+        commands::abandon_draft_run,
+        commands::generate_draft_plan,
+        commands::update_draft_plan,
+        commands::start_draft_run,
+        commands::resume_draft_run,
         commands::send_report_message,
         commands::resolve_report_proposal,
+        commands::run_review_sweeps,
+        commands::list_report_findings,
+        commands::resolve_report_finding,
+        commands::evaluate_report_completion,
         commands::export_report_docx,
         commands::list_record_files,
         commands::search_record_contents,
@@ -168,7 +179,7 @@ fn main() -> Result<()> {
         commands::get_console_logs_text,
         commands::save_console_logs,
         commands::log_frontend_event,
-        commands::stop_chat_stream,
+        commands::stop_stream,
     ]);
 
     #[cfg(debug_assertions)]

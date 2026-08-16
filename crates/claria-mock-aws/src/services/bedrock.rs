@@ -159,6 +159,12 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
             {
                 return Err("skip_full_draft_section schema must require section_id");
             }
+            "mark_section_failed"
+                if required != std::collections::HashSet::from(["section_id", "reason"])
+                    || !properties.contains_key("reason") =>
+            {
+                return Err("mark_section_failed schema must require section_id and reason");
+            }
             "finish_full_draft"
                 if required != std::collections::HashSet::from(["summary"])
                     || !properties.contains_key("summary") =>
@@ -178,6 +184,7 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
         "set_full_draft_title",
         "write_full_draft_section",
         "skip_full_draft_section",
+        "mark_section_failed",
         "finish_full_draft",
     ];
     if names != targeted_tools && names != full_draft_tools {
@@ -297,7 +304,14 @@ async fn count_tokens(path: &str, body: Value, state: SharedState) -> Response {
         .unwrap_or(&body);
     // Tool-configured (report) counting requests get the full report-shape
     // validation; plain chat counting requests only need messages.
-    if converse.get("toolConfig").is_some() {
+    if let Some(forced_tool) = converse
+        .pointer("/toolConfig/toolChoice/tool/name")
+        .and_then(Value::as_str)
+    {
+        if let Err(message) = validate_forced_tool_request(converse, forced_tool) {
+            return validation_error(message);
+        }
+    } else if converse.get("toolConfig").is_some() {
         if let Err(message) = validate_report_request(converse) {
             return validation_error(message);
         }
@@ -442,6 +456,41 @@ async fn converse(path: &str, body: Value, state: SharedState) -> Response {
     plain_converse(body, state).await
 }
 
+/// The registered marker this request's message text contains, if any.
+///
+/// Longest first, so a marker that is a prefix of another cannot shadow it.
+/// Only `text` blocks in `messages` are searched — never the tool schemas,
+/// which are identical across the requests a fan-out sends.
+async fn matching_marker(body: &Value, state: &SharedState) -> Option<String> {
+    let markers: Vec<String> = {
+        let st = state.read().await;
+        if st.bedrock_tool_responses_by_marker.is_empty() {
+            return None;
+        }
+        st.bedrock_tool_responses_by_marker
+            .keys()
+            .cloned()
+            .collect()
+    };
+    let text: String = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|message| message.get("content"))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut candidates: Vec<String> = markers
+        .into_iter()
+        .filter(|marker| text.contains(marker.as_str()))
+        .collect();
+    candidates.sort_by_key(|marker| std::cmp::Reverse(marker.len()));
+    candidates.into_iter().next()
+}
+
 /// Pop the next scripted tool-configured Converse payload, capturing the
 /// request and its model ID.
 ///
@@ -463,13 +512,18 @@ async fn tool_converse_payload(
         })
         .unwrap_or_default();
     let scripted = {
+        let marker = matching_marker(&body, &state).await;
         let mut st = state.write().await;
         st.bedrock_tool_model_ids.push(model_id);
         st.bedrock_tool_requests.push(body);
-        if st.bedrock_tool_responses.is_empty() {
-            None
-        } else {
-            Some(st.bedrock_tool_responses.remove(0))
+        let keyed = marker
+            .and_then(|marker| st.bedrock_tool_responses_by_marker.get_mut(&marker))
+            .filter(|queue| !queue.is_empty())
+            .map(|queue| queue.remove(0));
+        match keyed {
+            Some(response) => Some(response),
+            None if st.bedrock_tool_responses.is_empty() => None,
+            None => Some(st.bedrock_tool_responses.remove(0)),
         }
     };
 
@@ -494,7 +548,12 @@ async fn tool_converse_payload(
 /// (the tool FIFO) win; otherwise a translation-shaped envelope is
 /// synthesized from the request's `segments` payload so SDK tests can drive
 /// the real client end to end.
-async fn forced_tool_converse(forced_tool: &str, body: Value, state: SharedState) -> Response {
+/// The checks Bedrock applies to a `toolChoice.tool` request regardless of
+/// transport: the named tool has to be in the request's own tool list, the
+/// conversation has to have something in it, and any cache points have to be
+/// well formed. Shared by the unary and streaming endpoints so a forced call
+/// cannot pass one and fail the other.
+fn validate_forced_tool_request(body: &Value, forced_tool: &str) -> Result<(), &'static str> {
     let declared = body
         .pointer("/toolConfig/tools")
         .and_then(Value::as_array)
@@ -506,14 +565,40 @@ async fn forced_tool_converse(forced_tool: &str, body: Value, state: SharedState
         })
         .unwrap_or(false);
     if !declared {
-        return validation_error("toolChoice names a tool absent from the tool list");
+        return Err("toolChoice names a tool absent from the tool list");
     }
     if body
         .get("messages")
         .and_then(Value::as_array)
         .is_none_or(Vec::is_empty)
     {
-        return validation_error("messages must be a non-empty array");
+        return Err("messages must be a non-empty array");
+    }
+    for block in body
+        .get("system")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(
+            body.get("messages")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|message| message.get("content"))
+                .filter_map(Value::as_array)
+                .flatten(),
+        )
+    {
+        if let Some(cache_point) = block.get("cachePoint") {
+            validate_cache_point(cache_point)?;
+        }
+    }
+    Ok(())
+}
+
+async fn forced_tool_converse(forced_tool: &str, body: Value, state: SharedState) -> Response {
+    if let Err(message) = validate_forced_tool_request(&body, forced_tool) {
+        return validation_error(message);
     }
 
     let (scripted, segments) = {
@@ -676,7 +761,20 @@ const STREAM_DELTA_CHARS: usize = 24;
 /// Non-200 scripted responses return as ordinary JSON errors, which the SDK
 /// surfaces before streaming begins.
 async fn converse_stream(path: &str, body: Value, state: SharedState) -> Response {
-    let (status, payload) = if body.get("toolConfig").is_some() {
+    // A forced-tool request is the analysis family (planner, review passes):
+    // its tool set is its own, so the report-protocol validation above does
+    // not apply, but it draws from the same scripted FIFO and lands in the
+    // same capture surface as every other tool-configured request.
+    let forced_tool = body
+        .pointer("/toolConfig/toolChoice/tool/name")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let (status, payload) = if let Some(forced_tool) = forced_tool {
+        if let Err(message) = validate_forced_tool_request(&body, &forced_tool) {
+            return validation_error(message);
+        }
+        tool_converse_payload(path, "/converse-stream", body, state.clone()).await
+    } else if body.get("toolConfig").is_some() {
         if let Err(message) = validate_report_request(&body) {
             return validation_error(message);
         }
@@ -684,17 +782,25 @@ async fn converse_stream(path: &str, body: Value, state: SharedState) -> Respons
     } else {
         plain_converse_payload(body, state.clone()).await
     };
-    let (stall, drop_body) = {
+    let (stall, drop_body, silence) = {
         let mut state = state.write().await;
         state.bedrock_stream_request_count += 1;
+        let past_stall_point = state
+            .bedrock_stream_stalls_after
+            .is_some_and(|after| state.bedrock_stream_request_count > after);
         if state.bedrock_stream_stalls > 0 {
             state.bedrock_stream_stalls -= 1;
-            (true, false)
+            (true, false, false)
+        } else if past_stall_point {
+            (true, false, false)
         } else if state.bedrock_stream_drops > 0 {
             state.bedrock_stream_drops -= 1;
-            (false, true)
+            (false, true, false)
+        } else if state.bedrock_stream_silences > 0 {
+            state.bedrock_stream_silences -= 1;
+            (false, false, true)
         } else {
-            (false, false)
+            (false, false, false)
         }
     };
     if stall {
@@ -708,6 +814,9 @@ async fn converse_stream(path: &str, body: Value, state: SharedState) -> Respons
             Ok(response) => response,
             Err(error) => encoding_failure(error),
         };
+    }
+    if silence {
+        return silent_converse_stream();
     }
 
     if status != StatusCode::OK {
@@ -812,6 +921,37 @@ fn dropped_converse_stream() -> Result<Response, aws_smithy_eventstream::error::
         body,
     )
         .into_response())
+}
+
+/// A `ConverseStream` response that answers and then says nothing: the
+/// response opens and no event frame ever completes.
+///
+/// The body starts with fewer bytes than one frame prelude, so the decoder
+/// buffers them and hands the caller nothing. Sending those bytes rather
+/// than none is what makes this a stream failure: it puts the response head
+/// on the wire, so the client is waiting on the first frame and not on
+/// headers, which is a different failure the SDK's read timeout already
+/// covers.
+///
+/// The shape the SDK is least equipped for. `ConverseStream::send` resolves
+/// only once the first frame arrives — it has to look at that frame to rule
+/// out an `initial-response` — so the wait lands inside the send, where
+/// nothing in the SDK bounds it.
+fn silent_converse_stream() -> Response {
+    use futures::StreamExt;
+
+    let opening = futures::stream::once(async {
+        Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from_static(&[0_u8; 8]))
+    });
+    let never_ends = futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
+    let body = axum::body::Body::from_stream(opening.chain(never_ends));
+
+    (
+        StatusCode::OK,
+        [("content-type", "application/vnd.amazon.eventstream")],
+        body,
+    )
+        .into_response()
 }
 
 /// Decompose a unary Converse JSON payload into encoded event-stream frames.

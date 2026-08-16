@@ -7,7 +7,7 @@
 
 use claria_core::model_id::{
     CacheTtlChoice, ModelCapabilities, known_claude_family, preferred_counting_model,
-    release_date_stamp, strip_scope_prefix,
+    release_date_stamp, resolve_role_model, strip_scope_prefix,
 };
 
 /// One representative ID per Claude family/generation currently supported.
@@ -192,6 +192,49 @@ fn extended_cache_ttl_is_denied_only_for_pre_45_families() {
     assert!(!ModelCapabilities::for_id("us.amazon.nova-pro-v1:0").supports_extended_cache_ttl);
 }
 
+/// The cacheable-prefix floor is per-model and does not move monotonically
+/// with generation, so every representative ID states its own value. A
+/// caller that assumed one number for the tier would place cache points
+/// Bedrock silently ignores on exactly the models the primary user runs.
+#[test]
+fn minimum_cacheable_prefix_is_per_model_and_not_monotonic() {
+    for id in REPRESENTATIVE_MODEL_IDS {
+        let expected = match *id {
+            "us.anthropic.claude-haiku-4-5-20251001-v1:0" | "us.anthropic.claude-opus-4-6-v1" => {
+                4_096
+            }
+            _ => 1_024,
+        };
+        assert_eq!(
+            ModelCapabilities::for_id(id).min_cache_prefix_tokens,
+            expected,
+            "{id}"
+        );
+    }
+    // Generations outside the representative list, where the non-monotonic
+    // shape shows: 4.5/4.6 Opus need four times the 4.7 floor's predecessor
+    // and twice 4.7's own.
+    assert_eq!(
+        ModelCapabilities::for_id("us.anthropic.claude-opus-4-5-20251101-v1:0")
+            .min_cache_prefix_tokens,
+        4_096
+    );
+    assert_eq!(
+        ModelCapabilities::for_id("us.anthropic.claude-opus-4-7-v1").min_cache_prefix_tokens,
+        2_048
+    );
+    // Unknown Claude generations and non-Claude models take the permissive
+    // default rather than a floor invented for them.
+    assert_eq!(
+        ModelCapabilities::for_id("us.anthropic.claude-opus-6-v1:0").min_cache_prefix_tokens,
+        1_024
+    );
+    assert_eq!(
+        ModelCapabilities::for_id("us.amazon.nova-pro-v1:0").min_cache_prefix_tokens,
+        1_024
+    );
+}
+
 #[test]
 fn adaptive_thinking_and_effort_follow_their_generation_boundaries() {
     // Pre-4.6 families never get adaptive thinking.
@@ -302,4 +345,75 @@ fn each_cache_tier_reports_its_own_window() {
         CacheTtlChoice::OneHour.window(),
         std::time::Duration::from_secs(3_600)
     );
+}
+
+// ── Role-model resolution ───────────────────────────────────────────────────
+
+const OPUS_4_6: &str = "us.anthropic.claude-opus-4-6-v1";
+const SONNET_4: &str = "us.anthropic.claude-sonnet-4-20250514-v1:0";
+const SONNET_4_6: &str = "us.anthropic.claude-sonnet-4-6-20260210-v1:0";
+const HAIKU_4_5: &str = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+
+fn discovered(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(ToString::to_string).collect()
+}
+
+#[test]
+fn the_role_default_is_the_newest_capable_sonnet() {
+    let available = discovered(&[OPUS_4_6, SONNET_4, SONNET_4_6, HAIKU_4_5]);
+    assert_eq!(
+        resolve_role_model(None, &available, OPUS_4_6),
+        SONNET_4_6,
+        "the newest Sonnet by release stamp should win"
+    );
+}
+
+#[test]
+fn the_role_default_falls_back_to_haiku_then_to_the_writer() {
+    let haiku_only = discovered(&[OPUS_4_6, HAIKU_4_5]);
+    assert_eq!(resolve_role_model(None, &haiku_only, OPUS_4_6), HAIKU_4_5);
+
+    // The Opus-only account: nothing cheaper is available, so planning runs
+    // on the writer's own model rather than failing.
+    let opus_only = discovered(&[OPUS_4_6]);
+    assert_eq!(resolve_role_model(None, &opus_only, OPUS_4_6), OPUS_4_6);
+
+    // And an account that discovered nothing at all still resolves.
+    assert_eq!(resolve_role_model(None, &[], OPUS_4_6), OPUS_4_6);
+}
+
+#[test]
+fn an_explicit_role_model_is_honoured_only_while_it_is_available() {
+    let available = discovered(&[OPUS_4_6, SONNET_4_6, HAIKU_4_5]);
+    assert_eq!(
+        resolve_role_model(Some(HAIKU_4_5), &available, OPUS_4_6),
+        HAIKU_4_5,
+        "an available override is the clinician's decision"
+    );
+
+    // The account lost access to the pinned model: fail closed to the derived
+    // default rather than sending Bedrock a model it will refuse.
+    let without_haiku = discovered(&[OPUS_4_6, SONNET_4_6]);
+    assert_eq!(
+        resolve_role_model(Some(HAIKU_4_5), &without_haiku, OPUS_4_6),
+        SONNET_4_6
+    );
+
+    // An empty override is not an override.
+    assert_eq!(
+        resolve_role_model(Some("   "), &without_haiku, OPUS_4_6),
+        SONNET_4_6
+    );
+}
+
+#[test]
+fn a_role_model_must_be_able_to_run_report_tools_and_cache() {
+    // Claude 3.5 Sonnet is a Sonnet that never got prompt caching, so it is
+    // not a candidate for a role whose whole economy is a cached prefix.
+    let stale = discovered(&["us.anthropic.claude-3-5-sonnet-20241022-v2:0", HAIKU_4_5]);
+    assert_eq!(resolve_role_model(None, &stale, OPUS_4_6), HAIKU_4_5);
+
+    // A non-Claude model is never a candidate at all.
+    let foreign = discovered(&["us.amazon.nova-pro-v1:0"]);
+    assert_eq!(resolve_role_model(None, &foreign, OPUS_4_6), OPUS_4_6);
 }

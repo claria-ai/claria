@@ -4,7 +4,7 @@
 //! other failure has to carry its own reason, because that message invites
 //! the user to re-run setup and overwrite the file.
 
-use claria_desktop::config::{self, CURRENT_VERSION, SETUP_REQUIRED};
+use claria_desktop::config::{self, CURRENT_VERSION, ChatStreamMode, PlanGateMode, SETUP_REQUIRED};
 
 fn write_config(dir: &tempfile::TempDir, contents: &str) -> std::path::PathBuf {
     let path = dir.path().join("config.json");
@@ -88,4 +88,42 @@ fn an_existing_config_still_loads_and_migrates() {
         .expect("present");
     assert_eq!(on_disk_version, CURRENT_VERSION);
     assert_eq!(reloaded.system_name, "test");
+}
+
+/// A config written before the drafting pipeline existed comes forward with
+/// the gate on. Starting to draft against a plan nobody has seen is the one
+/// behaviour an existing install must not silently acquire.
+#[test]
+fn a_v10_config_migrates_to_v11_with_the_plan_gate_on() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 10,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "preferred_model_id": "us.anthropic.claude-opus-4-6-v1",
+            "chat_streaming": "token"
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v10 config migrates forward");
+
+    assert_eq!(config.draft_pipeline.plan_gate, PlanGateMode::Gated);
+    assert_eq!(config.draft_pipeline.planner_model_id, None);
+    assert_eq!(config.draft_pipeline.reviewer_model_id, None);
+    // Untouched settings survive the migration.
+    assert_eq!(config.chat_streaming, ChatStreamMode::Token);
+    assert_eq!(
+        config.preferred_model_id.as_deref(),
+        Some("us.anthropic.claude-opus-4-6-v1")
+    );
+
+    let (_, on_disk_version) = config::read_config_at(&path)
+        .expect("reread")
+        .expect("present");
+    assert_eq!(on_disk_version, CURRENT_VERSION);
 }

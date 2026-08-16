@@ -121,6 +121,267 @@ pub(crate) fn with_tail_cache_point(
     Ok(messages)
 }
 
+/// Caller-decided placement of the `cachePoint` blocks on one report-family
+/// request.
+///
+/// Bedrock caches a *prefix*, so where the markers go decides what survives
+/// the next call — and the service rejects mixed TTLs in one request, so a
+/// single [`Self::ttl`] covers every point the plan emits. The wire level
+/// owns none of that judgement: a plan says where the points go, and
+/// [`crate::report`] puts them exactly there.
+///
+/// Placement is expressed in three places because that is where Bedrock will
+/// take a marker: after the system blocks, after a chosen content block of a
+/// chosen message, and at the conversation tail.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CachePlan {
+    /// Tier every cache point in this plan is written at. `FiveMinutes` maps
+    /// to no `ttl` field on the wire — see [`sdk_cache_ttl`].
+    pub ttl: CacheTtlChoice,
+    /// Emit a `cachePoint` as the last system block, so the system policy
+    /// (and the tool schemas rendered ahead of it) read from cache.
+    pub after_system: bool,
+    /// Emit a `cachePoint` at the end of the last message, so the next call
+    /// in the loop reads the whole conversation so far from cache.
+    pub tail: bool,
+    /// `(message index, block index)` coordinates, zero-based, after each of
+    /// which a `cachePoint` is inserted. Both indices address the request's
+    /// protocol messages as the caller passed them, before any cache point
+    /// was added.
+    pub after_blocks: Vec<(usize, usize)>,
+}
+
+impl CachePlan {
+    /// Bedrock's ceiling on `cachePoint` blocks in one request. A request
+    /// over it is rejected outright, so the plan is validated at
+    /// construction rather than discovered at the wire.
+    pub const MAX_CACHE_POINTS: usize = 4;
+
+    /// A plan that emits nothing, producing the exact request shape a
+    /// caching-incapable model gets.
+    pub fn disabled() -> Self {
+        Self {
+            ttl: CacheTtlChoice::FiveMinutes,
+            after_system: false,
+            tail: false,
+            after_blocks: Vec::new(),
+        }
+    }
+
+    /// Build a plan, rejecting one that asks for more cache points than
+    /// Bedrock accepts.
+    pub fn new(
+        ttl: CacheTtlChoice,
+        after_system: bool,
+        tail: bool,
+        after_blocks: Vec<(usize, usize)>,
+    ) -> Result<Self, BedrockError> {
+        let plan = Self {
+            ttl,
+            after_system,
+            tail,
+            after_blocks,
+        };
+        let points = plan.point_count();
+        if points > Self::MAX_CACHE_POINTS {
+            return Err(BedrockError::SchemaViolation(format!(
+                "cache plan asks for {points} cache points; Bedrock accepts at most {}",
+                Self::MAX_CACHE_POINTS
+            )));
+        }
+        Ok(plan)
+    }
+
+    /// The placement the report family has always used: one point after the
+    /// system policy and one at the conversation tail, at the default
+    /// five-minute tier. The writer's loop re-reads within minutes, so the
+    /// doubled one-hour write rate would never pay off.
+    ///
+    /// Gated on the model family alone, reproducing today's behaviour: the
+    /// writer has never consulted the desktop's `prompt_caching_enabled`
+    /// flag, so this passes it as on.
+    pub fn report_default(capabilities: claria_core::model_id::ModelCapabilities) -> Self {
+        Self {
+            ttl: CacheTtlChoice::FiveMinutes,
+            after_system: true,
+            tail: true,
+            after_blocks: Vec::new(),
+        }
+        .gated(capabilities, true)
+    }
+
+    /// The whole-report drafting conversation's placement: no point on the
+    /// system policy, one after each caller-named checkpoint in the opening
+    /// message, and a moving tail point.
+    ///
+    /// The tier is the extended one-hour window wherever the family accepts
+    /// it. A drafting run writes a large frozen prefix once and then reads it
+    /// across every section it writes, so the doubled write rate is paid on
+    /// one call and recovered on the rest — the opposite trade from a
+    /// targeted edit, which re-reads within minutes and takes the cheaper
+    /// five-minute write. Bedrock rejects mixed TTLs in one request, so the
+    /// tier necessarily covers the tail point too.
+    pub fn full_draft(
+        capabilities: claria_core::model_id::ModelCapabilities,
+        after_blocks: Vec<(usize, usize)>,
+    ) -> Result<Self, BedrockError> {
+        Ok(
+            Self::new(CacheTtlChoice::OneHour, false, true, after_blocks)?
+                .gated(capabilities, true),
+        )
+    }
+
+    /// The parallel drafting fan-out's placement: [`Self::full_draft`]'s
+    /// checkpoints without the moving tail.
+    ///
+    /// A branch of the fan-out is a single-shot conversation — one request,
+    /// one section, no second call to read a tail point back — so a tail
+    /// marker would be a write nobody reads. What every branch does share is
+    /// the corpus, the template structure, and the plan above the two named
+    /// checkpoints, which is exactly the prefix the warm branch pays to write
+    /// and its siblings read. The extended tier is the same trade the serial
+    /// drafting conversation takes: one write, many reads, spread over a run
+    /// rather than seconds.
+    pub fn parallel_draft(
+        capabilities: claria_core::model_id::ModelCapabilities,
+        after_blocks: Vec<(usize, usize)>,
+    ) -> Result<Self, BedrockError> {
+        Ok(
+            Self::new(CacheTtlChoice::OneHour, false, false, after_blocks)?
+                .gated(capabilities, true),
+        )
+    }
+
+    /// The analysis family's placement: one point after the last system
+    /// block, nothing else.
+    ///
+    /// The planner and the review passes put the record corpus and the
+    /// template structure in the system blocks, above that point, and vary
+    /// only the messages below it. Bedrock invalidates in tool → system →
+    /// message order, so every analysis request on a given model reads the
+    /// same corpus prefix from cache no matter which tool it forces or which
+    /// property it asks about. The extended tier is the right trade for the
+    /// same reason the drafting run takes it: one write, many reads, spread
+    /// over a session rather than seconds.
+    pub fn analysis(capabilities: claria_core::model_id::ModelCapabilities) -> Self {
+        Self {
+            ttl: CacheTtlChoice::OneHour,
+            after_system: true,
+            tail: false,
+            after_blocks: Vec::new(),
+        }
+        .gated(capabilities, true)
+    }
+
+    /// The review fan-out's placement: [`Self::analysis`] plus a second point
+    /// after the first block of the opening message.
+    ///
+    /// Every branch of the fan-out sends the same system blocks and the same
+    /// drafted-sections block and differs only in the instruction that trails
+    /// them, so the second point is what lets six parallel branches read the
+    /// draft the warming branch paid to write. `after_blocks` names the block
+    /// rather than assuming it, because the caller owns the message layout.
+    pub fn review(
+        capabilities: claria_core::model_id::ModelCapabilities,
+        after_blocks: Vec<(usize, usize)>,
+    ) -> Result<Self, BedrockError> {
+        Ok(
+            Self::new(CacheTtlChoice::OneHour, true, false, after_blocks)?
+                .gated(capabilities, true),
+        )
+    }
+
+    /// Gate a plan on what the model can do and what the user asked for:
+    /// either saying no yields [`Self::disabled`], and a one-hour TTL the
+    /// family does not accept is downgraded rather than sent and rejected.
+    pub fn gated(
+        self,
+        capabilities: claria_core::model_id::ModelCapabilities,
+        prompt_caching_enabled: bool,
+    ) -> Self {
+        if !prompt_caching_enabled || !capabilities.prompt_caching {
+            return Self::disabled();
+        }
+        let ttl = match self.ttl {
+            CacheTtlChoice::OneHour if !capabilities.supports_extended_cache_ttl => {
+                CacheTtlChoice::FiveMinutes
+            }
+            ttl => ttl,
+        };
+        Self { ttl, ..self }
+    }
+
+    /// How many `cachePoint` blocks this plan puts on the wire.
+    pub fn point_count(&self) -> usize {
+        usize::from(self.after_system) + usize::from(self.tail) + self.after_blocks.len()
+    }
+
+    /// Whether the plan emits any cache point at all.
+    pub fn is_enabled(&self) -> bool {
+        self.point_count() > 0
+    }
+
+    /// The TTL to record on the turn's usage: `Some` only when the request
+    /// actually carried cache points, so an uncached turn prices as uncached
+    /// instead of claiming a tier it never wrote at.
+    pub fn effective_ttl(&self) -> Option<CacheTtlChoice> {
+        self.is_enabled().then_some(self.ttl)
+    }
+}
+
+/// Caching off unless a caller asks for it, so a default-constructed plan
+/// cannot silently start writing cache entries.
+impl Default for CachePlan {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+/// Insert a `cachePoint` immediately after each `(message, block)`
+/// coordinate, both zero-based against `messages` as passed in.
+///
+/// Insertions run back to front so every coordinate keeps addressing the
+/// block the caller meant; a coordinate that does not exist is an error
+/// rather than a silently skipped cache point, because a plan that misses is
+/// a plan that quietly stops caching.
+pub(crate) fn with_cache_points_after(
+    mut messages: Vec<Message>,
+    after_blocks: &[(usize, usize)],
+    ttl: Option<CacheTtl>,
+) -> Result<Vec<Message>, BedrockError> {
+    if after_blocks.is_empty() {
+        return Ok(messages);
+    }
+    let mut coordinates = after_blocks.to_vec();
+    coordinates.sort_unstable();
+    coordinates.dedup();
+    for &(message_index, block_index) in coordinates.iter().rev() {
+        let message = messages.get(message_index).ok_or_else(|| {
+            BedrockError::SchemaViolation(format!(
+                "cache plan names message {message_index}, but the request has {} messages",
+                messages.len()
+            ))
+        })?;
+        let mut content = message.content().to_vec();
+        if block_index >= content.len() {
+            return Err(BedrockError::SchemaViolation(format!(
+                "cache plan names block {block_index} of message {message_index}, which has {} blocks",
+                content.len()
+            )));
+        }
+        content.insert(
+            block_index + 1,
+            ContentBlock::CachePoint(cache_point(ttl.clone())?),
+        );
+        messages[message_index] = Message::builder()
+            .role(message.role().clone())
+            .set_content(Some(content))
+            .build()
+            .map_err(|error| BedrockError::Invocation(error.to_string()))?;
+    }
+    Ok(messages)
+}
+
 /// Concatenate the text blocks of an assistant message.
 pub(crate) fn collect_text(message: &Message) -> String {
     message
@@ -193,8 +454,20 @@ pub struct StreamOutcome {
     pub latency_ms: Option<u64>,
 }
 
-/// Longest silence tolerated between two frames of a Bedrock response
-/// stream before the connection is treated as dead.
+/// Longest wait for a `ConverseStream` to start answering before the
+/// request is treated as one the service never began.
+///
+/// Sized for the longest prefill a live call really has: a cross-region
+/// profile can miss the prompt cache and re-prefill the whole input cold,
+/// and a field failure showed that wait exceeding two minutes when the two
+/// waits below shared a single five-minute bound. Ninety seconds and a
+/// fresh request beat waiting out a five-minute silence, and a request that
+/// produced nothing is safe to send again verbatim.
+pub(crate) const STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(90);
+
+/// Longest silence tolerated between two frames of a response stream that
+/// has already started.
 ///
 /// The AWS SDK's stalled-stream protection does not cover this: the
 /// generated `ConverseStream` operation registers no
@@ -203,15 +476,58 @@ pub struct StreamOutcome {
 /// the wait for response headers — a `ConverseStream` whose socket dies
 /// mid-generation would otherwise hang forever.
 ///
-/// Sized for the quiet stretches a live stream really has: the wait for the
-/// first frame while a full context window prefills, and the gaps between
-/// reasoning deltas while the model thinks. The first-frame wait dominates —
-/// a cross-region profile can miss the prompt cache and re-prefill the whole
-/// input cold, and a field failure showed that wait exceeding the two
-/// minutes this was originally set to. Frames flow continuously once
-/// generation starts, so five silent minutes means the connection is gone,
-/// not that the model is busy.
-pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Frames flow continuously once generation starts — the gaps are the
+/// pauses between reasoning deltas, not minutes — so a silent minute
+/// mid-response means the connection is gone, not that the model is busy.
+pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// First-frame wait for the analysis family, which sends the largest input
+/// of any flow — the whole record corpus, in system blocks — and gets no
+/// frame until the model has read all of it.
+pub(crate) const ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(120);
+
+/// Inter-frame wait for the analysis family. One forced tool call emits a
+/// single large structured document, and the model deliberates inside it
+/// rather than between sentences, so the pauses that count as normal are
+/// longer than a chat reply's.
+pub(crate) const ANALYSIS_STREAM_IDLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(90);
+
+/// How long one call's stream may stay quiet, before it starts and after.
+///
+/// Carried per call rather than read from a global const, because the two
+/// waits that are generous for a forced-tool analysis request are a hang
+/// for a chat reply. Every value is a compile-time family default — there
+/// is no preference knob and no per-request tuning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StreamBounds {
+    /// Longest wait for the first event frame; exceeding it means the
+    /// service never began the response.
+    pub(crate) first_frame: std::time::Duration,
+    /// Longest silence between two frames of a stream already under way.
+    pub(crate) idle: std::time::Duration,
+}
+
+impl StreamBounds {
+    /// Chat and writer turns: text arrives continuously once generation
+    /// starts, so a silent minute is a dead socket.
+    pub(crate) const fn conversational() -> Self {
+        Self {
+            first_frame: STREAM_FIRST_FRAME_TIMEOUT,
+            idle: STREAM_IDLE_TIMEOUT,
+        }
+    }
+
+    /// Forced-tool analysis calls: the biggest input and the longest
+    /// single structured answer of any family.
+    pub(crate) const fn analysis() -> Self {
+        Self {
+            first_frame: ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT,
+            idle: ANALYSIS_STREAM_IDLE_TIMEOUT,
+        }
+    }
+}
 
 /// Stop reason recorded for a turn the reader ended from the UI. Not a
 /// Bedrock value — the service never got to send one — so it is spelled
@@ -279,22 +595,66 @@ impl StopSignal {
     }
 }
 
-/// Receive the next frame of a Converse response stream, bounded by
-/// [`STREAM_IDLE_TIMEOUT`]. `Ok(None)` ends the stream.
+/// Send a `ConverseStream` request and wait for the service to start
+/// answering, bounded by [`StreamBounds::first_frame`].
 ///
-/// Shared by the chat and writer stream loops so their idle bound and their
-/// mid-stream error shape cannot drift. Mid-stream failures carry a raw
-/// event frame rather than an HTTP response, so the full
+/// The first-frame wait belongs here rather than in the stream loop,
+/// because that is where the SDK spends it: the generated `send` resolves
+/// only once the first event frame has arrived, since it has to look at
+/// that frame to decide whether it is an `initial-response`. Nothing else
+/// bounds the wait — the read timeout is satisfied by the response headers,
+/// which arrive long before the first token — so a request the service
+/// accepted and never began otherwise hangs for as long as the socket
+/// stays open.
+///
+/// A request that produced no frame is one the model never started, so the
+/// failure says that instead of claiming a connection lost mid-response,
+/// and it is [`BedrockError::StreamInterrupted`] like the mid-stream case:
+/// nothing was generated, so re-sending it is safe.
+pub(crate) async fn start_converse_stream<T, E>(
+    operation: &'static str,
+    bounds: StreamBounds,
+    send: impl std::future::Future<Output = Result<T, SdkError<E>>>,
+) -> Result<T, BedrockError>
+where
+    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
+{
+    match tokio::time::timeout(bounds.first_frame, send).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(error)) => Err(classify_error(operation, error)),
+        Err(_elapsed) => {
+            let seconds = bounds.first_frame.as_secs();
+            tracing::error!(operation, seconds, "Bedrock never started responding");
+            Err(BedrockError::StreamInterrupted {
+                operation,
+                message: format!(
+                    "{operation} never started responding within {seconds} seconds and was \
+                     abandoned. The request was queued or the connection was lost before the \
+                     first token; nothing was generated."
+                ),
+            })
+        }
+    }
+}
+
+/// Receive the next frame of a Converse response stream, bounded by
+/// [`StreamBounds::idle`]. `Ok(None)` ends the stream.
+///
+/// Shared by the chat, analysis, and writer stream loops so their mid-stream
+/// error shape cannot drift; the bound itself is the caller's, because what
+/// counts as a silence differs per request family. Mid-stream failures carry
+/// a raw event frame rather than an HTTP response, so the full
 /// [`DisplayErrorContext`] chain is preserved instead of collapsing to
 /// "unhandled error".
 pub(crate) async fn recv_stream_event(
     operation: &'static str,
+    bounds: StreamBounds,
     stream: &mut aws_sdk_bedrockruntime::primitives::event_stream::EventReceiver<
         ConverseStreamOutput,
         aws_sdk_bedrockruntime::types::error::ConverseStreamOutputError,
     >,
 ) -> Result<Option<ConverseStreamOutput>, BedrockError> {
-    match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.recv()).await {
+    match tokio::time::timeout(bounds.idle, stream.recv()).await {
         Ok(Ok(event)) => Ok(event),
         Ok(Err(error)) => {
             tracing::error!(operation, "Bedrock stream failed");
@@ -307,7 +667,7 @@ pub(crate) async fn recv_stream_event(
             })
         }
         Err(_elapsed) => {
-            let seconds = STREAM_IDLE_TIMEOUT.as_secs();
+            let seconds = bounds.idle.as_secs();
             tracing::error!(operation, seconds, "Bedrock stream went silent");
             Err(BedrockError::StreamInterrupted {
                 operation,
@@ -506,7 +866,12 @@ pub(crate) fn log_model_budget(
 }
 
 /// Structured cache/usage observability line for one completed Converse
-/// call, shared by the chat and report flows. `hit_rate` is the fraction of
+/// call, shared by the chat and report flows.
+///
+/// `operation` names the request family rather than the SDK call — `chat`,
+/// `report_targeted`, `report_full_draft` — because cache behaviour differs
+/// per family and a console export that lumps them together answers nothing.
+/// It is a fixed label, never derived from user input. `hit_rate` is the fraction of
 /// input tokens served from cache; `cache_ttl` names the write tier, and
 /// `stop_reason`, `latency_ms`, and `max_tokens` let a console export answer
 /// "was it truncated, how long did it take, at which ceiling?". Fields are
@@ -592,6 +957,23 @@ impl InputTokenBudget {
             verified: None,
             verify_first: false,
         }
+    }
+
+    /// A budget that starts from a count already taken against an
+    /// identically shaped request, so a fan-out of sibling requests pays for
+    /// one `CountTokens` rather than one per branch.
+    pub(crate) fn seeded(budget: u32, tokens: u32, chars: u64) -> Self {
+        Self {
+            budget,
+            verified: Some((tokens, chars)),
+            verify_first: false,
+        }
+    }
+
+    /// The last real count and the request size it was taken at, for a caller
+    /// seeding siblings from it.
+    pub(crate) fn verified(&self) -> Option<(u32, u64)> {
+        self.verified
     }
 
     /// Check a request of `current_chars` characters against the budget.

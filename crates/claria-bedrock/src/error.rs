@@ -61,6 +61,14 @@ pub enum BedrockError {
 
     #[error("model agreement error: {0}")]
     Agreement(String),
+
+    /// The reader pressed Stop while the request was in flight. Not a
+    /// failure — the caller decides what its partial work is worth: a stopped
+    /// chat turn keeps the partial text as the answer, while a stopped
+    /// structured call produced nothing and keeps nothing. Callers that cannot
+    /// be stopped never construct it.
+    #[error("the request was stopped by the user")]
+    Stopped,
 }
 
 impl BedrockError {
@@ -76,5 +84,27 @@ impl BedrockError {
             Self::Service { code, .. } => code == "DispatchFailure",
             _ => false,
         }
+    }
+
+    /// True when Bedrock is asking the caller to slow down or come back,
+    /// rather than reporting anything wrong with the request: the same
+    /// bytes sent again later can succeed.
+    ///
+    /// Covers `ThrottlingException` (rate limit), `ServiceUnavailableException`
+    /// and HTTP 503 (capacity), `ModelNotReadyException` (a profile still
+    /// warming), and HTTP 429 for services that throttle by status without a
+    /// recognised code.
+    ///
+    /// `ServiceQuotaExceededException` is deliberately absent. An account
+    /// quota does not clear on a backoff timer, so retrying it burns the
+    /// user's time and hides the one error whose fix is a quota increase.
+    pub fn is_retryable_throttle(&self) -> bool {
+        let Self::Service { code, status, .. } = self else {
+            return false;
+        };
+        matches!(
+            code.as_str(),
+            "ThrottlingException" | "ServiceUnavailableException" | "ModelNotReadyException"
+        ) || matches!(status, Some(429 | 503))
     }
 }

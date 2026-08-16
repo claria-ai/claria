@@ -3,6 +3,10 @@ import { useChatModels } from "../lib/chatModels";
 import ChatComposer from "../components/ChatComposer";
 import ChatEmptyState from "../components/ChatEmptyState";
 import ContextPills from "../components/ContextPills";
+import DraftPlanPanel from "../components/DraftPlanPanel";
+import FindingsPanel from "../components/FindingsPanel";
+import type { FindingReference } from "../components/FindingCard";
+import { openFindingCounts } from "../lib/findings";
 import { buildContextPills } from "../lib/contextPills";
 import EditableName from "../components/EditableName";
 import ModelSelect from "../components/ModelSelect";
@@ -35,7 +39,10 @@ import {
   writeWritingComposerDraft,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
-import type { ReportWorkspaceView } from "../lib/tauri";
+import type { PlanEntryEdit, ReportWorkspaceView } from "../lib/tauri";
+
+/** One shared empty map, so a report with no findings keeps canvas identity. */
+const NO_FINDING_COUNTS: ReadonlyMap<string, number> = new Map();
 
 export type WritingLeaveState = {
   /** Any work that would be lost when the desktop app closes. */
@@ -43,6 +50,8 @@ export type WritingLeaveState = {
   /** Inline report changes that cannot be restored after leaving this page. */
   hasUnsavedReportEdits: boolean;
   busy: boolean;
+  /** A drafting run is generating right now, and can be stopped safely. */
+  draftRunLive: boolean;
 };
 
 export default function Writing({
@@ -90,9 +99,9 @@ export default function Writing({
   const [fullDraftConfirmationOpen, setFullDraftConfirmationOpen] =
     useState(false);
   const [chosenTemplateId, setChosenTemplateId] = useState("");
-  const [activePane, setActivePane] = useState<"setup" | "write" | "usage">(
-    expectedReportId ? "write" : "setup"
-  );
+  const [chosenPane, setActivePane] = useState<
+    "setup" | "write" | "usage" | "draft"
+  >(expectedReportId ? "write" : "setup");
   const [showTurnCosts, setShowTurnCosts] = useState(false);
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const proposalStartRef = useRef<HTMLDivElement | null>(null);
@@ -116,19 +125,86 @@ export default function Writing({
     exportStatus,
     agentActivity,
     liveContext,
+    run,
+    draftPane,
+    findings,
+    completion,
+    resolvingFindingId,
+    canReviewDraft,
+    canStopRun,
     load,
     beginEdit,
     cancelEdit,
     save,
     discardQueuedEdits,
     send,
-    generateFullDraft,
+    planRun,
+    startPlannedRun,
+    openResumeGate,
+    stopRun,
+    resumeRun,
+    keepPartialDraft,
+    discardRun,
     resolveProposal,
+    reviewDraft,
+    applyFinding,
+    undoFinding,
+    dismissFinding,
     applyTemplate,
     exportDocx,
     renameSession,
     applyReverted,
   } = useReportWorkspace({ clientId, expectedReportId });
+
+  // The pane outlives the run: findings stay readable after the draft that
+  // produced them is long finished, and a review can be asked for without a
+  // run ever having existed.
+  const findingRows = useMemo(() => findings?.findings ?? [], [findings]);
+  const hasDraftPane =
+    draftPane !== null || findingRows.length > 0 || busy === "reviewing";
+  const activePane =
+    chosenPane === "draft" && !hasDraftPane ? "write" : chosenPane;
+
+  const findingCounts = useMemo(
+    () =>
+      workspace
+        ? openFindingCounts(findingRows, workspace.draft.content)
+        : NO_FINDING_COUNTS,
+    [findingRows, workspace]
+  );
+
+  // The flag chips scroll-link into the pane, which is only mounted once the
+  // reader is on it — so the click chooses the pane and the scroll waits for
+  // the group to register.
+  const findingSectionRefs = useRef(new Map<string, HTMLElement>());
+  const pendingFindingFocusRef = useRef<string | null>(null);
+  const registerFindingSection = useCallback(
+    (sectionId: string, element: HTMLElement | null) => {
+      if (element) findingSectionRefs.current.set(sectionId, element);
+      else findingSectionRefs.current.delete(sectionId);
+    },
+    []
+  );
+  const openFindings = useCallback((sectionId: string) => {
+    // A registered group means the pane is already mounted, so the scroll is
+    // this click's own work; otherwise it waits for the pane to arrive.
+    const group = findingSectionRefs.current.get(sectionId);
+    if (group) {
+      group.scrollIntoView?.({ block: "start" });
+      return;
+    }
+    pendingFindingFocusRef.current = sectionId;
+    setActivePane("draft");
+  }, []);
+  useEffect(() => {
+    if (activePane !== "draft") return;
+    const sectionId = pendingFindingFocusRef.current;
+    if (!sectionId) return;
+    pendingFindingFocusRef.current = null;
+    findingSectionRefs.current
+      .get(sectionId)
+      ?.scrollIntoView?.({ block: "start" });
+  }, [activePane]);
 
   const {
     templates: writerTemplates,
@@ -176,19 +252,22 @@ export default function Writing({
   const hasUnsavedWork =
     dirty || instruction.trim() !== "" || references.length > 0;
 
+  const draftRunLive = run.live;
   useEffect(() => {
     onLeaveStateChange?.({
       hasUnsavedWork,
       hasUnsavedReportEdits: dirty,
       busy: busy !== null,
+      draftRunLive,
     });
     return () =>
       onLeaveStateChange?.({
         hasUnsavedWork: false,
         hasUnsavedReportEdits: false,
         busy: false,
+        draftRunLive: false,
       });
-  }, [busy, dirty, hasUnsavedWork, onLeaveStateChange]);
+  }, [busy, dirty, draftRunLive, hasUnsavedWork, onLeaveStateChange]);
 
   const pendingProposalId = workspace?.pending_proposal?.id;
   useEffect(() => {
@@ -348,15 +427,61 @@ export default function Writing({
       return;
     }
     setFullDraftConfirmationOpen(false);
-    const generated = await generateFullDraft(
-      selectedModelId,
-      instruction.trim()
-    );
-    if (generated) {
+    // The plan lands in its own pane whichever way the preference points:
+    // gated it waits there, auto-start it draws the progress.
+    setActivePane("draft");
+    const planned = await planRun(selectedModelId, instruction.trim());
+    if (planned) {
       setInstruction("");
       setQueuedReferences([]);
-      setActivePane("write");
+      return;
     }
+    // Nothing was planned, so there is no pane to stand on: the failure
+    // belongs back beside the action that asked for it.
+    setActivePane("setup");
+  }
+
+  /** Approve the plan the Draft run pane is showing. */
+  async function handleStartPlan(edits: PlanEntryEdit[], instructions: string) {
+    const planned = draftPane?.run;
+    if (!planned || !selectedModelId) return;
+    if (draftPane.mode === "resume-gate") {
+      await resumeRun(edits, instructions);
+      return;
+    }
+    await startPlannedRun(selectedModelId, planned, edits);
+  }
+
+  /**
+   * Put the block a consistency finding points at onto the composer, so the
+   * reader can ask about it in their own words. The card never fixes anything
+   * itself — the consistency pass has no write access, and neither does this.
+   */
+  function handleReferenceFinding(reference: FindingReference) {
+    const section = workspace?.draft.content.sections.find(
+      (candidate) => candidate.id === reference.sectionId
+    );
+    if (!section) return;
+    // A finding that never resolved to a block still points at a section, so
+    // fall back to the first block the composer can carry.
+    const index =
+      reference.blockIndex ??
+      section.blocks.findIndex((block) => block.kind !== "bullet_list");
+    const block = index >= 0 ? section.blocks[index] : undefined;
+    if (!block || block.kind === "bullet_list") {
+      setActivePane("write");
+      setSaveStatus(
+        `“${section.heading}” has no paragraph or table to attach. Quote it in your message instead.`
+      );
+      return;
+    }
+    addReference({
+      kind: block.kind,
+      sectionId: section.id,
+      blockIndex: index,
+      sectionHeading: section.heading,
+      preview: reportBlockReferencePreview(block),
+    });
   }
 
   async function handleApplyTemplate() {
@@ -442,6 +567,11 @@ export default function Writing({
           tabs={[
             { id: "setup", label: "Get started" },
             { id: "write", label: "Write with Claude" },
+            // A run — live, waiting at the gate, or interrupted — or the
+            // findings a review left behind.
+            ...(hasDraftPane
+              ? [{ id: "draft" as const, label: "Draft run" }]
+              : []),
             {
               id: "usage",
               label: "Costs and cache",
@@ -595,7 +725,11 @@ export default function Writing({
                       disabled={composerDisabled}
                       className="rounded-md bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
                     >
-                      {busy === "generating" ? "Filling…" : "Fill whole report"}
+                      {busy === "planning"
+                        ? "Planning…"
+                        : busy === "generating"
+                          ? "Filling…"
+                          : "Fill whole report"}
                     </button>
                   </div>
                   {actionError && (
@@ -637,6 +771,63 @@ export default function Writing({
                   {saveStatus}
                 </p>
               )}
+            </div>
+          </div>
+        )}
+
+        {activePane === "draft" && hasDraftPane && (
+          <div
+            id="writer-session-panel-draft"
+            role="tabpanel"
+            aria-labelledby="writer-session-tab-draft"
+            className="flex min-h-0 flex-1 flex-col"
+            data-testid="draft-run-pane"
+          >
+            {draftPane && (
+              <DraftPlanPanel
+                // The pane owns unsaved plan edits, so a new run or a new
+                // question gets a new pane rather than a reconciled one.
+                key={`${draftPane.run?.run_id ?? "planning"}:${draftPane.mode}`}
+                clientId={clientId}
+                run={draftPane.run}
+                runState={run}
+                mode={draftPane.mode}
+                busy={controlsBusy}
+                error={actionError}
+                canStop={canStopRun}
+                onStop={stopRun}
+                onStart={(edits, instructions) =>
+                  void handleStartPlan(edits, instructions)
+                }
+                onCancelPlan={() => void discardRun()}
+              />
+            )}
+            <div
+              className={
+                draftPane
+                  ? "flex max-h-80 min-h-0 shrink-0 flex-col"
+                  : "flex min-h-0 flex-1 flex-col"
+              }
+            >
+              <FindingsPanel
+                findings={findingRows}
+                content={workspace.draft.content}
+                draftRevision={workspace.draft.revision}
+                completion={completion}
+                busy={controlsBusy}
+                reviewing={busy === "reviewing"}
+                reviewCompleted={run.reviewCompleted}
+                reviewTotal={run.reviewTotal}
+                canReview={canReviewDraft}
+                resolvingId={resolvingFindingId}
+                onReview={() => void reviewDraft()}
+                onApply={(id) => void applyFinding(id)}
+                onUndo={(id) => void undoFinding(id)}
+                onDismiss={(id) => void dismissFinding(id)}
+                onReference={handleReferenceFinding}
+                onPreviewRecord={setPreviewFilename}
+                registerSection={registerFindingSection}
+              />
             </div>
           </div>
         )}
@@ -813,6 +1004,9 @@ export default function Writing({
             canSend={!composerDisabled && instruction.trim() !== ""}
             placeholder="Ask a question or describe the report change you want…"
             sendLabel={busy === "sending" ? "Using tools…" : "Send"}
+            onStop={stopRun}
+            canStop={canStopRun}
+            stopLabel="Stop"
             rows={4}
           />
         </div>
@@ -838,6 +1032,32 @@ export default function Writing({
         status={exportStatus}
         validationErrors={validationErrors}
         agentActivity={agentActivity}
+        run={run}
+        runError={actionError}
+        canStopRun={canStopRun}
+        onStopRun={stopRun}
+        onResumeRun={() => {
+          openResumeGate();
+          setActivePane("draft");
+        }}
+        onKeepPartialDraft={keepPartialDraft}
+        onDiscardRun={discardRun}
+        findingCounts={findingCounts}
+        onOpenFindings={openFindings}
+        // The canvas carries the review entry point only while nothing else
+        // is offering one; with a pane up, the pane's button is the one. The
+        // pass writes its progress and its findings into that pane, so asking
+        // for one from here goes there.
+        onReviewDraft={
+          hasDraftPane
+            ? undefined
+            : () => {
+                setActivePane("draft");
+                void reviewDraft();
+              }
+        }
+        canReviewDraft={canReviewDraft}
+        reviewing={busy === "reviewing"}
       />
       </div>
 
