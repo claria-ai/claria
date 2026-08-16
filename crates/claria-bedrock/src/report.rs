@@ -334,6 +334,35 @@ impl ReportInputBudget {
             inner: converse::InputTokenBudget::exact(input_budget_tokens),
         }
     }
+
+    /// A budget seeded from a count already taken against a request of the
+    /// same shape.
+    ///
+    /// The parallel drafting fan-out is the reason this exists: every section
+    /// branch sends a byte-identical corpus, template, and plan and differs
+    /// only in a short kickoff, so counting each of them separately would
+    /// spend one `CountTokens` per section to learn the same number. The warm
+    /// branch counts once and its siblings estimate forward from that result.
+    ///
+    /// There is no reserve parameter: the writer's output ceiling is fixed at
+    /// [`REPORT_OUTPUT_TOKEN_RESERVE`] and the budget is derived from it in
+    /// [`report_input_token_budget`], so a seeded budget cannot disagree with
+    /// the exact one it was seeded from.
+    pub fn seeded(model_id: &str, verified_tokens: u32, verified_chars: u64) -> Self {
+        Self {
+            inner: converse::InputTokenBudget::seeded(
+                report_input_token_budget(model_id),
+                verified_tokens,
+                verified_chars,
+            ),
+        }
+    }
+
+    /// The exact count this budget has taken, if it has taken one, as
+    /// `(input_tokens, request_characters)` — the seed for [`Self::seeded`].
+    pub fn verified(&self) -> Option<(u32, u64)> {
+        self.inner.verified()
+    }
 }
 
 /// Send one report-protocol Converse request with all three report tools using

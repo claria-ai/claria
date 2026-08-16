@@ -90,6 +90,85 @@ fn a_plan_over_the_cache_point_ceiling_is_refused() {
     assert!(matches!(error, BedrockError::SchemaViolation(message) if message.contains("5")));
 }
 
+/// A branch of the drafting fan-out is one request that never comes back for
+/// a second, so it marks the shared prefix and nothing else.
+#[test]
+fn the_parallel_draft_plan_marks_the_checkpoints_and_no_tail() {
+    let plan = CachePlan::parallel_draft(caps(MODEL_ID), vec![(0, 1), (0, 2)])
+        .expect("two points is under the ceiling");
+    assert!(!plan.after_system);
+    assert!(!plan.tail, "a single-shot branch reads no tail point back");
+    assert_eq!(plan.after_blocks, vec![(0, 1), (0, 2)]);
+    assert_eq!(plan.ttl, CacheTtlChoice::OneHour);
+    assert_eq!(plan.point_count(), 2);
+    assert_eq!(plan.effective_ttl(), Some(CacheTtlChoice::OneHour));
+}
+
+#[test]
+fn the_parallel_draft_plan_follows_the_family_gates() {
+    let downgraded = CachePlan::parallel_draft(caps(FIVE_MINUTE_ONLY_MODEL_ID), vec![(0, 1), (0, 2)])
+        .expect("two points");
+    assert_eq!(downgraded.ttl, CacheTtlChoice::FiveMinutes);
+    assert_eq!(
+        downgraded.after_blocks,
+        vec![(0, 1), (0, 2)],
+        "the tier is downgraded, the placement is not"
+    );
+
+    let disabled = CachePlan::parallel_draft(caps(NON_CACHING_MODEL_ID), vec![(0, 1), (0, 2)])
+        .expect("two points");
+    assert_eq!(disabled, CachePlan::disabled());
+}
+
+/// The warm branch counts once and hands the number on; a seeded budget
+/// reports the seed back so the next sibling can be seeded from the same
+/// count rather than taking one of its own.
+#[test]
+fn a_seeded_report_budget_carries_the_warm_branch_count() {
+    let unseeded = ReportInputBudget::new(MODEL_ID);
+    assert_eq!(
+        unseeded.verified(),
+        None,
+        "a fresh budget has taken no count yet"
+    );
+
+    let seeded = ReportInputBudget::seeded(MODEL_ID, 41_000, 160_000);
+    assert_eq!(seeded.verified(), Some((41_000, 160_000)));
+}
+
+/// A seeded budget estimates forward from its seed instead of calling
+/// `CountTokens`: a sibling request that grew by a short kickoff sends
+/// nothing extra to the service.
+#[tokio::test]
+async fn a_seeded_budget_sends_no_count_tokens_call() {
+    let server = MockServer::spawn().await;
+    script(&server).await;
+
+    converse_report_with_tool_limit(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &[user_message("Draft")],
+        8,
+        &mut ReportInputBudget::seeded(MODEL_ID, 1_000, 4_000),
+        claria_bedrock::converse::ModelTuning::default(),
+        CachePlan::parallel_draft(caps(MODEL_ID), vec![(0, 0)]).expect("one point"),
+        &StopSignal::new(),
+    )
+    .await
+    .expect("converse");
+
+    assert!(
+        server
+            .state
+            .read()
+            .await
+            .bedrock_count_token_requests
+            .is_empty(),
+        "a seeded budget took a count of its own"
+    );
+}
+
 fn sdk_config(endpoint: &str) -> aws_config::SdkConfig {
     let credentials = Credentials::new("test", "test", None, None, "test");
     aws_config::SdkConfig::builder()

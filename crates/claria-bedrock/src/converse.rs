@@ -231,6 +231,27 @@ impl CachePlan {
         )
     }
 
+    /// The parallel drafting fan-out's placement: [`Self::full_draft`]'s
+    /// checkpoints without the moving tail.
+    ///
+    /// A branch of the fan-out is a single-shot conversation — one request,
+    /// one section, no second call to read a tail point back — so a tail
+    /// marker would be a write nobody reads. What every branch does share is
+    /// the corpus, the template structure, and the plan above the two named
+    /// checkpoints, which is exactly the prefix the warm branch pays to write
+    /// and its siblings read. The extended tier is the same trade the serial
+    /// drafting conversation takes: one write, many reads, spread over a run
+    /// rather than seconds.
+    pub fn parallel_draft(
+        capabilities: claria_core::model_id::ModelCapabilities,
+        after_blocks: Vec<(usize, usize)>,
+    ) -> Result<Self, BedrockError> {
+        Ok(
+            Self::new(CacheTtlChoice::OneHour, false, false, after_blocks)?
+                .gated(capabilities, true),
+        )
+    }
+
     /// The analysis family's placement: one point after the last system
     /// block, nothing else.
     ///
