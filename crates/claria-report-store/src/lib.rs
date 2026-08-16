@@ -2,7 +2,8 @@
 //!
 //! This crate owns everything the Writing surface keeps in S3: workspace
 //! objects and their optimistic-concurrency protocol, immutable revisions,
-//! attempt and per-call usage receipts, and the global writer prompt and
+//! resumable drafting runs, attempt and per-call usage receipts, and the
+//! global writer prompt and
 //! template libraries. It knows nothing about Bedrock — records are built by
 //! the caller and handed here fully formed — so client-record lifecycle code
 //! can restore report workspaces without pulling in an LLM client.
@@ -11,6 +12,7 @@ mod attempts;
 mod error;
 pub mod prompt_library;
 mod revisions;
+mod runs;
 pub mod template_library;
 mod workspace;
 
@@ -27,6 +29,7 @@ pub use revisions::{
     RevisionCache, discard_queued_report_edits, list_report_revisions, load_report_revision,
     revert_report_revision,
 };
+pub use runs::{LoadedRun, create_draft_run, list_draft_runs, load_draft_run, save_draft_run};
 pub use workspace::{
     LoadedWorkspace, apply_report_template, apply_report_template_for_report,
     delete_report_workspace_for_client, ensure_revision, find_report_workspace,
@@ -38,10 +41,11 @@ pub use workspace::{
     start_report_workspace_with_id, store_report_template_source, suggested_docx_filename,
 };
 
-/// Ceiling for one writer instruction or whole-report guidance message.
-/// Public because saved library prompts prefill the instruction box, so
-/// their body ceiling is this ceiling.
-pub const MAX_INSTRUCTION_CHARACTERS: usize = 20_000;
+/// Ceiling for one writer instruction or whole-report guidance message. The
+/// drafting-run model bounds its own instructions with it, so it is owned
+/// there and re-exported here for the instruction box and the saved library
+/// prompts that prefill it.
+pub use claria_core::models::report_run::MAX_INSTRUCTION_CHARACTERS;
 
 /// Retained proposal accept/reject receipts per writing session.
 pub(crate) const MAX_RESOLUTIONS: usize = 100;

@@ -84,7 +84,7 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Runs one writing request end to end: prompt composition, the Bedrock tool loop, bounded record reads, proposal staging, and the whole-document draft protocol
 
 **`claria-report-store` — Durable writer state**
-- Workspace objects and their optimistic-concurrency protocol, immutable revisions, attempt and per-call usage receipts
+- Workspace objects and their optimistic-concurrency protocol, immutable revisions, resumable drafting runs, attempt and per-call usage receipts
 - The global writer prompt and writer template libraries
 - No Bedrock knowledge: callers hand it fully built records
 
@@ -128,6 +128,7 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `records/{uuid}/chat-history/{chat_id}.json` | Persisted, user-named chat sessions |
 | `report-authoring/{uuid}/workspace.json` | Accepted report, named writer session, and proposal history |
 | `report-authoring/{uuid}/attempts/` | Bounded writer-attempt diagnostics and usage |
+| `report-authoring/{uuid}/runs/{report_id}/{run_id}.json` | Durable per-section state for one resumable drafting run |
 | `report-authoring/{uuid}/templates/{sha256}.docx` | Immutable redacted template snapshot used to preserve Word formatting on export |
 | `writer_templates/{template_uuid}.docx` | Global managed, redacted writer-template source |
 | `writer_templates/{template_uuid}.json` | Writer-template metadata (name, size, upload date) |

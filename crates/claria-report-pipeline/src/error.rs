@@ -20,6 +20,9 @@ pub enum ReportPipelineError {
     #[error("The persisted report workspace is invalid: {0}")]
     InvalidWorkspace(String),
 
+    #[error("The persisted drafting run is invalid: {0}")]
+    InvalidRun(String),
+
     #[error("Report storage is unavailable while {operation}. Try again.")]
     Storage {
         operation: &'static str,
@@ -47,6 +50,7 @@ impl From<ReportStoreError> for ReportPipelineError {
             ReportStoreError::ClientNotFound => Self::ClientNotFound,
             ReportStoreError::Conflict => Self::Conflict,
             ReportStoreError::InvalidWorkspace(message) => Self::InvalidWorkspace(message),
+            ReportStoreError::InvalidRun(message) => Self::InvalidRun(message),
             ReportStoreError::Storage { operation, source } => Self::Storage { operation, source },
         }
     }

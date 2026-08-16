@@ -27,8 +27,10 @@ pub const MAX_REPORT_TURNS: usize = 200;
 pub const MAX_REPORT_PROTOCOL_BYTES: usize = 512 * 1024;
 pub const MAX_REPORT_SESSION_NAME_CHARACTERS: usize = 120;
 
-const MAX_TITLE_CHARACTERS: usize = 200;
-const MAX_HEADING_CHARACTERS: usize = 200;
+// Crate-visible so the drafting-run model bounds its own titles and headings
+// with the ceilings the accepted report already enforces.
+pub(crate) const MAX_TITLE_CHARACTERS: usize = 200;
+pub(crate) const MAX_HEADING_CHARACTERS: usize = 200;
 // Public so the Bedrock tool schema derives its ceilings from these
 // validators instead of maintaining drifting copies.
 pub const MAX_PARAGRAPH_CHARACTERS: usize = 20_000;
@@ -796,7 +798,7 @@ fn validate_section(section: &ReportSection) -> Result<(), CoreError> {
     validate_blocks(&section.blocks)
 }
 
-fn validate_blocks(blocks: &[ReportBlock]) -> Result<(), CoreError> {
+pub(crate) fn validate_blocks(blocks: &[ReportBlock]) -> Result<(), CoreError> {
     if blocks.len() > MAX_SECTION_BLOCKS {
         return Err(invalid(format!(
             "a section may contain at most {MAX_SECTION_BLOCKS} blocks"
@@ -935,7 +937,7 @@ fn validate_template_import(
     Ok(())
 }
 
-fn validate_nonempty_text(
+pub(crate) fn validate_nonempty_text(
     label: &str,
     value: &str,
     max_characters: usize,
@@ -946,7 +948,11 @@ fn validate_nonempty_text(
     validate_xml_text(label, value, max_characters)
 }
 
-fn validate_xml_text(label: &str, value: &str, max_characters: usize) -> Result<(), CoreError> {
+pub(crate) fn validate_xml_text(
+    label: &str,
+    value: &str,
+    max_characters: usize,
+) -> Result<(), CoreError> {
     let characters = value.chars().count();
     if characters > max_characters {
         return Err(invalid(format!(

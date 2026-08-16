@@ -16,4 +16,7 @@ pub enum CoreError {
 
     #[error("invalid report workspace: {0}")]
     InvalidReport(String),
+
+    #[error("invalid drafting run: {0}")]
+    InvalidDraftRun(String),
 }
