@@ -91,6 +91,8 @@ All notable changes to Claria are documented here.
 - A command-line harness drives the writer end to end with no UI, printing every progress event with elapsed timings, the plan it produced, tokens, and cost
 - The harness refuses to start a run once its attempt allowance is spent, until a human raises it
 - The harness exports traces to an OpenTelemetry collector when one is configured; the desktop app exports nothing
+- Document extraction logs a file's extension and byte size instead of its name
+- Storage errors reduce a record's location to its client folder, so an uploaded file's name no longer reaches the console, the exported logs, or an on-screen error
 
 ## [0.28.0] — 2026-08-15
 
