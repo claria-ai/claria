@@ -15,7 +15,7 @@ cheap.
 | Mode | Tools |
 |---|---|
 | Targeted edit | `list_record_files`, `read_record_file`, `propose_report_changes` |
-| Whole report | `set_full_draft_title`, `write_full_draft_section`, `finish_full_draft` |
+| Whole report | `set_full_draft_title`, `write_full_draft_section`, `skip_full_draft_section`, `mark_section_failed`, `finish_full_draft` |
 
 Every tool result is JSON with a success/error status. Persisted history is
 sanitized: results carrying record or title text are reduced to digests and
@@ -182,6 +182,7 @@ never the workspace. Persisted history keeps only a `title_sha256` stub.
 | `position` | 0-based final position, 0–100 |
 | `heading` | 1–200 chars |
 | `blocks` | 1–200, same block grammar as proposals |
+| `citations` | optional, ≤20 × `{filename, quote}`; filename copied from the record snapshot, quote a verbatim 10–300-character span |
 
 ```json
 {
@@ -202,6 +203,7 @@ Success result:
   "section_id": "3f9d2c1e-8a4b-4c6d-9e0f-112233445566",
   "position": 2,
   "block_count": 1,
+  "citation_count": 0,
   "section_count": 7
 }
 ```
@@ -209,13 +211,56 @@ Success result:
 Calling again with the returned `section_id` replaces the staged section.
 An id that neither came from the host context nor from an earlier write is
 rejected as `invented_section_id` — the anti-hallucination guard that keeps
-template sections accounted for. `null` gets a server-assigned UUID.
+template sections accounted for. `null` gets a server-assigned UUID. A
+citation naming a file outside the run's record snapshot is
+`unknown_citation_file`; a quote outside 10–300 characters is
+`invalid_citation_quote`. Quotes are **not** matched against record text
+here — that is the completion gate's job.
 
 **Internal mapping.** Moves the section to `drafted` in the run object and
 writes the run back to S3 **before** this success result is returned — the
 conversation never believes more than durable truth. The run's plan carries
 one required entry per section present in the draft when generation started;
-all of them must be drafted or skipped before finalization succeeds.
+all of them must be drafted, skipped, or failed before finalization
+succeeds. Three consecutive rejected writes for the same section return
+`section_attempts_exhausted` and mark that section failed with the last
+structural diagnostic, so one unwritable section cannot consume the run's
+call budget.
+
+---
+
+## `skip_full_draft_section`
+
+```json
+{ "section_id": "3f9d2c1e-8a4b-4c6d-9e0f-112233445566" }
+```
+
+Result: `{ "status": "section_skipped", "section_id": "..." }`. Valid only
+for a supplied section; an invented id is `invented_section_id`, and a
+section already written is `section_already_written` (a skip never overrides
+a write).
+
+**Internal mapping.** Moves the section to `skipped` in the run object and
+writes the run back before returning. When the plan was edited by a human
+and marks the section `draft`, the first skip returns a `plan_conflict`
+error carrying the plan row verbatim; a second skip of the same section is
+accepted and records `skip diverged from the approved plan` on it.
+
+---
+
+## `mark_section_failed`
+
+| Field | Constraint |
+|---|---|
+| `section_id` | a 36-char UUID copied from `plan_context` |
+| `reason` | 1–500 chars, PHI-free — what is missing, not what the records say |
+
+Result: `{ "status": "section_marked_failed", "section_id": "..." }`.
+
+**Internal mapping.** Moves the section to `failed` with the reason on it
+and writes the run back before returning. Assembly then leaves that
+section's base-revision content unchanged, so the run completes with the
+gap visible rather than stalling on it.
 
 ---
 
@@ -231,16 +276,19 @@ Success result:
 {
   "status": "full_draft_finalized",
   "section_count": 7,
+  "skipped_section_count": 1,
+  "failed_section_count": 0,
   "base_revision": 0
 }
 ```
 
-Fails with the missing UUIDs listed when any required template/report
-section was never written.
+Fails with the missing UUIDs listed when any planned section was never
+written, skipped, or marked failed.
 
 **Internal mapping.** Assembles the run's drafted sections in the order they
-were written, re-inserts skipped ones as empty placeholders, and stages the
-result; the host then saves it as **one atomic versioned revision**
+were written, re-inserts skipped ones as empty placeholders and failed ones
+as their base-revision content, and stages the result; the host then saves
+it as **one atomic versioned revision**
 (`replace_content`) with no proposal gate, stamps every run-authored section
 with the run that wrote it, releases the session, and marks the run
 completed. The loop's terminal guard also nudges the model once if it tries

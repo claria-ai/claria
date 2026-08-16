@@ -210,6 +210,27 @@ impl CachePlan {
         .gated(capabilities, true)
     }
 
+    /// The whole-report drafting conversation's placement: no point on the
+    /// system policy, one after each caller-named checkpoint in the opening
+    /// message, and a moving tail point.
+    ///
+    /// The tier is the extended one-hour window wherever the family accepts
+    /// it. A drafting run writes a large frozen prefix once and then reads it
+    /// across every section it writes, so the doubled write rate is paid on
+    /// one call and recovered on the rest — the opposite trade from a
+    /// targeted edit, which re-reads within minutes and takes the cheaper
+    /// five-minute write. Bedrock rejects mixed TTLs in one request, so the
+    /// tier necessarily covers the tail point too.
+    pub fn full_draft(
+        capabilities: claria_core::model_id::ModelCapabilities,
+        after_blocks: Vec<(usize, usize)>,
+    ) -> Result<Self, BedrockError> {
+        Ok(
+            Self::new(CacheTtlChoice::OneHour, false, true, after_blocks)?
+                .gated(capabilities, true),
+        )
+    }
+
     /// Gate a plan on what the model can do and what the user asked for:
     /// either saying no yields [`Self::disabled`], and a one-hour TTL the
     /// family does not accept is downgraded rather than sent and rejected.

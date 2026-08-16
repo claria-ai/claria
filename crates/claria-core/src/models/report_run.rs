@@ -45,8 +45,14 @@ pub const MAX_RUN_INSTRUCTIONS: usize = 20;
 /// when a stopped run is picked back up.
 pub const MAX_INSTRUCTION_CHARACTERS: usize = 20_000;
 
+/// Shortest quote worth checking against a record. Below this a "quote" is a
+/// fragment that matches half the corpus, so the completion gate could not
+/// tell a real citation from an accident.
+pub const MIN_CITATION_QUOTE_CHARACTERS: usize = 10;
 pub const MAX_CITATION_QUOTE_CHARACTERS: usize = 300;
 pub const MAX_SECTION_CITATIONS: usize = 20;
+/// Ceiling for the PHI-free note explaining why a section failed.
+pub const MAX_SECTION_ERROR_CHARACTERS: usize = 500;
 pub const MAX_PLAN_SCOPE_CHARACTERS: usize = 600;
 pub const MAX_PLAN_EVIDENCE: usize = 8;
 
@@ -347,9 +353,14 @@ impl RunSection {
                 &citation.quote,
                 MAX_CITATION_QUOTE_CHARACTERS,
             )?;
+            if citation.quote.chars().count() < MIN_CITATION_QUOTE_CHARACTERS {
+                return Err(invalid(format!(
+                    "a citation quote must be at least {MIN_CITATION_QUOTE_CHARACTERS} characters"
+                )));
+            }
         }
         if let Some(error) = &self.error {
-            validate_nonempty_text("section error", error, 500)?;
+            validate_nonempty_text("section error", error, MAX_SECTION_ERROR_CHARACTERS)?;
         }
         Ok(())
     }

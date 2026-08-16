@@ -177,6 +177,7 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
             "set_full_draft_title",
             "write_full_draft_section",
             "skip_full_draft_section",
+            "mark_section_failed",
             "finish_full_draft"
         ]
     );
@@ -185,8 +186,26 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
     let skip_description = tools[2]["toolSpec"]["description"]
         .as_str()
         .expect("skip description");
-    assert!(skip_description.contains("written or skipped"));
+    assert!(skip_description.contains("Skip only sections the plan marks skip"));
     assert!(skip_description.contains("never to shorten the job"));
+
+    // Failing a section is a declaration about the records, not a shortcut,
+    // and the description has to say so where the model reads it.
+    let failed = &tools[3]["toolSpec"]["inputSchema"]["json"];
+    assert_eq!(
+        failed["required"],
+        serde_json::json!(["section_id", "reason"])
+    );
+    assert_eq!(
+        failed["properties"]["reason"]["maxLength"],
+        claria_bedrock::report::MAX_SECTION_ERROR_CHARACTERS
+    );
+    let failed_description = tools[3]["toolSpec"]["description"]
+        .as_str()
+        .expect("mark_section_failed description");
+    assert!(failed_description.contains("after a genuine attempt"));
+    assert!(failed_description.contains("Never use this to shorten the job"));
+
     let section = &tools[1]["toolSpec"]["inputSchema"]["json"];
     assert_eq!(
         section["properties"]["blocks"]["maxItems"],
@@ -196,6 +215,32 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
     // multi-turn splitting of long clinical sections (v0.20–v0.23).
     assert_eq!(section["properties"]["blocks"]["maxItems"], 200);
     assert!(section["properties"]["section_id"].get("anyOf").is_some());
+    // Citations are optional, bounded, and must be verbatim spans long enough
+    // for the completion gate to resolve later.
+    let citations = &section["properties"]["citations"];
+    assert!(
+        !section["required"]
+            .as_array()
+            .expect("required")
+            .contains(&serde_json::json!("citations"))
+    );
+    assert_eq!(
+        citations["maxItems"],
+        claria_bedrock::report::MAX_SECTION_CITATIONS
+    );
+    assert_eq!(
+        citations["items"]["properties"]["quote"]["minLength"],
+        claria_bedrock::report::MIN_CITATION_QUOTE_CHARACTERS
+    );
+    assert_eq!(
+        citations["items"]["properties"]["quote"]["maxLength"],
+        claria_bedrock::report::MAX_CITATION_QUOTE_CHARACTERS
+    );
+    let write_description = tools[1]["toolSpec"]["description"]
+        .as_str()
+        .expect("write description");
+    assert!(write_description.contains("Work through plan_context"));
+    assert!(write_description.contains("ONE section per"));
 }
 
 #[tokio::test]

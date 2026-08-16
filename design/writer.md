@@ -47,9 +47,11 @@ events.
    text — becomes the working draft. The template's paragraphs are now data
    the model will see, not instructions (see `templates.md`).
 5. **Hydrate as the first turn.** "Fill the whole report" snapshots every
-   readable record into `<untrusted_record_context>`, injects the current
-   draft (the template skeleton) as `<untrusted_report_context>`, and runs
-   the full-draft tool protocol until `finish_full_draft` lands revision 1.
+   readable record into `<untrusted_record_context>`, injects the base
+   revision's structure and per-section template bodies as
+   `<untrusted_template_context>`, injects the run's section plan as
+   `<plan_context>`, and runs the full-draft tool protocol until
+   `finish_full_draft` lands revision 1.
 6. From there the session continues as targeted editing: instructions,
    record reads on demand, reviewable proposals, and eventually a DOCX
    export rendered back through the stored template package.
@@ -78,13 +80,14 @@ flowchart TD
 
     subgraph Hydrate["First turn: whole-report generation"]
         P["Preflight: eligible record bytes<br/>&le; input budget &times; 3"]
-        X["Build first turn:<br/>untrusted_report_context (template skeleton)<br/>untrusted_record_context (all 5 records)"]
-        L{"Converse round<br/>(max_tokens = 32k)"}
+        X["Build first turn:<br/>untrusted_record_context (all 5 records)<br/>untrusted_template_context (template skeleton)<br/>● CachePoint 1<br/>plan_context (the run's plan)<br/>● CachePoint 2<br/>kick-off instruction"]
+        L{"Converse round<br/>(max_tokens = 32k)<br/>● CachePoint 3 = moving tail"}
         TT["set_full_draft_title (1 call)"]
         W["write_full_draft_section<br/>one call per section, N calls<br/>each saved to the run first"]
         SK["skip_full_draft_section<br/>per user-deferred section"]
+        MF["mark_section_failed<br/>per undraftable section"]
         F["finish_full_draft (1 call)"]
-        V["Validate the run:<br/>every planned section_id<br/>drafted or skipped?"]
+        V["Validate the run:<br/>every planned section_id<br/>drafted, skipped, or failed?"]
         REV["Atomic save: revision 1<br/>run marked completed"]
     end
 
@@ -104,6 +107,7 @@ flowchart TD
     L --> TT --> L
     L --> W --> L
     L --> SK --> L
+    L --> MF --> L
     L --> F --> V --> REV
     REV --> I --> RD --> PR --> ACC
     ACC -- yes --> REVN --> I
@@ -119,18 +123,25 @@ one call for the document:
 - `set_full_draft_title` — always exactly one call.
 - `write_full_draft_section` — one call for **every** section the draft
   actually writes, plus one call per genuinely new section.
-- `skip_full_draft_section` — one call per section the user's guidance
-  defers to a later pass (e.g. "leave the summary until I supply a
-  diagnosis"). A skipped section re-enters the saved revision as an **empty
-  placeholder**: its heading and template position survive, its boilerplate
-  body does not, and DOCX export omits it entirely until content is written
-  into it. Writing into a deferred section — a later full-draft write, an
-  accepted `replace_section` proposal, or a hand edit — un-defers it.
+- `skip_full_draft_section` — one call per section the plan marks skip or
+  the user's guidance defers to a later pass (e.g. "leave the summary until
+  I supply a diagnosis"). A skipped section re-enters the saved revision as
+  an **empty placeholder**: its heading and template position survive, its
+  boilerplate body does not, and DOCX export omits it entirely until content
+  is written into it. Writing into a deferred section — a later full-draft
+  write, an accepted `replace_section` proposal, or a hand edit — un-defers
+  it.
+- `mark_section_failed` — one call per section the records genuinely cannot
+  support, after an attempt. A failed section keeps its base-revision
+  content unchanged and the run completes with the failure recorded on it,
+  rather than the whole document stalling on one gap. The host marks a
+  section failed the same way after three rejected writes for it, so a
+  section the writer cannot land does not spend the run's call budget.
 - `finish_full_draft` — one call. The finalizer refuses unless **every**
-  section id present in the template skeleton has been written **or
-  explicitly skipped** — an undecided section is an error, so stale template
-  facts cannot survive and nothing disappears silently. A ten-section
-  evaluation template is ten decisions minimum.
+  planned section has been written, **explicitly skipped**, or **marked
+  failed** — an undecided section is an error, so stale template facts
+  cannot survive and nothing disappears silently. A ten-section evaluation
+  template is ten decisions minimum.
 
 So a typical templated report is N+2 calls at minimum, spread across several
 Converse rounds: each response is capped at the 32k output reserve, and a
@@ -186,10 +197,13 @@ the prompt is independently bounded:
 | Whole-report record snapshot | Preflight: eligible source bytes ≤ input budget × 3 (~490 KiB on Opus 4.6); oversized sets fail with a remove-or-split error before any model call |
 | The report itself | Domain cap of 500,000 characters of content |
 
-The one contributor that grows with the user's work is the report: the
-**entire accepted report rides into every turn** inside
+The one contributor that grows with the user's work is the report: in
+targeted editing the **entire accepted report rides into every turn** inside
 `<untrusted_report_context>` (pretty-printed JSON), because the user may
 have hand-edited between turns and the model must copy real section ids.
+Whole-report drafting sends the base revision's structure and template
+bodies instead — the mutable draft it is about to replace never enters the
+cached prefix.
 A report near the 500k-character domain cap is ~125k+ tokens before history
 and instructions, so a sufficiently huge document can make a turn exceed the
 input budget. When that happens the turn **fails up front with an explicit

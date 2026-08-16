@@ -23,16 +23,18 @@ same package.
 
 Applying a template to a session sets the working draft to that imported
 content — headings **and** boilerplate body text. From then on the template
-is *data*, delivered to the model inside `<untrusted_report_context>` with
-`template_import` provenance (import revision, warnings, and whether
-carryover has been reviewed for the current revision).
+is *data*, delivered to the model inside `<untrusted_report_context>` in
+targeted editing and `<untrusted_template_context>` in whole-report
+drafting, both carrying `template_import` provenance (import revision,
+warnings, and whether carryover has been reviewed for the current revision).
 
 **Hydration is judgment, not substitution.** The whole-report prompt tells
-the model to decide every supplied section — copying each `section_id`
-exactly and either rewriting it or, when the user's guidance defers it to a
-later pass, explicitly skipping it, so no template section survives by
-omission — while preserving useful headings, table structure, and row
-meaning, and leaving unknown cells blank rather than inventing values. A
+the model to decide every planned section — copying each `section_id`
+exactly and either rewriting it, explicitly skipping it when the plan or the
+user's guidance defers it to a later pass, or marking it failed when the
+records cannot support it, so no template section survives by omission —
+while preserving useful headings, table structure, and row meaning, and
+leaving unknown cells blank rather than inventing values. A
 skipped section keeps its heading as an empty deferred placeholder; its
 boilerplate body is dropped rather than carried, and export omits the
 section until content is written into it. In practice the model carries
@@ -77,7 +79,8 @@ boundary is enforced in three stacked ways:
 
 1. **Instructions first, data after, in named delimiters.** The system
    prompt names the exact tags (`<untrusted_report_context>`,
-   `<untrusted_record_context>`, chat's `<record_context>`) and states that
+   `<untrusted_template_context>`, `<untrusted_record_context>`,
+   `<plan_context>`, chat's `<record_context>`) and states that
    everything inside them is data, never instructions. Content is escaped
    only where it could forge those delimiters — a document containing
    `</untrusted_report_context>` cannot close the region, while ordinary

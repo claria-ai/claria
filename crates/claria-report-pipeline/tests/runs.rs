@@ -5,7 +5,10 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_core::models::{
     report::{AuthorshipKind, ReportBlock, ReportContent, ReportSection},
-    report_run::{DraftRun, DraftRunStatus, RunSectionState},
+    report_run::{
+        DRAFT_RUN_SCHEMA_VERSION, DraftRun, DraftRunStatus, PlanEntry, RunInstruction, RunPlan,
+        RunSection, RunSectionState, SectionIntent,
+    },
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 use claria_report_pipeline as pipeline;
@@ -164,9 +167,35 @@ fn write_call(
     }}})
 }
 
+/// A section write that also attributes its claims to record quotes.
+fn write_call_citing(
+    id: &str,
+    section_id: &str,
+    position: u32,
+    heading: &str,
+    text: &str,
+    citations: &[(&str, &str)],
+) -> serde_json::Value {
+    let mut call = write_call(id, section_id, position, heading, text);
+    call["toolUse"]["input"]["citations"] = serde_json::Value::Array(
+        citations
+            .iter()
+            .map(|(filename, quote)| serde_json::json!({"filename": filename, "quote": quote}))
+            .collect(),
+    );
+    call
+}
+
 fn skip_call(id: &str, section_id: &str) -> serde_json::Value {
     serde_json::json!({"toolUse": {"toolUseId": id, "name": "skip_full_draft_section", "input": {
         "section_id": section_id
+    }}})
+}
+
+fn fail_call(id: &str, section_id: &str, reason: &str) -> serde_json::Value {
+    serde_json::json!({"toolUse": {"toolUseId": id, "name": "mark_section_failed", "input": {
+        "section_id": section_id,
+        "reason": reason
     }}})
 }
 
@@ -224,6 +253,819 @@ fn body(content: &ReportContent) -> Vec<(String, Vec<ReportBlock>, bool)> {
                 section.skipped,
             )
         })
+        .collect()
+}
+
+fn run_section(id: &str, heading: &str, position: u32, state: RunSectionState) -> RunSection {
+    RunSection {
+        section_id: id.parse().expect("section UUID"),
+        heading: heading.to_string(),
+        position,
+        state,
+        blocks: Vec::new(),
+        citations: Vec::new(),
+        attempts: 0,
+        error: None,
+        updated_at: jiff::Timestamp::now(),
+    }
+}
+
+fn plan_entry(id: &str, heading: &str, intent: SectionIntent) -> PlanEntry {
+    PlanEntry {
+        section_id: id.parse().expect("section UUID"),
+        heading: heading.to_string(),
+        intent,
+        required: true,
+        scope: String::new(),
+        evidence: Vec::new(),
+        instruction: None,
+    }
+}
+
+/// Put a hand-built run object in S3 so a test can start from run state the
+/// synthetic planner never produces — a user-approved plan, a rewrite intent,
+/// or a section that already failed.
+async fn seed_run(
+    s3: &aws_sdk_s3::Client,
+    client_id: Uuid,
+    report_id: Uuid,
+    plan: RunPlan,
+    sections: Vec<RunSection>,
+) -> Uuid {
+    let now = jiff::Timestamp::now();
+    let run_id = Uuid::new_v4();
+    let run = DraftRun {
+        schema_version: DRAFT_RUN_SCHEMA_VERSION,
+        run_id,
+        report_id,
+        client_id,
+        base_revision: 1,
+        status: DraftRunStatus::Stopped,
+        plan: Some(plan),
+        title: Some("Psychoeducational Evaluation".to_string()),
+        sections,
+        instructions: vec![RunInstruction {
+            text: "Write the whole evaluation.".to_string(),
+            added_at: now,
+        }],
+        writer_model_id: MODEL_ID.to_string(),
+        finalized_revision: None,
+        partial: false,
+        created_at: now,
+        updated_at: now,
+    };
+    claria_storage::objects::put_object(
+        s3,
+        BUCKET,
+        &claria_core::s3_keys::report_draft_run(client_id, report_id, run_id),
+        serde_json::to_vec(&run).expect("run JSON"),
+        Some("application/json"),
+    )
+    .await
+    .expect("seed the drafting run");
+    run_id
+}
+
+/// Every tool result the scripted conversation returned, in the order the
+/// model saw them. Read from the last captured request, which carries the
+/// whole accumulated conversation exactly once — the earlier requests are
+/// prefixes of it, so folding them all together would count each result again
+/// for every round that followed it.
+async fn tool_results(server: &MockServer) -> Vec<serde_json::Value> {
+    server
+        .state
+        .read()
+        .await
+        .bedrock_tool_requests
+        .last()
+        .and_then(|request| request["messages"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|message| {
+            message["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+        })
+        .filter_map(|block| block.get("toolResult").cloned())
+        .collect()
+}
+
+/// The error code of the first tool result carrying one, searched from the
+/// end so the assertion names the round that produced it.
+fn error_codes(results: &[serde_json::Value]) -> Vec<String> {
+    results
+        .iter()
+        .filter_map(|result| {
+            result["content"][0]["json"]["error"]["code"]
+                .as_str()
+                .map(ToString::to_string)
+        })
+        .collect()
+}
+
+/// The opening message of the first Bedrock call — the checkpoint layout.
+async fn opening_message(server: &MockServer) -> Vec<serde_json::Value> {
+    server.state.read().await.bedrock_tool_requests[0]["messages"][0]["content"]
+        .as_array()
+        .expect("opening message content")
+        .clone()
+}
+
+#[tokio::test]
+async fn citations_are_checked_against_the_run_snapshot_and_stored() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                write_call_citing(
+                    "section-1",
+                    REFERRAL_ID,
+                    0,
+                    "Reason for Referral",
+                    "Referred for attention concerns.",
+                    &[("intake.txt", "Referred by pediatrician")],
+                ),
+            ]),
+            // A file the snapshot never carried, and a quote too short to
+            // resolve against a record later.
+            tool_round(vec![write_call_citing(
+                "section-2",
+                BACKGROUND_ID,
+                1,
+                "Background",
+                "Documented developmental history.",
+                &[("chart-review.pdf", "Referred by pediatrician")],
+            )]),
+            tool_round(vec![write_call_citing(
+                "section-2b",
+                BACKGROUND_ID,
+                1,
+                "Background",
+                "Documented developmental history.",
+                &[("intake.txt", "too short")],
+            )]),
+            tool_round(vec![
+                write_call(
+                    "section-2c",
+                    BACKGROUND_ID,
+                    1,
+                    "Background",
+                    "Documented developmental history.",
+                ),
+                skip_call("skip-1", SUMMARY_ID),
+            ]),
+            tool_round(vec![finish_call("finish-1", "Completed the evaluation.")]),
+            closing_text("The evaluation is complete."),
+        ],
+    )
+    .await;
+
+    pipeline::generate_full_report_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Write the whole evaluation."),
+    )
+    .await
+    .expect("generate with citations");
+
+    let codes = error_codes(&tool_results(&server).await);
+    assert!(
+        codes.contains(&"unknown_citation_file".to_string()),
+        "a citation naming a file outside the snapshot was accepted: {codes:?}"
+    );
+    assert!(
+        codes.contains(&"invalid_citation_quote".to_string()),
+        "an unresolvably short quote was accepted: {codes:?}"
+    );
+
+    let run = only_run(&s3, client_id, report_id).await;
+    let referral = run
+        .sections
+        .iter()
+        .find(|section| section.section_id.to_string() == REFERRAL_ID)
+        .expect("referral run section");
+    assert_eq!(referral.citations.len(), 1);
+    assert_eq!(referral.citations[0].filename, "intake.txt");
+    assert_eq!(referral.citations[0].quote, "Referred by pediatrician");
+    // The rejected writes never landed a citation on the section they named.
+    let background = run
+        .sections
+        .iter()
+        .find(|section| section.section_id.to_string() == BACKGROUND_ID)
+        .expect("background run section");
+    assert_eq!(background.state, RunSectionState::Drafted);
+    assert!(background.citations.is_empty());
+}
+
+#[tokio::test]
+async fn a_section_marked_failed_is_durable_and_still_lets_the_run_finish() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                write_call(
+                    "section-1",
+                    REFERRAL_ID,
+                    0,
+                    "Reason for Referral",
+                    "Referred for attention concerns.",
+                ),
+                skip_call("skip-1", BACKGROUND_ID),
+                fail_call(
+                    "fail-1",
+                    SUMMARY_ID,
+                    "No testing data is present in the records, so no interpretation can be supported.",
+                ),
+            ]),
+            tool_round(vec![finish_call(
+                "finish-1",
+                "Drafted the referral; the summary could not be supported.",
+            )]),
+            closing_text("One section could not be drafted."),
+        ],
+    )
+    .await;
+
+    let outcome = pipeline::generate_full_report_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Write the whole evaluation."),
+    )
+    .await
+    .expect("a failed section does not block finishing");
+
+    // The run completed with the failure visible rather than stalling.
+    let run = only_run(&s3, client_id, report_id).await;
+    assert_eq!(run.status, DraftRunStatus::Completed);
+    assert_eq!(run.finalized_revision, Some(2));
+    let summary = run
+        .sections
+        .iter()
+        .find(|section| section.section_id.to_string() == SUMMARY_ID)
+        .expect("summary run section");
+    assert_eq!(summary.state, RunSectionState::Failed);
+    assert_eq!(
+        summary.error.as_deref(),
+        Some("No testing data is present in the records, so no interpretation can be supported.")
+    );
+    assert!(summary.blocks.is_empty());
+
+    // Assembly leaves a failed section's base-revision content exactly as it
+    // was: the writer could not replace that text, so nothing pretends it did.
+    let assembled = &outcome.workspace.draft.content.sections[2];
+    assert_eq!(assembled.id.to_string(), SUMMARY_ID);
+    assert!(!assembled.skipped);
+    assert_eq!(assembled.blocks, boilerplate());
+    assert!(assembled.authorship.is_none());
+
+    let results = tool_results(&server).await;
+    assert!(
+        results.iter().any(|result| {
+            result["content"][0]["json"]["status"] == "section_marked_failed"
+                && result["content"][0]["json"]["section_id"] == SUMMARY_ID
+        }),
+        "the failure was not acknowledged to the model"
+    );
+    assert!(
+        results
+            .iter()
+            .any(|result| result["content"][0]["json"]["failed_section_count"] == 1),
+        "the finish result did not report the failure"
+    );
+}
+
+#[tokio::test]
+async fn a_third_rejected_write_fails_the_section_not_the_turn() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    // The same impossible position, three times over. Position 40 is far past
+    // the end of a candidate that has no sections yet.
+    let doomed = |id: &str| write_call(id, REFERRAL_ID, 40, "Reason for Referral", "Attempt.");
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                doomed("attempt-1"),
+            ]),
+            tool_round(vec![doomed("attempt-2")]),
+            tool_round(vec![doomed("attempt-3")]),
+            tool_round(vec![
+                write_call(
+                    "section-2",
+                    BACKGROUND_ID,
+                    0,
+                    "Background",
+                    "Documented developmental history.",
+                ),
+                skip_call("skip-1", SUMMARY_ID),
+            ]),
+            tool_round(vec![finish_call(
+                "finish-1",
+                "Finished around one section.",
+            )]),
+            closing_text("One section could not be written."),
+        ],
+    )
+    .await;
+
+    let outcome = pipeline::generate_full_report_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Write the whole evaluation."),
+    )
+    .await
+    .expect("the bounded section does not fail the turn");
+
+    let codes = error_codes(&tool_results(&server).await);
+    assert_eq!(
+        codes,
+        vec![
+            "invalid_section_position",
+            "invalid_section_position",
+            "section_attempts_exhausted"
+        ],
+        "the third strike did not bound the section"
+    );
+
+    let run = only_run(&s3, client_id, report_id).await;
+    let referral = run
+        .sections
+        .iter()
+        .find(|section| section.section_id.to_string() == REFERRAL_ID)
+        .expect("referral run section");
+    assert_eq!(referral.state, RunSectionState::Failed);
+    // The stored diagnostic is the structural code and message the model saw
+    // — never a fragment of the draft it was trying to write.
+    let stored = referral.error.as_deref().expect("diagnostic");
+    assert!(stored.starts_with("invalid_section_position:"), "{stored}");
+    assert!(!stored.contains("Attempt."));
+
+    // The run still finished, and the bounded section kept its base content.
+    assert_eq!(outcome.workspace.draft.revision, 2);
+    assert_eq!(
+        outcome.workspace.draft.content.sections[0].blocks,
+        boilerplate()
+    );
+}
+
+#[tokio::test]
+async fn a_skip_is_challenged_only_when_a_human_approved_the_plan() {
+    let (server, sdk, s3) = setup().await;
+
+    // A synthetic plan is nobody's decision, so skipping through it is not a
+    // conflict — today's only path, and it must stay quiet.
+    let synthetic_client = Uuid::new_v4();
+    let synthetic_report = seed_templated_report(&s3, synthetic_client).await;
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                write_call(
+                    "section-1",
+                    REFERRAL_ID,
+                    0,
+                    "Reason for Referral",
+                    "Referred for attention concerns.",
+                ),
+                skip_call("skip-1", BACKGROUND_ID),
+                skip_call("skip-2", SUMMARY_ID),
+            ]),
+            tool_round(vec![finish_call("finish-1", "Wrote the referral.")]),
+            closing_text("Done."),
+        ],
+    )
+    .await;
+    pipeline::generate_full_report_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        synthetic_client,
+        synthetic_report,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Write the referral only."),
+    )
+    .await
+    .expect("a synthetic plan raises no conflict");
+    assert!(
+        !error_codes(&tool_results(&server).await).contains(&"plan_conflict".to_string()),
+        "a synthetic plan challenged a skip"
+    );
+    server.state.write().await.bedrock_tool_requests.clear();
+
+    // A plan a human approved is a different matter: contradicting it costs
+    // one corrective round, and then the writer's judgement stands.
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let now = jiff::Timestamp::now();
+    let run_id = seed_run(
+        &s3,
+        client_id,
+        report_id,
+        RunPlan {
+            model_id: MODEL_ID.to_string(),
+            entries: vec![
+                plan_entry(REFERRAL_ID, "Reason for Referral", SectionIntent::Draft),
+                plan_entry(BACKGROUND_ID, "Background", SectionIntent::Draft),
+                plan_entry(
+                    SUMMARY_ID,
+                    "Summary and Clinical Interpretation",
+                    SectionIntent::Skip,
+                ),
+            ],
+            user_edited: true,
+            approved_at: Some(now),
+            created_at: now,
+        },
+        vec![
+            run_section(
+                REFERRAL_ID,
+                "Reason for Referral",
+                0,
+                RunSectionState::Pending,
+            ),
+            run_section(BACKGROUND_ID, "Background", 1, RunSectionState::Pending),
+            run_section(
+                SUMMARY_ID,
+                "Summary and Clinical Interpretation",
+                2,
+                RunSectionState::Pending,
+            ),
+        ],
+    )
+    .await;
+
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                write_call(
+                    "section-1",
+                    REFERRAL_ID,
+                    0,
+                    "Reason for Referral",
+                    "Referred for attention concerns.",
+                ),
+                // Contradicts an approved `draft` row.
+                skip_call("skip-1", BACKGROUND_ID),
+                // Matches its approved `skip` row, so it passes untouched.
+                skip_call("skip-2", SUMMARY_ID),
+            ]),
+            tool_round(vec![skip_call("skip-3", BACKGROUND_ID)]),
+            tool_round(vec![finish_call("finish-1", "Deferred the background.")]),
+            closing_text("Done."),
+        ],
+    )
+    .await;
+    pipeline::resume_draft_run(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        MODEL_ID,
+        pipeline::FullReportRequest::new(""),
+    )
+    .await
+    .expect("the second skip is accepted");
+
+    let results = tool_results(&server).await;
+    assert_eq!(
+        error_codes(&results),
+        vec!["plan_conflict"],
+        "the approved plan was not defended exactly once"
+    );
+    let conflict = results
+        .iter()
+        .find(|result| result["content"][0]["json"]["error"]["code"] == "plan_conflict")
+        .expect("plan_conflict result");
+    // The row the model is arguing with goes back verbatim.
+    let row = &conflict["content"][0]["json"]["error"]["plan_entry"];
+    assert_eq!(row["section_id"], BACKGROUND_ID);
+    assert_eq!(row["heading"], "Background");
+    assert_eq!(row["intent"], "draft");
+
+    let run = only_run(&s3, client_id, report_id).await;
+    let background = run
+        .sections
+        .iter()
+        .find(|section| section.section_id.to_string() == BACKGROUND_ID)
+        .expect("background run section");
+    assert_eq!(background.state, RunSectionState::Skipped);
+    assert_eq!(
+        background.error.as_deref(),
+        Some("skip diverged from the approved plan")
+    );
+    // The skip that agreed with its plan row is recorded without a note.
+    let summary = run
+        .sections
+        .iter()
+        .find(|section| section.section_id.to_string() == SUMMARY_ID)
+        .expect("summary run section");
+    assert_eq!(summary.state, RunSectionState::Skipped);
+    assert!(summary.error.is_none());
+}
+
+#[tokio::test]
+async fn a_resume_kicks_off_with_durable_state_and_the_rewrite_source() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    let now = jiff::Timestamp::now();
+    let mut drafted = run_section(
+        REFERRAL_ID,
+        "Reason for Referral",
+        0,
+        RunSectionState::Drafted,
+    );
+    drafted.blocks = vec![paragraph("Referred for attention concerns.")];
+    let mut failed = run_section(
+        SUMMARY_ID,
+        "Summary and Clinical Interpretation",
+        2,
+        RunSectionState::Failed,
+    );
+    failed.error = Some("no testing data present".to_string());
+    let run_id = seed_run(
+        &s3,
+        client_id,
+        report_id,
+        RunPlan {
+            model_id: MODEL_ID.to_string(),
+            entries: vec![
+                plan_entry(REFERRAL_ID, "Reason for Referral", SectionIntent::Keep),
+                plan_entry(BACKGROUND_ID, "Background", SectionIntent::Rewrite),
+                plan_entry(
+                    SUMMARY_ID,
+                    "Summary and Clinical Interpretation",
+                    SectionIntent::Draft,
+                ),
+            ],
+            user_edited: true,
+            approved_at: Some(now),
+            created_at: now,
+        },
+        vec![
+            drafted,
+            run_section(BACKGROUND_ID, "Background", 1, RunSectionState::Pending),
+            failed,
+        ],
+    )
+    .await;
+
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                write_call(
+                    "section-2",
+                    BACKGROUND_ID,
+                    1,
+                    "Background",
+                    "Rewritten developmental history.",
+                ),
+                write_call(
+                    "section-3",
+                    SUMMARY_ID,
+                    2,
+                    "Summary and Clinical Interpretation",
+                    "Findings are consistent with the referral question.",
+                ),
+            ]),
+            tool_round(vec![finish_call("finish-1", "Picked the run back up.")]),
+            closing_text("The evaluation is complete."),
+        ],
+    )
+    .await;
+
+    pipeline::resume_draft_run(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Rewrite the background from the template."),
+    )
+    .await
+    .expect("resume the seeded run");
+
+    let opening = opening_message(&server).await;
+    let kickoff = opening[5]["text"].as_str().expect("kick-off text");
+    assert!(kickoff.contains("This drafting run RESUMES an interrupted session."));
+    assert!(kickoff.contains("Do not re-write sections marked drafted."));
+
+    // The durable per-section state, so the writer picks up rather than
+    // re-deriving what landed.
+    assert!(kickoff.contains("Section state:"));
+    assert!(kickoff.contains(REFERRAL_ID) && kickoff.contains("\"drafted\""));
+    assert!(kickoff.contains(BACKGROUND_ID) && kickoff.contains("\"pending\""));
+    assert!(kickoff.contains(SUMMARY_ID) && kickoff.contains("\"failed\""));
+    assert!(kickoff.contains("\"failed_reason\": \"no testing data present\""));
+
+    // The instruction typed at the resume, listed apart from the original.
+    assert!(kickoff.contains("Updated instructions for this resume:"));
+    assert!(kickoff.contains("- Rewrite the background from the template."));
+
+    // A rewrite has to be given the text it is rewriting: the section's
+    // template body travels with the kick-off, verbatim.
+    assert!(kickoff.contains("<template_copy_for_rewrite>"));
+    assert!(kickoff.contains("Template boilerplate."));
+    // Only the rewrite row gets one — a keep and a draft do not.
+    assert_eq!(kickoff.matches("<template_copy_for_rewrite>").count(), 1);
+    let rewrite_copy = kickoff
+        .split("<template_copy_for_rewrite>")
+        .nth(1)
+        .expect("rewrite copy");
+    assert!(rewrite_copy.contains(BACKGROUND_ID));
+}
+
+#[tokio::test]
+async fn the_opening_message_is_byte_identical_across_identical_runs() {
+    let (server, sdk, s3) = setup().await;
+
+    let first = one_run_opening(&server, &sdk, &s3).await;
+    let second = one_run_opening(&server, &sdk, &s3).await;
+
+    // Two runs over the same records and the same template produce the same
+    // bytes above the checkpoints. Anything else — an unsorted map, a
+    // timestamp, a listing order — costs every call after the first its cache.
+    for (index, label) in [(0, "record corpus"), (1, "template context"), (2, "plan")] {
+        assert_eq!(
+            first[index], second[index],
+            "the {label} block is not byte-stable"
+        );
+    }
+
+    let corpus = first[0]["text"].as_str().expect("record corpus");
+    let alpha = corpus.find("alpha-history.txt").expect("alpha listed");
+    let intake = corpus.find("intake.txt").expect("intake listed");
+    let zeta = corpus.find("zeta-notes.txt").expect("zeta listed");
+    assert!(
+        alpha < intake && intake < zeta,
+        "the corpus is not in filename order"
+    );
+}
+
+#[tokio::test]
+async fn the_cache_tier_follows_what_the_writer_model_accepts() {
+    // The extended one-hour tier where the family takes it...
+    let extended = cache_points_for("us.anthropic.claude-opus-4-6-20260301-v1:0").await;
+    assert!(!extended.is_empty());
+    for point in &extended {
+        assert_eq!(point, &serde_json::json!({"type": "default", "ttl": "1h"}));
+    }
+
+    // ...and the five-minute default where it does not. A mixed-TTL request is
+    // rejected outright, so the downgrade has to reach every point.
+    let default_tier = cache_points_for("us.anthropic.claude-sonnet-4-20250514-v1:0").await;
+    assert_eq!(default_tier.len(), extended.len());
+    for point in &default_tier {
+        assert_eq!(point, &serde_json::json!({"type": "default"}));
+    }
+}
+
+/// Seed a fresh client with the same records and template as every other call
+/// of this helper, run one whole-report draft, and return its opening message.
+/// The captured requests are cleared afterwards so two calls can be compared.
+async fn one_run_opening(
+    server: &MockServer,
+    sdk: &aws_config::SdkConfig,
+    s3: &aws_sdk_s3::Client,
+) -> Vec<serde_json::Value> {
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(s3, client_id).await;
+    // Deliberately created out of alphabetical order; the corpus is sorted by
+    // filename regardless of the order the walk produced.
+    for (filename, text) in [
+        ("zeta-notes.txt", "Zeta observations from the classroom."),
+        ("alpha-history.txt", "Alpha developmental history."),
+    ] {
+        claria_storage::objects::put_object(
+            s3,
+            BUCKET,
+            &claria_core::s3_keys::client_record_file(client_id, filename),
+            text.as_bytes().to_vec(),
+            Some("text/plain"),
+        )
+        .await
+        .expect("put record");
+    }
+    script(
+        server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                write_call(
+                    "section-1",
+                    REFERRAL_ID,
+                    0,
+                    "Reason for Referral",
+                    "Referred for attention concerns.",
+                ),
+                skip_call("skip-1", BACKGROUND_ID),
+                skip_call("skip-2", SUMMARY_ID),
+            ]),
+            tool_round(vec![finish_call("finish-1", "Wrote the referral.")]),
+            closing_text("Done."),
+        ],
+    )
+    .await;
+    pipeline::generate_full_report_for_report(
+        sdk,
+        s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Write the whole evaluation."),
+    )
+    .await
+    .expect("generate");
+    let opening = opening_message(server).await;
+    server.state.write().await.bedrock_tool_requests.clear();
+    opening
+}
+
+/// Drive one whole-report run on `model_id` and return every `cachePoint`
+/// block its opening Bedrock request carried.
+async fn cache_points_for(model_id: &str) -> Vec<serde_json::Value> {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                write_call(
+                    "section-1",
+                    REFERRAL_ID,
+                    0,
+                    "Reason for Referral",
+                    "Referred for attention concerns.",
+                ),
+                skip_call("skip-1", BACKGROUND_ID),
+                skip_call("skip-2", SUMMARY_ID),
+            ]),
+            tool_round(vec![finish_call("finish-1", "Wrote the referral.")]),
+            closing_text("Done."),
+        ],
+    )
+    .await;
+    pipeline::generate_full_report_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        model_id,
+        pipeline::FullReportRequest::new("Write the whole evaluation."),
+    )
+    .await
+    .expect("generate");
+    opening_message(&server)
+        .await
+        .into_iter()
+        .filter_map(|block| block.get("cachePoint").cloned())
         .collect()
 }
 

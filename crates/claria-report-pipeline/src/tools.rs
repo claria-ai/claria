@@ -7,9 +7,10 @@ use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::{
     error::BedrockError,
     report::{
-        self, FinishFullDraftRequest, ProposeReportChangesRequest, ReportBlockRequest,
-        ReportProposalOperationRequest, ReportToolCall, ReportToolRequest,
-        SetFullDraftTitleRequest, SkipFullDraftSectionRequest, WriteFullDraftSectionRequest,
+        self, FinishFullDraftRequest, MarkSectionFailedRequest, ProposeReportChangesRequest,
+        RecordCitationRequest, ReportBlockRequest, ReportProposalOperationRequest, ReportToolCall,
+        ReportToolRequest, SetFullDraftTitleRequest, SkipFullDraftSectionRequest,
+        WriteFullDraftSectionRequest,
     },
 };
 use claria_core::models::{
@@ -17,7 +18,11 @@ use claria_core::models::{
         ReportBlock, ReportContent, ReportOperation, ReportProposal, ReportSection,
         ReportToolResultStatus, ReportWorkspace, validate_report_content, validate_report_summary,
     },
-    report_run::{DraftRun, PlanEntry, RunSection, RunSectionState, SectionIntent},
+    report_run::{
+        DraftRun, MAX_CITATION_QUOTE_CHARACTERS, MAX_SECTION_CITATIONS,
+        MAX_SECTION_ERROR_CHARACTERS, MIN_CITATION_QUOTE_CHARACTERS, PlanEntry, RecordCitation,
+        RunSection, RunSectionState, SectionIntent,
+    },
 };
 use claria_report_store::{LoadedRun, ReportFailureCode, save_draft_run};
 use claria_storage::error::StorageError;
@@ -44,7 +49,21 @@ pub(crate) struct ExecutedTool {
 struct FullDraftRun<'a> {
     run: &'a mut LoadedRun,
     finalized: Option<FinalizedFullDraft>,
+    /// Consecutive rejected `write_full_draft_section` calls per section. A
+    /// section that keeps failing validation is bounded rather than allowed to
+    /// burn the run's whole call budget re-attempting the same mistake; a
+    /// successful write clears its count.
+    consecutive_write_failures: HashMap<Uuid, u32>,
+    /// Sections already told once that a skip contradicts an approved plan.
+    /// The corrective error is one strike, not a wall.
+    plan_conflicts_raised: HashSet<Uuid>,
 }
+
+/// Rejected writes tolerated for one section before the host fails it and
+/// tells the writer to move on. Two attempts is a repair round; a third
+/// identical failure is a section the writer cannot land, and spending the
+/// remaining call budget on it costs every section after it.
+const MAX_SECTION_WRITE_ATTEMPTS: u32 = 3;
 
 pub(crate) struct FinalizedFullDraft {
     pub(crate) content: ReportContent,
@@ -61,9 +80,17 @@ pub(crate) struct ToolExecutionContext<'a> {
     read_cache: HashMap<String, String>,
     pub(crate) staged_proposal: Option<ReportProposal>,
     full_draft: Option<FullDraftRun<'a>>,
+    /// Filenames the run's record snapshot actually carries, so a citation can
+    /// be checked against what the model was given rather than against the
+    /// client's whole bucket.
+    citable_filenames: &'a [String],
 }
 
 impl<'a> ToolExecutionContext<'a> {
+    // The tool loop's collaborators are all borrowed for the life of the turn;
+    // bundling them into a struct just to pass one argument would hide which
+    // of them the full-draft path needs.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         s3: &'a S3Client,
         bucket: &'a str,
@@ -71,6 +98,7 @@ impl<'a> ToolExecutionContext<'a> {
         workspace: &'a ReportWorkspace,
         model_id: &'a str,
         full_draft_run: Option<&'a mut LoadedRun>,
+        citable_filenames: &'a [String],
     ) -> Self {
         Self {
             s3,
@@ -84,7 +112,10 @@ impl<'a> ToolExecutionContext<'a> {
             full_draft: full_draft_run.map(|run| FullDraftRun {
                 run,
                 finalized: None,
+                consecutive_write_failures: HashMap::new(),
+                plan_conflicts_raised: HashSet::new(),
             }),
+            citable_filenames,
         }
     }
 
@@ -92,6 +123,27 @@ impl<'a> ToolExecutionContext<'a> {
         self.full_draft
             .as_ref()
             .is_some_and(|draft| draft.finalized.is_some())
+    }
+
+    /// Planned sections the run has not yet decided, in document order, as
+    /// `(id, heading)` — what the writer still owes before it may finish.
+    pub(crate) fn undecided_plan_sections(&self) -> Vec<(Uuid, String)> {
+        let Some(draft) = self.full_draft.as_ref() else {
+            return Vec::new();
+        };
+        let run = &draft.run.run;
+        let required = required_section_ids(run);
+        let mut undecided: Vec<&RunSection> = run
+            .sections
+            .iter()
+            .filter(|section| required.contains(&section.section_id))
+            .filter(|section| !is_decided(section.state))
+            .collect();
+        undecided.sort_by_key(|section| section.position);
+        undecided
+            .into_iter()
+            .map(|section| (section.section_id, section.heading.clone()))
+            .collect()
     }
 
     pub(crate) fn take_finalized_full_draft(&mut self) -> Option<FinalizedFullDraft> {
@@ -183,6 +235,9 @@ impl<'a> ToolExecutionContext<'a> {
             ReportToolRequest::SkipFullDraftSection(request) => {
                 self.skip_full_draft_section(request).await
             }
+            ReportToolRequest::MarkSectionFailed(request) => {
+                self.mark_section_failed(request).await
+            }
             ReportToolRequest::FinishFullDraft(request) => Ok(self.finish_full_draft(request)),
         }
     }
@@ -243,7 +298,7 @@ impl<'a> ToolExecutionContext<'a> {
         &mut self,
         request: WriteFullDraftSectionRequest,
     ) -> Result<ExecutedTool, TurnRunFailure> {
-        let Some(draft) = self.full_draft.as_mut() else {
+        let Some(draft) = self.full_draft.as_ref() else {
             return Ok(tool_error(
                 "tool_not_available",
                 "write_full_draft_section is available only during explicit full-draft generation.",
@@ -255,8 +310,11 @@ impl<'a> ToolExecutionContext<'a> {
                 "The complete draft is already finalized; do not modify it again.",
             ));
         }
+        // Resolving the ID comes first and on its own: a failure here names no
+        // section the host knows, so it cannot count toward that section's
+        // attempt bound.
         let run = &draft.run.run;
-        let section_id = match request.section_id {
+        let (section_id, attributable) = match &request.section_id {
             Some(value) => {
                 let Ok(id) = value.parse::<Uuid>() else {
                     return Ok(tool_error(
@@ -277,32 +335,133 @@ impl<'a> ToolExecutionContext<'a> {
                         "The section_id was not supplied by the host or returned by an earlier section write. Copy an existing ID exactly, or pass null for a new section.",
                     ));
                 }
-                id
+                (id, true)
             }
-            None => Uuid::new_v4(),
+            None => (Uuid::new_v4(), false),
         };
-        let position = match usize::try_from(request.position) {
-            Ok(position) => position,
-            Err(_) => {
-                return Ok(tool_error(
-                    "invalid_section_position",
-                    "The section position is too large.",
-                ));
+
+        let prepared = match self.prepare_section_write(section_id, request) {
+            Ok(prepared) => prepared,
+            Err(rejection) if !attributable => {
+                return Ok(tool_error(rejection.code, &rejection.message));
             }
+            Err(rejection) => return self.record_write_rejection(section_id, rejection).await,
         };
+
+        let supplied_order: Vec<Uuid> = self
+            .workspace
+            .draft
+            .content
+            .sections
+            .iter()
+            .map(|section| section.id)
+            .collect();
+        let now = jiff::Timestamp::now();
+        let Some(draft) = self.full_draft.as_mut() else {
+            return Ok(tool_error(
+                "tool_not_available",
+                "write_full_draft_section is available only during explicit full-draft generation.",
+            ));
+        };
+        draft.consecutive_write_failures.remove(&section_id);
+        let run = &mut draft.run.run;
+        match run
+            .sections
+            .iter_mut()
+            .find(|section| section.section_id == section_id)
+        {
+            Some(section) => {
+                section.heading = prepared.heading.clone();
+                section.blocks = prepared.blocks;
+                section.citations = prepared.citations;
+                // A write is the stronger decision: it overrides an earlier
+                // skip, exactly as the in-memory candidate did.
+                section.state = RunSectionState::Drafted;
+                section.attempts = section.attempts.saturating_add(1);
+                section.error = None;
+                section.updated_at = now;
+            }
+            None => {
+                // A section the writer invented. It joins the run's section
+                // universe, and the plan gains the matching row that keeps
+                // "one entry per section" true.
+                run.sections.push(RunSection {
+                    section_id,
+                    heading: prepared.heading.clone(),
+                    position: 0,
+                    state: RunSectionState::Drafted,
+                    blocks: prepared.blocks,
+                    citations: prepared.citations,
+                    attempts: 1,
+                    error: None,
+                    updated_at: now,
+                });
+                if let Some(plan) = run.plan.as_mut() {
+                    plan.entries.push(PlanEntry {
+                        section_id,
+                        heading: prepared.heading,
+                        intent: SectionIntent::Draft,
+                        // The host never asked for this section, so it is not
+                        // one the finisher demands a decision about — and a
+                        // skip of it is still an invented ID.
+                        required: false,
+                        scope: String::new(),
+                        evidence: Vec::new(),
+                        instruction: None,
+                    });
+                }
+            }
+        }
+        renumber_positions(run, &prepared.written_order, &supplied_order);
+        self.commit_run().await?;
+        Ok(ExecutedTool {
+            status: ReportToolResultStatus::Success,
+            content: serde_json::json!({
+                "status": "section_staged",
+                "section_id": section_id.to_string(),
+                "position": prepared.position,
+                "block_count": prepared.block_count,
+                "citation_count": prepared.citation_count,
+                "section_count": prepared.section_count
+            }),
+        })
+    }
+
+    /// Validate one section write against the candidate it would produce,
+    /// without touching the run. Read-only so the attempt bound below can
+    /// decide what to do with a rejection before anything is committed.
+    fn prepare_section_write(
+        &self,
+        section_id: Uuid,
+        request: WriteFullDraftSectionRequest,
+    ) -> Result<PreparedSectionWrite, WriteRejection> {
+        let Some(draft) = self.full_draft.as_ref() else {
+            return Err(WriteRejection::new(
+                "tool_not_available",
+                "write_full_draft_section is available only during explicit full-draft generation.",
+            ));
+        };
+        let run = &draft.run.run;
+        let position = usize::try_from(request.position).map_err(|_| {
+            WriteRejection::new(
+                "invalid_section_position",
+                "The section position is too large.",
+            )
+        })?;
         let mut sections = written_sections(run);
         if let Some(existing) = sections.iter().position(|section| section.id == section_id) {
             sections.remove(existing);
         }
         if position > sections.len() {
-            return Ok(tool_error(
+            return Err(WriteRejection::new(
                 "invalid_section_position",
-                &format!(
+                format!(
                     "Section position {position} is outside 0..={}; write sections in final order.",
                     sections.len()
                 ),
             ));
         }
+        let citations = self.validate_citations(request.citations.unwrap_or_default())?;
         let block_count = request.blocks.len();
         let heading = request.heading;
         let blocks: Vec<ReportBlock> = request.blocks.into_iter().map(block_from_request).collect();
@@ -324,80 +483,175 @@ impl<'a> ToolExecutionContext<'a> {
                 .unwrap_or_else(|| self.workspace.draft.content.title.clone()),
             sections: sections.clone(),
         };
-        if let Err(error) = validate_report_content(&proposed) {
-            return Ok(tool_error(
+        validate_report_content(&proposed).map_err(|error| {
+            WriteRejection::new(
                 "invalid_full_draft_section",
-                &format!("The full-draft section was invalid: {error}"),
+                format!("The full-draft section was invalid: {error}"),
+            )
+        })?;
+        Ok(PreparedSectionWrite {
+            position,
+            block_count,
+            citation_count: citations.len(),
+            section_count: sections.len(),
+            written_order: sections.iter().map(|section| section.id).collect(),
+            heading,
+            blocks,
+            citations,
+        })
+    }
+
+    /// Check each quote names a file the run actually put in front of the
+    /// model, and is long enough to be resolvable later. The quote itself is
+    /// deliberately NOT matched against the record text here: that is the
+    /// completion gate's job, and doing it per write would re-read the corpus
+    /// on every section.
+    fn validate_citations(
+        &self,
+        citations: Vec<RecordCitationRequest>,
+    ) -> Result<Vec<RecordCitation>, WriteRejection> {
+        if citations.len() > MAX_SECTION_CITATIONS {
+            return Err(WriteRejection::new(
+                "too_many_citations",
+                format!("A section may cite at most {MAX_SECTION_CITATIONS} record quotes."),
             ));
         }
-        let section_count = sections.len();
-        let supplied_order: Vec<Uuid> = self
-            .workspace
-            .draft
-            .content
-            .sections
-            .iter()
-            .map(|section| section.id)
-            .collect();
+        citations
+            .into_iter()
+            .map(|citation| {
+                if !self
+                    .citable_filenames
+                    .iter()
+                    .any(|filename| filename == &citation.filename)
+                {
+                    return Err(WriteRejection::new(
+                        "unknown_citation_file",
+                        "A citation named a file that is not in this run's record snapshot. Copy filenames exactly from the record context; unreadable records cannot be cited.",
+                    ));
+                }
+                let quote_characters = citation.quote.chars().count();
+                if !(MIN_CITATION_QUOTE_CHARACTERS..=MAX_CITATION_QUOTE_CHARACTERS)
+                    .contains(&quote_characters)
+                {
+                    return Err(WriteRejection::new(
+                        "invalid_citation_quote",
+                        format!(
+                            "A citation quote was {quote_characters} Unicode characters; quotes must be {MIN_CITATION_QUOTE_CHARACTERS}–{MAX_CITATION_QUOTE_CHARACTERS}."
+                        ),
+                    ));
+                }
+                Ok(RecordCitation {
+                    filename: citation.filename,
+                    quote: citation.quote,
+                })
+            })
+            .collect()
+    }
+
+    /// Count one rejected write against its section, and fail the section
+    /// once it has used its attempts — so the run continues with the sections
+    /// after it instead of spending the rest of its call budget here.
+    async fn record_write_rejection(
+        &mut self,
+        section_id: Uuid,
+        rejection: WriteRejection,
+    ) -> Result<ExecutedTool, TurnRunFailure> {
+        let Some(draft) = self.full_draft.as_mut() else {
+            return Ok(tool_error(rejection.code, &rejection.message));
+        };
+        let strikes = draft
+            .consecutive_write_failures
+            .entry(section_id)
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(1);
+        if *strikes < MAX_SECTION_WRITE_ATTEMPTS {
+            return Ok(tool_error(rejection.code, &rejection.message));
+        }
+        // The diagnostic is the tool error's own code and message: structural
+        // JSON/validator wording, never report or record text.
+        let diagnostic = truncate_characters(
+            &format!("{}: {}", rejection.code, rejection.message),
+            MAX_SECTION_ERROR_CHARACTERS,
+        );
         let now = jiff::Timestamp::now();
-        let run = &mut draft.run.run;
-        match run
+        if let Some(section) = draft
+            .run
+            .run
             .sections
             .iter_mut()
             .find(|section| section.section_id == section_id)
         {
-            Some(section) => {
-                section.heading = heading.clone();
-                section.blocks = blocks;
-                // A write is the stronger decision: it overrides an earlier
-                // skip, exactly as the in-memory candidate did.
-                section.state = RunSectionState::Drafted;
-                section.attempts = section.attempts.saturating_add(1);
-                section.error = None;
-                section.updated_at = now;
-            }
-            None => {
-                // A section the writer invented. It joins the run's section
-                // universe, and the plan gains the matching row that keeps
-                // "one entry per section" true.
-                run.sections.push(RunSection {
-                    section_id,
-                    heading: heading.clone(),
-                    position: 0,
-                    state: RunSectionState::Drafted,
-                    blocks,
-                    citations: Vec::new(),
-                    attempts: 1,
-                    error: None,
-                    updated_at: now,
-                });
-                if let Some(plan) = run.plan.as_mut() {
-                    plan.entries.push(PlanEntry {
-                        section_id,
-                        heading,
-                        intent: SectionIntent::Draft,
-                        // The host never asked for this section, so it is not
-                        // one the finisher demands a decision about — and a
-                        // skip of it is still an invented ID.
-                        required: false,
-                        scope: String::new(),
-                        evidence: Vec::new(),
-                        instruction: None,
-                    });
-                }
-            }
+            section.state = RunSectionState::Failed;
+            section.blocks.clear();
+            section.attempts = section.attempts.saturating_add(1);
+            section.error = Some(diagnostic.clone());
+            section.updated_at = now;
         }
-        let written: Vec<Uuid> = sections.iter().map(|section| section.id).collect();
-        renumber_positions(run, &written, &supplied_order);
+        self.commit_run().await?;
+        Ok(tool_error(
+            "section_attempts_exhausted",
+            &format!(
+                "This section was rejected {MAX_SECTION_WRITE_ATTEMPTS} times and is now marked failed; continue with the next planned section. Last diagnostic — {diagnostic}"
+            ),
+        ))
+    }
+
+    async fn mark_section_failed(
+        &mut self,
+        request: MarkSectionFailedRequest,
+    ) -> Result<ExecutedTool, TurnRunFailure> {
+        let Some(draft) = self.full_draft.as_mut() else {
+            return Ok(tool_error(
+                "tool_not_available",
+                "mark_section_failed is available only during explicit full-draft generation.",
+            ));
+        };
+        if draft.finalized.is_some() {
+            return Ok(tool_error(
+                "full_draft_already_finalized",
+                "The complete draft is already finalized; do not modify it again.",
+            ));
+        }
+        let Ok(section_id) = request.section_id.parse::<Uuid>() else {
+            return Ok(tool_error(
+                "invalid_section_id",
+                "section_id must be a copied 36-character UUID.",
+            ));
+        };
+        let reason = request.reason.trim().to_string();
+        if reason.is_empty() || reason.chars().count() > MAX_SECTION_ERROR_CHARACTERS {
+            return Ok(tool_error(
+                "invalid_failure_reason",
+                &format!("reason must be 1–{MAX_SECTION_ERROR_CHARACTERS} characters."),
+            ));
+        }
+        let now = jiff::Timestamp::now();
+        let Some(section) = draft
+            .run
+            .run
+            .sections
+            .iter_mut()
+            .find(|section| section.section_id == section_id)
+        else {
+            return Ok(tool_error(
+                "invented_section_id",
+                "Only a planned section can be marked failed. Copy its ID exactly from plan_context.",
+            ));
+        };
+        section.state = RunSectionState::Failed;
+        // A failed section carries no staged content: the assembly falls back
+        // to the base revision, and the run validator refuses blocks outside
+        // the drafted state.
+        section.blocks.clear();
+        section.attempts = section.attempts.saturating_add(1);
+        section.error = Some(reason);
+        section.updated_at = now;
         self.commit_run().await?;
         Ok(ExecutedTool {
             status: ReportToolResultStatus::Success,
             content: serde_json::json!({
-                "status": "section_staged",
-                "section_id": section_id.to_string(),
-                "position": position,
-                "block_count": block_count,
-                "section_count": section_count
+                "status": "section_marked_failed",
+                "section_id": section_id.to_string()
             }),
         })
     }
@@ -438,6 +692,46 @@ impl<'a> ToolExecutionContext<'a> {
                 "Only a supplied template/report section can be skipped. Copy its ID exactly from the untrusted context; sections you added yourself should simply not be written.",
             ));
         };
+        // A skip that contradicts a plan a human approved gets exactly one
+        // corrective round. The plan row goes back verbatim so the model can
+        // see what it is arguing with; if it still wants the skip, the skip
+        // stands and the divergence is recorded rather than fought over.
+        let conflict = draft
+            .run
+            .run
+            .plan
+            .as_ref()
+            .filter(|plan| plan.user_edited)
+            .and_then(|plan| {
+                plan.entries
+                    .iter()
+                    .find(|entry| entry.section_id == section_id)
+            })
+            .filter(|entry| entry.intent == SectionIntent::Draft)
+            .cloned();
+        let diverged = match conflict {
+            Some(entry) if draft.plan_conflicts_raised.insert(section_id) => {
+                return Ok(ExecutedTool {
+                    status: ReportToolResultStatus::Error,
+                    content: serde_json::json!({
+                        "error": {
+                            "code": "plan_conflict",
+                            "message": "The approved plan asks for this section to be drafted, not skipped. Draft it, or call skip_full_draft_section again to record a deliberate divergence.",
+                            "plan_entry": {
+                                "section_id": entry.section_id.to_string(),
+                                "heading": entry.heading,
+                                "intent": entry.intent,
+                                "required": entry.required,
+                                "scope": entry.scope,
+                                "instruction": entry.instruction
+                            }
+                        }
+                    }),
+                });
+            }
+            Some(_) => true,
+            None => false,
+        };
         let section = &mut draft.run.run.sections[index];
         if section.state == RunSectionState::Drafted {
             return Ok(tool_error(
@@ -446,6 +740,9 @@ impl<'a> ToolExecutionContext<'a> {
             ));
         }
         section.state = RunSectionState::Skipped;
+        if diverged {
+            section.error = Some("skip diverged from the approved plan".to_string());
+        }
         section.updated_at = jiff::Timestamp::now();
         self.commit_run().await?;
         Ok(ExecutedTool {
@@ -491,10 +788,14 @@ impl<'a> ToolExecutionContext<'a> {
             );
         }
         let skipped_section_ids = sections_in_state(run, RunSectionState::Skipped);
+        let failed_section_ids = sections_in_state(run, RunSectionState::Failed);
         let drafted_section_ids = sections_in_state(run, RunSectionState::Drafted);
+        // Failed joins drafted and skipped as a decision. A section the writer
+        // genuinely could not draft must not hold the whole run hostage — the
+        // run completes with the failure visible instead.
         let mut missing = required_section_ids(run)
             .difference(&drafted_section_ids)
-            .filter(|id| !skipped_section_ids.contains(id))
+            .filter(|id| !skipped_section_ids.contains(id) && !failed_section_ids.contains(id))
             .copied()
             .collect::<Vec<_>>();
         missing.sort();
@@ -502,7 +803,7 @@ impl<'a> ToolExecutionContext<'a> {
             return tool_error(
                 "full_draft_incomplete",
                 &format!(
-                    "Write or explicitly skip every supplied report/template section before finishing. Undecided section IDs: {}",
+                    "Write, explicitly skip, or mark failed every planned section before finishing. Undecided section IDs: {}",
                     missing
                         .iter()
                         .map(Uuid::to_string)
@@ -511,9 +812,10 @@ impl<'a> ToolExecutionContext<'a> {
                 ),
             );
         }
-        let sections = merge_skipped_placeholders(
+        let sections = merge_undrafted_sections(
             &written,
             &skipped_section_ids,
+            &failed_section_ids,
             &self.workspace.draft.content.sections,
         );
         let content = ReportContent { title, sections };
@@ -525,6 +827,7 @@ impl<'a> ToolExecutionContext<'a> {
         }
         let section_count = content.sections.len();
         let skipped_section_count = skipped_section_ids.len();
+        let failed_section_count = failed_section_ids.len();
         let base_revision = self.workspace.draft.revision;
         if let Some(draft) = self.full_draft.as_mut() {
             draft.finalized = Some(FinalizedFullDraft {
@@ -538,6 +841,7 @@ impl<'a> ToolExecutionContext<'a> {
                 "status": "full_draft_finalized",
                 "section_count": section_count,
                 "skipped_section_count": skipped_section_count,
+                "failed_section_count": failed_section_count,
                 "base_revision": base_revision
             }),
         }
@@ -759,23 +1063,31 @@ fn renumber_positions(run: &mut DraftRun, written: &[Uuid], supplied_order: &[Uu
     }
 }
 
-/// Merge deferred-section placeholders into the written full-draft sections.
+/// Merge the sections the run did not draft back into the written ones.
 ///
-/// Written sections keep the model's chosen order. Each skipped supplied
-/// section re-enters as an empty `skipped` placeholder carrying its supplied
-/// heading, ID, template copy, and authorship, positioned after the nearest
-/// earlier supplied section already present in the result — so consecutive
-/// skips keep their supplied relative order, and a skip with no earlier
-/// surviving neighbor lands at the front. The authored body stays empty; the
-/// template copy is what the greyed-out preview renders.
-fn merge_skipped_placeholders(
+/// Written sections keep the model's chosen order. Each undrafted supplied
+/// section re-enters positioned after the nearest earlier supplied section
+/// already present in the result — so consecutive gaps keep their supplied
+/// relative order, and one with no earlier surviving neighbor lands at the
+/// front.
+///
+/// What it re-enters as differs by decision. A **skipped** section becomes an
+/// empty `skipped` placeholder carrying its supplied heading, ID, template
+/// copy, and authorship: the authored body stays empty and the template copy
+/// is what the greyed-out preview renders. A **failed** section is copied from
+/// the base revision verbatim instead — the writer could not replace that
+/// text, so leaving it alone is the honest outcome, and a base section that
+/// was already an empty placeholder stays exactly that.
+fn merge_undrafted_sections(
     written: &[ReportSection],
     skipped_section_ids: &HashSet<Uuid>,
+    failed_section_ids: &HashSet<Uuid>,
     supplied: &[ReportSection],
 ) -> Vec<ReportSection> {
     let mut sections = written.to_vec();
     for (supplied_index, supplied_section) in supplied.iter().enumerate() {
-        if !skipped_section_ids.contains(&supplied_section.id) {
+        let skipped = skipped_section_ids.contains(&supplied_section.id);
+        if !skipped && !failed_section_ids.contains(&supplied_section.id) {
             continue;
         }
         let insert_at = supplied[..supplied_index]
@@ -788,8 +1100,7 @@ fn merge_skipped_placeholders(
                     .map(|position| position + 1)
             })
             .unwrap_or(0);
-        sections.insert(
-            insert_at,
+        let section = if skipped {
             ReportSection {
                 id: supplied_section.id,
                 heading: supplied_section.heading.clone(),
@@ -797,10 +1108,62 @@ fn merge_skipped_placeholders(
                 skipped: true,
                 template_blocks: supplied_section.template_blocks.clone(),
                 authorship: supplied_section.authorship.clone(),
-            },
-        );
+            }
+        } else {
+            supplied_section.clone()
+        };
+        sections.insert(insert_at, section);
     }
     sections
+}
+
+/// A section write the host refused, carrying the diagnostic the model gets
+/// back — structural wording only, so it is safe to persist on the run.
+struct WriteRejection {
+    code: &'static str,
+    message: String,
+}
+
+impl WriteRejection {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+/// A validated section write, ready to be applied to the run.
+struct PreparedSectionWrite {
+    heading: String,
+    blocks: Vec<ReportBlock>,
+    citations: Vec<RecordCitation>,
+    position: usize,
+    block_count: usize,
+    citation_count: usize,
+    section_count: usize,
+    written_order: Vec<Uuid>,
+}
+
+/// Whether the run has an answer for a section, in the sense the finisher
+/// demands: written, deliberately deferred, or genuinely failed.
+fn is_decided(state: RunSectionState) -> bool {
+    matches!(
+        state,
+        RunSectionState::Drafted
+            | RunSectionState::Skipped
+            | RunSectionState::Failed
+            | RunSectionState::Kept
+    )
+}
+
+/// Cut a diagnostic to `limit` Unicode characters so it fits the run's
+/// PHI-free error field without splitting a character.
+fn truncate_characters(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    text.chars().take(limit).collect()
 }
 
 fn list_record_files_result(inventory: &[RecordInventoryEntry]) -> ExecutedTool {

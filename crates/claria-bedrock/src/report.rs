@@ -36,6 +36,7 @@ pub const PROPOSE_REPORT_CHANGES_TOOL: &str = "propose_report_changes";
 pub const SET_FULL_DRAFT_TITLE_TOOL: &str = "set_full_draft_title";
 pub const WRITE_FULL_DRAFT_SECTION_TOOL: &str = "write_full_draft_section";
 pub const SKIP_FULL_DRAFT_SECTION_TOOL: &str = "skip_full_draft_section";
+pub const MARK_SECTION_FAILED_TOOL: &str = "mark_section_failed";
 pub const FINISH_FULL_DRAFT_TOOL: &str = "finish_full_draft";
 pub const DEFAULT_MAX_TOOL_USES_PER_RESPONSE: usize = 80;
 pub const MAX_TOOL_USES_PER_RESPONSE: usize = 100;
@@ -59,6 +60,15 @@ pub const REPORT_OUTPUT_TOKEN_RESERVE: u32 = 32_768;
 pub const MAX_PROPOSAL_OPERATIONS: usize = claria_core::models::report::MAX_PROPOSAL_OPERATIONS;
 /// Maximum blocks per proposed section — mirrors the domain validator.
 pub const MAX_SECTION_BLOCKS: usize = claria_core::models::report::MAX_SECTION_BLOCKS;
+/// Citation and failure-note ceilings, mirrored from the drafting-run
+/// validators so the advertised schema never rejects what the domain accepts.
+pub const MAX_SECTION_CITATIONS: usize = claria_core::models::report_run::MAX_SECTION_CITATIONS;
+pub const MIN_CITATION_QUOTE_CHARACTERS: usize =
+    claria_core::models::report_run::MIN_CITATION_QUOTE_CHARACTERS;
+pub const MAX_CITATION_QUOTE_CHARACTERS: usize =
+    claria_core::models::report_run::MAX_CITATION_QUOTE_CHARACTERS;
+pub const MAX_SECTION_ERROR_CHARACTERS: usize =
+    claria_core::models::report_run::MAX_SECTION_ERROR_CHARACTERS;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReportConverseOutput {
@@ -146,6 +156,7 @@ pub enum ReportToolRequest {
     SetFullDraftTitle(SetFullDraftTitleRequest),
     WriteFullDraftSection(WriteFullDraftSectionRequest),
     SkipFullDraftSection(SkipFullDraftSectionRequest),
+    MarkSectionFailed(MarkSectionFailedRequest),
     FinishFullDraft(FinishFullDraftRequest),
 }
 
@@ -186,6 +197,18 @@ pub struct WriteFullDraftSectionRequest {
     pub position: u32,
     pub heading: String,
     pub blocks: Vec<ReportBlockRequest>,
+    /// Record quotes the section's claims rest on. Optional, and validated at
+    /// commit against the run's record snapshot.
+    #[serde(default)]
+    pub citations: Option<Vec<RecordCitationRequest>>,
+}
+
+/// One record quote the writer attributes to a named record file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RecordCitationRequest {
+    pub filename: String,
+    pub quote: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -194,6 +217,15 @@ pub struct SkipFullDraftSectionRequest {
     /// An existing section ID copied from the supplied report structure —
     /// only supplied sections can be deferred, never new ones.
     pub section_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MarkSectionFailedRequest {
+    /// A planned section's 36-character UUID, copied exactly.
+    pub section_id: String,
+    /// Why the section cannot be drafted from the available records.
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -263,6 +295,9 @@ pub fn decode_tool_request(call: &ReportToolCall) -> Result<ReportToolRequest, B
             .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
         SKIP_FULL_DRAFT_SECTION_TOOL => serde_json::from_value(call.input.clone())
             .map(ReportToolRequest::SkipFullDraftSection)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        MARK_SECTION_FAILED_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::MarkSectionFailed)
             .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
         FINISH_FULL_DRAFT_TOOL => serde_json::from_value(call.input.clone())
             .map(ReportToolRequest::FinishFullDraft)
@@ -935,6 +970,49 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                 "type": "array", "minItems": 1, "maxItems": MAX_SECTION_BLOCKS,
                 "items": block_schema,
                 "description": "The complete blocks for this section. Calling the tool again with the returned section_id replaces the earlier staged version."
+            },
+            "citations": {
+                "type": "array",
+                "maxItems": MAX_SECTION_CITATIONS,
+                "description": format!(
+                    "Optional. Up to {MAX_SECTION_CITATIONS} record quotes this section's claims rest on."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["filename", "quote"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "filename": {
+                            "type": "string", "minLength": 1, "maxLength": 1024,
+                            "description": "A filename copied exactly from the record snapshot in the untrusted context. Invented names are rejected."
+                        },
+                        "quote": {
+                            "type": "string",
+                            "minLength": MIN_CITATION_QUOTE_CHARACTERS,
+                            "maxLength": MAX_CITATION_QUOTE_CHARACTERS,
+                            "description": format!(
+                                "A verbatim span of {MIN_CITATION_QUOTE_CHARACTERS}–{MAX_CITATION_QUOTE_CHARACTERS} Unicode characters copied from that file. Do not paraphrase."
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let mark_section_failed_schema = serde_json::json!({
+        "type": "object",
+        "required": ["section_id", "reason"],
+        "additionalProperties": false,
+        "properties": {
+            "section_id": {
+                "type": "string", "minLength": 36, "maxLength": 36,
+                "description": "The 36-character UUID of a planned section, copied exactly from plan_context."
+            },
+            "reason": {
+                "type": "string", "minLength": 1, "maxLength": MAX_SECTION_ERROR_CHARACTERS,
+                "description": format!(
+                    "Why this section cannot be drafted from the available records, in at most {MAX_SECTION_ERROR_CHARACTERS} characters. Name what is missing; do not quote client content."
+                )
             }
         }
     });
@@ -998,28 +1076,41 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
             )?,
             tool(
                 WRITE_FULL_DRAFT_SECTION_TOOL,
-                "Write one complete section into an isolated full-draft candidate. Copy existing \
-                 section_id values exactly so imported-template structure is retained; pass null only \
-                 for a new section. position is the 0-based final order. Use repeated calls or tool \
-                 rounds to fill the whole document; no section is saved to the working draft yet.",
+                "Write one complete section into an isolated full-draft candidate. Work through \
+                 plan_context in the order its entries are listed and write ONE section per \
+                 response, then wait for the tool result before starting the next. Ground the \
+                 section in the records that entry's evidence names; its scope is guidance, but its \
+                 section_id is authoritative — copy it exactly, and pass null only for a genuinely \
+                 new section. position is the 0-based final order. No section is saved to the \
+                 working draft until finish_full_draft succeeds.",
                 full_section_schema,
             )?,
             tool(
                 SKIP_FULL_DRAFT_SECTION_TOOL,
-                "Explicitly defer one supplied template/report section instead of writing it — only \
-                 when the user's guidance directs that it be left for a later pass, never to shorten \
-                 the job. The section keeps its heading and place in the document, its body stays \
-                 empty, and exports omit it until a later edit writes content into it. Every supplied \
-                 section must be either written or skipped before finish_full_draft; a later \
-                 write_full_draft_section with the same section_id overrides the skip.",
+                "Skip only sections the plan marks skip or that the user's guidance defers to a \
+                 later pass — never to shorten the job. The section keeps its heading and place in \
+                 the document, its body stays empty, and exports omit it until a later edit writes \
+                 content into it. Every planned section must be written, skipped, or marked failed \
+                 before finish_full_draft; a later write_full_draft_section with the same \
+                 section_id overrides the skip.",
                 skip_full_section_schema,
             )?,
             tool(
+                MARK_SECTION_FAILED_TOOL,
+                "Declare that one planned section cannot be drafted from the available records \
+                 after a genuine attempt — the records needed for it are missing, unreadable, or \
+                 contradict each other beyond what a draft can resolve. The section keeps its \
+                 base-revision content and the run finishes with the failure visible to the user. \
+                 Never use this to shorten the job, and never in place of skip_full_draft_section \
+                 for a section the plan or the user deliberately deferred.",
+                mark_section_failed_schema,
+            )?,
+            tool(
                 FINISH_FULL_DRAFT_TOOL,
-                "Validate and finalize the isolated full-draft candidate after the title has been set \
-                 and every supplied template/report section has been written or explicitly skipped. A \
-                 successful result authorizes the host to atomically save one new working-draft \
-                 revision without a proposal gate.",
+                "Validate and finalize the isolated full-draft candidate after the title has been \
+                 set and every planned section has been written, explicitly skipped, or marked \
+                 failed. A successful result authorizes the host to atomically save one new \
+                 working-draft revision without a proposal gate.",
                 finish_full_draft_schema,
             )?,
         ],

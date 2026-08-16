@@ -72,14 +72,7 @@ pub(crate) fn build_untrusted_context(
             }))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let template_context = workspace.template_import.as_ref().map(|template| {
-        serde_json::json!({
-            "imported_from_docx": true,
-            "imported_revision": template.imported_revision,
-            "warning_codes": template.warnings.iter().map(|warning| warning.code).collect::<Vec<_>>(),
-            "carryover_reviewed_for_current_revision": template.reviewed_revision == Some(workspace.draft.revision)
-        })
-    });
+    let template_context = template_provenance(workspace);
     let value = serde_json::json!({
         "accepted_revision": workspace.draft.revision,
         // Template copies and authorship stamps are host bookkeeping: the
@@ -108,13 +101,37 @@ pub(crate) fn build_untrusted_context(
 }
 
 /// Keep untrusted text from opening or closing the named host delimiters:
-/// only a `<` that begins `<untrusted_...` or `</untrusted_...` is rewritten
-/// to its six-character JSON unicode-escape form, so the serialized payload
-/// stays valid JSON and decodes back to the original characters. Ordinary clinical text —
+/// only a `<` that begins one of them — `<untrusted_...`, `</untrusted_...`,
+/// `<plan_context>`, `</plan_context>` — is rewritten to its six-character
+/// JSON unicode-escape form, so the serialized payload stays valid JSON and
+/// decodes back to the original characters. Ordinary clinical text —
 /// `T-score >70`, `<3rd percentile` — passes through verbatim; blanket
 /// angle-bracket escaping measurably mangled exactly that kind of prose.
 pub(crate) fn escape_delimiter_characters(value: &str) -> String {
-    claria_bedrock::context::escape_delimiter_forgeries(value, &["untrusted_"], "\\u003c")
+    claria_bedrock::context::escape_delimiter_forgeries(
+        value,
+        &["untrusted_", "plan_context"],
+        "\\u003c",
+    )
+}
+
+/// DOCX-template provenance for the model: how the structure got here and
+/// whether its carryover has been reviewed against the current revision.
+/// Never the source bytes, path, or original filename.
+pub(crate) fn template_provenance(workspace: &ReportWorkspace) -> Option<serde_json::Value> {
+    workspace.template_import.as_ref().map(|template| {
+        serde_json::json!({
+            "imported_from_docx": true,
+            "imported_revision": template.imported_revision,
+            "warning_codes": template
+                .warnings
+                .iter()
+                .map(|warning| warning.code)
+                .collect::<Vec<_>>(),
+            "carryover_reviewed_for_current_revision":
+                template.reviewed_revision == Some(workspace.draft.revision)
+        })
+    })
 }
 
 /// Lowercase hex SHA-256 digest — a PHI-free stand-in for prompt text in
@@ -216,6 +233,13 @@ fn sanitize_tool_input(name: &str, input: &serde_json::Value) -> serde_json::Val
         report::FINISH_FULL_DRAFT_TOOL => serde_json::json!({
             "summary_retained": false
         }),
+        // The failure reason is durable on the run object, which is where the
+        // UI reads it. The conversation copy is free model prose, so it is
+        // dropped here like every other free-text tool input.
+        report::MARK_SECTION_FAILED_TOOL => serde_json::json!({
+            "section_id": input.get("section_id"),
+            "reason_retained": false
+        }),
         _ => input.clone(),
     }
 }
@@ -251,6 +275,7 @@ fn sanitize_tool_result(
         | Some(report::SET_FULL_DRAFT_TITLE_TOOL)
         | Some(report::WRITE_FULL_DRAFT_SECTION_TOOL)
         | Some(report::SKIP_FULL_DRAFT_SECTION_TOOL)
+        | Some(report::MARK_SECTION_FAILED_TOOL)
         | Some(report::FINISH_FULL_DRAFT_TOOL) => content.clone(),
         _ => serde_json::json!({"status": "succeeded", "content_retained": false}),
     }

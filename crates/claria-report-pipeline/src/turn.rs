@@ -31,6 +31,9 @@ use crate::{
     context::{
         build_untrusted_context, flatten_protocol_history, sanitize_turn_messages, sha256_hex,
     },
+    full_draft_context::{
+        DraftTurnKind, cache_checkpoints, kickoff_instruction, plan_context, template_context,
+    },
     prompts::{full_report_system_prompt, report_system_prompt},
     record_context::{FullRecordContext, load_full_record_context, load_record_inventory},
     run::{release_failed_run, stamp_run_authorship, start_draft_run},
@@ -368,7 +371,17 @@ async fn generate_full_report_loaded(
 ) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     ensure_ready_for_turn(&loaded.workspace, expected_revision)?;
     let run = start_draft_run(s3, bucket, &mut loaded, model_id, request.guidance.trim()).await?;
-    execute_full_draft_turn(sdk_config, s3, bucket, loaded, model_id, request, run).await
+    execute_full_draft_turn(
+        sdk_config,
+        s3,
+        bucket,
+        loaded,
+        model_id,
+        request,
+        run,
+        DraftTurnKind::Fresh,
+    )
+    .await
 }
 
 /// Drive one whole-report turn against an already-created run, then release
@@ -378,6 +391,9 @@ async fn generate_full_report_loaded(
 /// once: on success the run owns the revision it cut, and on any failure the
 /// workspace pointer is cleared while the sections that landed stay durable in
 /// the run object.
+// The run and how the turn was entered ride alongside the workspace rather
+// than inside the request: both outlive the request and neither is the user's.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_full_draft_turn(
     sdk_config: &aws_config::SdkConfig,
     s3: &S3Client,
@@ -386,6 +402,7 @@ pub(crate) async fn execute_full_draft_turn(
     model_id: &str,
     request: FullReportRequest<'_>,
     mut run: LoadedRun,
+    turn_kind: DraftTurnKind,
 ) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     let client_id = loaded.workspace.client_id;
     let report_id = loaded.workspace.report_id;
@@ -406,6 +423,7 @@ pub(crate) async fn execute_full_draft_turn(
         TurnRunRequest::full_draft(
             request.guidance.trim(),
             &record_context,
+            turn_kind,
             request.limits,
             request.progress,
             request.prompt_cache,
@@ -564,6 +582,7 @@ enum TurnRunKind<'a> {
     FullDraft {
         guidance: &'a str,
         record_context: &'a FullRecordContext,
+        turn_kind: DraftTurnKind,
     },
 }
 
@@ -590,9 +609,11 @@ impl<'a> TurnRunRequest<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn full_draft(
         guidance: &'a str,
         record_context: &'a FullRecordContext,
+        turn_kind: DraftTurnKind,
         limits: ReportTurnLimits,
         progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
         prompt_cache: Option<&'a ReportPromptCache>,
@@ -603,6 +624,7 @@ impl<'a> TurnRunRequest<'a> {
             kind: TurnRunKind::FullDraft {
                 guidance,
                 record_context,
+                turn_kind,
             },
             limits,
             progress,
@@ -743,13 +765,23 @@ async fn run_turn(
     mut run: Option<&mut LoadedRun>,
     progress: &mut AttemptProgress,
 ) -> Result<ReportTurnOutcome, TurnRunFailure> {
-    let limits = request.limits;
     if request.is_full_draft() && run.is_none() {
         return Err(TurnRunFailure::new(
             ReportFailureCode::InvalidProtocol,
             "Claria could not start a durable drafting run for this whole-report request.",
         ));
     }
+    // A whole-report run's ceilings follow its plan; a targeted edit keeps
+    // exactly what the clinician configured.
+    let limits = match run.as_deref() {
+        Some(run) if request.is_full_draft() => request.limits.scaled_for_plan(
+            run.run
+                .plan
+                .as_ref()
+                .map_or(run.run.sections.len(), |plan| plan.entries.len()),
+        ),
+        _ => request.limits,
+    };
     loaded
         .workspace
         .prune_turns(limits.max_retained_turns as usize)
@@ -791,27 +823,33 @@ async fn run_turn(
         TurnRunKind::FullDraft {
             guidance,
             record_context,
+            turn_kind,
         } => {
-            let report_context =
-                build_untrusted_context(&loaded.workspace, &[]).map_err(|message| {
-                    TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message)
-                })?;
-            let guidance_text = if guidance.is_empty() {
-                "No additional user guidance was supplied.".to_string()
-            } else {
-                format!("Additional user guidance:\n{guidance}")
-            };
+            // Checkpoint layout, in the order the cache reads it: the frozen
+            // record corpus and template structure, then the plan, then the
+            // one block a resume rewrites. `run` is read-only here — the tool
+            // loop takes it mutably further down, after message 0 is fixed.
+            let run = run.as_deref().ok_or_else(|| {
+                TurnRunFailure::new(
+                    ReportFailureCode::InvalidProtocol,
+                    "Claria could not start a durable drafting run for this whole-report request.",
+                )
+            })?;
+            let base = &loaded.workspace.draft.content;
+            let template = template_context(&loaded.workspace, base).map_err(|message| {
+                TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message)
+            })?;
+            let plan = plan_context(run.run.plan.as_ref()).map_err(|message| {
+                TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message)
+            })?;
             protocol_content = vec![
-                ReportProtocolBlock::Text {
-                    text: report_context,
-                },
                 ReportProtocolBlock::Text {
                     text: record_context.prompt.clone(),
                 },
+                ReportProtocolBlock::Text { text: template },
+                ReportProtocolBlock::Text { text: plan },
                 ReportProtocolBlock::Text {
-                    text: format!(
-                        "Whole-document request: fill the complete working report from the supplied readable-record snapshot.\n{guidance_text}"
-                    ),
+                    text: kickoff_instruction(turn_kind, guidance, &run.run, base),
                 },
             ];
             persisted_instruction = if guidance.is_empty() {
@@ -874,6 +912,12 @@ async fn run_turn(
     // One exact CountTokens per turn; later calls estimate appended messages
     // and re-verify only near the budget.
     let mut input_budget = report::ReportInputBudget::new(&progress.model_id);
+    let citable_filenames = match request.kind {
+        TurnRunKind::FullDraft { record_context, .. } => {
+            record_context.citable_filenames.as_slice()
+        }
+        TurnRunKind::Targeted { .. } => &[],
+    };
     let mut tool_context = ToolExecutionContext::new(
         s3,
         bucket,
@@ -881,6 +925,7 @@ async fn run_turn(
         &loaded.workspace,
         &progress.model_id,
         run.as_deref_mut().filter(|_| request.is_full_draft()),
+        citable_filenames,
     );
     let terminal_text: String;
     // Named once for the failure messages: `progress` is borrowed mutably
@@ -890,9 +935,20 @@ async fn run_turn(
     // Where this turn's `cachePoint` blocks go. Fixed for the attempt
     // because the model is: a plan built per call could drift mid-loop and
     // move the prefix boundary the previous call just paid to write.
-    let cache_plan = claria_bedrock::converse::CachePlan::report_default(
-        claria_core::model_id::ModelCapabilities::for_id(&model_id),
-    );
+    let capabilities = claria_core::model_id::ModelCapabilities::for_id(&model_id);
+    let cache_plan = if request.is_full_draft() {
+        claria_bedrock::converse::CachePlan::full_draft(capabilities, cache_checkpoints()).map_err(
+            |error| {
+                TurnRunFailure::new(
+                    ReportFailureCode::InvalidProtocol,
+                    "Claria could not lay out the drafting conversation's prompt cache.",
+                )
+                .with_internal(error)
+            },
+        )?
+    } else {
+        claria_bedrock::converse::CachePlan::report_default(capabilities)
+    };
 
     loop {
         if progress.converse_calls >= limits.max_converse_calls {
@@ -1112,6 +1168,9 @@ async fn run_turn(
                         claria_bedrock::report::SKIP_FULL_DRAFT_SECTION_TOOL => {
                             Some("Deferred report section".to_string())
                         }
+                        claria_bedrock::report::MARK_SECTION_FAILED_TOOL => {
+                            Some("Failed report section".to_string())
+                        }
                         claria_bedrock::report::FINISH_FULL_DRAFT_TOOL => {
                             Some("Complete working draft".to_string())
                         }
@@ -1168,11 +1227,30 @@ async fn run_turn(
                         ));
                     }
                     completion_reminder_used = true;
+                    // Name the sections that are actually outstanding. "Every
+                    // required section" left the model to re-derive the set
+                    // from a plan it had already worked through once.
+                    let undecided = tool_context.undecided_plan_sections();
+                    let outstanding = if undecided.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " The plan still requires: {}.",
+                            undecided
+                                .iter()
+                                .map(|(id, heading)| format!("{id} ({heading})"))
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        )
+                    };
                     let reminder = ReportProtocolMessage {
                         role: ReportProtocolRole::User,
                         content: vec![ReportProtocolBlock::Text {
-                            text: "The full draft is not finalized. Continue writing every required section, then call finish_full_draft. Do not end with prose before that tool succeeds."
-                                .to_string(),
+                            text: format!(
+                                "The full draft is not finalized. Write, skip, or mark failed every \
+                                 planned section, then call finish_full_draft. Do not end with prose \
+                                 before that tool succeeds.{outstanding}"
+                            ),
                         }],
                         created_at: jiff::Timestamp::now(),
                     };
@@ -1429,8 +1507,10 @@ struct FailedReportCall<'a> {
 const STREAM_INTERRUPTION_RETRIES: u32 = 2;
 
 /// Pause between interrupted attempts, long enough for a transient network
-/// drop to clear and short enough to stay inside the 5-minute window of the
-/// prompt cache written by the previous completed call.
+/// drop to clear and short enough to stay well inside the prompt-cache window
+/// the previous completed call wrote. That window is five minutes for a
+/// targeted edit and an hour for a drafting run on a model that accepts the
+/// extended TTL, so this is sized against the shorter of the two.
 const STREAM_INTERRUPTION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Human phrasing of how long a failed call was retried for, in the

@@ -159,6 +159,12 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
             {
                 return Err("skip_full_draft_section schema must require section_id");
             }
+            "mark_section_failed"
+                if required != std::collections::HashSet::from(["section_id", "reason"])
+                    || !properties.contains_key("reason") =>
+            {
+                return Err("mark_section_failed schema must require section_id and reason");
+            }
             "finish_full_draft"
                 if required != std::collections::HashSet::from(["summary"])
                     || !properties.contains_key("summary") =>
@@ -178,6 +184,7 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
         "set_full_draft_title",
         "write_full_draft_section",
         "skip_full_draft_section",
+        "mark_section_failed",
         "finish_full_draft",
     ];
     if names != targeted_tools && names != full_draft_tools {

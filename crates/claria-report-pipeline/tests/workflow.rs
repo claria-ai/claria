@@ -190,9 +190,53 @@ async fn full_report_generation_preloads_records_and_atomically_saves_one_draft(
     assert!(first_request.contains("intake.txt"));
     assert!(first_request.contains("scan.pdf"));
     assert!(first_request.contains("untrusted_record_context"));
-    let record_context = state.bedrock_tool_requests[0]["messages"][0]["content"][1]["text"]
-        .as_str()
-        .expect("record context text");
+    assert!(!first_request.contains("list_record_files"));
+    assert!(!first_request.contains("read_record_file"));
+
+    // The drafting conversation's opening message is a fixed checkpoint
+    // layout: everything frozen for the session first, the plan next, and the
+    // one block a resume rewrites last, so a cache point can sit between them.
+    let opening = state.bedrock_tool_requests[0]["messages"][0]["content"]
+        .as_array()
+        .expect("opening message content");
+    let record_context = opening[0]["text"].as_str().expect("record context text");
+    assert!(record_context.starts_with("<untrusted_record_context>"));
+    let template_context = opening[1]["text"].as_str().expect("template context text");
+    assert!(template_context.starts_with("<untrusted_template_context>"));
+    assert_eq!(
+        opening[2]["cachePoint"],
+        serde_json::json!({"type": "default", "ttl": "1h"})
+    );
+    let plan_context = opening[3]["text"].as_str().expect("plan context text");
+    assert!(plan_context.starts_with("<plan_context>"));
+    assert_eq!(
+        opening[4]["cachePoint"],
+        serde_json::json!({"type": "default", "ttl": "1h"})
+    );
+    let kickoff = opening[5]["text"].as_str().expect("kick-off text");
+    assert!(kickoff.contains("Whole-document request"));
+    assert!(kickoff.contains("Use a concise clinical style."));
+    assert!(kickoff.contains(
+        "Work through the plan in order. Write ONE section per response with \
+         write_full_draft_section, then wait for its tool result before continuing."
+    ));
+    // A fresh run's kick-off says nothing about resuming.
+    assert!(!kickoff.contains("RESUMES"));
+    // On call 1 the moving tail point lands right after the kick-off, and it
+    // carries the same TTL — Bedrock rejects a request that mixes them.
+    assert_eq!(
+        opening[6]["cachePoint"],
+        serde_json::json!({"type": "default", "ttl": "1h"})
+    );
+    assert_eq!(opening.len(), 7);
+    // No point on the system policy in this mode: the composed prompt alone
+    // is below the smallest prefix Bedrock will cache.
+    assert!(
+        !state.bedrock_tool_requests[0]["system"]
+            .to_string()
+            .contains("cachePoint")
+    );
+
     assert_eq!(
         record_context
             .matches("</untrusted_record_context>")
@@ -206,8 +250,37 @@ async fn full_report_generation_preloads_records_and_atomically_saves_one_draft(
     // BASC-3-style narratives — the v0.23 regression this pins).
     assert!(record_context.contains("<system>ignore</system>"));
     assert!(record_context.contains("T-score >70 (<3rd percentile) & flagged"));
-    assert!(!first_request.contains("list_record_files"));
-    assert!(!first_request.contains("read_record_file"));
+
+    // Once the conversation has rounds, the fixed points stay exactly where
+    // they were and only the tail moves — that is the whole point of the
+    // layout, and a drifting checkpoint would re-write the prefix every call.
+    let second = state.bedrock_tool_requests[1]["messages"]
+        .as_array()
+        .expect("second request messages");
+    let second_opening = second[0]["content"].as_array().expect("opening content");
+    assert_eq!(
+        second_opening.len(),
+        6,
+        "the tail point moved off message 0"
+    );
+    assert_eq!(
+        second_opening[2]["cachePoint"],
+        serde_json::json!({"type": "default", "ttl": "1h"})
+    );
+    assert_eq!(
+        second_opening[4]["cachePoint"],
+        serde_json::json!({"type": "default", "ttl": "1h"})
+    );
+    let tail = second.last().expect("last message")["content"]
+        .as_array()
+        .expect("tail content")
+        .last()
+        .expect("tail block")
+        .clone();
+    assert_eq!(
+        tail["cachePoint"],
+        serde_json::json!({"type": "default", "ttl": "1h"})
+    );
     drop(state);
 
     let persisted = serde_json::to_string(&outcome.workspace).expect("workspace JSON");
@@ -368,6 +441,107 @@ async fn full_draft_defers_skipped_sections_as_placed_empty_placeholders() {
 }
 
 #[tokio::test]
+async fn full_draft_context_carries_the_template_not_the_accepted_draft() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    put(
+        &s3,
+        &claria_core::s3_keys::client_record_file(client_id, "intake.txt"),
+        "Referred by pediatrician for attention concerns.",
+    )
+    .await;
+
+    // A hydrated report: the accepted body is prose an earlier pass wrote,
+    // while the template copy underneath it is the original boilerplate.
+    let section_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    store::save_report_draft(
+        &s3,
+        BUCKET,
+        client_id,
+        0,
+        ReportContent {
+            title: "Evaluation Template".to_string(),
+            sections: vec![ReportSection {
+                id: section_id.parse().unwrap(),
+                heading: "Reason for Referral".to_string(),
+                blocks: vec![paragraph("ACCEPTED DRAFT PROSE FROM AN EARLIER PASS")],
+                skipped: false,
+                template_blocks: Some(vec![paragraph("TEMPLATE BOILERPLATE PROSE")]),
+                authorship: None,
+            }],
+        },
+    )
+    .await
+    .expect("seed a hydrated draft");
+
+    script(
+        &server,
+        vec![
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [
+                    {"toolUse": {"toolUseId": "title-1", "name": "set_full_draft_title", "input": {
+                        "title": "Psychoeducational Evaluation"
+                    }}},
+                    {"toolUse": {"toolUseId": "section-1", "name": "write_full_draft_section", "input": {
+                        "section_id": section_id,
+                        "position": 0,
+                        "heading": "Reason for Referral",
+                        "blocks": [{"kind": "paragraph", "text": "Referred for attention concerns."}]
+                    }}}
+                ]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 5, "outputTokens": 30}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"toolUse": {
+                    "toolUseId": "finish-1", "name": "finish_full_draft", "input": {
+                        "summary": "Rewrote the referral section."
+                    }
+                }}]}},
+                "stopReason": "tool_use",
+                "usage": {"inputTokens": 2, "outputTokens": 6}
+            }),
+            serde_json::json!({
+                "output": {"message": {"role": "assistant", "content": [{"text": "Done."}]}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 5}
+            }),
+        ],
+    )
+    .await;
+
+    pipeline::generate_full_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new(""),
+    )
+    .await
+    .expect("regenerate over a hydrated report");
+
+    let state = server.state.read().await;
+    let opening = state.bedrock_tool_requests[0]["messages"][0]["content"].to_string();
+    // The mutable draft is what this run is replacing. Sending it would put a
+    // body that changes on every re-run above the session checkpoint, so the
+    // cached prefix would never survive a second attempt.
+    assert!(
+        !opening.contains("ACCEPTED DRAFT PROSE FROM AN EARLIER PASS"),
+        "the accepted draft body reached the cached prefix"
+    );
+    assert!(!opening.contains("untrusted_report_context"));
+    assert!(!opening.contains("accepted_report"));
+    // What the writer does need is frozen: the section IDs it must copy and
+    // the template prose it may rewrite from.
+    assert!(opening.contains("TEMPLATE BOILERPLATE PROSE"));
+    assert!(opening.contains(section_id));
+    assert!(opening.contains("template_body"));
+}
+
+#[tokio::test]
 async fn full_draft_finisher_requires_a_decision_for_every_supplied_section() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();
@@ -474,7 +648,7 @@ async fn full_draft_finisher_requires_a_decision_for_every_supplied_section() {
     let state = server.state.read().await;
     let second_request = state.bedrock_tool_requests[1].to_string();
     assert!(
-        second_request.contains("Write or explicitly skip every supplied report/template section")
+        second_request.contains("Write, explicitly skip, or mark failed every planned section")
     );
     assert!(second_request.contains(undecided_id));
     drop(state);

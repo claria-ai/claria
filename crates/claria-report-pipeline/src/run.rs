@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     FullReportGenerationOutcome, ReportPipelineError,
+    full_draft_context::DraftTurnKind,
     turn::{FullReportRequest, execute_full_draft_turn, validate_model_choice},
 };
 
@@ -230,12 +231,15 @@ pub(crate) fn stamp_run_authorship(
 /// Finish an interrupted whole-report run without losing the sections that
 /// already landed.
 ///
-/// The model conversation starts fresh, exactly as a first attempt does: the
-/// untrusted report context is still the base revision, so the writer
-/// naturally rewrites what it finds unwritten. What changes is the finisher —
-/// it only demands decisions for sections the run has not already drafted or
-/// skipped, and every already-drafted section keeps its staged blocks unless
-/// the writer writes over them.
+/// The model conversation starts fresh, over the same frozen record corpus,
+/// template structure, and plan a first attempt sends — so the cached prefix
+/// the interrupted attempt paid for is still there to read. What changes is
+/// the kick-off block below the checkpoints: it carries the run's durable
+/// per-section state, the instructions typed at the resume, and a template
+/// copy for every section the plan wants rewritten. The finisher only demands
+/// decisions for sections the run has not already decided, and every
+/// already-drafted section keeps its staged blocks unless the writer writes
+/// over them.
 // The client/report/run identity plus the model and the request is the same
 // explicit orchestration boundary the other entry points keep.
 #[allow(clippy::too_many_arguments)]
@@ -306,5 +310,15 @@ pub async fn resume_draft_run(
     loaded.workspace.updated_at = now;
     save_loaded(s3, bucket, &mut loaded).await?;
 
-    execute_full_draft_turn(sdk_config, s3, bucket, loaded, model_id, request, run).await
+    execute_full_draft_turn(
+        sdk_config,
+        s3,
+        bucket,
+        loaded,
+        model_id,
+        request,
+        run,
+        DraftTurnKind::Resume,
+    )
+    .await
 }

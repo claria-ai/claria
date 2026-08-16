@@ -24,6 +24,9 @@ All notable changes to Claria are documented here.
 - Whole-report generation now saves each section durably as it lands, survives interruption, and can resume without losing drafted work
 - A report is locked against edits, template changes, and further writer turns only while a whole-report draft is actually running
 - Sections written by a whole-report draft record the run and model that wrote them
+- Whole-report drafting now caches its records and plan across the session, follows an explicit section plan, and can mark sections failed instead of stalling
+- A whole-report draft can cite the record quotes a section rests on
+- Whole-report call and tool-round ceilings now scale with the number of sections being drafted
 
 ## [0.28.0] — 2026-08-15
 

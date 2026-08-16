@@ -47,6 +47,10 @@ pub(crate) struct FullRecordContext {
     pub(crate) prompt: String,
     pub(crate) summary: FullRecordContextSummary,
     pub(crate) files: Vec<ReportRecordContextFile>,
+    /// Filenames a citation may name, in the same byte order the corpus block
+    /// lists them. Only files whose text actually reached the snapshot: a
+    /// record nobody could read is a record nobody can quote.
+    pub(crate) citable_filenames: Vec<String>,
 }
 
 enum LoadedFullRecord {
@@ -61,10 +65,24 @@ enum LoadedFullRecord {
     },
 }
 
+impl LoadedFullRecord {
+    fn filename(&self) -> &str {
+        match self {
+            Self::Included { filename, .. } | Self::Unavailable { filename, .. } => filename,
+        }
+    }
+}
+
 /// Load an all-or-nothing snapshot of every readable record representation.
 /// The metadata preflight caps downloads to the selected model's approximate
 /// input capacity; the exact CountTokens check still runs on the complete
 /// Bedrock request before inference.
+///
+/// The serialized block is a byte-deterministic function of the records it
+/// was given: files are sorted by filename byte order before serialization,
+/// and the JSON shape is fixed. A drafting run builds it once and then reads
+/// it from the prompt cache on every later call, so two builds over the same
+/// records that differed by a byte would cost the run its cache.
 pub(crate) async fn load_full_record_context(
     s3: &S3Client,
     bucket: &str,
@@ -119,14 +137,30 @@ pub(crate) async fn load_full_record_context(
             sha256,
         })
     });
-    let loaded = stream::iter(fetches)
+    let mut loaded = stream::iter(fetches)
         .buffered(claria_storage::objects::S3_FETCH_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
+    // Byte-determinism, stated once and here: the corpus is the frozen head of
+    // a drafting run's cached prefix, so two builds over the same records have
+    // to produce the same bytes or every later call in the run re-pays full
+    // input rates. S3 listing order is not a contract, and a failed fetch
+    // could reorder the buffered results, so the order is imposed rather than
+    // inherited — filename byte order, unavailable files sorted alongside the
+    // readable ones.
+    loaded.sort_by(|left, right| match (left, right) {
+        (Ok(left), Ok(right)) => left.filename().as_bytes().cmp(right.filename().as_bytes()),
+        // A load failure fails the whole snapshot a few lines below; its
+        // position among the successes is never observed.
+        (Err(_), Ok(_)) => std::cmp::Ordering::Less,
+        (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => std::cmp::Ordering::Equal,
+    });
 
     let mut files = Vec::new();
     let mut unavailable = Vec::new();
     let mut record_context_files = Vec::new();
+    let mut citable_filenames = Vec::new();
     let mut total_characters = 0_u64;
     for record in loaded {
         match record.map_err(|source| {
@@ -144,6 +178,7 @@ pub(crate) async fn load_full_record_context(
                     sha256: sha256.clone(),
                     characters,
                 });
+                citable_filenames.push(filename.clone());
                 files.push(serde_json::json!({
                     "filename": filename,
                     "sha256": sha256,
@@ -195,5 +230,6 @@ pub(crate) async fn load_full_record_context(
             total_characters,
         },
         files: record_context_files,
+        citable_filenames,
     })
 }

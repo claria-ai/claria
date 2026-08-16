@@ -9,6 +9,7 @@
 
 mod context;
 mod error;
+mod full_draft_context;
 mod prompt_cache;
 mod prompts;
 mod record_context;
@@ -114,6 +115,41 @@ impl ReportTurnLimits {
             max_tool_uses_per_response,
             max_retained_turns,
         })
+    }
+
+    /// Raise these ceilings to fit a plan of `plan_len` sections, never
+    /// lowering what the clinician configured.
+    ///
+    /// The defaults are sized for a request, not for a document. A 45-section
+    /// plan cannot fit under the default 50 Bedrock calls: one section per
+    /// response means at least one call per section, plus the title, the
+    /// finish, corrective rounds, and the closing reply. Leaving the fixed
+    /// default in place would fail those runs on the call ceiling with advice
+    /// to raise a setting the run had already outgrown, so the plan supplies a
+    /// floor of `plan_len * 2 + 8` — two calls per section for a write that
+    /// needs a repair round, plus fixed overhead — clamped to the same
+    /// maximum a clinician could type.
+    ///
+    /// Rounds move with calls because every round spends a call: the call
+    /// ceiling has to stay at least one above the round ceiling or the last
+    /// round has no call left to answer in.
+    pub fn scaled_for_plan(self, plan_len: usize) -> Self {
+        let target_calls = u32::try_from(plan_len.saturating_mul(2).saturating_add(8))
+            .unwrap_or(u32::MAX)
+            .min(MAX_CONFIGURABLE_CONVERSE_CALLS);
+        let max_converse_calls = self.max_converse_calls.max(target_calls);
+        let target_rounds = target_calls
+            .saturating_sub(1)
+            .min(MAX_CONFIGURABLE_TOOL_ROUNDS);
+        let max_tool_rounds = self
+            .max_tool_rounds
+            .max(target_rounds)
+            .min(max_converse_calls.saturating_sub(1));
+        Self {
+            max_tool_rounds,
+            max_converse_calls,
+            ..self
+        }
     }
 
     pub const fn max_tool_rounds(self) -> u32 {
