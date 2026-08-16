@@ -9,6 +9,8 @@ All notable changes to Claria are documented here.
 - An opt-in search toggle also looks inside the custom prompts, the writer prompt library, and template names
 - On-device transcription is split into models, compute, and advanced decoding panes, each badged "This Mac" to mark machine-local settings
 - The writer's guardrail-exhausted error now routes to Preferences → Document Writer → Writer Limits
+- The Preferences sidebar can export the synced preferences file for support or backup, and import one back after validation
+- Preferences file history lists past versions with view, restore, and a two-version diff; imports and restores keep the replaced values one version back
 
 ## [0.28.0] — 2026-08-15
 

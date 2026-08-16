@@ -28,6 +28,8 @@ import {
   uploadWriterTemplate,
   renameWriterTemplate,
   deleteWriterTemplate,
+  exportPreferences,
+  importPreferences,
   saveWriterLibraryPrompt,
   deleteWriterLibraryPrompt,
   type ChatStreamMode,
@@ -54,7 +56,7 @@ import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useWriterPrompts } from "../lib/useWriterPrompts";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
 import { formatDateTime, formatFileSize } from "../lib/format";
-import { promptVersions } from "../lib/versions";
+import { preferencesVersions, promptVersions } from "../lib/versions";
 import {
   categoryOf,
   defaultOpenPanes,
@@ -195,6 +197,10 @@ export default function Preferences({
     [openPanes, setPaneOpen]
   );
 
+  // Bumped after a preferences import or version restore; keys the category
+  // subtree so every mounted section refetches its freshly changed values.
+  const [reloadNonce, setReloadNonce] = useState(0);
+
   // Search over the static index, plus (opt-in) the user's saved text.
   const [query, setQuery] = useState("");
   const [includeSaved, setIncludeSaved] = useState(false);
@@ -323,6 +329,10 @@ export default function Preferences({
           })}
         </nav>
 
+        <PreferencesFileTools
+          onChanged={() => setReloadNonce((nonce) => nonce + 1)}
+        />
+
         {/* Replaces the old cross-machine sync banner. */}
         <p className="border-t border-gray-200 p-3 text-xs text-gray-400">
           Settings are stored in your S3 bucket and follow you across
@@ -346,7 +356,7 @@ export default function Preferences({
               onPick={openHit}
             />
           )}
-          <PaneControlContext.Provider value={paneControl}>
+          <PaneControlContext.Provider value={paneControl} key={reloadNonce}>
             {PREFERENCES_NAV.map((category) => (
               <div
                 key={category.id}
@@ -451,6 +461,123 @@ function SearchResults({
         <ErrorBanner
           message={`Could not search saved text: ${savedError}`}
           className="mt-3"
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Preferences file tools: export, import, and version history with diff for
+// _state/preferences.json — a support artifact and a one-file backup.
+// ---------------------------------------------------------------------------
+
+function PreferencesFileTools({ onChanged }: { onChanged: () => void }) {
+  const { setPreferredModelId } = useChatModels();
+  const [busy, setBusy] = useState<"export" | "import" | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showVersions, setShowVersions] = useState(false);
+
+  async function handleExport() {
+    setBusy("export");
+    setStatus(null);
+    setError(null);
+    try {
+      const saved = await exportPreferences();
+      if (saved) setStatus("Preferences exported.");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleImport() {
+    if (
+      !window.confirm(
+        "Replace your synced preferences with a file? The current values stay in version history."
+      )
+    ) {
+      return;
+    }
+    setBusy("import");
+    setStatus(null);
+    setError(null);
+    try {
+      const imported = await importPreferences();
+      if (imported) {
+        // The preferred model lives in app-wide context, not section state,
+        // so a remount alone would keep showing the pre-import pick.
+        setPreferredModelId(imported.preferred_model_id ?? null);
+        setStatus("Preferences imported.");
+        onChanged();
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRestored() {
+    try {
+      const info = await loadConfig();
+      setPreferredModelId(info.preferred_model_id ?? null);
+    } catch (e) {
+      logFrontendEvent("warn", `config reload after preferences restore failed: ${e}`);
+    }
+    setStatus("Previous version restored.");
+    onChanged();
+  }
+
+  const buttonClass =
+    "px-2 py-1 text-xs text-gray-600 border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50";
+
+  return (
+    <div className="border-t border-gray-200 p-3 space-y-2">
+      <p className="text-xs font-medium text-gray-500">Preferences file</p>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => void handleExport()}
+          disabled={busy !== null}
+          className={buttonClass}
+        >
+          {busy === "export" ? "Exporting…" : "Export…"}
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleImport()}
+          disabled={busy !== null}
+          className={buttonClass}
+        >
+          {busy === "import" ? "Importing…" : "Import…"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setStatus(null);
+            setError(null);
+            setShowVersions(true);
+          }}
+          disabled={busy !== null}
+          className={buttonClass}
+        >
+          History
+        </button>
+      </div>
+      {status && <p className="text-xs text-green-600">{status}</p>}
+      {error && <p className="text-xs text-red-600 break-words">{error}</p>}
+
+      {showVersions && (
+        <VersionHistoryModal
+          title="Preferences File Versions"
+          source={preferencesVersions()}
+          enableCompare
+          onClose={() => setShowVersions(false)}
+          onRestored={handleRestored}
+          onError={setError}
         />
       )}
     </div>

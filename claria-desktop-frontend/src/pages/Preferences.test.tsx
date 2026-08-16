@@ -98,6 +98,11 @@ vi.mock("../lib/tauri", () => ({
   deleteWriterTemplate: vi.fn(async () => {}),
   saveWriterLibraryPrompt: vi.fn(async () => ({})),
   deleteWriterLibraryPrompt: vi.fn(async () => {}),
+  exportPreferences: vi.fn(async () => true),
+  importPreferences: vi.fn(async () => configInfo),
+  listPreferencesVersions: vi.fn(async () => []),
+  getPreferencesVersion: vi.fn(async () => "{}"),
+  restorePreferencesVersion: vi.fn(async () => {}),
   listWriterTemplates: vi.fn(async () => []),
   listWriterLibraryPrompts: vi.fn(async () => [
     { id: "p1", name: "Phase 1", body: "Fill in the Reason for Referral." },
@@ -206,5 +211,31 @@ describe("Preferences", () => {
     const manager = await screen.findByTestId("writer-template-manager");
     expect((manager as HTMLDetailsElement).open).toBe(true);
     expect(categoryVisible(manager)).toBe(true);
+  });
+
+  it("exports the preferences file from the sidebar", async () => {
+    const user = userEvent.setup();
+    render(<Preferences navigate={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Export…" }));
+    await screen.findByText("Preferences exported.");
+  });
+
+  it("imports a preferences file after confirmation", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    try {
+      render(<Preferences navigate={vi.fn()} />);
+      await user.click(screen.getByRole("button", { name: "Import…" }));
+      await screen.findByText("Preferences imported.");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("opens the preferences file version history", async () => {
+    const user = userEvent.setup();
+    render(<Preferences navigate={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "History" }));
+    await screen.findByText("No version history found.");
   });
 });
