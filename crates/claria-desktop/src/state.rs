@@ -198,10 +198,10 @@ pub struct DesktopState {
     pub record_cache: Arc<RecordCache>,
     /// Per-version report-revision summaries; version IDs are immutable so
     /// entries never go stale.
-    pub revision_cache: Arc<claria_report_authoring::RevisionCache>,
+    pub revision_cache: Arc<claria_report_store::RevisionCache>,
     /// Exact transient Writer protocol, retained only for Bedrock's default
     /// five-minute prompt-cache window.
-    pub report_prompt_cache: Arc<claria_report_authoring::ReportPromptCache>,
+    pub report_prompt_cache: Arc<claria_report_pipeline::ReportPromptCache>,
     /// Hash-only state for deciding whether a reloaded client chat still has
     /// a reusable provider cache prefix.
     pub(crate) chat_prompt_cache: Arc<ChatPromptCache>,
@@ -231,8 +231,8 @@ impl Default for DesktopState {
                 claria_transcribe::LocalTranscriber::default(),
             )),
             record_cache: Arc::new(RecordCache::new()),
-            revision_cache: Arc::new(claria_report_authoring::RevisionCache::new()),
-            report_prompt_cache: Arc::new(claria_report_authoring::ReportPromptCache::new()),
+            revision_cache: Arc::new(claria_report_store::RevisionCache::new()),
+            report_prompt_cache: Arc::new(claria_report_pipeline::ReportPromptCache::new()),
             chat_prompt_cache: Arc::new(ChatPromptCache::new()),
             pending_report_templates: Arc::new(Mutex::new(HashMap::new())),
             chat_stops: Arc::new(StdMutex::new(HashMap::new())),

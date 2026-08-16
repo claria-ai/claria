@@ -152,7 +152,7 @@ impl ModelTuningPreferences {
 }
 
 /// Per-clinician guardrails for agentic document writing. These values sync
-/// across machines. The report-authoring crate validates the
+/// across machines. The report-pipeline crate validates the
 /// relationship between the limits before they are saved or used.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 pub struct ReportAuthoringPreferences {
@@ -167,8 +167,8 @@ pub struct ReportAuthoringPreferences {
 }
 
 impl ReportAuthoringPreferences {
-    pub fn limits(&self) -> Result<claria_report_authoring::ReportTurnLimits, String> {
-        claria_report_authoring::ReportTurnLimits::try_new(
+    pub fn limits(&self) -> Result<claria_report_pipeline::ReportTurnLimits, String> {
+        claria_report_pipeline::ReportTurnLimits::try_new(
             self.max_tool_rounds,
             self.max_converse_calls,
             self.max_tool_uses_per_response,
@@ -194,19 +194,19 @@ impl Default for ReportAuthoringPreferences {
 }
 
 fn default_max_tool_rounds() -> u32 {
-    claria_report_authoring::DEFAULT_MAX_TOOL_ROUNDS
+    claria_report_pipeline::DEFAULT_MAX_TOOL_ROUNDS
 }
 
 fn default_max_converse_calls() -> u32 {
-    claria_report_authoring::DEFAULT_MAX_CONVERSE_CALLS
+    claria_report_pipeline::DEFAULT_MAX_CONVERSE_CALLS
 }
 
 fn default_max_tool_uses_per_response() -> u32 {
-    claria_report_authoring::DEFAULT_MAX_TOOL_USES_PER_RESPONSE
+    claria_report_pipeline::DEFAULT_MAX_TOOL_USES_PER_RESPONSE
 }
 
 fn default_max_retained_turns() -> u32 {
-    claria_report_authoring::DEFAULT_MAX_RETAINED_TURNS
+    claria_report_pipeline::DEFAULT_MAX_RETAINED_TURNS
 }
 
 /// Per-clinician defaults for the transcription pipeline.

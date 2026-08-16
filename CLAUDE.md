@@ -80,6 +80,9 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Retryable, compensating client delete/restore lifecycle
 - Depends on `claria-report-store` (lifecycle restores report workspaces), so the report crates must never depend on this one
 
+**`claria-report-pipeline` — Report-writing orchestration**
+- Runs one writing request end to end: prompt composition, the Bedrock tool loop, bounded record reads, proposal staging, and the whole-document draft protocol
+
 **`claria-report-store` — Durable writer state**
 - Workspace objects and their optimistic-concurrency protocol, immutable revisions, attempt and per-call usage receipts
 - The global writer prompt and writer template libraries

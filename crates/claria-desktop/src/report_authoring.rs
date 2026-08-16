@@ -1,6 +1,6 @@
 //! Tauri-facing report-authoring view models.
 //!
-//! Workflow policy and AWS orchestration live in `claria-report-authoring`.
+//! Workflow policy and AWS orchestration live in `claria-report-pipeline`.
 //! The report domain types (`ReportDraft`, `ReportContent`, blocks,
 //! operations, exports, resolutions) derive `specta::Type` in `claria-core`
 //! and cross the IPC boundary as-is; this module keeps only the views that
@@ -107,7 +107,7 @@ pub struct WriterTemplateView {
 }
 
 pub fn writer_template_view(
-    template: claria_report_authoring::writer_templates::WriterTemplateSummary,
+    template: claria_report_store::template_library::WriterTemplateSummary,
 ) -> WriterTemplateView {
     WriterTemplateView {
         id: template.metadata.id.to_string(),
@@ -173,10 +173,10 @@ pub enum ReportTurnProgressView {
     },
 }
 
-impl From<claria_report_authoring::ReportTurnProgress> for ReportTurnProgressView {
-    fn from(value: claria_report_authoring::ReportTurnProgress) -> Self {
+impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView {
+    fn from(value: claria_report_pipeline::ReportTurnProgress) -> Self {
         match value {
-            claria_report_authoring::ReportTurnProgress::RecordContextPrepared {
+            claria_report_pipeline::ReportTurnProgress::RecordContextPrepared {
                 included_files,
                 unavailable_files,
                 total_characters,
@@ -185,13 +185,13 @@ impl From<claria_report_authoring::ReportTurnProgress> for ReportTurnProgressVie
                 unavailable_files,
                 total_characters,
             },
-            claria_report_authoring::ReportTurnProgress::ModelCallStarted { call_number } => {
+            claria_report_pipeline::ReportTurnProgress::ModelCallStarted { call_number } => {
                 Self::ModelCallStarted { call_number }
             }
-            claria_report_authoring::ReportTurnProgress::ToolStarted { name, context } => {
+            claria_report_pipeline::ReportTurnProgress::ToolStarted { name, context } => {
                 Self::ToolStarted { name, context }
             }
-            claria_report_authoring::ReportTurnProgress::ToolFinished {
+            claria_report_pipeline::ReportTurnProgress::ToolFinished {
                 name,
                 context,
                 status,
@@ -290,8 +290,8 @@ pub struct ReportBlockReferenceInput {
 }
 
 impl ReportBlockReferenceInput {
-    pub fn into_domain(self) -> Result<claria_report_authoring::ReportBlockReference, String> {
-        Ok(claria_report_authoring::ReportBlockReference {
+    pub fn into_domain(self) -> Result<claria_report_pipeline::ReportBlockReference, String> {
+        Ok(claria_report_pipeline::ReportBlockReference {
             section_id: self
                 .section_id
                 .parse::<Uuid>()
@@ -400,7 +400,7 @@ pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String>
 }
 
 pub fn turn_response_view(
-    outcome: claria_report_authoring::ReportTurnOutcome,
+    outcome: claria_report_pipeline::ReportTurnOutcome,
 ) -> ReportTurnResponse {
     ReportTurnResponse {
         workspace: workspace_view(&outcome.workspace),
@@ -416,7 +416,7 @@ pub fn turn_response_view(
 }
 
 pub fn full_report_response_view(
-    outcome: claria_report_authoring::FullReportGenerationOutcome,
+    outcome: claria_report_pipeline::FullReportGenerationOutcome,
 ) -> FullReportGenerationResponse {
     FullReportGenerationResponse {
         workspace: workspace_view(&outcome.workspace),

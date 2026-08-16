@@ -1,6 +1,6 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_mock_aws::testing::MockServer;
-use claria_report_authoring::writer_prompts;
+use claria_report_store::prompt_library as writer_prompts;
 use claria_storage::client;
 use uuid::Uuid;
 

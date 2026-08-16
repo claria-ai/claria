@@ -7,7 +7,7 @@ use claria_storage::error::StorageError;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{FullRecordContextSummary, ReportAuthoringError, context::escape_delimiter_characters};
+use crate::{FullRecordContextSummary, ReportPipelineError, context::escape_delimiter_characters};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecordInventoryEntry {
@@ -70,7 +70,7 @@ pub(crate) async fn load_full_record_context(
     bucket: &str,
     model_id: &str,
     inventory: &[RecordInventoryEntry],
-) -> Result<FullRecordContext, ReportAuthoringError> {
+) -> Result<FullRecordContext, ReportPipelineError> {
     use futures::stream::{self, StreamExt};
 
     // Three source bytes per available input token leaves headroom for the
@@ -84,7 +84,7 @@ pub(crate) async fn load_full_record_context(
         .map(|entry| entry.source_bytes)
         .fold(0_u64, u64::saturating_add);
     if eligible_source_bytes > max_source_bytes {
-        return Err(ReportAuthoringError::InvalidInput(format!(
+        return Err(ReportPipelineError::InvalidInput(format!(
             "The readable client-record snapshot is too large to place in this model's initial context ({eligible_source_bytes} bytes; safe limit {max_source_bytes}). Remove or split oversized records before generating the whole report."
         )));
     }
@@ -130,7 +130,7 @@ pub(crate) async fn load_full_record_context(
     let mut total_characters = 0_u64;
     for record in loaded {
         match record.map_err(|source| {
-            ReportAuthoringError::storage("reading the full-draft record snapshot", source)
+            ReportPipelineError::storage("reading the full-draft record snapshot", source)
         })? {
             LoadedFullRecord::Included {
                 filename,
@@ -163,7 +163,7 @@ pub(crate) async fn load_full_record_context(
         }
     }
     if files.is_empty() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportPipelineError::InvalidInput(
             "No readable client-record text is available. Generate text extraction for at least one record before filling the whole report."
                 .to_string(),
         ));
@@ -180,7 +180,7 @@ pub(crate) async fn load_full_record_context(
         "unavailable_files": unavailable
     }))
     .map_err(|_| {
-        ReportAuthoringError::InvalidInput(
+        ReportPipelineError::InvalidInput(
             "Claria could not serialize the readable-record snapshot.".to_string(),
         )
     })?;

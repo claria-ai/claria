@@ -1,7 +1,7 @@
 //! Editable prompts stored under `claria-prompts/` in S3, plus their
 //! version history.
 
-use claria_report_authoring::writer_prompts::WriterPrompt;
+use claria_report_store::prompt_library::WriterPrompt;
 use tauri::State;
 
 use super::{
@@ -40,16 +40,16 @@ fn resolve_prompt(
             claria_bedrock::extract::DEFAULT_EXTRACTION_PROMPT,
         )),
         // Only the editable body is stored; the fixed trust rules are always
-        // appended by claria-report-authoring's prompt composition.
+        // appended by claria-report-pipeline's prompt composition.
         "report-system" => Ok((
             claria_core::s3_keys::REPORT_SYSTEM_PROMPT,
             None,
-            claria_report_authoring::REPORT_SYSTEM_PROMPT_BODY,
+            claria_report_pipeline::REPORT_SYSTEM_PROMPT_BODY,
         )),
         "report-full-draft" => Ok((
             claria_core::s3_keys::FULL_REPORT_SYSTEM_PROMPT,
             None,
-            claria_report_authoring::FULL_REPORT_SYSTEM_PROMPT_BODY,
+            claria_report_pipeline::FULL_REPORT_SYSTEM_PROMPT_BODY,
         )),
         _ => Err(CommandError::Msg(format!("unknown prompt name: {name}"))),
     }
@@ -68,8 +68,8 @@ pub struct WriterTrustRules {
 #[specta::specta]
 pub async fn get_writer_trust_rules() -> Result<WriterTrustRules, String> {
     Ok(WriterTrustRules {
-        targeted: claria_report_authoring::REPORT_TRUST_RULES.to_string(),
-        full_draft: claria_report_authoring::FULL_REPORT_TRUST_RULES.to_string(),
+        targeted: claria_report_pipeline::REPORT_TRUST_RULES.to_string(),
+        full_draft: claria_report_pipeline::FULL_REPORT_TRUST_RULES.to_string(),
     })
 }
 
@@ -211,7 +211,7 @@ pub async fn list_writer_library_prompts(
 ) -> Result<Vec<WriterPrompt>, String> {
     run("list_writer_library_prompts", async {
         let ctx = CommandContext::new(&state).await?;
-        Ok(claria_report_authoring::writer_prompts::list(&ctx.s3, &ctx.bucket).await?)
+        Ok(claria_report_store::prompt_library::list(&ctx.s3, &ctx.bucket).await?)
     })
     .await
 }
@@ -230,7 +230,7 @@ pub async fn save_writer_library_prompt(
         let ctx = CommandContext::new(&state).await?;
         let (prompt, action) = match prompt_id {
             None => (
-                claria_report_authoring::writer_prompts::create(
+                claria_report_store::prompt_library::create(
                     &ctx.s3,
                     &ctx.bucket,
                     uuid::Uuid::new_v4(),
@@ -241,7 +241,7 @@ pub async fn save_writer_library_prompt(
                 "writer_prompt_created",
             ),
             Some(prompt_id) => (
-                claria_report_authoring::writer_prompts::update(
+                claria_report_store::prompt_library::update(
                     &ctx.s3,
                     &ctx.bucket,
                     parse_uuid(&prompt_id)?,
@@ -269,7 +269,7 @@ pub async fn delete_writer_library_prompt(
     run("delete_writer_library_prompt", async {
         let prompt_id = parse_uuid(&prompt_id)?;
         let ctx = CommandContext::new(&state).await?;
-        claria_report_authoring::writer_prompts::delete(&ctx.s3, &ctx.bucket, prompt_id).await?;
+        claria_report_store::prompt_library::delete(&ctx.s3, &ctx.bucket, prompt_id).await?;
         ctx.record_audit(ctx.audit_event(
             "writer_prompt_deleted",
             "writer_prompt",

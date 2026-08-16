@@ -2241,7 +2241,7 @@ const WRITER_LIMIT_DEFAULTS: WriterLimits = {
 
 // The `label` values below are quoted verbatim in the writer's
 // guardrail-exhausted error, which tells the clinician which field to raise.
-// Renaming one here means renaming it in `claria-report-authoring`'s
+// Renaming one here means renaming it in `claria-report-pipeline`'s
 // `TOOL_ROUNDS_FIELD_LABEL` / `CONVERSE_CALLS_FIELD_LABEL`.
 const WRITER_LIMIT_FIELDS: Array<{
   key: WriterLimitField;

@@ -33,7 +33,7 @@ pub async fn start_report_workspace(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let workspace = claria_report_authoring::start_report_workspace_with_id(
+        let workspace = claria_report_store::start_report_workspace_with_id(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -55,7 +55,7 @@ pub async fn load_report_workspace(
     run("load_report_workspace", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
-        let workspace = claria_report_authoring::load_report_workspace_by_id(
+        let workspace = claria_report_store::load_report_workspace_by_id(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -79,7 +79,7 @@ pub async fn list_editor_history(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         Ok(
-            claria_report_authoring::list_report_workspaces(&ctx.s3, &ctx.bucket, client_id)
+            claria_report_store::list_report_workspaces(&ctx.s3, &ctx.bucket, client_id)
                 .await?
                 .iter()
                 .filter(|workspace| {
@@ -106,7 +106,7 @@ pub async fn rename_report_session(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let workspace = claria_report_authoring::rename_report_session(
+        let workspace = claria_report_store::rename_report_session(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -142,7 +142,7 @@ pub async fn list_report_revisions(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let revisions = claria_report_authoring::list_report_revisions(
+        let revisions = claria_report_store::list_report_revisions(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -174,7 +174,7 @@ pub async fn load_report_revision(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let draft = claria_report_authoring::load_report_revision(
+        let draft = claria_report_store::load_report_revision(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -201,7 +201,7 @@ pub async fn revert_report_revision(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let workspace = claria_report_authoring::revert_report_revision(
+        let workspace = claria_report_store::revert_report_revision(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -246,7 +246,7 @@ pub async fn save_report_draft(
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let content = claria_desktop::report_authoring::content_from_edit(draft)?;
-        let workspace = claria_report_authoring::save_report_draft_for_report(
+        let workspace = claria_report_store::save_report_draft_for_report(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -285,7 +285,7 @@ pub async fn discard_queued_report_edits(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let workspace = claria_report_authoring::discard_queued_report_edits(
+        let workspace = claria_report_store::discard_queued_report_edits(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -336,12 +336,12 @@ pub async fn generate_full_report(
             model_id,
             "whole-report generation requested"
         );
-        let progress = |event: claria_report_authoring::ReportTurnProgress| {
+        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
         let prompt_body =
             super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-full-draft").await?;
-        let result = claria_report_authoring::generate_full_report_for_report(
+        let result = claria_report_pipeline::generate_full_report_for_report(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
@@ -349,7 +349,7 @@ pub async fn generate_full_report(
             report_id,
             expected_revision,
             &model_id,
-            claria_report_authoring::FullReportRequest::new(&guidance)
+            claria_report_pipeline::FullReportRequest::new(&guidance)
                 .with_limits(limits)
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
@@ -474,12 +474,12 @@ pub async fn send_report_message(
             .map(ReportBlockReferenceInput::into_domain)
             .collect::<Result<Vec<_>, _>>()?;
         let limits = ctx.cfg.report_authoring.limits()?;
-        let progress = |event: claria_report_authoring::ReportTurnProgress| {
+        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
         let prompt_body =
             super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-system").await?;
-        let result = claria_report_authoring::send_report_message_for_report(
+        let result = claria_report_pipeline::send_report_message_for_report(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
@@ -487,7 +487,7 @@ pub async fn send_report_message(
             report_id,
             expected_revision,
             &model_id,
-            claria_report_authoring::ReportMessageRequest::new(&instruction)
+            claria_report_pipeline::ReportMessageRequest::new(&instruction)
                 .with_references(&references)
                 .with_limits(limits)
                 .with_progress(&progress)
@@ -589,7 +589,7 @@ pub async fn resolve_report_proposal(
             ReportProposalChoice::Accept => "report_proposal_accepted",
             ReportProposalChoice::Reject => "report_proposal_rejected",
         };
-        let workspace = claria_report_authoring::resolve_report_proposal_for_report(
+        let workspace = claria_report_store::resolve_report_proposal_for_report(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -629,7 +629,7 @@ pub async fn export_report_docx(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let snapshot = claria_report_authoring::load_export_snapshot(
+        let snapshot = claria_report_store::load_export_snapshot(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -665,7 +665,7 @@ pub async fn export_report_docx(
                 (claria_docx::render_report(&snapshot.draft)?, false, None)
             };
         let draft = snapshot.draft;
-        let filename = claria_report_authoring::suggested_docx_filename(&draft.content.title);
+        let filename = claria_report_store::suggested_docx_filename(&draft.content.title);
         // Use the asynchronous dialog implementation. In particular, macOS must
         // schedule NSSavePanel work on the main thread; opening the synchronous
         // dialog after async S3 work can otherwise return as canceled repeatedly.
@@ -677,7 +677,7 @@ pub async fn export_report_docx(
             .await;
         let Some(selected) = selected else {
             let attempted_at = jiff::Timestamp::now();
-            let status_persisted = claria_report_authoring::record_report_export(
+            let status_persisted = claria_report_store::record_report_export(
                 &ctx.s3,
                 &ctx.bucket,
                 client_id,
@@ -708,7 +708,7 @@ pub async fn export_report_docx(
         }
         // The selected local path is intentionally never logged or audited.
         if let Err(error) = claria_desktop::local_export::write_private_atomic(&path, &bytes) {
-            let _ = claria_report_authoring::record_report_export(
+            let _ = claria_report_store::record_report_export(
                 &ctx.s3,
                 &ctx.bucket,
                 client_id,
@@ -720,7 +720,7 @@ pub async fn export_report_docx(
             return Err(error.to_string().into());
         }
         let attempted_at = jiff::Timestamp::now();
-        let status_persisted = claria_report_authoring::record_report_export(
+        let status_persisted = claria_report_store::record_report_export(
             &ctx.s3,
             &ctx.bucket,
             client_id,

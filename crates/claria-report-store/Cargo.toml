@@ -17,3 +17,9 @@ sha2.workspace = true
 specta.workspace = true
 thiserror.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
+
+[dev-dependencies]
+aws-config.workspace = true
+aws-credential-types.workspace = true
+claria-mock-aws.workspace = true
+tokio = { workspace = true, features = ["full"] }

@@ -14,19 +14,19 @@ use claria_core::models::{
     turn_usage::TurnUsage,
 };
 use claria_report_store::{
-    ATTEMPT_SCHEMA_VERSION, LoadedWorkspace, ReportCallUsageRecord, ReportStoreError,
-    ensure_revision, load_for_report, load_or_create, mark_template_current, persist_attempt,
-    persist_call_usage, save_loaded,
+    ATTEMPT_SCHEMA_VERSION, LoadedWorkspace, MAX_INSTRUCTION_CHARACTERS, REPORT_CONFLICT_MESSAGE,
+    ReportAttemptMetadata, ReportAttemptStatus, ReportCallUsageRecord, ReportFailureCode,
+    ReportStoreError, ensure_revision, load_for_report, load_or_create, mark_template_current,
+    persist_attempt, persist_call_usage, save_loaded,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     CONVERSE_CALLS_FIELD_LABEL, FullReportGenerationOutcome, MAX_CONFIGURABLE_CONVERSE_CALLS,
-    MAX_CONFIGURABLE_TOOL_ROUNDS, MAX_INSTRUCTION_CHARACTERS, MAX_REPORT_REFERENCES,
-    REPORT_CONFLICT_MESSAGE, REPORT_TRUNCATED_NOTICE, ReportAttemptMetadata, ReportAttemptStatus,
-    ReportAuthoringError, ReportBlockReference, ReportFailureCode, ReportPromptCache,
-    ReportTurnLimits, ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL, WRITER_LIMITS_SECTION,
+    MAX_CONFIGURABLE_TOOL_ROUNDS, MAX_REPORT_REFERENCES, REPORT_TRUNCATED_NOTICE,
+    ReportBlockReference, ReportPipelineError, ReportPromptCache, ReportTurnLimits,
+    ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL, WRITER_LIMITS_SECTION,
     context::{
         build_untrusted_context, flatten_protocol_history, sanitize_turn_messages, sha256_hex,
     },
@@ -195,13 +195,13 @@ pub async fn send_report_message(
     expected_revision: u64,
     model_id: &str,
     message: ReportMessageRequest<'_>,
-) -> Result<ReportTurnOutcome, ReportAuthoringError> {
+) -> Result<ReportTurnOutcome, ReportPipelineError> {
     let instruction = message.instruction.trim();
     let references = message.references;
     validate_instruction(instruction)?;
     validate_model_choice(model_id)?;
     if references.len() > MAX_REPORT_REFERENCES {
-        return Err(ReportAuthoringError::InvalidInput(format!(
+        return Err(ReportPipelineError::InvalidInput(format!(
             "Attach at most {MAX_REPORT_REFERENCES} report paragraphs or tables to one message."
         )));
     }
@@ -232,12 +232,12 @@ pub async fn send_report_message_for_report(
     expected_revision: u64,
     model_id: &str,
     message: ReportMessageRequest<'_>,
-) -> Result<ReportTurnOutcome, ReportAuthoringError> {
+) -> Result<ReportTurnOutcome, ReportPipelineError> {
     let instruction = message.instruction.trim();
     validate_instruction(instruction)?;
     validate_model_choice(model_id)?;
     if message.references.len() > MAX_REPORT_REFERENCES {
-        return Err(ReportAuthoringError::InvalidInput(format!(
+        return Err(ReportPipelineError::InvalidInput(format!(
             "Attach at most {MAX_REPORT_REFERENCES} report paragraphs or tables to one message."
         )));
     }
@@ -262,7 +262,7 @@ async fn send_report_message_loaded(
     expected_revision: u64,
     model_id: &str,
     message: ReportMessageRequest<'_>,
-) -> Result<ReportTurnOutcome, ReportAuthoringError> {
+) -> Result<ReportTurnOutcome, ReportPipelineError> {
     ensure_ready_for_turn(&loaded.workspace, expected_revision)?;
     execute_turn(
         sdk_config,
@@ -295,10 +295,10 @@ pub async fn generate_full_report(
     expected_revision: u64,
     model_id: &str,
     request: FullReportRequest<'_>,
-) -> Result<FullReportGenerationOutcome, ReportAuthoringError> {
+) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     let guidance = request.guidance.trim();
     if guidance.chars().count() > MAX_INSTRUCTION_CHARACTERS {
-        return Err(ReportAuthoringError::InvalidInput(format!(
+        return Err(ReportPipelineError::InvalidInput(format!(
             "The full-draft guidance exceeds {MAX_INSTRUCTION_CHARACTERS} characters."
         )));
     }
@@ -329,10 +329,10 @@ pub async fn generate_full_report_for_report(
     expected_revision: u64,
     model_id: &str,
     request: FullReportRequest<'_>,
-) -> Result<FullReportGenerationOutcome, ReportAuthoringError> {
+) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     let guidance = request.guidance.trim();
     if guidance.chars().count() > MAX_INSTRUCTION_CHARACTERS {
-        return Err(ReportAuthoringError::InvalidInput(format!(
+        return Err(ReportPipelineError::InvalidInput(format!(
             "The full-draft guidance exceeds {MAX_INSTRUCTION_CHARACTERS} characters."
         )));
     }
@@ -358,12 +358,12 @@ async fn generate_full_report_loaded(
     expected_revision: u64,
     model_id: &str,
     request: FullReportRequest<'_>,
-) -> Result<FullReportGenerationOutcome, ReportAuthoringError> {
+) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     ensure_ready_for_turn(&loaded.workspace, expected_revision)?;
     let client_id = loaded.workspace.client_id;
     let inventory = load_record_inventory(s3, bucket, client_id)
         .await
-        .map_err(|source| ReportAuthoringError::storage("listing full-draft records", source))?;
+        .map_err(|source| ReportPipelineError::storage("listing full-draft records", source))?;
     let record_context = load_full_record_context(s3, bucket, model_id, &inventory).await?;
     request.emit_progress(ReportTurnProgress::RecordContextPrepared {
         included_files: record_context.summary.included_files,
@@ -397,23 +397,23 @@ async fn generate_full_report_loaded(
     })
 }
 
-fn validate_instruction(instruction: &str) -> Result<(), ReportAuthoringError> {
+fn validate_instruction(instruction: &str) -> Result<(), ReportPipelineError> {
     if instruction.is_empty() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportPipelineError::InvalidInput(
             "Enter an instruction for the report assistant.".to_string(),
         ));
     }
     if instruction.chars().count() > MAX_INSTRUCTION_CHARACTERS {
-        return Err(ReportAuthoringError::InvalidInput(format!(
+        return Err(ReportPipelineError::InvalidInput(format!(
             "The instruction exceeds {MAX_INSTRUCTION_CHARACTERS} characters."
         )));
     }
     Ok(())
 }
 
-fn validate_model_choice(model_id: &str) -> Result<(), ReportAuthoringError> {
+fn validate_model_choice(model_id: &str) -> Result<(), ReportPipelineError> {
     if model_id.trim().is_empty() {
-        Err(ReportAuthoringError::InvalidInput(
+        Err(ReportPipelineError::InvalidInput(
             "Choose a model before starting the writer.".to_string(),
         ))
     } else {
@@ -424,10 +424,10 @@ fn validate_model_choice(model_id: &str) -> Result<(), ReportAuthoringError> {
 fn ensure_ready_for_turn(
     workspace: &ReportWorkspace,
     expected_revision: u64,
-) -> Result<(), ReportAuthoringError> {
+) -> Result<(), ReportPipelineError> {
     ensure_revision(workspace, expected_revision)?;
     if workspace.session.pending_proposal.is_some() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportPipelineError::InvalidInput(
             "Accept or reject the pending proposal before starting another writer action."
                 .to_string(),
         ));
@@ -442,7 +442,7 @@ async fn execute_turn(
     model_id: &str,
     request: TurnRunRequest<'_>,
     loaded: &mut LoadedWorkspace,
-) -> Result<ReportTurnOutcome, ReportAuthoringError> {
+) -> Result<ReportTurnOutcome, ReportPipelineError> {
     let started_at = jiff::Timestamp::now();
     let mut progress = AttemptProgress::new(&loaded.workspace, model_id, started_at);
     let result = run_turn(sdk_config, s3, bucket, request, loaded, &mut progress).await;
@@ -451,7 +451,7 @@ async fn execute_turn(
         Ok(mut outcome) => {
             let metadata = progress.metadata(ReportAttemptStatus::Completed, None);
             persist_attempt(s3, bucket, &metadata).await.map_err(|source| {
-                ReportAuthoringError::TurnFailed {
+                ReportPipelineError::TurnFailed {
                     message: "The report turn completed, but Claria could not record its final usage status. Reload the report before retrying.".to_string(),
                     code: ReportFailureCode::UsagePersistence,
                     attempt: Box::new(metadata.clone()),
@@ -477,7 +477,7 @@ async fn execute_turn(
                     Some(Box::new(status_error) as Box<dyn std::error::Error + Send + Sync>),
                 ),
             };
-            Err(ReportAuthoringError::TurnFailed {
+            Err(ReportPipelineError::TurnFailed {
                 message,
                 code: failure.code,
                 attempt: Box::new(metadata),

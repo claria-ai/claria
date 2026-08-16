@@ -1276,7 +1276,8 @@ dependencies = [
  "claria-mock-aws",
  "claria-provisioner",
  "claria-records",
- "claria-report-authoring",
+ "claria-report-pipeline",
+ "claria-report-store",
  "claria-storage",
  "claria-transcribe",
  "color-eyre",
@@ -1397,7 +1398,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "claria-report-authoring"
+name = "claria-report-pipeline"
 version = "0.28.0"
 dependencies = [
  "aws-config",
@@ -1424,8 +1425,11 @@ dependencies = [
 name = "claria-report-store"
 version = "0.28.0"
 dependencies = [
+ "aws-config",
+ "aws-credential-types",
  "aws-sdk-s3",
  "claria-core",
+ "claria-mock-aws",
  "claria-storage",
  "futures",
  "jiff",
@@ -1435,6 +1439,7 @@ dependencies = [
  "sha2 0.10.9",
  "specta",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 

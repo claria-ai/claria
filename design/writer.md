@@ -13,7 +13,7 @@ use. It has two modes that share one loop:
   a successful `finish_full_draft` saves **one atomic versioned revision**
   with no proposal gate.
 
-Crates: `claria-report-authoring` owns the turn loop, budgets, and prompt
+Crates: `claria-report-pipeline` owns the turn loop, budgets, and prompt
 composition; `claria-report-store` owns everything durable — workspaces and
 their ETag protocol, revisions, attempt and usage receipts, and the writer
 prompt and template libraries; `claria-bedrock` owns the exact Converse wire

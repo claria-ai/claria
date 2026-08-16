@@ -1,4 +1,4 @@
-//! Opt-in report-authoring workflows for atomic full drafts and targeted proposals.
+//! Report-writing orchestration for atomic full drafts and targeted proposals.
 //!
 //! This crate owns report workflow policy, bounded record tools, proposal
 //! staging, and the turn loop that drives them. Durable writer state lives in
@@ -11,36 +11,19 @@ mod error;
 mod prompt_cache;
 mod prompts;
 mod record_context;
-mod shim;
 mod tools;
 mod turn;
-pub mod writer_prompts;
-pub mod writer_templates;
 
 use claria_core::models::report::{MAX_REPORT_TURNS, ReportWorkspace};
+use claria_report_store::ReportAttemptMetadata;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub use claria_report_store::{
-    MAX_INSTRUCTION_CHARACTERS, REPORT_CONFLICT_MESSAGE, ReportAttemptMetadata,
-    ReportAttemptStatus, ReportCallUsageRecord, ReportExportSnapshot, ReportFailureCode,
-    ReportRevisionSummary, ReportTemplateApplication, RevisionCache, suggested_docx_filename,
-};
-pub use error::ReportAuthoringError;
+pub use error::ReportPipelineError;
 pub use prompt_cache::ReportPromptCache;
 pub use prompts::{
     FULL_REPORT_SYSTEM_PROMPT_BODY, FULL_REPORT_TRUST_RULES, REPORT_SYSTEM_PROMPT_BODY,
     REPORT_TRUST_RULES, full_report_system_prompt, report_system_prompt,
-};
-pub use shim::{
-    apply_report_template, apply_report_template_for_report, delete_report_workspace_for_client,
-    discard_queued_report_edits, find_report_workspace, list_report_revisions,
-    list_report_workspaces, load_export_snapshot, load_report_revision, load_report_workspace,
-    load_report_workspace_by_id, record_report_export, rename_report_session,
-    resolve_report_proposal, resolve_report_proposal_for_report,
-    restore_report_workspace_for_client, revert_report_revision, save_report_draft,
-    save_report_draft_for_report, start_report_workspace, start_report_workspace_with_id,
-    store_report_template_source,
 };
 pub use turn::{
     FullReportRequest, ReportMessageRequest, ReportTurnProgress, generate_full_report,
@@ -99,26 +82,26 @@ impl ReportTurnLimits {
         max_converse_calls: u32,
         max_tool_uses_per_response: u32,
         max_retained_turns: u32,
-    ) -> Result<Self, ReportAuthoringError> {
+    ) -> Result<Self, ReportPipelineError> {
         if max_tool_rounds == 0 || max_tool_rounds > MAX_CONFIGURABLE_TOOL_ROUNDS {
-            return Err(ReportAuthoringError::InvalidInput(format!(
+            return Err(ReportPipelineError::InvalidInput(format!(
                 "Writer tool rounds must be between 1 and {MAX_CONFIGURABLE_TOOL_ROUNDS}."
             )));
         }
         if max_converse_calls == 0 || max_converse_calls > MAX_CONFIGURABLE_CONVERSE_CALLS {
-            return Err(ReportAuthoringError::InvalidInput(format!(
+            return Err(ReportPipelineError::InvalidInput(format!(
                 "Writer Bedrock calls must be between 1 and {MAX_CONFIGURABLE_CONVERSE_CALLS}."
             )));
         }
         if max_tool_uses_per_response == 0
             || max_tool_uses_per_response > MAX_CONFIGURABLE_TOOL_USES_PER_RESPONSE
         {
-            return Err(ReportAuthoringError::InvalidInput(format!(
+            return Err(ReportPipelineError::InvalidInput(format!(
                 "Writer tools per response must be between 1 and {MAX_CONFIGURABLE_TOOL_USES_PER_RESPONSE}."
             )));
         }
         if max_retained_turns == 0 || max_retained_turns > MAX_CONFIGURABLE_RETAINED_TURNS {
-            return Err(ReportAuthoringError::InvalidInput(format!(
+            return Err(ReportPipelineError::InvalidInput(format!(
                 "Retained writer turns must be between 1 and {MAX_CONFIGURABLE_RETAINED_TURNS}."
             )));
         }

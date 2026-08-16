@@ -16,13 +16,14 @@ use claria_core::models::report::{
     ReportBlock, ReportContent, ReportOperation, ReportProposal, ReportSection,
     ReportToolResultStatus, ReportWorkspace, validate_report_content, validate_report_summary,
 };
+use claria_report_store::ReportFailureCode;
 use claria_storage::error::StorageError;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
     DEFAULT_READ_LIMIT, MAX_LIST_RESULT_BYTES, MAX_LISTED_FILES, MAX_READ_CHARACTERS_PER_TURN,
-    MAX_READ_LIMIT, ReportFailureCode, record_context::RecordInventoryEntry, turn::TurnRunFailure,
+    MAX_READ_LIMIT, record_context::RecordInventoryEntry, turn::TurnRunFailure,
 };
 
 pub(crate) struct ExecutedTool {
