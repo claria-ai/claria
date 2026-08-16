@@ -12,6 +12,82 @@ All notable changes to Claria are documented here.
 - The Preferences sidebar can export the synced preferences file for support or backup, and import one back after validation
 - Preferences file history lists past versions with view, restore, and a two-version diff; imports and restores keep the replaced values one version back
 - Transcription and chat-streaming edits now save once when you leave the section or close the screen, instead of writing a preferences version on every click
+- Split the report-authoring crate into focused modules ahead of the drafting-pipeline rework
+- Extracted durable writer storage into its own crate, dropping the Bedrock dependency from client-record lifecycle code
+- Renamed the report-authoring crate to report-pipeline now that storage lives in its own crate
+- Added a durable per-section drafting-run record so interrupted report generation can resume
+- Skipped report sections now keep a copy of their template body, and sections carry authorship metadata
+- Template copies stay out of Word exports and out of everything sent to the model
+- Prompt-cache checkpoints now respect each model's real minimum prefix size, and cache TTL is threaded through report usage records
+- Writer turns are labelled by kind in the cache logs, separating targeted edits from whole-draft runs
+- Bedrock throttling and capacity errors can now be retried with backoff, while an exhausted account quota still fails immediately
+- Whole-report generation now saves each section durably as it lands, survives interruption, and can resume without losing drafted work
+- A report is locked against edits, template changes, and further writer turns only while a whole-report draft is actually running
+- Sections written by a whole-report draft record the run and model that wrote them
+- Whole-report drafting now caches its records and plan across the session, follows an explicit section plan, and can mark sections failed instead of stalling
+- A whole-report draft can cite the record quotes a section rests on
+- Whole-report call and tool-round ceilings now scale with the number of sections being drafted
+- Drafting progress now reports each section as it lands, with the plan's section count as the denominator
+- An interrupted whole-report draft can be finalized from the sections it wrote, or discarded outright
+- Writer runs can now be stopped mid-generation, keeping every section already saved and resuming later
+- A stop that arrives after a whole-report draft has been finished leaves the saved revision standing
+- Model download progress is announced to screen readers as a labelled progress bar
+- The writer's proposal diff is now built from shared primitives so other panes can render the same comparison
+- Skipped sections now show their template text greyed out in the preview and say they are left out of exports
+- Editing a skipped section takes an explicit Include this section button, which fills it with the template text
+- The export line counts how many skipped sections the accepted revision left out
+- A planning pass now assigns scope and record evidence per section before drafting, with an editable plan and per-role model settings
+- Planned evidence is checked against the client's records, and a file the client does not have is flagged on the plan rather than passed to the writer
+- Picking up an interrupted draft re-plans it when you add instructions, and decides it without a model call when you do not
+- Report sections now appear in the preview as they are written, with an honest progress count and a Stop button that keeps completed work
+- Each section is marked in the preview while a draft runs — waiting, writing, drafted, skipped, or failed with the reason
+- A stopped or failed draft offers to start back up, keep what it wrote, or be discarded, and survives closing the app
+- Leaving Writing during a draft run now points at Stop instead of asking you to wait
+- The writer now shows an editable section plan before drafting, with per-section scope, evidence, and skip control, and resumes stopped runs from the same view
+- A new Draft runs preference chooses whether the plan waits for review or drafting starts as soon as it lands, and picks the models that plan and review
+- A resumed draft run can now be stopped like the first attempt
+- Report sections now record who last changed them, whether that was you, a template, or the model
+- Accepting a writer proposal credits the model that wrote it, and saving a hand edit credits you only on the sections you actually changed
+- Review findings have durable storage, so a style suggestion can be applied as a new revision and undone again
+- A finding whose text has moved on since the review is refused rather than applied to the wrong place
+- Draft reviews now sweep the report once per property in parallel, producing anchored findings with uniform per-section coverage
+- A review pass that fails leaves the other six intact, and the properties nobody reviewed are named rather than left to look clean
+- A deterministic completion check now verifies sections, citations, placeholders, and open findings — no model opinion involved
+- Cited record quotes are re-read from the records themselves, so a citation that no longer resolves is named with the file it came from
+- Export is unaffected by the completion check, which reports rather than blocks
+- Review findings now appear beside the draft, grouped by section and filtered by style, consistency, or resolved
+- A style finding applies in one click and can be undone again from the receipt it leaves
+- Consistency findings are read-only: they show the passage they contradict and can be sent to the chat composer, never applied
+- A finding whose section changed since the review is greyed out with a note to re-run the review
+- Sections with open findings are flagged on the document, and the flag jumps to the finding
+- The draft run pane closes with a completion checklist counting what is still outstanding
+- Raised the planner's output ceiling so plans for long reports no longer fail partway through
+- Planning now survives a dropped or stalled Bedrock connection by sending the request again
+- A Bedrock call that never starts responding now fails after ninety seconds instead of waiting indefinitely
+- A response that goes silent part-way through is abandoned after a minute rather than five
+- Planning now produces an outline naming the records each section rests on, instead of copying quoted excerpts out of them, so a plan generates in a fraction of the time
+- The planner's smaller answers hand ~16k tokens back to the record corpus it reads
+- Planning counts its sections off as they are decided instead of showing a spinner for the whole call
+- A report drafted from an approved plan now writes its sections in parallel rather than one after another
+- Sections appear in the order the plan puts them in, however long each one takes to arrive
+- The report title is written alongside the sections, and a title that fails leaves the existing one in place
+- Assembling the finished document no longer costs a model call
+- Sections the plan says to keep or skip are carried out without asking the writer
+- A section that cannot be written fails on its own; the rest of the report is still drafted and saved
+- Stopping a parallel draft keeps every section that had already landed and picks up from there
+- Reports generated without a plan are unchanged
+- Documented the writer, Bedrock, and logging code paths for contributors, and corrected the drafting-runs design doc where it had fallen behind the code
+- Planning and review calls now allow two minutes before the first token and ninety seconds between frames, above the limits chat and writer turns keep
+- An abandoned stream now names the call it belonged to — planning, review, chat, a targeted edit, or a whole-report draft — in the logs and in the error the reader is shown
+- Planning calls log the input-token count they actually measured alongside the budget they were given
+- Planning calls log how long the model took to send its first token and how long each attempt ran
+- Retry warnings now carry the attempt number and the attempt ceiling
+- The writer says when it is re-sending a Bedrock call that never landed, and which attempt it is on, instead of leaving the line frozen
+- Planning a report is now a sequence of eight-section calls rather than one call for the whole document
+- Each planning call is short enough to stay well inside the stream watchdog, and a call that fails re-plans its own eight sections rather than the document
+- The plan pane announces each batch of sections as it is decided, and Stop is answered between them
+- The planner is no longer sent the template's prose, which it was already ordered to disregard
+- The planner is asked for four records per section instead of eight, with a shorter line on each
 
 ## [0.28.0] — 2026-08-15
 

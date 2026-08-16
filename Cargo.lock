@@ -1218,6 +1218,7 @@ dependencies = [
  "aws-sdk-bedrock",
  "aws-sdk-bedrockruntime",
  "aws-smithy-types",
+ "backon",
  "claria-billing",
  "claria-core",
  "claria-mock-aws",
@@ -1256,6 +1257,7 @@ dependencies = [
  "serde_json",
  "specta",
  "thiserror 2.0.18",
+ "tracing",
  "uuid",
 ]
 
@@ -1276,7 +1278,8 @@ dependencies = [
  "claria-mock-aws",
  "claria-provisioner",
  "claria-records",
- "claria-report-authoring",
+ "claria-report-pipeline",
+ "claria-report-store",
  "claria-storage",
  "claria-transcribe",
  "color-eyre",
@@ -1382,7 +1385,7 @@ dependencies = [
  "aws-sdk-s3",
  "claria-core",
  "claria-mock-aws",
- "claria-report-authoring",
+ "claria-report-store",
  "claria-storage",
  "futures",
  "jiff",
@@ -1397,13 +1400,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "claria-report-authoring"
+name = "claria-report-pipeline"
 version = "0.28.0"
 dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
  "claria-bedrock",
+ "claria-core",
+ "claria-mock-aws",
+ "claria-report-store",
+ "claria-storage",
+ "futures",
+ "jiff",
+ "lru 0.18.0",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "specta",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "claria-report-store"
+version = "0.28.0"
+dependencies = [
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
  "claria-core",
  "claria-mock-aws",
  "claria-storage",
@@ -1416,7 +1443,6 @@ dependencies = [
  "specta",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
  "uuid",
 ]
 

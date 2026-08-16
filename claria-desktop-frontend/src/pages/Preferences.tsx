@@ -34,6 +34,8 @@ import {
   deleteWriterLibraryPrompt,
   type ChatStreamMode,
   type ConfigInfo,
+  type DraftPipelinePreferences,
+  type PlanGateMode,
   type EffortPreference,
   type ModelTuningPreferences,
   type LocalBackend,
@@ -76,7 +78,9 @@ import {
   type ContentHit,
 } from "../lib/preferencesSearchContent";
 import EditableName from "../components/EditableName";
+import ModelSelect from "../components/ModelSelect";
 import PreferencesSection from "../components/PreferencesSection";
+import ProgressBar from "../components/ProgressBar";
 import {
   BackButton,
   ComposeIcon,
@@ -1748,12 +1752,14 @@ function ModelGroup({
                 </div>
               </div>
               {modelProgress && (
-                <div className="mt-2 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-600 transition-[width]"
-                    style={{ width: `${percent}%` }}
-                  />
-                </div>
+                <ProgressBar
+                  className="mt-2"
+                  value={modelProgress.downloaded_bytes}
+                  max={modelProgress.total_bytes}
+                  label={`Downloading ${model.label}`}
+                  valueText={`${percent}%`}
+                  showValueText={false}
+                />
               )}
             </div>
           );
@@ -2241,7 +2247,7 @@ const WRITER_LIMIT_DEFAULTS: WriterLimits = {
 
 // The `label` values below are quoted verbatim in the writer's
 // guardrail-exhausted error, which tells the clinician which field to raise.
-// Renaming one here means renaming it in `claria-report-authoring`'s
+// Renaming one here means renaming it in `claria-report-pipeline`'s
 // `TOOL_ROUNDS_FIELD_LABEL` / `CONVERSE_CALLS_FIELD_LABEL`.
 const WRITER_LIMIT_FIELDS: Array<{
   key: WriterLimitField;
@@ -2789,6 +2795,237 @@ function descriptionForLanguage(lang: TranscriptionLanguage): string {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Draft runs — the plan gate and the two supporting model roles
+// ---------------------------------------------------------------------------
+
+const PLAN_GATE_OPTIONS: {
+  value: PlanGateMode;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "gated",
+    label: "Show the section plan for review before drafting (recommended)",
+    description:
+      "The plan lands in the Draft run pane, where scope, evidence, and skipped sections can be changed before a single word is written.",
+  },
+  {
+    value: "auto_start",
+    label: "Start drafting as soon as the plan is ready",
+    description:
+      "No stop between planning and writing. The plan is still shown beside the progress, and the run can still be stopped.",
+  },
+];
+
+/**
+ * Everything about how a whole-report draft is planned.
+ *
+ * The two model pickers name the supporting roles only — the writer keeps its
+ * own picker beside the draft — and leaving either on the default lets Claria
+ * resolve it at call time, so an account that gains a better model gets it
+ * without anyone editing a setting.
+ */
+function DraftRunsSection() {
+  const {
+    models: chatModels,
+    loading: modelsLoading,
+    error: modelsError,
+  } = useChatModels();
+  const [snapshot, setSnapshot] = useState<DraftPipelinePreferences | null>(
+    null
+  );
+  const [draft, setDraft] = useState<DraftPipelinePreferences | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [syncedOnce, setSyncedOnce] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const info = await fetchCloudPreferences();
+      setSnapshot(info.draft_pipeline);
+      setDraft(info.draft_pipeline);
+    } catch (e) {
+      try {
+        const info = await loadConfig();
+        setSnapshot(info.draft_pipeline);
+        setDraft(info.draft_pipeline);
+      } catch (fallbackError) {
+        setLoadError(String(fallbackError ?? e));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const dirty =
+    snapshot != null &&
+    draft != null &&
+    JSON.stringify(snapshot) !== JSON.stringify(draft);
+
+  const sync = useCallback(async (next: DraftPipelinePreferences) => {
+    setSyncing(true);
+    setSaveError(null);
+    try {
+      // Patch-save: only the drafting-pipeline fields travel, so this section
+      // cannot roll back a model, cost, or writer-limits edit.
+      const updated = await savePreferencesPatch({ draft_pipeline: next });
+      setSnapshot(updated.draft_pipeline);
+      setSyncedOnce(true);
+    } catch (e) {
+      logFrontendEvent("error", `draft run preferences save failed: ${e}`);
+      setSaveError(String(e));
+    } finally {
+      setSyncing(false);
+    }
+  }, []);
+
+  const pendingRef = useRef<DraftPipelinePreferences | null>(null);
+  useEffect(() => {
+    pendingRef.current = dirty && draft ? draft : null;
+  }, [dirty, draft]);
+  const flush = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    pendingRef.current = null;
+    void sync(pending);
+  }, [sync]);
+  const { containerRef, onContainerBlur } = useSaveOnLeave(flush);
+
+  const gate = draft?.plan_gate ?? "gated";
+  const active = PLAN_GATE_OPTIONS.find((option) => option.value === gate);
+
+  return (
+    <NavPane
+      paneId="writer.draft-runs"
+      summary={
+        active ? (
+          <span className="text-xs text-gray-400">
+            {gate === "gated" ? "Plan reviewed first" : "Drafts immediately"}
+          </span>
+        ) : undefined
+      }
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    >
+      {loading ? (
+        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+          <Spinner />
+          <span>Loading draft run settings...</span>
+        </div>
+      ) : draft == null ? (
+        <ErrorBanner
+          message={loadError ?? "Could not load the draft run settings."}
+          className=""
+        />
+      ) : (
+        <div ref={containerRef} onBlur={onContainerBlur} className="space-y-4">
+          <fieldset className="space-y-3" data-pref-anchor="plan_gate">
+            <legend className="text-xs font-medium text-gray-700">
+              Before drafting starts
+            </legend>
+            {PLAN_GATE_OPTIONS.map((option) => (
+              <label key={option.value} className="flex items-start gap-2">
+                <input
+                  type="radio"
+                  name="plan-gate"
+                  value={option.value}
+                  checked={gate === option.value}
+                  onChange={() =>
+                    setDraft({ ...draft, plan_gate: option.value })
+                  }
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="text-sm text-gray-700 block">
+                    {option.label}
+                  </span>
+                  <span className="text-xs text-gray-500 block">
+                    {option.description}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+
+          <div className="space-y-3">
+            <div data-pref-anchor="planner_model_id">
+              <label className="text-xs text-gray-600" htmlFor="planner-model">
+                Planning model
+              </label>
+              <p className="text-xs text-gray-500">
+                Reads the records and decides what each section should cover.
+              </p>
+              <ModelSelect
+                models={chatModels}
+                loading={modelsLoading}
+                error={modelsError}
+                value={draft.planner_model_id ?? ""}
+                onChange={(modelId) =>
+                  setDraft({
+                    ...draft,
+                    planner_model_id: modelId === "" ? null : modelId,
+                  })
+                }
+                ariaLabel="Planning model"
+                className="mt-1 w-full"
+                defaultOption
+              />
+            </div>
+            <div data-pref-anchor="reviewer_model_id">
+              <label className="text-xs text-gray-600" htmlFor="reviewer-model">
+                Review model
+              </label>
+              <p className="text-xs text-gray-500">
+                Reads the finished draft back and raises findings against it.
+              </p>
+              <ModelSelect
+                models={chatModels}
+                loading={modelsLoading}
+                error={modelsError}
+                value={draft.reviewer_model_id ?? ""}
+                onChange={(modelId) =>
+                  setDraft({
+                    ...draft,
+                    reviewer_model_id: modelId === "" ? null : modelId,
+                  })
+                }
+                ariaLabel="Review model"
+                className="mt-1 w-full"
+                defaultOption
+              />
+            </div>
+          </div>
+
+          {saveError ? (
+            <ErrorBanner
+              message={`Could not save draft run settings: ${saveError}`}
+              onRetry={() => {
+                if (draft) void sync(draft);
+              }}
+              className=""
+            />
+          ) : (
+            <SectionSaveStatus
+              syncing={syncing}
+              dirty={dirty}
+              syncedOnce={syncedOnce}
+            />
+          )}
+        </div>
+      )}
+    </NavPane>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Pane registry — every PaneId maps to the component that renders it. A
 // component serving several panes (shared state) appears once per pane and
@@ -2806,6 +3043,7 @@ const PANE_COMPONENTS: Record<PaneId, ComponentType> = {
   "writer.whole-report": WriterPromptEditors,
   "writer.prompt-library": WriterPromptsSection,
   "writer.templates": WriterTemplatesSection,
+  "writer.draft-runs": DraftRunsSection,
   "writer.limits": ReportAuthoringSection,
   "transcription.imported-audio": TranscriptionSection,
   "transcription.local-models": LocalTranscriptionPanes,

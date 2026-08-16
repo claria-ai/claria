@@ -8,19 +8,16 @@ pub use claria_desktop::report_authoring::{
     ReportTurnResponse, ReportWorkspaceView, TemplateExportWarning,
 };
 
-use claria_core::models::report::{ReportDraft, ReportExportStatus};
+use claria_core::models::{
+    report::{ReportDraft, ReportExportStatus},
+    report_run::RunSectionState,
+};
+use claria_report_pipeline::CompletionReport;
 
-use super::{CommandContext, parse_uuid, run, usage_audit_details};
+use super::{
+    CommandContext, merge_details, parse_uuid, run, streams::StopRegistration, usage_audit_details,
+};
 use crate::state::DesktopState;
-
-/// Overlay `extra`'s fields onto the shared usage details object.
-fn merge_details(base: &mut serde_json::Value, extra: serde_json::Value) {
-    if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
-        for (key, value) in extra {
-            base.insert(key.clone(), value.clone());
-        }
-    }
-}
 
 #[tauri::command]
 #[specta::specta]
@@ -33,7 +30,7 @@ pub async fn start_report_workspace(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let workspace = claria_report_authoring::start_report_workspace_with_id(
+        let workspace = claria_report_store::start_report_workspace_with_id(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -55,7 +52,7 @@ pub async fn load_report_workspace(
     run("load_report_workspace", async {
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
-        let workspace = claria_report_authoring::load_report_workspace_by_id(
+        let workspace = claria_report_store::load_report_workspace_by_id(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -79,7 +76,7 @@ pub async fn list_editor_history(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         Ok(
-            claria_report_authoring::list_report_workspaces(&ctx.s3, &ctx.bucket, client_id)
+            claria_report_store::list_report_workspaces(&ctx.s3, &ctx.bucket, client_id)
                 .await?
                 .iter()
                 .filter(|workspace| {
@@ -106,7 +103,7 @@ pub async fn rename_report_session(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let workspace = claria_report_authoring::rename_report_session(
+        let workspace = claria_report_store::rename_report_session(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -142,7 +139,7 @@ pub async fn list_report_revisions(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let revisions = claria_report_authoring::list_report_revisions(
+        let revisions = claria_report_store::list_report_revisions(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -174,7 +171,7 @@ pub async fn load_report_revision(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let draft = claria_report_authoring::load_report_revision(
+        let draft = claria_report_store::load_report_revision(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -201,7 +198,7 @@ pub async fn revert_report_revision(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let workspace = claria_report_authoring::revert_report_revision(
+        let workspace = claria_report_store::revert_report_revision(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -246,7 +243,7 @@ pub async fn save_report_draft(
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let content = claria_desktop::report_authoring::content_from_edit(draft)?;
-        let workspace = claria_report_authoring::save_report_draft_for_report(
+        let workspace = claria_report_store::save_report_draft_for_report(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -285,7 +282,7 @@ pub async fn discard_queued_report_edits(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let workspace = claria_report_authoring::discard_queued_report_edits(
+        let workspace = claria_report_store::discard_queued_report_edits(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -315,6 +312,9 @@ pub async fn discard_queued_report_edits(
 
 #[tauri::command]
 #[specta::specta]
+// Tauri command parameters are the typed IPC contract; report identity, the
+// stop handle, and the progress channel take this one past clippy's ceiling.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_full_report(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -322,10 +322,12 @@ pub async fn generate_full_report(
     expected_revision: u64,
     model_id: String,
     guidance: String,
+    stream_id: String,
     on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
 ) -> Result<FullReportGenerationResponse, String> {
     run("generate_full_report", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let limits = ctx.cfg.report_authoring.limits()?;
@@ -336,12 +338,12 @@ pub async fn generate_full_report(
             model_id,
             "whole-report generation requested"
         );
-        let progress = |event: claria_report_authoring::ReportTurnProgress| {
+        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
         let prompt_body =
             super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-full-draft").await?;
-        let result = claria_report_authoring::generate_full_report_for_report(
+        let result = claria_report_pipeline::generate_full_report_for_report(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
@@ -349,12 +351,13 @@ pub async fn generate_full_report(
             report_id,
             expected_revision,
             &model_id,
-            claria_report_authoring::FullReportRequest::new(&guidance)
+            claria_report_pipeline::FullReportRequest::new(&guidance)
                 .with_limits(limits)
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
                 .with_system_prompt_body(&prompt_body)
-                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id))
+                .with_stop(&stop.signal),
         )
         .await;
 
@@ -417,6 +420,7 @@ pub async fn generate_full_report(
                     || report_id.to_string(),
                     |value| value.report_id.to_string(),
                 );
+                let stopped = error.is_stopped();
                 let mut audit_details = usage_audit_details(
                     &model_id,
                     attempt.as_ref().map(|value| &value.usage),
@@ -425,7 +429,7 @@ pub async fn generate_full_report(
                 merge_details(
                     &mut audit_details,
                     serde_json::json!({
-                        "status": "failed",
+                        "status": if stopped { "stopped" } else { "failed" },
                         "client_id": client_id.to_string(),
                         "report_id": attempt.as_ref().map_or_else(
                             || report_id.to_string(),
@@ -438,8 +442,18 @@ pub async fn generate_full_report(
                         "usage_complete": attempt.as_ref().is_some_and(|value| value.usage_complete),
                     }),
                 );
+                let action = if stopped {
+                    merge_details(
+                        &mut audit_details,
+                        stopped_run_details(&ctx, client_id, report_id, error.stopped_run_id())
+                            .await,
+                    );
+                    "draft_run_stopped"
+                } else {
+                    "report_full_draft_failed"
+                };
                 ctx.record_audit(
-                    ctx.audit_event("report_full_draft_failed", "report", resource_id)
+                    ctx.audit_event(action, "report", resource_id)
                         .with_details(audit_details),
                 )
                 .await;
@@ -448,6 +462,51 @@ pub async fn generate_full_report(
         }
     })
     .await
+}
+
+/// What a stopped drafting run had landed when the Stop arrived, read back
+/// from the run object that is now the report's resumable state.
+///
+/// Counts and UUIDs only — never a heading or a line of the draft. A run that
+/// cannot be read still produces an audit event: the stop itself is the fact
+/// worth recording, and its counts are the detail.
+async fn stopped_run_details(
+    ctx: &CommandContext,
+    client_id: uuid::Uuid,
+    report_id: uuid::Uuid,
+    run_id: Option<uuid::Uuid>,
+) -> serde_json::Value {
+    let run = match claria_report_pipeline::load_resumable_draft_run(
+        &ctx.s3,
+        &ctx.bucket,
+        client_id,
+        report_id,
+    )
+    .await
+    {
+        Ok(run) => run,
+        Err(error) => {
+            tracing::warn!(
+                report_id = %report_id,
+                error = %error,
+                "could not read the stopped drafting run for its audit event"
+            );
+            None
+        }
+    };
+    let count = |state: RunSectionState| {
+        run.as_ref().map_or(0, |run| {
+            run.sections
+                .iter()
+                .filter(|section| section.state == state)
+                .count()
+        })
+    };
+    serde_json::json!({
+        "run_id": run_id.map(|run_id| run_id.to_string()),
+        "drafted_section_count": count(RunSectionState::Drafted),
+        "pending_section_count": count(RunSectionState::Pending),
+    })
 }
 
 #[tauri::command]
@@ -463,10 +522,12 @@ pub async fn send_report_message(
     model_id: String,
     instruction: String,
     references: Vec<ReportBlockReferenceInput>,
+    stream_id: String,
     on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
 ) -> Result<ReportTurnResponse, String> {
     run("send_report_message", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let references = references
@@ -474,12 +535,12 @@ pub async fn send_report_message(
             .map(ReportBlockReferenceInput::into_domain)
             .collect::<Result<Vec<_>, _>>()?;
         let limits = ctx.cfg.report_authoring.limits()?;
-        let progress = |event: claria_report_authoring::ReportTurnProgress| {
+        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
         let prompt_body =
             super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-system").await?;
-        let result = claria_report_authoring::send_report_message_for_report(
+        let result = claria_report_pipeline::send_report_message_for_report(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
@@ -487,13 +548,14 @@ pub async fn send_report_message(
             report_id,
             expected_revision,
             &model_id,
-            claria_report_authoring::ReportMessageRequest::new(&instruction)
+            claria_report_pipeline::ReportMessageRequest::new(&instruction)
                 .with_references(&references)
                 .with_limits(limits)
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
                 .with_system_prompt_body(&prompt_body)
-                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id))
+                .with_stop(&stop.signal),
         )
         .await;
 
@@ -543,10 +605,11 @@ pub async fn send_report_message(
                     attempt.as_ref().map(|value| &value.usage),
                     None,
                 );
+                let stopped = error.is_stopped();
                 merge_details(
                     &mut audit_details,
                     serde_json::json!({
-                        "status": "failed",
+                        "status": if stopped { "stopped" } else { "failed" },
                         "client_id": client_id.to_string(),
                         "report_id": attempt.as_ref().map_or_else(
                             || report_id.to_string(),
@@ -559,8 +622,15 @@ pub async fn send_report_message(
                         "usage_complete": attempt.as_ref().is_some_and(|value| value.usage_complete),
                     }),
                 );
+                // A stopped turn changed nothing, but it did spend tokens —
+                // the receipt is what keeps that spend traceable.
+                let action = if stopped {
+                    "report_tool_turn_stopped"
+                } else {
+                    "report_tool_turn_failed"
+                };
                 ctx.record_audit(
-                    ctx.audit_event("report_tool_turn_failed", "report", resource_id)
+                    ctx.audit_event(action, "report", resource_id)
                         .with_details(audit_details),
                 )
                 .await;
@@ -589,7 +659,7 @@ pub async fn resolve_report_proposal(
             ReportProposalChoice::Accept => "report_proposal_accepted",
             ReportProposalChoice::Reject => "report_proposal_rejected",
         };
-        let workspace = claria_report_authoring::resolve_report_proposal_for_report(
+        let workspace = claria_report_store::resolve_report_proposal_for_report(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -617,6 +687,30 @@ pub async fn resolve_report_proposal(
     .await
 }
 
+/// Answer the completion checklist for one report.
+///
+/// Read-only and model-free: it loads durable state, checks it, and returns
+/// what failed. Nothing is mutated, so there is no audit event to record.
+#[tauri::command]
+#[specta::specta]
+pub async fn evaluate_report_completion(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+) -> Result<CompletionReport, String> {
+    run("evaluate_report_completion", async {
+        let ctx = CommandContext::new(&state).await?;
+        Ok(claria_report_pipeline::evaluate_report_completion(
+            &ctx.s3,
+            &ctx.bucket,
+            parse_uuid(&client_id)?,
+            parse_uuid(&report_id)?,
+        )
+        .await?)
+    })
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn export_report_docx(
@@ -629,7 +723,7 @@ pub async fn export_report_docx(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
-        let snapshot = claria_report_authoring::load_export_snapshot(
+        let snapshot = claria_report_store::load_export_snapshot(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -665,7 +759,7 @@ pub async fn export_report_docx(
                 (claria_docx::render_report(&snapshot.draft)?, false, None)
             };
         let draft = snapshot.draft;
-        let filename = claria_report_authoring::suggested_docx_filename(&draft.content.title);
+        let filename = claria_report_store::suggested_docx_filename(&draft.content.title);
         // Use the asynchronous dialog implementation. In particular, macOS must
         // schedule NSSavePanel work on the main thread; opening the synchronous
         // dialog after async S3 work can otherwise return as canceled repeatedly.
@@ -677,7 +771,7 @@ pub async fn export_report_docx(
             .await;
         let Some(selected) = selected else {
             let attempted_at = jiff::Timestamp::now();
-            let status_persisted = claria_report_authoring::record_report_export(
+            let status_persisted = claria_report_store::record_report_export(
                 &ctx.s3,
                 &ctx.bucket,
                 client_id,
@@ -708,7 +802,7 @@ pub async fn export_report_docx(
         }
         // The selected local path is intentionally never logged or audited.
         if let Err(error) = claria_desktop::local_export::write_private_atomic(&path, &bytes) {
-            let _ = claria_report_authoring::record_report_export(
+            let _ = claria_report_store::record_report_export(
                 &ctx.s3,
                 &ctx.bucket,
                 client_id,
@@ -720,7 +814,7 @@ pub async fn export_report_docx(
             return Err(error.to_string().into());
         }
         let attempted_at = jiff::Timestamp::now();
-        let status_persisted = claria_report_authoring::record_report_export(
+        let status_persisted = claria_report_store::record_report_export(
             &ctx.s3,
             &ctx.bucket,
             client_id,

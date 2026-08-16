@@ -8,15 +8,35 @@ use. It has two modes that share one loop:
   (`propose_report_changes`) that the user reviews and accepts. Nothing the
   model does mutates the accepted report directly.
 - **Whole-report generation** — the one-action "fill the whole report" path.
-  Claria preloads every readable record into the first turn, the model writes
-  every section into an isolated candidate through internal tool rounds, and
-  a successful `finish_full_draft` saves **one atomic versioned revision**
-  with no proposal gate.
+  Claria preloads every readable record into the first turn and the model
+  writes every section through internal tool rounds. Each section is written
+  through to a **drafting run** object before its success result is returned,
+  so a generation that dies partway keeps everything that landed; a
+  successful `finish_full_draft` assembles the run and saves **one atomic
+  versioned revision** with no proposal gate.
 
-Crates: `claria-report-authoring` owns the turn loop, budgets, persistence,
-and prompt composition; `claria-bedrock` owns the exact Converse wire shape,
-tool schemas, and stop-reason handling; `claria-docx` owns template import
-and export; `claria-desktop` wires commands, preferences, and audit events.
+  A live run owns its Writing session: hand edits, template applies,
+  reverts, and further writer turns are refused until it finishes or fails.
+  It fails open — a failed run releases the session immediately and its
+  drafted sections stay readable for a resume. A run the user **stops** is
+  the exception: it keeps the session, because it is the state the report is
+  picked back up from.
+
+Crates: `claria-report-pipeline` owns the turn loop, budgets, and prompt
+composition; `claria-report-store` owns everything durable — workspaces and
+their ETag protocol, revisions, drafting runs, attempt and usage receipts,
+and the writer prompt and template libraries; `claria-bedrock` owns the exact Converse wire
+shape, tool schemas, and stop-reason handling; `claria-docx` owns template
+import and export; `claria-desktop` wires commands, preferences, and audit
+events.
+
+**`drafting-runs.md` is the companion to this document.** This file covers the
+two writing modes and the loop they share; that one covers the durable
+machinery under whole-report generation — the run object and its per-section
+state machine, the plan pass and its gate, the cached conversation layout, the
+review fan-out, the findings lifecycle, and the deterministic completion gate.
+Read it for anything about how a whole-report draft survives being interrupted,
+or about what "complete" means.
 
 ## Scenario: from empty account to a hydrated report
 
@@ -36,11 +56,21 @@ and export; `claria-desktop` wires commands, preferences, and audit events.
    and the imported structured content — headings **and** boilerplate body
    text — becomes the working draft. The template's paragraphs are now data
    the model will see, not instructions (see `templates.md`).
-5. **Hydrate as the first turn.** "Fill the whole report" snapshots every
-   readable record into `<untrusted_record_context>`, injects the current
-   draft (the template skeleton) as `<untrusted_report_context>`, and runs
-   the full-draft tool protocol until `finish_full_draft` lands revision 1.
-6. From there the session continues as targeted editing: instructions,
+5. **Plan the draft.** A planning model reads the same record snapshot and
+   template structure and returns one row per section — what it must assert
+   and which records support it — through a forced `submit_section_plan`
+   call. The host checks coverage itself and checks every filename against the
+   records; the plan lands on the run unapproved, for the clinician to edit
+   and start. Which model does this is a per-role setting, defaulting to the
+   newest capable Sonnet the account has.
+6. **Hydrate as the first turn.** Starting the approved plan snapshots every
+   readable record into `<untrusted_record_context>`, injects the base
+   revision's structure and per-section template bodies as
+   `<untrusted_template_context>`, injects the run's section plan as
+   `<plan_context>`, and runs the full-draft tool protocol until
+   `finish_full_draft` lands revision 1. Sections the plan marks skip are
+   already skipped on the run, so the writer is never asked about them.
+7. From there the session continues as targeted editing: instructions,
    record reads on demand, reviewable proposals, and eventually a DOCX
    export rendered back through the stored template package.
 
@@ -68,14 +98,15 @@ flowchart TD
 
     subgraph Hydrate["First turn: whole-report generation"]
         P["Preflight: eligible record bytes<br/>&le; input budget &times; 3"]
-        X["Build first turn:<br/>untrusted_report_context (template skeleton)<br/>untrusted_record_context (all 5 records)"]
-        L{"Converse round<br/>(max_tokens = 32k)"}
+        X["Build first turn:<br/>untrusted_record_context (all 5 records)<br/>untrusted_template_context (template skeleton)<br/>● CachePoint 1<br/>plan_context (the run's plan)<br/>● CachePoint 2<br/>kick-off instruction"]
+        L{"Converse round<br/>(max_tokens = 32k)<br/>● CachePoint 3 = moving tail"}
         TT["set_full_draft_title (1 call)"]
-        W["write_full_draft_section<br/>one call per section, N calls"]
+        W["write_full_draft_section<br/>one call per section, N calls<br/>each saved to the run first"]
         SK["skip_full_draft_section<br/>per user-deferred section"]
+        MF["mark_section_failed<br/>per undraftable section"]
         F["finish_full_draft (1 call)"]
-        V["Validate candidate:<br/>every template section_id<br/>written or skipped?"]
-        REV["Atomic save: revision 1"]
+        V["Validate the run:<br/>every planned section_id<br/>drafted, skipped, or failed?"]
+        REV["Atomic save: revision 1<br/>run marked completed"]
     end
 
     subgraph Interactive["Later turns: targeted editing"]
@@ -94,12 +125,46 @@ flowchart TD
     L --> TT --> L
     L --> W --> L
     L --> SK --> L
+    L --> MF --> L
     L --> F --> V --> REV
     REV --> I --> RD --> PR --> ACC
     ACC -- yes --> REVN --> I
     ACC -- no --> I
     REVN --> E
 ```
+
+## Stopping
+
+The writer shares chat's stop machinery — one registry, one `stop_stream`
+command, the same `select!` on the signal beside the next frame
+(`design/chat-streaming.md`). What differs is what a stop keeps.
+
+Chat keeps the half-answer it streamed. The writer throws a partially
+streamed response away **whole**: the frames in flight may be assembling a
+tool call whose input JSON is still arriving, and half a
+`write_full_draft_section` is not a section. Discarding it costs nothing,
+because a call that does not complete commits nothing — the conversation
+only ever grows by whole messages.
+
+What survives a stop is what was already durable:
+
+- **A drafting run** parks as `Stopped`, with every section it had landed
+  still in the run object and the workspace still pointing at it. No
+  revision is cut. The user resumes it, finalizes what it wrote, or
+  discards it. The stop is checked twice between rounds — after a tool
+  batch is executed and again before the next call is issued — so a stop
+  pressed while a section is being written to S3 keeps that section and
+  does not open one more billed conversation.
+- **A targeted turn** keeps nothing, which is the whole of its state: it
+  saves only at the end, so a stopped turn is a clean abort.
+
+Once `finish_full_draft` has succeeded the run is past its cut, and a stop
+becomes a no-op for the rest of the turn. All that remains is one closing
+call and the revision it authorizes; honouring a stop there would throw
+away a draft the writer had finished.
+
+Either way the attempt records a `stopped` receipt, so the tokens a stopped
+turn spent stay traceable.
 
 ## Why you see 10+ tool calls when starting a new file
 
@@ -109,18 +174,25 @@ one call for the document:
 - `set_full_draft_title` — always exactly one call.
 - `write_full_draft_section` — one call for **every** section the draft
   actually writes, plus one call per genuinely new section.
-- `skip_full_draft_section` — one call per section the user's guidance
-  defers to a later pass (e.g. "leave the summary until I supply a
-  diagnosis"). A skipped section re-enters the saved revision as an **empty
-  placeholder**: its heading and template position survive, its boilerplate
-  body does not, and DOCX export omits it entirely until content is written
-  into it. Writing into a deferred section — a later full-draft write, an
-  accepted `replace_section` proposal, or a hand edit — un-defers it.
+- `skip_full_draft_section` — one call per section the plan marks skip or
+  the user's guidance defers to a later pass (e.g. "leave the summary until
+  I supply a diagnosis"). A skipped section re-enters the saved revision as
+  an **empty placeholder**: its heading and template position survive, its
+  boilerplate body does not, and DOCX export omits it entirely until content
+  is written into it. Writing into a deferred section — a later full-draft
+  write, an accepted `replace_section` proposal, or a hand edit — un-defers
+  it.
+- `mark_section_failed` — one call per section the records genuinely cannot
+  support, after an attempt. A failed section keeps its base-revision
+  content unchanged and the run completes with the failure recorded on it,
+  rather than the whole document stalling on one gap. The host marks a
+  section failed the same way after three rejected writes for it, so a
+  section the writer cannot land does not spend the run's call budget.
 - `finish_full_draft` — one call. The finalizer refuses unless **every**
-  section id present in the template skeleton has been written **or
-  explicitly skipped** — an undecided section is an error, so stale template
-  facts cannot survive and nothing disappears silently. A ten-section
-  evaluation template is ten decisions minimum.
+  planned section has been written, **explicitly skipped**, or **marked
+  failed** — an undecided section is an error, so stale template facts
+  cannot survive and nothing disappears silently. A ten-section evaluation
+  template is ten decisions minimum.
 
 So a typical templated report is N+2 calls at minimum, spread across several
 Converse rounds: each response is capped at the 32k output reserve, and a
@@ -135,9 +207,10 @@ call is only executable once complete — but at a 32k output reserve a unary
 request would sit idle long enough to risk an HTTP timeout while the model
 generates, so the connection carries frames throughout instead.
 
-A round whose request never completes — the stream goes silent past the
-idle bound or drops mid-response, or the request never gets a response at
-all — is **retried up to twice** with the identical request. Nothing from a
+A round whose request never completes — the stream never starts, goes
+silent past the idle bound, or drops mid-response, or the request never
+gets a response at all — is **retried up to twice** with the identical
+request. Nothing from a
 failed attempt is committed, so the re-send is safe, and a quick retry
 re-reads the prompt cache the previous completed round wrote. When all
 three attempts go unanswered, the turn fails with the attempt count and how
@@ -176,10 +249,13 @@ the prompt is independently bounded:
 | Whole-report record snapshot | Preflight: eligible source bytes ≤ input budget × 3 (~490 KiB on Opus 4.6); oversized sets fail with a remove-or-split error before any model call |
 | The report itself | Domain cap of 500,000 characters of content |
 
-The one contributor that grows with the user's work is the report: the
-**entire accepted report rides into every turn** inside
+The one contributor that grows with the user's work is the report: in
+targeted editing the **entire accepted report rides into every turn** inside
 `<untrusted_report_context>` (pretty-printed JSON), because the user may
 have hand-edited between turns and the model must copy real section ids.
+Whole-report drafting sends the base revision's structure and template
+bodies instead — the mutable draft it is about to replace never enters the
+cached prefix.
 A report near the 500k-character domain cap is ~125k+ tokens before history
 and instructions, so a sufficiently huge document can make a turn exceed the
 input budget. When that happens the turn **fails up front with an explicit

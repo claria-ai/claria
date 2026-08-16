@@ -8,7 +8,7 @@ import {
 } from "react";
 import {
   acceptModelAgreement,
-  stopChatStream,
+  stopStream,
   type ChatMessage,
   type TurnUsage,
 } from "../lib/tauri";
@@ -318,7 +318,7 @@ export default function ChatWidget({
     if (!streamId || stopping) return;
     setStopping(true);
     try {
-      await stopChatStream(streamId);
+      await stopStream(streamId);
     } catch (e) {
       // The turn is still running; say so rather than leaving a dead button.
       setError(`Could not stop the reply: ${String(e)}`);

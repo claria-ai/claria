@@ -37,7 +37,7 @@ pub enum RecordsError {
     #[error("The report workspace could not be restored safely.")]
     ReportRestore {
         #[source]
-        source: claria_report_authoring::ReportAuthoringError,
+        source: claria_report_store::ReportStoreError,
     },
 
     #[error("Client deletion failed and was rolled back safely.")]

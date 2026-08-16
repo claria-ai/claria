@@ -11,7 +11,7 @@ use aws_sdk_s3::Client as S3Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ReportAuthoringError;
+use crate::ReportStoreError;
 
 const PROMPT_SCHEMA_VERSION: u32 = 1;
 pub const MAX_WRITER_PROMPT_NAME_CHARACTERS: usize = 120;
@@ -31,35 +31,35 @@ pub struct WriterPrompt {
     pub updated_at: jiff::Timestamp,
 }
 
-fn normalized_name(name: &str) -> Result<String, ReportAuthoringError> {
+fn normalized_name(name: &str) -> Result<String, ReportStoreError> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Enter a name for the saved prompt.".to_string(),
         ));
     }
     if name.chars().count() > MAX_WRITER_PROMPT_NAME_CHARACTERS {
-        return Err(ReportAuthoringError::InvalidInput(format!(
+        return Err(ReportStoreError::InvalidInput(format!(
             "Saved prompt names may contain at most {MAX_WRITER_PROMPT_NAME_CHARACTERS} characters."
         )));
     }
     if name.chars().any(char::is_control) {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Saved prompt names cannot contain control characters.".to_string(),
         ));
     }
     Ok(name.to_string())
 }
 
-fn normalized_body(body: &str) -> Result<String, ReportAuthoringError> {
+fn normalized_body(body: &str) -> Result<String, ReportStoreError> {
     let body = body.trim();
     if body.is_empty() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Enter the prompt text to save.".to_string(),
         ));
     }
     if body.chars().count() > MAX_WRITER_PROMPT_BODY_CHARACTERS {
-        return Err(ReportAuthoringError::InvalidInput(format!(
+        return Err(ReportStoreError::InvalidInput(format!(
             "Saved prompts may contain at most {MAX_WRITER_PROMPT_BODY_CHARACTERS} characters."
         )));
     }
@@ -72,9 +72,9 @@ pub async fn create(
     id: Uuid,
     name: &str,
     body: &str,
-) -> Result<WriterPrompt, ReportAuthoringError> {
+) -> Result<WriterPrompt, ReportStoreError> {
     if id.is_nil() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "The saved prompt ID cannot be nil.".to_string(),
         ));
     }
@@ -91,14 +91,14 @@ pub async fn create(
     Ok(prompt)
 }
 
-pub async fn list(s3: &S3Client, bucket: &str) -> Result<Vec<WriterPrompt>, ReportAuthoringError> {
+pub async fn list(s3: &S3Client, bucket: &str) -> Result<Vec<WriterPrompt>, ReportStoreError> {
     let keys = claria_storage::objects::list_objects(
         s3,
         bucket,
         claria_core::s3_keys::WRITER_PROMPT_LIBRARY_PREFIX,
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("listing saved prompts", source))?;
+    .map_err(|source| ReportStoreError::storage("listing saved prompts", source))?;
     let mut prompts = Vec::new();
     for key in keys {
         if !key.ends_with(".json") {
@@ -106,15 +106,15 @@ pub async fn list(s3: &S3Client, bucket: &str) -> Result<Vec<WriterPrompt>, Repo
         }
         let output = claria_storage::objects::get_object(s3, bucket, &key)
             .await
-            .map_err(|source| ReportAuthoringError::storage("reading a saved prompt", source))?;
+            .map_err(|source| ReportStoreError::storage("reading a saved prompt", source))?;
         let prompt: WriterPrompt = serde_json::from_slice(&output.body).map_err(|_| {
-            ReportAuthoringError::InvalidInput("A saved prompt is invalid.".to_string())
+            ReportStoreError::InvalidInput("A saved prompt is invalid.".to_string())
         })?;
         if prompt.schema_version != PROMPT_SCHEMA_VERSION
             || prompt.id.is_nil()
             || key != claria_core::s3_keys::writer_library_prompt(prompt.id)
         {
-            return Err(ReportAuthoringError::InvalidInput(
+            return Err(ReportStoreError::InvalidInput(
                 "A saved prompt does not match its stored key.".to_string(),
             ));
         }
@@ -137,7 +137,7 @@ pub async fn update(
     id: Uuid,
     name: &str,
     body: &str,
-) -> Result<WriterPrompt, ReportAuthoringError> {
+) -> Result<WriterPrompt, ReportStoreError> {
     let mut prompt = load(s3, bucket, id).await?;
     prompt.name = normalized_name(name)?;
     prompt.body = normalized_body(body)?;
@@ -146,18 +146,18 @@ pub async fn update(
     Ok(prompt)
 }
 
-pub async fn delete(s3: &S3Client, bucket: &str, id: Uuid) -> Result<(), ReportAuthoringError> {
+pub async fn delete(s3: &S3Client, bucket: &str, id: Uuid) -> Result<(), ReportStoreError> {
     claria_storage::objects::delete_object(
         s3,
         bucket,
         &claria_core::s3_keys::writer_library_prompt(id),
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("deleting a saved prompt", source))?;
+    .map_err(|source| ReportStoreError::storage("deleting a saved prompt", source))?;
     Ok(())
 }
 
-async fn load(s3: &S3Client, bucket: &str, id: Uuid) -> Result<WriterPrompt, ReportAuthoringError> {
+async fn load(s3: &S3Client, bucket: &str, id: Uuid) -> Result<WriterPrompt, ReportStoreError> {
     let (prompt, _) = claria_storage::state::load_state_checked(
         s3,
         bucket,
@@ -173,23 +173,19 @@ async fn load(s3: &S3Client, bucket: &str, id: Uuid) -> Result<WriterPrompt, Rep
     .await
     .map_err(|source| match source {
         claria_storage::error::StorageError::Serialization(_) => {
-            ReportAuthoringError::InvalidInput("A saved prompt is invalid.".to_string())
+            ReportStoreError::InvalidInput("A saved prompt is invalid.".to_string())
         }
         claria_storage::error::StorageError::InvalidState { reason, .. } => {
-            ReportAuthoringError::InvalidInput(reason)
+            ReportStoreError::InvalidInput(reason)
         }
-        other => ReportAuthoringError::storage("reading a saved prompt", other),
+        other => ReportStoreError::storage("reading a saved prompt", other),
     })?;
     Ok(prompt)
 }
 
-async fn save(
-    s3: &S3Client,
-    bucket: &str,
-    prompt: &WriterPrompt,
-) -> Result<(), ReportAuthoringError> {
+async fn save(s3: &S3Client, bucket: &str, prompt: &WriterPrompt) -> Result<(), ReportStoreError> {
     let body = serde_json::to_vec_pretty(prompt).map_err(|_| {
-        ReportAuthoringError::InvalidInput("Claria could not encode the saved prompt.".to_string())
+        ReportStoreError::InvalidInput("Claria could not encode the saved prompt.".to_string())
     })?;
     claria_storage::objects::put_object(
         s3,
@@ -199,6 +195,6 @@ async fn save(
         Some("application/json"),
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("saving the prompt", source))?;
+    .map_err(|source| ReportStoreError::storage("saving the prompt", source))?;
     Ok(())
 }

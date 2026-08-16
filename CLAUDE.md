@@ -78,7 +78,15 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Record inventory: the S3 walk behind the sidecar-visibility rules (the pure rule itself lives in `claria-core`'s `s3_keys.rs`)
 - ETag-revalidated read-through cache for record objects
 - Retryable, compensating client delete/restore lifecycle
-- Depends on `claria-report-authoring` (lifecycle restores report workspaces), so report authoring must never depend on this crate
+- Depends on `claria-report-store` (lifecycle restores report workspaces), so the report crates must never depend on this one
+
+**`claria-report-pipeline` — Report-writing orchestration**
+- Runs one writing request end to end: prompt composition, the Bedrock tool loop, bounded record reads, proposal staging, and the whole-document draft protocol
+
+**`claria-report-store` — Durable writer state**
+- Workspace objects and their optimistic-concurrency protocol, immutable revisions, resumable drafting runs, attempt and per-call usage receipts
+- The global writer prompt and writer template libraries
+- No Bedrock knowledge: callers hand it fully built records
 
 **`claria-bedrock` — LLM interactions**
 - Bedrock API calls for chat, text extraction, and translation
@@ -108,6 +116,145 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - `claria-desktop` is the only crate that reads/writes local config files (and the only crate that knows where local app directories live)
 - Crates communicate through well-defined public APIs, not shared mutable state
 
+## Code guide
+
+Where the machinery actually lives, so a session goes straight to the file
+instead of re-deriving the map. File paths and symbol names only — line numbers
+rot.
+
+### Writer draft-run trace
+
+The money path, front to back. Each hop is one file.
+
+| Hop | Where |
+|---|---|
+| Writing UI | `pages/Writing.tsx`, composing `components/DraftPlanPanel.tsx` (→ `DraftPlanCard.tsx`), `WritingCanvas.tsx`, `AgentThrobber.tsx` |
+| State owner | `lib/useReportWorkspace.ts` — owns `agentActivity` and the `DraftRunUiState`, and is the only place the progress channel is consumed |
+| Reducer | `lib/draftRun.ts` — `DraftRunUiState`, `emptyDraftRun`, `runStateFromDraftRun`, `reduceDraftRun`, `overlaySections` |
+| Bridge | `lib/tauri.ts` — `generateDraftPlan`, `updateDraftPlan`, `startDraftRun`, `resumeDraftRun`; each mints the `Channel` |
+| Command | `claria-desktop/src/commands/plan.rs` — the same four commands, each opening a `StopRegistration` (`commands/streams.rs`) keyed by `stream_id` |
+| Plan pass | `claria-report-pipeline/src/plan.rs` — `generate_draft_plan` → `plan_fresh_run`, a sequential loop of `PLAN_BATCH_SECTIONS`-section batches over `AnalysisPass::run_call`; resume via `plan_draft_resume`, which calls the same core once |
+| Plan system blocks | `plan.rs::analysis_system_blocks` — `prompts.rs::planner_system_prompt`, then the corpus block from `record_context.rs::load_full_record_context` (one compact JSON blob, per-file bound `claria_core::record_text::MAX_RECORD_TEXT_BYTES`), then `full_draft_context.rs::planner_template_context` (pretty-printed, structure only — the writer's `template_context` is what carries `template_body`) |
+| The model call | `claria-bedrock/src/analysis.rs::converse_structured`, forcing `SUBMIT_SECTION_PLAN_TOOL` once per batch; decoded by `decode_section_plan`, checked by `plan.rs::validate_section_plan` against the batch's own section list |
+| Approved plan → drafting | `parallel_draft.rs` fan-out, `buffer_unordered(BEDROCK_FAN_OUT_CONCURRENCY)` (3, in `lib.rs`); the sequential tool-loop shape lives in `turn.rs` |
+| Completion gate | `gate.rs::evaluate_report_completion` |
+| Run lifecycle | `run.rs` — `resume_draft_run`, `finalize_partial_draft`, `abandon_draft_run`, `park_stopped_run`, `release_failed_run` |
+
+**Progress comes back over an IPC Channel, not Tauri events.** The pipeline emits
+`ReportTurnProgress` (`claria-report-pipeline/src/turn.rs`); `claria-desktop`
+mirrors it as `ReportTurnProgressView` with a `From` impl in
+`src/report_authoring.rs`; the command pushes it down a
+`tauri::ipc::Channel<ReportTurnProgressView>` supplied by the caller;
+`lib/draftRun.ts` reduces it. Chat streams the same way
+(`ChatStreamEvent` in `commands/chat.rs`). Nothing in either flow uses
+`app.emit`. Adding a variant means all four edits plus regenerated bindings —
+and `reduceDraftRun`'s `default:` arm silently swallows kinds it doesn't know.
+
+Durable state for a run lives under `report-authoring/{client}/`, minted in
+`claria-core/src/s3_keys.rs`: the session workspace at `sessions/{report_id}.json`
+(`workspace.json` is the legacy singleton), the run at
+`runs/{report_id}/{run_id}.json`, review findings at `findings/{report_id}.json`.
+The run object is rewritten after every section that lands — that is what makes
+a run resumable.
+
+### Bedrock plumbing map (`crates/claria-bedrock`)
+
+| File | Owns |
+|---|---|
+| `converse.rs` | Stream bounds, cache points, budgets, usage/budget logging, `StopSignal` |
+| `retry.rs` | `with_throttle_retry` |
+| `analysis.rs` | Forced-tool structured calls: `StructuredCallRequest`, `converse_structured`, `AnalysisInputBudget`, the tool schemas |
+| `report.rs` | Writer turns and `REPORT_OUTPUT_TOKEN_RESERVE` |
+| `chat.rs` | Chat turns and `CHAT_MAX_OUTPUT_TOKENS` |
+
+**Stream silence** is bounded by two consts in `converse.rs`:
+`STREAM_FIRST_FRAME_TIMEOUT` (90s, in `start_converse_stream`) and
+`STREAM_IDLE_TIMEOUT` (60s, per-`recv` in `recv_stream_event`, clock restarting
+each frame). These exist because the AWS SDK's stalled-stream protection does
+not cover `ConverseStream` — the generated operation registers no
+`StalledStreamProtectionInterceptor` — and the SDK read timeout bounds only the
+wait for response headers. Neither bound is configurable.
+
+**Budgets** are the model's context window minus a per-operation output reserve.
+The window comes from the central capability table
+`claria-core/src/model_id.rs::ModelCapabilities::for_id`, which is suffix-driven
+(`:48k` / `:200k` / `:1m`) and otherwise an assumption. Reserves:
+`PLAN_OUTPUT_TOKEN_RESERVE` and `REVIEW_OUTPUT_TOKEN_RESERVE` in
+`claria-report-pipeline` (`plan.rs`, `review.rs`), `REPORT_OUTPUT_TOKEN_RESERVE`
+and `CHAT_MAX_OUTPUT_TOKENS` in `claria-bedrock`. Actual counting is
+`converse.rs::InputTokenBudget` — `exact` counts once then estimates at ~4
+chars/token, `estimated` trusts the estimate until within 10% of the budget, and
+`seeded` starts a fan-out sibling from a count a warm branch already paid for.
+
+**Retries.** `retry.rs::with_throttle_retry(label, op)`: 4 attempts total,
+jittered 1s/2s/4s, retrying only `is_retryable_throttle` or
+`is_interrupted_before_completion`. Schema violations, truncated responses, and
+exhausted quotas return on the first attempt. It notifies through
+`tracing::warn!` and, via `with_throttle_retry_observed`, an optional
+`RetryObserver` — which is how the writer surfaces `ModelCallRetrying`.
+
+**Forced-tool calls** share one tool configuration —
+`analysis.rs::analysis_tool_configuration` returns all three tools
+(`submit_section_plan`, `submit_resume_plan`, `submit_review_rows`) with no
+`toolChoice`, and `converse_structured` stamps the per-call `toolChoice` on top.
+A differing tool list would move the tools cache tier and cost every role the
+corpus prefix the others paid to write. `StructuredCallRequest.on_partial_tool_input`
+is a display-only callback over the partial tool-input JSON (the planner's row
+counter uses it); nothing is parsed out of the partial buffer.
+
+**Operation labels** — `"report_plan"`, `"report_review"`, `"report"`,
+`"report_parallel_draft"`, `"chat"` — are per-call-site literals, not a shared
+enum. They are what `log_model_budget`, `log_turn_usage`, and the retry WARN key
+off, so a mislabelled call site is invisible in a console export.
+
+### Chat trace
+
+`commands/chat.rs::chat_message` → `claria-bedrock/src/chat.rs`:
+`chat_input_token_budget` (window − `CHAT_MAX_OUTPUT_TOKENS`) → `log_model_budget`
+→ `InputTokenBudget::estimated` → `chat_converse_stream`, which streams deltas
+back over `Channel<ChatStreamEvent>`. History objects live at
+`records/{uuid}/chat-history/{chat_id}.json`
+(`claria-core/src/s3_keys.rs::chat_history`).
+
+### Logging and the Console
+
+- **Ring buffer.** `claria-desktop/src/console.rs` — `ConsoleLayer` is a tracing
+  layer writing into a `ConsoleBuffer` capped at `MAX_BYTES` (10MB). Span-close
+  entries carry `elapsed_ms`.
+- **Polling.** `pages/Console.tsx` polls `get_console_logs_since(seq)` every
+  `POLL_INTERVAL_MS` (500ms) and applies the `ConsoleDelta`.
+- **On-disk logs.** `claria-desktop/src/logging.rs` — daily rolling files,
+  `MAX_LOG_FILES` kept, under `app_log_dir()` (macOS:
+  `~/Library/Logs/com.claria.desktop`). The crate list every filter is built
+  from is the single `CLARIA_CRATES` constant; never hardcode a second list.
+- **Frontend bridge.** `lib/logBridge.ts` → `commands/console.rs::log_frontend_event`,
+  logged under target `claria_desktop::frontend`, capped at 2000 chars and
+  stripped of control characters.
+- **Targets that look like modules but aren't.** `claria_bedrock::budget` and
+  `claria_bedrock::cache` are `target:` overrides on individual `tracing::info!`
+  calls in `converse.rs`, not modules. Grepping for a module by that name finds
+  nothing.
+- PHI rules for what may appear in a log field are in **Logging & audit** below.
+  The console export is a support artifact in a HIPAA app.
+
+### Gotchas
+
+- The writer flow's progress transport is an IPC `Channel`, not Tauri events.
+- `lib/bindings.ts` regenerates only when the binary actually **runs**
+  (`#[cfg(debug_assertions)]` in `main()`); `cargo build` is not enough.
+- The `log_model_budget` INFO line is the **allowance** (window − reserve), not
+  the measured size of the request. The `CountTokens` result is a separate thing.
+- A retry is only visible to the reader if the call site passes a
+  `RetryObserver`; the plain `with_throttle_retry` still logs and nothing more.
+- One `AnalysisInputBudget` and one `PlanRowCounter` live on `AnalysisPass`,
+  outside the batch loop. Building either inside it silently buys a
+  `CountTokens` per batch and restarts the reader's row count at every
+  checkpoint.
+- `PLAN_BATCH_SECTIONS` and `PLAN_OUTPUT_TOKEN_RESERVE` are checked against
+  each other by a `const` assertion in `plan.rs` deriving
+  `WORST_CASE_PLAN_ROW_CHARS` from the schema's own ceilings. Widening the
+  evidence schema without widening the reserve fails the build.
+
 ## S3 Key Layout
 
 All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
@@ -120,6 +267,8 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `records/{uuid}/chat-history/{chat_id}.json` | Persisted, user-named chat sessions |
 | `report-authoring/{uuid}/workspace.json` | Accepted report, named writer session, and proposal history |
 | `report-authoring/{uuid}/attempts/` | Bounded writer-attempt diagnostics and usage |
+| `report-authoring/{uuid}/runs/{report_id}/{run_id}.json` | Durable per-section state for one resumable drafting run |
+| `report-authoring/{uuid}/findings/{report_uuid}.json` | Review findings for one Writing session, with apply/undo history |
 | `report-authoring/{uuid}/templates/{sha256}.docx` | Immutable redacted template snapshot used to preserve Word formatting on export |
 | `writer_templates/{template_uuid}.docx` | Global managed, redacted writer-template source |
 | `writer_templates/{template_uuid}.json` | Writer-template metadata (name, size, upload date) |

@@ -4,7 +4,7 @@ use aws_sdk_s3::Client as S3Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ReportAuthoringError;
+use crate::ReportStoreError;
 
 const METADATA_SCHEMA_VERSION: u32 = 1;
 const MAX_WRITER_TEMPLATE_BYTES: usize = 10 * 1024 * 1024;
@@ -31,20 +31,20 @@ struct WriterTemplateUsage {
     use_count: u64,
 }
 
-pub fn normalized_name(name: &str) -> Result<String, ReportAuthoringError> {
+pub fn normalized_name(name: &str) -> Result<String, ReportStoreError> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Enter a writer template name.".to_string(),
         ));
     }
     if name.chars().count() > MAX_WRITER_TEMPLATE_NAME_CHARACTERS {
-        return Err(ReportAuthoringError::InvalidInput(format!(
+        return Err(ReportStoreError::InvalidInput(format!(
             "Writer template names may contain at most {MAX_WRITER_TEMPLATE_NAME_CHARACTERS} characters."
         )));
     }
     if name.chars().any(char::is_control) {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Writer template names cannot contain control characters.".to_string(),
         ));
     }
@@ -57,15 +57,15 @@ pub async fn create(
     id: Uuid,
     name: &str,
     bytes: Vec<u8>,
-) -> Result<WriterTemplateSummary, ReportAuthoringError> {
+) -> Result<WriterTemplateSummary, ReportStoreError> {
     let name = normalized_name(name)?;
     if bytes.is_empty() || bytes.len() > MAX_WRITER_TEMPLATE_BYTES {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Writer templates must be between 1 byte and 10 MiB.".to_string(),
         ));
     }
     let size = u64::try_from(bytes.len()).map_err(|_| {
-        ReportAuthoringError::InvalidInput("The writer template is too large.".to_string())
+        ReportStoreError::InvalidInput("The writer template is too large.".to_string())
     })?;
     let metadata = WriterTemplateMetadata {
         schema_version: METADATA_SCHEMA_VERSION,
@@ -82,7 +82,7 @@ pub async fn create(
         Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("uploading the writer template", source))?;
+    .map_err(|source| ReportStoreError::storage("uploading the writer template", source))?;
     save_metadata(s3, bucket, &metadata).await?;
     // Usage is informational. A counter failure must not turn a successful
     // template upload into a failed operation; reads will display zero.
@@ -96,14 +96,14 @@ pub async fn create(
 pub async fn list(
     s3: &S3Client,
     bucket: &str,
-) -> Result<Vec<WriterTemplateSummary>, ReportAuthoringError> {
+) -> Result<Vec<WriterTemplateSummary>, ReportStoreError> {
     let keys = claria_storage::objects::list_objects(
         s3,
         bucket,
         claria_core::s3_keys::WRITER_TEMPLATES_PREFIX,
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("listing writer templates", source))?;
+    .map_err(|source| ReportStoreError::storage("listing writer templates", source))?;
     let mut templates = Vec::new();
     for key in keys {
         if !key.ends_with(".json") || key.ends_with(".usage.json") {
@@ -112,11 +112,11 @@ pub async fn list(
         let output = claria_storage::objects::get_object(s3, bucket, &key)
             .await
             .map_err(|source| {
-                ReportAuthoringError::storage("reading writer template metadata", source)
+                ReportStoreError::storage("reading writer template metadata", source)
             })?;
         let metadata: WriterTemplateMetadata =
             serde_json::from_slice(&output.body).map_err(|_| {
-                ReportAuthoringError::InvalidInput(
+                ReportStoreError::InvalidInput(
                     "A stored writer template has invalid metadata.".to_string(),
                 )
             })?;
@@ -124,7 +124,7 @@ pub async fn list(
             || metadata.id.is_nil()
             || key != claria_core::s3_keys::writer_template_metadata(metadata.id)
         {
-            return Err(ReportAuthoringError::InvalidInput(
+            return Err(ReportStoreError::InvalidInput(
                 "A stored writer template has unsupported metadata.".to_string(),
             ));
         }
@@ -143,7 +143,7 @@ pub async fn rename(
     bucket: &str,
     id: Uuid,
     name: &str,
-) -> Result<WriterTemplateSummary, ReportAuthoringError> {
+) -> Result<WriterTemplateSummary, ReportStoreError> {
     let mut metadata = load_metadata(s3, bucket, id).await?;
     metadata.name = normalized_name(name)?;
     save_metadata(s3, bucket, &metadata).await?;
@@ -154,7 +154,7 @@ pub async fn rename(
     })
 }
 
-pub async fn delete(s3: &S3Client, bucket: &str, id: Uuid) -> Result<(), ReportAuthoringError> {
+pub async fn delete(s3: &S3Client, bucket: &str, id: Uuid) -> Result<(), ReportStoreError> {
     // Remove metadata first so a partial failure cannot leave a visible row
     // whose source DOCX has already disappeared.
     for key in [
@@ -164,9 +164,7 @@ pub async fn delete(s3: &S3Client, bucket: &str, id: Uuid) -> Result<(), ReportA
     ] {
         claria_storage::objects::delete_object(s3, bucket, &key)
             .await
-            .map_err(|source| {
-                ReportAuthoringError::storage("deleting a writer template", source)
-            })?;
+            .map_err(|source| ReportStoreError::storage("deleting a writer template", source))?;
     }
     Ok(())
 }
@@ -176,7 +174,7 @@ pub async fn load_docx(
     bucket: &str,
     id: Uuid,
     max_bytes: u64,
-) -> Result<Vec<u8>, ReportAuthoringError> {
+) -> Result<Vec<u8>, ReportStoreError> {
     load_docx_with_metadata(s3, bucket, id, max_bytes)
         .await
         .map(|(_, bytes)| bytes)
@@ -187,7 +185,7 @@ pub async fn load_docx_with_metadata(
     bucket: &str,
     id: Uuid,
     max_bytes: u64,
-) -> Result<(WriterTemplateMetadata, Vec<u8>), ReportAuthoringError> {
+) -> Result<(WriterTemplateMetadata, Vec<u8>), ReportStoreError> {
     // Require matching metadata so a stale/orphaned DOCX cannot be selected.
     let metadata = load_metadata(s3, bucket, id).await?;
     let output = claria_storage::objects::get_object_bounded(
@@ -197,7 +195,7 @@ pub async fn load_docx_with_metadata(
         max_bytes,
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("reading the writer template", source))?;
+    .map_err(|source| ReportStoreError::storage("reading the writer template", source))?;
     Ok((metadata, output.body))
 }
 
@@ -205,7 +203,7 @@ pub async fn increment_usage(
     s3: &S3Client,
     bucket: &str,
     id: Uuid,
-) -> Result<u64, ReportAuthoringError> {
+) -> Result<u64, ReportStoreError> {
     // Missing or malformed counters deliberately restart at zero. Usage is a
     // convenience metric, not report state, and does not warrant locking.
     let next = read_usage(s3, bucket, id).await.saturating_add(1);
@@ -217,7 +215,7 @@ async fn load_metadata(
     s3: &S3Client,
     bucket: &str,
     id: Uuid,
-) -> Result<WriterTemplateMetadata, ReportAuthoringError> {
+) -> Result<WriterTemplateMetadata, ReportStoreError> {
     let (metadata, _) = claria_storage::state::load_state_checked(
         s3,
         bucket,
@@ -234,15 +232,13 @@ async fn load_metadata(
     )
     .await
     .map_err(|source| match source {
-        claria_storage::error::StorageError::Serialization(_) => {
-            ReportAuthoringError::InvalidInput(
-                "The stored writer template has invalid metadata.".to_string(),
-            )
-        }
+        claria_storage::error::StorageError::Serialization(_) => ReportStoreError::InvalidInput(
+            "The stored writer template has invalid metadata.".to_string(),
+        ),
         claria_storage::error::StorageError::InvalidState { reason, .. } => {
-            ReportAuthoringError::InvalidInput(reason)
+            ReportStoreError::InvalidInput(reason)
         }
-        other => ReportAuthoringError::storage("reading writer template metadata", other),
+        other => ReportStoreError::storage("reading writer template metadata", other),
     })?;
     Ok(metadata)
 }
@@ -251,9 +247,9 @@ async fn save_metadata(
     s3: &S3Client,
     bucket: &str,
     metadata: &WriterTemplateMetadata,
-) -> Result<(), ReportAuthoringError> {
+) -> Result<(), ReportStoreError> {
     let body = serde_json::to_vec_pretty(metadata).map_err(|_| {
-        ReportAuthoringError::InvalidInput(
+        ReportStoreError::InvalidInput(
             "Claria could not encode writer template metadata.".to_string(),
         )
     })?;
@@ -265,7 +261,7 @@ async fn save_metadata(
         Some("application/json"),
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("saving writer template metadata", source))?;
+    .map_err(|source| ReportStoreError::storage("saving writer template metadata", source))?;
     Ok(())
 }
 
@@ -289,11 +285,9 @@ async fn save_usage(
     bucket: &str,
     id: Uuid,
     use_count: u64,
-) -> Result<(), ReportAuthoringError> {
+) -> Result<(), ReportStoreError> {
     let body = serde_json::to_vec_pretty(&WriterTemplateUsage { use_count }).map_err(|_| {
-        ReportAuthoringError::InvalidInput(
-            "Claria could not encode writer template usage.".to_string(),
-        )
+        ReportStoreError::InvalidInput("Claria could not encode writer template usage.".to_string())
     })?;
     claria_storage::objects::put_object(
         s3,
@@ -303,6 +297,6 @@ async fn save_usage(
         Some("application/json"),
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("saving writer template usage", source))?;
+    .map_err(|source| ReportStoreError::storage("saving writer template usage", source))?;
     Ok(())
 }

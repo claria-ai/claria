@@ -2,8 +2,9 @@ use claria_storage::error::StorageError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ReportAttemptMetadata;
-
+/// Why a report-writing attempt ended. Serialized inside persisted attempt
+/// metadata, so the taxonomy belongs to the durable store rather than to
+/// whichever crate happens to run the turn loop.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportFailureCode {
@@ -17,8 +18,12 @@ pub enum ReportFailureCode {
     UsagePersistence,
 }
 
+/// The one error type for durable writer state.
+///
+/// Messages are complete, user-facing sentences; callers stringify them once
+/// at their own presentation boundary.
 #[derive(Debug, Error)]
-pub enum ReportAuthoringError {
+pub enum ReportStoreError {
     #[error("{0}")]
     InvalidInput(String),
 
@@ -31,39 +36,22 @@ pub enum ReportAuthoringError {
     #[error("The persisted report workspace is invalid: {0}")]
     InvalidWorkspace(String),
 
+    #[error("The persisted drafting run is invalid: {0}")]
+    InvalidRun(String),
+
+    #[error("The persisted review findings are invalid: {0}")]
+    InvalidFindings(String),
+
     #[error("Report storage is unavailable while {operation}. Try again.")]
     Storage {
         operation: &'static str,
         #[source]
         source: StorageError,
     },
-
-    #[error("{message}")]
-    TurnFailed {
-        message: String,
-        code: ReportFailureCode,
-        attempt: Box<ReportAttemptMetadata>,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
 }
 
-impl ReportAuthoringError {
+impl ReportStoreError {
     pub fn storage(operation: &'static str, source: StorageError) -> Self {
         Self::Storage { operation, source }
-    }
-
-    pub fn attempt(&self) -> Option<&ReportAttemptMetadata> {
-        match self {
-            Self::TurnFailed { attempt, .. } => Some(attempt),
-            _ => None,
-        }
-    }
-
-    pub fn failure_code(&self) -> Option<ReportFailureCode> {
-        match self {
-            Self::TurnFailed { code, .. } => Some(*code),
-            _ => None,
-        }
     }
 }

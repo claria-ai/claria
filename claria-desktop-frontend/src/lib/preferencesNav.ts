@@ -29,6 +29,7 @@ export type PaneId =
   | "writer.whole-report"
   | "writer.prompt-library"
   | "writer.templates"
+  | "writer.draft-runs"
   | "writer.limits"
   | "transcription.imported-audio"
   | "transcription.local-models"
@@ -201,6 +202,37 @@ export const PREFERENCES_NAV: CategorySpec[] = [
           "Keep a small shelf of reusable Word templates in Claria's managed S3 storage. Writing sessions can preview and apply these presets.",
         terms: ["docx", "word", "presets", "upload"],
         fields: [],
+      },
+      {
+        id: "writer.draft-runs",
+        title: "Draft runs",
+        blurb:
+          "How a whole-report draft is planned before it is written, and which models do the supporting work.",
+        terms: [
+          "plan",
+          "gate",
+          "planner",
+          "reviewer",
+          "draft run",
+          "sections",
+        ],
+        fields: [
+          {
+            anchor: "plan_gate",
+            label: "Before drafting starts",
+            terms: ["plan", "gate", "review", "auto start", "sections"],
+          },
+          {
+            anchor: "planner_model_id",
+            label: "Planning model",
+            terms: ["planner", "plan", "sections"],
+          },
+          {
+            anchor: "reviewer_model_id",
+            label: "Review model",
+            terms: ["reviewer", "review", "findings"],
+          },
+        ],
       },
       {
         id: "writer.limits",

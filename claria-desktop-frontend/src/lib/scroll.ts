@@ -17,3 +17,22 @@ export function isPinnedToBottom(
 ): boolean {
   return box.scrollHeight - box.scrollTop - box.clientHeight <= slack;
 }
+
+/** How long a deliberate scroll holds off automatic scrolling. */
+export const USER_SCROLL_GRACE_MS = 4000;
+
+/**
+ * Whether content is allowed to scroll itself into view.
+ *
+ * The same restraint as {@link isPinnedToBottom}, for content that arrives
+ * somewhere other than the bottom: a reader who has just moved the document
+ * themselves is reading, and yanking the viewport to a section the writer
+ * happened to start would take the page away from them.
+ */
+export function mayAutoScroll(
+  lastUserScrollAt: number | null,
+  now: number,
+  grace: number = USER_SCROLL_GRACE_MS
+): boolean {
+  return lastUserScrollAt === null || now - lastUserScrollAt >= grace;
+}
