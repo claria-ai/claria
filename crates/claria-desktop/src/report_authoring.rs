@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use claria_core::models::{
+    findings::ReportFindings,
     report::{
         ReportBlock, ReportContent, ReportDraft, ReportExport, ReportExportStatus, ReportOperation,
         ReportProposal, ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
@@ -275,6 +276,14 @@ impl From<ReportProposalChoice> for CoreProposalDecision {
             ReportProposalChoice::Reject => Self::Rejected,
         }
     }
+}
+
+/// Earns its life: resolving a finding changes both the report and the
+/// findings that describe it, and the caller needs the pair to stay in step.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportFindingResolution {
+    pub workspace: ReportWorkspaceView,
+    pub findings: ReportFindings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

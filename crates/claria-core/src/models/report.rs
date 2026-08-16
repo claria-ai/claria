@@ -563,9 +563,36 @@ impl ReportDraft {
         Ok(candidate)
     }
 
+    /// Apply a proposal without recording authorship. Sections keep whatever
+    /// stamp they already carried.
     pub fn accept(
         &self,
         proposal: &ReportProposal,
+        accepted_at: Timestamp,
+    ) -> Result<ReportDraft, CoreError> {
+        self.accept_stamped(proposal, None, accepted_at)
+    }
+
+    /// Apply a proposal and credit `model_id` for every section the proposal
+    /// wrote.
+    ///
+    /// Only [`ReportOperation::AddSection`] and
+    /// [`ReportOperation::ReplaceSection`] name a section whose text the model
+    /// authored. A title change touches no section body, and a removed section
+    /// has nothing left to stamp.
+    pub fn accept_with_authorship(
+        &self,
+        proposal: &ReportProposal,
+        model_id: &str,
+        accepted_at: Timestamp,
+    ) -> Result<ReportDraft, CoreError> {
+        self.accept_stamped(proposal, Some(model_id), accepted_at)
+    }
+
+    fn accept_stamped(
+        &self,
+        proposal: &ReportProposal,
+        model_id: Option<&str>,
         accepted_at: Timestamp,
     ) -> Result<ReportDraft, CoreError> {
         if proposal.base_revision != self.revision {
@@ -575,7 +602,7 @@ impl ReportDraft {
             )));
         }
         validate_proposal(proposal, None)?;
-        let recomputed = self.preview(&proposal.operations)?;
+        let mut recomputed = self.preview(&proposal.operations)?;
         if recomputed != proposal.proposed_content {
             return Err(invalid("proposal candidate does not match its operations"));
         }
@@ -583,6 +610,33 @@ impl ReportDraft {
             .revision
             .checked_add(1)
             .ok_or_else(|| invalid("report revision overflow"))?;
+        if let Some(model_id) = model_id {
+            let authorship = SectionAuthorship {
+                kind: AuthorshipKind::ModelRevised,
+                revision,
+                model_id: Some(model_id.to_string()),
+                run_id: None,
+                updated_at: accepted_at,
+            };
+            for operation in &proposal.operations {
+                let section_id = match operation {
+                    ReportOperation::AddSection { section, .. } => section.id,
+                    ReportOperation::ReplaceSection { section_id, .. } => *section_id,
+                    // A title change touches no body; a section removed later
+                    // in the same proposal is no longer there to stamp.
+                    ReportOperation::SetTitle { .. } | ReportOperation::RemoveSection { .. } => {
+                        continue;
+                    }
+                };
+                if let Some(section) = recomputed
+                    .sections
+                    .iter_mut()
+                    .find(|section| section.id == section_id)
+                {
+                    section.authorship = Some(authorship.clone());
+                }
+            }
+        }
         Ok(Self {
             revision,
             content: recomputed,
@@ -1022,7 +1076,9 @@ fn validate_template_import(
     Ok(())
 }
 
-fn validate_nonempty_text(
+/// Shared by every model in this crate that persists user- or model-authored
+/// text into a Word-renderable document.
+pub(crate) fn validate_nonempty_text(
     label: &str,
     value: &str,
     max_characters: usize,

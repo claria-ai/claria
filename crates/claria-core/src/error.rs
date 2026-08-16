@@ -16,4 +16,7 @@ pub enum CoreError {
 
     #[error("invalid report workspace: {0}")]
     InvalidReport(String),
+
+    #[error("invalid review findings: {0}")]
+    InvalidFindings(String),
 }

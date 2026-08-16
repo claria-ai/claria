@@ -83,6 +83,7 @@ fn report_workspace_is_isolated_from_records_and_chat_history() {
     let attempt_id = Uuid::new_v4();
     let attempt = s3_keys::report_attempt(id, attempt_id);
     let usage = s3_keys::report_call_usage(id, attempt_id, 3);
+    let findings = s3_keys::report_findings(id, report_id);
 
     assert_eq!(prefix, format!("report-authoring/{id}/"));
     assert_eq!(workspace, format!("report-authoring/{id}/workspace.json"));
@@ -99,9 +100,16 @@ fn report_workspace_is_isolated_from_records_and_chat_history() {
         usage,
         format!("report-authoring/{id}/usage/{attempt_id}/3.json")
     );
+    assert_eq!(
+        findings,
+        format!("report-authoring/{id}/findings/{report_id}.json")
+    );
     assert!(prefix.starts_with(s3_keys::REPORT_AUTHORING_PREFIX));
     assert!(attempt.starts_with(&prefix));
     assert!(usage.starts_with(&prefix));
+    // The client delete/restore lifecycle sweeps this prefix, so findings go
+    // and come back with the workspace they describe.
+    assert!(findings.starts_with(&prefix));
     assert_eq!(
         s3_keys::client_lifecycle(id),
         format!("_state/client-lifecycle/{id}.json")

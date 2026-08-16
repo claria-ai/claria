@@ -9,6 +9,7 @@
 
 mod attempts;
 mod error;
+mod findings;
 pub mod prompt_library;
 mod revisions;
 pub mod template_library;
@@ -23,6 +24,11 @@ pub use attempts::{
     persist_attempt, persist_call_usage,
 };
 pub use error::{ReportFailureCode, ReportStoreError};
+pub use findings::{
+    FindingOutcome, LoadedFindings, apply_style_finding, dismiss_finding, list_report_findings,
+    load_report_findings, refresh_finding_statuses, replace_findings_for_revision, resolve_finding,
+    save_report_findings, undo_style_finding,
+};
 pub use revisions::{
     RevisionCache, discard_queued_report_edits, list_report_revisions, load_report_revision,
     revert_report_revision,

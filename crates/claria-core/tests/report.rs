@@ -583,6 +583,90 @@ fn acceptance_recomputes_candidate_and_increments_once() {
 }
 
 #[test]
+fn acceptance_credits_the_model_for_every_section_the_proposal_wrote() {
+    let mut workspace = workspace();
+    let kept = Uuid::new_v4();
+    let replaced = Uuid::new_v4();
+    let removed = Uuid::new_v4();
+    workspace.draft.content.sections = vec![
+        section(kept, "Untouched", "Left alone."),
+        section(replaced, "History", "Old text."),
+        section(removed, "Obsolete", "Delete me."),
+    ];
+
+    let added = Uuid::new_v4();
+    let operations = vec![
+        ReportOperation::SetTitle {
+            title: "Reviewed assessment".to_string(),
+        },
+        ReportOperation::ReplaceSection {
+            section_id: replaced,
+            heading: "History".to_string(),
+            blocks: vec![paragraph("New text.")],
+        },
+        ReportOperation::AddSection {
+            position: 3,
+            section: section(added, "Summary", "Fresh text."),
+        },
+        ReportOperation::RemoveSection {
+            section_id: removed,
+        },
+    ];
+    let proposal = proposal(&workspace, operations);
+    let accepted = workspace
+        .draft
+        .accept_with_authorship(
+            &proposal,
+            &proposal.model_id,
+            timestamp("2026-08-01T12:02:00Z"),
+        )
+        .expect("accept with authorship");
+
+    let stamp = |id: Uuid| {
+        accepted
+            .content
+            .sections
+            .iter()
+            .find(|section| section.id == id)
+            .expect("section")
+            .authorship
+            .clone()
+    };
+    for id in [replaced, added] {
+        let authorship = stamp(id).expect("written sections are stamped");
+        assert_eq!(authorship.kind, AuthorshipKind::ModelRevised);
+        assert_eq!(authorship.revision, accepted.revision);
+        assert_eq!(
+            authorship.model_id.as_deref(),
+            Some(proposal.model_id.as_str())
+        );
+        assert_eq!(authorship.run_id, None);
+    }
+    // A retitle touches no body, and a removed section has nothing to stamp.
+    assert_eq!(stamp(kept), None);
+    assert!(
+        !accepted
+            .content
+            .sections
+            .iter()
+            .any(|section| section.id == removed)
+    );
+
+    // The unstamped `accept` contract is unchanged for any other caller.
+    let plain = workspace
+        .draft
+        .accept(&proposal, timestamp("2026-08-01T12:02:00Z"))
+        .expect("accept");
+    assert!(
+        plain
+            .content
+            .sections
+            .iter()
+            .all(|section| section.authorship.is_none())
+    );
+}
+
+#[test]
 fn acceptance_never_trusts_tampered_candidate() {
     let workspace = workspace();
     let operations = vec![ReportOperation::SetTitle {

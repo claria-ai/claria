@@ -17,6 +17,10 @@ All notable changes to Claria are documented here.
 - Renamed the report-authoring crate to report-pipeline now that storage lives in its own crate
 - Skipped report sections now keep a copy of their template body, and sections carry authorship metadata
 - Template copies stay out of Word exports and out of everything sent to the model
+- Report sections now record who last changed them, whether that was you, a template, or the model
+- Accepting a writer proposal credits the model that wrote it, and saving a hand edit credits you only on the sections you actually changed
+- Review findings have durable storage, so a style suggestion can be applied as a new revision and undone again
+- A finding whose text has moved on since the review is refused rather than applied to the wrong place
 
 ## [0.28.0] — 2026-08-15
 

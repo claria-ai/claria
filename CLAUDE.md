@@ -128,6 +128,7 @@ All S3 object paths are defined in `claria-core/src/s3_keys.rs`. Key prefixes:
 | `records/{uuid}/chat-history/{chat_id}.json` | Persisted, user-named chat sessions |
 | `report-authoring/{uuid}/workspace.json` | Accepted report, named writer session, and proposal history |
 | `report-authoring/{uuid}/attempts/` | Bounded writer-attempt diagnostics and usage |
+| `report-authoring/{uuid}/findings/{report_uuid}.json` | Review findings for one Writing session, with apply/undo history |
 | `report-authoring/{uuid}/templates/{sha256}.docx` | Immutable redacted template snapshot used to preserve Word formatting on export |
 | `writer_templates/{template_uuid}.docx` | Global managed, redacted writer-template source |
 | `writer_templates/{template_uuid}.json` | Writer-template metadata (name, size, upload date) |
