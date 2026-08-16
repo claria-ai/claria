@@ -182,6 +182,75 @@ export function buildInitScript(
         Array.from(templatePreviews.values()).map((preview) => [preview.import_id, preview]),
       );
 
+      // ── Review findings ───────────────────────────────────────────────
+      // Empty until a review runs; a review scripts one finding per pass
+      // against the first two sections it can see.
+      let reportFindings = {
+        schema_version: 1,
+        report_id: reportWorkspace.report_id,
+        client_id: reportWorkspace.client_id,
+        findings: [],
+        coverage: [],
+        updated_at: new Date().toISOString(),
+      };
+      // A test that wants to watch the review bar move holds the passes here;
+      // everything else lets all seven run straight through.
+      window.__REVIEW_STEP__ = Number.POSITIVE_INFINITY;
+      const REVIEW_PROPERTIES = [
+        ["style", "tense_drift"],
+        ["style", "terminology"],
+        ["style", "transitions"],
+        ["style", "redundancy"],
+        ["consistency", "internal_contradiction"],
+        ["consistency", "unsupported_claim"],
+        ["consistency", "cross_section_conflict"],
+      ];
+      // Applying or undoing a replacement cuts a revision and stamps the
+      // section, exactly as the store does — which is what makes every other
+      // finding against that section derive stale.
+      const applyFindingText = (finding, from, to) => {
+        const sections = reportWorkspace.draft.content.sections.map((section) => {
+          if (section.id !== finding.anchor.section_id) return section;
+          const blocks = section.blocks.map((block, index) =>
+            index === finding.proposal.block_index && block.kind === "paragraph"
+              ? { ...block, text: block.text.replace(from, to) }
+              : block,
+          );
+          return {
+            ...section,
+            blocks,
+            authorship: {
+              kind: to === finding.proposal.replacement_text ? "model_revised" : "human_edited",
+              revision: reportWorkspace.draft.revision + 1,
+              model_id: to === finding.proposal.replacement_text ? finding.model_id : null,
+              run_id: null,
+              updated_at: new Date().toISOString(),
+            },
+          };
+        });
+        commitDraftedSections(sections, reportWorkspace.draft.content.title);
+        // The undo just proved the reviewed passage is back, so the finding
+        // re-anchors rather than reopening derived-stale.
+        if (to === finding.proposal.original_text) {
+          finding.anchor.revision = reportWorkspace.draft.revision;
+        }
+      };
+      const completionReport = () => {
+        const checks = reportFindings.findings
+          .filter((finding) => finding.status === "open")
+          .map((finding) => ({
+            kind: "unresolved_finding",
+            section_id: finding.anchor.section_id,
+            detail: "open:" + finding.property,
+          }));
+        return {
+          complete: checks.length === 0,
+          checks,
+          evaluated_revision: reportWorkspace.draft.revision,
+          evaluated_at: new Date().toISOString(),
+        };
+      };
+
       // ── Drafting runs ─────────────────────────────────────────────────
       // Tests that say nothing drive a run straight through; a test that
       // wants to watch sections land sets these before starting one.
@@ -1219,6 +1288,128 @@ export function buildInitScript(
               reportWorkspace = { ...reportWorkspace, pending_proposal: null };
             }
             return reportWorkspace;
+          }
+          if (cmd === "list_report_findings") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            return structuredClone(reportFindings);
+          }
+          if (cmd === "evaluate_report_completion") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            return completionReport();
+          }
+          if (cmd === "run_review_sweeps") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            if (args.reportId !== reportWorkspace.report_id) throw "The report changed on another computer. Reload it before continuing.";
+            const emitReview = progressEmitter(args.onProgress);
+            const sections = reportWorkspace.draft.content.sections;
+            const now = new Date().toISOString();
+            const found = [];
+            const coverage = [];
+            for (let index = 0; index < REVIEW_PROPERTIES.length; index += 1) {
+              const [pass, property] = REVIEW_PROPERTIES[index];
+              await untilTrue(() => window.__REVIEW_STEP__ > index);
+              emitReview({
+                kind: "review_pass_started",
+                property,
+                index: index + 1,
+                total: REVIEW_PROPERTIES.length,
+              });
+              // Two findings in all: one anchored style replacement and one
+              // read-only consistency flag, in different sections.
+              const section = sections[index % Math.max(sections.length, 1)];
+              const paragraph = section
+                ? section.blocks.findIndex((block) => block.kind === "paragraph")
+                : -1;
+              const raises = section !== undefined && (index === 0 || index === 4);
+              if (raises) {
+                found.push({
+                  id: "finding-" + property,
+                  pass,
+                  property,
+                  model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                  anchor: { section_id: section.id, revision: args.revision },
+                  description: pass === "style"
+                    ? "The " + section.heading + " section slips into the present tense."
+                    : "The " + section.heading + " section disagrees with the records.",
+                  span: paragraph >= 0
+                    ? { block_index: paragraph, start_char: 0, end_char: 8 }
+                    : null,
+                  conflicting: pass === "consistency"
+                    ? { section_id: null, quote: "Jane is nine years old.", span: null }
+                    : null,
+                  record_citation: pass === "consistency"
+                    ? { filename: "intake-parent-interview.txt", quote: "age 11" }
+                    : null,
+                  proposal: pass === "style" && paragraph >= 0
+                    ? {
+                      block_index: paragraph,
+                      original_text: section.blocks[paragraph].text,
+                      replacement_text: section.blocks[paragraph].text + " Reviewed wording.",
+                    }
+                    : null,
+                  status: "open",
+                  applied_revision: null,
+                  resolved_at: null,
+                  created_at: now,
+                });
+              }
+              coverage.push({
+                pass,
+                property,
+                model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                revision: args.revision,
+                sections_reviewed: sections.length,
+                findings: raises ? 1 : 0,
+                completed_at: now,
+              });
+              emitReview({
+                kind: "review_pass_completed",
+                property,
+                findings: raises ? 1 : 0,
+                completed: index + 1,
+                total: REVIEW_PROPERTIES.length,
+              });
+            }
+            reportFindings = {
+              schema_version: 1,
+              report_id: reportWorkspace.report_id,
+              client_id: reportWorkspace.client_id,
+              findings: found,
+              coverage,
+              updated_at: now,
+            };
+            return structuredClone(reportFindings);
+          }
+          if (cmd === "resolve_report_finding") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            const finding = reportFindings.findings.find((row) => row.id === args.findingId);
+            if (!finding) throw "That finding is no longer available.";
+            const now = new Date().toISOString();
+            if (args.action === "dismiss") {
+              finding.status = "dismissed";
+              finding.resolved_at = now;
+            } else if (args.action === "apply_style") {
+              if (!finding.proposal) throw "That finding has no replacement to apply.";
+              applyFindingText(finding, finding.proposal.original_text, finding.proposal.replacement_text);
+              finding.status = "applied";
+              finding.applied_revision = reportWorkspace.draft.revision;
+              finding.resolved_at = now;
+            } else if (args.action === "undo_style") {
+              if (!finding.proposal) throw "That finding has no replacement to undo.";
+              applyFindingText(finding, finding.proposal.replacement_text, finding.proposal.original_text);
+              finding.status = "open";
+              finding.applied_revision = null;
+              finding.resolved_at = null;
+            } else {
+              throw "Unknown finding action.";
+            }
+            reportFindings.updated_at = now;
+            return {
+              workspace: structuredClone(reportWorkspace),
+              findings: structuredClone(reportFindings),
+            };
           }
           if (cmd === "export_report_docx") {
             window.__REPORT_COMMANDS__.push(cmd);

@@ -11,27 +11,34 @@ import {
   applyReportTemplate,
   discardQueuedReportEdits,
   discardReportTemplatePreview,
+  evaluateReportCompletion,
   exportReportDocx,
   finalizePartialDraft,
   generateDraftPlan,
   generateFullReport,
+  listReportFindings,
   loadConfig,
   loadDraftRun,
   loadReportWorkspace,
   previewWriterTemplate,
   renameReportSession,
+  resolveReportFinding,
   resolveReportProposal,
   resumeDraftRun,
+  runReviewSweeps,
   saveReportDraft,
   sendReportMessage,
   startDraftRun,
   startReportWorkspace,
   stopStream,
   updateDraftPlan,
+  type CompletionReport,
   type DraftRun,
+  type FindingAction,
   type FullReportGenerationResponse,
   type PlanEntryEdit,
   type ReportDraftEdit,
+  type ReportFindings,
   type ReportTurnProgressView,
   type ReportWorkspaceView,
 } from "./tauri";
@@ -51,6 +58,7 @@ import {
   type DraftRunUiState,
 } from "./draftRun";
 import { upsertLiveContext, type ContextPill } from "./contextPills";
+import { reviewPropertyLabel } from "./findings";
 import { logFrontendEvent } from "./logBridge";
 
 export type WriterBusy =
@@ -60,7 +68,9 @@ export type WriterBusy =
   | "sending"
   | "planning"
   | "generating"
+  | "reviewing"
   | "resolving"
+  | "resolving_finding"
   | "exporting"
   | "applying_template";
 
@@ -87,6 +97,8 @@ type RunAction =
   | { kind: "started" }
   | { kind: "resumed" }
   | { kind: "stopping" }
+  | { kind: "review_started" }
+  | { kind: "review_finished" }
   | { kind: "hydrated"; state: DraftRunUiState }
   | { kind: "cleared" };
 
@@ -105,6 +117,14 @@ function runReducer(
       return { ...state, live: true, stopping: false, outcome: null };
     case "stopping":
       return state.stopping ? state : { ...state, stopping: true };
+    case "review_started":
+      return { ...state, reviewCompleted: 0, reviewTotal: null };
+    case "review_finished":
+      // The bar retires with the pass; the findings it produced are the
+      // lasting record of it.
+      return state.reviewTotal === null
+        ? state
+        : { ...state, reviewCompleted: 0, reviewTotal: null };
     case "hydrated":
       return action.state;
     case "cleared":
@@ -117,15 +137,6 @@ const MODEL_ACTIVITY_WORDS = ["thinking", "working", "inferring"] as const;
 function modelActivityLabel(callNumber: number): string {
   const index = Math.max(0, callNumber - 1) % MODEL_ACTIVITY_WORDS.length;
   return `Claude is ${MODEL_ACTIVITY_WORDS[index]}`;
-}
-
-/**
- * The backend names review properties in snake_case, and that is the name the
- * findings themselves carry. Rendering it as prose is presentation, so it
- * happens here rather than being sent over the bridge twice.
- */
-function reviewPropertyLabel(property: string): string {
-  return property.replaceAll("_", " ");
 }
 
 function agentActivityForTool(name: string, context: string | null) {
@@ -270,6 +281,12 @@ export function useReportWorkspace({
   const [liveContext, setLiveContext] = useState<ContextPill[]>([]);
   const [run, dispatchRun] = useReducer(runReducer, undefined, emptyDraftRun);
   const [draftPane, setDraftPane] = useState<DraftPaneState>(null);
+  const [findings, setFindings] = useState<ReportFindings | null>(null);
+  const [completion, setCompletion] = useState<CompletionReport | null>(null);
+  /** The finding whose apply/undo/dismiss is in flight. */
+  const [resolvingFindingId, setResolvingFindingId] = useState<string | null>(
+    null
+  );
   // The durable run behind `run.runId`: resume needs its writer model, and
   // finalize and abandon need its ID after the reducer has moved on.
   const resumableRunRef = useRef<DraftRun | null>(null);
@@ -375,6 +392,53 @@ export function useReportWorkspace({
     [clientId]
   );
 
+  /**
+   * Re-read the findings this report carries. Failing to read them degrades
+   * the pane to empty, which is a lie worth logging: a finding nobody can see
+   * is a finding nobody can dismiss.
+   */
+  const refreshFindings = useCallback(
+    async (reportId: string, generation: number) => {
+      try {
+        const loaded = await listReportFindings(clientId, reportId);
+        if (generation === generationRef.current) setFindings(loaded);
+      } catch (error) {
+        logFrontendEvent(
+          "error",
+          `Writer findings lookup failed: ${String(error)}`
+        );
+        if (generation === generationRef.current) setFindings(null);
+      }
+    },
+    [clientId]
+  );
+
+  /**
+   * Ask the completion gate where the report stands. Display only — nothing
+   * it says blocks an export — so a report with no revisions is not asked at
+   * all, and a failure leaves the checklist off rather than failing the load
+   * around it.
+   */
+  const refreshCompletion = useCallback(
+    async (reportId: string, revision: number, generation: number) => {
+      if (revision === 0) {
+        if (generation === generationRef.current) setCompletion(null);
+        return;
+      }
+      try {
+        const report = await evaluateReportCompletion(clientId, reportId);
+        if (generation === generationRef.current) setCompletion(report);
+      } catch (error) {
+        logFrontendEvent(
+          "warn",
+          `Writer completion check unavailable: ${String(error)}`
+        );
+        if (generation === generationRef.current) setCompletion(null);
+      }
+    },
+    [clientId]
+  );
+
   const load = useCallback(async () => {
     const generation = ++generationRef.current;
     setLoading(true);
@@ -396,17 +460,30 @@ export function useReportWorkspace({
       setEditing(false);
       resumableRunRef.current = null;
       setDraftPane(null);
+      setFindings(null);
+      setCompletion(null);
       dispatchRun({ kind: "cleared" });
       // A run stopped before the app was closed is still resumable, so the
-      // banner has to survive a restart, not just a re-render.
-      await adoptDraftRun(result.report_id, generation);
+      // banner has to survive a restart, not just a re-render. None of these
+      // three depend on each other, so the load waits once, not three times.
+      await Promise.all([
+        adoptDraftRun(result.report_id, generation),
+        refreshFindings(result.report_id, generation),
+        refreshCompletion(result.report_id, result.draft.revision, generation),
+      ]);
     } catch (error) {
       if (generation !== generationRef.current) return;
       setLoadError(String(error));
     } finally {
       if (generation === generationRef.current) setLoading(false);
     }
-  }, [adoptDraftRun, clientId, expectedReportId]);
+  }, [
+    adoptDraftRun,
+    clientId,
+    expectedReportId,
+    refreshCompletion,
+    refreshFindings,
+  ]);
 
   useEffect(() => {
     void load();
@@ -1153,6 +1230,153 @@ export function useReportWorkspace({
     [clientId, showActionError]
   );
 
+  /**
+   * Review the saved draft, one pass per property.
+   *
+   * It occupies the busy slot for its life like a drafting run does, but it
+   * writes nothing to the report: it produces findings, and the reader
+   * decides what becomes of them.
+   */
+  const reviewDraft = useCallback(async (): Promise<boolean> => {
+    const { workspace: current, busy: currentBusy } = stateRef.current;
+    if (!current || currentBusy !== null) return false;
+    if (current.draft.revision === 0 || current.pending_proposal) return false;
+    const generation = generationRef.current;
+    const revision = current.draft.revision;
+    setBusy("reviewing");
+    setActionError(null);
+    dispatchRun({ kind: "review_started" });
+    setAgentActivity({
+      label: "Reviewing the draft",
+      detail: "One pass per property",
+    });
+    setSaveStatus("Reviewing the saved draft for style and consistency…");
+    logFrontendEvent("info", "Writer review sweep requested");
+    try {
+      const result = await runReviewSweeps(
+        clientId,
+        current.report_id,
+        revision,
+        (progress) => {
+          if (generation === generationRef.current) handleAgentProgress(progress);
+        }
+      );
+      if (generation !== generationRef.current) return false;
+      setFindings(result);
+      const open = result.findings.filter(
+        (finding) => finding.status === "open"
+      ).length;
+      setSaveStatus(
+        open === 0
+          ? `Reviewed revision ${revision}. Nothing to fix.`
+          : `Reviewed revision ${revision}. ${open} finding${open === 1 ? "" : "s"} to look at.`
+      );
+      await refreshCompletion(current.report_id, revision, generation);
+      return true;
+    } catch (error) {
+      const diagnostic =
+        error instanceof Error ? (error.stack ?? error.message) : String(error);
+      logFrontendEvent("error", `Writer review sweep failed: ${diagnostic}`);
+      if (generation !== generationRef.current) return false;
+      showActionError(error);
+      setSaveStatus(null);
+      return false;
+    } finally {
+      if (generation === generationRef.current) {
+        dispatchRun({ kind: "review_finished" });
+        setAgentActivity(null);
+        setBusy(null);
+      }
+    }
+  }, [clientId, handleAgentProgress, refreshCompletion, showActionError]);
+
+  /** What each resolution says while it runs, and once it has landed. */
+  const FINDING_MESSAGES: Record<
+    FindingAction,
+    { pending: string; done: (revision: number) => string }
+  > = useMemo(
+    () => ({
+      apply_style: {
+        pending: "Applying the suggested wording…",
+        done: (revision) => `Applied the finding as revision ${revision}.`,
+      },
+      undo_style: {
+        pending: "Putting the original wording back…",
+        done: (revision) =>
+          `Undid the applied finding as revision ${revision}.`,
+      },
+      dismiss: {
+        pending: "Dismissing the finding…",
+        done: () => "Dismissed the finding. The report was not changed.",
+      },
+    }),
+    []
+  );
+
+  /**
+   * One decision about one finding. The command answers with both halves —
+   * the workspace and the findings — so the canvas and the pane can never
+   * disagree about which revision the reader is looking at.
+   */
+  const resolveFinding = useCallback(
+    async (findingId: string, action: FindingAction): Promise<boolean> => {
+      const { workspace: current, busy: currentBusy } = stateRef.current;
+      if (!current || currentBusy !== null) return false;
+      const generation = generationRef.current;
+      setBusy("resolving_finding");
+      setResolvingFindingId(findingId);
+      setActionError(null);
+      setSaveStatus(FINDING_MESSAGES[action].pending);
+      try {
+        const result = await resolveReportFinding(
+          clientId,
+          current.report_id,
+          findingId,
+          action
+        );
+        if (generation !== generationRef.current) return false;
+        setWorkspace(result.workspace);
+        setEdit(draftToEdit(result.workspace.draft));
+        setEditing(false);
+        setConflict(false);
+        setFindings(result.findings);
+        setSaveStatus(
+          FINDING_MESSAGES[action].done(result.workspace.draft.revision)
+        );
+        await refreshCompletion(
+          result.workspace.report_id,
+          result.workspace.draft.revision,
+          generation
+        );
+        return true;
+      } catch (error) {
+        if (generation !== generationRef.current) return false;
+        showActionError(error);
+        setSaveStatus(null);
+        return false;
+      } finally {
+        if (generation === generationRef.current) {
+          setResolvingFindingId(null);
+          setBusy(null);
+        }
+      }
+    },
+    [FINDING_MESSAGES, clientId, refreshCompletion, showActionError]
+  );
+
+  const applyFinding = useCallback(
+    (findingId: string) => resolveFinding(findingId, "apply_style"),
+    [resolveFinding]
+  );
+  const undoFinding = useCallback(
+    (findingId: string) => resolveFinding(findingId, "undo_style"),
+    [resolveFinding]
+  );
+  const dismissFinding = useCallback(
+    (findingId: string) => resolveFinding(findingId, "dismiss"),
+    [resolveFinding]
+  );
+
   const applyTemplate = useCallback(
     async (templateId: string): Promise<boolean> => {
       const { workspace: current, busy: currentBusy, dirty: isDirty } =
@@ -1323,7 +1547,21 @@ export function useReportWorkspace({
     liveContext,
     run,
     draftPane,
+    findings,
+    completion,
+    resolvingFindingId,
     planGate,
+    /**
+     * A review reads one saved revision, so there has to be one, and it must
+     * not move underneath the pass: no pending proposal, no live run, and
+     * nothing else already holding the busy slot.
+     */
+    canReviewDraft:
+      busy === null &&
+      !run.live &&
+      workspace !== null &&
+      workspace.draft.revision > 0 &&
+      workspace.pending_proposal === null,
     // Every run command mints a stream, so any run this hook started can be
     // stopped — including one it picked back up.
     canStopRun:
@@ -1347,6 +1585,10 @@ export function useReportWorkspace({
     keepPartialDraft,
     discardRun,
     resolveProposal,
+    reviewDraft,
+    applyFinding,
+    undoFinding,
+    dismissFinding,
     applyTemplate,
     exportDocx,
     renameSession,

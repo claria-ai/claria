@@ -433,6 +433,90 @@ test("sections land while the draft runs, and Stop keeps the ones already saved"
   });
 });
 
+test("a review flags the draft, style fixes apply and undo, and consistency stays read-only", async ({
+  page,
+}) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="writing"]').click();
+
+  // A saved revision with real sections is what a review reads.
+  await page
+    .getByLabel("Writer template")
+    .selectOption({ label: "Sectioned Evaluation Template" });
+  await page.getByRole("button", { name: "Apply template" }).click();
+  const canvas = page.getByTestId("accepted-report-canvas");
+  await expect(canvas).toContainText("Template referral text.");
+
+  // Hold the passes so the honest "n of 7" can be watched moving.
+  const releasePasses = (through: number) =>
+    page.evaluate((value) => {
+      (window as unknown as { __REVIEW_STEP__: number }).__REVIEW_STEP__ = value;
+    }, through);
+  await releasePasses(1);
+  await page.getByRole("button", { name: "Review draft" }).click();
+
+  const reviewProgress = page.getByRole("progressbar", {
+    name: "Review checks completed",
+  });
+  await expect(reviewProgress).toHaveAttribute("aria-valuetext", "1 of 7 checks");
+  await releasePasses(3);
+  await expect(reviewProgress).toHaveAttribute("aria-valuetext", "3 of 7 checks");
+  await releasePasses(Number.POSITIVE_INFINITY);
+
+  const pane = page.getByTestId("draft-run-pane");
+  await expect(pane.getByTestId("finding-card")).toHaveCount(2);
+  await expect(reviewProgress).toHaveCount(0);
+
+  // Every flagged section carries its count back on the document itself.
+  await expect(page.getByTestId("section-findings-flag")).toHaveCount(2);
+  await expect(page.getByTestId("completion-checklist")).toContainText(
+    "2 open findings",
+  );
+
+  const styleCard = pane
+    .getByTestId("finding-card")
+    .filter({ hasText: "Reason for Referral" });
+  const consistencyCard = pane
+    .getByTestId("finding-card")
+    .filter({ hasText: "disagrees with the records" });
+
+  // The consistency pass has no write access, and neither does its card.
+  await expect(consistencyCard.getByRole("button", { name: "Apply" })).toHaveCount(0);
+  await expect(consistencyCard).toContainText("Jane is nine years old.");
+  await expect(
+    consistencyCard.getByRole("button", { name: "Reference in chat" }),
+  ).toBeVisible();
+
+  await styleCard.getByRole("button", { name: "Apply" }).click();
+  await expect(canvas).toContainText("Template referral text. Reviewed wording.");
+  await expect(styleCard.getByTestId("finding-receipt")).toContainText(
+    "Applied in r2",
+  );
+  await expect(page.getByTestId("completion-checklist")).toContainText(
+    "1 open finding",
+  );
+
+  await styleCard.getByRole("button", { name: "Undo" }).click();
+  await expect(canvas).not.toContainText("Reviewed wording.");
+  await expect(styleCard.getByRole("button", { name: "Apply" })).toBeVisible();
+
+  await styleCard.getByRole("button", { name: "Dismiss" }).click();
+  await consistencyCard.getByRole("button", { name: "Dismiss" }).click();
+  await expect(page.getByTestId("section-findings-flag")).toHaveCount(0);
+  await expect(page.getByTestId("completion-checklist")).toContainText(
+    "Ready — all checks pass",
+  );
+
+  const commands = await page.evaluate(() =>
+    (window as unknown as { __REPORT_COMMANDS__: string[] }).__REPORT_COMMANDS__,
+  );
+  expect(commands).toContain("run_review_sweeps");
+  expect(commands).toContain("resolve_report_finding");
+  expect(commands).toContain("evaluate_report_completion");
+});
+
 test("Editor History resumes a specific Writing session", async ({ page }) => {
   await page.goto(BASE_URL);
   await page.getByRole("button", { name: "Client Files" }).click();

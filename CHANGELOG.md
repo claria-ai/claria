@@ -55,6 +55,12 @@ All notable changes to Claria are documented here.
 - A deterministic completion check now verifies sections, citations, placeholders, and open findings — no model opinion involved
 - Cited record quotes are re-read from the records themselves, so a citation that no longer resolves is named with the file it came from
 - Export is unaffected by the completion check, which reports rather than blocks
+- Review findings now appear beside the draft, grouped by section and filtered by style, consistency, or resolved
+- A style finding applies in one click and can be undone again from the receipt it leaves
+- Consistency findings are read-only: they show the passage they contradict and can be sent to the chat composer, never applied
+- A finding whose section changed since the review is greyed out with a note to re-run the review
+- Sections with open findings are flagged on the document, and the flag jumps to the finding
+- The draft run pane closes with a completion checklist counting what is still outstanding
 
 ## [0.28.0] — 2026-08-15
 

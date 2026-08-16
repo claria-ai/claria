@@ -41,6 +41,10 @@ const mocks = vi.hoisted(() => ({
   listRecordFiles: vi.fn(),
   deleteRecordFile: vi.fn(),
   uploadRecordFile: vi.fn(),
+  listReportFindings: vi.fn(),
+  resolveReportFinding: vi.fn(),
+  runReviewSweeps: vi.fn(),
+  evaluateReportCompletion: vi.fn(),
 }));
 
 vi.mock("../lib/logBridge", () => ({
@@ -80,6 +84,10 @@ vi.mock("../lib/tauri", () => ({
   listRecordFiles: mocks.listRecordFiles,
   deleteRecordFile: mocks.deleteRecordFile,
   uploadRecordFile: mocks.uploadRecordFile,
+  listReportFindings: mocks.listReportFindings,
+  resolveReportFinding: mocks.resolveReportFinding,
+  runReviewSweeps: mocks.runReviewSweeps,
+  evaluateReportCompletion: mocks.evaluateReportCompletion,
 }));
 
 import Writing from "./Writing";
@@ -319,6 +327,8 @@ beforeEach(() => {
     { filename: "intake.txt", size: 10, uploaded_at: null },
     { filename: "teacher-observation.txt", size: 10, uploaded_at: null },
   ]);
+  mocks.listReportFindings.mockResolvedValue(reportFindings([]));
+  mocks.evaluateReportCompletion.mockResolvedValue(completionReport([]));
   mocks.generateDraftPlan.mockResolvedValue(plannedRun());
   mocks.updateDraftPlan.mockImplementation(async () => plannedRun());
   mocks.startDraftRun.mockResolvedValue({
@@ -330,6 +340,78 @@ beforeEach(() => {
   });
   vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
 });
+
+function reportFindings(findings: unknown[]) {
+  return {
+    schema_version: 1,
+    report_id: "report-1",
+    client_id: "client-1",
+    findings,
+    coverage: [],
+    updated_at: "2026-08-01T00:03:00Z",
+  };
+}
+
+function completionReport(
+  checks: Array<{ kind: string; section_id: string | null; detail: string }>
+) {
+  return {
+    complete: checks.length === 0,
+    checks,
+    evaluated_revision: 1,
+    evaluated_at: "2026-08-01T00:03:00Z",
+  };
+}
+
+/** One anchored style replacement against the report's only section. */
+function styleFinding(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "finding-style",
+    pass: "style",
+    property: "tense_drift",
+    model_id: "model-1",
+    anchor: { section_id: SECTION_ID, revision: 1 },
+    description: "The paragraph slips into the present tense.",
+    span: { block_index: 0, start_char: 0, end_char: 10 },
+    conflicting: null,
+    record_citation: null,
+    proposal: {
+      block_index: 0,
+      original_text: "A **bold report** paragraph.",
+      replacement_text: "A **bold report** paragraph, rewritten.",
+    },
+    status: "open",
+    applied_revision: null,
+    resolved_at: null,
+    created_at: "2026-08-01T00:03:00Z",
+    ...overrides,
+  };
+}
+
+/** One read-only cross-section flag against the same section. */
+function consistencyFinding(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "finding-consistency",
+    pass: "consistency",
+    property: "cross_section_conflict",
+    model_id: "model-1",
+    anchor: { section_id: SECTION_ID, revision: 1 },
+    description: "The stated age disagrees with the Background section.",
+    span: { block_index: 0, start_char: 0, end_char: 10 },
+    conflicting: {
+      section_id: null,
+      quote: "Jane is nine years old.",
+      span: null,
+    },
+    record_citation: { filename: "intake.txt", quote: "age 11" },
+    proposal: null,
+    status: "open",
+    applied_revision: null,
+    resolved_at: null,
+    created_at: "2026-08-01T00:03:00Z",
+    ...overrides,
+  };
+}
 
 /** The plan a fresh gate shows: two sections, one already scoped. */
 function plannedRun(warnings: string[] = []) {
@@ -1877,5 +1959,284 @@ describe("Writing plan gate", () => {
       expect.any(String),
       expect.any(Function)
     );
+  });
+});
+
+describe("Writing review findings", () => {
+  it("offers a review only against a saved revision with nothing pending", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 0 }));
+    const fresh = renderWriting();
+
+    await screen.findByText("Accepted report title");
+    expect(
+      (screen.getByRole("button", { name: "Review draft" }) as HTMLButtonElement)
+        .disabled
+    ).toBe(true);
+    fresh.unmount();
+
+    mocks.load.mockResolvedValue(workspace({ revision: 1, pending: true }));
+    const withProposal = renderWriting();
+    await screen.findByTestId("report-proposal");
+    expect(
+      (screen.getByRole("button", { name: "Review draft" }) as HTMLButtonElement)
+        .disabled
+    ).toBe(true);
+    withProposal.unmount();
+
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    expect(
+      (screen.getByRole("button", { name: "Review draft" }) as HTMLButtonElement)
+        .disabled
+    ).toBe(false);
+  });
+
+  it("counts review passes honestly and lands the findings in the pane", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    let emit: ((progress: unknown) => void) | undefined;
+    let settle: ((findings: unknown) => void) | undefined;
+    mocks.runReviewSweeps.mockImplementation(
+      (
+        _clientId: string,
+        _reportId: string,
+        _revision: number,
+        onProgress?: (progress: unknown) => void
+      ) => {
+        emit = onProgress;
+        return new Promise((resolve) => {
+          settle = resolve;
+        });
+      }
+    );
+    renderWriting();
+    await screen.findByText("Accepted report title");
+
+    await userEvent.click(screen.getByRole("button", { name: "Review draft" }));
+    expect(mocks.runReviewSweeps).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      1,
+      expect.any(Function)
+    );
+
+    await act(async () => {
+      emit?.({
+        kind: "review_pass_started",
+        property: "tense_drift",
+        index: 1,
+        total: 7,
+      });
+      emit?.({
+        kind: "review_pass_completed",
+        property: "tense_drift",
+        findings: 1,
+        completed: 2,
+        total: 7,
+      });
+    });
+
+    expect(
+      screen
+        .getByRole("progressbar", { name: "Review checks completed" })
+        .getAttribute("aria-valuetext")
+    ).toBe("2 of 7 checks");
+
+    await act(async () => {
+      settle?.(reportFindings([styleFinding()]));
+    });
+
+    const pane = within(await screen.findByTestId("draft-run-pane"));
+    expect(
+      pane.getByText("The paragraph slips into the present tense.")
+    ).toBeDefined();
+    // The bar retires with the pass; the findings are the lasting record.
+    expect(
+      screen.queryByRole("progressbar", { name: "Review checks completed" })
+    ).toBeNull();
+  });
+
+  it("applies a style finding, redraws the canvas, and offers the undo", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.listReportFindings.mockResolvedValue(
+      reportFindings([styleFinding()])
+    );
+    const applied = workspace({
+      revision: 2,
+      paragraph: "A **bold report** paragraph, rewritten.",
+    });
+    mocks.resolveReportFinding.mockResolvedValue({
+      workspace: applied,
+      findings: reportFindings([
+        styleFinding({ status: "applied", applied_revision: 2 }),
+      ]),
+    });
+    renderWriting();
+
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Draft run" }));
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(mocks.resolveReportFinding).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      "finding-style",
+      "apply_style"
+    );
+    expect(
+      (await screen.findByTestId("finding-receipt")).textContent
+    ).toContain("Applied in r2");
+    expect(
+      screen.getByTestId("accepted-report-canvas").textContent
+    ).toContain("paragraph, rewritten.");
+    // Applying re-asks the gate, because the revision it judged has moved.
+    expect(mocks.evaluateReportCompletion).toHaveBeenCalledTimes(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(mocks.resolveReportFinding).toHaveBeenLastCalledWith(
+      "client-1",
+      "report-1",
+      "finding-style",
+      "undo_style"
+    );
+  });
+
+  it("takes the reader from a canvas flag chip to that section's cards", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.listReportFindings.mockResolvedValue(
+      reportFindings([consistencyFinding()])
+    );
+    renderWriting();
+
+    await screen.findByText("Accepted report title");
+    const chip = await screen.findByTestId("section-findings-flag");
+    expect(chip.textContent).toContain("1 finding");
+
+    await userEvent.click(chip);
+
+    expect(
+      screen
+        .getByRole("tab", { name: "Draft run" })
+        .getAttribute("aria-selected")
+    ).toBe("true");
+    const pane = within(screen.getByTestId("draft-run-pane"));
+    expect(
+      pane.getByText("The stated age disagrees with the Background section.")
+    ).toBeDefined();
+    // A read-only pass gets no write path, whatever the card looks like.
+    expect(pane.queryByRole("button", { name: "Apply" })).toBeNull();
+  });
+
+  it("queues a consistency finding's block onto the composer", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.listReportFindings.mockResolvedValue(
+      reportFindings([consistencyFinding()])
+    );
+    renderWriting();
+
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Draft run" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Reference in chat" })
+    );
+
+    const references = within(
+      await screen.findByLabelText("Referenced report blocks")
+    );
+    expect(references.getByText(/Findings ¶1/)).toBeDefined();
+  });
+
+  it("dismisses a finding without touching the report", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.listReportFindings.mockResolvedValue(
+      reportFindings([consistencyFinding()])
+    );
+    mocks.resolveReportFinding.mockResolvedValue({
+      workspace: workspace({ revision: 1 }),
+      findings: reportFindings([consistencyFinding({ status: "dismissed" })]),
+    });
+    renderWriting();
+
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Draft run" }));
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    expect(mocks.resolveReportFinding).toHaveBeenCalledWith(
+      "client-1",
+      "report-1",
+      "finding-consistency",
+      "dismiss"
+    );
+    expect((await screen.findByTestId("finding-receipt")).textContent).toBe(
+      "Dismissed"
+    );
+    // The chip goes with the last open finding.
+    expect(screen.queryByTestId("section-findings-flag")).toBeNull();
+  });
+
+  it("reads the completion checks back as a counted checklist", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.listReportFindings.mockResolvedValue(
+      reportFindings([styleFinding()])
+    );
+    mocks.evaluateReportCompletion.mockResolvedValue(
+      completionReport([
+        { kind: "unresolved_finding", section_id: SECTION_ID, detail: "open" },
+        {
+          kind: "unresolved_citation",
+          section_id: SECTION_ID,
+          detail: "intake.txt",
+        },
+        {
+          kind: "unresolved_citation",
+          section_id: SECTION_ID,
+          detail: "scores.json",
+        },
+        {
+          kind: "placeholder_text",
+          section_id: SECTION_ID,
+          detail: "{{name}}",
+        },
+      ])
+    );
+    renderWriting();
+
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Draft run" }));
+
+    const checklist = screen.getByTestId("completion-checklist");
+    expect(checklist.textContent).toContain(
+      "1 section still has placeholder text"
+    );
+    expect(checklist.textContent).toContain("2 citations could not be verified");
+    expect(checklist.textContent).toContain("1 open finding");
+    expect(checklist.textContent).toContain("Findings");
+  });
+
+  it("says a report with no failing checks is ready", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.listReportFindings.mockResolvedValue(
+      reportFindings([styleFinding({ status: "dismissed" })])
+    );
+    renderWriting();
+
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Draft run" }));
+
+    expect(
+      within(screen.getByTestId("completion-checklist")).getByText(
+        "Ready — all checks pass"
+      )
+    ).toBeDefined();
+  });
+
+  it("never asks the completion gate about a report with no revisions", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 0 }));
+    renderWriting();
+
+    await screen.findByText("Accepted report title");
+
+    expect(mocks.evaluateReportCompletion).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("completion-checklist")).toBeNull();
   });
 });

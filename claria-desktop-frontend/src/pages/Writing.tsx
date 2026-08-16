@@ -4,6 +4,9 @@ import ChatComposer from "../components/ChatComposer";
 import ChatEmptyState from "../components/ChatEmptyState";
 import ContextPills from "../components/ContextPills";
 import DraftPlanPanel from "../components/DraftPlanPanel";
+import FindingsPanel from "../components/FindingsPanel";
+import type { FindingReference } from "../components/FindingCard";
+import { openFindingCounts } from "../lib/findings";
 import { buildContextPills } from "../lib/contextPills";
 import EditableName from "../components/EditableName";
 import ModelSelect from "../components/ModelSelect";
@@ -37,6 +40,9 @@ import {
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
 import type { PlanEntryEdit, ReportWorkspaceView } from "../lib/tauri";
+
+/** One shared empty map, so a report with no findings keeps canvas identity. */
+const NO_FINDING_COUNTS: ReadonlyMap<string, number> = new Map();
 
 export type WritingLeaveState = {
   /** Any work that would be lost when the desktop app closes. */
@@ -121,6 +127,10 @@ export default function Writing({
     liveContext,
     run,
     draftPane,
+    findings,
+    completion,
+    resolvingFindingId,
+    canReviewDraft,
     canStopRun,
     load,
     beginEdit,
@@ -136,16 +146,65 @@ export default function Writing({
     keepPartialDraft,
     discardRun,
     resolveProposal,
+    reviewDraft,
+    applyFinding,
+    undoFinding,
+    dismissFinding,
     applyTemplate,
     exportDocx,
     renameSession,
     applyReverted,
   } = useReportWorkspace({ clientId, expectedReportId });
 
-  // A run that finished, was discarded, or was picked back up takes its pane
-  // with it; the reader lands on the timeline rather than on nothing.
+  // The pane outlives the run: findings stay readable after the draft that
+  // produced them is long finished, and a review can be asked for without a
+  // run ever having existed.
+  const findingRows = useMemo(() => findings?.findings ?? [], [findings]);
+  const hasDraftPane =
+    draftPane !== null || findingRows.length > 0 || busy === "reviewing";
   const activePane =
-    chosenPane === "draft" && !draftPane ? "write" : chosenPane;
+    chosenPane === "draft" && !hasDraftPane ? "write" : chosenPane;
+
+  const findingCounts = useMemo(
+    () =>
+      workspace
+        ? openFindingCounts(findingRows, workspace.draft.content)
+        : NO_FINDING_COUNTS,
+    [findingRows, workspace]
+  );
+
+  // The flag chips scroll-link into the pane, which is only mounted once the
+  // reader is on it — so the click chooses the pane and the scroll waits for
+  // the group to register.
+  const findingSectionRefs = useRef(new Map<string, HTMLElement>());
+  const pendingFindingFocusRef = useRef<string | null>(null);
+  const registerFindingSection = useCallback(
+    (sectionId: string, element: HTMLElement | null) => {
+      if (element) findingSectionRefs.current.set(sectionId, element);
+      else findingSectionRefs.current.delete(sectionId);
+    },
+    []
+  );
+  const openFindings = useCallback((sectionId: string) => {
+    // A registered group means the pane is already mounted, so the scroll is
+    // this click's own work; otherwise it waits for the pane to arrive.
+    const group = findingSectionRefs.current.get(sectionId);
+    if (group) {
+      group.scrollIntoView?.({ block: "start" });
+      return;
+    }
+    pendingFindingFocusRef.current = sectionId;
+    setActivePane("draft");
+  }, []);
+  useEffect(() => {
+    if (activePane !== "draft") return;
+    const sectionId = pendingFindingFocusRef.current;
+    if (!sectionId) return;
+    pendingFindingFocusRef.current = null;
+    findingSectionRefs.current
+      .get(sectionId)
+      ?.scrollIntoView?.({ block: "start" });
+  }, [activePane]);
 
   const {
     templates: writerTemplates,
@@ -393,6 +452,38 @@ export default function Writing({
     await startPlannedRun(selectedModelId, planned, edits);
   }
 
+  /**
+   * Put the block a consistency finding points at onto the composer, so the
+   * reader can ask about it in their own words. The card never fixes anything
+   * itself — the consistency pass has no write access, and neither does this.
+   */
+  function handleReferenceFinding(reference: FindingReference) {
+    const section = workspace?.draft.content.sections.find(
+      (candidate) => candidate.id === reference.sectionId
+    );
+    if (!section) return;
+    // A finding that never resolved to a block still points at a section, so
+    // fall back to the first block the composer can carry.
+    const index =
+      reference.blockIndex ??
+      section.blocks.findIndex((block) => block.kind !== "bullet_list");
+    const block = index >= 0 ? section.blocks[index] : undefined;
+    if (!block || block.kind === "bullet_list") {
+      setActivePane("write");
+      setSaveStatus(
+        `“${section.heading}” has no paragraph or table to attach. Quote it in your message instead.`
+      );
+      return;
+    }
+    addReference({
+      kind: block.kind,
+      sectionId: section.id,
+      blockIndex: index,
+      sectionHeading: section.heading,
+      preview: reportBlockReferencePreview(block),
+    });
+  }
+
   async function handleApplyTemplate() {
     if (editing) return;
     const applied = await applyTemplate(selectedTemplateId);
@@ -476,9 +567,11 @@ export default function Writing({
           tabs={[
             { id: "setup", label: "Get started" },
             { id: "write", label: "Write with Claude" },
-            // Only a report with a run — live, waiting at the gate, or
-            // interrupted — has a run to show.
-            ...(draftPane ? [{ id: "draft" as const, label: "Draft run" }] : []),
+            // A run — live, waiting at the gate, or interrupted — or the
+            // findings a review left behind.
+            ...(hasDraftPane
+              ? [{ id: "draft" as const, label: "Draft run" }]
+              : []),
             {
               id: "usage",
               label: "Costs and cache",
@@ -682,7 +775,7 @@ export default function Writing({
           </div>
         )}
 
-        {activePane === "draft" && draftPane && (
+        {activePane === "draft" && hasDraftPane && (
           <div
             id="writer-session-panel-draft"
             role="tabpanel"
@@ -690,23 +783,52 @@ export default function Writing({
             className="flex min-h-0 flex-1 flex-col"
             data-testid="draft-run-pane"
           >
-            <DraftPlanPanel
-              // The pane owns unsaved plan edits, so a new run or a new
-              // question gets a new pane rather than a reconciled one.
-              key={`${draftPane.run?.run_id ?? "planning"}:${draftPane.mode}`}
-              clientId={clientId}
-              run={draftPane.run}
-              runState={run}
-              mode={draftPane.mode}
-              busy={controlsBusy}
-              error={actionError}
-              canStop={canStopRun}
-              onStop={stopRun}
-              onStart={(edits, instructions) =>
-                void handleStartPlan(edits, instructions)
+            {draftPane && (
+              <DraftPlanPanel
+                // The pane owns unsaved plan edits, so a new run or a new
+                // question gets a new pane rather than a reconciled one.
+                key={`${draftPane.run?.run_id ?? "planning"}:${draftPane.mode}`}
+                clientId={clientId}
+                run={draftPane.run}
+                runState={run}
+                mode={draftPane.mode}
+                busy={controlsBusy}
+                error={actionError}
+                canStop={canStopRun}
+                onStop={stopRun}
+                onStart={(edits, instructions) =>
+                  void handleStartPlan(edits, instructions)
+                }
+                onCancelPlan={() => void discardRun()}
+              />
+            )}
+            <div
+              className={
+                draftPane
+                  ? "flex max-h-80 min-h-0 shrink-0 flex-col"
+                  : "flex min-h-0 flex-1 flex-col"
               }
-              onCancelPlan={() => void discardRun()}
-            />
+            >
+              <FindingsPanel
+                findings={findingRows}
+                content={workspace.draft.content}
+                draftRevision={workspace.draft.revision}
+                completion={completion}
+                busy={controlsBusy}
+                reviewing={busy === "reviewing"}
+                reviewCompleted={run.reviewCompleted}
+                reviewTotal={run.reviewTotal}
+                canReview={canReviewDraft}
+                resolvingId={resolvingFindingId}
+                onReview={() => void reviewDraft()}
+                onApply={(id) => void applyFinding(id)}
+                onUndo={(id) => void undoFinding(id)}
+                onDismiss={(id) => void dismissFinding(id)}
+                onReference={handleReferenceFinding}
+                onPreviewRecord={setPreviewFilename}
+                registerSection={registerFindingSection}
+              />
+            </div>
           </div>
         )}
 
@@ -920,6 +1042,22 @@ export default function Writing({
         }}
         onKeepPartialDraft={keepPartialDraft}
         onDiscardRun={discardRun}
+        findingCounts={findingCounts}
+        onOpenFindings={openFindings}
+        // The canvas carries the review entry point only while nothing else
+        // is offering one; with a pane up, the pane's button is the one. The
+        // pass writes its progress and its findings into that pane, so asking
+        // for one from here goes there.
+        onReviewDraft={
+          hasDraftPane
+            ? undefined
+            : () => {
+                setActivePane("draft");
+                void reviewDraft();
+              }
+        }
+        canReviewDraft={canReviewDraft}
+        reviewing={busy === "reviewing"}
       />
       </div>
 

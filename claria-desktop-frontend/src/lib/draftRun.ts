@@ -46,6 +46,14 @@ export type DraftRunUiState = {
   sections: ReadonlyMap<string, SectionUiState>;
   /** How a run ended, read from durable state. Always `null` while live. */
   outcome: "stopped" | "failed" | null;
+  /**
+   * The review fan-out's own counters, kept apart from the drafting ones: a
+   * review writes nothing to the report, has no sections of its own, and can
+   * run over a report that never had a drafting run at all.
+   */
+  reviewCompleted: number;
+  /** `null` until the first pass says how many properties there are. */
+  reviewTotal: number | null;
 };
 
 const NO_SECTIONS: ReadonlyMap<string, SectionUiState> = new Map();
@@ -59,6 +67,8 @@ const EMPTY: DraftRunUiState = {
   title: null,
   sections: NO_SECTIONS,
   outcome: null,
+  reviewCompleted: 0,
+  reviewTotal: null,
 };
 
 /** The state of a report with no drafting run anywhere near it. */
@@ -118,6 +128,8 @@ export function runStateFromDraftRun(run: DraftRun): DraftRunUiState {
         : run.status === "failed"
           ? "failed"
           : null,
+    reviewCompleted: 0,
+    reviewTotal: null,
   };
 }
 
@@ -192,6 +204,17 @@ export function reduceDraftRun(
         sectionId: null,
         section: null,
       });
+    // Review passes never touch `live` or the section ledger: a review is not
+    // a drafting run, has no Stop behind it, and must not make the canvas
+    // draw a section bar with no sections in it.
+    case "review_pass_started":
+      return commitReview(state, state.reviewCompleted, event.total);
+    case "review_pass_completed":
+      return commitReview(
+        state,
+        Math.max(state.reviewCompleted, event.completed),
+        event.total
+      );
     default:
       // The legacy record-context, model-call, and tool events belong to the
       // qualitative activity line, not to the run's section ledger.
@@ -233,6 +256,23 @@ export function overlaySections(
 /** Counters never move backwards, whatever order the events arrive in. */
 function highest(current: number | null, incoming: number): number {
   return current === null ? incoming : Math.max(current, incoming);
+}
+
+/**
+ * Branches finish out of order, so `completed` is the branch's own position
+ * and the highest one wins. A round that moves nothing returns the same
+ * object, so the memoized pane does not re-render on a redelivered event.
+ */
+function commitReview(
+  state: DraftRunUiState,
+  completed: number,
+  total: number
+): DraftRunUiState {
+  const reviewTotal = highest(state.reviewTotal, total);
+  if (state.reviewCompleted === completed && state.reviewTotal === reviewTotal) {
+    return state;
+  }
+  return { ...state, reviewCompleted: completed, reviewTotal };
 }
 
 function commit(

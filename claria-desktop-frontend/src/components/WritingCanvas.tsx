@@ -97,6 +97,11 @@ function WritingCanvas({
   onResumeRun,
   onKeepPartialDraft,
   onDiscardRun,
+  findingCounts,
+  onOpenFindings,
+  onReviewDraft,
+  canReviewDraft = false,
+  reviewing = false,
 }: {
   workspace: ReportWorkspaceView;
   edit: ReportDraftEdit;
@@ -127,6 +132,17 @@ function WritingCanvas({
   onResumeRun?: () => void;
   onKeepPartialDraft?: () => void;
   onDiscardRun?: () => void;
+  /**
+   * Open findings per section, from the findings themselves rather than from
+   * run state — a review can be long over by the time the reader looks.
+   */
+  findingCounts?: ReadonlyMap<string, number>;
+  /** Take the reader to that section's cards in the Draft run pane. */
+  onOpenFindings?: (sectionId: string) => void;
+  /** The compact entry point, passed only when no run pane is showing. */
+  onReviewDraft?: () => void;
+  canReviewDraft?: boolean;
+  reviewing?: boolean;
 }) {
   const pending = workspace.pending_proposal !== null;
   const sectionStates = run?.sections;
@@ -232,6 +248,16 @@ function WritingCanvas({
             {dirty ? " · Unsaved changes" : " · Saved"}
           </p>
         </div>
+        {onReviewDraft && (
+          <button
+            type="button"
+            onClick={onReviewDraft}
+            disabled={!canReviewDraft}
+            className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50"
+          >
+            {reviewing ? "Reviewing…" : "Review draft"}
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpenRevisions}
@@ -386,6 +412,8 @@ function WritingCanvas({
               content={liveContent}
               onReference={onReference}
               sectionStates={sectionStates}
+              findingCounts={findingCounts}
+              onOpenFindings={onOpenFindings}
             />
           )}
         </div>
@@ -398,12 +426,17 @@ export function ReportDocument({
   content,
   onReference,
   sectionStates,
+  findingCounts,
+  onOpenFindings,
   testId = "accepted-report-canvas",
 }: {
   content: ReportContent;
   onReference?: (reference: WritingBlockReference) => void;
   /** Per-section run state, when a drafting run owns this report. */
   sectionStates?: ReadonlyMap<string, SectionUiState>;
+  /** Open findings per section, for the amber flag chips. */
+  findingCounts?: ReadonlyMap<string, number>;
+  onOpenFindings?: (sectionId: string) => void;
   testId?: string;
 }) {
   return (
@@ -423,6 +456,16 @@ export function ReportDocument({
           {content.sections.map((section) => {
             const runState = sectionStates?.get(section.id) ?? null;
             const chip = runState ? SECTION_CHIP[runState.status] : null;
+            const findings = findingCounts?.get(section.id) ?? 0;
+            const flag =
+              findings > 0
+                ? {
+                    count: findings,
+                    onOpen: onOpenFindings
+                      ? () => onOpenFindings(section.id)
+                      : undefined,
+                  }
+                : null;
             return (
               <section
                 key={section.id}
@@ -436,6 +479,7 @@ export function ReportDocument({
                       heading={section.heading}
                       muted
                       chip={chip ?? { tone: "muted", label: "Skipped" }}
+                      flag={flag}
                     />
                     <p className="text-xs text-gray-400 italic">
                       Skipped — kept from the template for reference. Not
@@ -451,7 +495,11 @@ export function ReportDocument({
                   </div>
                 ) : (
                   <>
-                    <SectionHeading heading={section.heading} chip={chip} />
+                    <SectionHeading
+                      heading={section.heading}
+                      chip={chip}
+                      flag={flag}
+                    />
                     {runState?.status === "failed" && runState.error && (
                       <p
                         data-testid="section-failure"
@@ -493,12 +541,18 @@ export function ReportDocument({
 function SectionHeading({
   heading,
   chip,
+  flag = null,
   muted = false,
 }: {
   heading: string;
   chip: { tone: StatusChipTone; label: string; animated?: boolean } | null;
+  /** Open review findings against this section, and the way to them. */
+  flag?: { count: number; onOpen?: () => void } | null;
   muted?: boolean;
 }) {
+  const flagLabel = flag
+    ? `${flag.count} finding${flag.count === 1 ? "" : "s"}`
+    : "";
   return (
     <div className="mb-3 flex items-baseline gap-2">
       <h2
@@ -519,6 +573,20 @@ function SectionHeading({
             label={chip.label}
             animated={chip.animated}
           />
+        ))}
+      {flag &&
+        (flag.onOpen ? (
+          <button
+            type="button"
+            data-testid="section-findings-flag"
+            aria-label={`Show ${flagLabel} for ${heading}`}
+            onClick={flag.onOpen}
+            className="rounded-full"
+          >
+            <StatusChip tone="warning" label={flagLabel} />
+          </button>
+        ) : (
+          <StatusChip tone="warning" label={flagLabel} />
         ))}
     </div>
   );

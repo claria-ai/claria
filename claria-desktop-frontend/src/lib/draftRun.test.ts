@@ -108,6 +108,8 @@ describe("emptyDraftRun", () => {
       title: null,
       sections: new Map(),
       outcome: null,
+      reviewCompleted: 0,
+      reviewTotal: null,
     });
   });
 
@@ -304,6 +306,72 @@ describe("reduceDraftRun", () => {
     expect(resumed.live).toBe(true);
     // The run identity survives, so the banner's actions still know it.
     expect(resumed.runId).toBe(stopped.runId);
+  });
+
+  it("counts review passes without claiming a drafting run is live", () => {
+    const started = apply([
+      { kind: "review_pass_started", property: "tense_drift", index: 1, total: 7 },
+    ]);
+
+    expect(started.reviewTotal).toBe(7);
+    expect(started.reviewCompleted).toBe(0);
+    // A review writes nothing and has no Stop behind it, so none of the
+    // drafting state moves.
+    expect(started.live).toBe(false);
+    expect(started.total).toBeNull();
+    expect(started.sections.size).toBe(0);
+  });
+
+  it("takes the highest branch position, because branches finish out of order", () => {
+    const state = apply([
+      { kind: "review_pass_started", property: "tense_drift", index: 1, total: 7 },
+      {
+        kind: "review_pass_completed",
+        property: "terminology",
+        findings: 2,
+        completed: 3,
+        total: 7,
+      },
+      {
+        kind: "review_pass_completed",
+        property: "tense_drift",
+        findings: 0,
+        completed: 2,
+        total: 7,
+      },
+    ]);
+
+    expect(state.reviewCompleted).toBe(3);
+    expect(state.reviewTotal).toBe(7);
+  });
+
+  it("returns the same object when a review event repeats", () => {
+    const event: ReportTurnProgressView = {
+      kind: "review_pass_completed",
+      property: "redundancy",
+      findings: 1,
+      completed: 4,
+      total: 7,
+    };
+    const state = apply([event]);
+
+    expect(reduceDraftRun(state, event)).toBe(state);
+  });
+
+  it("leaves a run's sections alone while a review counts beside them", () => {
+    const drafting = apply(ORDERED);
+    const reviewed = reduceDraftRun(drafting, {
+      kind: "review_pass_completed",
+      property: "transitions",
+      findings: 1,
+      completed: 1,
+      total: 7,
+    });
+
+    expect(reviewed.sections).toBe(drafting.sections);
+    expect(reviewed.drafted).toBe(drafting.drafted);
+    expect(reviewed.total).toBe(drafting.total);
+    expect(reviewed.reviewCompleted).toBe(1);
   });
 });
 
