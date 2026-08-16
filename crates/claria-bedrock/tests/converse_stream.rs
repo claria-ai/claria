@@ -419,17 +419,30 @@ async fn a_long_conversation_is_bounded_before_it_reaches_bedrock() {
     );
 }
 
+/// Let a real exchange land, then pause the clock so the silence bound
+/// under test elapses in virtual time.
+///
+/// A clock paused from the first instant is no good here: it auto-advances
+/// whenever the runtime has nothing to run, which fires the bound while the
+/// request is still crossing the socket. Pausing once the exchange is under
+/// way keeps both halves honest — the round trip happens in real time, the
+/// waiting does not.
+fn pause_the_clock_once_the_exchange_lands() {
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        tokio::time::pause();
+    });
+}
+
 /// A stream that opens and then dies has to fail, not hang. Nothing in the
 /// AWS SDK bounds this: the generated `ConverseStream` operation registers
 /// no stalled-stream protection interceptor, and the read timeout covers
 /// only the wait for response headers, which have already arrived by then.
-///
-/// Runs on a paused clock, so the idle bound elapses in virtual time rather
-/// than making the suite wait it out.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
     let server = MockServer::spawn().await;
     server.state.write().await.bedrock_stream_stalls = 1;
+    pause_the_clock_once_the_exchange_lands();
 
     let mut streamed = String::new();
     let error = chat_converse_stream(
@@ -459,6 +472,55 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
     }
     // Whatever did arrive before the stall reached the reader.
     assert!(streamed.starts_with("Beginning of a reply"));
+}
+
+/// A request the service accepts and never begins has to fail too, and the
+/// SDK bounds it nowhere: the read timeout is satisfied by the response
+/// headers, and `send` itself is what waits for the first frame. Left alone
+/// it hangs for as long as the socket stays open.
+///
+/// The failure also has to say what happened — nothing was generated, so
+/// nothing was lost mid-response. That is the difference between a caller
+/// that re-sends the request and one that reports a broken connection.
+#[tokio::test]
+async fn a_stream_that_never_starts_says_it_never_started() {
+    let server = MockServer::spawn().await;
+    server.state.write().await.bedrock_stream_silences = 1;
+    pause_the_clock_once_the_exchange_lands();
+
+    let mut streamed = String::new();
+    let error = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        token_paced(CacheStrategy::disabled()),
+        |delta| streamed.push_str(delta),
+    )
+    .await
+    .expect_err("a stream that never starts must not hang forever");
+
+    match error {
+        BedrockError::StreamInterrupted { operation, message } => {
+            assert_eq!(operation, "chat ConverseStream");
+            assert!(
+                message.contains("never started responding"),
+                "the failure does not say the response never began: {message}"
+            );
+            assert!(
+                !message.contains("mid-response"),
+                "a call that produced nothing was not lost mid-response: {message}"
+            );
+        }
+        other => panic!("expected a stream-interrupted error, got {other:?}"),
+    }
+    assert!(
+        streamed.is_empty(),
+        "no frame arrived, so nothing should have been forwarded: {streamed}"
+    );
+    // The request really reached the service and was answered with silence,
+    // rather than the bound firing before anything went out.
+    assert_eq!(server.state.read().await.bedrock_stream_silences, 0);
 }
 
 /// Paragraph pacing is what a clinician sees by default: the reply lands in
@@ -542,7 +604,8 @@ async fn pacing_off_forwards_nothing_but_still_returns_the_reply() {
 /// where Stop has to interrupt a parked read rather than slot between two
 /// frames. The first delta hands the reader's cue to a separate task, so the
 /// stop lands while the stream loop is waiting, not while it is running.
-/// Without that interrupt this test hangs for five minutes and then fails.
+/// Without that interrupt this test waits out the whole idle bound and then
+/// fails.
 #[tokio::test]
 async fn a_stopped_stream_keeps_what_arrived_and_returns_at_once() {
     let server = MockServer::spawn().await;

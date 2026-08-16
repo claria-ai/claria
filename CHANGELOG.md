@@ -62,6 +62,9 @@ All notable changes to Claria are documented here.
 - Sections with open findings are flagged on the document, and the flag jumps to the finding
 - The draft run pane closes with a completion checklist counting what is still outstanding
 - Raised the planner's output ceiling so plans for long reports no longer fail partway through
+- Planning now survives a dropped or stalled Bedrock connection by sending the request again
+- A Bedrock call that never starts responding now fails after ninety seconds instead of waiting indefinitely
+- A response that goes silent part-way through is abandoned after a minute rather than five
 
 ## [0.28.0] — 2026-08-15
 
