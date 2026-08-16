@@ -212,9 +212,12 @@ async fn plan(
     planner_override: Option<&str>,
     writer_override: Option<&str>,
 ) -> Result<()> {
+    // The allowance is checked up front so a refusal costs no setup, but the
+    // attempt is not claimed until everything that can fail locally — the
+    // model resolution, the workspace, the template — has succeeded. A
+    // mistyped client ID must not cost a Bedrock attempt.
     let mut governor = Governor::open(state_path.to_path_buf())?;
-    governor.claim("plan", Some(client_id))?;
-    announce_claim(&governor);
+    governor.check()?;
 
     let models = preferences::resolve(context, planner_override, writer_override).await?;
     println!(
@@ -229,6 +232,8 @@ async fn plan(
         workspace.draft.content.sections.len()
     );
 
+    governor.claim("plan", Some(client_id))?;
+    announce_claim(&governor);
     let recorder = progress::ProgressRecorder::new(true);
     let outcome = pipeline::plan(
         context,
@@ -245,13 +250,22 @@ async fn plan(
         &outcome.as_ref().map(|plan| plan.cost).ok(),
         outcome.is_ok(),
     )?;
+    record_outcome(outcome.is_ok());
     let plan = outcome?;
     print_plan(&plan);
     print_cost("plan", &plan.cost, plan.converse_calls, &governor);
-    tracing::Span::current().record("outcome", "ok");
     tracing::Span::current().record("cost_usd", plan.cost.cost_usd);
     tracing::Span::current().record("converse_calls", plan.converse_calls);
     Ok(())
+}
+
+/// Stamp the house `outcome` attribute on the command's root span.
+///
+/// Recorded on both branches: a trace whose root has no outcome is a trace
+/// nobody can filter failures out of, which is exactly what the failed run
+/// that first exercised this harness looked like.
+fn record_outcome(ok: bool) {
+    tracing::Span::current().record("outcome", if ok { "ok" } else { "failed" });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -265,8 +279,7 @@ async fn run(
     writer_override: Option<&str>,
 ) -> Result<()> {
     let mut governor = Governor::open(state_path.to_path_buf())?;
-    governor.claim("run", Some(client_id))?;
-    announce_claim(&governor);
+    governor.check()?;
 
     let models = preferences::resolve(context, planner_override, writer_override).await?;
     println!(
@@ -281,26 +294,22 @@ async fn run(
         workspace.draft.content.sections.len()
     );
 
+    governor.claim("run", Some(client_id))?;
+    announce_claim(&governor);
     let outcome = draft_run(context, &workspace, &models, instructions).await;
     settle(
         &mut governor,
         &outcome.as_ref().map(|report| report.cost).ok(),
         outcome.is_ok(),
     )?;
+    record_outcome(outcome.is_ok());
     let report = outcome?;
 
     print_plan(&report.plan);
+    // Document order, which is the order the assembled draft carries — not
+    // the order the parallel branches happened to finish in.
     println!("\nsections");
-    let mut sections = report
-        .outcome
-        .workspace
-        .draft
-        .content
-        .sections
-        .iter()
-        .collect::<Vec<_>>();
-    sections.sort_by_key(|section| section.heading.clone());
-    for section in sections {
+    for section in &report.outcome.workspace.draft.content.sections {
         println!(
             "  {} — {} blocks{}",
             section.heading,
@@ -326,7 +335,6 @@ async fn run(
         report.plan.converse_calls + report.outcome.attempt.converse_calls,
         &governor,
     );
-    tracing::Span::current().record("outcome", "ok");
     tracing::Span::current().record("cost_usd", report.cost.cost_usd);
     Ok(())
 }
@@ -478,12 +486,12 @@ fn report(state_path: &std::path::Path) -> Result<()> {
         return Ok(());
     }
     println!(
-        "\n{:<25} {:<12} {:<38} {:>9} {:>9} {:>10}  outcome",
+        "\n{:<28} {:<12} {:<38} {:>9} {:>9} {:>10}  outcome",
         "when", "command", "client", "tokens_in", "tokens_out", "cost_usd"
     );
     for run in &state.runs {
         println!(
-            "{:<25} {:<12} {:<38} {:>9} {:>9} {:>10.4}  {}",
+            "{:<28} {:<12} {:<38} {:>9} {:>9} {:>10.4}  {}",
             run.timestamp.to_string(),
             run.command,
             run.client_id

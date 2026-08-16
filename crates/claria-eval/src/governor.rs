@@ -89,9 +89,11 @@ impl Governor {
         &self.path
     }
 
-    /// Claim one attempt for a Bedrock-invoking run, refusing once the
-    /// allowance is spent. The claim is persisted before this returns.
-    pub fn claim(&mut self, command: &str, client_id: Option<Uuid>) -> Result<()> {
+    /// Refuse now if the allowance is spent, without claiming anything.
+    ///
+    /// Called before the local setup a run needs, so a spent allowance is
+    /// reported immediately rather than after a minute of S3 reads.
+    pub fn check(&self) -> Result<()> {
         if self.state.attempts_used >= self.state.attempts_granted {
             return Err(eyre!(
                 "spend governor: {} of {} attempts used, so this run will not start. \
@@ -102,6 +104,18 @@ impl Governor {
                 self.state.total_cost_usd
             ));
         }
+        Ok(())
+    }
+
+    /// Claim one attempt for a Bedrock-invoking run, refusing once the
+    /// allowance is spent. The claim is persisted before this returns, so a
+    /// run that is killed mid-call still costs its attempt.
+    ///
+    /// Callers claim as late as they can while still being before the model
+    /// call: a mistyped client ID or a report with no sections must not cost
+    /// an attempt.
+    pub fn claim(&mut self, command: &str, client_id: Option<Uuid>) -> Result<()> {
+        self.check()?;
         self.state.attempts_used += 1;
         self.state.runs.push(SpendRun {
             timestamp: jiff::Timestamp::now(),

@@ -84,6 +84,24 @@ fn the_governor_refuses_once_the_allowance_is_spent_and_grant_unblocks_it() {
     governor.claim("plan", None).expect("claim after grant");
 }
 
+/// The up-front check has to refuse on exactly the same condition as the
+/// claim, or a run does a minute of setup only to be turned away.
+#[test]
+fn the_check_refuses_wherever_the_claim_would() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let mut governor = governor(&directory);
+    governor
+        .check()
+        .expect("a fresh allowance passes the check");
+    for _ in 0..DEFAULT_ATTEMPTS_GRANTED {
+        governor.claim("plan", None).expect("claim");
+    }
+    assert!(governor.check().is_err());
+    assert!(governor.claim("plan", None).is_err());
+    governor.grant(1).expect("grant");
+    governor.check().expect("the check passes after a grant");
+}
+
 /// A refusal must not be recoverable by deleting nothing and rerunning: the
 /// refusal is read back from disk, not from memory.
 #[test]
