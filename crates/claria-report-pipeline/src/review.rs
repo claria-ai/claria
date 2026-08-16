@@ -95,17 +95,10 @@ use crate::{
 /// with some sections missing, it is unparseable.
 pub const REVIEW_OUTPUT_TOKEN_RESERVE: u32 = 16_384;
 
-/// Branches in flight at once after the warming branch.
-///
-/// Bedrock meters a model by requests per minute against the whole account,
-/// and a review branch is a single long request rather than a burst, so the
-/// figure that matters is how many of these can be outstanding before the
-/// account's other work starts being throttled. Three leaves headroom on the
-/// smallest on-demand RPM allocations while still finishing six branches in
-/// two waves; the throttle retry underneath absorbs the case where an
-/// account is busier than that, and raising this would mostly buy more
-/// retries.
-pub const REVIEW_FAN_OUT_CONCURRENCY: usize = 3;
+/// Branches in flight at once after the warming branch. The rationale lives
+/// with [`crate::BEDROCK_FAN_OUT_CONCURRENCY`], which the drafting fan-out
+/// shares: both spend the same account's request-per-minute allocation.
+pub const REVIEW_FAN_OUT_CONCURRENCY: usize = crate::BEDROCK_FAN_OUT_CONCURRENCY;
 
 /// Repair rounds granted to one branch whose answer failed host validation.
 /// One, for the same reason the planner gets one: the diagnostic names the

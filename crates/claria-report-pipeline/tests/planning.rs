@@ -233,12 +233,6 @@ fn write_call(
     }}})
 }
 
-fn finish_call(id: &str, summary: &str) -> serde_json::Value {
-    serde_json::json!({"toolUse": {"toolUseId": id, "name": "finish_full_draft", "input": {
-        "summary": summary
-    }}})
-}
-
 fn tool_round(calls: Vec<serde_json::Value>) -> ScriptedBedrockResponse {
     ok(serde_json::json!({
         "output": {"message": {"role": "assistant", "content": calls}},
@@ -247,12 +241,44 @@ fn tool_round(calls: Vec<serde_json::Value>) -> ScriptedBedrockResponse {
     }))
 }
 
-fn closing_text(text: &str) -> ScriptedBedrockResponse {
-    ok(serde_json::json!({
-        "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
-        "stopReason": "end_turn",
-        "usage": {"inputTokens": 1, "outputTokens": 5}
-    }))
+/// The kick-off phrase only the branch assigned `section_id` carries. Never a
+/// bare UUID: the plan block lists every section's ID in every branch's
+/// request, so a bare UUID matches all of them at once.
+fn section_marker(section_id: &str) -> String {
+    format!("Assigned section: {section_id}")
+}
+
+/// The title branch's own phrase.
+const TITLE_MARKER: &str = "Assigned task: the report title.";
+
+/// Answer one drafting branch with the write it was assigned.
+async fn script_branch(server: &MockServer, section_id: &str, heading: &str, text: &str) {
+    server
+        .state
+        .write()
+        .await
+        .bedrock_tool_responses_by_marker
+        .entry(section_marker(section_id))
+        .or_default()
+        .push(tool_round(vec![write_call(
+            "branch-write",
+            section_id,
+            0,
+            heading,
+            text,
+        )]));
+}
+
+/// Answer the title branch.
+async fn script_title(server: &MockServer, title: &str) {
+    server
+        .state
+        .write()
+        .await
+        .bedrock_tool_responses_by_marker
+        .entry(TITLE_MARKER.to_string())
+        .or_default()
+        .push(tool_round(vec![title_call("branch-title", title)]));
 }
 
 fn models() -> pipeline::PlanModels<'static> {
@@ -860,40 +886,35 @@ async fn a_planned_run_drafts_the_plan_and_pre_skips_the_rest() {
 
     script(
         &server,
-        vec![
-            section_plan(vec![
-                plan_row(
-                    REFERRAL_ID,
-                    "draft",
-                    "State the referral question.",
-                    Some(INTAKE_FILE),
-                ),
-                plan_row(BACKGROUND_ID, "draft", "Summarize the history.", None),
-                plan_row(SUMMARY_ID, "skip", "No testing data is present.", None),
-            ]),
-            // The writer is never asked about the skipped section.
-            tool_round(vec![
-                title_call("title-1", "Psychoeducational Evaluation"),
-                write_call(
-                    "section-1",
-                    REFERRAL_ID,
-                    0,
-                    "Reason for Referral",
-                    "Referred for attention concerns.",
-                ),
-            ]),
-            tool_round(vec![write_call(
-                "section-2",
-                BACKGROUND_ID,
-                1,
-                "Background",
-                "Documented developmental history.",
-            )]),
-            tool_round(vec![finish_call("finish-1", "Drafted two sections.")]),
-            closing_text("The evaluation is drafted."),
-        ],
+        vec![section_plan(vec![
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "State the referral question.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(BACKGROUND_ID, "draft", "Summarize the history.", None),
+            plan_row(SUMMARY_ID, "skip", "No testing data is present.", None),
+        ])],
     )
     .await;
+    // One branch per drafted row, plus the title. The writer is never asked
+    // about the skipped section at all.
+    script_branch(
+        &server,
+        REFERRAL_ID,
+        "Reason for Referral",
+        "Referred for attention concerns.",
+    )
+    .await;
+    script_branch(
+        &server,
+        BACKGROUND_ID,
+        "Background",
+        "Documented developmental history.",
+    )
+    .await;
+    script_title(&server, "Psychoeducational Evaluation").await;
 
     let planned = pipeline::generate_draft_plan(
         &sdk,
@@ -989,10 +1010,14 @@ async fn a_planned_run_drafts_the_plan_and_pre_skips_the_rest() {
     assert_eq!(run.writer_model_id, WRITER_MODEL_ID);
     assert!(run.plan.as_ref().expect("plan").approved_at.is_some());
 
-    // The drafting conversation was told what the plan said, and the guidance
-    // typed at the plan step reached the writer even though Start carried
-    // none of its own.
-    let drafting = requests(&server).await.remove(1);
+    // The plan pass, one branch per drafted row, and the title — nothing was
+    // spent on the skip, and nothing was spent finishing.
+    let captured = requests(&server).await;
+    assert_eq!(captured.len(), 4);
+
+    // Every branch was told what the plan said, and the guidance typed at the
+    // plan step reached the writer even though Start carried none of its own.
+    let drafting = &captured[1];
     let opening = drafting["messages"][0]["content"]
         .as_array()
         .expect("opening message");
@@ -1008,6 +1033,7 @@ async fn a_planned_run_drafts_the_plan_and_pre_skips_the_rest() {
         .filter_map(|block| block["text"].as_str())
         .next_back()
         .expect("kick-off text");
+    assert!(kickoff.starts_with(&section_marker(REFERRAL_ID)));
     assert!(kickoff.contains("Cover the referral question first."));
 }
 
@@ -1018,22 +1044,11 @@ async fn a_resume_with_no_new_instructions_skips_the_planner() {
     let report_id = seed_templated_report(&s3, client_id).await;
     let run_id = seed_interrupted_run(&s3, client_id, report_id).await;
 
-    script(
+    script_branch(
         &server,
-        vec![
-            tool_round(vec![
-                title_call("title-1", "Psychoeducational Evaluation"),
-                write_call(
-                    "section-3",
-                    SUMMARY_ID,
-                    1,
-                    "Summary and Clinical Interpretation",
-                    "Findings match the referral question.",
-                ),
-            ]),
-            tool_round(vec![finish_call("finish-1", "Picked the run back up.")]),
-            closing_text("Done."),
-        ],
+        SUMMARY_ID,
+        "Summary and Clinical Interpretation",
+        "Findings match the referral question.",
     )
     .await;
 
@@ -1051,10 +1066,13 @@ async fn a_resume_with_no_new_instructions_skips_the_planner() {
     .await
     .expect("resume without new instructions");
 
-    // No planning call went out: the first request is the drafting round.
-    let first = requests(&server).await.remove(0);
+    // No planning call went out, and the one section still pending is the
+    // whole fan-out: the run already has a title, and the keep and the skip
+    // are the host's to carry out.
+    let captured = requests(&server).await;
+    assert_eq!(captured.len(), 1);
     assert!(
-        first["toolConfig"]["toolChoice"].is_null(),
+        captured[0]["toolConfig"]["toolChoice"].is_null(),
         "a resume with no new instructions called the planner"
     );
 
@@ -1098,29 +1116,18 @@ async fn a_resume_gate_directive_survives_the_deterministic_re_plan() {
     .await
     .expect("the resume-gate edit applies");
 
-    script(
+    script_branch(
         &server,
-        vec![
-            tool_round(vec![
-                title_call("title-1", "Psychoeducational Evaluation"),
-                write_call(
-                    "section-1",
-                    REFERRAL_ID,
-                    0,
-                    "Reason for Referral",
-                    "Rewritten referral paragraph.",
-                ),
-            ]),
-            tool_round(vec![write_call(
-                "section-2",
-                SUMMARY_ID,
-                1,
-                "Summary and Clinical Interpretation",
-                "Findings match the referral question.",
-            )]),
-            tool_round(vec![finish_call("finish-1", "Picked the run back up.")]),
-            closing_text("Done."),
-        ],
+        REFERRAL_ID,
+        "Reason for Referral",
+        "Rewritten referral paragraph.",
+    )
+    .await;
+    script_branch(
+        &server,
+        SUMMARY_ID,
+        "Summary and Clinical Interpretation",
+        "Findings match the referral question.",
     )
     .await;
 
@@ -1156,50 +1163,43 @@ async fn a_resume_with_new_instructions_re_plans_through_the_model() {
 
     script(
         &server,
-        vec![
-            resume_plan(vec![
-                resume_row(
-                    REFERRAL_ID,
-                    "rewrite",
-                    "The new instructions change what this section must say.",
-                    Some("Name the referring pediatrician's concern explicitly."),
-                    Some(INTAKE_FILE),
-                ),
-                resume_row(
-                    BACKGROUND_ID,
-                    "skip",
-                    "Still nothing to write from.",
-                    None,
-                    None,
-                ),
-                resume_row(
-                    SUMMARY_ID,
-                    "draft",
-                    "Never written.",
-                    Some("Interpret the referral question."),
-                    Some(INTAKE_FILE),
-                ),
-            ]),
-            tool_round(vec![
-                title_call("title-1", "Psychoeducational Evaluation"),
-                write_call(
-                    "section-1",
-                    REFERRAL_ID,
-                    0,
-                    "Reason for Referral",
-                    "The pediatrician raised attention concerns.",
-                ),
-            ]),
-            tool_round(vec![write_call(
-                "section-3",
+        vec![resume_plan(vec![
+            resume_row(
+                REFERRAL_ID,
+                "rewrite",
+                "The new instructions change what this section must say.",
+                Some("Name the referring pediatrician's concern explicitly."),
+                Some(INTAKE_FILE),
+            ),
+            resume_row(
+                BACKGROUND_ID,
+                "skip",
+                "Still nothing to write from.",
+                None,
+                None,
+            ),
+            resume_row(
                 SUMMARY_ID,
-                1,
-                "Summary and Clinical Interpretation",
-                "Findings match the referral question.",
-            )]),
-            tool_round(vec![finish_call("finish-1", "Re-planned and finished.")]),
-            closing_text("Done."),
-        ],
+                "draft",
+                "Never written.",
+                Some("Interpret the referral question."),
+                Some(INTAKE_FILE),
+            ),
+        ])],
+    )
+    .await;
+    script_branch(
+        &server,
+        REFERRAL_ID,
+        "Reason for Referral",
+        "The pediatrician raised attention concerns.",
+    )
+    .await;
+    script_branch(
+        &server,
+        SUMMARY_ID,
+        "Summary and Clinical Interpretation",
+        "Findings match the referral question.",
     )
     .await;
 

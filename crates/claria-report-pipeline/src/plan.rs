@@ -55,15 +55,13 @@ use uuid::Uuid;
 use crate::{
     FullReportGenerationOutcome, ReportPipelineError,
     full_draft_context::{DraftTurnKind, section_state_table, template_context},
+    parallel_draft::execute_parallel_draft_turn,
     prompts::planner_system_prompt,
     record_context::{
         BudgetRole, FullRecordContext, load_full_record_context, load_record_inventory,
     },
     run::{create_run_for_workspace, release_failed_run},
-    turn::{
-        FullReportRequest, ReportTurnProgress, ensure_ready_for_turn, execute_full_draft_turn,
-        validate_model_choice,
-    },
+    turn::{FullReportRequest, ReportTurnProgress, ensure_ready_for_turn, validate_model_choice},
 };
 
 /// Output-token ceiling for one planning call, and the reserve subtracted
@@ -436,7 +434,11 @@ pub async fn start_draft_run(
     loaded.workspace.updated_at = now;
     save_loaded(s3, bucket, &mut loaded).await?;
 
-    execute_full_draft_turn(
+    // A run that reached this function has an approved plan by definition, so
+    // it always drafts in parallel. The serial conversation stays for the
+    // un-gated command, whose synthetic 1:1 plan is nobody's decision and
+    // states nothing that would make its sections independent.
+    execute_parallel_draft_turn(
         sdk_config,
         s3,
         bucket,

@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::{
     FullReportGenerationOutcome, ReportPipelineError,
     full_draft_context::DraftTurnKind,
+    parallel_draft::{execute_parallel_draft_turn, is_gated_plan},
     tools::{merge_undrafted_sections, written_sections},
     turn::{FullReportRequest, execute_full_draft_turn, validate_model_choice},
 };
@@ -357,17 +358,35 @@ pub async fn resume_draft_run(
     loaded.workspace.updated_at = now;
     save_loaded(s3, bucket, &mut loaded).await?;
 
-    execute_full_draft_turn(
-        sdk_config,
-        s3,
-        bucket,
-        loaded,
-        model_id,
-        request,
-        run,
-        DraftTurnKind::Resume,
-    )
-    .await
+    // Which executor picks the run back up follows the run's own plan, not a
+    // setting: a run that was planned and approved resumes in parallel over
+    // whatever is still pending, and one built on a synthetic 1:1 plan resumes
+    // the serial conversation it started as.
+    if is_gated_plan(&run.run) {
+        execute_parallel_draft_turn(
+            sdk_config,
+            s3,
+            bucket,
+            loaded,
+            model_id,
+            request,
+            run,
+            DraftTurnKind::Resume,
+        )
+        .await
+    } else {
+        execute_full_draft_turn(
+            sdk_config,
+            s3,
+            bucket,
+            loaded,
+            model_id,
+            request,
+            run,
+            DraftTurnKind::Resume,
+        )
+        .await
+    }
 }
 
 /// The drafting run a Writing session should hydrate from, if any.

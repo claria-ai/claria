@@ -688,8 +688,13 @@ async fn a_skip_is_challenged_only_when_a_human_approved_the_plan() {
     );
     server.state.write().await.bedrock_tool_requests.clear();
 
-    // A plan a human approved is a different matter: contradicting it costs
-    // one corrective round, and then the writer's judgement stands.
+    // A plan a human edited is a different matter: contradicting it costs one
+    // corrective round, and then the writer's judgement stands. The plan is
+    // synthetic-but-edited on purpose — a clinician can edit the plan of an
+    // un-gated run at the resume gate, and that run keeps the serial
+    // conversation this rule lives in. A plan from an actual planning pass
+    // drafts in parallel, where the host carries out its skips itself and the
+    // writer never gets the chance to argue with one.
     let client_id = Uuid::new_v4();
     let report_id = seed_templated_report(&s3, client_id).await;
     let now = jiff::Timestamp::now();
@@ -709,7 +714,7 @@ async fn a_skip_is_challenged_only_when_a_human_approved_the_plan() {
                 ),
             ],
             user_edited: true,
-            synthetic: false,
+            synthetic: true,
             approved_at: Some(now),
             plan_warnings: Vec::new(),
             created_at: now,
@@ -805,6 +810,9 @@ async fn a_skip_is_challenged_only_when_a_human_approved_the_plan() {
     assert!(summary.error.is_none());
 }
 
+/// The serial resume's kick-off block. A run whose plan came from a planning
+/// pass resumes in parallel and gets a per-section kick-off instead, so this
+/// pins itself to the serial path with a synthetic plan the clinician edited.
 #[tokio::test]
 async fn a_resume_kicks_off_with_durable_state_and_the_rewrite_source() {
     let (server, sdk, s3) = setup().await;
@@ -842,7 +850,7 @@ async fn a_resume_kicks_off_with_durable_state_and_the_rewrite_source() {
                 ),
             ],
             user_edited: true,
-            synthetic: false,
+            synthetic: true,
             approved_at: Some(now),
             plan_warnings: Vec::new(),
             created_at: now,

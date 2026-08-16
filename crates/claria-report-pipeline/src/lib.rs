@@ -11,6 +11,7 @@ mod context;
 mod error;
 mod full_draft_context;
 mod gate;
+mod parallel_draft;
 mod plan;
 mod prompt_cache;
 mod prompts;
@@ -54,6 +55,21 @@ pub use turn::{
     FullReportRequest, ReportMessageRequest, ReportTurnProgress, generate_full_report,
     generate_full_report_for_report, send_report_message, send_report_message_for_report,
 };
+
+/// Bedrock requests one fan-out keeps in flight at once.
+///
+/// Bedrock meters a model by requests per minute against the whole account,
+/// and a fanned-out branch is a single long request rather than a burst, so
+/// the figure that matters is how many of these can be outstanding before the
+/// account's other work starts being throttled. Three leaves headroom on the
+/// smallest on-demand RPM allocations while still clearing a seven-branch
+/// review in two waves; the throttle retry underneath absorbs the case where
+/// an account is busier than that, and raising this would mostly buy more
+/// retries.
+///
+/// Shared by the review sweep and the parallel drafting run, because the
+/// account they both spend is the same one.
+pub(crate) const BEDROCK_FAN_OUT_CONCURRENCY: usize = 3;
 
 pub(crate) const DEFAULT_READ_LIMIT: u32 = 8_000;
 pub(crate) const MAX_READ_LIMIT: u32 = 12_000;

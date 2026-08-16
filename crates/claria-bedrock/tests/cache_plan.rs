@@ -106,8 +106,9 @@ fn the_parallel_draft_plan_marks_the_checkpoints_and_no_tail() {
 
 #[test]
 fn the_parallel_draft_plan_follows_the_family_gates() {
-    let downgraded = CachePlan::parallel_draft(caps(FIVE_MINUTE_ONLY_MODEL_ID), vec![(0, 1), (0, 2)])
-        .expect("two points");
+    let downgraded =
+        CachePlan::parallel_draft(caps(FIVE_MINUTE_ONLY_MODEL_ID), vec![(0, 1), (0, 2)])
+            .expect("two points");
     assert_eq!(downgraded.ttl, CacheTtlChoice::FiveMinutes);
     assert_eq!(
         downgraded.after_blocks,

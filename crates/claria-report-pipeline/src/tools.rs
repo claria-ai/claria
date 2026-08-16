@@ -887,7 +887,11 @@ pub(crate) fn assemble_finished_draft(
     supplied: &[ReportSection],
     fallback_title: Option<&str>,
 ) -> Result<AssembledDraft, ToolRejection> {
-    let title = match run.title.clone().or_else(|| fallback_title.map(str::to_string)) {
+    let title = match run
+        .title
+        .clone()
+        .or_else(|| fallback_title.map(str::to_string))
+    {
         Some(title) => title,
         None => {
             return Err(ToolRejection::new(
@@ -1012,10 +1016,7 @@ fn prepare_section_write(
         },
     );
     let proposed = ReportContent {
-        title: run
-            .title
-            .clone()
-            .unwrap_or_else(|| base_title.to_string()),
+        title: run.title.clone().unwrap_or_else(|| base_title.to_string()),
         sections: sections.clone(),
     };
     validate_report_content(&proposed).map_err(|error| {
@@ -1334,8 +1335,8 @@ pub(crate) fn renumber_positions_plan_order(run: &mut DraftRun) {
     let mut positions: HashMap<Uuid, u32> = HashMap::with_capacity(order.len());
     let mut next = 0_u32;
     for id in order {
-        if !positions.contains_key(&id) {
-            positions.insert(id, next);
+        if let std::collections::hash_map::Entry::Vacant(slot) = positions.entry(id) {
+            slot.insert(next);
             next = next.saturating_add(1);
         }
     }
@@ -1410,7 +1411,7 @@ pub(crate) struct ToolRejection {
 }
 
 impl ToolRejection {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),

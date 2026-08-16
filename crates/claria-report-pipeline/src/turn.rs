@@ -158,7 +158,7 @@ pub enum ReportTurnProgress {
 /// function is behind a shared reference — so it pends forever and a caller
 /// that never calls `with_stop` behaves exactly as it did before stopping
 /// existed.
-fn never_stopped() -> &'static StopSignal {
+pub(crate) fn never_stopped() -> &'static StopSignal {
     static NEVER: std::sync::OnceLock<StopSignal> = std::sync::OnceLock::new();
     NEVER.get_or_init(StopSignal::new)
 }
@@ -244,11 +244,13 @@ pub struct FullReportRequest<'a> {
     /// the complete document from the readable-record snapshot.
     pub guidance: &'a str,
     pub limits: ReportTurnLimits,
-    progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
-    prompt_cache: Option<&'a ReportPromptCache>,
-    system_prompt_body: Option<&'a str>,
-    model_tuning: claria_bedrock::converse::ModelTuning,
-    stop: &'a StopSignal,
+    // Crate-visible because the parallel drafting coordinator is a second
+    // executor for the same request type, not a second request type.
+    pub(crate) progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
+    pub(crate) prompt_cache: Option<&'a ReportPromptCache>,
+    pub(crate) system_prompt_body: Option<&'a str>,
+    pub(crate) model_tuning: claria_bedrock::converse::ModelTuning,
+    pub(crate) stop: &'a StopSignal,
 }
 
 impl<'a> FullReportRequest<'a> {
@@ -571,7 +573,7 @@ pub(crate) async fn execute_full_draft_turn(
     }
 }
 
-async fn prepare_full_draft_context(
+pub(crate) async fn prepare_full_draft_context(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
@@ -645,7 +647,23 @@ async fn execute_turn(
     // the error the caller gets back, and the loop takes the run by value.
     let run_id = run.as_deref().map(|run| run.run.run_id);
     let result = run_turn(sdk_config, s3, bucket, request, loaded, run, &mut progress).await;
+    settle_attempt(s3, bucket, &mut progress, run_id, result).await
+}
 
+/// Write the attempt's closing receipt and turn however the work ended into
+/// what the caller gets back.
+///
+/// Shared by the serial turn loop and the parallel drafting coordinator: they
+/// disagree about almost everything else, but an attempt's receipt is the
+/// billing record for a request, and two paths writing it two ways is how a
+/// stopped run ends up filed as a failure.
+pub(crate) async fn settle_attempt(
+    s3: &S3Client,
+    bucket: &str,
+    progress: &mut AttemptProgress,
+    run_id: Option<Uuid>,
+    result: Result<ReportTurnOutcome, TurnInterruption>,
+) -> Result<ReportTurnOutcome, ReportPipelineError> {
     match result {
         Ok(mut outcome) => {
             let metadata = progress.metadata(ReportAttemptStatus::Completed, None);
@@ -802,7 +820,11 @@ pub(crate) struct AttemptProgress {
 }
 
 impl AttemptProgress {
-    fn new(workspace: &ReportWorkspace, model_id: &str, started_at: jiff::Timestamp) -> Self {
+    pub(crate) fn new(
+        workspace: &ReportWorkspace,
+        model_id: &str,
+        started_at: jiff::Timestamp,
+    ) -> Self {
         Self {
             attempt_id: Uuid::new_v4(),
             report_id: workspace.report_id,
@@ -817,7 +839,7 @@ impl AttemptProgress {
         }
     }
 
-    fn metadata(
+    pub(crate) fn metadata(
         &self,
         status: ReportAttemptStatus,
         failure_code: Option<ReportFailureCode>,
@@ -845,7 +867,7 @@ impl AttemptProgress {
 /// The store persists these but does not know Bedrock, so the wire stop
 /// reason, the enforced output ceiling, and the app version are stamped here,
 /// where the call was actually made.
-fn call_usage_record(
+pub(crate) fn call_usage_record(
     progress: &AttemptProgress,
     call_number: u32,
     usage: Option<TurnUsage>,
@@ -893,6 +915,15 @@ pub(crate) struct TurnRunFailure {
     message: String,
     usage_may_be_incomplete: bool,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+impl TurnRunFailure {
+    /// The PHI-free, user-facing sentence this failure carries. A drafting
+    /// branch records it on the section it could not write, which is why it
+    /// has to be readable without consuming the failure.
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl TurnRunFailure {
@@ -1636,7 +1667,7 @@ async fn run_turn(
 /// tool round spends a Converse call, so the call ceiling binds first unless
 /// it stays at least one above the round ceiling.
 #[derive(Debug, Clone, Copy)]
-enum ExhaustedWriterLimit {
+pub(crate) enum ExhaustedWriterLimit {
     ToolRounds,
     ConverseCalls,
 }
@@ -1647,7 +1678,7 @@ enum ExhaustedWriterLimit {
 /// The counts matter more than the verdict: 39 of 40 rounds spent listing
 /// files is a different problem from 40 of 40 spent writing sections, and a
 /// screenshot of this message should be enough to tell them apart.
-fn limit_exhausted_failure(
+pub(crate) fn limit_exhausted_failure(
     exhausted: ExhaustedWriterLimit,
     rounds: u32,
     calls: u32,
@@ -1703,10 +1734,10 @@ fn limit_exhausted_failure(
 /// whole-report run, so it belongs in the message a clinician screenshots
 /// rather than only in the log they will not open.
 #[derive(Debug, Clone, Copy)]
-struct FailedReportCall<'a> {
-    number: u32,
-    ceiling: u32,
-    model_id: &'a str,
+pub(crate) struct FailedReportCall<'a> {
+    pub(crate) number: u32,
+    pub(crate) ceiling: u32,
+    pub(crate) model_id: &'a str,
 }
 
 /// Retries granted to one Bedrock call whose request never completed —
@@ -1738,7 +1769,7 @@ fn elapsed_phrase(elapsed: std::time::Duration) -> String {
     }
 }
 
-fn map_bedrock_failure(
+pub(crate) fn map_bedrock_failure(
     error: BedrockError,
     call: FailedReportCall<'_>,
     attempts: u32,
@@ -1843,7 +1874,7 @@ fn map_bedrock_failure(
     failure.with_internal(error)
 }
 
-fn terminal_stop_failure(reason: ReportStopReason) -> TurnRunFailure {
+pub(crate) fn terminal_stop_failure(reason: ReportStopReason) -> TurnRunFailure {
     let message = match reason {
         ReportStopReason::ContentFiltered => {
             "The report assistant response was blocked by content filtering."
@@ -1882,7 +1913,7 @@ impl TurnRunFailure {
     }
 }
 
-fn empty_usage(model_id: &str) -> TurnUsage {
+pub(crate) fn empty_usage(model_id: &str) -> TurnUsage {
     TurnUsage {
         model_id: model_id.to_string(),
         input_tokens: 0,
@@ -1895,7 +1926,7 @@ fn empty_usage(model_id: &str) -> TurnUsage {
     }
 }
 
-fn merge_usage(total: &mut TurnUsage, call: &TurnUsage, first: bool) {
+pub(crate) fn merge_usage(total: &mut TurnUsage, call: &TurnUsage, first: bool) {
     total.input_tokens = total.input_tokens.saturating_add(call.input_tokens);
     total.output_tokens = total.output_tokens.saturating_add(call.output_tokens);
     total.cache_read_input_tokens = total

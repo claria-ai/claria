@@ -210,6 +210,76 @@ pub(crate) fn kickoff_instruction(
     text
 }
 
+/// The greppable opening of every section branch's kick-off block.
+///
+/// Tests key a scripted answer on the whole phrase rather than on the UUID
+/// alone: the plan block lists every section's ID in every branch's request,
+/// so a bare UUID matches all of them and the marker has to carry something
+/// only the assigned branch says.
+pub(crate) const ASSIGNED_SECTION_PREFIX: &str = "Assigned section: ";
+
+/// One branch's assignment: what to write, and the plan row that says what it
+/// must cover.
+///
+/// Byte-deterministic like every other builder here, and for a sharper reason:
+/// the blocks above this one are identical across branches, so this string is
+/// the only thing separating one branch's request from its siblings'. Anything
+/// unstable in it — a timestamp, an unsorted map — would also be unstable
+/// across the run's two attempts and cost the resume its cached prefix.
+pub(crate) fn section_kickoff_instruction(guidance: &str, entry: &PlanEntry) -> String {
+    let mut text = format!(
+        "{ASSIGNED_SECTION_PREFIX}{} ({})\n",
+        entry.section_id, entry.heading
+    );
+    text.push_str(
+        "\nWrite this one section of the report from the supplied readable-record snapshot.\n",
+    );
+    if guidance.is_empty() {
+        text.push_str("\nNo additional user guidance was supplied.\n");
+    } else {
+        text.push_str(&format!("\nAdditional user guidance:\n{guidance}\n"));
+    }
+    text.push_str(&format!(
+        "\nYour plan row:\n{}\n",
+        serde_json::to_string_pretty(&plan_entry_view(entry)).unwrap_or_else(|_| "{}".to_string())
+    ));
+    text.push_str(
+        "\nCall write_full_draft_section exactly once, with section_id set to the assigned ID \
+         above, and then stop. If the records genuinely cannot support this section, call \
+         mark_section_failed for the same ID instead. Those are the only two tools available to \
+         you: skipping, titling, and finishing the draft are the host's decisions in this mode, \
+         and every other tool call will be refused.\n",
+    );
+    text.push_str(
+        "\nOther sections are being written concurrently by parallel writers from this same \
+         plan. Write only your assigned section, and write it self-contained: no \"as described \
+         above\" or \"as noted below\", and do not restate material another section's scope owns.\n",
+    );
+    text
+}
+
+/// The title branch's assignment. It sits beside the section branches in the
+/// same fan-out and over the same cached prefix, so it is built here too.
+pub(crate) fn title_kickoff_instruction(guidance: &str, base: &ReportContent) -> String {
+    let mut text = String::from("Assigned task: the report title.\n");
+    if guidance.is_empty() {
+        text.push_str("\nNo additional user guidance was supplied.\n");
+    } else {
+        text.push_str(&format!("\nAdditional user guidance:\n{guidance}\n"));
+    }
+    text.push_str(&format!(
+        "\nThe base revision's working title is {}. Keep it if it already names this document \
+         correctly.\n",
+        serde_json::Value::String(base.title.clone())
+    ));
+    text.push_str(
+        "\nCall set_full_draft_title exactly once and then stop. The sections themselves are \
+         being written concurrently by parallel writers; do not write, skip, or finish any of \
+         them, and do not call any other tool.\n",
+    );
+    text
+}
+
 /// The run's durable per-section state, in document order, as host data.
 /// Shared with the resume planner, which decides what to do next from exactly
 /// the same table the writer is shown.

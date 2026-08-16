@@ -53,6 +53,23 @@ The host supplies a snapshot of every readable client-record file inside <untrus
 # Template carryover
 Treat template bodies as potentially belonging to a different person. Never carry a name, date, pronoun, diagnosis, score, or other client-specific fact forward from a template body unless the current client records support it. Preserve table headers and row meaning when rewriting table cells, and leave unknown cells blank rather than inventing values.";
 
+/// What changes when the document is written by parallel writers instead of
+/// one conversation.
+///
+/// Appended after the trust rules, so it is the last thing the model reads and
+/// wins over the serial workflow paragraph above it — which is user-editable
+/// and still says "one section per response, then wait for its tool result".
+/// A branch has no later response to write a second section in and no sibling
+/// it can see, and both of those have to be stated rather than implied.
+pub(crate) const PARALLEL_SECTION_RULES: &str = "\
+# Parallel drafting (overrides the complete-draft workflow above)
+
+This request drafts ONE assigned part of the document. The other parts are being written at the same time by other writers working from the same plan, and you cannot see them. The workflow paragraph above describes a single conversation writing every section in turn; ignore it. In particular: do not work through the plan, do not write more than the part you were assigned, and do not finish the draft — Claria assembles the document itself once every writer has answered.
+
+The kick-off message below names your assignment and lists the tool you may call for it. Call that tool exactly once and then stop. Any other report tool is unavailable in this mode and will be refused.
+
+Write your part so it stands on its own. The reader will see it beside parts you have not read, so never write \"as described above\", \"as noted below\", or any other reference to another section's position or content, and do not restate material the plan gives another section's scope. Where your part needs a fact another section also rests on, state it plainly from the records rather than pointing at where it was said.";
+
 /// The section planner's prompt. Fixed text, not user-editable: the plan is
 /// host-validated against the template and the record corpus, and a custom
 /// body that changed the shape of a row would fail that validation on every
@@ -104,6 +121,20 @@ pub fn full_report_system_prompt(custom_body: Option<&str>) -> String {
     compose_prompt(
         custom_body.unwrap_or(FULL_REPORT_SYSTEM_PROMPT_BODY),
         FULL_REPORT_TRUST_RULES,
+    )
+}
+
+/// Compose the whole-document system prompt for one branch of the parallel
+/// drafting fan-out: the serial prompt, plus the rules that override its
+/// workflow.
+///
+/// Byte-deterministic for a given body, because every branch of a run sends
+/// this string and a single differing character costs all of them the system
+/// tier of the cache.
+pub(crate) fn full_report_parallel_system_prompt(custom_body: Option<&str>) -> String {
+    format!(
+        "{}\n\n{PARALLEL_SECTION_RULES}",
+        full_report_system_prompt(custom_body)
     )
 }
 
