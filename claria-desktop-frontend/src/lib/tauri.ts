@@ -27,6 +27,7 @@ import type {
   DraftRun,
   EditorHistoryEntry,
   FileVersion,
+  FindingAction,
   FullReportGenerationResponse,
   InfraChatResponse,
   LocalModelId,
@@ -46,6 +47,8 @@ import type {
   ReportDraftEdit,
   ReportDraft,
   ReportExportResult,
+  ReportFindings,
+  ReportFindingResolution,
   ReportProposalChoice,
   ReportRevisionView,
   ReportTemplatePreview,
@@ -95,8 +98,13 @@ export type {
   DeletedClient,
   DeletedFile,
   EditorHistoryEntry,
+  ConflictingRef,
   FieldDrift,
   FileVersion,
+  Finding,
+  FindingAction,
+  FindingAnchor,
+  FindingStatus,
   FullReportGenerationResponse,
   InfraChatResponse,
   Lifecycle,
@@ -116,6 +124,7 @@ export type {
   ProvisionApplyOutcome,
   ProvisionScanResult,
   ProvisionerProgress,
+  RecordCitation,
   RecordContext,
   RecordFile,
   ReportAuthoringPreferences,
@@ -130,6 +139,8 @@ export type {
   ReportExportResult,
   ReportExportStatus,
   ReportExport,
+  ReportFindings,
+  ReportFindingResolution,
   ReportOperation,
   ReportProposalChoice,
   ReportProposalDecision,
@@ -149,6 +160,10 @@ export type {
   ReportTurnResponse,
   ReportWorkspaceView,
   ResourceSpec,
+  ReviewCoverage,
+  ReviewPass,
+  StyleProposal,
+  TextSpan,
   Severity,
   SpeakerMode,
   StepStatus,
@@ -687,6 +702,24 @@ export async function resolveReportProposal(
 ): Promise<ReportWorkspaceView> {
   return unwrap(
     await commands.resolveReportProposal(clientId, reportId, proposalId, decision)
+  );
+}
+
+export async function listReportFindings(
+  clientId: string,
+  reportId: string
+): Promise<ReportFindings> {
+  return unwrap(await commands.listReportFindings(clientId, reportId));
+}
+
+export async function resolveReportFinding(
+  clientId: string,
+  reportId: string,
+  findingId: string,
+  action: FindingAction
+): Promise<ReportFindingResolution> {
+  return unwrap(
+    await commands.resolveReportFinding(clientId, reportId, findingId, action)
   );
 }
 

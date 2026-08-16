@@ -118,6 +118,8 @@ fn main() -> Result<()> {
         commands::resume_draft_run,
         commands::send_report_message,
         commands::resolve_report_proposal,
+        commands::list_report_findings,
+        commands::resolve_report_finding,
         commands::export_report_docx,
         commands::list_record_files,
         commands::search_record_contents,

@@ -1082,7 +1082,33 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
     .await
     .expect("accept");
     assert_eq!(accepted.draft.revision, 1);
-    assert_eq!(accepted.draft.content, pending.proposed_content);
+    assert_eq!(accepted.draft.content.title, pending.proposed_content.title);
+    // Accepting credits the proposing model for every section it wrote, so
+    // the accepted sections differ from the proposal by exactly that stamp.
+    assert_eq!(
+        accepted
+            .draft
+            .content
+            .sections
+            .iter()
+            .cloned()
+            .map(|section| claria_core::models::report::ReportSection {
+                authorship: None,
+                ..section
+            })
+            .collect::<Vec<_>>(),
+        pending.proposed_content.sections
+    );
+    let stamp = accepted.draft.content.sections[0]
+        .authorship
+        .as_ref()
+        .expect("accepted sections are stamped");
+    assert_eq!(
+        stamp.kind,
+        claria_core::models::report::AuthorshipKind::ModelRevised
+    );
+    assert_eq!(stamp.revision, 1);
+    assert_eq!(stamp.model_id.as_deref(), Some(pending.model_id.as_str()));
     assert!(accepted.session.pending_proposal.is_none());
     assert_eq!(accepted.session.last_agent_revision, Some(1));
 
