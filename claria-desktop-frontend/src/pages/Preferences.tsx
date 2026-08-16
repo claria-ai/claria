@@ -53,6 +53,7 @@ import { logFrontendEvent } from "../lib/logBridge";
 import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
+import { useSaveOnLeave } from "../lib/useSaveOnLeave";
 import { useWriterPrompts } from "../lib/useWriterPrompts";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
 import { formatDateTime, formatFileSize } from "../lib/format";
@@ -657,6 +658,35 @@ function PreferredModelSection() {
   );
 }
 
+/**
+ * Save-state footer for a section that saves when the user leaves it
+ * (`useSaveOnLeave`), so edits read as intentional drafts, not lost clicks.
+ */
+function SectionSaveStatus({
+  syncing,
+  dirty,
+  syncedOnce,
+}: {
+  syncing: boolean;
+  dirty: boolean;
+  syncedOnce: boolean;
+}) {
+  if (!syncing && !dirty && !syncedOnce) return null;
+  return (
+    <p className="text-xs text-gray-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
+      {syncing ? (
+        <>
+          <Spinner /> Saving...
+        </>
+      ) : dirty ? (
+        "Unsaved changes — saved when you leave this section."
+      ) : (
+        "Saved. Other computers pick this up on restart."
+      )}
+    </p>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Chat streaming — how much of a reply appears at a time
 // ---------------------------------------------------------------------------
@@ -688,9 +718,12 @@ const CHAT_STREAM_OPTIONS: {
 
 function ChatStreamingSection() {
   const [snapshot, setSnapshot] = useState<ChatStreamMode | null>(null);
+  const [draft, setDraft] = useState<ChatStreamMode | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [syncedOnce, setSyncedOnce] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -698,10 +731,12 @@ function ChatStreamingSection() {
     try {
       const info = await fetchCloudPreferences();
       setSnapshot(info.chat_streaming);
+      setDraft(info.chat_streaming);
     } catch (e) {
       try {
         const info = await loadConfig();
         setSnapshot(info.chat_streaming);
+        setDraft(info.chat_streaming);
       } catch (fallbackError) {
         setLoadError(String(fallbackError ?? e));
       }
@@ -714,24 +749,39 @@ function ChatStreamingSection() {
     load();
   }, [load]);
 
-  // One click, one save — there is nothing here to get half-edited, so a
-  // Save button would only add a step.
-  async function choose(mode: ChatStreamMode) {
-    const previous = snapshot;
-    setSnapshot(mode);
+  const dirty = snapshot != null && draft != null && snapshot !== draft;
+
+  const sync = useCallback(async (next: ChatStreamMode) => {
+    setSyncing(true);
     setSaveError(null);
     try {
-      const updated = await savePreferencesPatch({ chat_streaming: mode });
+      const updated = await savePreferencesPatch({ chat_streaming: next });
       setSnapshot(updated.chat_streaming);
+      setSyncedOnce(true);
     } catch (e) {
-      setSnapshot(previous);
+      // Also logged through the bridge: a flush finishing after unmount has
+      // no UI left to show the banner in.
+      logFrontendEvent("error", `chat streaming save failed: ${e}`);
       setSaveError(String(e));
+    } finally {
+      setSyncing(false);
     }
-  }
+  }, []);
 
-  const active = CHAT_STREAM_OPTIONS.find(
-    (option) => option.value === snapshot
-  );
+  // The draft that still needs saving; null when clean or already flushed.
+  const pendingRef = useRef<ChatStreamMode | null>(null);
+  useEffect(() => {
+    pendingRef.current = dirty && draft ? draft : null;
+  }, [dirty, draft]);
+  const flush = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    pendingRef.current = null;
+    void sync(pending);
+  }, [sync]);
+  const { containerRef, onContainerBlur } = useSaveOnLeave(flush);
+
+  const active = CHAT_STREAM_OPTIONS.find((option) => option.value === draft);
 
   return (
     <NavPane
@@ -748,13 +798,17 @@ function ChatStreamingSection() {
           <Spinner />
           <span>Loading chat streaming...</span>
         </div>
-      ) : snapshot == null ? (
+      ) : draft == null ? (
         <ErrorBanner
           message={loadError ?? "Could not load the chat streaming setting."}
           className=""
         />
       ) : (
-        <>
+        <div
+          ref={containerRef}
+          onBlur={onContainerBlur}
+          className="space-y-3"
+        >
           <div className="space-y-3" data-pref-anchor="chat_streaming">
             {CHAT_STREAM_OPTIONS.map((option) => (
               <label key={option.value} className="flex items-start gap-2">
@@ -762,8 +816,8 @@ function ChatStreamingSection() {
                   type="radio"
                   name="chat-streaming"
                   value={option.value}
-                  checked={snapshot === option.value}
-                  onChange={() => void choose(option.value)}
+                  checked={draft === option.value}
+                  onChange={() => setDraft(option.value)}
                   className="mt-0.5"
                 />
                 <span>
@@ -777,8 +831,22 @@ function ChatStreamingSection() {
               </label>
             ))}
           </div>
-          {saveError && <ErrorBanner message={saveError} className="" />}
-        </>
+          {saveError ? (
+            <ErrorBanner
+              message={`Could not save chat streaming: ${saveError}`}
+              onRetry={() => {
+                if (draft) void sync(draft);
+              }}
+              className=""
+            />
+          ) : (
+            <SectionSaveStatus
+              syncing={syncing}
+              dirty={dirty}
+              syncedOnce={syncedOnce}
+            />
+          )}
+        </div>
       )}
     </NavPane>
   );
@@ -2436,19 +2504,17 @@ function ReportAuthoringSection() {
 // Transcription section: language / speaker count / engine / translation
 // ---------------------------------------------------------------------------
 
-/** How long editing settles before a change is pushed to S3. */
-const TRANSCRIPTION_SYNC_DEBOUNCE_MS = 600;
-
 /**
  * Transcription defaults applied to drag-and-drop audio uploads. The wizard
  * uses these as starting values too, but lets the user override per file.
  *
  * Cross-machine sync: on mount we call `fetchCloudPreferences` to pull the
  * latest values from S3 (so the editing machine sees its own recent changes
- * without an app restart). Edits accumulate in a draft and are patch-saved to
- * local config and S3 via `savePreferencesPatch` shortly after the user stops
- * changing things — only this section's fields travel, so sibling sections
- * are never clobbered.
+ * without an app restart). Edits accumulate in a draft and are patch-saved
+ * once when the user leaves the section or the screen goes away
+ * (`useSaveOnLeave`) — one preferences-file version per editing burst, not
+ * one per click. Only this section's fields travel, so sibling sections are
+ * never clobbered.
  */
 function TranscriptionSection() {
   // The full set of synced fields, fetched on mount.
@@ -2476,46 +2542,31 @@ function TranscriptionSection() {
       // dropdown and Cost Explorer sections can never be rolled back by a
       // stale snapshot here.
       const updated = await savePreferencesPatch({ transcription: next });
-      // Advancing the snapshot clears `dirty` and stops the debounce.
+      // Advancing the snapshot clears `dirty`.
       setSnapshot(updated);
       setSyncedOnce(true);
     } catch (e) {
+      // Also logged through the bridge: a flush finishing after unmount has
+      // no UI left to show the banner in.
+      logFrontendEvent("error", `transcription preferences save failed: ${e}`);
       setSyncError(String(e));
     } finally {
       setSyncing(false);
     }
   }, []);
 
-  // Debounced save-on-change. Saving while the screen is still mounted is what
-  // makes the edit survive a quit or a window close — an unmount cleanup never
-  // runs in either case, so edits used to be lost silently.
+  // The draft that still needs saving; null when clean or already flushed.
   const pendingRef = useRef<TranscriptionPreferences | null>(null);
   useEffect(() => {
-    if (!dirty || !snapshot || !draft) {
-      pendingRef.current = null;
-      return;
-    }
-    pendingRef.current = draft;
-    const id = setTimeout(() => {
-      pendingRef.current = null;
-      void sync(draft);
-    }, TRANSCRIPTION_SYNC_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [dirty, snapshot, draft, sync]);
-
-  // Backstop for the one case the debounce cannot cover: navigating away
-  // within the debounce window cancels the timer above. Fire-and-forget,
-  // because there is no longer any UI to report a failure into — but the
-  // window is a few hundred milliseconds, not the whole session.
-  useEffect(() => {
-    return () => {
-      const pending = pendingRef.current;
-      if (!pending) return;
-      savePreferencesPatch({ transcription: pending }).catch((e) =>
-        logFrontendEvent("error", `preferences sync on leave failed: ${e}`)
-      );
-    };
-  }, []);
+    pendingRef.current = dirty && draft ? draft : null;
+  }, [dirty, draft]);
+  const flush = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    pendingRef.current = null;
+    void sync(pending);
+  }, [sync]);
+  const { containerRef, onContainerBlur } = useSaveOnLeave(flush);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -2590,7 +2641,11 @@ function TranscriptionSection() {
             className=""
           />
         ) : (
-          <>
+          <div
+            ref={containerRef}
+            onBlur={onContainerBlur}
+            className="space-y-4"
+          >
             {/* Language */}
             <fieldset data-pref-anchor="default_language">
               <legend className="text-sm font-medium text-gray-700 mb-2">
@@ -2699,20 +2754,14 @@ function TranscriptionSection() {
                 }}
                 className=""
               />
-            ) : syncing ? (
-              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
-                <Spinner /> Saving...
-              </p>
-            ) : dirty ? (
-              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">
-                Unsaved changes...
-              </p>
-            ) : syncedOnce ? (
-              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">
-                Saved. Other computers pick this up on restart.
-              </p>
-            ) : null}
-          </>
+            ) : (
+              <SectionSaveStatus
+                syncing={syncing}
+                dirty={dirty}
+                syncedOnce={syncedOnce}
+              />
+            )}
+          </div>
         )}
     </NavPane>
   );

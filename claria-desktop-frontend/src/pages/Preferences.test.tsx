@@ -117,6 +117,7 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import Preferences from "./Preferences";
+import { savePreferencesPatch } from "../lib/tauri";
 import { PREFERENCES_NAV } from "../lib/preferencesNav";
 
 function categoryVisible(paneOrHeading: Element): boolean {
@@ -230,6 +231,61 @@ describe("Preferences", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("batches transcription edits into one save when leaving the section", async () => {
+    const user = userEvent.setup();
+    render(<Preferences navigate={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Transcription" }));
+    const spanish = await screen.findByLabelText(/All Spanish audio/);
+    const saveMock = vi.mocked(savePreferencesPatch);
+    saveMock.mockClear();
+
+    await user.click(spanish);
+    await user.click(screen.getByLabelText(/Use Transcribe Medical/));
+    expect(saveMock).not.toHaveBeenCalled();
+
+    // Leaving the section — a click on the sidebar — flushes one patch with
+    // both edits.
+    await user.click(screen.getByRole("button", { name: "Claude" }));
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).toHaveBeenCalledWith({
+      transcription: {
+        default_language: "spanish",
+        default_speaker_count: 2,
+        use_medical_for_english: true,
+        translate_to_english: false,
+      },
+    });
+  });
+
+  it("flushes pending transcription edits when Preferences unmounts", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<Preferences navigate={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Transcription" }));
+    const spanish = await screen.findByLabelText(/All Spanish audio/);
+    const saveMock = vi.mocked(savePreferencesPatch);
+    saveMock.mockClear();
+
+    await user.click(spanish);
+    expect(saveMock).not.toHaveBeenCalled();
+    unmount();
+    expect(saveMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves the chat streaming choice when leaving the section", async () => {
+    const user = userEvent.setup();
+    render(<Preferences navigate={vi.fn()} />);
+    const wordByWord = await screen.findByLabelText(/Word by word/);
+    const saveMock = vi.mocked(savePreferencesPatch);
+    saveMock.mockClear();
+
+    await user.click(wordByWord);
+    expect(saveMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Prompts" }));
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).toHaveBeenCalledWith({ chat_streaming: "token" });
   });
 
   it("opens the preferences file version history", async () => {
