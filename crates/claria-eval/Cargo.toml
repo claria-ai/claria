@@ -1,0 +1,50 @@
+[package]
+name = "claria-eval"
+version = "0.28.0"
+edition.workspace = true
+license.workspace = true
+
+# The library target exists so the integration tests in `tests/` can reach the
+# governor, config loader, cost arithmetic, and pipeline drivers. `claria-eval`
+# is a binary crate for every other purpose, including its error convention
+# (`eyre`, like `claria-desktop` and `claria-mock-aws`).
+[lib]
+name = "claria_eval"
+path = "src/lib.rs"
+
+[[bin]]
+name = "claria-eval"
+path = "src/main.rs"
+
+[dependencies]
+aws-config.workspace = true
+aws-credential-types.workspace = true
+aws-sdk-s3.workspace = true
+claria-bedrock.workspace = true
+claria-billing.workspace = true
+claria-core.workspace = true
+claria-docx.workspace = true
+claria-records.workspace = true
+claria-report-pipeline.workspace = true
+claria-report-store.workspace = true
+claria-storage.workspace = true
+clap = { version = "=4.6.1", features = ["derive"] }
+dirs.workspace = true
+eyre.workspace = true
+jiff.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tonic.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+uuid = { workspace = true, features = ["serde", "v4"] }
+
+[dev-dependencies]
+claria-mock-aws.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full"] }
