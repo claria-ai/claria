@@ -67,11 +67,14 @@ use crate::{
 
 /// Output-token ceiling for one planning call, and the reserve subtracted
 /// from the planner's context window to form its input budget — enforced, not
-/// aspirational. A hundred rows of scope, evidence quotes, and section IDs is
-/// the worst case, and it fits inside this with room to spare; a plan that
-/// hits the ceiling is a typed failure rather than a truncated document
-/// outline nobody could tell was truncated.
-pub const PLAN_OUTPUT_TOKEN_RESERVE: u32 = 8_192;
+/// aspirational. The schema admits plans no output ceiling could hold: a
+/// hundred sections, six hundred characters of scope each, eight evidence
+/// quotes apiece. So this is sized for the dense plans a real report
+/// produces rather than for that worst case, and matches the writer's
+/// `REPORT_OUTPUT_TOKEN_RESERVE` — the same ceiling the same models already
+/// answer under. A plan that reaches it is a typed failure rather than a
+/// document outline silently missing its last sections.
+pub const PLAN_OUTPUT_TOKEN_RESERVE: u32 = 32_768;
 
 /// Stamped as the plan's author when a resume is decided by code rather than
 /// by a model. Not a Bedrock model ID and deliberately not shaped like one,

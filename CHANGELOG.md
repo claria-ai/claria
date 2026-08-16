@@ -30,6 +30,7 @@ All notable changes to Claria are documented here.
 - A planning pass now assigns scope and record evidence per section before drafting, with an editable plan and per-role model settings
 - Planned evidence quotes are checked against the client's records, and anything that does not resolve is flagged on the plan rather than passed to the writer
 - Picking up an interrupted draft re-plans it when you add instructions, and decides it without a model call when you do not
+- Raised the planner's output ceiling so plans for long reports no longer fail partway through
 
 ## [0.28.0] — 2026-08-15
 
