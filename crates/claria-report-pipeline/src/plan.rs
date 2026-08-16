@@ -4,7 +4,7 @@
 //! A plan is produced by one forced tool call to a smaller model, then
 //! checked by code. The model is trusted to read a corpus and propose scope;
 //! it is not trusted to have covered every section, to have kept the section
-//! IDs it was given, or to have quoted a record accurately. Those are
+//! IDs it was given, or to have named a record that exists. Those are
 //! decidable questions, so the host decides them:
 //!
 //! - **Coverage and identity are hard.** One row per template section, no
@@ -12,10 +12,10 @@
 //!   diagnostic goes back verbatim and the tool is forced again — and then
 //!   the pass fails. A plan missing a section would silently delete it from
 //!   the document.
-//! - **Evidence is soft.** A quote that resolves against no record, or a
-//!   draft row left with nothing backing it, lands as a warning on the run.
-//!   The clinician is about to read this plan at the gate; refusing to show
-//!   it to them because one quote was reflowed helps nobody.
+//! - **Evidence is soft.** A filename that names no record, or a draft row
+//!   left with nothing backing it, lands as a warning on the run. The
+//!   clinician is about to read this plan at the gate; refusing to show it to
+//!   them because one filename was mistyped helps nobody.
 //!
 //! Resuming works the same way over a different question — what to do with
 //! the sections that already landed — and only when there is a question to
@@ -67,14 +67,14 @@ use crate::{
 
 /// Output-token ceiling for one planning call, and the reserve subtracted
 /// from the planner's context window to form its input budget — enforced, not
-/// aspirational. The schema admits plans no output ceiling could hold: a
-/// hundred sections, six hundred characters of scope each, eight evidence
-/// quotes apiece. So this is sized for the dense plans a real report
-/// produces rather than for that worst case, and matches the writer's
-/// `REPORT_OUTPUT_TOKEN_RESERVE` — the same ceiling the same models already
-/// answer under. A plan that reaches it is a typed failure rather than a
-/// document outline silently missing its last sections.
-pub const PLAN_OUTPUT_TOKEN_RESERVE: u32 = 32_768;
+/// aspirational. A plan row is an outline entry: a section ID, a sentence or
+/// three of scope, and a handful of filenames with one line each on why they
+/// matter. A hundred of those is a couple of thousand tokens, so this leaves
+/// roughly four times the room even a dense report needs, and hands the rest
+/// back to the input budget the corpus is read under. A plan that reaches the
+/// ceiling is a typed failure rather than a document outline silently missing
+/// its last sections.
+pub const PLAN_OUTPUT_TOKEN_RESERVE: u32 = 16_384;
 
 /// Stamped as the plan's author when a resume is decided by code rather than
 /// by a model. Not a Bedrock model ID and deliberately not shaped like one,
@@ -845,12 +845,12 @@ fn fresh_plan_instruction(guidance: &str) -> String {
             order that block lists them. Copy each section_id exactly; never invent, merge, \
             reorder, or omit a section.\n\
          2. Assign a scope to EVERY section: what that section must assert about this client, in \
-            terms the writer can act on.\n\
-         3. Cite evidence as quotes copied character for character out of \
-            <untrusted_record_context>, with the filename copied exactly. The host searches the \
-            corpus for each quote, so a paraphrased or corrected quote resolves against nothing \
-            and is dropped.\n\
-         4. Give every section you mark \"draft\" at least one evidence quote. A section the \
+            terms the writer can act on. One to three specific sentences.\n\
+         3. Cite evidence as filenames copied exactly out of <untrusted_record_context>, each \
+            with one line on why that record matters to that section. The host checks every \
+            filename against the corpus, so an approximated name is dropped. Do not copy record \
+            text into the plan — the writer reads the records in full when it drafts.\n\
+         4. Give every section you mark \"draft\" at least one evidence record. A section the \
             records cannot support belongs on a \"skip\" row whose scope says what is missing.\n\
          5. Mark a row \"skip\" only when the records cannot support the section or the guidance \
             below defers it — never to shorten the job. A skipped section keeps its heading and \
@@ -877,8 +877,9 @@ fn resume_plan_instruction(run: &DraftRun, instructions: &str) -> String {
          3. \"rewrite\" and \"draft\" both need a scope saying what the section must assert, and \
             \"rewrite\" also needs evidence — it is replacing text that already exists, so it has \
             to say what the replacement rests on.\n\
-         4. Quote evidence character for character out of <untrusted_record_context> with the \
-            filename copied exactly; a paraphrased quote resolves against nothing.\n\
+         4. Name evidence by filename, copied exactly out of <untrusted_record_context>, with \
+            one line on why that record matters; a name the corpus does not list is dropped. Do \
+            not copy record text into the plan.\n\
          5. Honour the updated instructions below. They are why this run is being re-planned: a \
             section that already landed may need rewriting to satisfy them.\n\n",
     );
@@ -927,8 +928,8 @@ struct ValidatedPlan {
 /// Check a fresh plan against the template it was planning.
 ///
 /// Coverage and identity are the hard part and produce an `Err` the repair
-/// round hands back. Evidence is checked too, but a quote that does not
-/// resolve is a warning on the plan the clinician is about to read, not a
+/// round hands back. Evidence is checked too, but a filename that names no
+/// record is a warning on the plan the clinician is about to read, not a
 /// reason to refuse to show it to them.
 fn validate_section_plan(
     rows: &[SectionPlanRow],
@@ -1037,7 +1038,7 @@ fn validate_resume_plan(
         let supplied = row.evidence.as_deref().unwrap_or_default();
         if row.decision == ResumeDecision::Rewrite && supplied.is_empty() {
             return Err(format!(
-                "section {section_id} was given decision \"rewrite\" without evidence; replacing text that already exists must say what the replacement rests on"
+                "section {section_id} was given decision \"rewrite\" without evidence; replacing text that already exists must name the records the replacement rests on"
             ));
         }
         let mut evidence = resolve_evidence(supplied, corpus, &mut warnings);
@@ -1120,8 +1121,8 @@ pub(crate) fn index_rows<'a>(
     Ok(by_id)
 }
 
-/// Keep the evidence whose quotes actually appear in the pinned corpus, and
-/// record a warning for each one that does not.
+/// Keep the evidence that names a file in the pinned corpus, and record a
+/// warning for each one that does not.
 fn resolve_evidence(
     supplied: &[PlanEvidence],
     corpus: &FullRecordContext,
@@ -1137,10 +1138,6 @@ fn resolve_evidence(
                 .any(|filename| filename == &evidence.filename)
             {
                 warnings.push(format!("unknown_evidence_file:{}", evidence.filename));
-                return None;
-            }
-            if !corpus.resolves_quote(&evidence.filename, &evidence.quote) {
-                warnings.push(format!("unresolved_quote:{}", evidence.filename));
                 return None;
             }
             Some(EvidenceRef {

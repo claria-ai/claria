@@ -160,8 +160,8 @@ export default function DraftPlanPanel({
                 className="rounded-md border border-amber-200 bg-amber-50 p-3"
               >
                 <p className="text-xs font-semibold text-amber-900">
-                  Some evidence quotes could not be verified against the
-                  records. Fix or remove them before drafting.
+                  Some evidence could not be matched to this client's records.
+                  Fix or remove it before drafting.
                 </p>
                 <ul className="mt-1 list-disc pl-5 text-xs text-amber-800">
                   {warnings.map((warning) => (

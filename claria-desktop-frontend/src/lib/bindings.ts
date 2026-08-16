@@ -2261,8 +2261,8 @@ synthetic?: boolean;
 approved_at: string | null; 
 /**
  * What the host could not confirm about the plan the model produced,
- * as `code:detail` strings — an evidence quote that resolves against no
- * record, a draft row with nothing left backing it. Codes and filenames
+ * as `code:detail` strings — evidence naming a file the client does not
+ * have, a draft row with nothing left backing it. Codes and filenames
  * only, never record text, so the gate can show them and the console can
  * log them.
  * 

@@ -296,7 +296,7 @@ pub async fn resume_draft_run(
 }
 
 /// Counts and model IDs for the planning audit event — never a scope, a
-/// heading, or an evidence quote.
+/// heading, or a record filename.
 fn plan_audit_details(
     planner_model_id: &str,
     outcome: &claria_report_pipeline::DraftPlanOutcome,

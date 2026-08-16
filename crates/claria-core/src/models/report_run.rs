@@ -55,8 +55,8 @@ pub const MAX_SECTION_CITATIONS: usize = 20;
 pub const MAX_SECTION_ERROR_CHARACTERS: usize = 500;
 pub const MAX_PLAN_SCOPE_CHARACTERS: usize = 600;
 pub const MAX_PLAN_EVIDENCE: usize = 8;
-/// Ceiling for the planner's one-line reason an evidence quote matters. Short
-/// on purpose: it is a pointer to the quote, not a second copy of it.
+/// Ceiling for the planner's one-line reason a record matters to a section.
+/// Short on purpose: it is a pointer to the record, not a summary of it.
 pub const MAX_EVIDENCE_RELEVANCE_CHARACTERS: usize = 200;
 /// Ceiling on the PHI-free codes a plan carries about its own weak spots.
 /// Bounded so a pathological plan cannot grow the run object without limit.
@@ -143,8 +143,8 @@ pub struct RunPlan {
     #[specta(type = Option<String>)]
     pub approved_at: Option<Timestamp>,
     /// What the host could not confirm about the plan the model produced,
-    /// as `code:detail` strings — an evidence quote that resolves against no
-    /// record, a draft row with nothing left backing it. Codes and filenames
+    /// as `code:detail` strings — evidence naming a file the client does not
+    /// have, a draft row with nothing left backing it. Codes and filenames
     /// only, never record text, so the gate can show them and the console can
     /// log them.
     ///

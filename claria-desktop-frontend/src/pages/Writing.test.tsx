@@ -1814,14 +1814,15 @@ describe("Writing plan gate", () => {
 
   it("shows what the host could not verify about the plan", async () => {
     await openGate(
-      plannedRun(["unresolved_evidence:intake.txt", "duplicate_anchor:Summary"])
+      plannedRun([
+        "unknown_evidence_file:intake.txt",
+        "no_resolved_evidence:section-summary",
+      ])
     );
 
     const warnings = screen.getByTestId("plan-warnings");
-    expect(warnings.textContent).toContain(
-      "Some evidence quotes could not be verified"
-    );
-    expect(warnings.textContent).toContain("unresolved_evidence:intake.txt");
+    expect(warnings.textContent).toContain("Some evidence could not be matched");
+    expect(warnings.textContent).toContain("unknown_evidence_file:intake.txt");
   });
 
   it("discards the plan after confirming, and nothing is drafted", async () => {

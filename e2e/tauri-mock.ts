@@ -938,7 +938,7 @@ export function buildInitScript(
                 model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
                 user_edited: false,
                 approved_at: null,
-                plan_warnings: ["unresolved_evidence:assessment-scores.json"],
+                plan_warnings: ["unknown_evidence_file:assessment-scores.json"],
                 created_at: now,
                 entries: sections.map((section, position) => ({
                   section_id: section.id,

@@ -189,7 +189,7 @@ test("a planned whole-report draft is reviewed at the gate, then saved in one re
     page.getByText("Plan ready — review before drafting"),
   ).toBeVisible();
   await expect(page.getByTestId("plan-warnings")).toContainText(
-    "unresolved_evidence:assessment-scores.json",
+    "unknown_evidence_file:assessment-scores.json",
   );
   await expect(page.getByTestId("accepted-report-canvas")).toContainText(
     "Imported Evaluation Template",

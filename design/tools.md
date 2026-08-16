@@ -315,15 +315,14 @@ template order.
 | `section_id` | a 36-char UUID copied from the supplied structure |
 | `action` | `draft` or `skip` |
 | `scope` | 1–600 chars — what the section must assert, or why it is skipped |
-| `evidence` | ≤8 × `{filename, quote (10–300 chars), relevance?}` |
+| `evidence` | ≤8 × `{filename, relevance?}` — filenames, never record text |
 
 **Internal mapping.** Coverage and identity are hard: a missing row, a
 duplicate, or an invented ID returns the offending IDs as an error
-`tool_result` and forces the tool again, once. Evidence is soft: each quote
-is resolved against the pinned record corpus by whitespace-normalized
-substring search, and one that does not resolve is dropped with a
-`unresolved_quote:{filename}` warning on the plan rather than failing it. A
-`draft` row left with no resolved evidence adds
+`tool_result` and forces the tool again, once. Evidence is soft: each filename
+is checked against the pinned record corpus, and one the client does not have
+is dropped with an `unknown_evidence_file:{filename}` warning on the plan
+rather than failing it. A `draft` row left with no resolved evidence adds
 `no_resolved_evidence:{section_id}`. The plan lands on the run
 `awaiting_approval`, unapproved, for the clinician to edit.
 

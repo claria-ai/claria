@@ -30,7 +30,7 @@ use claria_core::models::{
     report::{MAX_REPORT_SECTIONS, ReportProtocolMessage, validate_report_conversation},
     report_run::{
         MAX_CITATION_QUOTE_CHARACTERS, MAX_EVIDENCE_RELEVANCE_CHARACTERS, MAX_PLAN_EVIDENCE,
-        MAX_PLAN_SCOPE_CHARACTERS, MIN_CITATION_QUOTE_CHARACTERS,
+        MAX_PLAN_SCOPE_CHARACTERS,
     },
     turn_usage::TurnUsage,
 };
@@ -500,8 +500,9 @@ pub fn analysis_tool_configuration() -> Result<ToolConfiguration, BedrockError> 
                 "Submit the drafting plan for this report. Called exactly once. Return exactly \
                  one row per section listed in the supplied template structure, in the order \
                  that structure lists them — no extra rows, no omitted rows, no invented \
-                 section IDs. Every row states what the section must assert and which record \
-                 quotes support it; a row that skips a section states why instead.",
+                 section IDs. Every row states what the section must assert and names the \
+                 records it must be written from; a row that skips a section states why \
+                 instead. This is an outline, not a draft: never copy record text into it.",
                 section_plan_schema(),
             )?,
             report::tool(
@@ -547,11 +548,11 @@ fn section_id_schema() -> serde_json::Value {
 fn evidence_schema(required: bool) -> serde_json::Value {
     let description = if required {
         format!(
-            "Up to {MAX_PLAN_EVIDENCE} record quotes the section must be grounded in, strongest first."
+            "Up to {MAX_PLAN_EVIDENCE} records the section must be written from, most decisive first."
         )
     } else {
         format!(
-            "Up to {MAX_PLAN_EVIDENCE} record quotes the section must be grounded in, strongest first. May be empty only when action is \"skip\"."
+            "Up to {MAX_PLAN_EVIDENCE} records the section must be written from, most decisive first. May be empty only when action is \"skip\"."
         )
     };
     serde_json::json!({
@@ -560,25 +561,17 @@ fn evidence_schema(required: bool) -> serde_json::Value {
         "description": description,
         "items": {
             "type": "object",
-            "required": ["filename", "quote"],
+            "required": ["filename"],
             "additionalProperties": false,
             "properties": {
                 "filename": {
                     "type": "string", "minLength": 1, "maxLength": 1024,
-                    "description": "A filename copied exactly from the record corpus in the untrusted context. Invented or approximated names are rejected."
-                },
-                "quote": {
-                    "type": "string",
-                    "minLength": MIN_CITATION_QUOTE_CHARACTERS,
-                    "maxLength": MAX_CITATION_QUOTE_CHARACTERS,
-                    "description": format!(
-                        "A span of {MIN_CITATION_QUOTE_CHARACTERS}–{MAX_CITATION_QUOTE_CHARACTERS} Unicode characters copied verbatim from that file. The host searches for it in the record text; a paraphrased, corrected, or reflowed quote fails that search and the evidence is dropped."
-                    )
+                    "description": "A filename copied exactly from the record corpus in the untrusted context. The host checks it against that corpus; an invented or approximated name is dropped from the plan."
                 },
                 "relevance": {
                     "type": "string", "minLength": 1, "maxLength": MAX_EVIDENCE_RELEVANCE_CHARACTERS,
                     "description": format!(
-                        "Optional. Why this quote matters to this section, in at most {MAX_EVIDENCE_RELEVANCE_CHARACTERS} Unicode characters."
+                        "One line on why this record matters to this section, in at most {MAX_EVIDENCE_RELEVANCE_CHARACTERS} Unicode characters. A pointer, not a quotation: do not copy record text here."
                     )
                 }
             }
@@ -854,7 +847,6 @@ pub enum PlanAction {
 #[serde(deny_unknown_fields)]
 pub struct PlanEvidence {
     pub filename: String,
-    pub quote: String,
     #[serde(default)]
     pub relevance: Option<String>,
 }

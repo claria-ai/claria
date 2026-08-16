@@ -23,14 +23,12 @@ const REFERRAL_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const BACKGROUND_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const SUMMARY_ID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-/// A span that really is in `intake.txt`, wrapped across a line so a resolved
-/// quote also proves whitespace normalization.
+/// The one record the seeded client has. Filenames, not spans, are what a
+/// plan cites, so this only has to be readable text the corpus can list.
 const INTAKE_TEXT: &str =
     "Referred by pediatrician for attention concerns.\nParent reports homework avoidance.";
-const REAL_QUOTE: &str = "Referred by pediatrician for attention concerns.";
-/// Same claim, reworded. Nothing in the record says this, so it must not
-/// resolve.
-const PARAPHRASED_QUOTE: &str = "The pediatrician referred him over attention problems.";
+/// The name that record is listed under in the corpus.
+const INTAKE_FILE: &str = "intake.txt";
 
 fn sdk_config(endpoint: &str) -> aws_config::SdkConfig {
     let credentials = Credentials::new("test", "test", None, None, "test");
@@ -154,13 +152,17 @@ fn forced_tool_call(
     }))
 }
 
-fn plan_row(section_id: &str, action: &str, scope: &str, quote: Option<&str>) -> serde_json::Value {
-    let evidence: Vec<serde_json::Value> = quote
+fn plan_row(
+    section_id: &str,
+    action: &str,
+    scope: &str,
+    evidence_file: Option<&str>,
+) -> serde_json::Value {
+    let evidence: Vec<serde_json::Value> = evidence_file
         .into_iter()
-        .map(|quote| {
+        .map(|filename| {
             serde_json::json!({
-                "filename": "intake.txt",
-                "quote": quote,
+                "filename": filename,
                 "relevance": "Names the referral question."
             })
         })
@@ -186,7 +188,7 @@ fn resume_row(
     decision: &str,
     reason: &str,
     scope: Option<&str>,
-    quote: Option<&str>,
+    evidence_file: Option<&str>,
 ) -> serde_json::Value {
     let mut row = serde_json::json!({
         "section_id": section_id,
@@ -196,8 +198,8 @@ fn resume_row(
     if let Some(scope) = scope {
         row["scope"] = serde_json::Value::String(scope.to_string());
     }
-    if let Some(quote) = quote {
-        row["evidence"] = serde_json::json!([{"filename": "intake.txt", "quote": quote}]);
+    if let Some(filename) = evidence_file {
+        row["evidence"] = serde_json::json!([{"filename": filename}]);
     }
     row
 }
@@ -293,13 +295,13 @@ async fn a_plan_lands_at_the_gate_with_scope_and_evidence() {
                 REFERRAL_ID,
                 "draft",
                 "State the referral question and who raised it.",
-                Some(REAL_QUOTE),
+                Some(INTAKE_FILE),
             ),
             plan_row(
                 BACKGROUND_ID,
                 "draft",
                 "Summarize developmental and school history.",
-                Some("Parent reports homework avoidance."),
+                Some(INTAKE_FILE),
             ),
             plan_row(
                 SUMMARY_ID,
@@ -375,7 +377,12 @@ async fn the_planner_request_caches_the_corpus_above_the_question() {
     script(
         &server,
         vec![section_plan(vec![
-            plan_row(REFERRAL_ID, "draft", "Referral question.", Some(REAL_QUOTE)),
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "Referral question.",
+                Some(INTAKE_FILE),
+            ),
             plan_row(BACKGROUND_ID, "skip", "Deferred.", None),
             plan_row(SUMMARY_ID, "skip", "Deferred.", None),
         ])],
@@ -466,76 +473,17 @@ async fn the_planner_request_caches_the_corpus_above_the_question() {
 }
 
 #[tokio::test]
-async fn an_unresolvable_quote_lands_as_a_warning_rather_than_a_failure() {
-    let (server, sdk, s3) = setup().await;
-    let client_id = Uuid::new_v4();
-    let report_id = seed_templated_report(&s3, client_id).await;
-
-    script(
-        &server,
-        vec![section_plan(vec![
-            // A paraphrase of something the record does say.
-            plan_row(
-                REFERRAL_ID,
-                "draft",
-                "State the referral question.",
-                Some(PARAPHRASED_QUOTE),
-            ),
-            // A real quote, reflowed — whitespace is the one difference the
-            // resolver forgives.
-            plan_row(
-                BACKGROUND_ID,
-                "draft",
-                "Summarize the history.",
-                Some("Parent reports    homework\navoidance."),
-            ),
-            plan_row(SUMMARY_ID, "skip", "Nothing to interpret.", None),
-        ])],
-    )
-    .await;
-
-    let outcome = pipeline::generate_draft_plan(
-        &sdk,
-        &s3,
-        BUCKET,
-        client_id,
-        report_id,
-        1,
-        models(),
-        pipeline::DraftPlanRequest::new(""),
-    )
-    .await
-    .expect("a plan with weak evidence still lands");
-
-    let plan = outcome.run.plan.as_ref().expect("plan");
-    assert!(
-        plan.plan_warnings
-            .contains(&"unresolved_quote:intake.txt".to_string()),
-        "warnings: {:?}",
-        plan.plan_warnings
-    );
-    assert!(
-        plan.plan_warnings
-            .contains(&format!("no_resolved_evidence:{REFERRAL_ID}")),
-        "warnings: {:?}",
-        plan.plan_warnings
-    );
-    // The unresolved quote is dropped rather than passed to the writer as if
-    // the record said it.
-    assert!(entry(plan, REFERRAL_ID).evidence.is_empty());
-    // The reflowed one resolves and survives.
-    assert_eq!(entry(plan, BACKGROUND_ID).evidence.len(), 1);
-    assert_eq!(outcome.run.status, DraftRunStatus::AwaitingApproval);
-}
-
-#[tokio::test]
 async fn an_evidence_file_outside_the_corpus_is_warned_about() {
     let (server, sdk, s3) = setup().await;
     let client_id = Uuid::new_v4();
     let report_id = seed_templated_report(&s3, client_id).await;
 
-    let mut invented = plan_row(REFERRAL_ID, "draft", "Referral question.", Some(REAL_QUOTE));
-    invented["evidence"][0]["filename"] = serde_json::json!("chart-review.pdf");
+    let invented = plan_row(
+        REFERRAL_ID,
+        "draft",
+        "Referral question.",
+        Some("chart-review.pdf"),
+    );
     script(
         &server,
         vec![section_plan(vec![
@@ -557,7 +505,7 @@ async fn an_evidence_file_outside_the_corpus_is_warned_about() {
         pipeline::DraftPlanRequest::new(""),
     )
     .await
-    .expect("the plan lands");
+    .expect("a plan with weak evidence still lands");
     let plan = outcome.run.plan.as_ref().expect("plan");
     assert!(
         plan.plan_warnings
@@ -565,6 +513,18 @@ async fn an_evidence_file_outside_the_corpus_is_warned_about() {
         "warnings: {:?}",
         plan.plan_warnings
     );
+    // A draft row left with nothing backing it is flagged for the clinician.
+    assert!(
+        plan.plan_warnings
+            .contains(&format!("no_resolved_evidence:{REFERRAL_ID}")),
+        "warnings: {:?}",
+        plan.plan_warnings
+    );
+    // The invented file is dropped rather than handed to the writer as if the
+    // client had such a record.
+    assert!(entry(plan, REFERRAL_ID).evidence.is_empty());
+    // Soft, not fatal: the plan still reaches the gate.
+    assert_eq!(outcome.run.status, DraftRunStatus::AwaitingApproval);
 }
 
 #[tokio::test]
@@ -578,12 +538,22 @@ async fn a_plan_that_misses_a_section_is_repaired_in_one_round() {
         vec![
             // Two rows for three sections.
             section_plan(vec![
-                plan_row(REFERRAL_ID, "draft", "Referral question.", Some(REAL_QUOTE)),
-                plan_row(BACKGROUND_ID, "draft", "History.", Some(REAL_QUOTE)),
+                plan_row(
+                    REFERRAL_ID,
+                    "draft",
+                    "Referral question.",
+                    Some(INTAKE_FILE),
+                ),
+                plan_row(BACKGROUND_ID, "draft", "History.", Some(INTAKE_FILE)),
             ]),
             section_plan(vec![
-                plan_row(REFERRAL_ID, "draft", "Referral question.", Some(REAL_QUOTE)),
-                plan_row(BACKGROUND_ID, "draft", "History.", Some(REAL_QUOTE)),
+                plan_row(
+                    REFERRAL_ID,
+                    "draft",
+                    "Referral question.",
+                    Some(INTAKE_FILE),
+                ),
+                plan_row(BACKGROUND_ID, "draft", "History.", Some(INTAKE_FILE)),
                 plan_row(SUMMARY_ID, "skip", "Nothing to interpret yet.", None),
             ]),
         ],
@@ -631,8 +601,13 @@ async fn a_plan_that_fails_twice_fails_the_pass_and_releases_the_report() {
     // An invented section ID, twice over.
     let invented = || {
         section_plan(vec![
-            plan_row(REFERRAL_ID, "draft", "Referral question.", Some(REAL_QUOTE)),
-            plan_row(BACKGROUND_ID, "draft", "History.", Some(REAL_QUOTE)),
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "Referral question.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(BACKGROUND_ID, "draft", "History.", Some(INTAKE_FILE)),
             plan_row(
                 "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
                 "draft",
@@ -687,7 +662,7 @@ async fn a_planned_run_drafts_the_plan_and_pre_skips_the_rest() {
                     REFERRAL_ID,
                     "draft",
                     "State the referral question.",
-                    Some(REAL_QUOTE),
+                    Some(INTAKE_FILE),
                 ),
                 plan_row(BACKGROUND_ID, "draft", "Summarize the history.", None),
                 plan_row(SUMMARY_ID, "skip", "No testing data is present.", None),
@@ -984,7 +959,7 @@ async fn a_resume_with_new_instructions_re_plans_through_the_model() {
                     "rewrite",
                     "The new instructions change what this section must say.",
                     Some("Name the referring pediatrician's concern explicitly."),
-                    Some(REAL_QUOTE),
+                    Some(INTAKE_FILE),
                 ),
                 resume_row(
                     BACKGROUND_ID,
@@ -998,7 +973,7 @@ async fn a_resume_with_new_instructions_re_plans_through_the_model() {
                     "draft",
                     "Never written.",
                     Some("Interpret the referral question."),
-                    Some(REAL_QUOTE),
+                    Some(INTAKE_FILE),
                 ),
             ]),
             tool_round(vec![
@@ -1127,7 +1102,7 @@ async fn a_resume_plan_demands_a_scope_for_a_rewrite() {
                 "rewrite",
                 "Needs work.",
                 None,
-                Some(REAL_QUOTE),
+                Some(INTAKE_FILE),
             ),
             resume_row(BACKGROUND_ID, "skip", "Deferred.", None, None),
             resume_row(SUMMARY_ID, "draft", "Write it.", Some("Interpret."), None),
@@ -1170,7 +1145,12 @@ async fn a_gate_edit_refuses_a_record_the_client_does_not_have() {
     script(
         &server,
         vec![section_plan(vec![
-            plan_row(REFERRAL_ID, "draft", "Referral question.", Some(REAL_QUOTE)),
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "Referral question.",
+                Some(INTAKE_FILE),
+            ),
             plan_row(BACKGROUND_ID, "skip", "Deferred.", None),
             plan_row(SUMMARY_ID, "skip", "Deferred.", None),
         ])],

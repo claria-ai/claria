@@ -115,7 +115,8 @@ all keep working exactly as they did before runs existed.
 A planning model — a per-role setting, defaulting to the newest capable Sonnet
 the account has — reads the record corpus and the template structure and
 answers one forced `submit_section_plan` call: one row per section, with what
-it must assert and which record quotes support it.
+it must assert and which records support it. The plan is an outline — filenames
+and a one-line reason each, never copied record text.
 
 The host then decides what is decidable:
 
@@ -123,10 +124,10 @@ The host then decides what is decidable:
   IDs, no duplicates. Failing that costs one repair round — the diagnostic goes
   back verbatim and the tool is forced again — then the pass fails. A plan
   missing a section would silently delete it from the document.
-- **Evidence is soft.** A quote that resolves against no record lands as a
-  `unresolved_quote:{filename}` warning on the plan. The clinician is about to
-  read this plan at the gate; refusing to show it to them because one quote was
-  reflowed helps nobody.
+- **Evidence is soft.** A filename the client does not have lands as an
+  `unknown_evidence_file:{filename}` warning on the plan. The clinician is about
+  to read this plan at the gate; refusing to show it to them because one
+  filename was mistyped helps nobody.
 
 The plan lands on the run `awaiting_approval` and nothing drafts until
 `start_draft_run` is called, so the gate is structural rather than a courtesy.

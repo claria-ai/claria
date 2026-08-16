@@ -58,8 +58,8 @@ or about what "complete" means.
    the model will see, not instructions (see `templates.md`).
 5. **Plan the draft.** A planning model reads the same record snapshot and
    template structure and returns one row per section — what it must assert
-   and which record quotes support it — through a forced `submit_section_plan`
-   call. The host checks coverage itself and resolves every quote against the
+   and which records support it — through a forced `submit_section_plan`
+   call. The host checks coverage itself and checks every filename against the
    records; the plan lands on the run unapproved, for the clinician to edit
    and start. Which model does this is a per-role setting, defaulting to the
    newest capable Sonnet the account has.

@@ -37,7 +37,7 @@ All notable changes to Claria are documented here.
 - Editing a skipped section takes an explicit Include this section button, which fills it with the template text
 - The export line counts how many skipped sections the accepted revision left out
 - A planning pass now assigns scope and record evidence per section before drafting, with an editable plan and per-role model settings
-- Planned evidence quotes are checked against the client's records, and anything that does not resolve is flagged on the plan rather than passed to the writer
+- Planned evidence is checked against the client's records, and a file the client does not have is flagged on the plan rather than passed to the writer
 - Picking up an interrupted draft re-plans it when you add instructions, and decides it without a model call when you do not
 - Report sections now appear in the preview as they are written, with an honest progress count and a Stop button that keeps completed work
 - Each section is marked in the preview while a draft runs — waiting, writing, drafted, skipped, or failed with the reason
@@ -62,6 +62,8 @@ All notable changes to Claria are documented here.
 - Sections with open findings are flagged on the document, and the flag jumps to the finding
 - The draft run pane closes with a completion checklist counting what is still outstanding
 - Raised the planner's output ceiling so plans for long reports no longer fail partway through
+- Planning now produces an outline naming the records each section rests on, instead of copying quoted excerpts out of them, so a plan generates in a fraction of the time
+- The planner's smaller answers hand ~16k tokens back to the record corpus it reads
 
 ## [0.28.0] — 2026-08-15
 
