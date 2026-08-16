@@ -1,0 +1,758 @@
+//! Host-side execution of the report tool protocol: bounded record reads,
+//! proposal staging, and the isolated full-draft candidate.
+
+use std::collections::{HashMap, HashSet};
+
+use aws_sdk_s3::Client as S3Client;
+use claria_bedrock::{
+    error::BedrockError,
+    report::{
+        self, FinishFullDraftRequest, ProposeReportChangesRequest, ReportBlockRequest,
+        ReportProposalOperationRequest, ReportToolCall, ReportToolRequest,
+        SetFullDraftTitleRequest, SkipFullDraftSectionRequest, WriteFullDraftSectionRequest,
+    },
+};
+use claria_core::models::report::{
+    ReportBlock, ReportContent, ReportOperation, ReportProposal, ReportSection,
+    ReportToolResultStatus, ReportWorkspace, validate_report_content, validate_report_summary,
+};
+use claria_storage::error::StorageError;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::{
+    DEFAULT_READ_LIMIT, MAX_LIST_RESULT_BYTES, MAX_LISTED_FILES, MAX_READ_CHARACTERS_PER_TURN,
+    MAX_READ_LIMIT, ReportFailureCode, record_context::RecordInventoryEntry, turn::TurnRunFailure,
+};
+
+pub(crate) struct ExecutedTool {
+    pub(crate) status: ReportToolResultStatus,
+    pub(crate) content: serde_json::Value,
+}
+
+struct FullDraftCandidate {
+    required_section_ids: HashSet<Uuid>,
+    touched_section_ids: HashSet<Uuid>,
+    skipped_section_ids: HashSet<Uuid>,
+    title: Option<String>,
+    sections: Vec<ReportSection>,
+    finalized_summary: Option<String>,
+}
+
+impl FullDraftCandidate {
+    fn new(workspace: &ReportWorkspace) -> Self {
+        Self {
+            required_section_ids: workspace
+                .draft
+                .content
+                .sections
+                .iter()
+                .map(|section| section.id)
+                .collect(),
+            touched_section_ids: HashSet::new(),
+            skipped_section_ids: HashSet::new(),
+            title: None,
+            sections: Vec::new(),
+            finalized_summary: None,
+        }
+    }
+}
+
+pub(crate) struct FinalizedFullDraft {
+    pub(crate) content: ReportContent,
+    pub(crate) summary: String,
+}
+
+pub(crate) struct ToolExecutionContext<'a> {
+    s3: &'a S3Client,
+    bucket: &'a str,
+    inventory: &'a [RecordInventoryEntry],
+    workspace: &'a ReportWorkspace,
+    model_id: &'a str,
+    read_characters: u32,
+    read_cache: HashMap<String, String>,
+    pub(crate) staged_proposal: Option<ReportProposal>,
+    full_draft: Option<FullDraftCandidate>,
+}
+
+impl<'a> ToolExecutionContext<'a> {
+    pub(crate) fn new(
+        s3: &'a S3Client,
+        bucket: &'a str,
+        inventory: &'a [RecordInventoryEntry],
+        workspace: &'a ReportWorkspace,
+        model_id: &'a str,
+        full_draft: bool,
+    ) -> Self {
+        Self {
+            s3,
+            bucket,
+            inventory,
+            workspace,
+            model_id,
+            read_characters: 0,
+            read_cache: HashMap::new(),
+            staged_proposal: None,
+            full_draft: full_draft.then(|| FullDraftCandidate::new(workspace)),
+        }
+    }
+
+    pub(crate) fn full_draft_is_finalized(&self) -> bool {
+        self.full_draft
+            .as_ref()
+            .is_some_and(|candidate| candidate.finalized_summary.is_some())
+    }
+
+    pub(crate) fn take_finalized_full_draft(&mut self) -> Option<FinalizedFullDraft> {
+        let candidate = self.full_draft.take()?;
+        let summary = candidate.finalized_summary?;
+        let title = candidate.title?;
+        Some(FinalizedFullDraft {
+            content: ReportContent {
+                title,
+                sections: candidate.sections,
+            },
+            summary,
+        })
+    }
+
+    pub(crate) async fn execute(
+        &mut self,
+        call: &ReportToolCall,
+    ) -> Result<ExecutedTool, TurnRunFailure> {
+        let request = match report::decode_tool_request(call) {
+            Ok(request) => request,
+            Err(error) => {
+                // Carry the decode diagnostic verbatim: these messages
+                // describe JSON structure (field names, types, positions),
+                // never report or record content, and a generic sentence
+                // wastes the model's repair round.
+                let diagnostic = match &error {
+                    BedrockError::SchemaViolation(message) => message.clone(),
+                    other => other.to_string(),
+                };
+                return Ok(tool_error(
+                    "invalid_tool_input",
+                    &format!("The tool input did not match the configured schema: {diagnostic}"),
+                ));
+            }
+        };
+
+        match request {
+            ReportToolRequest::ListRecordFiles(_) => {
+                if self.full_draft.is_some() {
+                    return Ok(tool_error(
+                        "tool_not_available",
+                        "The complete readable-record snapshot is already in context; list_record_files is unavailable in full-draft mode.",
+                    ));
+                }
+                Ok(list_record_files_result(self.inventory))
+            }
+            ReportToolRequest::ReadRecordFile(request) => {
+                if self.full_draft.is_some() {
+                    return Ok(tool_error(
+                        "tool_not_available",
+                        "The complete readable-record snapshot is already in context; read_record_file is unavailable in full-draft mode.",
+                    ));
+                }
+                self.read_record_file(request.filename, request.offset, request.limit)
+                    .await
+            }
+            ReportToolRequest::ProposeReportChanges(request) => {
+                if self.full_draft.is_some() {
+                    return Ok(tool_error(
+                        "tool_not_available",
+                        "Full-draft mode saves one atomic working revision; do not stage a reviewable proposal.",
+                    ));
+                }
+                if self.staged_proposal.is_some() {
+                    return Ok(tool_error(
+                        "proposal_already_pending",
+                        "A valid proposal is already pending in this turn.",
+                    ));
+                }
+                match stage_proposal(self.workspace, self.model_id, call, request) {
+                    Ok(proposal) => {
+                        let result = ExecutedTool {
+                            status: ReportToolResultStatus::Success,
+                            content: serde_json::json!({
+                                "status": "pending_user_acceptance",
+                                "proposal_id": proposal.id.to_string(),
+                                "base_revision": proposal.base_revision
+                            }),
+                        };
+                        self.staged_proposal = Some(proposal);
+                        Ok(result)
+                    }
+                    Err(reason) => Ok(tool_error(
+                        "invalid_proposal",
+                        &format!(
+                            "The proposed operations were not valid for the accepted report: {reason}"
+                        ),
+                    )),
+                }
+            }
+            ReportToolRequest::SetFullDraftTitle(request) => Ok(self.set_full_draft_title(request)),
+            ReportToolRequest::WriteFullDraftSection(request) => {
+                Ok(self.write_full_draft_section(request))
+            }
+            ReportToolRequest::SkipFullDraftSection(request) => {
+                Ok(self.skip_full_draft_section(request))
+            }
+            ReportToolRequest::FinishFullDraft(request) => Ok(self.finish_full_draft(request)),
+        }
+    }
+
+    fn set_full_draft_title(&mut self, request: SetFullDraftTitleRequest) -> ExecutedTool {
+        let Some(candidate) = self.full_draft.as_mut() else {
+            return tool_error(
+                "tool_not_available",
+                "set_full_draft_title is available only during explicit full-draft generation.",
+            );
+        };
+        if candidate.finalized_summary.is_some() {
+            return tool_error(
+                "full_draft_already_finalized",
+                "The complete draft is already finalized; do not modify it again.",
+            );
+        }
+        let proposed = ReportContent {
+            title: request.title.clone(),
+            sections: candidate.sections.clone(),
+        };
+        if let Err(error) = validate_report_content(&proposed) {
+            return tool_error(
+                "invalid_full_draft_title",
+                &format!("The full-draft title was invalid: {error}"),
+            );
+        }
+        candidate.title = Some(request.title);
+        ExecutedTool {
+            status: ReportToolResultStatus::Success,
+            content: serde_json::json!({"status": "title_staged"}),
+        }
+    }
+
+    fn write_full_draft_section(&mut self, request: WriteFullDraftSectionRequest) -> ExecutedTool {
+        let Some(candidate) = self.full_draft.as_ref() else {
+            return tool_error(
+                "tool_not_available",
+                "write_full_draft_section is available only during explicit full-draft generation.",
+            );
+        };
+        if candidate.finalized_summary.is_some() {
+            return tool_error(
+                "full_draft_already_finalized",
+                "The complete draft is already finalized; do not modify it again.",
+            );
+        }
+        let section_id = match request.section_id {
+            Some(value) => {
+                let Ok(id) = value.parse::<Uuid>() else {
+                    return tool_error(
+                        "invalid_section_id",
+                        "section_id must be a copied 36-character UUID or null for a new section.",
+                    );
+                };
+                if id.is_nil() {
+                    return tool_error("invalid_section_id", "section_id cannot be the nil UUID.");
+                }
+                let known = candidate.required_section_ids.contains(&id)
+                    || candidate.sections.iter().any(|section| section.id == id);
+                if !known {
+                    return tool_error(
+                        "invented_section_id",
+                        "The section_id was not supplied by the host or returned by an earlier section write. Copy an existing ID exactly, or pass null for a new section.",
+                    );
+                }
+                id
+            }
+            None => Uuid::new_v4(),
+        };
+        let position = match usize::try_from(request.position) {
+            Ok(position) => position,
+            Err(_) => {
+                return tool_error(
+                    "invalid_section_position",
+                    "The section position is too large.",
+                );
+            }
+        };
+        let mut sections = candidate.sections.clone();
+        if let Some(existing) = sections.iter().position(|section| section.id == section_id) {
+            sections.remove(existing);
+        }
+        if position > sections.len() {
+            return tool_error(
+                "invalid_section_position",
+                &format!(
+                    "Section position {position} is outside 0..={}; write sections in final order.",
+                    sections.len()
+                ),
+            );
+        }
+        let block_count = request.blocks.len();
+        sections.insert(
+            position,
+            ReportSection {
+                id: section_id,
+                heading: request.heading,
+                blocks: request.blocks.into_iter().map(block_from_request).collect(),
+                skipped: false,
+            },
+        );
+        let proposed = ReportContent {
+            title: candidate
+                .title
+                .clone()
+                .unwrap_or_else(|| self.workspace.draft.content.title.clone()),
+            sections: sections.clone(),
+        };
+        if let Err(error) = validate_report_content(&proposed) {
+            return tool_error(
+                "invalid_full_draft_section",
+                &format!("The full-draft section was invalid: {error}"),
+            );
+        }
+        let section_count = sections.len();
+        let Some(candidate) = self.full_draft.as_mut() else {
+            return tool_error(
+                "tool_not_available",
+                "The full-draft candidate is no longer available.",
+            );
+        };
+        candidate.sections = sections;
+        candidate.touched_section_ids.insert(section_id);
+        // A write is the stronger decision: it overrides an earlier skip.
+        candidate.skipped_section_ids.remove(&section_id);
+        ExecutedTool {
+            status: ReportToolResultStatus::Success,
+            content: serde_json::json!({
+                "status": "section_staged",
+                "section_id": section_id.to_string(),
+                "position": position,
+                "block_count": block_count,
+                "section_count": section_count
+            }),
+        }
+    }
+
+    fn skip_full_draft_section(&mut self, request: SkipFullDraftSectionRequest) -> ExecutedTool {
+        let Some(candidate) = self.full_draft.as_mut() else {
+            return tool_error(
+                "tool_not_available",
+                "skip_full_draft_section is available only during explicit full-draft generation.",
+            );
+        };
+        if candidate.finalized_summary.is_some() {
+            return tool_error(
+                "full_draft_already_finalized",
+                "The complete draft is already finalized; do not modify it again.",
+            );
+        }
+        let Ok(section_id) = request.section_id.parse::<Uuid>() else {
+            return tool_error(
+                "invalid_section_id",
+                "section_id must be a copied 36-character UUID.",
+            );
+        };
+        if !candidate.required_section_ids.contains(&section_id) {
+            return tool_error(
+                "invented_section_id",
+                "Only a supplied template/report section can be skipped. Copy its ID exactly from the untrusted context; sections you added yourself should simply not be written.",
+            );
+        }
+        if candidate.touched_section_ids.contains(&section_id) {
+            return tool_error(
+                "section_already_written",
+                "This section was already written in this draft; a skip cannot override a write. The written section stands.",
+            );
+        }
+        candidate.skipped_section_ids.insert(section_id);
+        ExecutedTool {
+            status: ReportToolResultStatus::Success,
+            content: serde_json::json!({
+                "status": "section_skipped",
+                "section_id": section_id.to_string()
+            }),
+        }
+    }
+
+    fn finish_full_draft(&mut self, request: FinishFullDraftRequest) -> ExecutedTool {
+        if let Err(error) = validate_report_summary(&request.summary) {
+            return tool_error(
+                "invalid_full_draft_summary",
+                &format!("The full-draft summary was invalid: {error}"),
+            );
+        }
+        let Some(candidate) = self.full_draft.as_ref() else {
+            return tool_error(
+                "tool_not_available",
+                "finish_full_draft is available only during explicit full-draft generation.",
+            );
+        };
+        if candidate.finalized_summary.is_some() {
+            return tool_error(
+                "full_draft_already_finalized",
+                "The complete draft is already finalized.",
+            );
+        }
+        let Some(title) = candidate.title.clone() else {
+            return tool_error(
+                "full_draft_incomplete",
+                "Call set_full_draft_title before finishing the complete draft.",
+            );
+        };
+        if candidate.sections.is_empty() {
+            return tool_error(
+                "full_draft_incomplete",
+                "Write at least one complete report section before finishing.",
+            );
+        }
+        let mut missing = candidate
+            .required_section_ids
+            .difference(&candidate.touched_section_ids)
+            .filter(|id| !candidate.skipped_section_ids.contains(id))
+            .copied()
+            .collect::<Vec<_>>();
+        missing.sort();
+        if !missing.is_empty() {
+            return tool_error(
+                "full_draft_incomplete",
+                &format!(
+                    "Write or explicitly skip every supplied report/template section before finishing. Undecided section IDs: {}",
+                    missing
+                        .iter()
+                        .map(Uuid::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+        let sections = merge_skipped_placeholders(
+            &candidate.sections,
+            &candidate.skipped_section_ids,
+            &self.workspace.draft.content.sections,
+        );
+        let content = ReportContent { title, sections };
+        if let Err(error) = validate_report_content(&content) {
+            return tool_error(
+                "invalid_full_draft",
+                &format!("The complete draft was invalid: {error}"),
+            );
+        }
+        let section_count = content.sections.len();
+        let skipped_section_count = candidate.skipped_section_ids.len();
+        let Some(candidate) = self.full_draft.as_mut() else {
+            return tool_error(
+                "tool_not_available",
+                "The full-draft candidate is no longer available.",
+            );
+        };
+        candidate.sections = content.sections;
+        candidate.finalized_summary = Some(request.summary);
+        ExecutedTool {
+            status: ReportToolResultStatus::Success,
+            content: serde_json::json!({
+                "status": "full_draft_finalized",
+                "section_count": section_count,
+                "skipped_section_count": skipped_section_count,
+                "base_revision": self.workspace.draft.revision
+            }),
+        }
+    }
+
+    async fn read_record_file(
+        &mut self,
+        filename: String,
+        offset: Option<u32>,
+        limit: Option<u32>,
+    ) -> Result<ExecutedTool, TurnRunFailure> {
+        if filename.is_empty() || filename.chars().count() > 1_024 {
+            return Ok(tool_error(
+                "invalid_filename",
+                "Filename length is invalid.",
+            ));
+        }
+        let Some(entry) = self
+            .inventory
+            .iter()
+            .find(|entry| entry.filename == filename)
+        else {
+            return Ok(tool_error(
+                "file_not_in_inventory",
+                "The filename is not in this client's safe record inventory.",
+            ));
+        };
+        let read_key = &entry.read_key;
+        if entry.source_bytes > claria_core::record_text::MAX_RECORD_TEXT_BYTES {
+            return Ok(tool_error(
+                "record_too_large",
+                "The readable record exceeds Claria's 2 MiB source limit.",
+            ));
+        }
+        let requested_limit = limit.unwrap_or(DEFAULT_READ_LIMIT);
+        if requested_limit == 0 || requested_limit > MAX_READ_LIMIT {
+            return Ok(tool_error(
+                "invalid_read_limit",
+                "Read limit must be between 1 and 12000 characters.",
+            ));
+        }
+        let remaining = MAX_READ_CHARACTERS_PER_TURN.saturating_sub(self.read_characters);
+        if remaining == 0 {
+            return Ok(tool_error(
+                "turn_read_limit_reached",
+                "This turn has reached the 48000-character record read limit.",
+            ));
+        }
+        let effective_limit = requested_limit.min(remaining);
+        let offset = offset.unwrap_or(0);
+
+        if !self.read_cache.contains_key(read_key) {
+            let output = match claria_storage::objects::get_object_bounded(
+                self.s3,
+                self.bucket,
+                read_key,
+                claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+            )
+            .await
+            {
+                Ok(output) => output,
+                Err(StorageError::ObjectTooLarge { .. }) => {
+                    return Ok(tool_error(
+                        "record_too_large",
+                        "The readable record exceeds Claria's 2 MiB source limit.",
+                    ));
+                }
+                Err(error) => {
+                    return Err(TurnRunFailure::new(
+                        ReportFailureCode::RecordStorage,
+                        "Claria could not read the approved record text from managed storage. Retry the turn.",
+                    )
+                    .with_internal(error));
+                }
+            };
+            let Some(text) = claria_core::record_text::decode_record_text(&output.body) else {
+                return Ok(tool_error(
+                    "record_not_text",
+                    "The record is not printable UTF-8 text and has no readable extraction.",
+                ));
+            };
+            self.read_cache.insert(read_key.clone(), text.to_string());
+        }
+        let Some(text) = self.read_cache.get(read_key) else {
+            return Err(TurnRunFailure::new(
+                ReportFailureCode::RecordStorage,
+                "Claria could not cache the approved record text. Retry the turn.",
+            ));
+        };
+        let total_characters_usize = text.chars().count();
+        let total_characters = match u32::try_from(total_characters_usize) {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(tool_error(
+                    "record_too_large",
+                    "The record text is too large for bounded character reads.",
+                ));
+            }
+        };
+        if offset > total_characters {
+            return Ok(tool_error(
+                "offset_out_of_range",
+                "Read offset is beyond the end of the record text.",
+            ));
+        }
+        let selected: String = text
+            .chars()
+            .skip(offset as usize)
+            .take(effective_limit as usize)
+            .collect();
+        let returned_characters = selected.chars().count() as u32;
+        self.read_characters = self.read_characters.saturating_add(returned_characters);
+        let end = offset.saturating_add(returned_characters);
+        let next_offset = (end < total_characters).then_some(end);
+        let sha256 = Sha256::digest(selected.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        Ok(ExecutedTool {
+            status: ReportToolResultStatus::Success,
+            content: serde_json::json!({
+                "filename": filename,
+                "text": selected,
+                "offset": offset,
+                "returned_characters": returned_characters,
+                "total_characters": total_characters,
+                "next_offset": next_offset,
+                "sha256": sha256
+            }),
+        })
+    }
+}
+
+/// Merge deferred-section placeholders into the written full-draft sections.
+///
+/// Written sections keep the model's chosen order. Each skipped supplied
+/// section re-enters as an empty `skipped` placeholder carrying its supplied
+/// heading and ID, positioned after the nearest earlier supplied section
+/// already present in the result — so consecutive skips keep their supplied
+/// relative order, and a skip with no earlier surviving neighbor lands at
+/// the front.
+fn merge_skipped_placeholders(
+    written: &[ReportSection],
+    skipped_section_ids: &HashSet<Uuid>,
+    supplied: &[ReportSection],
+) -> Vec<ReportSection> {
+    let mut sections = written.to_vec();
+    for (supplied_index, supplied_section) in supplied.iter().enumerate() {
+        if !skipped_section_ids.contains(&supplied_section.id) {
+            continue;
+        }
+        let insert_at = supplied[..supplied_index]
+            .iter()
+            .rev()
+            .find_map(|prior| {
+                sections
+                    .iter()
+                    .position(|section| section.id == prior.id)
+                    .map(|position| position + 1)
+            })
+            .unwrap_or(0);
+        sections.insert(
+            insert_at,
+            ReportSection {
+                id: supplied_section.id,
+                heading: supplied_section.heading.clone(),
+                blocks: Vec::new(),
+                skipped: true,
+            },
+        );
+    }
+    sections
+}
+
+fn list_record_files_result(inventory: &[RecordInventoryEntry]) -> ExecutedTool {
+    let mut files: Vec<serde_json::Value> = inventory
+        .iter()
+        .take(MAX_LISTED_FILES)
+        .map(|entry| {
+            serde_json::json!({
+                "filename": entry.filename,
+                "readable": entry.source_bytes <= claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+                "source_too_large": entry.source_bytes > claria_core::record_text::MAX_RECORD_TEXT_BYTES
+            })
+        })
+        .collect();
+
+    let mut truncated = inventory.len() > files.len();
+    while serde_json::to_vec(&serde_json::json!({
+        "files": files,
+        "truncated": truncated
+    }))
+    .map_or(usize::MAX, |bytes| bytes.len())
+        > MAX_LIST_RESULT_BYTES
+    {
+        if files.pop().is_none() {
+            break;
+        }
+        truncated = true;
+    }
+    ExecutedTool {
+        status: ReportToolResultStatus::Success,
+        content: serde_json::json!({"files": files, "truncated": truncated}),
+    }
+}
+
+fn stage_proposal(
+    workspace: &ReportWorkspace,
+    model_id: &str,
+    call: &ReportToolCall,
+    request: ProposeReportChangesRequest,
+) -> Result<ReportProposal, String> {
+    validate_report_summary(&request.summary).map_err(|error| error.to_string())?;
+    let operations = request
+        .operations
+        .into_iter()
+        .map(operation_from_request)
+        .collect::<Result<Vec<_>, _>>()?;
+    let proposed_content = workspace
+        .draft
+        .preview(&operations)
+        .map_err(|error| error.to_string())?;
+    Ok(ReportProposal {
+        id: Uuid::new_v4(),
+        report_id: workspace.report_id,
+        base_revision: workspace.draft.revision,
+        model_id: model_id.to_string(),
+        summary: request.summary,
+        operations,
+        proposed_content,
+        tool_use_id: call.tool_use_id.clone(),
+        created_at: jiff::Timestamp::now(),
+    })
+}
+
+fn operation_from_request(
+    operation: ReportProposalOperationRequest,
+) -> Result<ReportOperation, String> {
+    match operation {
+        ReportProposalOperationRequest::SetTitle { title } => {
+            Ok(ReportOperation::SetTitle { title })
+        }
+        ReportProposalOperationRequest::AddSection {
+            position,
+            heading,
+            blocks,
+        } => Ok(ReportOperation::AddSection {
+            position,
+            section: ReportSection {
+                id: Uuid::new_v4(),
+                heading,
+                blocks: blocks.into_iter().map(block_from_request).collect(),
+                skipped: false,
+            },
+        }),
+        ReportProposalOperationRequest::ReplaceSection {
+            section_id,
+            heading,
+            blocks,
+        } => Ok(ReportOperation::ReplaceSection {
+            section_id: section_id
+                .parse()
+                .map_err(|_| format!("Invalid section ID: {section_id}"))?,
+            heading,
+            blocks: blocks.into_iter().map(block_from_request).collect(),
+        }),
+        ReportProposalOperationRequest::RemoveSection { section_id } => {
+            Ok(ReportOperation::RemoveSection {
+                section_id: section_id
+                    .parse()
+                    .map_err(|_| format!("Invalid section ID: {section_id}"))?,
+            })
+        }
+    }
+}
+
+fn block_from_request(block: ReportBlockRequest) -> ReportBlock {
+    match block {
+        ReportBlockRequest::Paragraph { text } => ReportBlock::Paragraph { text },
+        ReportBlockRequest::BulletList { items } => ReportBlock::BulletList { items },
+        ReportBlockRequest::Table {
+            rows,
+            has_header,
+            column_widths,
+        } => ReportBlock::Table {
+            rows,
+            has_header,
+            column_widths,
+        },
+    }
+}
+
+fn tool_error(code: &str, message: &str) -> ExecutedTool {
+    ExecutedTool {
+        status: ReportToolResultStatus::Error,
+        content: serde_json::json!({"error": {"code": code, "message": message}}),
+    }
+}
