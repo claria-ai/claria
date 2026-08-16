@@ -66,6 +66,69 @@ async fetchCloudPreferences() : Promise<Result<ConfigInfo, string>> {
 }
 },
 /**
+ * Save the S3-stored preferences file to a user-selected local path, verbatim
+ * so a support reader sees exactly what the app reads. Falls back to a
+ * canonical serialization of the local values when the cloud copy doesn't
+ * exist yet. Returns `false` when the dialog is cancelled.
+ */
+async exportPreferences() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_preferences") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Replace the synced preferences with a user-selected export. The previous
+ * values stay one entry back in the file's S3 version history. Returns
+ * `None` when the dialog is cancelled.
+ */
+async importPreferences() : Promise<Result<ConfigInfo | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("import_preferences") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List all versions of the synced preferences file.
+ */
+async listPreferencesVersions() : Promise<Result<FileVersion[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_preferences_versions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the text of one version of the synced preferences file.
+ */
+async getPreferencesVersion(versionId: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_preferences_version", { versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Restore a previous version of the synced preferences file. The version's
+ * content is parsed and validated first, then written through the normal
+ * patch path so the local config follows and the overwritten values remain
+ * in version history.
+ */
+async restorePreferencesVersion(versionId: string) : Promise<Result<ConfigInfo, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restore_preferences_version", { versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Upload an audio file and transcribe with the wizard's per-file options.
  * 
  * Same skeleton as [`upload_record_file`], but restricted to audio and with

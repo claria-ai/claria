@@ -186,6 +186,100 @@ export function GearIcon({ className = "w-5 h-5" }: IconProps) {
   );
 }
 
+/** Four-point spark. The Claude category tile in Preferences. */
+export function SparkleIcon({ className = "w-4 h-4" }: IconProps) {
+  return (
+    <svg
+      className={className}
+      fill="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path d="M12 2.5l2.05 5.6a2 2 0 001.19 1.19l5.6 2.05-5.6 2.05a2 2 0 00-1.19 1.19L12 20.18l-2.05-5.6a2 2 0 00-1.19-1.19l-5.6-2.05 5.6-2.05a2 2 0 001.19-1.19L12 2.5z" />
+    </svg>
+  );
+}
+
+/** Speech bubble with text lines. The Prompts category tile in Preferences. */
+export function PromptIcon({ className = "w-4 h-4" }: IconProps) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M8 10h8m-8 4h5m7-2a8.96 8.96 0 01-1.3 4.67L20 21l-4.72-1.18A9 9 0 1121 12z"
+      />
+    </svg>
+  );
+}
+
+/** Pencil over a square. The Document Writer category tile in Preferences. */
+export function ComposeIcon({ className = "w-4 h-4" }: IconProps) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+      />
+    </svg>
+  );
+}
+
+/** Microphone. The Transcription category tile in Preferences. */
+export function MicrophoneIcon({ className = "w-4 h-4" }: IconProps) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M12 15a3 3 0 003-3V6a3 3 0 10-6 0v6a3 3 0 003 3zm6-3a6 6 0 01-12 0m6 6v3m-3 0h6"
+      />
+    </svg>
+  );
+}
+
+/** Dollar in a circle. The Billing category tile in Preferences. */
+export function DollarIcon({ className = "w-4 h-4" }: IconProps) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 9c-1.11 0-2.08-.402-2.599-1M12 16v1m9-5a9 9 0 11-18 0 9 9 0 0118 0z"
+      />
+    </svg>
+  );
+}
+
 /**
  * The back chevron every page header re-implemented by hand, including the
  * accessible name those hand-rolled copies were missing.

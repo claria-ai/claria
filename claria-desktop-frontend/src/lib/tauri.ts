@@ -15,6 +15,7 @@ import type {
   ChatHistorySummary,
   ChatMessage,
   ChatStreamEvent,
+  ConfigInfo,
   ConsoleDelta,
   CostAndUsageResult,
   CostGranularity,
@@ -763,6 +764,33 @@ export async function renameChatHistory(
 
 export async function setPreferredModel(modelId: string | null): Promise<void> {
   unwrap(await commands.setPreferredModel(modelId));
+}
+
+// ---------------------------------------------------------------------------
+// Preferences file wrappers — export, import, and version history for
+// _state/preferences.json
+// ---------------------------------------------------------------------------
+
+/** Save the synced preferences file locally. Resolves false on cancel. */
+export async function exportPreferences(): Promise<boolean> {
+  return unwrap(await commands.exportPreferences());
+}
+
+/** Replace the synced preferences from a local export. Null on cancel. */
+export async function importPreferences(): Promise<ConfigInfo | null> {
+  return unwrap(await commands.importPreferences());
+}
+
+export async function listPreferencesVersions(): Promise<FileVersion[]> {
+  return unwrap(await commands.listPreferencesVersions());
+}
+
+export async function getPreferencesVersion(versionId: string): Promise<string> {
+  return unwrap(await commands.getPreferencesVersion(versionId));
+}
+
+export async function restorePreferencesVersion(versionId: string): Promise<void> {
+  unwrap(await commands.restorePreferencesVersion(versionId));
 }
 
 // ---------------------------------------------------------------------------

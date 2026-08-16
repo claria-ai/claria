@@ -1,9 +1,12 @@
 import {
   getFileVersionText,
+  getPreferencesVersion,
   getPromptVersion,
   listFileVersions,
+  listPreferencesVersions,
   listPromptVersions,
   restoreFileVersion,
+  restorePreferencesVersion,
   restorePromptVersion,
   type FileVersion,
 } from "./tauri";
@@ -44,5 +47,14 @@ export function promptVersions(promptName: string): VersionSource {
     list: () => listPromptVersions(promptName),
     getText: (versionId) => getPromptVersion(promptName, versionId),
     restore: (versionId) => restorePromptVersion(promptName, versionId),
+  };
+}
+
+/** History of the synced preferences file (`_state/preferences.json`). */
+export function preferencesVersions(): VersionSource {
+  return {
+    list: () => listPreferencesVersions(),
+    getText: (versionId) => getPreferencesVersion(versionId),
+    restore: (versionId) => restorePreferencesVersion(versionId),
   };
 }

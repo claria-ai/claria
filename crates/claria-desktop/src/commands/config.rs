@@ -7,7 +7,10 @@ use claria_desktop::config::{
     SyncedPreferences, TranscriptionPreferences,
 };
 
-use super::{CommandContext, CommandError, bucket_name, cached_aws, run};
+use super::{
+    CommandContext, CommandError, bucket_name, cached_aws, run,
+    versions::{FileVersion, get_version_text_for_key, list_versions_for_key},
+};
 use crate::state::DesktopState;
 
 #[tauri::command]
@@ -388,6 +391,218 @@ pub async fn set_preferred_model(
         };
         apply_preferences_patch(&state, &ctx.s3, ctx.cfg, &patch, "preferred model").await?;
         Ok(())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Preferences file: export, import, and version history
+// ---------------------------------------------------------------------------
+
+/// Ceiling for an imported preferences file. The real file is a few KiB, so
+/// anything past this is a mis-picked file, not a preferences export.
+const MAX_PREFERENCES_IMPORT_BYTES: u64 = 1024 * 1024;
+
+/// Parse a user-supplied preferences JSON body. Rejects a file written by a
+/// newer Claria rather than silently dropping its unknown fields, which a
+/// rewrite would otherwise erase from the synced copy. Field validation
+/// happens in [`apply_preferences_patch`], which every accepted import and
+/// restore goes through.
+fn parse_preferences_file(bytes: &[u8]) -> Result<SyncedPreferences, CommandError> {
+    let synced: SyncedPreferences = serde_json::from_slice(bytes).map_err(|e| {
+        CommandError::Msg(format!(
+            "The selected file is not a Claria preferences export: {e}"
+        ))
+    })?;
+    if synced.preferences_version > config::PREFERENCES_VERSION {
+        return Err(CommandError::Msg(
+            "This preferences file was written by a newer Claria. Update Claria, then try again."
+                .to_string(),
+        ));
+    }
+    Ok(synced)
+}
+
+/// A patch that sets every synced field — a whole-file replace expressed
+/// through the same merge path section saves use.
+fn full_preferences_patch(synced: &SyncedPreferences) -> PreferencesPatch {
+    PreferencesPatch {
+        preferred_model_id: Some(synced.preferred_model_id.clone()),
+        cost_explorer_enabled: Some(synced.cost_explorer_enabled),
+        hourly_cost_data: Some(synced.hourly_cost_data),
+        prompt_caching_enabled: Some(synced.prompt_caching_enabled),
+        transcription: Some(synced.transcription.clone()),
+        report_authoring: Some(synced.report_authoring.clone()),
+        model_tuning: Some(synced.model_tuning),
+        chat_streaming: Some(synced.chat_streaming),
+    }
+}
+
+/// Save the S3-stored preferences file to a user-selected local path, verbatim
+/// so a support reader sees exactly what the app reads. Falls back to a
+/// canonical serialization of the local values when the cloud copy doesn't
+/// exist yet. Returns `false` when the dialog is cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn export_preferences(state: State<'_, DesktopState>) -> Result<bool, String> {
+    run("export_preferences", async {
+        let ctx = CommandContext::new(&state).await?;
+        let bytes = match claria_storage::objects::get_object(
+            &ctx.s3,
+            &ctx.bucket,
+            claria_core::s3_keys::PREFERENCES,
+        )
+        .await
+        {
+            Ok(output) => output.body,
+            Err(claria_storage::error::StorageError::NotFound { .. }) => {
+                serde_json::to_vec_pretty(&SyncedPreferences::from_config(&ctx.cfg))?
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let date = jiff::Timestamp::now().strftime("%Y-%m-%d").to_string();
+        // Async dialog: on macOS the sync dialog cannot follow async S3 work
+        // (see the DOCX export), returning as cancelled repeatedly.
+        let selected = rfd::AsyncFileDialog::new()
+            .set_title("Export Claria preferences")
+            .set_file_name(format!("claria-preferences-{date}.json"))
+            .add_filter("JSON", &["json"])
+            .save_file()
+            .await;
+        let Some(selected) = selected else {
+            return Ok(false);
+        };
+        claria_desktop::local_export::write_private_atomic(selected.path(), &bytes)?;
+        Ok(true)
+    })
+    .await
+}
+
+/// Replace the synced preferences with a user-selected export. The previous
+/// values stay one entry back in the file's S3 version history. Returns
+/// `None` when the dialog is cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn import_preferences(
+    state: State<'_, DesktopState>,
+) -> Result<Option<ConfigInfo>, String> {
+    run("import_preferences", async {
+        let selected = rfd::AsyncFileDialog::new()
+            .set_title("Import Claria preferences")
+            .add_filter("JSON", &["json"])
+            .pick_file()
+            .await;
+        let Some(selected) = selected else {
+            return Ok(None);
+        };
+        let metadata = tokio::fs::metadata(selected.path()).await.map_err(|_| {
+            CommandError::Msg("Claria could not inspect the selected file.".to_string())
+        })?;
+        if metadata.len() > MAX_PREFERENCES_IMPORT_BYTES {
+            return Err(CommandError::Msg(
+                "The selected file is too large to be a Claria preferences export.".to_string(),
+            ));
+        }
+        let bytes = tokio::fs::read(selected.path()).await.map_err(|_| {
+            CommandError::Msg("Claria could not read the selected file.".to_string())
+        })?;
+        let synced = parse_preferences_file(&bytes)?;
+
+        let ctx = CommandContext::new(&state).await?;
+        let patch = full_preferences_patch(&synced);
+        let cfg = apply_preferences_patch(
+            &state,
+            &ctx.s3,
+            ctx.cfg.clone(),
+            &patch,
+            "imported preferences",
+        )
+        .await?;
+        ctx.record_audit(ctx.audit_event(
+            "preferences_imported",
+            "preferences",
+            claria_core::s3_keys::PREFERENCES,
+        ))
+        .await;
+        Ok(Some(config::config_info(&cfg)))
+    })
+    .await
+}
+
+/// List all versions of the synced preferences file.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_preferences_versions(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<FileVersion>, String> {
+    run("list_preferences_versions", async {
+        let ctx = CommandContext::new(&state).await?;
+        list_versions_for_key(&ctx.s3, &ctx.bucket, claria_core::s3_keys::PREFERENCES).await
+    })
+    .await
+}
+
+/// Get the text of one version of the synced preferences file.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_preferences_version(
+    state: State<'_, DesktopState>,
+    version_id: String,
+) -> Result<String, String> {
+    run("get_preferences_version", async {
+        let ctx = CommandContext::new(&state).await?;
+        get_version_text_for_key(
+            &ctx.s3,
+            &ctx.bucket,
+            claria_core::s3_keys::PREFERENCES,
+            &version_id,
+        )
+        .await
+    })
+    .await
+}
+
+/// Restore a previous version of the synced preferences file. The version's
+/// content is parsed and validated first, then written through the normal
+/// patch path so the local config follows and the overwritten values remain
+/// in version history.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_preferences_version(
+    state: State<'_, DesktopState>,
+    version_id: String,
+) -> Result<ConfigInfo, String> {
+    run("restore_preferences_version", async {
+        let ctx = CommandContext::new(&state).await?;
+        let text = get_version_text_for_key(
+            &ctx.s3,
+            &ctx.bucket,
+            claria_core::s3_keys::PREFERENCES,
+            &version_id,
+        )
+        .await?;
+        let synced = parse_preferences_file(text.as_bytes())?;
+        let patch = full_preferences_patch(&synced);
+        let cfg = apply_preferences_patch(
+            &state,
+            &ctx.s3,
+            ctx.cfg.clone(),
+            &patch,
+            "restored preferences",
+        )
+        .await?;
+        tracing::info!(version_id, "preferences version restored");
+        ctx.record_audit(
+            ctx.audit_event(
+                "preferences_version_restored",
+                "preferences",
+                claria_core::s3_keys::PREFERENCES,
+            )
+            .with_details(serde_json::json!({ "version_id": version_id })),
+        )
+        .await;
+        Ok(config::config_info(&cfg))
     })
     .await
 }
