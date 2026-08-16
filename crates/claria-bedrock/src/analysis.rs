@@ -136,6 +136,38 @@ impl ReviewProperty {
 /// decision itself.
 pub const MAX_RESUME_REASON_CHARACTERS: usize = 300;
 
+/// Evidence rows one plan row may carry *in the schema*, which is not the
+/// same number as the one the run object may hold.
+///
+/// Evidence is the largest thing a plan row can contain and therefore the
+/// main driver of how long a planning call streams for. Nothing downstream
+/// consumes more than a handful — the gate displays them and the writer is
+/// steered by them, while the completion gate checks the writer's own
+/// citations — so asking for four decisive records is a smaller, faster
+/// answer with nothing lost. The persisted ceiling stays where it is so a
+/// clinician's gate edit and every plan written before this can still name
+/// eight.
+pub const MAX_PLANNER_EVIDENCE: usize = 4;
+
+/// Ceiling for the planner's one-line reason on an evidence row, in the
+/// schema. Same reasoning as [`MAX_PLANNER_EVIDENCE`]: a pointer fits in a
+/// line, and the persisted ceiling stays wider than what is asked for.
+pub const MAX_PLANNER_RELEVANCE_CHARACTERS: usize = 120;
+
+/// Ceiling on a cited filename. S3 object keys are bounded well below this,
+/// and it is the number the output-size arithmetic in the planner is derived
+/// from, so it is named rather than repeated.
+pub const MAX_EVIDENCE_FILENAME_CHARACTERS: usize = 1024;
+
+const _: () = assert!(
+    MAX_PLANNER_EVIDENCE <= MAX_PLAN_EVIDENCE,
+    "the schema must not ask for more evidence rows than the run object may hold"
+);
+const _: () = assert!(
+    MAX_PLANNER_RELEVANCE_CHARACTERS <= MAX_EVIDENCE_RELEVANCE_CHARACTERS,
+    "the schema must not ask for a relevance line the run object would truncate"
+);
+
 /// What one forced analysis call produced.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StructuredCallOutput {
@@ -190,12 +222,15 @@ pub struct StructuredCallRequest<'a> {
     pub operation: &'static str,
 }
 
-/// Per-call input-token budget for an analysis request.
+/// Input-token budget for an analysis request.
 ///
 /// One real `CountTokens` against the exact request shape, then character
-/// estimates for anything appended (the repair round). The reserve is the
-/// caller's, because how much output one of these calls needs depends on what
-/// it is being asked for.
+/// estimates for whatever differs afterwards — a repair round's appended
+/// transcript, or the next batch's question over the same cached prefix. It
+/// belongs to the pass rather than the call for exactly that reason: a budget
+/// rebuilt per call would pay repeatedly to learn one number. The reserve is
+/// the caller's, because how much output one of these calls needs depends on
+/// what it is being asked for.
 pub struct AnalysisInputBudget {
     inner: converse::InputTokenBudget,
     budget_tokens: u32,
@@ -334,11 +369,28 @@ pub async fn converse_structured(
         .set_system(Some(system_blocks.clone()))
         .tool_config(tools.clone())
         .build();
+    let budget_tokens = budget.budget_tokens();
     budget
         .inner
         .ensure_within(
             report::protocol_chars(&system.join("\n"), messages),
-            || report::count_report_tokens(config, &client, model_id, token_request),
+            || async {
+                let measured =
+                    report::count_report_tokens(config, &client, model_id, token_request).await?;
+                // The allowance is logged when the budget is built; this is
+                // what the request actually measured against it, which is the
+                // number a console export needs to answer "how close was it?".
+                // Counts and model IDs only — never corpus or prompt text.
+                tracing::info!(
+                    target: "claria_bedrock::budget",
+                    operation,
+                    model_id,
+                    measured_input_tokens = measured,
+                    input_budget_tokens = budget_tokens,
+                    "analysis input measured"
+                );
+                Ok(measured)
+            },
             |input_tokens, input_token_budget| BedrockError::ContextBudgetExceeded {
                 model_id: model_id.to_string(),
                 input_tokens,
@@ -368,51 +420,79 @@ pub async fn converse_structured(
         system_blocks
     };
 
+    let bounds = converse::StreamBounds::analysis();
     let started = std::time::Instant::now();
-    let response = converse::start_converse_stream(
-        "analysis ConverseStream",
-        client
-            .converse_stream()
-            .model_id(model_id)
-            .set_system(Some(system_blocks))
-            .set_messages(Some(converse_messages))
-            .tool_config(tools)
-            // No tuning fields: see the module docs. The ceiling is still set
-            // and still branched on, exactly as every other Converse call must.
-            .inference_config(
-                InferenceConfiguration::builder()
-                    .max_tokens(max_tokens as i32)
-                    .build(),
-            )
-            .send(),
-    )
-    .await?;
+    // How long the service took to produce the first frame, filled in the
+    // moment it does. It is the number that separates "the model is still
+    // reading the corpus" from "the request never landed", and the failure
+    // paths below report it too.
+    let mut first_token_ms: Option<u64> = None;
+    let streamed = async {
+        let response = converse::start_converse_stream(
+            operation,
+            bounds,
+            client
+                .converse_stream()
+                .model_id(model_id)
+                .set_system(Some(system_blocks))
+                .set_messages(Some(converse_messages))
+                .tool_config(tools)
+                // No tuning fields: see the module docs. The ceiling is still set
+                // and still branched on, exactly as every other Converse call must.
+                .inference_config(
+                    InferenceConfiguration::builder()
+                        .max_tokens(max_tokens as i32)
+                        .build(),
+                )
+                .send(),
+        )
+        .await?;
+        first_token_ms = Some(elapsed_ms(started));
 
-    let mut stream = response.stream;
-    let mut collector = report::ReportStreamCollector::default();
-    let stopped = loop {
-        let event = tokio::select! {
-            biased;
-            () = stop.stopped() => break true,
-            event = converse::recv_stream_event("analysis ConverseStream", &mut stream) => event?,
+        let mut stream = response.stream;
+        let mut collector = report::ReportStreamCollector::default();
+        let stopped = loop {
+            let event = tokio::select! {
+                biased;
+                () = stop.stopped() => break true,
+                event = converse::recv_stream_event(operation, bounds, &mut stream) => event?,
+            };
+            let Some(event) = event else { break false };
+            if let Some(fragment) = collector.absorb(event)
+                && let Some(on_partial_tool_input) = on_partial_tool_input
+            {
+                on_partial_tool_input(&fragment);
+            }
         };
-        let Some(event) = event else { break false };
-        if let Some(fragment) = collector.absorb(event)
-            && let Some(on_partial_tool_input) = on_partial_tool_input
-        {
-            on_partial_tool_input(&fragment);
+        if stopped {
+            // Dropping the stream closes the connection so the model stops
+            // producing a structured answer nobody is going to read.
+            drop(stream);
+            return Err(BedrockError::Stopped);
+        }
+        collector.finish()
+    }
+    .await;
+
+    let (content, wire_stop_reason, wire_usage) = match streamed {
+        Ok(streamed) => {
+            log_call_timing(operation, model_id, first_token_ms, started, "completed");
+            streamed
+        }
+        Err(error) => {
+            let outcome = if matches!(error, BedrockError::Stopped) {
+                "stopped"
+            } else {
+                "failed"
+            };
+            log_call_timing(operation, model_id, first_token_ms, started, outcome);
+            if matches!(error, BedrockError::Stopped) {
+                tracing::info!(operation, model_id, "analysis call stopped by the reader");
+            }
+            return Err(error);
         }
     };
-    if stopped {
-        // Dropping the stream closes the connection so the model stops
-        // producing a structured answer nobody is going to read.
-        drop(stream);
-        tracing::info!(operation, model_id, "analysis call stopped by the reader");
-        return Err(BedrockError::Stopped);
-    }
-
-    let (content, wire_stop_reason, wire_usage) = collector.finish()?;
-    let latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    let latency_ms = Some(elapsed_ms(started));
     let stop_reason = report::map_stop_reason(&wire_stop_reason);
     let usage = converse::optional_usage(wire_usage.as_ref(), model_id, cache_plan.effective_ttl());
     converse::log_turn_usage(
@@ -473,6 +553,37 @@ pub async fn converse_structured(
     })
 }
 
+fn elapsed_ms(since: std::time::Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Timing line for one attempt of an analysis call, on every exit.
+///
+/// The retry layer re-sends a call that never landed, so "how long did the
+/// turn take" is not the same question as "how long did this attempt wait" —
+/// and a stall shows up as a missing `first_token_ms` beside a full-length
+/// `attempt_elapsed_ms`, which is the difference between a request the
+/// service never began and one whose socket died mid-answer. Fields are
+/// labels, model IDs, and durations — never prompt, corpus, or response
+/// content.
+fn log_call_timing(
+    operation: &'static str,
+    model_id: &str,
+    first_token_ms: Option<u64>,
+    started: std::time::Instant,
+    outcome: &'static str,
+) {
+    tracing::info!(
+        target: "claria_bedrock::budget",
+        operation,
+        model_id,
+        first_token_ms,
+        attempt_elapsed_ms = elapsed_ms(started),
+        outcome,
+        "analysis call finished"
+    );
+}
+
 /// Re-issue the shared tool configuration with `forced_tool` selected.
 ///
 /// The tool list is copied verbatim so the tools tier of the prompt cache
@@ -518,10 +629,12 @@ pub fn analysis_tool_configuration() -> Result<ToolConfiguration, BedrockError> 
         .set_tools(Some(vec![
             report::tool(
                 SUBMIT_SECTION_PLAN_TOOL,
-                "Submit the drafting plan for this report. Called exactly once. Return exactly \
-                 one row per section listed in the supplied template structure, in the order \
-                 that structure lists them — no extra rows, no omitted rows, no invented \
-                 section IDs. Every row states what the section must assert and names the \
+                "Submit the drafting plan for the sections named in the instruction. Called \
+                 exactly once. The instruction lists the section IDs this call is responsible \
+                 for; return exactly one row per listed ID, in the order it lists them — no \
+                 extra rows, no omitted rows, no invented section IDs, and no row for any \
+                 section the instruction did not list, even when the template structure shows \
+                 you others. Every row states what the section must assert and names the \
                  records it must be written from; a row that skips a section states why \
                  instead. This is an outline, not a draft: never copy record text into it.",
                 section_plan_schema(),
@@ -569,16 +682,16 @@ fn section_id_schema() -> serde_json::Value {
 fn evidence_schema(required: bool) -> serde_json::Value {
     let description = if required {
         format!(
-            "Up to {MAX_PLAN_EVIDENCE} records the section must be written from, most decisive first."
+            "Up to {MAX_PLANNER_EVIDENCE} records the section must be written from, most decisive first."
         )
     } else {
         format!(
-            "Up to {MAX_PLAN_EVIDENCE} records the section must be written from, most decisive first. May be empty only when action is \"skip\"."
+            "Up to {MAX_PLANNER_EVIDENCE} records the section must be written from, most decisive first. May be empty only when action is \"skip\"."
         )
     };
     serde_json::json!({
         "type": "array",
-        "maxItems": MAX_PLAN_EVIDENCE,
+        "maxItems": MAX_PLANNER_EVIDENCE,
         "description": description,
         "items": {
             "type": "object",
@@ -586,13 +699,13 @@ fn evidence_schema(required: bool) -> serde_json::Value {
             "additionalProperties": false,
             "properties": {
                 "filename": {
-                    "type": "string", "minLength": 1, "maxLength": 1024,
+                    "type": "string", "minLength": 1, "maxLength": MAX_EVIDENCE_FILENAME_CHARACTERS,
                     "description": "A filename copied exactly from the record corpus in the untrusted context. The host checks it against that corpus; an invented or approximated name is dropped from the plan."
                 },
                 "relevance": {
-                    "type": "string", "minLength": 1, "maxLength": MAX_EVIDENCE_RELEVANCE_CHARACTERS,
+                    "type": "string", "minLength": 1, "maxLength": MAX_PLANNER_RELEVANCE_CHARACTERS,
                     "description": format!(
-                        "One line on why this record matters to this section, in at most {MAX_EVIDENCE_RELEVANCE_CHARACTERS} Unicode characters. A pointer, not a quotation: do not copy record text here."
+                        "One line on why this record matters to this section, in at most {MAX_PLANNER_RELEVANCE_CHARACTERS} Unicode characters. A pointer, not a quotation: do not copy record text here."
                     )
                 }
             }
@@ -610,7 +723,7 @@ fn section_plan_schema() -> serde_json::Value {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": MAX_REPORT_SECTIONS,
-                "description": "Exactly one row per section in the supplied template structure, in template order.",
+                "description": "Exactly one row per section ID the instruction lists, in the order it lists them, and no row for any other section.",
                 "items": {
                     "type": "object",
                     "required": ["section_id", "action", "scope", "evidence"],
@@ -732,7 +845,7 @@ fn review_record_citation_schema() -> serde_json::Value {
         "description": "The record text that settles the point. Consistency properties only.",
         "properties": {
             "filename": {
-                "type": "string", "minLength": 1, "maxLength": 1024,
+                "type": "string", "minLength": 1, "maxLength": MAX_EVIDENCE_FILENAME_CHARACTERS,
                 "description": "A filename copied exactly from the record corpus in the untrusted context."
             },
             "quote": review_quote_schema("The span of that file that settles the point, copied verbatim.")

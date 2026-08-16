@@ -47,7 +47,7 @@ use claria_bedrock::{
     report::{
         self, ReportStopReason, ReportToolCall, ReportToolRequest, WriteFullDraftSectionRequest,
     },
-    retry::with_throttle_retry,
+    retry::{MAX_ATTEMPTS, with_throttle_retry_observed},
 };
 use claria_core::models::{
     report::{
@@ -1030,7 +1030,18 @@ async fn run_branch(
         // invented its own retry schedule would hammer a throttled account.
         // A failed attempt commits nothing — `messages` still holds only
         // completed messages — so re-sending the identical request is safe.
-        let attempt = with_throttle_retry(OPERATION, || {
+        // The reserved number, not the coordinator's: a branch cannot know
+        // what commit order will call this, and the reader needs the retry
+        // named while it is happening rather than after the merge.
+        let on_retry = |attempt, delay| {
+            context.emit(ReportTurnProgress::retrying(
+                call_number,
+                attempt,
+                MAX_ATTEMPTS,
+                delay,
+            ));
+        };
+        let attempt = with_throttle_retry_observed(OPERATION, Some(&on_retry), || {
             let messages = &messages;
             let budget = &budget;
             async move {

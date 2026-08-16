@@ -40,6 +40,19 @@ pub(crate) fn cache_checkpoints() -> Vec<(usize, usize)> {
     vec![(0, TEMPLATE_CONTEXT_BLOCK), (0, PLAN_CONTEXT_BLOCK)]
 }
 
+/// Whether the template block carries each section's prose body.
+///
+/// The writer rewrites from that prose and cannot work without it. The
+/// analysis family never reads it: a planner is ordered to treat template
+/// bodies as facts about somebody else, and nothing in the plan schema, the
+/// plan validator, or the review sweep looks at one. Sending it to them was
+/// the single largest avoidable block in an analysis request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateBodies {
+    Include,
+    Omit,
+}
+
 /// The base revision's structure, and every section's template body.
 ///
 /// This replaces the accepted-report dump the whole-draft mode used to send.
@@ -52,18 +65,50 @@ pub(crate) fn template_context(
     workspace: &ReportWorkspace,
     base: &ReportContent,
 ) -> Result<String, String> {
+    build_template_context(workspace, base, TemplateBodies::Include)
+}
+
+/// The same block for the analysis family — planning, resume planning, and
+/// the review sweep — with the per-section prose left out.
+///
+/// One builder and one block shape, so all three roles keep reading the same
+/// cached system prefix: they differ only in which tool they are forced onto,
+/// and a differing system block would cost each of them the prefix the others
+/// paid to write.
+pub(crate) fn planner_template_context(
+    workspace: &ReportWorkspace,
+    base: &ReportContent,
+) -> Result<String, String> {
+    build_template_context(workspace, base, TemplateBodies::Omit)
+}
+
+fn build_template_context(
+    workspace: &ReportWorkspace,
+    base: &ReportContent,
+    bodies: TemplateBodies,
+) -> Result<String, String> {
     let value = serde_json::json!({
         "title": base.title,
         "template_import": template_provenance(workspace),
         "sections": base
             .sections
             .iter()
-            .map(|section| serde_json::json!({
-                "section_id": section.id,
-                "heading": section.heading,
-                "skipped": section.skipped,
-                "template_body": template_body(section)
-            }))
+            .map(|section| {
+                let mut row = serde_json::json!({
+                    "section_id": section.id,
+                    "heading": section.heading,
+                    "skipped": section.skipped
+                });
+                if bodies == TemplateBodies::Include
+                    && let Some(object) = row.as_object_mut()
+                {
+                    object.insert(
+                        "template_body".to_string(),
+                        serde_json::json!(template_body(section)),
+                    );
+                }
+                row
+            })
             .collect::<Vec<_>>()
     });
     // Pretty-printed, unlike the record corpus: the model copies section UUIDs

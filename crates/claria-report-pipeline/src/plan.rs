@@ -1,26 +1,35 @@
 //! The planning pass: deciding what each section must assert, and what in the
 //! records says so, before a word of the report is written.
 //!
-//! A plan is produced by one forced tool call to a smaller model, then
-//! checked by code. The model is trusted to read a corpus and propose scope;
-//! it is not trusted to have covered every section, to have kept the section
-//! IDs it was given, or to have named a record that exists. Those are
-//! decidable questions, so the host decides them:
+//! A plan is produced by forced tool calls to a smaller model, then checked
+//! by code. The model is trusted to read a corpus and propose scope; it is
+//! not trusted to have covered every section, to have kept the section IDs it
+//! was given, or to have named a record that exists. Those are decidable
+//! questions, so the host decides them:
 //!
-//! - **Coverage and identity are hard.** One row per template section, no
-//!   invented IDs, no duplicates. Failing that costs one repair round — the
-//!   diagnostic goes back verbatim and the tool is forced again — and then
-//!   the pass fails. A plan missing a section would silently delete it from
-//!   the document.
+//! - **Coverage and identity are hard.** One row per section the call was
+//!   given, no invented IDs, no duplicates. Failing that costs one repair
+//!   round — the diagnostic goes back verbatim and the tool is forced again —
+//!   and then the pass fails. A plan missing a section would silently delete
+//!   it from the document.
 //! - **Evidence is soft.** A filename that names no record, or a draft row
 //!   left with nothing backing it, lands as a warning on the run. The
 //!   clinician is about to read this plan at the gate; refusing to show it to
 //!   them because one filename was mistyped helps nobody.
 //!
+//! A fresh plan is asked for [`PLAN_BATCH_SECTIONS`] sections at a time, in
+//! template order, one sequential call per batch. Every batch reads the same
+//! cached prefix and carries only its own question; a batch that validates is
+//! decided, announced, and never asked for again, and the pass checks the
+//! stop signal before opening the next call. Nothing is persisted until the
+//! last batch lands, so a pass that fails halfway leaves the report as it
+//! found it.
+//!
 //! Resuming works the same way over a different question — what to do with
 //! the sections that already landed — and only when there is a question to
-//! ask. A resume with no new instructions has a decidable answer, so it skips
-//! the model entirely.
+//! ask. It stays one call, because its question is the run's whole state
+//! table. A resume with no new instructions has a decidable answer, so it
+//! skips the model entirely.
 
 use std::collections::{HashMap, HashSet};
 
@@ -32,12 +41,12 @@ use claria_bedrock::{
     },
     converse::StopSignal,
     error::BedrockError,
-    retry::with_throttle_retry,
+    retry::{MAX_ATTEMPTS, with_throttle_retry_observed},
 };
 use claria_core::models::{
     report::{
-        ReportContent, ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole,
-        ReportToolResultStatus, ReportWorkspace,
+        ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
+        ReportWorkspace,
     },
     report_run::{
         DraftRun, DraftRunStatus, EvidenceRef, MAX_PLAN_EVIDENCE, MAX_PLAN_SCOPE_CHARACTERS,
@@ -54,7 +63,7 @@ use uuid::Uuid;
 
 use crate::{
     FullReportGenerationOutcome, ReportPipelineError,
-    full_draft_context::{DraftTurnKind, section_state_table, template_context},
+    full_draft_context::{DraftTurnKind, planner_template_context, section_state_table},
     parallel_draft::execute_parallel_draft_turn,
     prompts::planner_system_prompt,
     record_context::{
@@ -68,11 +77,12 @@ use crate::{
 /// from the planner's context window to form its input budget — enforced, not
 /// aspirational. A plan row is an outline entry: a section ID, a sentence or
 /// three of scope, and a handful of filenames with one line each on why they
-/// matter. A hundred of those is a couple of thousand tokens, so this leaves
-/// roughly four times the room even a dense report needs, and hands the rest
-/// back to the input budget the corpus is read under. A plan that reaches the
-/// ceiling is a typed failure rather than a document outline silently missing
-/// its last sections.
+/// matter. A call is asked for [`PLAN_BATCH_SECTIONS`] of them, which is a
+/// couple of thousand tokens in practice and, at every schema ceiling at
+/// once, still a third inside this — the `const` assertion below is what
+/// holds the two numbers together. Whatever is left goes back to the input
+/// budget the corpus is read under. A batch that reaches the ceiling is a
+/// typed failure rather than a document outline silently missing rows.
 pub const PLAN_OUTPUT_TOKEN_RESERVE: u32 = 16_384;
 
 /// Stamped as the plan's author when a resume is decided by code rather than
@@ -85,6 +95,59 @@ pub const DETERMINISTIC_PLAN_MODEL_ID: &str = "claria-deterministic-resume";
 /// model that cannot use that is not going to use a second copy of it either,
 /// and every round is a full re-read of the corpus.
 const PLAN_REPAIR_ROUNDS: u32 = 1;
+
+/// Sections one planning call is asked to plan.
+///
+/// A fresh plan is a sequence of these rather than one call for the whole
+/// document. The single call was the pipeline's longest-running request by
+/// far — one forced tool emitting every row of a thirty-section report — and
+/// its length is what put it under the stream's inter-frame watchdog with
+/// nothing to show the reader and nothing to salvage. Eight rows is a couple
+/// of thousand tokens of realistic output: short enough to land well inside
+/// the watchdog, long enough that the per-call overhead (a fresh instruction
+/// and a cached-prefix read) stays small against it. It also makes the pass
+/// checkpointed — every batch that validates is decided, and the reader is
+/// told so — and gives Stop somewhere to land between calls.
+pub const PLAN_BATCH_SECTIONS: usize = 8;
+
+/// Characters of JSON scaffolding around one plan row's values: the four key
+/// names and their quotes, colons and commas, the row's own braces, and the
+/// same again for each evidence object it carries. Rounded well up — it is a
+/// term in a ceiling check, so overstating it is the safe direction.
+const PLAN_ROW_JSON_OVERHEAD_CHARS: usize = 160;
+
+/// The characters-per-token ratio output is sized at, matching the estimate
+/// the input budget uses. Tool-call JSON is denser than prose, so a ceiling
+/// derived at this ratio is conservative.
+const OUTPUT_CHARS_PER_TOKEN: usize = 4;
+
+/// The largest one plan row's JSON can be, derived from the schema's own
+/// ceilings rather than guessed: a 36-character section UUID, the longest
+/// action word, a scope at its limit, and
+/// [`analysis::MAX_PLANNER_EVIDENCE`] evidence objects each holding a
+/// filename and a relevance line at theirs.
+const WORST_CASE_PLAN_ROW_CHARS: usize = PLAN_ROW_JSON_OVERHEAD_CHARS
+    + SECTION_ID_CHARACTERS
+    + LONGEST_PLAN_ACTION_CHARACTERS
+    + MAX_PLAN_SCOPE_CHARACTERS
+    + analysis::MAX_PLANNER_EVIDENCE
+        * (analysis::MAX_EVIDENCE_FILENAME_CHARACTERS + analysis::MAX_PLANNER_RELEVANCE_CHARACTERS);
+
+/// A section UUID's canonical text length, which the schema pins exactly.
+const SECTION_ID_CHARACTERS: usize = 36;
+
+/// `"draft"` — the longer of the two action words.
+const LONGEST_PLAN_ACTION_CHARACTERS: usize = 5;
+
+// The batch size and the output ceiling are the same constraint stated twice,
+// so they are checked against each other rather than maintained apart: a
+// batch whose worst case does not fit would be a reserve that is a lie, and
+// truncated forced-tool JSON is a failed pass rather than a short plan.
+const _: () = assert!(
+    PLAN_BATCH_SECTIONS * WORST_CASE_PLAN_ROW_CHARS
+        <= PLAN_OUTPUT_TOKEN_RESERVE as usize * OUTPUT_CHARS_PER_TOKEN,
+    "a worst-case batch of plan rows must fit the planner's output ceiling"
+);
 
 /// What one planning pass produced, and what it cost.
 ///
@@ -224,31 +287,72 @@ async fn plan_fresh_run(
 ) -> Result<DraftPlanOutcome, ReportPipelineError> {
     let corpus = prepare_analysis_corpus(s3, bucket, workspace.client_id, models, request).await?;
     let system = analysis_system_blocks(workspace, &corpus)?;
-    let instruction = fresh_plan_instruction(request.instructions.trim());
 
-    let call = run_analysis_call(
-        sdk_config,
-        models.planner_model_id,
-        &system,
-        instruction,
-        analysis::SUBMIT_SECTION_PLAN_TOOL,
-        section_total(workspace.draft.content.sections.len()),
-        request,
-        |input| {
-            let rows = analysis::decode_section_plan(input).map_err(bedrock_diagnostic)?;
-            validate_section_plan(&rows.rows, &workspace.draft.content, &corpus)
-        },
-    )
-    .await?;
+    let expected: Vec<(Uuid, &str)> = workspace
+        .draft
+        .content
+        .sections
+        .iter()
+        .map(|section| (section.id, section.heading.as_str()))
+        .collect();
+    let total = section_total(expected.len());
+    let batches: Vec<&[(Uuid, &str)]> = expected.chunks(PLAN_BATCH_SECTIONS).collect();
+    let batch_count = batches.len();
+
+    // One pass, one budget, one row counter, however many calls the document
+    // takes: the verified `CountTokens` belongs to the request shape, which
+    // every batch shares, and the counter's denominator is the whole document.
+    let pass = AnalysisPass::new(sdk_config, models.planner_model_id, &system, request, total)?;
+    let mut tally = PassTally::default();
+    // One accumulator for the whole plan: a filename the corpus does not have
+    // is the same warning whichever batch names it, and the gate shows a
+    // bounded, deduplicated list.
+    let mut warnings = Warnings::default();
+    let mut entries: Vec<PlanEntry> = Vec::with_capacity(expected.len());
+
+    for (index, batch) in batches.iter().enumerate() {
+        // Between batches is where a Stop lands: the call in flight is
+        // interrupted by the stream loop, and this is what stops the pass
+        // opening the next billed one.
+        if pass.stop.is_stopped() {
+            return Err(map_bedrock_error(BedrockError::Stopped, PLANNER_LABELS));
+        }
+        let batch_len = section_total(batch.len());
+        let planned = pass
+            .run_call(
+                fresh_plan_instruction(
+                    request.instructions.trim(),
+                    batch,
+                    index.saturating_add(1),
+                    batch_count,
+                ),
+                analysis::SUBMIT_SECTION_PLAN_TOOL,
+                batch_len,
+                &mut tally,
+                |input| {
+                    let rows = analysis::decode_section_plan(input).map_err(bedrock_diagnostic)?;
+                    validate_section_plan(&rows.rows, batch, &corpus, &mut warnings)
+                },
+            )
+            .await?;
+        let first = section_total(index * PLAN_BATCH_SECTIONS).saturating_add(1);
+        entries.extend(planned);
+        pass.advance_rows(batch_len);
+        request.emit_progress(ReportTurnProgress::PlanBatchPlanned {
+            first,
+            last: first.saturating_add(batch_len).saturating_sub(1),
+            total,
+        });
+    }
 
     let now = jiff::Timestamp::now();
     run.run.plan = Some(RunPlan {
         model_id: models.planner_model_id.to_string(),
-        entries: call.value.entries,
+        entries,
         user_edited: false,
         synthetic: false,
         approved_at: None,
-        plan_warnings: call.value.warnings,
+        plan_warnings: warnings.into_vec(),
         created_at: now,
     });
     run.run.status = DraftRunStatus::AwaitingApproval;
@@ -256,8 +360,8 @@ async fn plan_fresh_run(
 
     Ok(DraftPlanOutcome {
         run: run.run.clone(),
-        usage: call.usage,
-        converse_calls: call.converse_calls,
+        usage: tally.usage,
+        converse_calls: tally.converse_calls,
     })
 }
 
@@ -552,43 +656,53 @@ pub async fn plan_draft_resume(
     let system = analysis_system_blocks(&loaded.workspace, &corpus)?;
     let instruction = resume_plan_instruction(&run.run, instructions);
 
-    let call = run_analysis_call(
-        sdk_config,
-        models.planner_model_id,
-        &system,
-        instruction,
-        analysis::SUBMIT_RESUME_PLAN_TOOL,
-        section_total(run.run.sections.len()),
-        request,
-        |input| {
-            let rows = analysis::decode_resume_plan(input).map_err(bedrock_diagnostic)?;
-            validate_resume_plan(&rows.rows, &run.run, &corpus)
-        },
-    )
-    .await?;
+    // Deliberately one call over every section, where a fresh plan is
+    // batched. A resume asks what to do with sections that already have
+    // durable state, and that state is one table the model reads as a whole:
+    // splitting it would hand each call a slice of a picture whose point is
+    // that it is complete. It is also the smaller question — a decision word
+    // and a line of reasoning per row — so it never had the fresh plan's
+    // length problem.
+    let total = section_total(run.run.sections.len());
+    let pass = AnalysisPass::new(sdk_config, models.planner_model_id, &system, request, total)?;
+    let mut tally = PassTally::default();
+    let mut warnings = Warnings::default();
+    let entries = pass
+        .run_call(
+            instruction,
+            analysis::SUBMIT_RESUME_PLAN_TOOL,
+            total,
+            &mut tally,
+            |input| {
+                let rows = analysis::decode_resume_plan(input).map_err(bedrock_diagnostic)?;
+                validate_resume_plan(&rows.rows, &run.run, &corpus, &mut warnings)
+            },
+        )
+        .await?;
 
     run.run.plan = Some(RunPlan {
         model_id: models.planner_model_id.to_string(),
-        entries: call.value.entries,
+        entries,
         user_edited: false,
         synthetic: false,
         approved_at: Some(now),
-        plan_warnings: call.value.warnings,
+        plan_warnings: warnings.into_vec(),
         created_at: now,
     });
     apply_plan_to_sections(&mut run.run, now);
     save_draft_run(s3, bucket, &mut run).await?;
     Ok(DraftPlanOutcome {
         run: run.run.clone(),
-        usage: call.usage,
-        converse_calls: call.converse_calls,
+        usage: tally.usage,
+        converse_calls: tally.converse_calls,
     })
 }
 
 // ── The forced call, and its one repair round ───────────────────────────────
 
-struct AnalysisOutcome<T> {
-    value: T,
+/// What a planning pass has spent so far, across every call it has made.
+#[derive(Debug, Default)]
+struct PassTally {
     usage: Option<TurnUsage>,
     converse_calls: u32,
 }
@@ -617,6 +731,10 @@ struct PlanRowCounter {
     carry: String,
     /// Rows seen in the attempt now streaming.
     seen: u32,
+    /// Rows earlier batches already had accepted. The bar is against the
+    /// whole document, so a batch counts on from where its predecessor
+    /// stopped rather than restarting at one.
+    base: u32,
     /// Highest count already announced. A throttle retry or a repair round
     /// starts the JSON again from nothing, and the reader must not watch the
     /// count walk backwards.
@@ -624,15 +742,27 @@ struct PlanRowCounter {
 }
 
 impl PlanRowCounter {
-    /// Begin a fresh attempt. What has already been announced stands.
+    /// Begin a fresh attempt. What has already been announced stands, and so
+    /// does what earlier batches settled.
     fn restart(&mut self) {
         self.carry.clear();
         self.seen = 0;
     }
 
+    /// Retire a batch that validated: its rows are decided, so the next
+    /// batch's counting starts above them.
+    fn advance_base(&mut self, batch_len: u32) {
+        self.base = self.base.saturating_add(batch_len);
+    }
+
     /// Absorb one fragment of partial JSON, returning the new row count when
     /// it has moved past everything announced so far.
-    fn absorb(&mut self, fragment: &str, total: u32) -> Option<u32> {
+    ///
+    /// `batch_len` is how many rows the call now streaming was asked for and
+    /// `total` how many the document has: a planner that answers with more
+    /// rows than it was given is a validation failure, not a progress line
+    /// that counts past its own denominator.
+    fn absorb(&mut self, fragment: &str, batch_len: u32, total: u32) -> Option<u32> {
         self.carry.push_str(fragment);
         let mut consumed = 0;
         while let Some(at) = self.carry[consumed..].find(SECTION_ID_KEY) {
@@ -640,10 +770,10 @@ impl PlanRowCounter {
             self.seen = self.seen.saturating_add(1);
         }
         self.carry.drain(..consumed);
-        // A planner that returns more rows than the document has is a
-        // validation failure, not a progress line that counts past its own
-        // denominator.
-        let seen = self.seen.min(total);
+        let seen = self
+            .base
+            .saturating_add(self.seen.min(batch_len))
+            .min(total);
         (seen > self.announced).then(|| {
             self.announced = seen;
             seen
@@ -651,163 +781,213 @@ impl PlanRowCounter {
     }
 }
 
-/// Force one analysis tool, validate the answer, and grant exactly
-/// [`PLAN_REPAIR_ROUNDS`] correction before giving up.
+/// One planning pass, and everything its calls share.
 ///
-/// The correction is an error `tool_result` carrying the validator's own
-/// words. Those words name section IDs, row indexes, and JSON fields — never
-/// record or draft text — so sending them back costs nothing and is the
-/// difference between a model that fixes one row and a model that re-guesses
-/// the whole plan.
-///
-/// A repair round is not the same thing as a retry. Rounds answer a plan the
-/// host refused; retries answer a call that never landed — a throttle, or a
-/// stream that stalled or was severed — and re-send the identical request
-/// without spending a round or a second `CountTokens`.
-///
-/// `section_total` is how many rows the document is owed, which is known
-/// before the call and is the denominator the live row count is reported
-/// against.
-// The same explicit orchestration boundary the entry points above keep.
-#[allow(clippy::too_many_arguments)]
-async fn run_analysis_call<T>(
-    sdk_config: &aws_config::SdkConfig,
-    planner_model_id: &str,
-    system: &[String],
-    instruction: String,
-    forced_tool: &'static str,
+/// A fresh plan is several calls over one request shape: the same system
+/// blocks, the same tool set, the same cache plan, and one verified input
+/// count. Holding them here is what keeps that true — a budget built inside
+/// the batch loop would silently pay for a `CountTokens` per batch, and a
+/// counter built there would restart the reader's number at every checkpoint.
+struct AnalysisPass<'a> {
+    sdk_config: &'a aws_config::SdkConfig,
+    planner_model_id: &'a str,
+    system: &'a [String],
+    tools: analysis::AnalysisToolConfiguration,
+    cache_plan: claria_bedrock::converse::CachePlan,
+    /// Behind a lock so each retry attempt can re-borrow it: the verified
+    /// count belongs to the request, not the attempt, so a re-sent request
+    /// must not pay for a second `CountTokens`.
+    budget: tokio::sync::Mutex<AnalysisInputBudget>,
+    /// Rows counted off the partial answer, behind a lock because the stream
+    /// hands fragments to a shared callback rather than to this task.
+    counter: std::sync::Mutex<PlanRowCounter>,
+    stop: &'a StopSignal,
+    request: DraftPlanRequest<'a>,
+    /// Rows the whole pass is owed: the progress denominator, known before
+    /// the first call.
     section_total: u32,
-    request: DraftPlanRequest<'_>,
-    mut validate: impl FnMut(&serde_json::Value) -> Result<T, String>,
-) -> Result<AnalysisOutcome<T>, ReportPipelineError> {
-    // A caller that supplied no signal gets one nobody can fire.
-    let unstoppable = StopSignal::default();
-    let stop = request.stop.unwrap_or(&unstoppable);
-    let tools = analysis::analysis_tool_configuration()
-        .map_err(|error| map_bedrock_error(error, PLANNER_LABELS))?;
-    let cache_plan = claria_bedrock::converse::CachePlan::analysis(
-        claria_core::model_id::ModelCapabilities::for_id(planner_model_id),
-    );
-    // Behind a lock so each retry attempt can re-borrow it: the verified
-    // count belongs to the request, not the attempt, so a re-sent request
-    // must not pay for a second `CountTokens`.
-    let budget = tokio::sync::Mutex::new(AnalysisInputBudget::new(
-        planner_model_id,
-        "report_plan",
-        PLAN_OUTPUT_TOKEN_RESERVE,
-    ));
-    let mut messages = vec![ReportProtocolMessage {
-        role: ReportProtocolRole::User,
-        content: vec![ReportProtocolBlock::Text { text: instruction }],
-        created_at: jiff::Timestamp::now(),
-    }];
+}
 
-    // Rows counted off the partial answer, behind a lock because the stream
-    // hands fragments to a shared callback rather than to this task.
-    let counter = std::sync::Mutex::new(PlanRowCounter::default());
-    let count_row = |fragment: &str| {
-        let Ok(mut counter) = counter.lock() else {
-            return;
-        };
-        if let Some(planned) = counter.absorb(fragment, section_total) {
-            request.emit_progress(ReportTurnProgress::PlanRowPlanned {
-                planned,
-                total: section_total,
-            });
-        }
-    };
-
-    let mut usage: Option<TurnUsage> = None;
-    let mut converse_calls = 0_u32;
-    let mut rejection: Option<String> = None;
-    for round in 0..=PLAN_REPAIR_ROUNDS {
-        converse_calls = converse_calls.saturating_add(1);
-        request.emit_progress(ReportTurnProgress::ModelCallStarted {
-            call_number: converse_calls,
-        });
-        let output: StructuredCallOutput = with_throttle_retry("report_plan", || {
-            let messages = &messages;
-            let tools = &tools;
-            let cache_plan = &cache_plan;
-            let budget = &budget;
-            let count_row = &count_row;
-            if let Ok(mut counter) = counter.lock() {
-                counter.restart();
-            }
-            async move {
-                analysis::converse_structured(
-                    sdk_config,
-                    StructuredCallRequest {
-                        model_id: planner_model_id,
-                        system,
-                        messages,
-                        tools,
-                        forced_tool,
-                        max_tokens: PLAN_OUTPUT_TOKEN_RESERVE,
-                        cache_plan: cache_plan.clone(),
-                        stop,
-                        on_partial_tool_input: Some(count_row),
-                        operation: "report_plan",
-                    },
-                    &mut *budget.lock().await,
-                )
-                .await
-            }
+impl<'a> AnalysisPass<'a> {
+    fn new(
+        sdk_config: &'a aws_config::SdkConfig,
+        planner_model_id: &'a str,
+        system: &'a [String],
+        request: DraftPlanRequest<'a>,
+        section_total: u32,
+    ) -> Result<Self, ReportPipelineError> {
+        Ok(Self {
+            sdk_config,
+            planner_model_id,
+            system,
+            tools: analysis::analysis_tool_configuration()
+                .map_err(|error| map_bedrock_error(error, PLANNER_LABELS))?,
+            cache_plan: claria_bedrock::converse::CachePlan::analysis(
+                claria_core::model_id::ModelCapabilities::for_id(planner_model_id),
+            ),
+            budget: tokio::sync::Mutex::new(AnalysisInputBudget::new(
+                planner_model_id,
+                "report_plan",
+                PLAN_OUTPUT_TOKEN_RESERVE,
+            )),
+            counter: std::sync::Mutex::new(PlanRowCounter::default()),
+            // A caller that supplied no signal gets one nobody can fire.
+            stop: match request.stop {
+                Some(stop) => stop,
+                None => crate::turn::never_stopped(),
+            },
+            request,
+            section_total,
         })
-        .await
-        .map_err(|error| map_bedrock_error(error, PLANNER_LABELS))?;
-        usage = merge_optional_usage(usage, output.usage.clone());
+    }
 
-        match validate(&output.input) {
-            Ok(value) => {
-                return Ok(AnalysisOutcome {
-                    value,
-                    usage,
-                    converse_calls,
-                });
-            }
-            Err(diagnostic) => {
-                if round == PLAN_REPAIR_ROUNDS {
-                    rejection = Some(diagnostic);
-                    break;
-                }
-                messages.push(ReportProtocolMessage {
-                    role: ReportProtocolRole::Assistant,
-                    content: vec![ReportProtocolBlock::ToolUse {
-                        tool_use_id: output.tool_use_id.clone(),
-                        name: forced_tool.to_string(),
-                        input: output.input.clone(),
-                    }],
-                    created_at: jiff::Timestamp::now(),
-                });
-                messages.push(ReportProtocolMessage {
-                    role: ReportProtocolRole::User,
-                    content: vec![ReportProtocolBlock::ToolResult {
-                        tool_use_id: output.tool_use_id,
-                        status: ReportToolResultStatus::Error,
-                        content: serde_json::json!({"error": {
-                            "code": "invalid_plan",
-                            "message": diagnostic,
-                        }}),
-                    }],
-                    created_at: jiff::Timestamp::now(),
-                });
-                rejection = None;
-            }
+    /// Retire the rows a batch settled, so the next one counts on from them.
+    fn advance_rows(&self, batch_len: u32) {
+        if let Ok(mut counter) = self.counter.lock() {
+            counter.advance_base(batch_len);
         }
     }
 
-    let diagnostic = rejection.unwrap_or_else(|| "the plan could not be validated".to_string());
-    tracing::error!(
-        planner_model_id,
-        forced_tool,
-        converse_calls,
-        diagnostic,
-        "the planner could not produce a valid plan"
-    );
-    Err(ReportPipelineError::InvalidInput(format!(
-        "The planning model could not produce a usable plan for this report, even after a correction. Nothing was saved. Details: {diagnostic}"
-    )))
+    /// Force one analysis tool, validate the answer, and grant exactly
+    /// [`PLAN_REPAIR_ROUNDS`] correction before giving up.
+    ///
+    /// The correction is an error `tool_result` carrying the validator's own
+    /// words. Those words name section IDs, row indexes, and JSON fields —
+    /// never record or draft text — so sending them back costs nothing and is
+    /// the difference between a model that fixes one row and a model that
+    /// re-guesses the whole plan.
+    ///
+    /// A repair round is not the same thing as a retry. Rounds answer a plan
+    /// the host refused; retries answer a call that never landed — a throttle,
+    /// or a stream that stalled or was severed — and re-send the identical
+    /// request without spending a round or a second `CountTokens`.
+    ///
+    /// The conversation starts empty every time. A batch that carried its
+    /// predecessors' transcripts would grow a messages tier that nothing
+    /// caches, for an answer that is about sections the earlier calls were
+    /// never shown.
+    async fn run_call<T>(
+        &self,
+        instruction: String,
+        forced_tool: &'static str,
+        batch_len: u32,
+        tally: &mut PassTally,
+        mut validate: impl FnMut(&serde_json::Value) -> Result<T, String>,
+    ) -> Result<T, ReportPipelineError> {
+        let mut messages = vec![ReportProtocolMessage {
+            role: ReportProtocolRole::User,
+            content: vec![ReportProtocolBlock::Text { text: instruction }],
+            created_at: jiff::Timestamp::now(),
+        }];
+
+        let count_row = |fragment: &str| {
+            let Ok(mut counter) = self.counter.lock() else {
+                return;
+            };
+            if let Some(planned) = counter.absorb(fragment, batch_len, self.section_total) {
+                self.request
+                    .emit_progress(ReportTurnProgress::PlanRowPlanned {
+                        planned,
+                        total: self.section_total,
+                    });
+            }
+        };
+
+        let mut rejection: Option<String> = None;
+        for round in 0..=PLAN_REPAIR_ROUNDS {
+            tally.converse_calls = tally.converse_calls.saturating_add(1);
+            let call_number = tally.converse_calls;
+            let on_retry = |attempt, delay| {
+                self.request.emit_progress(ReportTurnProgress::retrying(
+                    call_number,
+                    attempt,
+                    MAX_ATTEMPTS,
+                    delay,
+                ));
+            };
+            let output: StructuredCallOutput =
+                with_throttle_retry_observed("report_plan", Some(&on_retry), || {
+                    let messages = &messages;
+                    let count_row = &count_row;
+                    if let Ok(mut counter) = self.counter.lock() {
+                        counter.restart();
+                    }
+                    // Announced per attempt rather than per round: a re-sent
+                    // request is a new stream whose row count starts over, and
+                    // saying it started is what retires the retry line.
+                    self.request
+                        .emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
+                    async move {
+                        analysis::converse_structured(
+                            self.sdk_config,
+                            StructuredCallRequest {
+                                model_id: self.planner_model_id,
+                                system: self.system,
+                                messages,
+                                tools: &self.tools,
+                                forced_tool,
+                                max_tokens: PLAN_OUTPUT_TOKEN_RESERVE,
+                                cache_plan: self.cache_plan.clone(),
+                                stop: self.stop,
+                                on_partial_tool_input: Some(count_row),
+                                operation: "report_plan",
+                            },
+                            &mut *self.budget.lock().await,
+                        )
+                        .await
+                    }
+                })
+                .await
+                .map_err(|error| map_bedrock_error(error, PLANNER_LABELS))?;
+            tally.usage = merge_optional_usage(tally.usage.take(), output.usage.clone());
+
+            match validate(&output.input) {
+                Ok(value) => return Ok(value),
+                Err(diagnostic) => {
+                    if round == PLAN_REPAIR_ROUNDS {
+                        rejection = Some(diagnostic);
+                        break;
+                    }
+                    messages.push(ReportProtocolMessage {
+                        role: ReportProtocolRole::Assistant,
+                        content: vec![ReportProtocolBlock::ToolUse {
+                            tool_use_id: output.tool_use_id.clone(),
+                            name: forced_tool.to_string(),
+                            input: output.input.clone(),
+                        }],
+                        created_at: jiff::Timestamp::now(),
+                    });
+                    messages.push(ReportProtocolMessage {
+                        role: ReportProtocolRole::User,
+                        content: vec![ReportProtocolBlock::ToolResult {
+                            tool_use_id: output.tool_use_id,
+                            status: ReportToolResultStatus::Error,
+                            content: serde_json::json!({"error": {
+                                "code": "invalid_plan",
+                                "message": diagnostic,
+                            }}),
+                        }],
+                        created_at: jiff::Timestamp::now(),
+                    });
+                    rejection = None;
+                }
+            }
+        }
+
+        let diagnostic = rejection.unwrap_or_else(|| "the plan could not be validated".to_string());
+        let planner_model_id = self.planner_model_id;
+        let converse_calls = tally.converse_calls;
+        tracing::error!(
+            planner_model_id,
+            forced_tool,
+            converse_calls,
+            diagnostic,
+            "the planner could not produce a valid plan"
+        );
+        Err(ReportPipelineError::InvalidInput(format!(
+            "The planning model could not produce a usable plan for this report, even after a correction. Nothing was saved. Details: {diagnostic}"
+        )))
+    }
 }
 
 /// How one analysis role names itself in the sentences a clinician reads when
@@ -944,11 +1124,17 @@ async fn prepare_analysis_corpus(
 /// Untrusted data after the instructions, inside named delimiters, with the
 /// data-not-instructions rule stated in the policy above it — the same
 /// posture the writer uses, in a different transport tier.
+///
+/// The template block here carries structure without prose. Every analysis
+/// role — fresh plan, resume plan, review sweep — reads these same blocks and
+/// none of them reads a template body, so leaving the prose out is one
+/// smaller shared prefix rather than a saving one role takes at the others'
+/// expense. The writer's own block still carries it.
 pub(crate) fn analysis_system_blocks(
     workspace: &ReportWorkspace,
     corpus: &FullRecordContext,
 ) -> Result<Vec<String>, ReportPipelineError> {
-    let template = template_context(workspace, &workspace.draft.content)
+    let template = planner_template_context(workspace, &workspace.draft.content)
         .map_err(ReportPipelineError::InvalidInput)?;
     Ok(vec![
         planner_system_prompt(),
@@ -957,15 +1143,36 @@ pub(crate) fn analysis_system_blocks(
     ])
 }
 
-fn fresh_plan_instruction(guidance: &str) -> String {
-    let mut text = String::from(
-        "Plan this report before it is written.\n\n\
-         Requirements:\n\
-         1. Return exactly one row per section listed in <untrusted_template_context>, in the \
-            order that block lists them. Copy each section_id exactly; never invent, merge, \
-            reorder, or omit a section.\n\
-         2. Assign a scope to EVERY section: what that section must assert about this client, in \
-            terms the writer can act on. One to three specific sentences.\n\
+/// One batch's question: which sections this call answers for, and what a row
+/// about one has to say.
+///
+/// The section IDs are listed here rather than left implicit in the template
+/// block because the template block is the cached prefix — identical in every
+/// batch — and the batch is the only thing that differs. Naming them by ID and
+/// by ID alone also keeps the question small: the headings are already above,
+/// and repeating untrusted text below the cache point buys nothing.
+fn fresh_plan_instruction(
+    guidance: &str,
+    batch: &[(Uuid, &str)],
+    batch_number: usize,
+    batch_count: usize,
+) -> String {
+    let mut text = format!(
+        "Plan this report before it is written. The report is being planned in \
+         {batch_count} batches and this is batch {batch_number} of {batch_count}.\n\n\
+         Plan these sections, and only these:\n"
+    );
+    for (section_id, _) in batch {
+        text.push_str(&format!("- {section_id}\n"));
+    }
+    text.push_str(
+        "\nRequirements:\n\
+         1. Return exactly one row per section ID listed above, in the order listed. Copy each \
+            section_id exactly; never invent, merge, reorder, or omit one. Return no row for any \
+            other section of this report — the sections not listed above belong to the other \
+            batches, and a row for one of them fails this call.\n\
+         2. Assign a scope to EVERY section you were given: what that section must assert about \
+            this client, in terms the writer can act on. One to three specific sentences.\n\
          3. Cite evidence as filenames copied exactly out of <untrusted_record_context>, each \
             with one line on why that record matters to that section. The host checks every \
             filename against the corpus, so an approximated name is dropped. Do not copy record \
@@ -981,7 +1188,7 @@ fn fresh_plan_instruction(guidance: &str) -> String {
     } else {
         text.push_str(&format!("Additional user guidance:\n{guidance}\n"));
     }
-    text.push_str("\nCall submit_section_plan exactly once with the complete plan.\n");
+    text.push_str("\nCall submit_section_plan exactly once with this batch's rows.\n");
     text
 }
 
@@ -1039,39 +1246,33 @@ fn run_op_summary(run: &DraftRun) -> String {
 
 // ── Host validation ─────────────────────────────────────────────────────────
 
-/// A validated plan, plus what the host could not confirm about it.
-struct ValidatedPlan {
-    entries: Vec<PlanEntry>,
-    warnings: Vec<String>,
-}
-
-/// Check a fresh plan against the template it was planning.
+/// Check one batch of a fresh plan against the sections that batch was given.
 ///
 /// Coverage and identity are the hard part and produce an `Err` the repair
-/// round hands back. Evidence is checked too, but a filename that names no
-/// record is a warning on the plan the clinician is about to read, not a
-/// reason to refuse to show it to them.
+/// round hands back — and the diagnostic is per-batch, so a model that
+/// answered for the whole document is told it returned sections it was not
+/// given rather than being congratulated on a superset. Evidence is checked
+/// too, but a filename that names no record is a warning on the plan the
+/// clinician is about to read, not a reason to refuse to show it to them.
+///
+/// The warnings accumulator is the caller's because a plan has one warning
+/// list however many batches wrote it.
 fn validate_section_plan(
     rows: &[SectionPlanRow],
-    template: &ReportContent,
+    expected: &[(Uuid, &str)],
     corpus: &FullRecordContext,
-) -> Result<ValidatedPlan, String> {
-    let expected: Vec<(Uuid, &str)> = template
-        .sections
-        .iter()
-        .map(|section| (section.id, section.heading.as_str()))
-        .collect();
-    let by_id = index_rows(rows.iter().map(|row| row.section_id.as_str()), &expected)?;
+    warnings: &mut Warnings,
+) -> Result<Vec<PlanEntry>, String> {
+    let by_id = index_rows(rows.iter().map(|row| row.section_id.as_str()), expected)?;
 
-    let mut warnings = Warnings::default();
     let mut entries = Vec::with_capacity(expected.len());
-    for (section_id, heading) in &expected {
+    for (section_id, heading) in expected {
         let row = &rows[by_id[section_id]];
         let intent = match row.action {
             PlanAction::Draft => SectionIntent::Draft,
             PlanAction::Skip => SectionIntent::Skip,
         };
-        let evidence = resolve_evidence(&row.evidence, corpus, &mut warnings);
+        let evidence = resolve_evidence(&row.evidence, corpus, warnings);
         if intent == SectionIntent::Draft && evidence.is_empty() {
             warnings.push(format!("no_resolved_evidence:{section_id}"));
         }
@@ -1087,10 +1288,7 @@ fn validate_section_plan(
             instruction: None,
         });
     }
-    Ok(ValidatedPlan {
-        entries,
-        warnings: warnings.into_vec(),
-    })
+    Ok(entries)
 }
 
 /// Check a resume plan against the run it is resuming.
@@ -1098,7 +1296,8 @@ fn validate_resume_plan(
     rows: &[analysis::ResumePlanRow],
     run: &DraftRun,
     corpus: &FullRecordContext,
-) -> Result<ValidatedPlan, String> {
+    warnings: &mut Warnings,
+) -> Result<Vec<PlanEntry>, String> {
     let mut ordered: Vec<&RunSection> = run.sections.iter().collect();
     ordered.sort_by_key(|section| section.position);
     let expected: Vec<(Uuid, &str)> = ordered
@@ -1119,7 +1318,6 @@ fn validate_resume_plan(
         .map(|entry| (entry.section_id, entry))
         .collect();
 
-    let mut warnings = Warnings::default();
     let mut entries = Vec::with_capacity(expected.len());
     for (section_id, heading) in &expected {
         let row = &rows[by_id[section_id]];
@@ -1161,7 +1359,7 @@ fn validate_resume_plan(
                 "section {section_id} was given decision \"rewrite\" without evidence; replacing text that already exists must name the records the replacement rests on"
             ));
         }
-        let mut evidence = resolve_evidence(supplied, corpus, &mut warnings);
+        let mut evidence = resolve_evidence(supplied, corpus, warnings);
         if evidence.is_empty()
             && let Some(entry) = previous.get(section_id)
         {
@@ -1189,10 +1387,7 @@ fn validate_resume_plan(
                 .and_then(|entry| entry.instruction.clone()),
         });
     }
-    Ok(ValidatedPlan {
-        entries,
-        warnings: warnings.into_vec(),
-    })
+    Ok(entries)
 }
 
 /// Map each expected section ID to the row that answers for it, refusing an

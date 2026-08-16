@@ -49,7 +49,7 @@ use claria_bedrock::{
         StructuredCallOutput, StructuredCallRequest,
     },
     converse::StopSignal,
-    retry::with_throttle_retry,
+    retry::{MAX_ATTEMPTS, with_throttle_retry_observed},
 };
 use claria_core::models::{
     findings::{
@@ -328,6 +328,7 @@ async fn fan_out(
     let warm = run_branch(
         sdk_config,
         context,
+        request,
         *warm_property,
         &tools,
         &cache_plan,
@@ -359,9 +360,10 @@ async fn fan_out(
                         index,
                         total,
                     });
-                    let outcome =
-                        run_branch(sdk_config, context, property, tools, cache_plan, stop, seed)
-                            .await;
+                    let outcome = run_branch(
+                        sdk_config, context, request, property, tools, cache_plan, stop, seed,
+                    )
+                    .await;
                     (outcome, property, index)
                 }
             }),
@@ -413,6 +415,7 @@ fn emit_completed(
 async fn run_branch(
     sdk_config: &aws_config::SdkConfig,
     context: &BranchContext<'_>,
+    request: ReviewSweepRequest<'_>,
     property: ReviewProperty,
     tools: &AnalysisToolConfiguration,
     cache_plan: &claria_bedrock::converse::CachePlan,
@@ -450,34 +453,44 @@ async fn run_branch(
     let mut rejection: Option<String> = None;
     for round in 0..=REVIEW_REPAIR_ROUNDS {
         converse_calls = converse_calls.saturating_add(1);
-        let output: StructuredCallOutput = with_throttle_retry("report_review", || {
-            let messages = &messages;
-            let budget = &budget;
-            async move {
-                analysis::converse_structured(
-                    sdk_config,
-                    StructuredCallRequest {
-                        model_id: context.reviewer_model_id,
-                        system: context.system,
-                        messages,
-                        tools,
-                        forced_tool: analysis::SUBMIT_REVIEW_ROWS_TOOL,
-                        max_tokens: REVIEW_OUTPUT_TOKEN_RESERVE,
-                        cache_plan: cache_plan.clone(),
-                        stop,
-                        // A review branch already reports itself pass by
-                        // pass; a row count inside one pass says nothing the
-                        // reader can act on.
-                        on_partial_tool_input: None,
-                        operation: "report_review",
-                    },
-                    &mut *budget.lock().await,
-                )
-                .await
-            }
-        })
-        .await
-        .map_err(|error| map_bedrock_error(error, REVIEWER_LABELS))?;
+        let call_number = converse_calls;
+        let on_retry = |attempt, delay| {
+            request.emit_progress(ReportTurnProgress::retrying(
+                call_number,
+                attempt,
+                MAX_ATTEMPTS,
+                delay,
+            ));
+        };
+        let output: StructuredCallOutput =
+            with_throttle_retry_observed("report_review", Some(&on_retry), || {
+                let messages = &messages;
+                let budget = &budget;
+                async move {
+                    analysis::converse_structured(
+                        sdk_config,
+                        StructuredCallRequest {
+                            model_id: context.reviewer_model_id,
+                            system: context.system,
+                            messages,
+                            tools,
+                            forced_tool: analysis::SUBMIT_REVIEW_ROWS_TOOL,
+                            max_tokens: REVIEW_OUTPUT_TOKEN_RESERVE,
+                            cache_plan: cache_plan.clone(),
+                            stop,
+                            // A review branch already reports itself pass by
+                            // pass; a row count inside one pass says nothing
+                            // the reader can act on.
+                            on_partial_tool_input: None,
+                            operation: "report_review",
+                        },
+                        &mut *budget.lock().await,
+                    )
+                    .await
+                }
+            })
+            .await
+            .map_err(|error| map_bedrock_error(error, REVIEWER_LABELS))?;
         usage = merge_optional_usage(usage, output.usage.clone());
 
         let validated = analysis::decode_review_rows(&output.input)

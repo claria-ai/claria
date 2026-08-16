@@ -2144,13 +2144,25 @@ export type ReportTemplateWarningView = { code: string; message: string; count: 
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
-export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus } | 
+export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | 
+/**
+ * The last announced call never landed and the identical request is
+ * going out again. `attempt` is the one about to be made, so the first
+ * retry reports 2 of `max_attempts`.
+ */
+{ kind: "model_call_retrying"; call_number: number; attempt: number; max_attempts: number; delay_ms: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus } | 
 /**
  * Another plan row has been counted off the answer the planner is still
  * streaming. Display only — the plan is validated whole when the call
  * returns — so the count may restart if the call is re-sent.
  */
 { kind: "plan_row_planned"; planned: number; total: number } | 
+/**
+ * One batch of the plan is decided and will not be asked for again.
+ * `first` and `last` are one-based and inclusive, against the document's
+ * whole section count.
+ */
+{ kind: "plan_batch_planned"; first: number; last: number; total: number } | 
 /**
  * The drafting run's plan is settled, before the first model call: the
  * honest denominator for the progress that follows.

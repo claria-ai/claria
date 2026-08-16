@@ -76,6 +76,18 @@ All notable changes to Claria are documented here.
 - A section that cannot be written fails on its own; the rest of the report is still drafted and saved
 - Stopping a parallel draft keeps every section that had already landed and picks up from there
 - Reports generated without a plan are unchanged
+- Documented the writer, Bedrock, and logging code paths for contributors, and corrected the drafting-runs design doc where it had fallen behind the code
+- Planning and review calls now allow two minutes before the first token and ninety seconds between frames, above the limits chat and writer turns keep
+- An abandoned stream now names the call it belonged to — planning, review, chat, a targeted edit, or a whole-report draft — in the logs and in the error the reader is shown
+- Planning calls log the input-token count they actually measured alongside the budget they were given
+- Planning calls log how long the model took to send its first token and how long each attempt ran
+- Retry warnings now carry the attempt number and the attempt ceiling
+- The writer says when it is re-sending a Bedrock call that never landed, and which attempt it is on, instead of leaving the line frozen
+- Planning a report is now a sequence of eight-section calls rather than one call for the whole document
+- Each planning call is short enough to stay well inside the stream watchdog, and a call that fails re-plans its own eight sections rather than the document
+- The plan pane announces each batch of sections as it is decided, and Stop is answered between them
+- The planner is no longer sent the template's prose, which it was already ordered to disregard
+- The planner is asked for four records per section instead of eight, with a shorter line on each
 - A command-line harness drives the writer end to end with no UI, printing every progress event with elapsed timings, the plan it produced, tokens, and cost
 - The harness refuses to start a run once its attempt allowance is spent, until a human raises it
 - The harness exports traces to an OpenTelemetry collector when one is configured; the desktop app exports nothing

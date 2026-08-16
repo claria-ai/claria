@@ -163,6 +163,15 @@ pub enum ReportTurnProgressView {
     ModelCallStarted {
         call_number: u32,
     },
+    /// The last announced call never landed and the identical request is
+    /// going out again. `attempt` is the one about to be made, so the first
+    /// retry reports 2 of `max_attempts`.
+    ModelCallRetrying {
+        call_number: u32,
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+    },
     ToolStarted {
         name: String,
         context: Option<String>,
@@ -177,6 +186,14 @@ pub enum ReportTurnProgressView {
     /// returns — so the count may restart if the call is re-sent.
     PlanRowPlanned {
         planned: u32,
+        total: u32,
+    },
+    /// One batch of the plan is decided and will not be asked for again.
+    /// `first` and `last` are one-based and inclusive, against the document's
+    /// whole section count.
+    PlanBatchPlanned {
+        first: u32,
+        last: u32,
         total: u32,
     },
     /// The drafting run's plan is settled, before the first model call: the
@@ -241,6 +258,17 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
             claria_report_pipeline::ReportTurnProgress::ModelCallStarted { call_number } => {
                 Self::ModelCallStarted { call_number }
             }
+            claria_report_pipeline::ReportTurnProgress::ModelCallRetrying {
+                call_number,
+                attempt,
+                max_attempts,
+                delay_ms,
+            } => Self::ModelCallRetrying {
+                call_number,
+                attempt,
+                max_attempts,
+                delay_ms,
+            },
             claria_report_pipeline::ReportTurnProgress::ToolStarted { name, context } => {
                 Self::ToolStarted { name, context }
             }
@@ -258,6 +286,9 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
             },
             claria_report_pipeline::ReportTurnProgress::PlanRowPlanned { planned, total } => {
                 Self::PlanRowPlanned { planned, total }
+            }
+            claria_report_pipeline::ReportTurnProgress::PlanBatchPlanned { first, last, total } => {
+                Self::PlanBatchPlanned { first, last, total }
             }
             claria_report_pipeline::ReportTurnProgress::PlanReady { section_count } => {
                 Self::PlanReady { section_count }

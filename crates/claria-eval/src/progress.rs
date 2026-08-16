@@ -89,6 +89,15 @@ pub fn describe(event: &ReportTurnProgress) -> String {
         ReportTurnProgress::ModelCallStarted { call_number } => {
             format!("model call {call_number}")
         }
+        ReportTurnProgress::ModelCallRetrying {
+            call_number,
+            attempt,
+            max_attempts,
+            delay_ms,
+        } => format!(
+            "model call {call_number} RETRYING (attempt {attempt}/{max_attempts}, \
+             after {delay_ms}ms)"
+        ),
         ReportTurnProgress::ToolStarted { name, context } => match context {
             Some(context) => format!("tool {name} started ({context})"),
             None => format!("tool {name} started"),
@@ -103,6 +112,9 @@ pub fn describe(event: &ReportTurnProgress) -> String {
         },
         ReportTurnProgress::PlanRowPlanned { planned, total } => {
             format!("planned {planned}/{total} rows")
+        }
+        ReportTurnProgress::PlanBatchPlanned { first, last, total } => {
+            format!("plan batch decided: sections {first}–{last} of {total}")
         }
         ReportTurnProgress::PlanReady { section_count } => {
             format!("plan ready: {section_count} sections")

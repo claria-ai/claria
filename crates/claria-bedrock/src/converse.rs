@@ -481,6 +481,54 @@ pub(crate) const STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
 /// mid-response means the connection is gone, not that the model is busy.
 pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// First-frame wait for the analysis family, which sends the largest input
+/// of any flow — the whole record corpus, in system blocks — and gets no
+/// frame until the model has read all of it.
+pub(crate) const ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(120);
+
+/// Inter-frame wait for the analysis family. One forced tool call emits a
+/// single large structured document, and the model deliberates inside it
+/// rather than between sentences, so the pauses that count as normal are
+/// longer than a chat reply's.
+pub(crate) const ANALYSIS_STREAM_IDLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(90);
+
+/// How long one call's stream may stay quiet, before it starts and after.
+///
+/// Carried per call rather than read from a global const, because the two
+/// waits that are generous for a forced-tool analysis request are a hang
+/// for a chat reply. Every value is a compile-time family default — there
+/// is no preference knob and no per-request tuning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StreamBounds {
+    /// Longest wait for the first event frame; exceeding it means the
+    /// service never began the response.
+    pub(crate) first_frame: std::time::Duration,
+    /// Longest silence between two frames of a stream already under way.
+    pub(crate) idle: std::time::Duration,
+}
+
+impl StreamBounds {
+    /// Chat and writer turns: text arrives continuously once generation
+    /// starts, so a silent minute is a dead socket.
+    pub(crate) const fn conversational() -> Self {
+        Self {
+            first_frame: STREAM_FIRST_FRAME_TIMEOUT,
+            idle: STREAM_IDLE_TIMEOUT,
+        }
+    }
+
+    /// Forced-tool analysis calls: the biggest input and the longest
+    /// single structured answer of any family.
+    pub(crate) const fn analysis() -> Self {
+        Self {
+            first_frame: ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT,
+            idle: ANALYSIS_STREAM_IDLE_TIMEOUT,
+        }
+    }
+}
+
 /// Stop reason recorded for a turn the reader ended from the UI. Not a
 /// Bedrock value — the service never got to send one — so it is spelled
 /// differently from every wire reason and callers can label it as a choice
@@ -548,7 +596,7 @@ impl StopSignal {
 }
 
 /// Send a `ConverseStream` request and wait for the service to start
-/// answering, bounded by [`STREAM_FIRST_FRAME_TIMEOUT`].
+/// answering, bounded by [`StreamBounds::first_frame`].
 ///
 /// The first-frame wait belongs here rather than in the stream loop,
 /// because that is where the SDK spends it: the generated `send` resolves
@@ -565,16 +613,17 @@ impl StopSignal {
 /// nothing was generated, so re-sending it is safe.
 pub(crate) async fn start_converse_stream<T, E>(
     operation: &'static str,
+    bounds: StreamBounds,
     send: impl std::future::Future<Output = Result<T, SdkError<E>>>,
 ) -> Result<T, BedrockError>
 where
     E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
 {
-    match tokio::time::timeout(STREAM_FIRST_FRAME_TIMEOUT, send).await {
+    match tokio::time::timeout(bounds.first_frame, send).await {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(error)) => Err(classify_error(operation, error)),
         Err(_elapsed) => {
-            let seconds = STREAM_FIRST_FRAME_TIMEOUT.as_secs();
+            let seconds = bounds.first_frame.as_secs();
             tracing::error!(operation, seconds, "Bedrock never started responding");
             Err(BedrockError::StreamInterrupted {
                 operation,
@@ -589,21 +638,23 @@ where
 }
 
 /// Receive the next frame of a Converse response stream, bounded by
-/// [`STREAM_IDLE_TIMEOUT`]. `Ok(None)` ends the stream.
+/// [`StreamBounds::idle`]. `Ok(None)` ends the stream.
 ///
-/// Shared by the chat, analysis, and writer stream loops so their idle bound
-/// and their mid-stream error shape cannot drift. Mid-stream failures carry
+/// Shared by the chat, analysis, and writer stream loops so their mid-stream
+/// error shape cannot drift; the bound itself is the caller's, because what
+/// counts as a silence differs per request family. Mid-stream failures carry
 /// a raw event frame rather than an HTTP response, so the full
 /// [`DisplayErrorContext`] chain is preserved instead of collapsing to
 /// "unhandled error".
 pub(crate) async fn recv_stream_event(
     operation: &'static str,
+    bounds: StreamBounds,
     stream: &mut aws_sdk_bedrockruntime::primitives::event_stream::EventReceiver<
         ConverseStreamOutput,
         aws_sdk_bedrockruntime::types::error::ConverseStreamOutputError,
     >,
 ) -> Result<Option<ConverseStreamOutput>, BedrockError> {
-    match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.recv()).await {
+    match tokio::time::timeout(bounds.idle, stream.recv()).await {
         Ok(Ok(event)) => Ok(event),
         Ok(Err(error)) => {
             tracing::error!(operation, "Bedrock stream failed");
@@ -616,7 +667,7 @@ pub(crate) async fn recv_stream_event(
             })
         }
         Err(_elapsed) => {
-            let seconds = STREAM_IDLE_TIMEOUT.as_secs();
+            let seconds = bounds.idle.as_secs();
             tracing::error!(operation, seconds, "Bedrock stream went silent");
             Err(BedrockError::StreamInterrupted {
                 operation,

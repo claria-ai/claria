@@ -53,16 +53,30 @@ stateDiagram-v2
     AwaitingApproval --> Drafting: start_draft_run
     Drafting --> Completed: finish_full_draft cuts a revision
     Drafting --> Failed: turn fails or is interrupted
+    Drafting --> Stopped: stop_stream
     Failed --> Drafting: resume_draft_run
     Stopped --> Drafting: resume_draft_run
+    Stopped --> Completed: finalize_partial_draft
+    Failed --> Completed: finalize_partial_draft
+    Stopped --> Abandoned: abandon_draft_run
+    Failed --> Abandoned: abandon_draft_run
     Completed --> [*]
+    Abandoned --> [*]
 ```
 
-Two statuses are defined and not yet reachable. `Stopped` is what a
-user-initiated stop will produce; the run model, the resume path, and the
-pipeline's `StopSignal` parameters all handle it, but no command fires one, so
-today an interrupted run arrives as `Failed` and resumes the same way.
-`Abandoned` has no path at all yet — nothing discards a run.
+`Stopped` and `Failed` differ in one way that matters: a failed run releases
+`active_run_id`, a stopped one keeps it. Stopping is a decision, so the session
+stays pointed at the run the reader stopped, and the guards that refuse
+competing edits keep the report still underneath the sections it already wrote.
+`release_failed_run` and `park_stopped_run` are the two halves of that.
+
+Every command that streams opens a `StopRegistration` against its `stream_id`,
+so `stop_stream` reaches the run in flight; the stream loop drops the call
+whole and the run is parked. Resuming it, finalizing what it landed, or
+abandoning it are the three ways the pointer is released. `abandon_draft_run`
+accepts a run in any status but `Completed` — a run that already cut a revision
+is reverted, not discarded — and leaves the sections it landed on the object as
+history.
 
 Every section of the report gets a row on the run — kept and skipped ones
 included — so `run.sections` is the complete section universe and the finisher
@@ -118,17 +132,45 @@ all keep working exactly as they did before runs existed.
 ## The plan pass
 
 A planning model — a per-role setting, defaulting to the newest capable Sonnet
-the account has — reads the record corpus and the template structure and
-answers one forced `submit_section_plan` call: one row per section, with what
-it must assert and which records support it. The plan is an outline — filenames
-and a one-line reason each, never copied record text.
+the account has — reads the record corpus and the report's section structure and
+answers forced `submit_section_plan` calls: one row per section, with what it
+must assert and which records support it. The plan is an outline — filenames and
+a one-line reason each, never copied record text.
+
+A fresh plan is **batched**. The document's sections are cut into contiguous
+runs of `PLAN_BATCH_SECTIONS` (8) in template order, and each batch is one
+sequential call whose instruction lists the section IDs it answers for and
+forbids a row for any other. The batches share everything expensive — the same
+system blocks, the same tool set, one cache point, one `CountTokens` for the
+whole pass — and share nothing else: a batch's `messages` is its own question
+and nothing more, so no batch carries a predecessor's transcript. Each batch
+gets its own repair round and its own transport retry, so a stalled or severed
+call re-pays for one batch rather than the document.
+
+A batch that validates is a checkpoint: its rows are decided, the reader is
+told so with `plan_batch_planned`, and the pass checks the stop signal before
+opening the next call. Nothing is persisted until every batch has validated —
+`plan_fresh_run` writes the plan once, at the end — so a batch that exhausts
+its repair round and its retries fails the whole pass exactly as a single call
+used to, and a Stop between batches leaves the report as it found it.
+
+The **resume** plan stays a single call over every section: its question is the
+run's whole state table, which means nothing sliced, and its rows are a decision
+word and a line of reasoning rather than a scope and evidence.
+
+The planner's template block carries structure without prose. Its trust rules
+order it to treat template bodies as facts about somebody else, nothing in the
+plan schema or the validator reads one, and the review sweep shares the same
+system blocks — so the prose is left out of all three and the writer's own block
+still carries it.
 
 The host then decides what is decidable:
 
-- **Coverage and identity are hard.** One row per template section, no invented
-  IDs, no duplicates. Failing that costs one repair round — the diagnostic goes
-  back verbatim and the tool is forced again — then the pass fails. A plan
-  missing a section would silently delete it from the document.
+- **Coverage and identity are hard.** One row per section the batch was given,
+  no invented IDs, no duplicates, and no row for a section another batch owns.
+  Failing that costs one repair round — the diagnostic goes back verbatim and
+  the tool is forced again — then the pass fails. A plan missing a section would
+  silently delete it from the document.
 - **Evidence is soft.** A filename the client does not have lands as an
   `unknown_evidence_file:{filename}` warning on the plan. The clinician is about
   to read this plan at the gate; refusing to show it to them because one
@@ -138,8 +180,10 @@ The plan lands on the run `awaiting_approval` and nothing drafts until
 `start_draft_run` is called, so the gate is structural rather than a courtesy.
 `update_draft_plan` takes per-section patches — an absent field is left exactly
 as the planner wrote it — and stamps `user_edited`. Whether the gate is shown
-or skipped is a preference (`draft_pipeline.plan_gate`, gated by default); the
-pane that reads it is not built yet.
+or skipped is a preference (`draft_pipeline.plan_gate`, gated by default), read
+in `useReportWorkspace` and rendered by `DraftPlanPanel` — one `DraftPlanCard`
+per row, editable in place, with Start below them. Set to `auto_start`, the plan
+still lands `awaiting_approval` and the run starts itself.
 
 Two plans are **not** a planning model's work, and both are marked `synthetic`
 so nothing downstream mistakes them for one: the 1:1 plan the un-gated
@@ -406,9 +450,13 @@ A resume refuses if the report moved underneath it — the saved sections no
 longer fit a document at a different revision, and a new run is the honest
 answer.
 
-The pipeline's planner and review entry points already accept a `StopSignal`
-that drops the in-flight stream whole; the command layer does not yet mint one
-for a run, so today's only interruption is a failure.
+A run can also be interrupted deliberately. Every streaming command opens a
+`StopRegistration` keyed by the `stream_id` the frontend passed in, so
+`stop_stream` fires the `StopSignal` the planner, the drafting run, and the
+review sweep are all watching; the stream loop drops the in-flight call whole
+rather than waiting for a frame that may be minutes away. The run is then
+parked `stopped` — sections demoted, `active_run_id` deliberately left in
+place — and resumes exactly as a failed one does.
 
 ---
 
@@ -423,15 +471,26 @@ filenames, prompts, or document text: `draft_plan_generated`,
 
 Progress rides one `Channel<ReportTurnProgressView>` shared by the planning,
 drafting, and review phases: `record_context_prepared`, `model_call_started`,
-`tool_started`, `tool_finished`, `plan_row_planned`, the per-section events,
-and — for the review — `review_pass_started` and `review_pass_completed`. Every
-section and review event carries its own counters and total, so a dropped event
-cannot desync a progress bar.
+`model_call_retrying`, `tool_started`, `tool_finished`, `plan_row_planned`,
+`plan_batch_planned`, the per-section events, and — for the review —
+`review_pass_started` and `review_pass_completed`. Every section and review
+event carries its own counters and total, so a dropped event cannot desync a
+progress bar.
 
 The parallel fan-out emits the same section events, from the coordinator, after
 each durable commit. It emits no `tool_started`/`tool_finished`: a branch
 executes no host tool, and its call numbers are assigned in commit order
 because a branch cannot number its own calls without racing its siblings.
+
+A retried Bedrock call is the one thing the reader cannot otherwise see: the
+identical request is re-sent under the same call number, so a throttle backoff
+and a stalled stream look the same from outside. `model_call_retrying` carries
+the call number, the attempt about to be made, the ceiling it counts towards,
+and the wait ahead of it; every retry site announces `model_call_started`
+again when the re-sent request goes out, which is what retires the line.
+`max_attempts` rides on the event because the two retry layers count
+differently — four for the throttle wrapper, three for the stream-interruption
+loop.
 
 A tool call is only executable once complete, so nothing the writer does
 streams below the call boundary. Planning is the one exception, and only for
@@ -440,3 +499,11 @@ it arrives, and each new row emits `plan_row_planned` with the document's
 section count as the denominator. Nothing is parsed out of the partial buffer
 but that count, the plan is still validated whole when the call returns, and a
 re-sent call restarts the count without walking the reader's number backwards.
+Batches count on from each other rather than from one, so the number is against
+the whole document however many calls wrote it.
+
+`plan_batch_planned` is the other half of that: `plan_row_planned` says what a
+call is producing, `plan_batch_planned` says what the host has accepted. Its
+`first` and `last` are one-based and inclusive against the document's whole
+section count, so "Planned sections 9–16 of 38" reads without the listener
+knowing the batch size.
