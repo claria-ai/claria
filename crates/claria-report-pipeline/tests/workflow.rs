@@ -243,13 +243,18 @@ async fn full_draft_defers_skipped_sections_as_placed_empty_placeholders() {
     let referral_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let background_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let summary_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let boilerplate = || {
+        vec![ReportBlock::Paragraph {
+            text: "Template boilerplate.".to_string(),
+        }]
+    };
     let template_section = |id: &str, heading: &str| ReportSection {
         id: id.parse().unwrap(),
         heading: heading.to_string(),
-        blocks: vec![ReportBlock::Paragraph {
-            text: "Template boilerplate.".to_string(),
-        }],
+        blocks: boilerplate(),
         skipped: false,
+        template_blocks: Some(boilerplate()),
+        authorship: None,
     };
     store::save_report_draft(
         &s3,
@@ -338,12 +343,22 @@ async fn full_draft_defers_skipped_sections_as_placed_empty_placeholders() {
     assert_eq!(deferred.heading, "Summary and Clinical Interpretation");
     assert!(deferred.skipped);
     assert!(deferred.blocks.is_empty());
+    // Deferring drops the authored body but keeps the template copy, so the
+    // preview has something to grey out and a later pass can rewrite from it.
+    assert_eq!(deferred.template_blocks.as_ref(), Some(&boilerplate()));
 
     // The finalize result the model saw reports the deferral count, and the
     // deferred placeholder rides into the next turn's report context.
     let state = server.state.read().await;
     let finish_round = state.bedrock_tool_requests[2].to_string();
     assert!(finish_round.contains("\"skipped_section_count\":1"));
+    // Template copies are host bookkeeping and never reach the model.
+    assert!(
+        !state
+            .bedrock_tool_requests
+            .iter()
+            .any(|request| request.to_string().contains("template_blocks"))
+    );
     drop(state);
 
     let reloaded = store::load_report_workspace(&s3, BUCKET, client_id)
@@ -381,6 +396,8 @@ async fn full_draft_finisher_requires_a_decision_for_every_supplied_section() {
                         text: "Boilerplate history.".to_string(),
                     }],
                     skipped: false,
+                    template_blocks: None,
+                    authorship: None,
                 },
                 ReportSection {
                     id: undecided_id.parse().unwrap(),
@@ -389,6 +406,8 @@ async fn full_draft_finisher_requires_a_decision_for_every_supplied_section() {
                         text: "Boilerplate observations.".to_string(),
                     }],
                     skipped: false,
+                    template_blocks: None,
+                    authorship: None,
                 },
             ],
         },
@@ -2050,6 +2069,8 @@ async fn accepted_report_content_and_focused_tables_stay_in_untrusted_context() 
             title: malicious.to_string(),
             sections: vec![ReportSection {
                 skipped: false,
+                template_blocks: None,
+                authorship: None,
                 id: section_id,
                 heading: "Findings".to_string(),
                 blocks: vec![

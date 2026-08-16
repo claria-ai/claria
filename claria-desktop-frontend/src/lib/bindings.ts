@@ -1328,6 +1328,7 @@ assumed_role_arn: string;
  * The account ID of the sub-account we assumed into.
  */
 account_id: string }
+export type AuthorshipKind = "template" | "model_generated" | "model_revised" | "human_edited"
 /**
  * Redacted [`BootstrapResult`] for the frontend: the minted secret access
  * key is persisted to the local config Rust-side and never returned.
@@ -1685,7 +1686,7 @@ export type RecordContext = { filename: string; text: string }
 export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
 /**
  * Per-clinician guardrails for agentic document writing. These values sync
- * across machines. The report-authoring crate validates the
+ * across machines. The report-pipeline crate validates the
  * relationship between the limits before they are saved or used.
  */
 export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
@@ -1742,7 +1743,19 @@ export type ReportSection = { id: string; heading: string; blocks: ReportBlock[]
  * in the document, the body stays empty, and export omits the section
  * entirely until a later edit writes content into it.
  */
-skipped?: boolean }
+skipped?: boolean; 
+/**
+ * Immutable copy of the imported template body for this section, stamped
+ * when the template is applied. It is never exported and never sent to a
+ * model as accepted content; the preview renders it greyed-out while the
+ * section is `skipped`, and it survives a fill so a later "rewrite from
+ * the template" still has the original text.
+ */
+template_blocks?: ReportBlock[] | null; 
+/**
+ * Who last wrote this section, and at which revision.
+ */
+authorship?: SectionAuthorship | null }
 export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlock[]; skipped?: boolean }
 export type ReportTemplateImportView = { writer_template_id: string | null; writer_template_name: string | null; imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
 export type ReportTemplatePreview = { import_id: string; content: ReportContent; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
@@ -1803,6 +1816,15 @@ severity: Severity;
  * IAM actions this resource requires (aggregated for policy diff)
  */
 iam_actions: string[] }
+/**
+ * The latest authorship stamp for one section — not a log, and not per-block.
+ */
+export type SectionAuthorship = { kind: AuthorshipKind; 
+/**
+ * Draft revision this stamp describes. Never newer than the accepted
+ * draft it rides on.
+ */
+revision: number; model_id: string | null; run_id: string | null; updated_at: string }
 export type Severity = 
 /**
  * Data sources — read-only checks

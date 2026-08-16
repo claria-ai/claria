@@ -385,11 +385,16 @@ pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String>
             // Hand-writing content into a deferred section un-defers it,
             // even if the frontend forgot to clear the flag.
             let skipped = section.skipped && section.blocks.is_empty();
+            // The editor never sees a section's template copy or authorship
+            // stamp, so an edit cannot carry them: the store re-attaches the
+            // template copy by section ID when it saves.
             Ok(ReportSection {
                 id,
                 heading: section.heading,
                 blocks: section.blocks,
                 skipped,
+                template_blocks: None,
+                authorship: None,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

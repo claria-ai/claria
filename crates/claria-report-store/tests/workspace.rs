@@ -7,7 +7,8 @@ use std::collections::HashSet;
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_core::models::report::{
-    ReportBlock, ReportContent, ReportSection, ReportTemplateWarning, ReportTemplateWarningCode,
+    AuthorshipKind, ReportBlock, ReportContent, ReportSection, ReportTemplateWarning,
+    ReportTemplateWarningCode,
 };
 use claria_mock_aws::testing::MockServer;
 use claria_report_store::{self as store, REPORT_CONFLICT_MESSAGE};
@@ -197,12 +198,16 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
             sections: vec![
                 ReportSection {
                     skipped: false,
+                    template_blocks: None,
+                    authorship: None,
                     id: Uuid::new_v4(),
                     heading: "First".to_string(),
                     blocks: vec![paragraph("One")],
                 },
                 ReportSection {
                     skipped: false,
+                    template_blocks: None,
+                    authorship: None,
                     id: Uuid::new_v4(),
                     heading: "Second".to_string(),
                     blocks: vec![paragraph("Two")],
@@ -253,12 +258,16 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
             sections: vec![
                 ReportSection {
                     skipped: false,
+                    template_blocks: None,
+                    authorship: None,
                     id: second_id,
                     heading: "Second".to_string(),
                     blocks: vec![paragraph("Two")],
                 },
                 ReportSection {
                     skipped: false,
+                    template_blocks: None,
+                    authorship: None,
                     id: first_id,
                     heading: "First".to_string(),
                     blocks: vec![paragraph("One")],
@@ -461,6 +470,8 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
                 title: "Imported template".to_string(),
                 sections: vec![ReportSection {
                     skipped: false,
+                    template_blocks: None,
+                    authorship: None,
                     id: Uuid::new_v4(),
                     heading: "Scores".to_string(),
                     blocks: vec![ReportBlock::Table {
@@ -485,6 +496,19 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
     .await
     .expect("apply template");
     assert_eq!(imported.draft.revision, 1);
+    let imported_section = &imported.draft.content.sections[0];
+    assert_eq!(
+        imported_section.template_blocks.as_ref(),
+        Some(&imported_section.blocks)
+    );
+    let authorship = imported_section
+        .authorship
+        .as_ref()
+        .expect("template authorship");
+    assert_eq!(authorship.kind, AuthorshipKind::Template);
+    assert_eq!(authorship.revision, 1);
+    assert_eq!(authorship.model_id, None);
+    assert_eq!(authorship.run_id, None);
     let metadata = imported
         .template_import
         .as_ref()
@@ -502,6 +526,8 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
     assert_eq!(snapshot.draft.revision, 1);
     assert_eq!(snapshot.template_source, Some(template_source.clone()));
 
+    // The editor never sees template copies, so a hand edit arrives without
+    // them and the store has to put them back.
     let edited = store::save_report_draft(
         &s3,
         BUCKET,
@@ -509,12 +535,27 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
         1,
         ReportContent {
             title: "Imported template revised".to_string(),
-            sections: imported.draft.content.sections,
+            sections: imported
+                .draft
+                .content
+                .sections
+                .iter()
+                .cloned()
+                .map(|section| ReportSection {
+                    template_blocks: None,
+                    authorship: None,
+                    ..section
+                })
+                .collect(),
         },
     )
     .await
     .expect("edit imported report");
     assert_eq!(edited.draft.revision, 2);
+    assert_eq!(
+        edited.draft.content.sections[0].template_blocks.as_ref(),
+        imported_section.template_blocks.as_ref()
+    );
     assert_eq!(
         edited
             .template_import
