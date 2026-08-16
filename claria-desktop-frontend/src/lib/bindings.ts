@@ -604,6 +604,64 @@ async generateFullReport(clientId: string, reportId: string, expectedRevision: n
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Plan a whole-report draft and leave it at the gate.
+ * 
+ * Guarded exactly like a writer turn — no pending proposal, the revision the
+ * caller expects, no run already in flight — and the run it creates holds the
+ * report for the whole gate window, so nothing can edit the report out from
+ * under a plan being reviewed. A plan pass that fails releases that hold.
+ */
+async generateDraftPlan(clientId: string, reportId: string, expectedRevision: number, instructions: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<DraftRun, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("generate_draft_plan", { clientId, reportId, expectedRevision, instructions, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply the clinician's edits to a plan waiting at the gate.
+ */
+async updateDraftPlan(clientId: string, reportId: string, runId: string, edits: PlanEntryEdit[]) : Promise<Result<DraftRun, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_draft_plan", { clientId, reportId, runId, edits }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Approve the plan and draft the report it describes.
+ */
+async startDraftRun(clientId: string, reportId: string, runId: string, modelId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_draft_run", { clientId, reportId, runId, modelId, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Pick an interrupted drafting run back up.
+ * 
+ * New instructions get a planning call over the run's durable state — they
+ * may change what an already-drafted section should say — and no new
+ * instructions is decided in code: keep what landed, draft the rest.
+ * 
+ * This resumes directly whatever the plan-gate preference says. The gate is
+ * a frontend decision: showing the re-plan before executing it means calling
+ * the planning pass on its own first, which the pane does, and there is no
+ * second command for "resume without re-planning".
+ */
+async resumeDraftRun(clientId: string, reportId: string, runId: string, updatedInstructions: string | null, modelId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resume_draft_run", { clientId, reportId, runId, updatedInstructions, modelId, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async sendReportMessage(clientId: string, reportId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, reportId, expectedRevision, modelId, instruction, references, onProgress }) };
@@ -1440,7 +1498,7 @@ export type ClientSummary = { id: string; name: string; created_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences; chat_streaming: ChatStreamMode }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences; chat_streaming: ChatStreamMode; draft_pipeline: DraftPipelinePreferences }
 /**
  * One poll's worth of new console entries, addressed by a monotonic
  * sequence cursor so the 500ms UI poll ships only new lines.
@@ -1525,8 +1583,75 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  * A file that has been deleted (has a delete marker as the latest version).
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
+/**
+ * Per-clinician settings for the sectioned drafting pipeline.
+ * 
+ * The two model IDs name the supporting roles only — the writer keeps its
+ * own picker beside the draft. `None` means "let Claria choose", which
+ * resolves through the capability table at call time rather than being
+ * frozen into the config, so an account that gains a better model gets it
+ * without anyone editing a setting.
+ */
+export type DraftPipelinePreferences = { plan_gate?: PlanGateMode; planner_model_id?: string | null; reviewer_model_id?: string | null }
+/**
+ * What the plan decided for exactly one section. There is one entry per
+ * [`RunSection`] and no entry without one.
+ * 
+ * Renamed across the IPC boundary: the provisioner exports its own
+ * `PlanEntry`, and two types of the same name are a bindings-export panic at
+ * startup rather than a compile error.
+ */
+export type DraftPlanEntry = { section_id: string; heading: string; intent: SectionIntent; 
+/**
+ * The report cannot be considered complete while this section is empty.
+ */
+required: boolean; 
+/**
+ * What the section should cover, in the planner's words. May be empty for
+ * a section the plan does not intend to write.
+ */
+scope: string; evidence: EvidenceRef[]; 
+/**
+ * Per-section steering that overrides the run-wide instructions.
+ */
+instruction: string | null }
+/**
+ * One resumable whole-report drafting run.
+ * 
+ * The object is rewritten (conditionally, on its ETag) after every section
+ * the writer lands, so an interrupted run resumes from durable state instead
+ * of restarting.
+ */
+export type DraftRun = { schema_version: number; run_id: string; report_id: string; client_id: string; 
+/**
+ * Accepted revision the run builds on. The finish cut uses it as the
+ * expected revision, so concurrent edits to the report conflict rather
+ * than being overwritten by assembled sections.
+ */
+base_revision: number; status: DraftRunStatus; plan: RunPlan | null; title: string | null; 
+/**
+ * Every section of the report, in no particular order — read
+ * [`RunSection::position`] for document order.
+ */
+sections: RunSection[]; instructions: RunInstruction[]; writer_model_id: string; 
+/**
+ * Revision produced by the finish cut. Present only once the run is
+ * [`DraftRunStatus::Completed`].
+ */
+finalized_revision: number | null; 
+/**
+ * The run was finalized from a stopped state: sections that never landed
+ * were skipped rather than drafted.
+ */
+partial: boolean; created_at: string; updated_at: string }
+export type DraftRunStatus = "planning" | "awaiting_approval" | "drafting" | "stopped" | "failed" | "completed" | "abandoned"
 export type EditorHistoryEntry = { report_id: string; name: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExport | null }
 export type EffortPreference = "low" | "medium" | "high" | "max"
+/**
+ * A record the planner expects a section to draw on. Records are referenced
+ * by filename; the note is the planner's own reason, never record text.
+ */
+export type EvidenceRef = { filename: string; note: string | null }
 /**
  * Structured before/after for a single field that doesn't match desired state.
  * 
@@ -1630,6 +1755,32 @@ export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drif
  */
 actual: JsonValue | null }
 /**
+ * One section's worth of gate edits. Absent fields are left exactly as the
+ * planner wrote them, so the pane can save the one control the user touched
+ * without restating the rest of the row.
+ */
+export type PlanEntryEdit = { section_id: string; intent?: SectionIntent | null; scope?: string | null; evidence?: EvidenceRef[] | null; 
+/**
+ * Per-section steering. An all-whitespace value clears the instruction
+ * rather than storing a blank one.
+ */
+instruction?: string | null }
+/**
+ * Whether a whole-report draft stops for the clinician between planning and
+ * writing.
+ */
+export type PlanGateMode = 
+/**
+ * The plan lands in the draft-run pane and waits to be read, edited, and
+ * approved. The default: a plan is cheap to fix and expensive to draft
+ * against once it is wrong.
+ */
+"gated" | 
+/**
+ * Drafting begins as soon as the plan lands.
+ */
+"auto_start"
+/**
  * Named-field patch for the synced preferences. Absent fields are left
  * untouched, so a UI section (or a single-setting command) saves only what
  * it owns and can never roll back a sibling section's edit.
@@ -1640,7 +1791,7 @@ export type PreferencesPatch = {
  * (only expressible in-process — over IPC use `set_preferred_model`),
  * `None` leaves it unchanged.
  */
-preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null }
+preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null; draft_pipeline?: DraftPipelinePreferences | null }
 /**
  * What `provision_apply` did.
  * 
@@ -1676,6 +1827,11 @@ needs_escalation: boolean;
  */
 account_id: string }
 export type ProvisionerProgress = { kind: "scan_started"; label: string; index: number; total: number } | { kind: "scan_completed"; label: string; index: number; total: number } | { kind: "apply_started"; label: string; action: string; index: number; total: number } | { kind: "apply_completed"; label: string; action: string; index: number; total: number } | { kind: "escalation_step"; label: string; status: string }
+/**
+ * A quote the writer attributed to a record, used by the completion gate to
+ * check that cited text actually exists in the client's records.
+ */
+export type RecordCitation = { filename: string; quote: string }
 /**
  * A record file with its readable text content, for chat context.
  */
@@ -1817,6 +1973,78 @@ severity: Severity;
  */
 iam_actions: string[] }
 /**
+ * User guidance for the run: the instruction it started from, plus anything
+ * added when a stopped run was picked back up.
+ */
+export type RunInstruction = { text: string; added_at: string }
+/**
+ * The section plan the user approved before drafting started.
+ */
+export type RunPlan = { 
+/**
+ * Model that produced the plan, which is not the model that writes the
+ * sections.
+ */
+model_id: string; entries: DraftPlanEntry[]; 
+/**
+ * The user changed the plan at the gate before approving it.
+ */
+user_edited: boolean; 
+/**
+ * Unset while the plan is still waiting at the gate.
+ */
+approved_at: string | null; 
+/**
+ * What the host could not confirm about the plan the model produced,
+ * as `code:detail` strings — an evidence quote that resolves against no
+ * record, a draft row with nothing left backing it. Codes and filenames
+ * only, never record text, so the gate can show them and the console can
+ * log them.
+ * 
+ * A warning never blocks the plan: the user fixes it at the gate.
+ */
+plan_warnings?: string[]; created_at: string }
+/**
+ * The durable state machine for one section of the report.
+ */
+export type RunSection = { section_id: string; heading: string; 
+/**
+ * Zero-based ordering slot, unique across the run. A drafted section's
+ * slot is where the writer put it, so sorting the drafted rows by it
+ * reproduces the document the run is assembling; everything still
+ * undecided trails behind them in the order the report supplied it.
+ */
+position: number; state: RunSectionState; 
+/**
+ * Staged content that has already survived a write. Nonempty only in
+ * [`RunSectionState::Drafted`]; the finish cut reads it verbatim.
+ */
+blocks: ReportBlock[]; citations: RecordCitation[]; 
+/**
+ * How many times the writer has tried this section.
+ */
+attempts: number; 
+/**
+ * PHI-free note about why the section failed: error codes and counts,
+ * never record or draft content.
+ */
+error: string | null; updated_at: string }
+export type RunSectionState = "pending" | 
+/**
+ * Transient: correct only while the writer is mid-section. Any section
+ * still `Drafting` when a run is loaded was interrupted and must be
+ * demoted to `Pending` — see [`DraftRun::demote_interrupted_sections`].
+ */
+"drafting" | "drafted" | "failed" | 
+/**
+ * Drafted, but a review pass raised a finding against it.
+ */
+"flagged" | "skipped" | 
+/**
+ * The base-revision content stands; the run does not touch this section.
+ */
+"kept"
+/**
  * The latest authorship stamp for one section — not a log, and not per-block.
  */
 export type SectionAuthorship = { kind: AuthorshipKind; 
@@ -1825,6 +2053,11 @@ export type SectionAuthorship = { kind: AuthorshipKind;
  * draft it rides on.
  */
 revision: number; model_id: string | null; run_id: string | null; updated_at: string }
+export type SectionIntent = "draft" | "rewrite" | 
+/**
+ * Leave the section's base-revision content exactly as it is.
+ */
+"keep" | "skip"
 export type Severity = 
 /**
  * Data sources — read-only checks
