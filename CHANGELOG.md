@@ -17,6 +17,9 @@ All notable changes to Claria are documented here.
 - Renamed the report-authoring crate to report-pipeline now that storage lives in its own crate
 - Skipped report sections now keep a copy of their template body, and sections carry authorship metadata
 - Template copies stay out of Word exports and out of everything sent to the model
+- Skipped sections now show their template text greyed out in the preview and say they are left out of exports
+- Editing a skipped section takes an explicit Include this section button, which fills it with the template text
+- The export line counts how many skipped sections the accepted revision left out
 
 ## [0.28.0] — 2026-08-15
 

@@ -164,6 +164,7 @@ export function countReportEdits(
       continue;
     }
     if (before.id !== after.id || before.heading !== after.heading) count += 1;
+    if ((before.skipped ?? false) !== (after.skipped ?? false)) count += 1;
     const blockCount = Math.max(before.blocks.length, after.blocks.length);
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
       if (!blocksEqual(before.blocks[blockIndex], after.blocks[blockIndex])) {
@@ -204,6 +205,14 @@ export function validateReportEdit(edit: ReportDraftEdit): string[] {
   edit.sections.forEach((section, sectionIndex) => {
     const sectionLabel = `Section ${sectionIndex + 1}`;
     validateRequiredText(errors, `${sectionLabel} heading`, section.heading, 200);
+    // Un-skipping is the explicit "Include this section" action, which clears
+    // the flag as it copies the template body in. Content under a section that
+    // is still skipped means the editor lost track of one of the two.
+    if (section.skipped && section.blocks.length > 0) {
+      errors.push(
+        `${sectionLabel} is skipped — choose Include this section before writing into it.`
+      );
+    }
     if (section.blocks.length > 200) {
       errors.push(`${sectionLabel} can contain at most 200 blocks.`);
     }
