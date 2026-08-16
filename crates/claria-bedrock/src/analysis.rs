@@ -354,22 +354,24 @@ pub async fn converse_structured(
     };
 
     let started = std::time::Instant::now();
-    let response = client
-        .converse_stream()
-        .model_id(model_id)
-        .set_system(Some(system_blocks))
-        .set_messages(Some(converse_messages))
-        .tool_config(tools)
-        // No tuning fields: see the module docs. The ceiling is still set and
-        // still branched on, exactly as every other Converse call must.
-        .inference_config(
-            InferenceConfiguration::builder()
-                .max_tokens(max_tokens as i32)
-                .build(),
-        )
-        .send()
-        .await
-        .map_err(|error| converse::classify_error("analysis ConverseStream", error))?;
+    let response = converse::start_converse_stream(
+        "analysis ConverseStream",
+        client
+            .converse_stream()
+            .model_id(model_id)
+            .set_system(Some(system_blocks))
+            .set_messages(Some(converse_messages))
+            .tool_config(tools)
+            // No tuning fields: see the module docs. The ceiling is still set
+            // and still branched on, exactly as every other Converse call must.
+            .inference_config(
+                InferenceConfiguration::builder()
+                    .max_tokens(max_tokens as i32)
+                    .build(),
+            )
+            .send(),
+    )
+    .await?;
 
     let mut stream = response.stream;
     let mut collector = report::ReportStreamCollector::default();
