@@ -2015,10 +2015,15 @@ async fn finalizing_a_partial_draft_keeps_what_landed_and_defers_the_rest() {
             .map(|authorship| authorship.kind),
         Some(AuthorshipKind::ModelGenerated)
     );
+    // Whatever stamp a deferred section carried before the run travels with
+    // it untouched; it just must not be credited to the run.
     assert!(
         outcome.workspace.draft.content.sections[1]
             .authorship
-            .is_none()
+            .as_ref()
+            .is_none_or(|authorship| {
+                authorship.kind != AuthorshipKind::ModelGenerated && authorship.run_id.is_none()
+            })
     );
 
     let run = only_run(&s3, client_id, report_id).await;
