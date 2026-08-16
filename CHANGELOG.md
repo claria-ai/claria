@@ -36,6 +36,7 @@ All notable changes to Claria are documented here.
 - A finding whose text has moved on since the review is refused rather than applied to the wrong place
 - Draft reviews now sweep the report once per property in parallel, producing anchored findings with uniform per-section coverage
 - A review pass that fails leaves the other six intact, and the properties nobody reviewed are named rather than left to look clean
+- Raised the planner's output ceiling so plans for long reports no longer fail partway through
 
 ## [0.28.0] — 2026-08-15
 
