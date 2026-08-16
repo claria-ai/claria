@@ -8,15 +8,22 @@ use. It has two modes that share one loop:
   (`propose_report_changes`) that the user reviews and accepts. Nothing the
   model does mutates the accepted report directly.
 - **Whole-report generation** — the one-action "fill the whole report" path.
-  Claria preloads every readable record into the first turn, the model writes
-  every section into an isolated candidate through internal tool rounds, and
-  a successful `finish_full_draft` saves **one atomic versioned revision**
-  with no proposal gate.
+  Claria preloads every readable record into the first turn and the model
+  writes every section through internal tool rounds. Each section is written
+  through to a **drafting run** object before its success result is returned,
+  so a generation that dies partway keeps everything that landed; a
+  successful `finish_full_draft` assembles the run and saves **one atomic
+  versioned revision** with no proposal gate.
+
+  A live run owns its Writing session: hand edits, template applies,
+  reverts, and further writer turns are refused until it finishes or fails.
+  It fails open — a failed run releases the session immediately and its
+  drafted sections stay readable for a resume.
 
 Crates: `claria-report-pipeline` owns the turn loop, budgets, and prompt
 composition; `claria-report-store` owns everything durable — workspaces and
-their ETag protocol, revisions, attempt and usage receipts, and the writer
-prompt and template libraries; `claria-bedrock` owns the exact Converse wire
+their ETag protocol, revisions, drafting runs, attempt and usage receipts,
+and the writer prompt and template libraries; `claria-bedrock` owns the exact Converse wire
 shape, tool schemas, and stop-reason handling; `claria-docx` owns template
 import and export; `claria-desktop` wires commands, preferences, and audit
 events.
@@ -74,11 +81,11 @@ flowchart TD
         X["Build first turn:<br/>untrusted_report_context (template skeleton)<br/>untrusted_record_context (all 5 records)"]
         L{"Converse round<br/>(max_tokens = 32k)"}
         TT["set_full_draft_title (1 call)"]
-        W["write_full_draft_section<br/>one call per section, N calls"]
+        W["write_full_draft_section<br/>one call per section, N calls<br/>each saved to the run first"]
         SK["skip_full_draft_section<br/>per user-deferred section"]
         F["finish_full_draft (1 call)"]
-        V["Validate candidate:<br/>every template section_id<br/>written or skipped?"]
-        REV["Atomic save: revision 1"]
+        V["Validate the run:<br/>every planned section_id<br/>drafted or skipped?"]
+        REV["Atomic save: revision 1<br/>run marked completed"]
     end
 
     subgraph Interactive["Later turns: targeted editing"]

@@ -14,10 +14,11 @@ use claria_core::models::{
     turn_usage::TurnUsage,
 };
 use claria_report_store::{
-    ATTEMPT_SCHEMA_VERSION, LoadedWorkspace, MAX_INSTRUCTION_CHARACTERS, REPORT_CONFLICT_MESSAGE,
-    ReportAttemptMetadata, ReportAttemptStatus, ReportCallUsageRecord, ReportFailureCode,
-    ReportStoreError, ensure_revision, load_for_report, load_or_create, mark_template_current,
-    persist_attempt, persist_call_usage, save_loaded,
+    ATTEMPT_SCHEMA_VERSION, LoadedRun, LoadedWorkspace, MAX_INSTRUCTION_CHARACTERS,
+    REPORT_CONFLICT_MESSAGE, ReportAttemptMetadata, ReportAttemptStatus, ReportCallUsageRecord,
+    ReportFailureCode, ReportStoreError, ensure_no_active_run, ensure_revision, load_for_report,
+    load_or_create, mark_template_current, persist_attempt, persist_call_usage, save_draft_run,
+    save_loaded,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -32,6 +33,7 @@ use crate::{
     },
     prompts::{full_report_system_prompt, report_system_prompt},
     record_context::{FullRecordContext, load_full_record_context, load_record_inventory},
+    run::{release_failed_run, stamp_run_authorship, start_draft_run},
     tools::ToolExecutionContext,
 };
 
@@ -180,7 +182,7 @@ impl<'a> FullReportRequest<'a> {
         self
     }
 
-    fn emit_progress(self, event: ReportTurnProgress) {
+    pub(crate) fn emit_progress(self, event: ReportTurnProgress) {
         if let Some(progress) = self.progress {
             progress(event);
         }
@@ -279,14 +281,19 @@ async fn send_report_message_loaded(
             message.model_tuning,
         ),
         &mut loaded,
+        None,
     )
     .await
 }
 
 /// Generate and directly save one complete working-draft revision from every
-/// readable client-record file. The model may use many internal tool rounds,
-/// but no partial candidate reaches the workspace and no proposal acceptance
-/// is required.
+/// readable client-record file.
+///
+/// The model may use many internal tool rounds. Each section it lands is
+/// written through to a durable drafting run before the model is told the
+/// write succeeded, so an interrupted generation keeps its work; the report
+/// itself still moves in one atomic revision at the end, with no proposal
+/// acceptance required.
 pub async fn generate_full_report(
     sdk_config: &aws_config::SdkConfig,
     s3: &S3Client,
@@ -360,16 +367,36 @@ async fn generate_full_report_loaded(
     request: FullReportRequest<'_>,
 ) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     ensure_ready_for_turn(&loaded.workspace, expected_revision)?;
+    let run = start_draft_run(s3, bucket, &mut loaded, model_id, request.guidance.trim()).await?;
+    execute_full_draft_turn(sdk_config, s3, bucket, loaded, model_id, request, run).await
+}
+
+/// Drive one whole-report turn against an already-created run, then release
+/// the workspace whichever way the turn ends.
+///
+/// Both the first attempt and a resume land here, so the guarantee is stated
+/// once: on success the run owns the revision it cut, and on any failure the
+/// workspace pointer is cleared while the sections that landed stay durable in
+/// the run object.
+pub(crate) async fn execute_full_draft_turn(
+    sdk_config: &aws_config::SdkConfig,
+    s3: &S3Client,
+    bucket: &str,
+    mut loaded: LoadedWorkspace,
+    model_id: &str,
+    request: FullReportRequest<'_>,
+    mut run: LoadedRun,
+) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     let client_id = loaded.workspace.client_id;
-    let inventory = load_record_inventory(s3, bucket, client_id)
-        .await
-        .map_err(|source| ReportPipelineError::storage("listing full-draft records", source))?;
-    let record_context = load_full_record_context(s3, bucket, model_id, &inventory).await?;
-    request.emit_progress(ReportTurnProgress::RecordContextPrepared {
-        included_files: record_context.summary.included_files,
-        unavailable_files: record_context.summary.unavailable_files,
-        total_characters: record_context.summary.total_characters,
-    });
+    let report_id = loaded.workspace.report_id;
+    let prepared = prepare_full_draft_context(s3, bucket, client_id, model_id, request).await;
+    let record_context = match prepared {
+        Ok(record_context) => record_context,
+        Err(error) => {
+            release_failed_run(s3, bucket, client_id, report_id, &mut run).await;
+            return Err(error);
+        }
+    };
 
     let outcome = execute_turn(
         sdk_config,
@@ -386,15 +413,42 @@ async fn generate_full_report_loaded(
             request.model_tuning,
         ),
         &mut loaded,
+        Some(&mut run),
     )
-    .await?;
-    Ok(FullReportGenerationOutcome {
-        workspace: outcome.workspace,
-        turn_id: outcome.turn_id,
-        assistant_text: outcome.assistant_text,
-        record_context: record_context.summary,
-        attempt: outcome.attempt,
-    })
+    .await;
+
+    match outcome {
+        Ok(outcome) => Ok(FullReportGenerationOutcome {
+            workspace: outcome.workspace,
+            turn_id: outcome.turn_id,
+            assistant_text: outcome.assistant_text,
+            record_context: record_context.summary,
+            attempt: outcome.attempt,
+        }),
+        Err(error) => {
+            release_failed_run(s3, bucket, client_id, report_id, &mut run).await;
+            Err(error)
+        }
+    }
+}
+
+async fn prepare_full_draft_context(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    model_id: &str,
+    request: FullReportRequest<'_>,
+) -> Result<FullRecordContext, ReportPipelineError> {
+    let inventory = load_record_inventory(s3, bucket, client_id)
+        .await
+        .map_err(|source| ReportPipelineError::storage("listing full-draft records", source))?;
+    let record_context = load_full_record_context(s3, bucket, model_id, &inventory).await?;
+    request.emit_progress(ReportTurnProgress::RecordContextPrepared {
+        included_files: record_context.summary.included_files,
+        unavailable_files: record_context.summary.unavailable_files,
+        total_characters: record_context.summary.total_characters,
+    });
+    Ok(record_context)
 }
 
 fn validate_instruction(instruction: &str) -> Result<(), ReportPipelineError> {
@@ -411,7 +465,7 @@ fn validate_instruction(instruction: &str) -> Result<(), ReportPipelineError> {
     Ok(())
 }
 
-fn validate_model_choice(model_id: &str) -> Result<(), ReportPipelineError> {
+pub(crate) fn validate_model_choice(model_id: &str) -> Result<(), ReportPipelineError> {
     if model_id.trim().is_empty() {
         Err(ReportPipelineError::InvalidInput(
             "Choose a model before starting the writer.".to_string(),
@@ -426,6 +480,7 @@ fn ensure_ready_for_turn(
     expected_revision: u64,
 ) -> Result<(), ReportPipelineError> {
     ensure_revision(workspace, expected_revision)?;
+    ensure_no_active_run(workspace)?;
     if workspace.session.pending_proposal.is_some() {
         return Err(ReportPipelineError::InvalidInput(
             "Accept or reject the pending proposal before starting another writer action."
@@ -442,10 +497,11 @@ async fn execute_turn(
     model_id: &str,
     request: TurnRunRequest<'_>,
     loaded: &mut LoadedWorkspace,
+    run: Option<&mut LoadedRun>,
 ) -> Result<ReportTurnOutcome, ReportPipelineError> {
     let started_at = jiff::Timestamp::now();
     let mut progress = AttemptProgress::new(&loaded.workspace, model_id, started_at);
-    let result = run_turn(sdk_config, s3, bucket, request, loaded, &mut progress).await;
+    let result = run_turn(sdk_config, s3, bucket, request, loaded, run, &mut progress).await;
 
     match result {
         Ok(mut outcome) => {
@@ -675,15 +731,25 @@ impl TurnRunFailure {
     }
 }
 
+// The run is threaded alongside the workspace rather than inside the request
+// because both are mutated for the life of the turn.
+#[allow(clippy::too_many_arguments)]
 async fn run_turn(
     sdk_config: &aws_config::SdkConfig,
     s3: &S3Client,
     bucket: &str,
     request: TurnRunRequest<'_>,
     loaded: &mut LoadedWorkspace,
+    mut run: Option<&mut LoadedRun>,
     progress: &mut AttemptProgress,
 ) -> Result<ReportTurnOutcome, TurnRunFailure> {
     let limits = request.limits;
+    if request.is_full_draft() && run.is_none() {
+        return Err(TurnRunFailure::new(
+            ReportFailureCode::InvalidProtocol,
+            "Claria could not start a durable drafting run for this whole-report request.",
+        ));
+    }
     loaded
         .workspace
         .prune_turns(limits.max_retained_turns as usize)
@@ -814,7 +880,7 @@ async fn run_turn(
         &inventory,
         &loaded.workspace,
         &progress.model_id,
-        request.is_full_draft(),
+        run.as_deref_mut().filter(|_| request.is_full_draft()),
     );
     let terminal_text: String;
     // Named once for the failure messages: `progress` is borrowed mutably
@@ -1152,6 +1218,7 @@ async fn run_turn(
 
     let completed_at = jiff::Timestamp::now();
     let mut assistant_text = terminal_text;
+    let mut finalized_revision = None;
     if let Some(finalized) = finalized_full_draft {
         let expected_revision = loaded.workspace.draft.revision;
         loaded.workspace.draft = loaded
@@ -1161,9 +1228,22 @@ async fn run_turn(
             .map_err(|error| {
                 TurnRunFailure::new(ReportFailureCode::InvalidProtocol, error.to_string())
             })?;
+        let revision = loaded.workspace.draft.revision;
+        if let Some(run) = run.as_deref() {
+            stamp_run_authorship(
+                &mut loaded.workspace.draft.content,
+                &run.run,
+                revision,
+                completed_at,
+            );
+        }
+        // The run no longer owns the workspace: the revision it was building
+        // toward is cut, so edits, retries, and saves are free again.
+        loaded.workspace.active_run_id = None;
         loaded.workspace.session.pending_proposal = None;
-        loaded.workspace.session.last_agent_revision = Some(loaded.workspace.draft.revision);
+        loaded.workspace.session.last_agent_revision = Some(revision);
         mark_template_current(&mut loaded.workspace);
+        finalized_revision = Some(revision);
         if assistant_text.trim().is_empty() {
             assistant_text = finalized.summary;
         }
@@ -1214,6 +1294,22 @@ async fn run_turn(
         )
         .with_internal(other),
     })?;
+
+    // Workspace first, run second. The revision is the user's document and the
+    // run object is bookkeeping about it, so a run that never records its own
+    // completion is healed from the workspace on the next load rather than
+    // failing a generation that already landed.
+    if let (Some(run), Some(revision)) = (run, finalized_revision) {
+        run.run.status = claria_core::models::report_run::DraftRunStatus::Completed;
+        run.run.finalized_revision = Some(revision);
+        if let Err(error) = save_draft_run(s3, bucket, run).await {
+            tracing::warn!(
+                run_id = %run.run.run_id,
+                error = %error,
+                "the drafting run completed but could not record its own finish"
+            );
+        }
+    }
 
     if let Some(cache) = request.prompt_cache {
         if !request.is_full_draft()

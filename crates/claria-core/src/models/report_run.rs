@@ -166,7 +166,10 @@ pub struct EvidenceRef {
 pub struct RunSection {
     pub section_id: Uuid,
     pub heading: String,
-    /// Zero-based document order, unique across the run.
+    /// Zero-based ordering slot, unique across the run. A drafted section's
+    /// slot is where the writer put it, so sorting the drafted rows by it
+    /// reproduces the document the run is assembling; everything still
+    /// undecided trails behind them in the order the report supplied it.
     pub position: u32,
     pub state: RunSectionState,
     /// Staged content that has already survived a write. Nonempty only in

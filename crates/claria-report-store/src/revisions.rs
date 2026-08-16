@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use crate::{
     ReportRevisionSummary, ReportStoreError,
-    workspace::{ensure_revision, load_for_report, mark_template_current, save_loaded},
+    workspace::{
+        ensure_no_active_run, ensure_revision, load_for_report, mark_template_current, save_loaded,
+    },
 };
 
 pub async fn list_report_revisions(
@@ -69,6 +71,7 @@ pub async fn revert_report_revision(
 ) -> Result<ReportWorkspace, ReportStoreError> {
     let mut loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     ensure_revision(&loaded.workspace, expected_revision)?;
+    ensure_no_active_run(&loaded.workspace)?;
     if revision >= expected_revision {
         return Err(ReportStoreError::InvalidInput(
             "Choose an earlier report revision to restore.".to_string(),
@@ -118,6 +121,7 @@ pub async fn discard_queued_report_edits(
 ) -> Result<ReportWorkspace, ReportStoreError> {
     let mut loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     ensure_revision(&loaded.workspace, expected_revision)?;
+    ensure_no_active_run(&loaded.workspace)?;
     if loaded.workspace.session.pending_proposal.is_some() {
         return Err(ReportStoreError::InvalidInput(
             "Accept or reject the pending proposal before discarding report edits.".to_string(),

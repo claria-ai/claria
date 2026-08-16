@@ -14,7 +14,10 @@ use claria_storage::error::StorageError;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{MAX_RESOLUTIONS, ReportExportSnapshot, ReportStoreError, ReportTemplateApplication};
+use crate::{
+    ACTIVE_RUN_MESSAGE, MAX_RESOLUTIONS, ReportExportSnapshot, ReportStoreError,
+    ReportTemplateApplication,
+};
 
 /// Legacy-compatible current workspace loader. New UI sessions use
 /// [`start_report_workspace`] and resume by ID with
@@ -221,6 +224,7 @@ async fn save_report_draft_loaded(
     mut content: ReportContent,
 ) -> Result<ReportWorkspace, ReportStoreError> {
     ensure_revision(&loaded.workspace, expected_revision)?;
+    ensure_no_active_run(&loaded.workspace)?;
     if loaded.workspace.session.pending_proposal.is_some() {
         return Err(ReportStoreError::InvalidInput(
             "Accept or reject the pending proposal before editing the report.".to_string(),
@@ -332,6 +336,7 @@ async fn apply_report_template_loaded(
     application: ReportTemplateApplication,
 ) -> Result<ReportWorkspace, ReportStoreError> {
     ensure_revision(&loaded.workspace, expected_revision)?;
+    ensure_no_active_run(&loaded.workspace)?;
     if loaded.workspace.template_import.is_some() {
         return Err(ReportStoreError::InvalidInput(
             "This Writing session already has a template. Start a new session to use a different template."
@@ -793,6 +798,22 @@ fn require_etag(etag: String) -> Result<String, ReportStoreError> {
         ))
     } else {
         Ok(etag)
+    }
+}
+
+/// Refuse to mutate a report a whole-report drafting run currently owns.
+///
+/// The pointer is set for the life of one run and cleared when it finishes or
+/// fails, so in practice this only fires on a second window racing the first.
+/// Landing a section and cutting a revision underneath each other is exactly
+/// the collision it exists to stop.
+pub fn ensure_no_active_run(workspace: &ReportWorkspace) -> Result<(), ReportStoreError> {
+    if workspace.active_run_id.is_some() {
+        Err(ReportStoreError::InvalidInput(
+            ACTIVE_RUN_MESSAGE.to_string(),
+        ))
+    } else {
+        Ok(())
     }
 }
 

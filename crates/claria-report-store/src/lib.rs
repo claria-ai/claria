@@ -32,9 +32,9 @@ pub use revisions::{
 pub use runs::{LoadedRun, create_draft_run, list_draft_runs, load_draft_run, save_draft_run};
 pub use workspace::{
     LoadedWorkspace, apply_report_template, apply_report_template_for_report,
-    delete_report_workspace_for_client, ensure_revision, find_report_workspace,
-    list_report_workspaces, load_export_snapshot, load_for_report, load_or_create,
-    load_report_workspace, load_report_workspace_by_id, mark_template_current,
+    delete_report_workspace_for_client, ensure_no_active_run, ensure_revision,
+    find_report_workspace, list_report_workspaces, load_export_snapshot, load_for_report,
+    load_or_create, load_report_workspace, load_report_workspace_by_id, mark_template_current,
     record_report_export, rename_report_session, resolve_report_proposal,
     resolve_report_proposal_for_report, restore_report_workspace_for_client, save_loaded,
     save_report_draft, save_report_draft_for_report, start_report_workspace,
@@ -52,6 +52,11 @@ pub(crate) const MAX_RESOLUTIONS: usize = 100;
 
 pub const REPORT_CONFLICT_MESSAGE: &str =
     "The report changed on another computer. Reload it before continuing.";
+
+/// Refusal shown for every report mutation attempted while a whole-report
+/// drafting run owns the session.
+pub const ACTIVE_RUN_MESSAGE: &str = "A whole-report draft is currently running for this session. \
+Wait for it to finish, or stop it, before changing the report.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReportExportSnapshot {

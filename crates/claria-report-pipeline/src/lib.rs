@@ -1,16 +1,18 @@
-//! Report-writing orchestration for atomic full drafts and targeted proposals.
+//! Report-writing orchestration for durable whole-report runs and targeted
+//! proposals.
 //!
 //! This crate owns report workflow policy, bounded record tools, proposal
-//! staging, and the turn loop that drives them. Durable writer state lives in
-//! `claria-report-store`, Bedrock wire details stay in `claria-bedrock`,
-//! generic S3 operations stay in `claria-storage`, and persisted domain types
-//! stay in `claria-core`.
+//! staging, the drafting-run executor, and the turn loop that drives them.
+//! Durable writer state lives in `claria-report-store`, Bedrock wire details
+//! stay in `claria-bedrock`, generic S3 operations stay in `claria-storage`,
+//! and persisted domain types stay in `claria-core`.
 
 mod context;
 mod error;
 mod prompt_cache;
 mod prompts;
 mod record_context;
+mod run;
 mod tools;
 mod turn;
 
@@ -25,6 +27,7 @@ pub use prompts::{
     FULL_REPORT_SYSTEM_PROMPT_BODY, FULL_REPORT_TRUST_RULES, REPORT_SYSTEM_PROMPT_BODY,
     REPORT_TRUST_RULES, full_report_system_prompt, report_system_prompt,
 };
+pub use run::resume_draft_run;
 pub use turn::{
     FullReportRequest, ReportMessageRequest, ReportTurnProgress, generate_full_report,
     generate_full_report_for_report, send_report_message, send_report_message_for_report,

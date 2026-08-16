@@ -2,7 +2,7 @@
 
 The writer exposes two disjoint tool sets over Bedrock Converse tool use.
 Targeted editing gets record access plus proposal staging; whole-report
-generation gets candidate-building tools and **no** record tools (its
+generation gets run-building tools and **no** record tools (its
 snapshot is injected up front). Tool descriptions are contracts: ID-copying
 rules, 0-based positions, character units, per-turn limits, and the
 truncation-salvage behavior are all stated in the description or the
@@ -211,10 +211,11 @@ An id that neither came from the host context nor from an earlier write is
 rejected as `invented_section_id` — the anti-hallucination guard that keeps
 template sections accounted for. `null` gets a server-assigned UUID.
 
-**Internal mapping.** Mutates only the candidate's section list and marks
-the id touched. The candidate snapshotted every section id present in the
-draft when generation started (`required_section_ids`); those must all be
-touched before finalization succeeds.
+**Internal mapping.** Moves the section to `drafted` in the run object and
+writes the run back to S3 **before** this success result is returned — the
+conversation never believes more than durable truth. The run's plan carries
+one required entry per section present in the draft when generation started;
+all of them must be drafted or skipped before finalization succeeds.
 
 ---
 
@@ -237,11 +238,13 @@ Success result:
 Fails with the missing UUIDs listed when any required template/report
 section was never written.
 
-**Internal mapping.** Marks the candidate finalized; the host then
-validates the complete content and saves it as **one atomic versioned
-revision** (`replace_content`) with no proposal gate — the loop's terminal
-guard also nudges the model once if it tries to end the turn in prose
-before this tool succeeded.
+**Internal mapping.** Assembles the run's drafted sections in the order they
+were written, re-inserts skipped ones as empty placeholders, and stages the
+result; the host then saves it as **one atomic versioned revision**
+(`replace_content`) with no proposal gate, stamps every run-authored section
+with the run that wrote it, releases the session, and marks the run
+completed. The loop's terminal guard also nudges the model once if it tries
+to end the turn in prose before this tool succeeded.
 
 ---
 
