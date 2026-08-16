@@ -68,6 +68,14 @@ All notable changes to Claria are documented here.
 - Planning now produces an outline naming the records each section rests on, instead of copying quoted excerpts out of them, so a plan generates in a fraction of the time
 - The planner's smaller answers hand ~16k tokens back to the record corpus it reads
 - Planning counts its sections off as they are decided instead of showing a spinner for the whole call
+- A report drafted from an approved plan now writes its sections in parallel rather than one after another
+- Sections appear in the order the plan puts them in, however long each one takes to arrive
+- The report title is written alongside the sections, and a title that fails leaves the existing one in place
+- Assembling the finished document no longer costs a model call
+- Sections the plan says to keep or skip are carried out without asking the writer
+- A section that cannot be written fails on its own; the rest of the report is still drafted and saved
+- Stopping a parallel draft keeps every section that had already landed and picks up from there
+- Reports generated without a plan are unchanged
 
 ## [0.28.0] — 2026-08-15
 

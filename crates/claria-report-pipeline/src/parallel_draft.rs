@@ -87,7 +87,7 @@ use crate::{
     turn::{
         AttemptProgress, FailedReportCall, FullReportRequest, ReportTurnProgress, TurnInterruption,
         TurnRunFailure, call_usage_record, map_bedrock_failure, merge_usage,
-        prepare_full_draft_context, settle_attempt,
+        prepare_full_draft_context, settle_attempt, terminal_stop_failure,
     },
 };
 
@@ -1079,24 +1079,36 @@ async fn run_branch(
         tool_uses = tool_uses.saturating_add(output.tool_calls.len() as u32);
         messages.push(output.message.clone());
 
+        // Filtered, guardrailed, malformed, over the context window: the same
+        // terminal set the serial loop refuses, and refused here for the same
+        // reason — a branch cannot repair its way out of any of them, and a
+        // tool call beside one is not work anybody should trust.
+        if !matches!(
+            output.stop_reason,
+            ReportStopReason::EndTurn | ReportStopReason::ToolUse | ReportStopReason::MaxTokens
+        ) {
+            return finished(
+                BranchVerdict::Errored(terminal_stop_failure(output.stop_reason)),
+                receipts,
+                tool_uses,
+                verified(&budget).await,
+            );
+        }
         if output.tool_calls.is_empty() {
+            // A response that ran out of output tokens before it produced its
+            // one tool call has nothing salvageable in it either.
+            if matches!(output.stop_reason, ReportStopReason::MaxTokens) {
+                return finished(
+                    BranchVerdict::Errored(terminal_stop_failure(output.stop_reason)),
+                    receipts,
+                    tool_uses,
+                    verified(&budget).await,
+                );
+            }
             // A response that ended in prose, or one whose stop reason claimed
             // a tool call it never made. Either way the branch has nothing to
             // hand back, and one reminder is worth more than a failure.
-            if corrective_used
-                || !matches!(
-                    output.stop_reason,
-                    ReportStopReason::EndTurn | ReportStopReason::ToolUse
-                )
-            {
-                if let Some(failure) = terminal_failure(output.stop_reason) {
-                    return finished(
-                        BranchVerdict::Errored(failure),
-                        receipts,
-                        tool_uses,
-                        verified(&budget).await,
-                    );
-                }
+            if corrective_used {
                 return finished(
                     BranchVerdict::SectionFailed {
                         code: "no_tool_call",
@@ -1190,16 +1202,6 @@ fn cache_read_tokens(outcome: &BranchOutcome) -> u64 {
         .fold(0_u64, |total, usage| {
             total.saturating_add(usage.cache_read_input_tokens)
         })
-}
-
-/// A stop reason a branch cannot repair its way out of. `end_turn` and
-/// `tool_use` are handled by the caller; everything else is the same terminal
-/// set the serial loop refuses.
-fn terminal_failure(stop_reason: ReportStopReason) -> Option<TurnRunFailure> {
-    match stop_reason {
-        ReportStopReason::EndTurn | ReportStopReason::ToolUse => None,
-        other => Some(crate::turn::terminal_stop_failure(other)),
-    }
 }
 
 /// The one corrective round a branch gets when a response produced no tool

@@ -72,6 +72,11 @@ its own small machine:
 `Pending → Drafting → Drafted | Failed | Skipped | Kept`, plus `Flagged` for a
 drafted section a review pass raised something against.
 
+`Kept` is produced by the parallel coordinator and nothing else: it is what a
+`keep` plan row means once the run reaches the point of carrying it out — the
+base revision's content stands, the section is decided, and no model is asked
+about it.
+
 **`Drafting` is transient and never true across a load.** A section found
 `Drafting` on disk belongs to an interrupted run; every load demotes it to
 `Pending` before anything else looks at it.
@@ -145,7 +150,32 @@ keep, skipped → skip, everything else → draft — and inherits the source pl
 
 ---
 
-## The drafting conversation
+## Two drafting shapes
+
+Which shape a run takes follows the run's own plan, not a setting:
+
+| | Serial conversation | Parallel fan-out |
+|---|---|---|
+| Used by | `generate_full_report*`, and a resume of a run built on a synthetic plan | `start_draft_run`, and a resume of a run whose plan came from a planning pass |
+| Plan | Synthetic 1:1, nobody's decision | Read and approved by a clinician |
+| Shape | One conversation, one section per response | One transient conversation per pending section, plus one for the title |
+| Title | `set_full_draft_title` inside the conversation | A sibling branch; a failure falls back to the base title |
+| Finish | `finish_full_draft`, then a closing reply | Pure code — no model call |
+| Positions | Written order | Plan order, assigned before any branch starts |
+| Skips | The writer calls `skip_full_draft_section` | The host carries out the plan's `skip` and `keep` rows itself |
+
+The gate is the whole justification. An approved plan states what each section
+must assert and which records it rests on, which is precisely the claim that
+the sections can be written without reading one another. A synthetic plan
+states nothing, so a run on one keeps the conversation where each section can
+see the last.
+
+One consequence is a simplification: on the gated path the writer never gets
+the chance to argue with a plan row, so the skip-divergence handshake below
+does not arise. A human-approved plan is the authority there, and a section it
+defers is deferred without a model call.
+
+## The serial drafting conversation
 
 One Opus conversation writes the whole document, one section per tool call,
 over a prompt built so the expensive half is cached:
@@ -184,6 +214,69 @@ rejects mixed TTLs, so one tier covers the whole plan.
 Call ceilings scale with the plan (`plan_len * 2 + 8`, clamped to what a
 clinician could configure by hand), because a forty-five-section plan cannot
 fit under a request-sized default.
+
+---
+
+## The parallel fan-out
+
+A gated run sends one request per pending section instead of one conversation
+for the document. Blocks 0–2 and both checkpoints are the serial layout above,
+built by the same functions, so the two shapes read each other's cached prefix:
+
+```
+system:      composed prompt + trust rules + parallel rules   ┐ identical
+messages[0]: <untrusted_record_context>                       │ across
+             <untrusted_template_context>  ● CachePoint 1 (1h) │ branches
+             <plan_context>                ● CachePoint 2 (1h) ┘
+             "Assigned section: {uuid} ({heading})" …  ← the only differing bytes
+```
+
+There is no tail point: a branch is a single request and never comes back to
+read one. The parallel rules are appended after the trust rules, last, so they
+override the user-editable workflow paragraph that still says "one section per
+response".
+
+A branch may call exactly two tools — `write_full_draft_section` for its own
+section, or `mark_section_failed` for the same ID. Naming another section, a
+null section ID, skipping, titling, and finishing are all refused with a
+diagnostic and count as one of the three write attempts the serial path also
+grants. A valid write ends the branch without the success `tool_result` going
+back, which saves one billed call per section.
+
+Execution is warm-then-fan-out, at `buffer_unordered(3)` with throttle backoff,
+exactly like the review sweep. The first plan section runs alone with the run's
+one `CountTokens` and writes both checkpoints; everything after it reads them
+and estimates forward from that count. A warm branch that errors seeds nothing
+and its siblings run unseeded.
+
+**Branches never touch the run.** A branch validates and hands back; a
+single-threaded coordinator applies the verdict, writes the run object, and
+only then emits progress — which is what keeps the ETag chain a chain and the
+`drafted`/`total` counters monotonic while branches finish out of order.
+`buffer_unordered`, not `buffered`, so commits land in completion order and a
+run that dies keeps every section that had finished; document order is not at
+stake, because positions were handed out from the plan before any branch
+started.
+
+The coordinator also owns the ends of the run:
+
+- **Title** is a sibling branch. Its failure never fails the run — the base
+  revision's title stands.
+- **Finish** is pure code. The plan already says what a finished document is,
+  so `assemble_finished_draft` — the same function the in-conversation
+  `finish_full_draft` tool calls — cuts the revision, and the assistant message
+  the session persists is the host's own count of what happened.
+- **Zero drafted sections** fails the run with the first branch's typed cause,
+  the same rule the review fan-out uses: one failure with many symptoms is
+  better reported once than as an empty revision.
+- **Stop** finishes draining, commits the verdicts that had already arrived,
+  and parks the run. Every branch checks the signal before its first call, so a
+  queued one never opens a billed conversation after a Stop.
+
+A resume needs no special case: the fan-out covers whatever is still `Pending`
+after the plan is applied, drafted sections are untouched by construction, and
+a branch kick-off carries no section-state table because there is nothing in
+the run's history a branch could act on.
 
 ---
 
@@ -330,10 +423,15 @@ filenames, prompts, or document text: `draft_plan_generated`,
 
 Progress rides one `Channel<ReportTurnProgressView>` shared by the planning,
 drafting, and review phases: `record_context_prepared`, `model_call_started`,
-`tool_started`, `tool_finished`, `plan_row_planned`, and — for the fan-out —
-`review_pass_started` and `review_pass_completed`. The review events carry
-their own `index`/`completed` and `total`, so a dropped event cannot desync a
-progress bar.
+`tool_started`, `tool_finished`, `plan_row_planned`, the per-section events,
+and — for the review — `review_pass_started` and `review_pass_completed`. Every
+section and review event carries its own counters and total, so a dropped event
+cannot desync a progress bar.
+
+The parallel fan-out emits the same section events, from the coordinator, after
+each durable commit. It emits no `tool_started`/`tool_finished`: a branch
+executes no host tool, and its call numbers are assigned in commit order
+because a branch cannot number its own calls without racing its siblings.
 
 A tool call is only executable once complete, so nothing the writer does
 streams below the call boundary. Planning is the one exception, and only for
