@@ -1,11 +1,12 @@
-//! Review findings — listing them and resolving one.
+//! Review findings — producing them, listing them, and resolving one.
 
 use claria_core::models::findings::{FindingAction, ReportFindings};
 use tauri::State;
 
 pub use claria_desktop::report_authoring::ReportFindingResolution;
+use claria_desktop::report_authoring::ReportTurnProgressView;
 
-use super::{CommandContext, parse_uuid, run};
+use super::{CommandContext, merge_details, parse_uuid, run, usage_audit_details};
 use crate::state::DesktopState;
 
 /// The durable audit action one resolution records.
@@ -15,6 +16,66 @@ const fn audit_action(action: FindingAction) -> &'static str {
         FindingAction::UndoStyle => "finding_undone",
         FindingAction::Dismiss => "finding_dismissed",
     }
+}
+
+/// Review one accepted revision for every property and save what comes back.
+///
+/// One request per property runs in parallel against the reviewing model, so
+/// the command holds its future for the length of the slowest branch. A
+/// property whose branch fails leaves no coverage row: the returned findings
+/// say which properties were actually read, and the audit event names the
+/// ones that were not.
+#[tauri::command]
+#[specta::specta]
+pub async fn run_review_sweeps(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+    revision: u64,
+    on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
+) -> Result<ReportFindings, String> {
+    run("run_review_sweeps", async {
+        let ctx = CommandContext::new(&state).await?;
+        let client_id = parse_uuid(&client_id)?;
+        let report_id = parse_uuid(&report_id)?;
+        let reviewer_override = ctx.cfg.draft_pipeline.reviewer_model_id.clone();
+        let preferred = ctx.cfg.preferred_model_id.clone().unwrap_or_default();
+        let reviewer_model_id =
+            super::plan::role_model_id(&ctx, reviewer_override.as_deref(), &preferred).await?;
+        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
+            let _ = on_progress.send(event.into());
+        };
+        let outcome = claria_report_pipeline::run_review_sweeps(
+            &ctx.sdk_config,
+            &ctx.s3,
+            &ctx.bucket,
+            client_id,
+            report_id,
+            revision,
+            &reviewer_model_id,
+            claria_report_pipeline::ReviewSweepRequest::new().with_progress(&progress),
+        )
+        .await?;
+        let mut details = usage_audit_details(&reviewer_model_id, outcome.usage.as_ref(), None);
+        merge_details(
+            &mut details,
+            serde_json::json!({
+                "client_id": client_id.to_string(),
+                "reviewer_model_id": reviewer_model_id,
+                "revision": revision,
+                "findings_by_property": outcome.findings_by_property(),
+                "failed_properties": outcome.failed_properties(),
+                "converse_calls": outcome.converse_calls,
+            }),
+        );
+        ctx.record_audit(
+            ctx.audit_event("review_sweep_completed", "report", report_id.to_string())
+                .with_details(details),
+        )
+        .await;
+        Ok(outcome.findings)
+    })
+    .await
 }
 
 #[tauri::command]

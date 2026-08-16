@@ -17,14 +17,14 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{
-    error::CoreError,
-    models::report::{ReportContent, validate_nonempty_text},
-};
 /// Findings cite records exactly the way a drafting run does, so they share the
 /// one definition. Two `RecordCitation` types would also collide in the specta
 /// bindings, which refuse duplicate exported names.
 pub use crate::models::report_run::{MAX_CITATION_QUOTE_CHARACTERS, RecordCitation};
+use crate::{
+    error::CoreError,
+    models::report::{ReportContent, validate_nonempty_text},
+};
 
 pub const REPORT_FINDINGS_SCHEMA_VERSION: u32 = 1;
 

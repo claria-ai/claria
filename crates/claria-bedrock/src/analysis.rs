@@ -42,8 +42,93 @@ use crate::{
     report::{self, ReportStopReason},
 };
 
+/// The analysis tool set's wire type, re-exported so an orchestrating crate
+/// can hold one between calls without taking a direct dependency on the
+/// Bedrock SDK. Wire types are this crate's job.
+pub use aws_sdk_bedrockruntime::types::ToolConfiguration as AnalysisToolConfiguration;
+
 pub const SUBMIT_SECTION_PLAN_TOOL: &str = "submit_section_plan";
 pub const SUBMIT_RESUME_PLAN_TOOL: &str = "submit_resume_plan";
+pub const SUBMIT_REVIEW_ROWS_TOOL: &str = "submit_review_rows";
+
+/// Shortest span a review finding may anchor on. Shorter than a citation
+/// quote's floor because a review points at a phrase inside one section, not
+/// at a passage inside a whole corpus: "was administered" is a real tense
+/// anchor, and the section it must be unique within is a few paragraphs long.
+pub const MIN_REVIEW_QUOTE_CHARACTERS: usize = 5;
+
+/// Ceiling for one finding's description. Well inside the persisted model's
+/// own ceiling, which leaves the host room to append its anchor notes to a
+/// description that arrived at the limit.
+pub const MAX_REVIEW_DESCRIPTION_CHARACTERS: usize = 400;
+
+/// Findings one property may raise about one section. A property that finds
+/// ten separate problems in one section has found a section that needs
+/// rewriting, not ten findings worth resolving one at a time.
+pub const MAX_REVIEW_SECTION_FINDINGS: usize = 10;
+
+const _: () = assert!(
+    MAX_REVIEW_DESCRIPTION_CHARACTERS
+        <= claria_core::models::findings::MAX_FINDING_DESCRIPTION_CHARACTERS,
+    "a description the schema accepts must fit the description the store persists"
+);
+const _: () = assert!(
+    MIN_REVIEW_QUOTE_CHARACTERS < MAX_CITATION_QUOTE_CHARACTERS,
+    "review quote bounds must describe a non-empty range"
+);
+
+/// The seven properties one review sweep fans out over, one request each.
+///
+/// The split is structural, not editorial. A style property's finding carries
+/// an anchored replacement the clinician can apply and undo; a consistency
+/// property's finding is a claim about the document that no replacement could
+/// settle, so it has no write path at all — the persisted model refuses the
+/// combination, and [`Self::pass`] is the one place the mapping lives.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewProperty {
+    TenseDrift,
+    Terminology,
+    Transitions,
+    Redundancy,
+    InternalContradiction,
+    UnsupportedClaim,
+    CrossSectionConflict,
+}
+
+impl ReviewProperty {
+    /// Every property, in the order the fan-out runs them. The first is the
+    /// warming branch: it writes the cache prefix the other six read.
+    pub const ALL: [Self; 7] = [
+        Self::TenseDrift,
+        Self::Terminology,
+        Self::Transitions,
+        Self::Redundancy,
+        Self::InternalContradiction,
+        Self::UnsupportedClaim,
+        Self::CrossSectionConflict,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TenseDrift => "tense_drift",
+            Self::Terminology => "terminology",
+            Self::Transitions => "transitions",
+            Self::Redundancy => "redundancy",
+            Self::InternalContradiction => "internal_contradiction",
+            Self::UnsupportedClaim => "unsupported_claim",
+            Self::CrossSectionConflict => "cross_section_conflict",
+        }
+    }
+
+    /// Whether findings from this property carry an applicable replacement.
+    pub const fn is_style(self) -> bool {
+        matches!(
+            self,
+            Self::TenseDrift | Self::Terminology | Self::Transitions | Self::Redundancy
+        )
+    }
+}
 
 /// Ceiling for the planner's one-line reason behind a resume decision. It is
 /// read by the host, never persisted: a free-text rationale about a section
@@ -117,10 +202,43 @@ impl AnalysisInputBudget {
         }
     }
 
+    /// A budget seeded from a count already taken against a request of the
+    /// same shape.
+    ///
+    /// The review fan-out is the reason this exists: seven branches send
+    /// byte-identical system blocks and a byte-identical draft block, and
+    /// differ only in a few hundred tokens of instruction. Counting each of
+    /// them separately would spend seven `CountTokens` calls to learn the same
+    /// number, so the warming branch counts once and the siblings estimate
+    /// forward from its result — the incremental rule the review rules already
+    /// require of a multi-call tool loop.
+    pub fn seeded(
+        model_id: &str,
+        output_token_reserve: u32,
+        verified_tokens: u32,
+        verified_chars: u64,
+    ) -> Self {
+        let budget_tokens = analysis_input_token_budget(model_id, output_token_reserve);
+        Self {
+            inner: converse::InputTokenBudget::seeded(
+                budget_tokens,
+                verified_tokens,
+                verified_chars,
+            ),
+            budget_tokens,
+        }
+    }
+
     /// The input budget this analysis call runs under, so a caller sizing the
     /// corpus against it reads the same number the call will enforce.
     pub const fn budget_tokens(&self) -> u32 {
         self.budget_tokens
+    }
+
+    /// The exact count this budget has taken, if it has taken one, as
+    /// `(input_tokens, request_characters)` — the seed for [`Self::seeded`].
+    pub fn verified(&self) -> Option<(u32, u64)> {
+        self.inner.verified()
     }
 }
 
@@ -396,6 +514,24 @@ pub fn analysis_tool_configuration() -> Result<ToolConfiguration, BedrockError> 
                  one row per section in the supplied state table and no invented section IDs.",
                 resume_plan_schema(),
             )?,
+            report::tool(
+                SUBMIT_REVIEW_ROWS_TOOL,
+                "Submit this review pass's verdict on the drafted report. Called exactly once, \
+                 for the single property named in \"property\" and no other. Return exactly one \
+                 row per section listed in the supplied drafted-section block, in the order that \
+                 block lists them, and include a row with status \"no_issues\" for every section \
+                 this property is clean in — an omitted row is not read as \"nothing found\", it \
+                 fails validation and costs the pass a correction round. Copy every section_id \
+                 exactly; never invent, merge, reorder, or omit a section. Every quote you return \
+                 is searched for in the text of the section it belongs to, with runs of \
+                 whitespace treated as equal; a quote you have corrected, shortened, reflowed, or \
+                 paraphrased matches nothing and the finding is discarded. The style properties \
+                 (tense_drift, terminology, transitions, redundancy) must attach a \"replacement\" \
+                 to every finding. The consistency properties (internal_contradiction, \
+                 unsupported_claim, cross_section_conflict) report only: a consistency finding \
+                 that carries a \"replacement\" is rejected outright.",
+                review_rows_schema(),
+            )?,
         ]))
         .build()
         .map_err(|error| BedrockError::Invocation(error.to_string()))
@@ -526,6 +662,170 @@ fn resume_plan_schema() -> serde_json::Value {
     })
 }
 
+/// A quote field: the same bounds and the same "whitespace may differ,
+/// nothing else may" contract wherever a review returns copied text.
+fn review_quote_schema(what: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "string",
+        "minLength": MIN_REVIEW_QUOTE_CHARACTERS,
+        "maxLength": MAX_CITATION_QUOTE_CHARACTERS,
+        "description": format!(
+            "{what} Between {MIN_REVIEW_QUOTE_CHARACTERS} and {MAX_CITATION_QUOTE_CHARACTERS} Unicode characters, copied verbatim. Whitespace may differ; nothing else may."
+        )
+    })
+}
+
+fn review_span_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["quote"],
+        "additionalProperties": false,
+        "description": "Where in THIS section the problem is.",
+        "properties": {
+            "quote": review_quote_schema(
+                "The passage in this section the finding is about, copied from this section's own text."
+            ),
+            "block_index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Optional zero-based index of the block the quote came from, numbered as the drafted-section block numbers this section's blocks. A hint only: the host searches that block first and then the rest of the section, so a wrong index costs nothing and a missing one costs nothing."
+            }
+        }
+    })
+}
+
+fn review_conflicting_span_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["quote"],
+        "additionalProperties": false,
+        "description": "The passage this finding conflicts with. Consistency properties only.",
+        "properties": {
+            "section_id": {
+                "type": "string", "minLength": 36, "maxLength": 36,
+                "description": "The 36-character UUID of the section holding the conflicting passage, copied exactly. Omit it when the conflict is inside the same section as the span above."
+            },
+            "quote": review_quote_schema("The conflicting passage, copied from the section it is in.")
+        }
+    })
+}
+
+fn review_record_citation_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["filename", "quote"],
+        "additionalProperties": false,
+        "description": "The record text that settles the point. Consistency properties only.",
+        "properties": {
+            "filename": {
+                "type": "string", "minLength": 1, "maxLength": 1024,
+                "description": "A filename copied exactly from the record corpus in the untrusted context."
+            },
+            "quote": review_quote_schema("The span of that file that settles the point, copied verbatim.")
+        }
+    })
+}
+
+fn review_replacement_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["find", "replace"],
+        "additionalProperties": false,
+        "description": "The anchored edit that fixes this finding. Required on every finding from a style property (tense_drift, terminology, transitions, redundancy), and never valid on a consistency property (internal_contradiction, unsupported_claim, cross_section_conflict), which reports only.",
+        "properties": {
+            "find": {
+                "type": "string",
+                "minLength": MIN_REVIEW_QUOTE_CHARACTERS,
+                "maxLength": MAX_CITATION_QUOTE_CHARACTERS,
+                "description": format!(
+                    "The exact text to replace, copied character for character from this section and occurring exactly once in it. {MIN_REVIEW_QUOTE_CHARACTERS}\u{2013}{MAX_CITATION_QUOTE_CHARACTERS} Unicode characters. Widen it until it is unique rather than pointing at a word that repeats."
+                )
+            },
+            "replace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_CITATION_QUOTE_CHARACTERS,
+                "description": format!(
+                    "The text to put in its place, at most {MAX_CITATION_QUOTE_CHARACTERS} Unicode characters. It must differ from \"find\", and it must not be empty \u{2014} shorten a passage by rewriting it, not by deleting it."
+                )
+            }
+        }
+    })
+}
+
+fn review_finding_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["span", "description"],
+        "additionalProperties": false,
+        "properties": {
+            "span": review_span_schema(),
+            "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_REVIEW_DESCRIPTION_CHARACTERS,
+                "description": format!(
+                    "What is wrong and why, in at most {MAX_REVIEW_DESCRIPTION_CHARACTERS} Unicode characters. Written for the clinician who will act on it."
+                )
+            },
+            "conflicting_span": review_conflicting_span_schema(),
+            "record_citation": review_record_citation_schema(),
+            "replacement": review_replacement_schema()
+        }
+    })
+}
+
+fn review_row_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["section_id", "status", "findings"],
+        "additionalProperties": false,
+        "properties": {
+            "section_id": section_id_schema(),
+            "status": {
+                "enum": ["no_issues", "findings"],
+                "description": "\"no_issues\" means you read this section for this property and it is clean; send an empty findings array with it. \"findings\" means the findings array below is not empty."
+            },
+            "findings": {
+                "type": "array",
+                "maxItems": MAX_REVIEW_SECTION_FINDINGS,
+                "description": format!(
+                    "Up to {MAX_REVIEW_SECTION_FINDINGS} findings about this section, strongest first. Empty when status is \"no_issues\"."
+                ),
+                "items": review_finding_schema()
+            }
+        }
+    })
+}
+
+/// The union review tool's schema.
+///
+/// One schema for all seven properties, because the tool list is the first
+/// tier Bedrock invalidates: a per-property tool would move that tier and
+/// cost every branch of the fan-out the corpus prefix its sibling paid to
+/// write. Which fields are legal for which property is therefore stated in
+/// the descriptions and enforced by the host, not by the shape.
+fn review_rows_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["property", "rows"],
+        "additionalProperties": false,
+        "properties": {
+            "property": {
+                "enum": ReviewProperty::ALL.map(ReviewProperty::as_str),
+                "description": "The single property this pass was asked about. It must equal the property named in the instruction; a row set submitted under any other property is rejected."
+            },
+            "rows": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_REPORT_SECTIONS,
+                "description": "Exactly one row per drafted section, in the order the drafted-section block lists them, including every section where this property found nothing.",
+                "items": review_row_schema()
+            }
+        }
+    })
+}
+
 // ── Typed rows ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -597,6 +897,83 @@ pub fn decode_section_plan(input: &serde_json::Value) -> Result<SectionPlanReque
 
 /// [`decode_section_plan`] for the resume tool.
 pub fn decode_resume_plan(input: &serde_json::Value) -> Result<ResumePlanRequest, BedrockError> {
+    serde_json::from_value(input.clone())
+        .map_err(|error| BedrockError::SchemaViolation(error.to_string()))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRowsRequest {
+    pub property: ReviewProperty,
+    pub rows: Vec<ReviewRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRow {
+    pub section_id: String,
+    pub status: ReviewRowStatus,
+    /// Defaulted rather than required so a clean row that omits the empty
+    /// array is accepted. The schema still asks for it, because "send an
+    /// empty array" is a clearer contract than "omit the field".
+    #[serde(default)]
+    pub findings: Vec<ReviewRowFinding>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewRowStatus {
+    NoIssues,
+    Findings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRowFinding {
+    pub span: ReviewSpan,
+    pub description: String,
+    #[serde(default)]
+    pub conflicting_span: Option<ReviewConflictingSpan>,
+    #[serde(default)]
+    pub record_citation: Option<ReviewRecordCitation>,
+    #[serde(default)]
+    pub replacement: Option<ReviewReplacement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewSpan {
+    pub quote: String,
+    /// A hint the host searches first, not an address it trusts.
+    #[serde(default)]
+    pub block_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewConflictingSpan {
+    /// `None` means the conflicting passage is in the same section.
+    #[serde(default)]
+    pub section_id: Option<String>,
+    pub quote: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRecordCitation {
+    pub filename: String,
+    pub quote: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewReplacement {
+    pub find: String,
+    pub replace: String,
+}
+
+/// [`decode_section_plan`] for the review tool.
+pub fn decode_review_rows(input: &serde_json::Value) -> Result<ReviewRowsRequest, BedrockError> {
     serde_json::from_value(input.clone())
         .map_err(|error| BedrockError::SchemaViolation(error.to_string()))
 }

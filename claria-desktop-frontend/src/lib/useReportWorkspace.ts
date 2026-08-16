@@ -49,6 +49,15 @@ function modelActivityLabel(callNumber: number): string {
   return `Claude is ${MODEL_ACTIVITY_WORDS[index]}`;
 }
 
+/**
+ * The backend names review properties in snake_case, and that is the name the
+ * findings themselves carry. Rendering it as prose is presentation, so it
+ * happens here rather than being sent over the bridge twice.
+ */
+function reviewPropertyLabel(property: string): string {
+  return property.replaceAll("_", " ");
+}
+
 function agentActivityForTool(name: string, context: string | null) {
   if (name === "list_record_files") {
     return { label: "Checking available records", detail: context ?? undefined };
@@ -289,6 +298,25 @@ export function useReportWorkspace({
       setAgentActivity({
         label: modelActivityLabel(progress.call_number),
         detail: `Model call ${progress.call_number}`,
+      });
+      return;
+    }
+
+    if (progress.kind === "review_pass_started") {
+      setAgentActivity({
+        label: `Reviewing for ${reviewPropertyLabel(progress.property)}`,
+        detail: `Pass ${progress.index} of ${progress.total}`,
+      });
+      return;
+    }
+
+    if (progress.kind === "review_pass_completed") {
+      setAgentActivity({
+        label:
+          progress.findings === 0
+            ? `No ${reviewPropertyLabel(progress.property)} issues found`
+            : `${progress.findings} ${reviewPropertyLabel(progress.property)} finding${progress.findings === 1 ? "" : "s"}`,
+        detail: `${progress.completed} of ${progress.total} passes done`,
       });
       return;
     }

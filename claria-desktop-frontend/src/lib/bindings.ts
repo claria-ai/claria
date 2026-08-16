@@ -678,6 +678,23 @@ async resolveReportProposal(clientId: string, reportId: string, proposalId: stri
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Review one accepted revision for every property and save what comes back.
+ * 
+ * One request per property runs in parallel against the reviewing model, so
+ * the command holds its future for the length of the slowest branch. A
+ * property whose branch fails leaves no coverage row: the returned findings
+ * say which properties were actually read, and the audit event names the
+ * ones that were not.
+ */
+async runReviewSweeps(clientId: string, reportId: string, revision: number, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportFindings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("run_review_sweeps", { clientId, reportId, revision, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async listReportFindings(clientId: string, reportId: string) : Promise<Result<ReportFindings, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_report_findings", { clientId, reportId }) };
@@ -2015,7 +2032,7 @@ export type ReportTemplateWarningView = { code: string; message: string; count: 
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
-export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus }
+export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus } | { kind: "review_pass_started"; property: string; index: number; total: number } | { kind: "review_pass_completed"; property: string; findings: number; completed: number; total: number }
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
 /**
  * Earns its life over `ReportWorkspace`: flattens the session container and

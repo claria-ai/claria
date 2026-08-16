@@ -20,7 +20,7 @@ use crate::state::DesktopState;
 /// override the picker offered is an override this honours, and one the
 /// account has since lost falls through to the derived default instead of
 /// failing the command with a Bedrock error.
-async fn role_model_id(
+pub(crate) async fn role_model_id(
     ctx: &CommandContext,
     override_id: Option<&str>,
     writer_model_id: &str,

@@ -172,6 +172,17 @@ pub enum ReportTurnProgressView {
         context: Option<String>,
         status: ReportToolActivityStatus,
     },
+    ReviewPassStarted {
+        property: String,
+        index: u32,
+        total: u32,
+    },
+    ReviewPassCompleted {
+        property: String,
+        findings: u32,
+        completed: u32,
+        total: u32,
+    },
 }
 
 impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView {
@@ -203,6 +214,26 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                     ReportToolResultStatus::Success => ReportToolActivityStatus::Succeeded,
                     ReportToolResultStatus::Error => ReportToolActivityStatus::Failed,
                 },
+            },
+            claria_report_pipeline::ReportTurnProgress::ReviewPassStarted {
+                property,
+                index,
+                total,
+            } => Self::ReviewPassStarted {
+                property,
+                index,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::ReviewPassCompleted {
+                property,
+                findings,
+                completed,
+                total,
+            } => Self::ReviewPassCompleted {
+                property,
+                findings,
+                completed,
+                total,
             },
         }
     }

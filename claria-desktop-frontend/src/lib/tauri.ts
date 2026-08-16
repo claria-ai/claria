@@ -705,6 +705,23 @@ export async function resolveReportProposal(
   );
 }
 
+/**
+ * Review one accepted revision for every property at once. The seven passes
+ * run in parallel, so this resolves when the slowest of them does.
+ */
+export async function runReviewSweeps(
+  clientId: string,
+  reportId: string,
+  revision: number,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<ReportFindings> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.runReviewSweeps(clientId, reportId, revision, channel)
+  );
+}
+
 export async function listReportFindings(
   clientId: string,
   reportId: string

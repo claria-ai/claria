@@ -68,6 +68,13 @@ impl<'a> BudgetRole<'a> {
             model_id,
         }
     }
+
+    pub(crate) fn reviewer(model_id: &'a str) -> Self {
+        Self {
+            role: "reviewing model",
+            model_id,
+        }
+    }
 }
 
 /// Bytes of the request that are structure rather than records: the system

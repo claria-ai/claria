@@ -438,7 +438,14 @@ async fn the_planner_request_caches_the_corpus_above_the_question() {
         .iter()
         .filter_map(|tool| tool["toolSpec"]["name"].as_str())
         .collect();
-    assert_eq!(tools, vec!["submit_section_plan", "submit_resume_plan"]);
+    assert_eq!(
+        tools,
+        vec![
+            "submit_section_plan",
+            "submit_resume_plan",
+            "submit_review_rows"
+        ]
+    );
 
     // Only the question is below the cache point.
     let messages = request["messages"].as_array().expect("messages");

@@ -573,7 +573,8 @@ async fn run_analysis_call<T>(
     // A caller that supplied no signal gets one nobody can fire.
     let unstoppable = StopSignal::default();
     let stop = request.stop.unwrap_or(&unstoppable);
-    let tools = analysis::analysis_tool_configuration().map_err(map_bedrock_error)?;
+    let tools = analysis::analysis_tool_configuration()
+        .map_err(|error| map_bedrock_error(error, PLANNER_LABELS))?;
     let cache_plan = claria_bedrock::converse::CachePlan::analysis(
         claria_core::model_id::ModelCapabilities::for_id(planner_model_id),
     );
@@ -609,7 +610,7 @@ async fn run_analysis_call<T>(
             &mut budget,
         )
         .await
-        .map_err(map_bedrock_error)?;
+        .map_err(|error| map_bedrock_error(error, PLANNER_LABELS))?;
         usage = merge_optional_usage(usage, output.usage.clone());
 
         match validate(&output.input) {
@@ -664,45 +665,72 @@ async fn run_analysis_call<T>(
     )))
 }
 
-fn map_bedrock_error(error: BedrockError) -> ReportPipelineError {
+/// How one analysis role names itself in the sentences a clinician reads when
+/// its call fails. Every message below is the same message with these three
+/// nouns substituted, which is why there is one mapper rather than one per
+/// role: a new failure mode has to be worded once.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AnalysisRoleLabels {
+    /// "planning pass", "review pass".
+    pub(crate) pass: &'static str,
+    /// "planning model", "reviewing model".
+    pub(crate) model: &'static str,
+    /// "plan", "review".
+    pub(crate) artifact: &'static str,
+}
+
+pub(crate) const PLANNER_LABELS: AnalysisRoleLabels = AnalysisRoleLabels {
+    pass: "planning pass",
+    model: "planning model",
+    artifact: "plan",
+};
+
+pub(crate) fn map_bedrock_error(
+    error: BedrockError,
+    labels: AnalysisRoleLabels,
+) -> ReportPipelineError {
+    let AnalysisRoleLabels {
+        pass,
+        model,
+        artifact,
+    } = labels;
     match &error {
-        BedrockError::Stopped => ReportPipelineError::InvalidInput(
-            "The planning pass was stopped before it finished. Nothing was saved.".to_string(),
-        ),
-        BedrockError::ResponseTruncated { .. } => ReportPipelineError::InvalidInput(
-            "The plan was cut off at the planning model's response limit, so it could not be used. Plan a smaller report, or choose a planning model with a larger response limit."
-                .to_string(),
-        ),
-        BedrockError::ContextBudgetExceeded { .. } => ReportPipelineError::InvalidInput(
-            "This client's records exceed the planning model's context window. Remove or split oversized records, or choose a planning model with a larger context window."
-                .to_string(),
-        ),
-        BedrockError::UnsupportedModel(_) => ReportPipelineError::InvalidInput(
-            "The selected planning model is not verified for report tools. Choose a current Claude model in Preferences."
-                .to_string(),
-        ),
+        BedrockError::Stopped => ReportPipelineError::InvalidInput(format!(
+            "The {pass} was stopped before it finished. Nothing was saved."
+        )),
+        BedrockError::ResponseTruncated { .. } => ReportPipelineError::InvalidInput(format!(
+            "The {artifact} was cut off at the {model}'s response limit, so it could not be used. Try a smaller report, or choose a {model} with a larger response limit."
+        )),
+        BedrockError::ContextBudgetExceeded { .. } => ReportPipelineError::InvalidInput(format!(
+            "This client's records exceed the {model}'s context window. Remove or split oversized records, or choose a {model} with a larger context window."
+        )),
+        BedrockError::UnsupportedModel(_) => ReportPipelineError::InvalidInput(format!(
+            "The selected {model} is not verified for report tools. Choose a current Claude model in Preferences."
+        )),
         _ => {
             // Structural, PHI-free: service codes, request IDs, protocol
             // shapes. The user-facing sentence below deliberately carries none
             // of it.
-            tracing::error!(error = %error, "the planning call failed");
-            ReportPipelineError::InvalidInput(
-                "Claria could not reach the planning model. Nothing was saved. The Claria Console log holds the underlying error."
-                    .to_string(),
-            )
+            tracing::error!(error = %error, pass, "the analysis call failed");
+            ReportPipelineError::InvalidInput(format!(
+                "Claria could not reach the {model}. Nothing was saved. The Claria Console log holds the underlying error."
+            ))
         }
     }
 }
 
 /// A decode failure's serde diagnostic, verbatim.
-fn bedrock_diagnostic(error: BedrockError) -> String {
+pub(crate) fn bedrock_diagnostic(error: BedrockError) -> String {
     match error {
         BedrockError::SchemaViolation(message) => message,
         other => other.to_string(),
     }
 }
 
-fn merge_optional_usage(total: Option<TurnUsage>, call: Option<TurnUsage>) -> Option<TurnUsage> {
+pub(crate) fn merge_optional_usage(
+    total: Option<TurnUsage>,
+    call: Option<TurnUsage>,
+) -> Option<TurnUsage> {
     match (total, call) {
         (None, call) => call,
         (Some(total), None) => Some(total),
@@ -761,7 +789,7 @@ async fn prepare_analysis_corpus(
 /// Untrusted data after the instructions, inside named delimiters, with the
 /// data-not-instructions rule stated in the policy above it — the same
 /// posture the writer uses, in a different transport tier.
-fn analysis_system_blocks(
+pub(crate) fn analysis_system_blocks(
     workspace: &ReportWorkspace,
     corpus: &FullRecordContext,
 ) -> Result<Vec<String>, ReportPipelineError> {
@@ -1017,7 +1045,7 @@ fn validate_resume_plan(
 /// The diagnostic names the offending IDs because that is the whole value of
 /// the repair round: "coverage was wrong" tells the model nothing it can act
 /// on. Section UUIDs are host identifiers, not content.
-fn index_rows<'a>(
+pub(crate) fn index_rows<'a>(
     supplied: impl Iterator<Item = &'a str>,
     expected: &[(Uuid, &str)],
 ) -> Result<HashMap<Uuid, usize>, String> {
@@ -1101,21 +1129,21 @@ fn resolve_evidence(
 /// The plan's warning list: deduplicated, ordered, and bounded, so one badly
 /// quoted file cannot produce a hundred identical lines at the gate.
 #[derive(Default)]
-struct Warnings(Vec<String>);
+pub(crate) struct Warnings(Vec<String>);
 
 impl Warnings {
-    fn push(&mut self, warning: String) {
+    pub(crate) fn push(&mut self, warning: String) {
         if self.0.len() < MAX_PLAN_WARNINGS && !self.0.contains(&warning) {
             self.0.push(warning);
         }
     }
 
-    fn into_vec(self) -> Vec<String> {
+    pub(crate) fn into_vec(self) -> Vec<String> {
         self.0
     }
 }
 
-fn truncate_characters(text: &str, limit: usize) -> String {
+pub(crate) fn truncate_characters(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 

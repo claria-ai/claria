@@ -34,6 +34,8 @@ All notable changes to Claria are documented here.
 - Accepting a writer proposal credits the model that wrote it, and saving a hand edit credits you only on the sections you actually changed
 - Review findings have durable storage, so a style suggestion can be applied as a new revision and undone again
 - A finding whose text has moved on since the review is refused rather than applied to the wrong place
+- Draft reviews now sweep the report once per property in parallel, producing anchored findings with uniform per-section coverage
+- A review pass that fails leaves the other six intact, and the properties nobody reviewed are named rather than left to look clean
 
 ## [0.28.0] — 2026-08-15
 

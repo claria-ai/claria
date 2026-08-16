@@ -14,6 +14,8 @@ mod plan;
 mod prompt_cache;
 mod prompts;
 mod record_context;
+mod review;
+mod review_instructions;
 mod run;
 mod tools;
 mod turn;
@@ -34,6 +36,10 @@ pub use prompts::{
     FULL_REPORT_SYSTEM_PROMPT_BODY, FULL_REPORT_TRUST_RULES, PLANNER_SYSTEM_PROMPT_BODY,
     PLANNER_TRUST_RULES, REPORT_SYSTEM_PROMPT_BODY, REPORT_TRUST_RULES, full_report_system_prompt,
     planner_system_prompt, report_system_prompt,
+};
+pub use review::{
+    REVIEW_FAN_OUT_CONCURRENCY, REVIEW_OUTPUT_TOKEN_RESERVE, ReviewPropertyStatus,
+    ReviewSweepOutcome, ReviewSweepRequest, run_review_sweeps,
 };
 pub use run::resume_draft_run;
 pub use turn::{
