@@ -241,6 +241,112 @@ test("whole-report generation preloads records and saves one direct draft revisi
   });
 });
 
+test("sections land while the draft runs, and Stop keeps the ones already saved", async ({
+  page,
+}) => {
+  await page.goto(BASE_URL);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe").click();
+  await page.locator('[data-tab="writing"]').click();
+
+  // A template with three sections, so the run has something to land into.
+  await page
+    .getByLabel("Writer template")
+    .selectOption({ label: "Sectioned Evaluation Template" });
+  await page.getByRole("button", { name: "Apply template" }).click();
+  await expect(page.getByTestId("accepted-report-canvas")).toContainText(
+    "Template referral text.",
+  );
+
+  // Hold the run at the gate so each section can be observed landing.
+  await page.evaluate(() => {
+    const holder = window as unknown as {
+      __DRAFT_STEP__: number;
+      __DRAFT_RESOLVE__: boolean;
+    };
+    holder.__DRAFT_STEP__ = 0;
+    holder.__DRAFT_RESOLVE__ = false;
+  });
+
+  await page
+    .getByLabel("Full report guidance")
+    .fill("Use a concise clinical style.");
+  await page.getByRole("button", { name: "Fill whole report" }).click();
+  await page
+    .getByRole("dialog", { name: "Replace the working draft?" })
+    .getByRole("button", { name: "Fill whole report" })
+    .click();
+
+  const canvas = page.getByTestId("accepted-report-canvas");
+  const progress = page.getByRole("progressbar", {
+    name: "Report sections drafted",
+  });
+  const releaseSection = async (step: number) => {
+    await page.evaluate((value) => {
+      (window as unknown as { __DRAFT_STEP__: number }).__DRAFT_STEP__ = value;
+    }, step);
+  };
+
+  await releaseSection(1);
+  await expect(canvas).toContainText(
+    "Drafted Reason for Referral from the client records.",
+  );
+  await expect(progress).toHaveAttribute("aria-valuetext", "1 of 3 drafted");
+  // The command has not returned: the section is on the page because it is
+  // durable, not because the run finished.
+  await expect(
+    page.getByText(/Generated and saved revision/),
+  ).toHaveCount(0);
+
+  await releaseSection(2);
+  await expect(canvas).toContainText(
+    "Drafted Background from the client records.",
+  );
+  await expect(progress).toHaveAttribute("aria-valuetext", "2 of 3 drafted");
+  await expect(canvas).toContainText("Template summary text.");
+
+  await page.getByRole("button", { name: "Stop run" }).click();
+
+  const banner = page.getByTestId("draft-run-banner");
+  await expect(banner).toContainText(
+    "Stopped — 2 of 3 sections drafted and saved. Undone sections are unchanged.",
+  );
+  // Nothing about a stop the reader asked for is an error.
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(canvas).toContainText(
+    "Drafted Reason for Referral from the client records.",
+  );
+
+  const invocations = await page.evaluate(() =>
+    (window as unknown as {
+      __REPORT_INVOCATIONS__: Array<{ cmd: string; args: Record<string, unknown> }>;
+    }).__REPORT_INVOCATIONS__,
+  );
+  const generation = invocations.find(
+    (invocation) => invocation.cmd === "generate_full_report",
+  );
+  const stop = invocations.find((invocation) => invocation.cmd === "stop_stream");
+  expect(stop?.args.streamId).toBe(generation?.args.streamId);
+
+  await banner.getByRole("button", { name: "Start back up" }).click();
+  await expect(canvas).toContainText(
+    "Drafted Summary from the client records.",
+  );
+  await expect(page.getByTestId("draft-run-banner")).toHaveCount(0);
+
+  const resumed = await page.evaluate(() =>
+    (window as unknown as {
+      __REPORT_INVOCATIONS__: Array<{ cmd: string; args: Record<string, unknown> }>;
+    }).__REPORT_INVOCATIONS__.find(
+      (invocation) => invocation.cmd === "resume_draft_run",
+    ),
+  );
+  expect(resumed?.args).toMatchObject({
+    runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    updatedInstructions: null,
+  });
+});
+
 test("Editor History resumes a specific Writing session", async ({ page }) => {
   await page.goto(BASE_URL);
   await page.getByRole("button", { name: "Client Files" }).click();

@@ -153,6 +153,107 @@ export function buildInitScript(
         }],
         stats: { sections: 1, paragraphs: 0, bullet_lists: 0, tables: 1, table_cells: 4, placeholder_count: 1 },
       };
+      // A second template with enough sections for a drafting run to land one
+      // at a time. Appended, so tests that take the first template are unmoved.
+      const SECTIONED_TEMPLATE_ID = "55555555-5555-4555-8555-555555555556";
+      const sectionedTemplatePreview = {
+        import_id: "77777777-7777-4777-8777-777777777778",
+        content: {
+          title: "Sectioned Evaluation Template",
+          sections: [
+            { id: "a1111111-1111-4111-8111-111111111111", heading: "Reason for Referral", blocks: [{ kind: "paragraph", text: "Template referral text." }] },
+            { id: "a2222222-2222-4222-8222-222222222222", heading: "Background", blocks: [{ kind: "paragraph", text: "Template background text." }] },
+            { id: "a3333333-3333-4333-8333-333333333333", heading: "Summary", blocks: [{ kind: "paragraph", text: "Template summary text." }] },
+          ],
+        },
+        warnings: [],
+        stats: { sections: 3, paragraphs: 3, bullet_lists: 0, tables: 0, table_cells: 0, placeholder_count: 0 },
+      };
+      const templatePreviews = new Map([
+        ["55555555-5555-4555-8555-555555555555", reportTemplatePreview],
+        [SECTIONED_TEMPLATE_ID, sectionedTemplatePreview],
+      ]);
+      const previewsByImportId = new Map(
+        Array.from(templatePreviews.values()).map((preview) => [preview.import_id, preview]),
+      );
+
+      // ── Drafting runs ─────────────────────────────────────────────────
+      // Tests that say nothing drive a run straight through; a test that
+      // wants to watch sections land sets these before starting one.
+      window.__DRAFT_STEP__ = Number.POSITIVE_INFINITY;
+      window.__DRAFT_RESOLVE__ = true;
+      const stoppedStreams = new Set();
+      const draftRuns = new Map();
+      const untilTrue = (predicate) =>
+        new Promise((resolve) => {
+          const tick = () => (predicate() ? resolve(undefined) : setTimeout(tick, 10));
+          tick();
+        });
+      // Progress rides the Tauri Channel: the callback the SDK registered is
+      // reachable by the channel's own id, and it needs the ordering index.
+      const progressEmitter = (channel) => {
+        let index = 0;
+        return (message) => {
+          const callback = window["_" + channel.id];
+          if (callback) callback({ index: index++, message });
+        };
+      };
+      const draftedSection = (source) => ({
+        ...structuredClone(source),
+        skipped: false,
+        blocks: [{ kind: "paragraph", text: "Drafted " + source.heading + " from the client records." }],
+      });
+      const recordDraftRun = (drafted, modelId) => {
+        const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const draftedIds = new Set(drafted.map((section) => section.id));
+        draftRuns.set(reportWorkspace.report_id, {
+          schema_version: 1,
+          run_id: runId,
+          report_id: reportWorkspace.report_id,
+          client_id: reportWorkspace.client_id,
+          base_revision: reportWorkspace.draft.revision,
+          status: "stopped",
+          plan: null,
+          title: "Complete Generated Evaluation",
+          sections: reportWorkspace.draft.content.sections.map((section, position) => ({
+            section_id: section.id,
+            heading: section.heading,
+            position,
+            state: draftedIds.has(section.id) ? "drafted" : "pending",
+            blocks: draftedIds.has(section.id)
+              ? drafted.find((written) => written.id === section.id).blocks
+              : [],
+            citations: [],
+            attempts: draftedIds.has(section.id) ? 1 : 0,
+            error: null,
+            updated_at: new Date().toISOString(),
+          })),
+          instructions: [],
+          writer_model_id: modelId,
+          finalized_revision: null,
+          partial: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        return runId;
+      };
+      // Save the given sections as the next revision, the way a run's finish
+      // cut does.
+      const commitDraftedSections = (sections, title) => {
+        const now = new Date().toISOString();
+        reportWorkspace = {
+          ...reportWorkspace,
+          draft: {
+            ...reportWorkspace.draft,
+            revision: reportWorkspace.draft.revision + 1,
+            content: { title, sections: structuredClone(sections) },
+            updated_at: now,
+          },
+          last_agent_revision: reportWorkspace.draft.revision + 1,
+          updated_at: now,
+        };
+        rememberReportDraft();
+      };
 
       // ── Plan / apply fixtures built from mock-aws scan ─────────────────
       // We generate "create" entries for a fresh account so the UI shows
@@ -214,6 +315,10 @@ export function buildInitScript(
             if (callback) callback(data);
           };
           return id;
+        },
+
+        unregisterCallback: function(id) {
+          delete window["_" + id];
         },
 
         invoke: async function(cmd, args) {
@@ -595,40 +700,57 @@ export function buildInitScript(
             rememberReportDraft();
             return structuredClone(reportWorkspace);
           }
+          // The writer's saved-prompt picker reads this on every mount, and
+          // treats a null list as a crash rather than an empty library.
+          if (cmd === "list_writer_library_prompts") return [];
           if (cmd === "list_writer_templates") return [{
             id: "55555555-5555-4555-8555-555555555555",
             name: "Imported Evaluation Template",
             size: 24576,
             uploaded_at: "2026-08-01T12:00:00Z",
             use_count: 0,
+          }, {
+            id: SECTIONED_TEMPLATE_ID,
+            name: "Sectioned Evaluation Template",
+            size: 31744,
+            uploaded_at: "2026-08-02T12:00:00Z",
+            use_count: 0,
           }];
           if (cmd === "preview_writer_template") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
-            return structuredClone(reportTemplatePreview);
+            const preview = templatePreviews.get(args.templateId);
+            if (!preview) throw "That writer template is no longer available.";
+            return structuredClone(preview);
           }
           if (cmd === "apply_report_template") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
-            if (args.importId !== reportTemplatePreview.import_id) throw "That template preview expired. Select the template again.";
+            const preview = previewsByImportId.get(args.importId);
+            if (!preview) throw "That template preview expired. Select the template again.";
             if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
+            const isSectioned = preview.import_id === sectionedTemplatePreview.import_id;
             reportWorkspace = {
               ...reportWorkspace,
               draft: {
                 ...reportWorkspace.draft,
                 revision: reportWorkspace.draft.revision + 1,
-                content: structuredClone(reportTemplatePreview.content),
+                content: structuredClone(preview.content),
                 updated_at: new Date().toISOString(),
               },
               template_import: {
-                writer_template_id: "55555555-5555-4555-8555-555555555555",
-                writer_template_name: "Imported Evaluation Template",
+                writer_template_id: isSectioned
+                  ? SECTIONED_TEMPLATE_ID
+                  : "55555555-5555-4555-8555-555555555555",
+                writer_template_name: isSectioned
+                  ? "Sectioned Evaluation Template"
+                  : "Imported Evaluation Template",
                 imported_revision: reportWorkspace.draft.revision + 1,
                 imported_at: new Date().toISOString(),
-                warnings: structuredClone(reportTemplatePreview.warnings),
+                warnings: structuredClone(preview.warnings),
                 reviewed_revision: reportWorkspace.draft.revision + 1,
                 review_required: false,
-                placeholder_count: reportTemplatePreview.stats.placeholder_count,
+                placeholder_count: preview.stats.placeholder_count,
               },
             };
             rememberReportDraft();
@@ -638,11 +760,112 @@ export function buildInitScript(
             window.__REPORT_COMMANDS__.push(cmd);
             return null;
           }
+          if (cmd === "stop_stream") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            stoppedStreams.add(args.streamId);
+            return null;
+          }
+          if (cmd === "load_draft_run") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            const run = draftRuns.get(args.reportId);
+            return run ? structuredClone(run) : null;
+          }
+          if (cmd === "finalize_partial_draft" || cmd === "abandon_draft_run") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            const run = draftRuns.get(args.reportId);
+            if (!run || run.run_id !== args.runId) throw "That drafting run is no longer available.";
+            draftRuns.delete(args.reportId);
+            if (cmd === "finalize_partial_draft") {
+              commitDraftedSections(
+                reportWorkspace.draft.content.sections.map((section) => {
+                  const stored = run.sections.find((entry) => entry.section_id === section.id);
+                  return stored && stored.state === "drafted"
+                    ? { ...section, blocks: structuredClone(stored.blocks), skipped: false }
+                    : { ...section, blocks: [], skipped: true, template_blocks: structuredClone(section.blocks) };
+                }),
+                run.title,
+              );
+            }
+            return structuredClone(reportWorkspace);
+          }
+          if (cmd === "resume_draft_run") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
+            const run = draftRuns.get(args.reportId);
+            if (!run || run.run_id !== args.runId) throw "That drafting run is no longer available.";
+            const emitResume = progressEmitter(args.onProgress);
+            const sections = reportWorkspace.draft.content.sections;
+            emitResume({ kind: "plan_ready", section_count: sections.length });
+            const written = sections.map((section, position) => {
+              const stored = run.sections.find((entry) => entry.section_id === section.id);
+              const finished = stored && stored.state === "drafted"
+                ? { ...structuredClone(section), blocks: structuredClone(stored.blocks) }
+                : draftedSection(section);
+              emitResume({
+                kind: "section_completed",
+                section_id: section.id,
+                section: finished,
+                drafted: position + 1,
+                total: sections.length,
+              });
+              return finished;
+            });
+            draftRuns.delete(args.reportId);
+            commitDraftedSections(written, run.title);
+            return {
+              workspace: structuredClone(reportWorkspace),
+              turn_id: "turn-resume-1",
+              attempt_id: "attempt-resume-1",
+              assistant_text: "The complete working draft is ready.",
+              usage: { model_id: args.modelId, input_tokens: 10, output_tokens: 80, cache_read_input_tokens: 0, cache_write_input_tokens: 0, cache_ttl: null, cost_usd: 0.01, pricing_version: 5 },
+              usage_complete: true,
+              converse_calls: 2,
+              tool_uses: 2,
+              included_record_files: 3,
+              unavailable_record_files: 0,
+              record_characters: 6400,
+            };
+          }
           if (cmd === "generate_full_report") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
             if (args.reportId !== reportWorkspace.report_id || args.expectedRevision !== reportWorkspace.draft.revision) throw "The report changed on another computer. Reload it before continuing.";
             if (reportWorkspace.pending_proposal) throw "Accept or reject the pending proposal before starting another writer action.";
+
+            // Scripted section-level progress, one section per allowed step.
+            const emitProgress = progressEmitter(args.onProgress);
+            const planned = reportWorkspace.draft.content.sections;
+            emitProgress({ kind: "plan_ready", section_count: planned.length });
+            emitProgress({ kind: "title_set", title: "Complete Generated Evaluation" });
+            const landed = [];
+            for (let position = 0; position < planned.length; position += 1) {
+              await untilTrue(() =>
+                window.__DRAFT_STEP__ > position || stoppedStreams.has(args.streamId));
+              if (stoppedStreams.has(args.streamId)) break;
+              emitProgress({
+                kind: "section_started",
+                section_id: planned[position].id,
+                index: position,
+                total: planned.length,
+              });
+              const written = draftedSection(planned[position]);
+              landed.push(written);
+              emitProgress({
+                kind: "section_completed",
+                section_id: planned[position].id,
+                section: written,
+                drafted: landed.length,
+                total: planned.length,
+              });
+            }
+            if (stoppedStreams.has(args.streamId)) {
+              recordDraftRun(landed, args.modelId);
+              throw "generate_full_report failed: The report writer could not finish this draft. The draft run was stopped.";
+            }
+            await untilTrue(() => window.__DRAFT_RESOLVE__ === true);
+
             const nextRevision = reportWorkspace.draft.revision + 1;
             const now = new Date().toISOString();
             reportWorkspace = {

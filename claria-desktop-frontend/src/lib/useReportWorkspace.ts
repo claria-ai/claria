@@ -1,17 +1,31 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
+import {
+  abandonDraftRun,
   applyReportTemplate,
   discardQueuedReportEdits,
   discardReportTemplatePreview,
   exportReportDocx,
+  finalizePartialDraft,
   generateFullReport,
+  loadDraftRun,
   loadReportWorkspace,
   previewWriterTemplate,
   renameReportSession,
   resolveReportProposal,
+  resumeDraftRun,
   saveReportDraft,
   sendReportMessage,
   startReportWorkspace,
+  stopStream,
+  type DraftRun,
+  type FullReportGenerationResponse,
   type ReportDraftEdit,
   type ReportTurnProgressView,
   type ReportWorkspaceView,
@@ -23,6 +37,12 @@ import {
   reportEditsEqual,
   validateReportEdit,
 } from "./writingWorkspace";
+import {
+  emptyDraftRun,
+  reduceDraftRun,
+  runStateFromDraftRun,
+  type DraftRunUiState,
+} from "./draftRun";
 import { upsertLiveContext, type ContextPill } from "./contextPills";
 import { logFrontendEvent } from "./logBridge";
 
@@ -40,6 +60,41 @@ export type AgentActivity = { label: string; detail?: string } | null;
 
 function isReportConflict(message: string): boolean {
   return message.toLowerCase().includes("changed on another computer");
+}
+
+/**
+ * The progress channel drives the run state; everything else about a run —
+ * starting it, picking it back up, and adopting durable state after it ends —
+ * is one of these.
+ */
+type RunAction =
+  | { kind: "progress"; event: ReportTurnProgressView }
+  | { kind: "started" }
+  | { kind: "resumed" }
+  | { kind: "stopping" }
+  | { kind: "hydrated"; state: DraftRunUiState }
+  | { kind: "cleared" };
+
+function runReducer(
+  state: DraftRunUiState,
+  action: RunAction
+): DraftRunUiState {
+  switch (action.kind) {
+    case "progress":
+      return reduceDraftRun(state, action.event);
+    case "started":
+      return { ...emptyDraftRun(), live: true };
+    case "resumed":
+      // Sections the earlier attempt landed stay on screen; the run reports
+      // its own counters from its first event.
+      return { ...state, live: true, stopping: false, outcome: null };
+    case "stopping":
+      return state.stopping ? state : { ...state, stopping: true };
+    case "hydrated":
+      return action.state;
+    case "cleared":
+      return emptyDraftRun();
+  }
 }
 
 const MODEL_ACTIVITY_WORDS = ["thinking", "working", "inferring"] as const;
@@ -69,6 +124,71 @@ function agentActivityForTool(name: string, context: string | null) {
     return { label: "Validating the complete report" };
   }
   return { label: "Using an approved tool", detail: name };
+}
+
+function sectionHeading(
+  workspace: ReportWorkspaceView | null,
+  sectionId: string
+): string | null {
+  return (
+    workspace?.draft.content.sections.find(
+      (section) => section.id === sectionId
+    )?.heading ?? null
+  );
+}
+
+/**
+ * The qualitative line for one section-level progress event. `null` for the
+ * events that only move counters, so the previous line keeps standing.
+ */
+function agentActivityForSection(
+  progress: ReportTurnProgressView,
+  headingFor: (sectionId: string) => string | null
+): AgentActivity {
+  const named = (sectionId: string, verb: string, index: number, total: number) => {
+    const heading = headingFor(sectionId);
+    return {
+      label: heading ? `${verb} “${heading}”` : verb,
+      detail: `section ${index} of ${total}`,
+    };
+  };
+  switch (progress.kind) {
+    case "plan_ready":
+      return {
+        label: "Planning the report",
+        detail: `${progress.section_count} section${progress.section_count === 1 ? "" : "s"} to decide`,
+      };
+    case "section_started":
+      return named(
+        progress.section_id,
+        "Drafting",
+        progress.index + 1,
+        progress.total
+      );
+    case "section_completed":
+      return named(
+        progress.section_id,
+        "Saved",
+        progress.drafted,
+        progress.total
+      );
+    case "section_skipped":
+      return named(
+        progress.section_id,
+        "Skipped",
+        progress.drafted,
+        progress.total
+      );
+    case "section_failed":
+      return {
+        label: headingFor(progress.section_id)
+          ? `Could not write “${headingFor(progress.section_id)}”`
+          : "Could not write a section",
+        detail: progress.message,
+      };
+    default:
+      return null;
+  }
 }
 
 /**
@@ -106,6 +226,13 @@ export function useReportWorkspace({
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [agentActivity, setAgentActivity] = useState<AgentActivity>(null);
   const [liveContext, setLiveContext] = useState<ContextPill[]>([]);
+  const [run, dispatchRun] = useReducer(runReducer, undefined, emptyDraftRun);
+  // The durable run behind `run.runId`: resume needs its writer model, and
+  // finalize and abandon need its ID after the reducer has moved on.
+  const resumableRunRef = useRef<DraftRun | null>(null);
+  // Minted before `generate_full_report` is invoked so the run can be
+  // stopped; `resume_draft_run` takes no stream, so a resumed run cannot.
+  const streamIdRef = useRef<string | null>(null);
 
   const baseline = useMemo(
     () => (workspace ? draftToEdit(workspace.draft) : null),
@@ -135,6 +262,38 @@ export function useReportWorkspace({
     setConflict(isReportConflict(message));
   }, []);
 
+  /**
+   * Adopt whatever durable run this report has, if it is one the writer can
+   * pick back up. Returns the run's outcome so a caller can decide whether a
+   * failed command still deserves an error line.
+   */
+  const adoptDraftRun = useCallback(
+    async (reportId: string, generation: number) => {
+      let durable: DraftRun | null = null;
+      try {
+        durable = await loadDraftRun(clientId, reportId);
+      } catch (error) {
+        // A run we cannot read is a run we cannot offer; say so in the log
+        // rather than pretending the report has none.
+        logFrontendEvent(
+          "error",
+          `Writer drafting-run lookup failed: ${String(error)}`
+        );
+        return null;
+      }
+      if (generation !== generationRef.current) return null;
+      const hydrated = durable ? runStateFromDraftRun(durable) : null;
+      if (!durable || !hydrated?.outcome) {
+        resumableRunRef.current = null;
+        return null;
+      }
+      resumableRunRef.current = durable;
+      dispatchRun({ kind: "hydrated", state: hydrated });
+      return hydrated.outcome;
+    },
+    [clientId]
+  );
+
   const load = useCallback(async () => {
     const generation = ++generationRef.current;
     setLoading(true);
@@ -154,13 +313,18 @@ export function useReportWorkspace({
       setWorkspace(result);
       setEdit(draftToEdit(result.draft));
       setEditing(false);
+      resumableRunRef.current = null;
+      dispatchRun({ kind: "cleared" });
+      // A run stopped before the app was closed is still resumable, so the
+      // banner has to survive a restart, not just a re-render.
+      await adoptDraftRun(result.report_id, generation);
     } catch (error) {
       if (generation !== generationRef.current) return;
       setLoadError(String(error));
     } finally {
       if (generation === generationRef.current) setLoading(false);
     }
-  }, [clientId, expectedReportId]);
+  }, [adoptDraftRun, clientId, expectedReportId]);
 
   useEffect(() => {
     void load();
@@ -293,11 +457,15 @@ export function useReportWorkspace({
       return;
     }
 
-    // Section-level progress (plan_ready, section_*, title_set) is what the
-    // live drafting canvas will read; this hook has no use for it yet and
-    // must not fold it into the tool throbber, which would report every
-    // landed section as "Context unavailable".
+    // Section-level progress drives the canvas through the run reducer. It
+    // also carries the qualitative line, because "Drafting section 5 of 9" is
+    // a better answer to "what is it doing" than any tool name.
     if (progress.kind !== "tool_started" && progress.kind !== "tool_finished") {
+      dispatchRun({ kind: "progress", event: progress });
+      const activity = agentActivityForSection(progress, (sectionId) =>
+        sectionHeading(stateRef.current.workspace, sectionId)
+      );
+      if (activity) setAgentActivity(activity);
       return;
     }
 
@@ -396,43 +564,30 @@ export function useReportWorkspace({
     [clientId, handleAgentProgress, persistCurrentEdit, showActionError]
   );
 
-  const generateFullDraft = useCallback(
-    async (modelId: string, guidance: string): Promise<boolean> => {
-      const { busy: currentBusy } = stateRef.current;
-      if (currentBusy !== null) return false;
-      const generation = generationRef.current;
-      setBusy("generating");
-      setActionError(null);
-      setLiveContext([]);
-      setAgentActivity({
-        label: "Preparing the complete report",
-        detail: "Loading every readable client record",
-      });
-      setSaveStatus(
-        stateRef.current.dirty
-          ? "Saving your report edits before generating the complete draft…"
-          : "Loading all readable records for the complete draft…"
-      );
-      logFrontendEvent("info", "Writer whole-report generation requested");
+  /**
+   * The tail shared by starting a run and picking one back up: adopt the
+   * finished workspace, or work out from durable state whether the failure was
+   * a stop the reader asked for.
+   *
+   * The stop message is never matched. The run object decides: if the report
+   * still holds a run the writer can pick back up, that is the outcome and the
+   * banner says so; anything else is a real error.
+   */
+  const settleRun = useCallback(
+    async (
+      generation: number,
+      command: Promise<FullReportGenerationResponse>
+    ): Promise<boolean> => {
+      const reportId = stateRef.current.workspace?.report_id;
       try {
-        const current = await persistCurrentEdit();
-        if (generation !== generationRef.current) return false;
-        const result = await generateFullReport(
-          clientId,
-          current.report_id,
-          current.draft.revision,
-          modelId,
-          guidance,
-          randomUuid(),
-          (progress) => {
-            if (generation === generationRef.current) handleAgentProgress(progress);
-          }
-        );
+        const result = await command;
         if (generation !== generationRef.current) return false;
         setWorkspace(result.workspace);
         setEdit(draftToEdit(result.workspace.draft));
         setEditing(false);
         setConflict(false);
+        resumableRunRef.current = null;
+        dispatchRun({ kind: "cleared" });
         const unavailable =
           result.unavailable_record_files > 0
             ? ` ${result.unavailable_record_files} record${result.unavailable_record_files === 1 ? " was" : "s were"} unavailable and listed in the writer context.`
@@ -443,26 +598,224 @@ export function useReportWorkspace({
         setLiveContext([]);
         return true;
       } catch (error) {
-        if (generation !== generationRef.current) return false;
         const diagnostic =
           error instanceof Error ? (error.stack ?? error.message) : String(error);
         logFrontendEvent(
           "error",
           `Writer whole-report generation failed: ${diagnostic}`
         );
-        showActionError(error);
+        const outcome = reportId
+          ? await adoptDraftRun(reportId, generation)
+          : null;
+        if (generation !== generationRef.current) return false;
         setSaveStatus(null);
         setLiveContext([]);
+        if (outcome === "stopped") {
+          // The banner carries the outcome; an error toast on top of it would
+          // frame the reader's own Stop as a fault.
+          setActionError(null);
+          setConflict(false);
+          return false;
+        }
+        if (!outcome) dispatchRun({ kind: "cleared" });
+        showActionError(error);
         return false;
       } finally {
         if (generation === generationRef.current) {
           setAgentActivity(null);
           setBusy(null);
+          streamIdRef.current = null;
         }
       }
     },
-    [clientId, handleAgentProgress, persistCurrentEdit, showActionError]
+    [adoptDraftRun, showActionError]
   );
+
+  const generateFullDraft = useCallback(
+    async (modelId: string, guidance: string): Promise<boolean> => {
+      const { busy: currentBusy } = stateRef.current;
+      if (currentBusy !== null) return false;
+      const generation = generationRef.current;
+      // Minted before the first render of the busy state, so the Stop button
+      // is live from the moment the run is.
+      const streamId = randomUuid();
+      streamIdRef.current = streamId;
+      setBusy("generating");
+      setActionError(null);
+      setLiveContext([]);
+      dispatchRun({ kind: "started" });
+      setAgentActivity({
+        label: "Preparing the complete report",
+        detail: "Loading every readable client record",
+      });
+      setSaveStatus(
+        stateRef.current.dirty
+          ? "Saving your report edits before generating the complete draft…"
+          : "Loading all readable records for the complete draft…"
+      );
+      logFrontendEvent("info", "Writer whole-report generation requested");
+      let current: ReportWorkspaceView;
+      try {
+        current = await persistCurrentEdit();
+      } catch (error) {
+        if (generation !== generationRef.current) return false;
+        showActionError(error);
+        setSaveStatus(null);
+        setLiveContext([]);
+        dispatchRun({ kind: "cleared" });
+        setAgentActivity(null);
+        setBusy(null);
+        streamIdRef.current = null;
+        return false;
+      }
+      if (generation !== generationRef.current) return false;
+      return settleRun(
+        generation,
+        generateFullReport(
+          clientId,
+          current.report_id,
+          current.draft.revision,
+          modelId,
+          guidance,
+          streamId,
+          (progress) => {
+            if (generation === generationRef.current) handleAgentProgress(progress);
+          }
+        )
+      );
+    },
+    [
+      clientId,
+      handleAgentProgress,
+      persistCurrentEdit,
+      settleRun,
+      showActionError,
+    ]
+  );
+
+  /**
+   * Ask the backend to end the run. Nothing here decides the outcome — the
+   * in-flight command settling does, which is what makes a stop that loses
+   * its race with a finishing run leave the finished revision standing.
+   */
+  const stopRun = useCallback(() => {
+    const streamId = streamIdRef.current;
+    if (!streamId) return;
+    dispatchRun({ kind: "stopping" });
+    logFrontendEvent("info", "Writer run stop requested");
+    void stopStream(streamId).catch((error) => {
+      logFrontendEvent("error", `Writer run stop failed: ${String(error)}`);
+    });
+  }, []);
+
+  const resumeRun = useCallback(
+    async (instructions?: string): Promise<boolean> => {
+      const { workspace: current, busy: currentBusy } = stateRef.current;
+      const durable = resumableRunRef.current;
+      if (!current || currentBusy !== null || !durable) return false;
+      const generation = generationRef.current;
+      // Resume owns no stream: the backend command takes none, so Stop stays
+      // off rather than pretending to work.
+      streamIdRef.current = null;
+      setBusy("generating");
+      setActionError(null);
+      setLiveContext([]);
+      dispatchRun({ kind: "resumed" });
+      setAgentActivity({
+        label: "Picking the draft back up",
+        detail: "Deciding what is left to write",
+      });
+      setSaveStatus("Picking the interrupted draft back up…");
+      logFrontendEvent("info", "Writer drafting run resume requested");
+      const trimmed = instructions?.trim() ?? "";
+      return settleRun(
+        generation,
+        resumeDraftRun(
+          clientId,
+          current.report_id,
+          durable.run_id,
+          trimmed === "" ? null : trimmed,
+          durable.writer_model_id,
+          (progress) => {
+            if (generation === generationRef.current) handleAgentProgress(progress);
+          }
+        )
+      );
+    },
+    [clientId, handleAgentProgress, settleRun]
+  );
+
+  /** Keep what an interrupted run wrote; undone sections become skipped. */
+  const keepPartialDraft = useCallback(async (): Promise<boolean> => {
+    const { workspace: current, busy: currentBusy } = stateRef.current;
+    const durable = resumableRunRef.current;
+    if (!current || currentBusy !== null || !durable) return false;
+    const generation = generationRef.current;
+    setBusy("resolving");
+    setActionError(null);
+    setSaveStatus("Keeping the sections the draft finished…");
+    try {
+      const result = await finalizePartialDraft(
+        clientId,
+        current.report_id,
+        durable.run_id
+      );
+      if (generation !== generationRef.current) return false;
+      setWorkspace(result);
+      setEdit(draftToEdit(result.draft));
+      setEditing(false);
+      setConflict(false);
+      resumableRunRef.current = null;
+      dispatchRun({ kind: "cleared" });
+      setSaveStatus(
+        `Kept the partial draft as revision ${result.draft.revision}. Sections the run never wrote are marked skipped.`
+      );
+      return true;
+    } catch (error) {
+      if (generation !== generationRef.current) return false;
+      showActionError(error);
+      setSaveStatus(null);
+      return false;
+    } finally {
+      if (generation === generationRef.current) setBusy(null);
+    }
+  }, [clientId, showActionError]);
+
+  /** Throw the interrupted run away. The report keeps its revision. */
+  const discardRun = useCallback(async (): Promise<boolean> => {
+    const { workspace: current, busy: currentBusy } = stateRef.current;
+    const durable = resumableRunRef.current;
+    if (!current || currentBusy !== null || !durable) return false;
+    const generation = generationRef.current;
+    setBusy("discarding");
+    setActionError(null);
+    setSaveStatus("Discarding the interrupted draft…");
+    try {
+      const result = await abandonDraftRun(
+        clientId,
+        current.report_id,
+        durable.run_id
+      );
+      if (generation !== generationRef.current) return false;
+      setWorkspace(result);
+      setEdit(draftToEdit(result.draft));
+      setEditing(false);
+      setConflict(false);
+      resumableRunRef.current = null;
+      dispatchRun({ kind: "cleared" });
+      setSaveStatus(
+        `Discarded the interrupted draft. The report is unchanged at revision ${result.draft.revision}.`
+      );
+      return true;
+    } catch (error) {
+      if (generation !== generationRef.current) return false;
+      showActionError(error);
+      setSaveStatus(null);
+      return false;
+    } finally {
+      if (generation === generationRef.current) setBusy(null);
+    }
+  }, [clientId, showActionError]);
 
   const resolveProposal = useCallback(
     async (decision: "accept" | "reject") => {
@@ -673,6 +1026,9 @@ export function useReportWorkspace({
     exportStatus,
     agentActivity,
     liveContext,
+    run,
+    // Only a run started here owns a stream, so only that run can be stopped.
+    canStopRun: busy === "generating" && !run.stopping && streamIdRef.current !== null,
     load,
     beginEdit,
     cancelEdit,
@@ -680,6 +1036,10 @@ export function useReportWorkspace({
     discardQueuedEdits,
     send,
     generateFullDraft,
+    stopRun,
+    resumeRun,
+    keepPartialDraft,
+    discardRun,
     resolveProposal,
     applyTemplate,
     exportDocx,

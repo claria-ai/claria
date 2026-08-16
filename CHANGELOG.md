@@ -39,6 +39,10 @@ All notable changes to Claria are documented here.
 - A planning pass now assigns scope and record evidence per section before drafting, with an editable plan and per-role model settings
 - Planned evidence quotes are checked against the client's records, and anything that does not resolve is flagged on the plan rather than passed to the writer
 - Picking up an interrupted draft re-plans it when you add instructions, and decides it without a model call when you do not
+- Report sections now appear in the preview as they are written, with an honest progress count and a Stop button that keeps completed work
+- Each section is marked in the preview while a draft runs — waiting, writing, drafted, skipped, or failed with the reason
+- A stopped or failed draft offers to start back up, keep what it wrote, or be discarded, and survives closing the app
+- Leaving Writing during a draft run now points at Stop instead of asking you to wait
 
 ## [0.28.0] — 2026-08-15
 

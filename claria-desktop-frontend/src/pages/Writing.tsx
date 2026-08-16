@@ -43,6 +43,8 @@ export type WritingLeaveState = {
   /** Inline report changes that cannot be restored after leaving this page. */
   hasUnsavedReportEdits: boolean;
   busy: boolean;
+  /** A drafting run is generating right now, and can be stopped safely. */
+  draftRunLive: boolean;
 };
 
 export default function Writing({
@@ -116,6 +118,8 @@ export default function Writing({
     exportStatus,
     agentActivity,
     liveContext,
+    run,
+    canStopRun,
     load,
     beginEdit,
     cancelEdit,
@@ -123,6 +127,10 @@ export default function Writing({
     discardQueuedEdits,
     send,
     generateFullDraft,
+    stopRun,
+    resumeRun,
+    keepPartialDraft,
+    discardRun,
     resolveProposal,
     applyTemplate,
     exportDocx,
@@ -176,19 +184,22 @@ export default function Writing({
   const hasUnsavedWork =
     dirty || instruction.trim() !== "" || references.length > 0;
 
+  const draftRunLive = run.live;
   useEffect(() => {
     onLeaveStateChange?.({
       hasUnsavedWork,
       hasUnsavedReportEdits: dirty,
       busy: busy !== null,
+      draftRunLive,
     });
     return () =>
       onLeaveStateChange?.({
         hasUnsavedWork: false,
         hasUnsavedReportEdits: false,
         busy: false,
+        draftRunLive: false,
       });
-  }, [busy, dirty, hasUnsavedWork, onLeaveStateChange]);
+  }, [busy, dirty, draftRunLive, hasUnsavedWork, onLeaveStateChange]);
 
   const pendingProposalId = workspace?.pending_proposal?.id;
   useEffect(() => {
@@ -813,6 +824,9 @@ export default function Writing({
             canSend={!composerDisabled && instruction.trim() !== ""}
             placeholder="Ask a question or describe the report change you want…"
             sendLabel={busy === "sending" ? "Using tools…" : "Send"}
+            onStop={stopRun}
+            canStop={canStopRun}
+            stopLabel="Stop"
             rows={4}
           />
         </div>
@@ -838,6 +852,13 @@ export default function Writing({
         status={exportStatus}
         validationErrors={validationErrors}
         agentActivity={agentActivity}
+        run={run}
+        runError={actionError}
+        canStopRun={canStopRun}
+        onStopRun={stopRun}
+        onResumeRun={resumeRun}
+        onKeepPartialDraft={keepPartialDraft}
+        onDiscardRun={discardRun}
       />
       </div>
 

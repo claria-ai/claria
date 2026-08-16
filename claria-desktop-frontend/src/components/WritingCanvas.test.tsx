@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import WritingCanvas, { ReportDocument } from "./WritingCanvas";
@@ -9,6 +9,11 @@ import type {
   ReportSection,
   ReportWorkspaceView,
 } from "../lib/tauri";
+import {
+  emptyDraftRun,
+  type DraftRunUiState,
+  type SectionUiState,
+} from "../lib/draftRun";
 import { draftToEdit } from "../lib/writingWorkspace";
 
 const WRITTEN_SECTION_ID = "11111111-1111-4111-8111-111111111111";
@@ -83,11 +88,25 @@ function renderCanvas({
   editing = false,
   edit,
   onChange = () => {},
+  run,
+  runError = null,
+  canStopRun = false,
+  onStopRun,
+  onResumeRun,
+  onKeepPartialDraft,
+  onDiscardRun,
 }: {
   content: ReportContent;
   editing?: boolean;
   edit?: ReportDraftEdit;
   onChange?: (edit: ReportDraftEdit) => void;
+  run?: DraftRunUiState;
+  runError?: string | null;
+  canStopRun?: boolean;
+  onStopRun?: () => void;
+  onResumeRun?: (instructions?: string) => void;
+  onKeepPartialDraft?: () => void;
+  onDiscardRun?: () => void;
 }) {
   const value = workspace(content);
   return render(
@@ -108,8 +127,33 @@ function renderCanvas({
       onReference={() => {}}
       status={null}
       validationErrors={[]}
+      run={run}
+      runError={runError}
+      canStopRun={canStopRun}
+      onStopRun={onStopRun}
+      onResumeRun={onResumeRun}
+      onKeepPartialDraft={onKeepPartialDraft}
+      onDiscardRun={onDiscardRun}
     />
   );
+}
+
+function runState(
+  sections: Array<[string, SectionUiState]>,
+  overrides: Partial<DraftRunUiState> = {}
+): DraftRunUiState {
+  return {
+    ...emptyDraftRun(),
+    runId: "99999999-9999-4999-8999-999999999999",
+    live: true,
+    total: sections.length,
+    sections: new Map(sections),
+    ...overrides,
+  };
+}
+
+function sectionOf(id: string, section: HTMLElement | Document = document) {
+  return (section as ParentNode).querySelector(`[data-section-id="${id}"]`);
 }
 
 describe("ReportDocument skipped sections", () => {
@@ -258,5 +302,299 @@ describe("WritingCanvas skipped sections", () => {
     const next = onChange.mock.calls[0][0] as ReportDraftEdit;
     expect(next.sections[0].skipped).toBe(false);
     expect(next.sections[0].blocks).toEqual([]);
+  });
+});
+
+const PENDING_SECTION_ID = "44444444-4444-4444-8444-444444444444";
+
+const pendingSection: ReportSection = {
+  id: PENDING_SECTION_ID,
+  heading: "Background",
+  blocks: [{ kind: "paragraph", text: "Template boilerplate." }],
+  skipped: false,
+};
+
+describe("ReportDocument section states", () => {
+  it("marks each section with its own edge and chip", () => {
+    render(
+      <ReportDocument
+        content={reportContent([writtenSection, pendingSection, skippedSection()])}
+        sectionStates={
+          new Map<string, SectionUiState>([
+            [
+              WRITTEN_SECTION_ID,
+              { status: "drafting", content: null, error: null },
+            ],
+            [PENDING_SECTION_ID, { status: "pending", content: null, error: null }],
+            [SKIPPED_SECTION_ID, { status: "skipped", content: null, error: null }],
+          ])
+        }
+      />
+    );
+
+    const drafting = sectionOf(WRITTEN_SECTION_ID);
+    expect(drafting?.className).toContain("border-blue-400");
+    expect(drafting?.textContent).toContain("Writing");
+
+    const pending = sectionOf(PENDING_SECTION_ID);
+    expect(pending?.className).toContain("border-gray-200");
+    expect(pending?.textContent).toContain("Waiting");
+
+    expect(sectionOf(SKIPPED_SECTION_ID)?.textContent).toContain("Skipped");
+  });
+
+  it("dims a section that is being rewritten without blanking it", () => {
+    render(
+      <ReportDocument
+        content={reportContent([writtenSection])}
+        sectionStates={
+          new Map<string, SectionUiState>([
+            [WRITTEN_SECTION_ID, { status: "drafting", content: null, error: null }],
+          ])
+        }
+      />
+    );
+
+    expect(screen.getByText("Referred for attention concerns.")).toBeTruthy();
+    const dimmed = sectionOf(WRITTEN_SECTION_ID)?.querySelector(".opacity-60");
+    expect(dimmed?.textContent).toContain("Referred for attention concerns.");
+  });
+
+  it("shows a drafted section's chip and keeps the edge tint", () => {
+    render(
+      <ReportDocument
+        content={reportContent([writtenSection])}
+        sectionStates={
+          new Map<string, SectionUiState>([
+            [WRITTEN_SECTION_ID, { status: "drafted", content: null, error: null }],
+          ])
+        }
+      />
+    );
+
+    const section = sectionOf(WRITTEN_SECTION_ID);
+    expect(section?.className).toContain("border-emerald-300");
+    expect(section?.textContent).toContain("Drafted");
+    // The chip fades rather than disappearing, so the tint is what remains.
+    expect(screen.getByText("Drafted").className).toContain("transition-opacity");
+  });
+
+  it("puts a failed section's reason under its heading", () => {
+    render(
+      <ReportDocument
+        content={reportContent([writtenSection])}
+        sectionStates={
+          new Map<string, SectionUiState>([
+            [
+              WRITTEN_SECTION_ID,
+              {
+                status: "failed",
+                content: null,
+                error: "section_attempts_exhausted",
+              },
+            ],
+          ])
+        }
+      />
+    );
+
+    expect(sectionOf(WRITTEN_SECTION_ID)?.className).toContain("border-red-400");
+    expect(screen.getByText("Failed")).toBeTruthy();
+    expect(screen.getByTestId("section-failure").textContent).toBe(
+      "section_attempts_exhausted"
+    );
+  });
+
+  it("marks an untouched section as unchanged", () => {
+    render(
+      <ReportDocument
+        content={reportContent([writtenSection])}
+        sectionStates={
+          new Map<string, SectionUiState>([
+            [WRITTEN_SECTION_ID, { status: "kept", content: null, error: null }],
+          ])
+        }
+      />
+    );
+    expect(screen.getByText("Unchanged")).toBeTruthy();
+  });
+
+  it("leaves the document alone when no run owns it", () => {
+    render(<ReportDocument content={reportContent([writtenSection])} />);
+    expect(screen.queryByTestId("status-chip")).toBeNull();
+    expect(sectionOf(WRITTEN_SECTION_ID)?.className).toBe("");
+  });
+});
+
+describe("WritingCanvas live drafting", () => {
+  it("renders landed content over the accepted draft as it arrives", () => {
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: runState(
+        [
+          [
+            WRITTEN_SECTION_ID,
+            {
+              status: "drafted",
+              content: {
+                id: WRITTEN_SECTION_ID,
+                heading: "Reason for Referral",
+                blocks: [
+                  { kind: "paragraph", text: "Written live by the drafting run." },
+                ],
+              },
+              error: null,
+            },
+          ],
+        ],
+        { title: "Psychoeducational Evaluation", drafted: 1 }
+      ),
+    });
+
+    const canvas = screen.getByTestId("accepted-report-canvas");
+    expect(canvas.textContent).toContain("Written live by the drafting run.");
+    expect(canvas.textContent).not.toContain("Referred for attention concerns.");
+    // The run's title lands live too.
+    expect(canvas.textContent).toContain("Psychoeducational Evaluation");
+  });
+
+  it("counts progress honestly and offers Stop while the run is live", async () => {
+    const user = userEvent.setup();
+    const onStopRun = vi.fn();
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: runState([], { total: 9, drafted: 4 }),
+      canStopRun: true,
+      onStopRun,
+    });
+
+    const bar = screen.getByRole("progressbar", {
+      name: "Report sections drafted",
+    });
+    expect(bar.getAttribute("aria-valuenow")).toBe("4");
+    expect(bar.getAttribute("aria-valuemax")).toBe("9");
+    expect(bar.getAttribute("aria-valuetext")).toBe("4 of 9 drafted");
+
+    await user.click(screen.getByRole("button", { name: "Stop run" }));
+    expect(onStopRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no progress bar while the run is still planning", () => {
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: runState([], { total: null }),
+      canStopRun: true,
+      onStopRun: vi.fn(),
+    });
+
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("disables Stop once the stop is already in flight", () => {
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: runState([], { total: 3, drafted: 1, stopping: true }),
+      canStopRun: false,
+      onStopRun: vi.fn(),
+    });
+
+    const stop = screen.getByRole("button", { name: "Stopping…" });
+    expect((stop as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("WritingCanvas stopped run banner", () => {
+  const stopped = runState([], {
+    live: false,
+    total: 9,
+    drafted: 4,
+    outcome: "stopped" as const,
+  });
+
+  it("replaces the progress strip with what the run left behind", () => {
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: stopped,
+      onResumeRun: vi.fn(),
+      onKeepPartialDraft: vi.fn(),
+      onDiscardRun: vi.fn(),
+    });
+
+    expect(screen.getByTestId("draft-run-banner").textContent).toContain(
+      "Stopped — 4 of 9 sections drafted and saved. Undone sections are unchanged."
+    );
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("keeps a failed run's error line above the outcome", () => {
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: { ...stopped, outcome: "failed" },
+      runError: "The model stopped responding.",
+      onResumeRun: vi.fn(),
+    });
+
+    const banner = screen.getByTestId("draft-run-banner");
+    expect(banner.textContent).toContain("The model stopped responding.");
+    expect(banner.textContent).toContain("Stopped — 4 of 9 sections drafted");
+  });
+
+  it("starts back up with the instructions the reader typed", async () => {
+    const user = userEvent.setup();
+    const onResumeRun = vi.fn();
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: stopped,
+      onResumeRun,
+    });
+
+    await user.type(
+      screen.getByLabelText("Instructions for picking the draft back up"),
+      "Tighten the summary."
+    );
+    await user.click(screen.getByRole("button", { name: "Start back up" }));
+
+    expect(onResumeRun).toHaveBeenCalledWith("Tighten the summary.");
+  });
+
+  it("confirms before keeping the partial draft", async () => {
+    const user = userEvent.setup();
+    const onKeepPartialDraft = vi.fn();
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: stopped,
+      onKeepPartialDraft,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Keep partial draft" }));
+    const dialog = screen.getByRole("dialog", {
+      name: "Keep the partial draft?",
+    });
+    expect(dialog.textContent).toContain("Undone sections will be marked skipped");
+    expect(onKeepPartialDraft).not.toHaveBeenCalled();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Keep partial draft" })
+    );
+    expect(onKeepPartialDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirms before discarding the run", async () => {
+    const user = userEvent.setup();
+    const onDiscardRun = vi.fn();
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: stopped,
+      onDiscardRun,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Discard run" }));
+    const dialog = screen.getByRole("dialog", {
+      name: "Discard this drafting run?",
+    });
+    expect(onDiscardRun).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "Discard run" }));
+    expect(onDiscardRun).toHaveBeenCalledTimes(1);
   });
 });

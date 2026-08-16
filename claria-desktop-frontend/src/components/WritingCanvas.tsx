@@ -1,4 +1,12 @@
-import { memo, useEffect, useMemo, useRef, type ElementType } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ElementType,
+} from "react";
 import { InlineMarkdown, MarkdownBlock } from "./Markdown";
 import type {
   ReportBlock,
@@ -14,10 +22,48 @@ import {
   newReportTable,
 } from "../lib/writingWorkspace";
 import {
+  overlaySections,
+  type DraftRunUiState,
+  type SectionUiState,
+  type SectionUiStatus,
+} from "../lib/draftRun";
+import { mayAutoScroll } from "../lib/scroll";
+import {
   reportBlockReferencePreview,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
 import AgentThrobber from "./AgentThrobber";
+import Modal from "./Modal";
+import ProgressBar from "./ProgressBar";
+import StatusChip, { type StatusChipTone } from "./StatusChip";
+
+/** How long a landed section keeps its chip before it fades out. */
+const DRAFTED_CHIP_MS = 2000;
+
+/**
+ * The left edge that marks a section's place in a run. Complete Tailwind
+ * literals: a class name assembled from a status would compile to nothing.
+ */
+const SECTION_EDGE: Record<SectionUiStatus, string> = {
+  pending: "border-l-2 border-gray-200 pl-4",
+  drafting: "border-l-2 border-blue-400 pl-4",
+  drafted: "border-l-2 border-emerald-300 pl-4",
+  failed: "border-l-2 border-red-400 pl-4",
+  skipped: "border-l-2 border-gray-200 pl-4",
+  kept: "border-l-2 border-gray-200 pl-4",
+};
+
+const SECTION_CHIP: Record<
+  SectionUiStatus,
+  { tone: StatusChipTone; label: string; animated?: boolean }
+> = {
+  pending: { tone: "neutral", label: "Waiting" },
+  drafting: { tone: "progress", label: "Writing", animated: true },
+  drafted: { tone: "success", label: "Drafted" },
+  failed: { tone: "danger", label: "Failed" },
+  skipped: { tone: "muted", label: "Skipped" },
+  kept: { tone: "neutral", label: "Unchanged" },
+};
 
 /**
  * The accepted-report canvas. Memoized — the writer page re-renders on every
@@ -44,6 +90,13 @@ function WritingCanvas({
   status,
   validationErrors,
   agentActivity,
+  run,
+  runError,
+  canStopRun = false,
+  onStopRun,
+  onResumeRun,
+  onKeepPartialDraft,
+  onDiscardRun,
 }: {
   workspace: ReportWorkspaceView;
   edit: ReportDraftEdit;
@@ -64,8 +117,53 @@ function WritingCanvas({
   status: string | null;
   validationErrors: string[];
   agentActivity?: { label: string; detail?: string } | null;
+  /** Live or resumable drafting-run state. Referentially stable per run. */
+  run?: DraftRunUiState | null;
+  /** The error a failed run reported, shown above the outcome line. */
+  runError?: string | null;
+  canStopRun?: boolean;
+  onStopRun?: () => void;
+  onResumeRun?: (instructions?: string) => void;
+  onKeepPartialDraft?: () => void;
+  onDiscardRun?: () => void;
 }) {
   const pending = workspace.pending_proposal !== null;
+  const sectionStates = run?.sections;
+
+  // Sections land in the preview as they become durable. The workspace object
+  // stays replace-only: the overlay is derived, and the command's final
+  // workspace clears it.
+  const liveContent = useMemo(() => {
+    const base = workspace.draft.content;
+    if (!run) return base;
+    const overlaid = overlaySections(base, run.sections);
+    return run.title && run.title !== overlaid.title
+      ? { ...overlaid, title: run.title }
+      : overlaid;
+  }, [run, workspace.draft.content]);
+
+  const draftingSectionId = useMemo(() => {
+    if (!run) return null;
+    for (const [sectionId, state] of run.sections) {
+      if (state.status === "drafting") return sectionId;
+    }
+    return null;
+  }, [run]);
+
+  const scrollBoxRef = useRef<HTMLDivElement | null>(null);
+  const lastUserScrollRef = useRef<number | null>(null);
+  const noteUserScroll = useCallback(() => {
+    lastUserScrollRef.current = Date.now();
+  }, []);
+
+  useEffect(() => {
+    if (!draftingSectionId) return;
+    if (!mayAutoScroll(lastUserScrollRef.current, Date.now())) return;
+    const target = scrollBoxRef.current?.querySelector(
+      `[data-section-id="${draftingSectionId}"]`
+    );
+    target?.scrollIntoView?.({ block: "center" });
+  }, [draftingSectionId]);
 
   function updateSection(index: number, section: ReportSectionEdit) {
     const sections = [...edit.sections];
@@ -194,6 +292,45 @@ function WritingCanvas({
       </div>
 
       <div className="px-5 pt-3 space-y-2">
+        {run?.outcome ? (
+          <DraftRunBanner
+            run={run}
+            error={runError ?? null}
+            busy={busy}
+            onResume={onResumeRun}
+            onKeepPartial={onKeepPartialDraft}
+            onDiscard={onDiscardRun}
+          />
+        ) : (
+          run?.live && (
+            <div
+              className="flex items-end gap-3"
+              data-testid="draft-run-progress"
+            >
+              {/* No denominator, no bar: a planning run gets the throbber
+                  alone rather than a percentage nobody can stand behind. */}
+              {run.total !== null && (
+                <ProgressBar
+                  className="flex-1"
+                  label="Report sections drafted"
+                  value={run.drafted}
+                  max={run.total}
+                  valueText={`${run.drafted} of ${run.total} drafted`}
+                />
+              )}
+              {onStopRun && (
+                <button
+                  type="button"
+                  onClick={onStopRun}
+                  disabled={!canStopRun}
+                  className="ml-auto px-2.5 py-1 text-xs font-medium text-gray-600 rounded-md hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50"
+                >
+                  {run.stopping ? "Stopping…" : "Stop run"}
+                </button>
+              )}
+            </div>
+          )
+        )}
         {agentActivity && (
           <AgentThrobber
             label={agentActivity.label}
@@ -207,7 +344,13 @@ function WritingCanvas({
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div
+        ref={scrollBoxRef}
+        onWheel={noteUserScroll}
+        onTouchMove={noteUserScroll}
+        onKeyDown={noteUserScroll}
+        className="flex-1 overflow-y-auto p-6"
+      >
         <div className="max-w-3xl mx-auto bg-white min-h-full border border-gray-200 shadow-sm rounded-sm px-10 py-12 select-text">
           {editing ? (
             <>
@@ -239,8 +382,9 @@ function WritingCanvas({
             </>
           ) : (
             <ReportDocument
-              content={workspace.draft.content}
+              content={liveContent}
               onReference={onReference}
+              sectionStates={sectionStates}
             />
           )}
         </div>
@@ -252,10 +396,13 @@ function WritingCanvas({
 export function ReportDocument({
   content,
   onReference,
+  sectionStates,
   testId = "accepted-report-canvas",
 }: {
   content: ReportContent;
   onReference?: (reference: WritingBlockReference) => void;
+  /** Per-section run state, when a drafting run owns this report. */
+  sectionStates?: ReadonlyMap<string, SectionUiState>;
   testId?: string;
 }) {
   return (
@@ -272,43 +419,285 @@ export function ReportDocument({
         </div>
       ) : (
         <div className="space-y-8">
-          {content.sections.map((section) => (
-            <section key={section.id}>
-              {section.skipped ? (
-                <div data-testid="deferred-section">
-                  <h2 className="text-xl font-semibold text-gray-400 mb-1">
-                    <InlineMarkdown text={section.heading} />
-                  </h2>
-                  <p className="text-xs text-gray-400 italic">
-                    Skipped — kept from the template for reference. Not included
-                    in the exported document.
-                  </p>
-                  {section.template_blocks &&
-                    section.template_blocks.length > 0 && (
-                      <SkippedSectionBody
-                        blocks={section.template_blocks}
-                        sectionHeading={section.heading}
-                      />
+          {content.sections.map((section) => {
+            const runState = sectionStates?.get(section.id) ?? null;
+            const chip = runState ? SECTION_CHIP[runState.status] : null;
+            return (
+              <section
+                key={section.id}
+                data-section-id={section.id}
+                data-section-status={runState?.status}
+                className={runState ? SECTION_EDGE[runState.status] : undefined}
+              >
+                {section.skipped ? (
+                  <div data-testid="deferred-section">
+                    <SectionHeading
+                      heading={section.heading}
+                      muted
+                      chip={chip ?? { tone: "muted", label: "Skipped" }}
+                    />
+                    <p className="text-xs text-gray-400 italic">
+                      Skipped — kept from the template for reference. Not
+                      included in the exported document.
+                    </p>
+                    {section.template_blocks &&
+                      section.template_blocks.length > 0 && (
+                        <SkippedSectionBody
+                          blocks={section.template_blocks}
+                          sectionHeading={section.heading}
+                        />
+                      )}
+                  </div>
+                ) : (
+                  <>
+                    <SectionHeading heading={section.heading} chip={chip} />
+                    {runState?.status === "failed" && runState.error && (
+                      <p
+                        data-testid="section-failure"
+                        className="mb-2 text-xs text-red-700"
+                      >
+                        {runState.error}
+                      </p>
                     )}
-                </div>
-              ) : (
-                <>
-                  <h2 className="text-xl font-semibold text-gray-900 mb-3">
-                    <InlineMarkdown text={section.heading} />
-                  </h2>
-                  <SectionBlocks
-                    blocks={section.blocks}
-                    sectionId={section.id}
-                    sectionHeading={section.heading}
-                    onReference={onReference}
-                  />
-                </>
-              )}
-            </section>
-          ))}
+                    <div
+                      className={
+                        runState?.status === "drafting"
+                          ? "opacity-60 transition-opacity"
+                          : undefined
+                      }
+                    >
+                      <SectionBlocks
+                        blocks={section.blocks}
+                        sectionId={section.id}
+                        sectionHeading={section.heading}
+                        onReference={onReference}
+                      />
+                    </div>
+                  </>
+                )}
+              </section>
+            );
+          })}
         </div>
       )}
     </article>
+  );
+}
+
+/**
+ * A section heading with room for one run-state chip beside it. A landed
+ * section's chip fades out once it has been read; the edge tint stays, so the
+ * document still shows what the run touched after the chips have gone.
+ */
+function SectionHeading({
+  heading,
+  chip,
+  muted = false,
+}: {
+  heading: string;
+  chip: { tone: StatusChipTone; label: string; animated?: boolean } | null;
+  muted?: boolean;
+}) {
+  return (
+    <div className="mb-3 flex items-baseline gap-2">
+      <h2
+        className={
+          muted
+            ? "text-xl font-semibold text-gray-400"
+            : "text-xl font-semibold text-gray-900"
+        }
+      >
+        <InlineMarkdown text={heading} />
+      </h2>
+      {chip &&
+        (chip.label === "Drafted" ? (
+          <FadingStatusChip tone={chip.tone} label={chip.label} />
+        ) : (
+          <StatusChip
+            tone={chip.tone}
+            label={chip.label}
+            animated={chip.animated}
+          />
+        ))}
+    </div>
+  );
+}
+
+function FadingStatusChip({
+  tone,
+  label,
+}: {
+  tone: StatusChipTone;
+  label: string;
+}) {
+  // Mount-scoped: a section leaving `drafted` swaps this component out, so a
+  // section written twice gets a fresh chip and a fresh timer.
+  const [faded, setFaded] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setFaded(true), DRAFTED_CHIP_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  return (
+    <StatusChip
+      tone={tone}
+      label={label}
+      className={
+        faded
+          ? "opacity-0 transition-opacity duration-700"
+          : "opacity-100 transition-opacity duration-700"
+      }
+    />
+  );
+}
+
+/**
+ * What an interrupted run left behind, and the three ways out of it. Every
+ * sentence here is about durable state: the sections it names are already
+ * saved, and the ones it does not are untouched.
+ */
+function DraftRunBanner({
+  run,
+  error,
+  busy,
+  onResume,
+  onKeepPartial,
+  onDiscard,
+}: {
+  run: DraftRunUiState;
+  error: string | null;
+  busy: boolean;
+  onResume?: (instructions?: string) => void;
+  onKeepPartial?: () => void;
+  onDiscard?: () => void;
+}) {
+  const [instructions, setInstructions] = useState("");
+  const [confirming, setConfirming] = useState<"keep" | "discard" | null>(null);
+  const total = run.total ?? run.sections.size;
+
+  return (
+    <div
+      data-testid="draft-run-banner"
+      className="rounded-md border border-amber-200 bg-amber-50 p-3"
+    >
+      {run.outcome === "failed" && error && (
+        <p className="mb-1 text-xs font-semibold text-red-700">{error}</p>
+      )}
+      <p className="text-xs text-amber-900">
+        {`Stopped — ${run.drafted} of ${total} sections drafted and saved. Undone sections are unchanged.`}
+      </p>
+      {onResume && (
+        <label className="mt-2 block">
+          <span className="sr-only">Instructions for picking the draft back up</span>
+          <input
+            type="text"
+            aria-label="Instructions for picking the draft back up"
+            value={instructions}
+            onChange={(event) => setInstructions(event.currentTarget.value)}
+            disabled={busy}
+            placeholder="Optional: what should change when it starts back up?"
+            className="w-full rounded-md border border-amber-200 bg-white px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:bg-gray-50"
+          />
+        </label>
+      )}
+      <div className="mt-2 flex flex-wrap gap-2">
+        {onResume && (
+          <button
+            type="button"
+            onClick={() => onResume(instructions)}
+            disabled={busy}
+            className="rounded-md bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+          >
+            Start back up
+          </button>
+        )}
+        {onKeepPartial && (
+          <button
+            type="button"
+            onClick={() => setConfirming("keep")}
+            disabled={busy}
+            className="rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+          >
+            Keep partial draft
+          </button>
+        )}
+        {onDiscard && (
+          <button
+            type="button"
+            onClick={() => setConfirming("discard")}
+            disabled={busy}
+            className="px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 disabled:opacity-50"
+          >
+            Discard run
+          </button>
+        )}
+      </div>
+
+      {confirming === "keep" && (
+        <Modal
+          open
+          title="Keep the partial draft?"
+          onClose={() => setConfirming(null)}
+          className="max-w-lg p-6"
+        >
+          <p className="text-sm leading-6 text-gray-600">
+            Undone sections will be marked skipped and kept from the template
+            for reference. The sections the run wrote are saved as a new
+            revision, and the run itself is closed.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirming(null)}
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirming(null);
+                onKeepPartial?.();
+              }}
+              className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+            >
+              Keep partial draft
+            </button>
+          </div>
+        </Modal>
+      )}
+      {confirming === "discard" && (
+        <Modal
+          open
+          title="Discard this drafting run?"
+          onClose={() => setConfirming(null)}
+          className="max-w-lg p-6"
+        >
+          <p className="text-sm leading-6 text-gray-600">
+            The sections this run wrote are thrown away and cannot be picked
+            back up. The accepted report is left exactly as it is.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirming(null)}
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirming(null);
+                onDiscard?.();
+              }}
+              className="rounded-md bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-800"
+            >
+              Discard run
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
   );
 }
 
