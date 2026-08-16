@@ -64,7 +64,17 @@ pub async fn extract_document_text(
         .build()
         .map_err(|e| BedrockError::Invocation(e.to_string()))?;
 
-    info!(model_id, filename, "extracting text from document");
+    // A client-chosen upload filename can identify a person, so the log fields
+    // are the extension and the byte size — what diagnostics actually use.
+    let extension = log_safe_extension(filename);
+    let document_bytes = bytes.len();
+
+    info!(
+        model_id,
+        extension = %extension,
+        document_bytes,
+        "extracting text from document"
+    );
 
     let response = client
         .converse()
@@ -93,7 +103,8 @@ pub async fn extract_document_text(
 
     info!(
         model_id,
-        filename,
+        extension = %extension,
+        document_bytes,
         text_len = text.len(),
         "document text extraction complete"
     );
@@ -101,6 +112,16 @@ pub async fn extract_document_text(
     let usage = converse::optional_usage(response.usage(), model_id, None);
 
     Ok((text, usage))
+}
+
+/// The lowercase extension of an upload filename, or `"none"` when there is
+/// no extension. Only the extension is PHI-safe to log: the rest of a
+/// client-chosen filename can identify a person.
+fn log_safe_extension(filename: &str) -> String {
+    match filename.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() => ext.to_lowercase(),
+        _ => "none".to_string(),
+    }
 }
 
 /// Sanitize a filename for use as a Bedrock `DocumentBlock` name.
