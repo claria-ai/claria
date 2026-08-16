@@ -21,6 +21,11 @@ pub const ATTEMPT_SCHEMA_VERSION: u32 = 2;
 pub enum ReportAttemptStatus {
     Completed,
     Aborted,
+    /// The reader stopped the attempt. Distinct from `Aborted` because
+    /// nothing went wrong: the receipt still records what the attempt spent
+    /// before the Stop, and a stopped drafting run keeps every section it
+    /// had already written.
+    Stopped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

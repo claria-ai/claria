@@ -1,6 +1,7 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_bedrock::{
     chat::{ChatMessage, ChatRole},
+    converse::StopSignal,
     error::BedrockError,
     report::{
         PROPOSE_REPORT_CHANGES_TOOL, ReportInputBudget, ReportStopReason, ReportToolRequest,
@@ -159,6 +160,7 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
         &mut ReportInputBudget::new(MODEL_ID),
         claria_bedrock::converse::ModelTuning::default(),
         default_cache_plan(),
+        &StopSignal::new(),
     )
     .await
     .expect("full-draft converse");
@@ -269,6 +271,7 @@ async fn model_tuning_shapes_the_wire_request() {
             temperature: Some(0.3),
         },
         default_cache_plan(),
+        &StopSignal::new(),
     )
     .await
     .expect("tuned converse");
@@ -421,6 +424,7 @@ async fn configured_tool_limit_rejects_oversized_model_responses() {
         &mut claria_bedrock::report::ReportInputBudget::new(MODEL_ID),
         claria_bedrock::converse::ModelTuning::default(),
         default_cache_plan(),
+        &StopSignal::new(),
     )
     .await
     .expect_err("configured tool limit");

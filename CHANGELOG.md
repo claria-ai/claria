@@ -29,6 +29,8 @@ All notable changes to Claria are documented here.
 - Whole-report call and tool-round ceilings now scale with the number of sections being drafted
 - Drafting progress now reports each section as it lands, with the plan's section count as the denominator
 - An interrupted whole-report draft can be finalized from the sections it wrote, or discarded outright
+- Writer runs can now be stopped mid-generation, keeping every section already saved and resuming later
+- A stop that arrives after a whole-report draft has been finished leaves the saved revision standing
 
 ## [0.28.0] — 2026-08-15
 

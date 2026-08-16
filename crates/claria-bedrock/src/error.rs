@@ -61,6 +61,11 @@ pub enum BedrockError {
 
     #[error("model agreement error: {0}")]
     Agreement(String),
+
+    /// The reader pressed Stop while the request was in flight. Not a
+    /// failure — the caller decides what its partial work is worth.
+    #[error("the request was stopped by the user")]
+    Stopped,
 }
 
 impl BedrockError {

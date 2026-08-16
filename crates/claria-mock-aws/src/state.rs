@@ -79,6 +79,14 @@ pub struct MockState {
     /// counter, so retry paths can be scripted to stall then recover.
     /// A stalled response still consumes its scripted payload.
     pub bedrock_stream_stalls: u32,
+    /// Fault injection: once set, every `ConverseStream` request after the
+    /// Nth stalls the same way [`Self::bedrock_stream_stalls`] does, and goes
+    /// on doing so. The counter above fires on whichever response comes next,
+    /// which a test cannot aim at a particular call without racing the loop
+    /// it is testing; this pins the stall to a chosen point in a scripted
+    /// conversation — say, the call that would follow the second landed
+    /// section.
+    pub bedrock_stream_stalls_after: Option<usize>,
     /// Fault injection: the next N `ConverseStream` responses send an
     /// opening frame and one text delta, then sever the connection with a
     /// body error. Reproduces a socket that resets mid-generation, and —

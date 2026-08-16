@@ -1,6 +1,7 @@
 use claria_report_store::{ReportAttemptMetadata, ReportFailureCode, ReportStoreError};
 use claria_storage::error::StorageError;
 use thiserror::Error;
+use uuid::Uuid;
 
 /// The one error type for report-writing orchestration.
 ///
@@ -38,6 +39,29 @@ pub enum ReportPipelineError {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
+
+    /// The reader pressed Stop. Shaped as an error because the turn produced
+    /// no outcome, but it is not a failure: a stopped drafting run keeps
+    /// every section it landed and stays resumable, and a stopped targeted
+    /// turn changed nothing at all.
+    ///
+    /// `run_id` names the drafting run left parked and resumable; `None` is
+    /// a targeted turn, which owns no run.
+    #[error("{}", stopped_message(run_id))]
+    Stopped {
+        run_id: Option<Uuid>,
+        attempt: Box<ReportAttemptMetadata>,
+    },
+}
+
+/// What the reader stopped, in their words. A drafting run is picked back up
+/// from the writing surface; a targeted turn simply did not happen.
+fn stopped_message(run_id: &Option<Uuid>) -> &'static str {
+    if run_id.is_some() {
+        "The draft run was stopped."
+    } else {
+        "The writer turn was stopped."
+    }
 }
 
 /// Durable-store failures reach the turn loop's callers unchanged: the store
@@ -61,11 +85,26 @@ impl ReportPipelineError {
         Self::Storage { operation, source }
     }
 
+    /// The attempt receipt this turn recorded, for the caller's usage audit.
+    /// A stopped turn has one too — it spent tokens before the Stop.
     pub fn attempt(&self) -> Option<&ReportAttemptMetadata> {
         match self {
-            Self::TurnFailed { attempt, .. } => Some(attempt),
+            Self::TurnFailed { attempt, .. } | Self::Stopped { attempt, .. } => Some(attempt),
             _ => None,
         }
+    }
+
+    /// The drafting run a stop left parked and resumable.
+    pub fn stopped_run_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Stopped { run_id, .. } => *run_id,
+            _ => None,
+        }
+    }
+
+    /// Whether the reader stopped this turn, as opposed to it failing.
+    pub fn is_stopped(&self) -> bool {
+        matches!(self, Self::Stopped { .. })
     }
 
     pub fn failure_code(&self) -> Option<ReportFailureCode> {

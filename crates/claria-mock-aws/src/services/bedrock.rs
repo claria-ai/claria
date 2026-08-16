@@ -694,8 +694,13 @@ async fn converse_stream(path: &str, body: Value, state: SharedState) -> Respons
     let (stall, drop_body) = {
         let mut state = state.write().await;
         state.bedrock_stream_request_count += 1;
+        let past_stall_point = state
+            .bedrock_stream_stalls_after
+            .is_some_and(|after| state.bedrock_stream_request_count > after);
         if state.bedrock_stream_stalls > 0 {
             state.bedrock_stream_stalls -= 1;
+            (true, false)
+        } else if past_stall_point {
             (true, false)
         } else if state.bedrock_stream_drops > 0 {
             state.bedrock_stream_drops -= 1;

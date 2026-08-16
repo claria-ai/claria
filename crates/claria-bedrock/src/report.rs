@@ -355,6 +355,7 @@ pub async fn converse_report(
         converse::CachePlan::report_default(claria_core::model_id::ModelCapabilities::for_id(
             model_id,
         )),
+        &converse::StopSignal::new(),
     )
     .await
 }
@@ -366,6 +367,9 @@ pub async fn converse_report(
 /// `cache_plan` — where the request's `cachePoint` blocks go. This function
 /// owns the exact Bedrock wire shape, validates safe tool correlation, and
 /// returns the response usage priced at this individual call's rates.
+///
+/// `stop` ends the call where it stands; see
+/// [`converse_report_with_tool_set`] for what a stopped response costs.
 #[allow(clippy::too_many_arguments)]
 pub async fn converse_report_with_tool_limit(
     config: &aws_config::SdkConfig,
@@ -376,6 +380,7 @@ pub async fn converse_report_with_tool_limit(
     budget: &mut ReportInputBudget,
     tuning: converse::ModelTuning,
     cache_plan: converse::CachePlan,
+    stop: &converse::StopSignal,
 ) -> Result<ReportConverseOutput, BedrockError> {
     converse_report_with_tool_set(
         config,
@@ -387,6 +392,7 @@ pub async fn converse_report_with_tool_limit(
         ReportToolSet::TargetedEdit,
         tuning,
         cache_plan,
+        stop,
     )
     .await
 }
@@ -405,6 +411,7 @@ pub async fn converse_full_report_with_tool_limit(
     budget: &mut ReportInputBudget,
     tuning: converse::ModelTuning,
     cache_plan: converse::CachePlan,
+    stop: &converse::StopSignal,
 ) -> Result<ReportConverseOutput, BedrockError> {
     converse_report_with_tool_set(
         config,
@@ -416,6 +423,7 @@ pub async fn converse_full_report_with_tool_limit(
         ReportToolSet::FullDraft,
         tuning,
         cache_plan,
+        stop,
     )
     .await
 }
@@ -448,6 +456,17 @@ impl ReportToolSet {
         tool_set = ?tool_set
     )
 )]
+/// Send one report-protocol Converse request and fold its streamed response
+/// back into a whole assistant message.
+///
+/// `stop` is watched alongside every frame — a writer stream can sit silent
+/// for minutes while a large prefix prefills, so a Stop that waits for the
+/// next frame is not a Stop. Unlike chat, a stopped writer response is
+/// discarded WHOLE rather than salvaged: a half-streamed response can hold a
+/// tool call whose input JSON is still being assembled, and half a
+/// `write_full_draft_section` is not a section. The loop's existing
+/// invariant — a call that fails commits nothing, because the protocol only
+/// ever grows by complete messages — is what makes throwing it away safe.
 #[allow(clippy::too_many_arguments)]
 async fn converse_report_with_tool_set(
     config: &aws_config::SdkConfig,
@@ -459,6 +478,7 @@ async fn converse_report_with_tool_set(
     tool_set: ReportToolSet,
     tuning: converse::ModelTuning,
     cache_plan: converse::CachePlan,
+    stop: &converse::StopSignal,
 ) -> Result<ReportConverseOutput, BedrockError> {
     if max_tool_uses_per_response == 0 || max_tool_uses_per_response > MAX_TOOL_USES_PER_RESPONSE {
         return Err(BedrockError::SchemaViolation(format!(
@@ -554,7 +574,17 @@ async fn converse_report_with_tool_set(
     let mut stream = response.stream;
     let mut collector = ReportStreamCollector::default();
     loop {
-        let event = converse::recv_stream_event("report ConverseStream", &mut stream).await?;
+        let event = tokio::select! {
+            biased;
+            () = stop.stopped() => {
+                // Dropping the stream closes the connection, so the model
+                // stops generating a response nobody is going to read.
+                drop(stream);
+                tracing::info!(model_id, "report stream stopped by the reader");
+                return Err(BedrockError::Stopped);
+            }
+            event = converse::recv_stream_event("report ConverseStream", &mut stream) => event?,
+        };
         let Some(event) = event else { break };
         collector.absorb(event);
     }

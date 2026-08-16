@@ -171,7 +171,7 @@ fn main() -> Result<()> {
         commands::get_console_logs_text,
         commands::save_console_logs,
         commands::log_frontend_event,
-        commands::stop_chat_stream,
+        commands::stop_stream,
     ]);
 
     #[cfg(debug_assertions)]

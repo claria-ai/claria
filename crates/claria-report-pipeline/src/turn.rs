@@ -3,6 +3,7 @@
 
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::{
+    converse::StopSignal,
     error::BedrockError,
     report::{self, ReportStopReason},
 };
@@ -36,7 +37,7 @@ use crate::{
     },
     prompts::{full_report_system_prompt, report_system_prompt},
     record_context::{FullRecordContext, load_full_record_context, load_record_inventory},
-    run::{release_failed_run, stamp_run_authorship, start_draft_run},
+    run::{park_stopped_run, release_failed_run, stamp_run_authorship, start_draft_run},
     tools::ToolExecutionContext,
 };
 
@@ -116,6 +117,17 @@ pub enum ReportTurnProgress {
     },
 }
 
+/// The signal a request with no Stop button behind it watches.
+///
+/// One process-wide handle nobody can fire — the only copy that leaves this
+/// function is behind a shared reference — so it pends forever and a caller
+/// that never calls `with_stop` behaves exactly as it did before stopping
+/// existed.
+fn never_stopped() -> &'static StopSignal {
+    static NEVER: std::sync::OnceLock<StopSignal> = std::sync::OnceLock::new();
+    NEVER.get_or_init(StopSignal::new)
+}
+
 #[derive(Clone, Copy)]
 pub struct ReportMessageRequest<'a> {
     pub instruction: &'a str,
@@ -125,6 +137,7 @@ pub struct ReportMessageRequest<'a> {
     prompt_cache: Option<&'a ReportPromptCache>,
     system_prompt_body: Option<&'a str>,
     model_tuning: claria_bedrock::converse::ModelTuning,
+    stop: &'a StopSignal,
 }
 
 impl<'a> ReportMessageRequest<'a> {
@@ -137,7 +150,15 @@ impl<'a> ReportMessageRequest<'a> {
             prompt_cache: None,
             system_prompt_body: None,
             model_tuning: claria_bedrock::converse::ModelTuning::default(),
+            stop: never_stopped(),
         }
+    }
+
+    /// Let the reader end this turn early. Nothing is persisted to the
+    /// session when they do — a targeted turn only ever saves at its end.
+    pub fn with_stop(mut self, stop: &'a StopSignal) -> Self {
+        self.stop = stop;
+        self
     }
 
     /// Use a customized system-prompt body; the fixed trust rules are still
@@ -192,6 +213,7 @@ pub struct FullReportRequest<'a> {
     prompt_cache: Option<&'a ReportPromptCache>,
     system_prompt_body: Option<&'a str>,
     model_tuning: claria_bedrock::converse::ModelTuning,
+    stop: &'a StopSignal,
 }
 
 impl<'a> FullReportRequest<'a> {
@@ -203,7 +225,16 @@ impl<'a> FullReportRequest<'a> {
             prompt_cache: None,
             system_prompt_body: None,
             model_tuning: claria_bedrock::converse::ModelTuning::default(),
+            stop: never_stopped(),
         }
+    }
+
+    /// Let the reader stop the run mid-flight. Every section that already
+    /// landed stays durable in the run object, the run is parked as
+    /// `Stopped`, and the report is picked back up from there.
+    pub fn with_stop(mut self, stop: &'a StopSignal) -> Self {
+        self.stop = stop;
+        self
     }
 
     /// Use a customized system-prompt body; the fixed trust rules are still
@@ -327,15 +358,7 @@ async fn send_report_message_loaded(
         s3,
         bucket,
         model_id,
-        TurnRunRequest::targeted(
-            message.instruction.trim(),
-            message.references,
-            message.limits,
-            message.progress,
-            message.prompt_cache,
-            message.system_prompt_body,
-            message.model_tuning,
-        ),
+        TurnRunRequest::targeted(message, message.instruction.trim()),
         &mut loaded,
         None,
     )
@@ -444,6 +467,10 @@ async fn generate_full_report_loaded(
 /// once: on success the run owns the revision it cut, and on any failure the
 /// workspace pointer is cleared while the sections that landed stay durable in
 /// the run object.
+///
+/// A stop is the third way out, and the only one that keeps the pointer: the
+/// stopped run still owns the session, because that is the state the writing
+/// surface hydrates from and picks back up.
 // The run and how the turn was entered ride alongside the workspace rather
 // than inside the request: both outlive the request and neither is the user's.
 #[allow(clippy::too_many_arguments)]
@@ -473,16 +500,7 @@ pub(crate) async fn execute_full_draft_turn(
         s3,
         bucket,
         model_id,
-        TurnRunRequest::full_draft(
-            request.guidance.trim(),
-            &record_context,
-            turn_kind,
-            request.limits,
-            request.progress,
-            request.prompt_cache,
-            request.system_prompt_body,
-            request.model_tuning,
-        ),
+        TurnRunRequest::full_draft(request, request.guidance.trim(), &record_context, turn_kind),
         &mut loaded,
         Some(&mut run),
     )
@@ -496,6 +514,10 @@ pub(crate) async fn execute_full_draft_turn(
             record_context: record_context.summary,
             attempt: outcome.attempt,
         }),
+        Err(error) if error.is_stopped() => {
+            park_stopped_run(s3, bucket, &mut run).await;
+            Err(error)
+        }
         Err(error) => {
             release_failed_run(s3, bucket, client_id, report_id, &mut run).await;
             Err(error)
@@ -572,6 +594,9 @@ async fn execute_turn(
 ) -> Result<ReportTurnOutcome, ReportPipelineError> {
     let started_at = jiff::Timestamp::now();
     let mut progress = AttemptProgress::new(&loaded.workspace, model_id, started_at);
+    // Read before the run is handed to the loop: a stopped run is named in
+    // the error the caller gets back, and the loop takes the run by value.
+    let run_id = run.as_deref().map(|run| run.run.run_id);
     let result = run_turn(sdk_config, s3, bucket, request, loaded, run, &mut progress).await;
 
     match result {
@@ -588,7 +613,26 @@ async fn execute_turn(
             outcome.attempt = metadata;
             Ok(outcome)
         }
-        Err(failure) => {
+        // The reader's own choice, not a failure: the receipt records what
+        // the attempt spent, and the caller decides what its partial work is
+        // worth. A receipt that cannot be written is logged and let go —
+        // failing the stop would tell the reader their Stop did not work,
+        // which is the one thing that is certainly untrue.
+        Err(TurnInterruption::Stopped) => {
+            let metadata = progress.metadata(ReportAttemptStatus::Stopped, None);
+            if let Err(error) = persist_attempt(s3, bucket, &metadata).await {
+                tracing::warn!(
+                    attempt_id = %metadata.attempt_id,
+                    error = %error,
+                    "the stopped writer attempt could not record its receipt"
+                );
+            }
+            Err(ReportPipelineError::Stopped {
+                run_id,
+                attempt: Box::new(metadata),
+            })
+        }
+        Err(TurnInterruption::Failed(failure)) => {
             if failure.usage_may_be_incomplete {
                 progress.usage_complete = false;
             }
@@ -624,6 +668,9 @@ struct TurnRunRequest<'a> {
     /// appended during composition.
     system_prompt_body: Option<&'a str>,
     model_tuning: claria_bedrock::converse::ModelTuning,
+    /// Fired by the reader's Stop button; a request that never set one
+    /// watches a signal nobody holds.
+    stop: &'a StopSignal,
 }
 
 #[derive(Clone, Copy)]
@@ -640,38 +687,31 @@ enum TurnRunKind<'a> {
 }
 
 impl<'a> TurnRunRequest<'a> {
-    fn targeted(
-        instruction: &'a str,
-        references: &'a [ReportBlockReference],
-        limits: ReportTurnLimits,
-        progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
-        prompt_cache: Option<&'a ReportPromptCache>,
-        system_prompt_body: Option<&'a str>,
-        model_tuning: claria_bedrock::converse::ModelTuning,
-    ) -> Self {
+    /// The caller's targeted request, with its instruction already trimmed.
+    /// Every knob the two request types share is copied straight across, so
+    /// adding one to the public builder cannot silently miss the loop.
+    fn targeted(message: ReportMessageRequest<'a>, instruction: &'a str) -> Self {
         Self {
             kind: TurnRunKind::Targeted {
                 instruction,
-                references,
+                references: message.references,
             },
-            limits,
-            progress,
-            prompt_cache,
-            system_prompt_body,
-            model_tuning,
+            limits: message.limits,
+            progress: message.progress,
+            prompt_cache: message.prompt_cache,
+            system_prompt_body: message.system_prompt_body,
+            model_tuning: message.model_tuning,
+            stop: message.stop,
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// The caller's whole-report request, with its guidance already trimmed
+    /// and its record snapshot loaded.
     fn full_draft(
+        request: FullReportRequest<'a>,
         guidance: &'a str,
         record_context: &'a FullRecordContext,
         turn_kind: DraftTurnKind,
-        limits: ReportTurnLimits,
-        progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
-        prompt_cache: Option<&'a ReportPromptCache>,
-        system_prompt_body: Option<&'a str>,
-        model_tuning: claria_bedrock::converse::ModelTuning,
     ) -> Self {
         Self {
             kind: TurnRunKind::FullDraft {
@@ -679,11 +719,12 @@ impl<'a> TurnRunRequest<'a> {
                 record_context,
                 turn_kind,
             },
-            limits,
-            progress,
-            prompt_cache,
-            system_prompt_body,
-            model_tuning,
+            limits: request.limits,
+            progress: request.progress,
+            prompt_cache: request.prompt_cache,
+            system_prompt_body: request.system_prompt_body,
+            model_tuning: request.model_tuning,
+            stop: request.stop,
         }
     }
 
@@ -783,6 +824,23 @@ fn call_usage_record(
     }
 }
 
+/// Why the turn loop ended without an outcome.
+///
+/// The two are kept apart all the way out of the loop because they mean
+/// opposite things to the caller: a failure releases the drafting run and
+/// hands the reader an error, while a stop parks the run exactly where it is
+/// so the reader can pick it back up.
+pub(crate) enum TurnInterruption {
+    Failed(TurnRunFailure),
+    Stopped,
+}
+
+impl From<TurnRunFailure> for TurnInterruption {
+    fn from(failure: TurnRunFailure) -> Self {
+        Self::Failed(failure)
+    }
+}
+
 pub(crate) struct TurnRunFailure {
     code: ReportFailureCode,
     message: String,
@@ -817,12 +875,13 @@ async fn run_turn(
     loaded: &mut LoadedWorkspace,
     mut run: Option<&mut LoadedRun>,
     progress: &mut AttemptProgress,
-) -> Result<ReportTurnOutcome, TurnRunFailure> {
+) -> Result<ReportTurnOutcome, TurnInterruption> {
     if request.is_full_draft() && run.is_none() {
         return Err(TurnRunFailure::new(
             ReportFailureCode::InvalidProtocol,
             "Claria could not start a durable drafting run for this whole-report request.",
-        ));
+        )
+        .into());
     }
     // A whole-report run's ceilings follow its plan; a targeted edit keeps
     // exactly what the clinician configured. The same row count is the
@@ -1012,13 +1071,31 @@ async fn run_turn(
     };
 
     loop {
+        // Past the cut, Stop is deliberately a no-op: `finish_full_draft` has
+        // already succeeded, so all that is left is one closing call and the
+        // revision it authorizes. Honouring a Stop here would throw away a
+        // draft the writer finished, which is the opposite of what the reader
+        // asked for.
+        let past_the_cut = tool_context.full_draft_is_finalized();
+        let stop = if past_the_cut {
+            never_stopped()
+        } else {
+            request.stop
+        };
+        // Second of the two between-round checks: a Stop that landed while
+        // the previous round's sections were being written to S3 must not be
+        // answered by opening one more billed conversation.
+        if stop.is_stopped() {
+            return Err(TurnInterruption::Stopped);
+        }
         if progress.converse_calls >= limits.max_converse_calls {
             return Err(limit_exhausted_failure(
                 ExhaustedWriterLimit::ConverseCalls,
                 rounds,
                 progress.converse_calls,
                 limits,
-            ));
+            )
+            .into());
         }
         let call_number = progress.converse_calls.saturating_add(1);
         request.emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
@@ -1040,6 +1117,7 @@ async fn run_turn(
                     &mut input_budget,
                     request.model_tuning,
                     cache_plan.clone(),
+                    stop,
                 )
                 .await
             } else {
@@ -1052,11 +1130,16 @@ async fn run_turn(
                     &mut input_budget,
                     request.model_tuning,
                     cache_plan.clone(),
+                    stop,
                 )
                 .await
             };
             match attempt {
                 Ok(output) => break output,
+                // A stopped call is the reader's decision, never a
+                // transient fault: retrying it would re-issue the exact
+                // request they just cancelled.
+                Err(BedrockError::Stopped) => return Err(TurnInterruption::Stopped),
                 Err(error)
                     if error.is_interrupted_before_completion()
                         && interruptions < STREAM_INTERRUPTION_RETRIES =>
@@ -1080,7 +1163,8 @@ async fn run_turn(
                         },
                         interruptions.saturating_add(1),
                         call_started.elapsed(),
-                    ));
+                    )
+                    .into());
                 }
             }
         };
@@ -1135,7 +1219,8 @@ async fn run_turn(
                 return Err(TurnRunFailure::new(
                     ReportFailureCode::InvalidProtocol,
                     "Bedrock repeatedly returned an inconsistent report stop reason. Nothing from this turn was applied.",
-                ));
+                )
+                .into());
             }
             corrective_round_used = true;
             // The mismatched tool calls stay in the persisted protocol, so
@@ -1196,7 +1281,8 @@ async fn run_turn(
                         rounds,
                         progress.converse_calls,
                         limits,
-                    ));
+                    )
+                    .into());
                 }
                 rounds += 1;
                 progress.tool_uses = progress
@@ -1278,6 +1364,15 @@ async fn run_turn(
                 };
                 protocol.push(result_message.clone());
                 turn_messages.push(result_message);
+                // First of the two between-round checks. Executing a batch
+                // means S3 writes, and a Stop pressed during them belongs to
+                // this round: the sections it just made durable stand, and
+                // the round that would have followed never starts. A batch
+                // that carried the finish tool is past the cut and keeps
+                // going, for the reason given at the top of the loop.
+                if !tool_context.full_draft_is_finalized() && request.stop.is_stopped() {
+                    return Err(TurnInterruption::Stopped);
+                }
             }
             ReportStopReason::EndTurn => {
                 if request.is_full_draft() && !tool_context.full_draft_is_finalized() {
@@ -1285,7 +1380,8 @@ async fn run_turn(
                         return Err(TurnRunFailure::new(
                             ReportFailureCode::InvalidProtocol,
                             "The writer stopped twice without finalizing the complete draft. Nothing was saved.",
-                        ));
+                        )
+                        .into());
                     }
                     completion_reminder_used = true;
                     // Name the sections that are actually outstanding. "Every
@@ -1341,7 +1437,7 @@ async fn run_turn(
                 };
                 break;
             }
-            reason => return Err(terminal_stop_failure(reason)),
+            reason => return Err(terminal_stop_failure(reason).into()),
         }
     }
 
@@ -1352,7 +1448,8 @@ async fn run_turn(
         return Err(TurnRunFailure::new(
             ReportFailureCode::InvalidProtocol,
             "The writer did not finalize a complete draft. Nothing was saved.",
-        ));
+        )
+        .into());
     }
 
     let completed_at = jiff::Timestamp::now();

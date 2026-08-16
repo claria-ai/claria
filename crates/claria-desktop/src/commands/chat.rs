@@ -1,22 +1,17 @@
 //! Chat commands — record chat, infra chat, persisted chat history, and
 //! context token counting.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard},
-};
-
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use claria_bedrock::{chat::ChatStreamOptions, converse::StopSignal};
+use claria_bedrock::chat::ChatStreamOptions;
 use claria_core::models::chat_history::{ChatMessage, ChatRole};
 use claria_desktop::config::ClariaConfig;
 use claria_provisioner::PlanEntry;
 
 use super::{
     CommandContext, CommandError, next_ordinal_name, parse_uuid, prompts::load_prompt,
-    records::load_record_context, run, usage_audit_details,
+    records::load_record_context, run, streams::StopRegistration, usage_audit_details,
 };
 use crate::state::DesktopState;
 
@@ -52,79 +47,6 @@ pub enum ChatStreamEvent {
 /// carries the complete response for persistence).
 fn send_stream_event(channel: &tauri::ipc::Channel<ChatStreamEvent>, event: ChatStreamEvent) {
     let _ = channel.send(event);
-}
-
-/// Live stop signals, keyed by the turn id the frontend minted.
-type StopRegistry = Mutex<HashMap<uuid::Uuid, StopSignal>>;
-
-/// The registry is only ever held across map operations, never across an
-/// await, so a poisoned lock means a panic elsewhere rather than torn state —
-/// recover the map instead of taking the process down with it.
-fn lock_stops(registry: &StopRegistry) -> MutexGuard<'_, HashMap<uuid::Uuid, StopSignal>> {
-    registry
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// A turn's stop signal, registered for as long as its stream runs.
-///
-/// The registration is an RAII guard rather than a pair of calls because
-/// every `?` in a command body is an exit path; a leaked entry would keep a
-/// finished turn's id addressable and grow the map for the life of the
-/// process.
-struct StopRegistration {
-    registry: Arc<StopRegistry>,
-    stream_id: uuid::Uuid,
-    signal: StopSignal,
-}
-
-impl StopRegistration {
-    /// Register a fresh signal for `stream_id`. A repeated id replaces the
-    /// previous entry, which can only happen if the frontend reused one.
-    fn open(state: &DesktopState, stream_id: &str) -> Result<Self, CommandError> {
-        let stream_id = parse_uuid(stream_id)?;
-        let signal = StopSignal::new();
-        let registry = state.chat_stops.clone();
-        lock_stops(&registry).insert(stream_id, signal.clone());
-        Ok(Self {
-            registry,
-            stream_id,
-            signal,
-        })
-    }
-}
-
-impl Drop for StopRegistration {
-    fn drop(&mut self) {
-        let mut registry = lock_stops(&self.registry);
-        // Only ever retire this turn's own signal — a reused id would
-        // otherwise let a finishing turn deregister a running one.
-        if registry
-            .get(&self.stream_id)
-            .is_some_and(|current| current.is_same(&self.signal))
-        {
-            registry.remove(&self.stream_id);
-        }
-    }
-}
-
-/// End an in-flight streamed chat turn early, keeping whatever text arrived.
-///
-/// A `stream_id` with no live turn behind it is not an error: the reply may
-/// have completed between the click and this call.
-#[tauri::command]
-#[specta::specta]
-pub fn stop_chat_stream(state: State<'_, DesktopState>, stream_id: String) -> Result<(), String> {
-    super::flatten(
-        "stop_chat_stream",
-        parse_uuid(&stream_id).map(|id| match lock_stops(&state.chat_stops).get(&id) {
-            Some(signal) => {
-                signal.stop();
-                tracing::info!(stream_id = %id, "stopping chat stream");
-            }
-            None => tracing::debug!(stream_id = %id, "no chat stream to stop"),
-        }),
-    )
 }
 
 /// Response from an infrastructure chat turn. Infra chat does not persist

@@ -565,6 +565,7 @@ describe("Writing", () => {
       "model-1",
       "Review my edits",
       [],
+      expect.any(String),
       expect.any(Function)
     );
   });
@@ -597,6 +598,7 @@ describe("Writing", () => {
       0,
       "model-1",
       "Use a concise clinical style",
+      expect.any(String),
       expect.any(Function)
     );
     expect(await screen.findByText("Generated complete report")).toBeDefined();
@@ -706,6 +708,7 @@ describe("Writing", () => {
       "model-1",
       "Shorten this",
       [{ section_id: SECTION_ID, block_index: 0 }],
+      expect.any(String),
       expect.any(Function)
     );
   });
@@ -748,6 +751,7 @@ describe("Writing", () => {
       "model-1",
       "Update this score table",
       [{ section_id: SECTION_ID, block_index: 0 }],
+      expect.any(String),
       expect.any(Function)
     );
   });
@@ -763,6 +767,7 @@ describe("Writing", () => {
         _modelId: string,
         _instruction: string,
         _references: unknown[],
+        _streamId: string,
         onProgress: (value: unknown) => void
       ) => {
         progress = onProgress;
@@ -801,6 +806,7 @@ describe("Writing", () => {
         _modelId: string,
         _instruction: string,
         _references: unknown[],
+        _streamId: string,
         onProgress: (progress: unknown) => void
       ) => {
         onProgress({

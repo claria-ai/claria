@@ -565,12 +565,18 @@ export async function discardReportTemplatePreview(
   unwrap(await commands.discardReportTemplatePreview(importId));
 }
 
+/**
+ * Fill the whole report from every readable record. `streamId` is minted by
+ * the caller before invoking, so the run can be stopped mid-generation with
+ * {@link stopStream}; a stopped run keeps every section it had already saved.
+ */
 export async function generateFullReport(
   clientId: string,
   reportId: string,
   expectedRevision: number,
   modelId: string,
   guidance: string,
+  streamId: string,
   onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<FullReportGenerationResponse> {
   const channel = new Channel<ReportTurnProgressView>();
@@ -582,6 +588,7 @@ export async function generateFullReport(
       expectedRevision,
       modelId,
       guidance,
+      streamId,
       channel
     )
   );
@@ -620,13 +627,19 @@ export async function abandonDraftRun(
   return unwrap(await commands.abandonDraftRun(clientId, reportId, runId));
 }
 
+/**
+ * One targeted writer turn. `streamId` is minted by the caller before
+ * invoking, so the turn can be stopped with {@link stopStream}; a stopped
+ * turn changes nothing.
+ */
 export async function sendReportMessage(
   clientId: string,
   reportId: string,
   expectedRevision: number,
   modelId: string,
   instruction: string,
-  references: ReportBlockReferenceInput[] = [],
+  references: ReportBlockReferenceInput[],
+  streamId: string,
   onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<ReportTurnResponse> {
   const channel = new Channel<ReportTurnProgressView>();
@@ -639,6 +652,7 @@ export async function sendReportMessage(
       modelId,
       instruction,
       references,
+      streamId,
       channel
     )
   );
@@ -771,13 +785,17 @@ export async function infraChat(
 }
 
 /**
- * End the in-flight turn identified by `streamId`. Whatever text already
- * arrived is kept, and the command that is streaming it returns normally
- * with a `stopped_by_user` stop reason. Safe to call for a turn that has
- * already finished.
+ * End the in-flight stream identified by `streamId`: a chat reply, a writer
+ * turn, or a whole-report drafting run.
+ *
+ * What stopping keeps depends on what was running. A chat turn keeps whatever
+ * text arrived and returns normally with a `stopped_by_user` stop reason; a
+ * drafting run keeps every section it had already saved and comes back as a
+ * stopped run to pick back up. Safe to call for work that has already
+ * finished.
  */
-export async function stopChatStream(streamId: string): Promise<void> {
-  unwrap(await commands.stopChatStream(streamId));
+export async function stopStream(streamId: string): Promise<void> {
+  unwrap(await commands.stopStream(streamId));
 }
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {

@@ -363,6 +363,7 @@ export function useReportWorkspace({
           modelId,
           instruction,
           references,
+          randomUuid(),
           (progress) => {
             if (generation === generationRef.current) handleAgentProgress(progress);
           }
@@ -422,6 +423,7 @@ export function useReportWorkspace({
           current.draft.revision,
           modelId,
           guidance,
+          randomUuid(),
           (progress) => {
             if (generation === generationRef.current) handleAgentProgress(progress);
           }

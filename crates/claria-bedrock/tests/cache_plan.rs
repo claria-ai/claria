@@ -3,7 +3,7 @@
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_bedrock::{
-    converse::CachePlan,
+    converse::{CachePlan, StopSignal},
     error::BedrockError,
     report::{ReportInputBudget, converse_report_with_tool_limit},
 };
@@ -148,6 +148,7 @@ async fn an_after_block_coordinate_places_the_point_mid_message() {
         &mut ReportInputBudget::new(MODEL_ID),
         claria_bedrock::converse::ModelTuning::default(),
         plan,
+        &StopSignal::new(),
     )
     .await
     .expect("converse");
@@ -194,6 +195,7 @@ async fn a_coordinate_outside_the_conversation_is_an_error() {
         &mut ReportInputBudget::new(MODEL_ID),
         claria_bedrock::converse::ModelTuning::default(),
         plan,
+        &StopSignal::new(),
     )
     .await
     .expect_err("out-of-range coordinate");

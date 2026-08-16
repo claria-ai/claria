@@ -9,7 +9,7 @@ import { ChatModelsContext, type ChatModelsState } from "../lib/chatModels";
 import type { ChatMessage, TurnUsage } from "../lib/tauri";
 import ChatWidget, { type SendResult } from "./ChatWidget";
 
-const stopChatStream = vi.fn<(streamId: string) => Promise<void>>(
+const stopStream = vi.fn<(streamId: string) => Promise<void>>(
   async () => {}
 );
 
@@ -19,7 +19,7 @@ vi.mock("../lib/tauri", async (importOriginal) => {
     ...actual,
     lookupModelPricing: vi.fn(async () => null),
     acceptModelAgreement: vi.fn(async () => undefined),
-    stopChatStream: (streamId: string) => stopChatStream(streamId),
+    stopStream: (streamId: string) => stopStream(streamId),
   };
 });
 
@@ -145,7 +145,7 @@ describe("ChatWidget", () => {
     );
 
     await userEvent.click(screen.getByRole("button", { name: /Stop/ }));
-    expect(stopChatStream).toHaveBeenCalledWith(turnId);
+    expect(stopStream).toHaveBeenCalledWith(turnId);
     expect(turnId).not.toBe("");
 
     // The backend still returns the partial reply, and the button goes quiet.

@@ -596,9 +596,9 @@ async discardReportTemplatePreview(importId: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
-async generateFullReport(clientId: string, reportId: string, expectedRevision: number, modelId: string, guidance: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+async generateFullReport(clientId: string, reportId: string, expectedRevision: number, modelId: string, guidance: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("generate_full_report", { clientId, reportId, expectedRevision, modelId, guidance, onProgress }) };
+    return { status: "ok", data: await TAURI_INVOKE("generate_full_report", { clientId, reportId, expectedRevision, modelId, guidance, streamId, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -640,9 +640,9 @@ async abandonDraftRun(clientId: string, reportId: string, runId: string) : Promi
     else return { status: "error", error: e  as any };
 }
 },
-async sendReportMessage(clientId: string, reportId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
+async sendReportMessage(clientId: string, reportId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, reportId, expectedRevision, modelId, instruction, references, onProgress }) };
+    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, reportId, expectedRevision, modelId, instruction, references, streamId, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1264,14 +1264,19 @@ async logFrontendEvent(level: FrontendLogLevel, message: string) : Promise<void>
     await TAURI_INVOKE("log_frontend_event", { level, message });
 },
 /**
- * End an in-flight streamed chat turn early, keeping whatever text arrived.
+ * End an in-flight streamed turn early: a chat reply, a writer turn, or a
+ * whole-report drafting run.
  * 
- * A `stream_id` with no live turn behind it is not an error: the reply may
+ * What stopping costs is the caller's business, not this command's — chat
+ * keeps the text that arrived, and a drafting run keeps every section it had
+ * already saved.
+ * 
+ * A `stream_id` with no live stream behind it is not an error: the work may
  * have completed between the click and this call.
  */
-async stopChatStream(streamId: string) : Promise<Result<null, string>> {
+async stopStream(streamId: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("stop_chat_stream", { streamId }) };
+    return { status: "ok", data: await TAURI_INVOKE("stop_stream", { streamId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

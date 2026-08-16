@@ -18,7 +18,9 @@ use. It has two modes that share one loop:
   A live run owns its Writing session: hand edits, template applies,
   reverts, and further writer turns are refused until it finishes or fails.
   It fails open — a failed run releases the session immediately and its
-  drafted sections stay readable for a resume.
+  drafted sections stay readable for a resume. A run the user **stops** is
+  the exception: it keeps the session, because it is the state the report is
+  picked back up from.
 
 Crates: `claria-report-pipeline` owns the turn loop, budgets, and prompt
 composition; `claria-report-store` owns everything durable — workspaces and
@@ -114,6 +116,39 @@ flowchart TD
     ACC -- no --> I
     REVN --> E
 ```
+
+## Stopping
+
+The writer shares chat's stop machinery — one registry, one `stop_stream`
+command, the same `select!` on the signal beside the next frame
+(`design/chat-streaming.md`). What differs is what a stop keeps.
+
+Chat keeps the half-answer it streamed. The writer throws a partially
+streamed response away **whole**: the frames in flight may be assembling a
+tool call whose input JSON is still arriving, and half a
+`write_full_draft_section` is not a section. Discarding it costs nothing,
+because a call that does not complete commits nothing — the conversation
+only ever grows by whole messages.
+
+What survives a stop is what was already durable:
+
+- **A drafting run** parks as `Stopped`, with every section it had landed
+  still in the run object and the workspace still pointing at it. No
+  revision is cut. The user resumes it, finalizes what it wrote, or
+  discards it. The stop is checked twice between rounds — after a tool
+  batch is executed and again before the next call is issued — so a stop
+  pressed while a section is being written to S3 keeps that section and
+  does not open one more billed conversation.
+- **A targeted turn** keeps nothing, which is the whole of its state: it
+  saves only at the end, so a stopped turn is a clean abort.
+
+Once `finish_full_draft` has succeeded the run is past its cut, and a stop
+becomes a no-op for the rest of the turn. All that remains is one closing
+call and the revision it authorizes; honouring a stop there would throw
+away a draft the writer had finished.
+
+Either way the attempt records a `stopped` receipt, so the tokens a stopped
+turn spent stay traceable.
 
 ## Why you see 10+ tool calls when starting a new file
 

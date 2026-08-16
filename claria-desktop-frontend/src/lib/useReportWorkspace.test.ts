@@ -112,6 +112,7 @@ describe("useReportWorkspace progress handling", () => {
         _revision: number,
         _modelId: string,
         _guidance: string,
+        _streamId: string,
         onProgress?: (progress: ReportTurnProgressView) => void
       ): Promise<FullReportGenerationResponse> => {
         emit = onProgress;

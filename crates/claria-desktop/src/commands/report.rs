@@ -8,9 +8,12 @@ pub use claria_desktop::report_authoring::{
     ReportTurnResponse, ReportWorkspaceView, TemplateExportWarning,
 };
 
-use claria_core::models::report::{ReportDraft, ReportExportStatus};
+use claria_core::models::{
+    report::{ReportDraft, ReportExportStatus},
+    report_run::RunSectionState,
+};
 
-use super::{CommandContext, parse_uuid, run, usage_audit_details};
+use super::{CommandContext, parse_uuid, run, streams::StopRegistration, usage_audit_details};
 use crate::state::DesktopState;
 
 /// Overlay `extra`'s fields onto the shared usage details object.
@@ -315,6 +318,9 @@ pub async fn discard_queued_report_edits(
 
 #[tauri::command]
 #[specta::specta]
+// Tauri command parameters are the typed IPC contract; report identity, the
+// stop handle, and the progress channel take this one past clippy's ceiling.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_full_report(
     state: State<'_, DesktopState>,
     client_id: String,
@@ -322,10 +328,12 @@ pub async fn generate_full_report(
     expected_revision: u64,
     model_id: String,
     guidance: String,
+    stream_id: String,
     on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
 ) -> Result<FullReportGenerationResponse, String> {
     run("generate_full_report", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let limits = ctx.cfg.report_authoring.limits()?;
@@ -354,7 +362,8 @@ pub async fn generate_full_report(
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
                 .with_system_prompt_body(&prompt_body)
-                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id))
+                .with_stop(&stop.signal),
         )
         .await;
 
@@ -417,6 +426,7 @@ pub async fn generate_full_report(
                     || report_id.to_string(),
                     |value| value.report_id.to_string(),
                 );
+                let stopped = error.is_stopped();
                 let mut audit_details = usage_audit_details(
                     &model_id,
                     attempt.as_ref().map(|value| &value.usage),
@@ -425,7 +435,7 @@ pub async fn generate_full_report(
                 merge_details(
                     &mut audit_details,
                     serde_json::json!({
-                        "status": "failed",
+                        "status": if stopped { "stopped" } else { "failed" },
                         "client_id": client_id.to_string(),
                         "report_id": attempt.as_ref().map_or_else(
                             || report_id.to_string(),
@@ -438,8 +448,18 @@ pub async fn generate_full_report(
                         "usage_complete": attempt.as_ref().is_some_and(|value| value.usage_complete),
                     }),
                 );
+                let action = if stopped {
+                    merge_details(
+                        &mut audit_details,
+                        stopped_run_details(&ctx, client_id, report_id, error.stopped_run_id())
+                            .await,
+                    );
+                    "draft_run_stopped"
+                } else {
+                    "report_full_draft_failed"
+                };
                 ctx.record_audit(
-                    ctx.audit_event("report_full_draft_failed", "report", resource_id)
+                    ctx.audit_event(action, "report", resource_id)
                         .with_details(audit_details),
                 )
                 .await;
@@ -448,6 +468,51 @@ pub async fn generate_full_report(
         }
     })
     .await
+}
+
+/// What a stopped drafting run had landed when the Stop arrived, read back
+/// from the run object that is now the report's resumable state.
+///
+/// Counts and UUIDs only — never a heading or a line of the draft. A run that
+/// cannot be read still produces an audit event: the stop itself is the fact
+/// worth recording, and its counts are the detail.
+async fn stopped_run_details(
+    ctx: &CommandContext,
+    client_id: uuid::Uuid,
+    report_id: uuid::Uuid,
+    run_id: Option<uuid::Uuid>,
+) -> serde_json::Value {
+    let run = match claria_report_pipeline::load_resumable_draft_run(
+        &ctx.s3,
+        &ctx.bucket,
+        client_id,
+        report_id,
+    )
+    .await
+    {
+        Ok(run) => run,
+        Err(error) => {
+            tracing::warn!(
+                report_id = %report_id,
+                error = %error,
+                "could not read the stopped drafting run for its audit event"
+            );
+            None
+        }
+    };
+    let count = |state: RunSectionState| {
+        run.as_ref().map_or(0, |run| {
+            run.sections
+                .iter()
+                .filter(|section| section.state == state)
+                .count()
+        })
+    };
+    serde_json::json!({
+        "run_id": run_id.map(|run_id| run_id.to_string()),
+        "drafted_section_count": count(RunSectionState::Drafted),
+        "pending_section_count": count(RunSectionState::Pending),
+    })
 }
 
 #[tauri::command]
@@ -463,10 +528,12 @@ pub async fn send_report_message(
     model_id: String,
     instruction: String,
     references: Vec<ReportBlockReferenceInput>,
+    stream_id: String,
     on_progress: tauri::ipc::Channel<ReportTurnProgressView>,
 ) -> Result<ReportTurnResponse, String> {
     run("send_report_message", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let references = references
@@ -493,7 +560,8 @@ pub async fn send_report_message(
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
                 .with_system_prompt_body(&prompt_body)
-                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id)),
+                .with_model_tuning(super::model_tuning_for(&ctx.cfg, &model_id))
+                .with_stop(&stop.signal),
         )
         .await;
 
@@ -543,10 +611,11 @@ pub async fn send_report_message(
                     attempt.as_ref().map(|value| &value.usage),
                     None,
                 );
+                let stopped = error.is_stopped();
                 merge_details(
                     &mut audit_details,
                     serde_json::json!({
-                        "status": "failed",
+                        "status": if stopped { "stopped" } else { "failed" },
                         "client_id": client_id.to_string(),
                         "report_id": attempt.as_ref().map_or_else(
                             || report_id.to_string(),
@@ -559,8 +628,15 @@ pub async fn send_report_message(
                         "usage_complete": attempt.as_ref().is_some_and(|value| value.usage_complete),
                     }),
                 );
+                // A stopped turn changed nothing, but it did spend tokens —
+                // the receipt is what keeps that spend traceable.
+                let action = if stopped {
+                    "report_tool_turn_stopped"
+                } else {
+                    "report_tool_turn_failed"
+                };
                 ctx.record_audit(
-                    ctx.audit_event("report_tool_turn_failed", "report", resource_id)
+                    ctx.audit_event(action, "report", resource_id)
                         .with_details(audit_details),
                 )
                 .await;

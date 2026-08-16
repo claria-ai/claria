@@ -168,6 +168,33 @@ pub(crate) async fn release_failed_run(
     }
 }
 
+/// Park a run the reader stopped, leaving it exactly where they stopped it.
+///
+/// The one difference from [`release_failed_run`] is the one that matters:
+/// the workspace keeps pointing at this run. A stopped run is the resumable
+/// state the writing surface hydrates from, and the guards that refuse
+/// competing edits while a run is active are what stop the report moving out
+/// from under the sections it already wrote. Resuming, finalizing from what
+/// it landed, or abandoning it are the three ways the pointer is released.
+///
+/// Sections that landed need no write of their own — each was made durable
+/// before the model was told it had succeeded.
+pub(crate) async fn park_stopped_run(s3: &S3Client, bucket: &str, run: &mut LoadedRun) {
+    let now = jiff::Timestamp::now();
+    run.run.demote_interrupted_sections(now);
+    run.run.status = DraftRunStatus::Stopped;
+    if let Err(error) = save_draft_run(s3, bucket, run).await {
+        // The reader's Stop already took effect — the model is no longer
+        // running. Losing the status stamp costs the run its "resumable"
+        // label, which the next load heals from the workspace pointer.
+        tracing::warn!(
+            run_id = %run.run.run_id,
+            error = %error,
+            "could not stamp the stopped drafting run"
+        );
+    }
+}
+
 /// Re-read the workspace and, if it still points at `run_id`, release it.
 /// Returns the workspace as it now stands either way.
 async fn clear_active_run(
