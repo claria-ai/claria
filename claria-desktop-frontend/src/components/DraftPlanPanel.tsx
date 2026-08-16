@@ -325,6 +325,11 @@ function phaseLine(
       : `Stopped — ${runState.drafted} of ${total} sections drafted and saved`;
   }
   if (runState.total === null) {
+    // A retry outranks the row count: the count has stopped moving, and
+    // saying why is more use than repeating the number it stopped on.
+    if (runState.retrying) {
+      return `Reconnecting to Claude — attempt ${runState.retrying.attempt} of ${runState.retrying.maxAttempts}`;
+    }
     return runState.planTotal === null
       ? "Planning the report…"
       : `Planning — ${runState.planned} of ${runState.planTotal} sections decided`;

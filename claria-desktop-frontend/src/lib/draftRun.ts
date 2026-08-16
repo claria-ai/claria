@@ -62,6 +62,21 @@ export type DraftRunUiState = {
   planned: number;
   /** `null` until the planning pass says how many sections it is planning. */
   planTotal: number | null;
+  /**
+   * The call the backend is waiting to re-send, or `null` when nothing is
+   * being retried. A retried call is re-sent under the same call number, so
+   * without this the reader watches a frozen line for the whole backoff and
+   * cannot tell a retry from a stall.
+   *
+   * Cleared by the next call, plan, or section event: whatever the retry was
+   * waiting for has landed by then, and a banner nobody retires is worse
+   * than no banner at all.
+   */
+  retrying: {
+    callNumber: number;
+    attempt: number;
+    maxAttempts: number;
+  } | null;
 };
 
 const NO_SECTIONS: ReadonlyMap<string, SectionUiState> = new Map();
@@ -79,6 +94,7 @@ const EMPTY: DraftRunUiState = {
   reviewTotal: null,
   planned: 0,
   planTotal: null,
+  retrying: null,
 };
 
 /** The state of a report with no drafting run anywhere near it. */
@@ -142,6 +158,7 @@ export function runStateFromDraftRun(run: DraftRun): DraftRunUiState {
     reviewTotal: null,
     planned: 0,
     planTotal: null,
+    retrying: null,
   };
 }
 
@@ -158,6 +175,22 @@ export function reduceDraftRun(
   event: ReportTurnProgressView
 ): DraftRunUiState {
   switch (event.kind) {
+    // The one thing the reader cannot otherwise see: a retried call is
+    // re-sent under the same call number, so the retry has to announce
+    // itself or the wait looks like a stall.
+    case "model_call_retrying":
+      return {
+        ...state,
+        retrying: {
+          callNumber: event.call_number,
+          attempt: event.attempt,
+          maxAttempts: event.max_attempts,
+        },
+      };
+    // A call is on the wire again — the re-sent one, or the next one. Either
+    // way the wait the banner described is over.
+    case "model_call_started":
+      return clearRetrying(state);
     // Planning never touches `live` or the section ledger, for the same
     // reason a review pass does not: it decides what to write and writes
     // nothing. The pass that started it is what put the run on screen.
@@ -237,8 +270,8 @@ export function reduceDraftRun(
         event.total
       );
     default:
-      // The legacy record-context, model-call, and tool events belong to the
-      // qualitative activity line, not to the run's section ledger.
+      // The legacy record-context and tool events belong to the qualitative
+      // activity line, not to the run's section ledger.
       return state;
   }
 }
@@ -280,6 +313,15 @@ function highest(current: number | null, incoming: number): number {
 }
 
 /**
+ * Any event that is not itself a retry means the retry it followed is over.
+ * Returns the input untouched when nothing was being retried, so the
+ * memoized panes keep their identity on the common path.
+ */
+function clearRetrying(state: DraftRunUiState): DraftRunUiState {
+  return state.retrying === null ? state : { ...state, retrying: null };
+}
+
+/**
  * Branches finish out of order, so `completed` is the branch's own position
  * and the highest one wins. A round that moves nothing returns the same
  * object, so the memoized pane does not re-render on a redelivered event.
@@ -290,10 +332,19 @@ function commitReview(
   total: number
 ): DraftRunUiState {
   const reviewTotal = highest(state.reviewTotal, total);
-  if (state.reviewCompleted === completed && state.reviewTotal === reviewTotal) {
+  if (
+    state.reviewCompleted === completed &&
+    state.reviewTotal === reviewTotal &&
+    state.retrying === null
+  ) {
     return state;
   }
-  return { ...state, reviewCompleted: completed, reviewTotal };
+  return {
+    ...state,
+    reviewCompleted: completed,
+    reviewTotal,
+    retrying: null,
+  };
 }
 
 /**
@@ -306,8 +357,14 @@ function commitPlanned(
   total: number
 ): DraftRunUiState {
   const planTotal = highest(state.planTotal, total);
-  if (state.planned === planned && state.planTotal === planTotal) return state;
-  return { ...state, planned, planTotal };
+  if (
+    state.planned === planned &&
+    state.planTotal === planTotal &&
+    state.retrying === null
+  ) {
+    return state;
+  }
+  return { ...state, planned, planTotal, retrying: null };
 }
 
 function commit(
@@ -331,6 +388,7 @@ function commit(
     state.total === fields.total &&
     state.drafted === fields.drafted &&
     state.title === fields.title &&
+    state.retrying === null &&
     !sectionChanged
   ) {
     return state;
@@ -351,6 +409,7 @@ function commit(
     drafted: fields.drafted,
     title: fields.title,
     sections,
+    retrying: null,
   };
 }
 

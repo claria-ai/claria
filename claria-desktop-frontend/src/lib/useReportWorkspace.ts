@@ -614,9 +614,21 @@ export function useReportWorkspace({
     }
 
     if (progress.kind === "model_call_started") {
+      // Also through the reducer: a call on the wire is what retires a
+      // retry line the run state is still holding.
+      dispatchRun({ kind: "progress", event: progress });
       setAgentActivity({
         label: modelActivityLabel(progress.call_number),
         detail: `Model call ${progress.call_number}`,
+      });
+      return;
+    }
+
+    if (progress.kind === "model_call_retrying") {
+      dispatchRun({ kind: "progress", event: progress });
+      setAgentActivity({
+        label: "Reconnecting to Claude",
+        detail: `Retrying model call ${progress.call_number} (attempt ${progress.attempt} of ${progress.max_attempts})`,
       });
       return;
     }

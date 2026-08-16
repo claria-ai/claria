@@ -32,7 +32,7 @@ use claria_bedrock::{
     },
     converse::StopSignal,
     error::BedrockError,
-    retry::with_throttle_retry,
+    retry::{MAX_ATTEMPTS, with_throttle_retry_observed},
 };
 use claria_core::models::{
     report::{
@@ -720,40 +720,51 @@ async fn run_analysis_call<T>(
     let mut rejection: Option<String> = None;
     for round in 0..=PLAN_REPAIR_ROUNDS {
         converse_calls = converse_calls.saturating_add(1);
-        request.emit_progress(ReportTurnProgress::ModelCallStarted {
-            call_number: converse_calls,
-        });
-        let output: StructuredCallOutput = with_throttle_retry("report_plan", || {
-            let messages = &messages;
-            let tools = &tools;
-            let cache_plan = &cache_plan;
-            let budget = &budget;
-            let count_row = &count_row;
-            if let Ok(mut counter) = counter.lock() {
-                counter.restart();
-            }
-            async move {
-                analysis::converse_structured(
-                    sdk_config,
-                    StructuredCallRequest {
-                        model_id: planner_model_id,
-                        system,
-                        messages,
-                        tools,
-                        forced_tool,
-                        max_tokens: PLAN_OUTPUT_TOKEN_RESERVE,
-                        cache_plan: cache_plan.clone(),
-                        stop,
-                        on_partial_tool_input: Some(count_row),
-                        operation: "report_plan",
-                    },
-                    &mut *budget.lock().await,
-                )
-                .await
-            }
-        })
-        .await
-        .map_err(|error| map_bedrock_error(error, PLANNER_LABELS))?;
+        let call_number = converse_calls;
+        let on_retry = |attempt, delay| {
+            request.emit_progress(ReportTurnProgress::retrying(
+                call_number,
+                attempt,
+                MAX_ATTEMPTS,
+                delay,
+            ));
+        };
+        let output: StructuredCallOutput =
+            with_throttle_retry_observed("report_plan", Some(&on_retry), || {
+                let messages = &messages;
+                let tools = &tools;
+                let cache_plan = &cache_plan;
+                let budget = &budget;
+                let count_row = &count_row;
+                if let Ok(mut counter) = counter.lock() {
+                    counter.restart();
+                }
+                // Announced per attempt rather than per round: a re-sent
+                // request is a new stream whose row count starts over, and
+                // saying it started is what retires the retry line.
+                request.emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
+                async move {
+                    analysis::converse_structured(
+                        sdk_config,
+                        StructuredCallRequest {
+                            model_id: planner_model_id,
+                            system,
+                            messages,
+                            tools,
+                            forced_tool,
+                            max_tokens: PLAN_OUTPUT_TOKEN_RESERVE,
+                            cache_plan: cache_plan.clone(),
+                            stop,
+                            on_partial_tool_input: Some(count_row),
+                            operation: "report_plan",
+                        },
+                        &mut *budget.lock().await,
+                    )
+                    .await
+                }
+            })
+            .await
+            .map_err(|error| map_bedrock_error(error, PLANNER_LABELS))?;
         usage = merge_optional_usage(usage, output.usage.clone());
 
         match validate(&output.input) {

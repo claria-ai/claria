@@ -788,6 +788,109 @@ async fn planning_retries_a_dropped_stream_and_completes() {
     );
 }
 
+/// Attempts the AWS SDK spends on one request before the error it has been
+/// swallowing reaches the pipeline. A severed body fails while the operation
+/// is still resolving, so the SDK's standard dispatch policy — not the
+/// pipeline's wrapper — sees it first.
+const SDK_DISPATCH_ATTEMPTS: u32 = 3;
+
+/// A retry is invisible from the outside — the identical request goes out
+/// under the same call number — so the pass says it is happening. The reader
+/// gets the attempt about to be made, and the re-sent call announces itself
+/// again, which is what lets the surface retire the line.
+#[tokio::test]
+async fn a_retried_planner_call_reports_the_attempt_it_is_about_to_make() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    // Enough drops to spend the AWS SDK's own dispatch retries, so the
+    // failure reaches the pipeline's wrapper instead of being absorbed
+    // underneath it. Each severed request consumes a scripted payload.
+    server.state.write().await.bedrock_stream_drops = SDK_DISPATCH_ATTEMPTS;
+
+    let plan = || {
+        section_plan(vec![
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "State the referral question.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(BACKGROUND_ID, "draft", "Summarize history.", None),
+            plan_row(SUMMARY_ID, "skip", "No testing data is present yet.", None),
+        ])
+    };
+    script(
+        &server,
+        (0..=SDK_DISPATCH_ATTEMPTS).map(|_| plan()).collect(),
+    )
+    .await;
+
+    let progress = std::sync::Mutex::new(Vec::new());
+    let emit_progress = |event| progress.lock().expect("progress lock").push(event);
+    let outcome = pipeline::generate_draft_plan(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        models(),
+        pipeline::DraftPlanRequest::new("Lead with the referral question.")
+            .with_progress(&emit_progress),
+    )
+    .await
+    .expect("the retried plan lands");
+
+    assert_eq!(outcome.run.status, DraftRunStatus::AwaitingApproval);
+    let events = progress.into_inner().expect("progress values");
+    let retry = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                pipeline::ReportTurnProgress::ModelCallRetrying {
+                    call_number: 1,
+                    attempt: 2,
+                    ..
+                }
+            )
+        })
+        .expect("the severed attempt is reported as a retry");
+    assert!(
+        matches!(
+            events[retry],
+            pipeline::ReportTurnProgress::ModelCallRetrying {
+                max_attempts,
+                delay_ms,
+                ..
+            } if max_attempts == claria_bedrock::retry::MAX_ATTEMPTS && delay_ms > 0
+        ),
+        "the retry does not say what it is counting towards or how long it waits"
+    );
+    // The re-sent request announces itself, so the reader's retry line has
+    // something to retire it.
+    assert!(
+        events[retry + 1..].iter().any(|event| matches!(
+            event,
+            pipeline::ReportTurnProgress::ModelCallStarted { call_number: 1 }
+        )),
+        "the re-sent call never said it started"
+    );
+    // One retry, not one per repair round: the plan validated first time.
+    assert_eq!(outcome.converse_calls, 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                pipeline::ReportTurnProgress::ModelCallRetrying { .. }
+            ))
+            .count(),
+        1
+    );
+}
+
 /// When every attempt is severed the pass fails on the transport, and says
 /// so: a planner that answered nothing is not a planner that wrote a bad
 /// plan, and the two failures have different fixes.

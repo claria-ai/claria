@@ -63,6 +63,22 @@ pub enum ReportTurnProgress {
     ModelCallStarted {
         call_number: u32,
     },
+    /// The call named by the last `ModelCallStarted` never landed, and the
+    /// identical request is about to go out again after `delay_ms`.
+    ///
+    /// A retried call is otherwise invisible: it is re-sent inside the same
+    /// call number, so from the outside a reader watching a stalled stream
+    /// and a reader watching a retry see the same frozen line. `attempt` is
+    /// the attempt about to be made — 2 for the first retry — counted
+    /// against `max_attempts`, which differs between the throttle wrapper
+    /// and the stream-interruption loop and so rides on the event rather
+    /// than being a constant the reader has to know.
+    ModelCallRetrying {
+        call_number: u32,
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+    },
     ToolStarted {
         name: String,
         context: Option<String>,
@@ -150,6 +166,28 @@ pub enum ReportTurnProgress {
         completed: u32,
         total: u32,
     },
+}
+
+impl ReportTurnProgress {
+    /// The retry event for a call about to be re-sent, built from what a
+    /// retry observer is handed.
+    ///
+    /// One constructor for every retry site so the "attempt about to be
+    /// made" convention and the millisecond conversion are stated once
+    /// rather than re-derived per flow.
+    pub(crate) fn retrying(
+        call_number: u32,
+        attempt: u32,
+        max_attempts: u32,
+        delay: std::time::Duration,
+    ) -> Self {
+        Self::ModelCallRetrying {
+            call_number,
+            attempt,
+            max_attempts,
+            delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
 }
 
 /// The signal a request with no Stop button behind it watches.
@@ -1153,7 +1191,6 @@ async fn run_turn(
             .into());
         }
         let call_number = progress.converse_calls.saturating_add(1);
-        request.emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
         // One Bedrock call, with bounded retries when its response stream
         // stalls or drops. A failed attempt commits nothing — `protocol`
         // still holds only completed messages — so re-sending the identical
@@ -1162,6 +1199,10 @@ async fn run_turn(
         let call_started = tokio::time::Instant::now();
         let mut interruptions = 0_u32;
         let output = loop {
+            // Announced per attempt, not per call: a re-sent request is a
+            // new stream, and saying so is what retires the retry line the
+            // interruption arm below put on screen.
+            request.emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
             let attempt = if request.is_full_draft() {
                 report::converse_full_report_with_tool_limit(
                     sdk_config,
@@ -1206,6 +1247,12 @@ async fn run_turn(
                         error = %error,
                         "Bedrock stream interrupted; retrying the call"
                     );
+                    request.emit_progress(ReportTurnProgress::retrying(
+                        call_number,
+                        interruptions.saturating_add(1),
+                        STREAM_INTERRUPTION_RETRIES.saturating_add(1),
+                        STREAM_INTERRUPTION_RETRY_DELAY,
+                    ));
                     tokio::time::sleep(STREAM_INTERRUPTION_RETRY_DELAY).await;
                 }
                 Err(error) => {

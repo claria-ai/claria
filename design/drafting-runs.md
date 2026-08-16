@@ -330,10 +330,20 @@ filenames, prompts, or document text: `draft_plan_generated`,
 
 Progress rides one `Channel<ReportTurnProgressView>` shared by the planning,
 drafting, and review phases: `record_context_prepared`, `model_call_started`,
-`tool_started`, `tool_finished`, `plan_row_planned`, and — for the fan-out —
-`review_pass_started` and `review_pass_completed`. The review events carry
-their own `index`/`completed` and `total`, so a dropped event cannot desync a
-progress bar.
+`model_call_retrying`, `tool_started`, `tool_finished`, `plan_row_planned`,
+and — for the fan-out — `review_pass_started` and `review_pass_completed`. The
+review events carry their own `index`/`completed` and `total`, so a dropped
+event cannot desync a progress bar.
+
+A retried Bedrock call is the one thing the reader cannot otherwise see: the
+identical request is re-sent under the same call number, so a throttle backoff
+and a stalled stream look the same from outside. `model_call_retrying` carries
+the call number, the attempt about to be made, the ceiling it counts towards,
+and the wait ahead of it; every retry site announces `model_call_started`
+again when the re-sent request goes out, which is what retires the line.
+`max_attempts` rides on the event because the two retry layers count
+differently — four for the throttle wrapper, three for the stream-interruption
+loop.
 
 A tool call is only executable once complete, so nothing the writer does
 streams below the call boundary. Planning is the one exception, and only for
