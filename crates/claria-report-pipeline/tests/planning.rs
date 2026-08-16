@@ -666,7 +666,7 @@ async fn planning_retries_a_dropped_stream_and_completes() {
                 REFERRAL_ID,
                 "draft",
                 "State the referral question.",
-                Some(REAL_QUOTE),
+                Some(INTAKE_FILE),
             ),
             plan_row(BACKGROUND_ID, "draft", "Summarize history.", None),
             plan_row(SUMMARY_ID, "skip", "No testing data is present yet.", None),
