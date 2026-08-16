@@ -666,6 +666,136 @@ async fn a_plan_that_fails_twice_fails_the_pass_and_releases_the_report() {
     assert_eq!(workspace.draft.revision, 1);
 }
 
+/// A severed planner stream is a transport failure, not a bad plan: the
+/// identical request goes out again and the pass completes. Before this the
+/// planner was the one Bedrock call in the pipeline with no retry at all, so
+/// a dropped connection failed a run that had already paid to read the
+/// corpus.
+#[tokio::test]
+async fn planning_retries_a_dropped_stream_and_completes() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    server.state.write().await.bedrock_stream_drops = 1;
+
+    let plan = || {
+        section_plan(vec![
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "State the referral question.",
+                Some(REAL_QUOTE),
+            ),
+            plan_row(BACKGROUND_ID, "draft", "Summarize history.", None),
+            plan_row(SUMMARY_ID, "skip", "No testing data is present yet.", None),
+        ])
+    };
+    // The severed attempt consumes its scripted payload; the retry gets the
+    // same plan back.
+    script(&server, vec![plan(), plan()]).await;
+
+    let outcome = pipeline::generate_draft_plan(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        models(),
+        pipeline::DraftPlanRequest::new("Lead with the referral question."),
+    )
+    .await
+    .expect("the retried plan lands");
+
+    assert_eq!(outcome.run.status, DraftRunStatus::AwaitingApproval);
+    // A retry is transport recovery, not a planner round.
+    assert_eq!(outcome.converse_calls, 1);
+    assert_eq!(outcome.run.plan.as_ref().expect("plan").entries.len(), 3);
+
+    let state = server.state.read().await;
+    assert_eq!(state.bedrock_stream_drops, 0, "the drop was consumed");
+    assert_eq!(
+        state.bedrock_stream_request_count, 2,
+        "the severed attempt plus the retry"
+    );
+    // The retry re-sent the same conversation the severed attempt carried.
+    assert_eq!(
+        state.bedrock_tool_requests[0]["messages"],
+        state.bedrock_tool_requests[1]["messages"]
+    );
+    // Count once: the verified count belongs to the request, so a re-sent
+    // request does not pay for a second CountTokens.
+    assert_eq!(
+        state.bedrock_count_token_requests.len(),
+        1,
+        "the retry re-counted the request it had already counted"
+    );
+}
+
+/// When every attempt is severed the pass fails on the transport, and says
+/// so: a planner that answered nothing is not a planner that wrote a bad
+/// plan, and the two failures have different fixes.
+#[tokio::test]
+async fn planning_exhausts_retries_with_an_actionable_error() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    // Over-provisioned on purpose: the AWS SDK's own dispatch-retry layer
+    // can add server requests beyond the retry wrapper's attempts, and each
+    // one consumes a drop and a scripted payload.
+    server.state.write().await.bedrock_stream_drops = 12;
+
+    let plan = section_plan(vec![plan_row(
+        REFERRAL_ID,
+        "draft",
+        "Never delivered.",
+        None,
+    )]);
+    script(&server, vec![plan; 12]).await;
+
+    let error = pipeline::generate_draft_plan(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        models(),
+        pipeline::DraftPlanRequest::new(""),
+    )
+    .await
+    .expect_err("a planner that never answers cannot produce a plan");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("got no response"),
+        "the failure does not name the transport as the cause: {message}"
+    );
+    assert!(
+        message.contains("Try again later"),
+        "the failure does not say what to do next: {message}"
+    );
+    assert!(
+        !message.contains("usable plan"),
+        "a severed connection was reported as a bad plan: {message}"
+    );
+
+    // Every attempt really went out, and the report is usable again.
+    let state = server.state.read().await;
+    assert!(
+        state.bedrock_stream_request_count >= 4,
+        "the planner gave up before exhausting its attempts: {}",
+        state.bedrock_stream_request_count
+    );
+    drop(state);
+    let run = only_run(&s3, client_id, report_id).await;
+    assert_eq!(run.status, DraftRunStatus::Failed);
+    let workspace = store::load_report_workspace_by_id(&s3, BUCKET, client_id, report_id)
+        .await
+        .expect("reload workspace");
+    assert_eq!(workspace.active_run_id, None);
+}
+
 #[tokio::test]
 async fn a_planned_run_drafts_the_plan_and_pre_skips_the_rest() {
     let (server, sdk, s3) = setup().await;

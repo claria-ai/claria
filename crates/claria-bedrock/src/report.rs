@@ -534,22 +534,24 @@ async fn converse_report_with_tool_set(
     // needs a whole message before it can execute tool calls — but the
     // connection carries frames throughout instead of idling.
     let started = std::time::Instant::now();
-    let response = client
-        .converse_stream()
-        .model_id(model_id)
-        .set_system(Some(system_blocks))
-        .set_messages(Some(converse_messages))
-        .tool_config(tools)
-        .inference_config(
-            InferenceConfiguration::builder()
-                .max_tokens(REPORT_OUTPUT_TOKEN_RESERVE as i32)
-                .set_temperature(tuning.temperature)
-                .build(),
-        )
-        .set_additional_model_request_fields(converse::additional_request_fields(tuning)?)
-        .send()
-        .await
-        .map_err(|error| converse::classify_error("report ConverseStream", error))?;
+    let response = converse::start_converse_stream(
+        "report ConverseStream",
+        client
+            .converse_stream()
+            .model_id(model_id)
+            .set_system(Some(system_blocks))
+            .set_messages(Some(converse_messages))
+            .tool_config(tools)
+            .inference_config(
+                InferenceConfiguration::builder()
+                    .max_tokens(REPORT_OUTPUT_TOKEN_RESERVE as i32)
+                    .set_temperature(tuning.temperature)
+                    .build(),
+            )
+            .set_additional_model_request_fields(converse::additional_request_fields(tuning)?)
+            .send(),
+    )
+    .await?;
 
     let mut stream = response.stream;
     let mut collector = ReportStreamCollector::default();

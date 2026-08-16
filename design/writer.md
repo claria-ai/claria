@@ -164,9 +164,10 @@ call is only executable once complete — but at a 32k output reserve a unary
 request would sit idle long enough to risk an HTTP timeout while the model
 generates, so the connection carries frames throughout instead.
 
-A round whose request never completes — the stream goes silent past the
-idle bound or drops mid-response, or the request never gets a response at
-all — is **retried up to twice** with the identical request. Nothing from a
+A round whose request never completes — the stream never starts, goes
+silent past the idle bound, or drops mid-response, or the request never
+gets a response at all — is **retried up to twice** with the identical
+request. Nothing from a
 failed attempt is committed, so the re-send is safe, and a quick retry
 re-reads the prompt cache the previous completed round wrote. When all
 three attempts go unanswered, the turn fails with the attempt count and how

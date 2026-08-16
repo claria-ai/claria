@@ -415,8 +415,20 @@ pub struct StreamOutcome {
     pub latency_ms: Option<u64>,
 }
 
-/// Longest silence tolerated between two frames of a Bedrock response
-/// stream before the connection is treated as dead.
+/// Longest wait for a `ConverseStream` to start answering before the
+/// request is treated as one the service never began.
+///
+/// Sized for the longest prefill a live call really has: a cross-region
+/// profile can miss the prompt cache and re-prefill the whole input cold,
+/// and a field failure showed that wait exceeding two minutes when the two
+/// waits below shared a single five-minute bound. Ninety seconds and a
+/// fresh request beat waiting out a five-minute silence, and a request that
+/// produced nothing is safe to send again verbatim.
+pub(crate) const STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(90);
+
+/// Longest silence tolerated between two frames of a response stream that
+/// has already started.
 ///
 /// The AWS SDK's stalled-stream protection does not cover this: the
 /// generated `ConverseStream` operation registers no
@@ -425,15 +437,10 @@ pub struct StreamOutcome {
 /// the wait for response headers — a `ConverseStream` whose socket dies
 /// mid-generation would otherwise hang forever.
 ///
-/// Sized for the quiet stretches a live stream really has: the wait for the
-/// first frame while a full context window prefills, and the gaps between
-/// reasoning deltas while the model thinks. The first-frame wait dominates —
-/// a cross-region profile can miss the prompt cache and re-prefill the whole
-/// input cold, and a field failure showed that wait exceeding the two
-/// minutes this was originally set to. Frames flow continuously once
-/// generation starts, so five silent minutes means the connection is gone,
-/// not that the model is busy.
-pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Frames flow continuously once generation starts — the gaps are the
+/// pauses between reasoning deltas, not minutes — so a silent minute
+/// mid-response means the connection is gone, not that the model is busy.
+pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Stop reason recorded for a turn the reader ended from the UI. Not a
 /// Bedrock value — the service never got to send one — so it is spelled
@@ -501,12 +508,53 @@ impl StopSignal {
     }
 }
 
+/// Send a `ConverseStream` request and wait for the service to start
+/// answering, bounded by [`STREAM_FIRST_FRAME_TIMEOUT`].
+///
+/// The first-frame wait belongs here rather than in the stream loop,
+/// because that is where the SDK spends it: the generated `send` resolves
+/// only once the first event frame has arrived, since it has to look at
+/// that frame to decide whether it is an `initial-response`. Nothing else
+/// bounds the wait — the read timeout is satisfied by the response headers,
+/// which arrive long before the first token — so a request the service
+/// accepted and never began otherwise hangs for as long as the socket
+/// stays open.
+///
+/// A request that produced no frame is one the model never started, so the
+/// failure says that instead of claiming a connection lost mid-response,
+/// and it is [`BedrockError::StreamInterrupted`] like the mid-stream case:
+/// nothing was generated, so re-sending it is safe.
+pub(crate) async fn start_converse_stream<T, E>(
+    operation: &'static str,
+    send: impl std::future::Future<Output = Result<T, SdkError<E>>>,
+) -> Result<T, BedrockError>
+where
+    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
+{
+    match tokio::time::timeout(STREAM_FIRST_FRAME_TIMEOUT, send).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(error)) => Err(classify_error(operation, error)),
+        Err(_elapsed) => {
+            let seconds = STREAM_FIRST_FRAME_TIMEOUT.as_secs();
+            tracing::error!(operation, seconds, "Bedrock never started responding");
+            Err(BedrockError::StreamInterrupted {
+                operation,
+                message: format!(
+                    "{operation} never started responding within {seconds} seconds and was \
+                     abandoned. The request was queued or the connection was lost before the \
+                     first token; nothing was generated."
+                ),
+            })
+        }
+    }
+}
+
 /// Receive the next frame of a Converse response stream, bounded by
 /// [`STREAM_IDLE_TIMEOUT`]. `Ok(None)` ends the stream.
 ///
-/// Shared by the chat and writer stream loops so their idle bound and their
-/// mid-stream error shape cannot drift. Mid-stream failures carry a raw
-/// event frame rather than an HTTP response, so the full
+/// Shared by the chat, analysis, and writer stream loops so their idle bound
+/// and their mid-stream error shape cannot drift. Mid-stream failures carry
+/// a raw event frame rather than an HTTP response, so the full
 /// [`DisplayErrorContext`] chain is preserved instead of collapsing to
 /// "unhandled error".
 pub(crate) async fn recv_stream_event(

@@ -32,6 +32,7 @@ use claria_bedrock::{
     },
     converse::StopSignal,
     error::BedrockError,
+    retry::with_throttle_retry,
 };
 use claria_core::models::{
     report::{
@@ -564,6 +565,11 @@ struct AnalysisOutcome<T> {
 /// record or draft text — so sending them back costs nothing and is the
 /// difference between a model that fixes one row and a model that re-guesses
 /// the whole plan.
+///
+/// A repair round is not the same thing as a retry. Rounds answer a plan the
+/// host refused; retries answer a call that never landed — a throttle, or a
+/// stream that stalled or was severed — and re-send the identical request
+/// without spending a round or a second `CountTokens`.
 async fn run_analysis_call<T>(
     sdk_config: &aws_config::SdkConfig,
     planner_model_id: &str,
@@ -580,8 +586,14 @@ async fn run_analysis_call<T>(
     let cache_plan = claria_bedrock::converse::CachePlan::analysis(
         claria_core::model_id::ModelCapabilities::for_id(planner_model_id),
     );
-    let mut budget =
-        AnalysisInputBudget::new(planner_model_id, "report_plan", PLAN_OUTPUT_TOKEN_RESERVE);
+    // Behind a lock so each retry attempt can re-borrow it: the verified
+    // count belongs to the request, not the attempt, so a re-sent request
+    // must not pay for a second `CountTokens`.
+    let budget = tokio::sync::Mutex::new(AnalysisInputBudget::new(
+        planner_model_id,
+        "report_plan",
+        PLAN_OUTPUT_TOKEN_RESERVE,
+    ));
     let mut messages = vec![ReportProtocolMessage {
         role: ReportProtocolRole::User,
         content: vec![ReportProtocolBlock::Text { text: instruction }],
@@ -596,21 +608,30 @@ async fn run_analysis_call<T>(
         request.emit_progress(ReportTurnProgress::ModelCallStarted {
             call_number: converse_calls,
         });
-        let output: StructuredCallOutput = analysis::converse_structured(
-            sdk_config,
-            StructuredCallRequest {
-                model_id: planner_model_id,
-                system,
-                messages: &messages,
-                tools: &tools,
-                forced_tool,
-                max_tokens: PLAN_OUTPUT_TOKEN_RESERVE,
-                cache_plan: cache_plan.clone(),
-                stop,
-                operation: "report_plan",
-            },
-            &mut budget,
-        )
+        let output: StructuredCallOutput = with_throttle_retry("report_plan", || {
+            let messages = &messages;
+            let tools = &tools;
+            let cache_plan = &cache_plan;
+            let budget = &budget;
+            async move {
+                analysis::converse_structured(
+                    sdk_config,
+                    StructuredCallRequest {
+                        model_id: planner_model_id,
+                        system,
+                        messages,
+                        tools,
+                        forced_tool,
+                        max_tokens: PLAN_OUTPUT_TOKEN_RESERVE,
+                        cache_plan: cache_plan.clone(),
+                        stop,
+                        operation: "report_plan",
+                    },
+                    &mut *budget.lock().await,
+                )
+                .await
+            }
+        })
         .await
         .map_err(map_bedrock_error)?;
         usage = merge_optional_usage(usage, output.usage.clone());
@@ -682,6 +703,15 @@ fn map_bedrock_error(error: BedrockError) -> ReportPipelineError {
         ),
         BedrockError::UnsupportedModel(_) => ReportPipelineError::InvalidInput(
             "The selected planning model is not verified for report tools. Choose a current Claude model in Preferences."
+                .to_string(),
+        ),
+        // Every attempt went out and none came back complete — the stream
+        // never started, went silent, or was severed, or the request got no
+        // response at all. The wait, not the request, is the actionable
+        // fact. Must precede the catch-all, which would otherwise report a
+        // service that answered nothing as one Claria could not reach.
+        _ if error.is_interrupted_before_completion() => ReportPipelineError::InvalidInput(
+            "Bedrock appears to be having a hard time: the planning call got no response, even after retries. Nothing was saved. Try again later."
                 .to_string(),
         ),
         _ => {
