@@ -88,6 +88,9 @@ All notable changes to Claria are documented here.
 - The plan pane announces each batch of sections as it is decided, and Stop is answered between them
 - The planner is no longer sent the template's prose, which it was already ordered to disregard
 - The planner is asked for four records per section instead of eight, with a shorter line on each
+- A command-line harness drives the writer end to end with no UI, printing every progress event with elapsed timings, the plan it produced, tokens, and cost
+- The harness refuses to start a run once its attempt allowance is spent, until a human raises it
+- The harness exports traces to an OpenTelemetry collector when one is configured; the desktop app exports nothing
 
 ## [0.28.0] — 2026-08-15
 
