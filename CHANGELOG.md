@@ -33,6 +33,9 @@ All notable changes to Claria are documented here.
 - A stop that arrives after a whole-report draft has been finished leaves the saved revision standing
 - Model download progress is announced to screen readers as a labelled progress bar
 - The writer's proposal diff is now built from shared primitives so other panes can render the same comparison
+- Skipped sections now show their template text greyed out in the preview and say they are left out of exports
+- Editing a skipped section takes an explicit Include this section button, which fills it with the template text
+- The export line counts how many skipped sections the accepted revision left out
 
 ## [0.28.0] — 2026-08-15
 

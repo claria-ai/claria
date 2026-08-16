@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, type ElementType } from "react";
+import { memo, useEffect, useMemo, useRef, type ElementType } from "react";
 import { InlineMarkdown, MarkdownBlock } from "./Markdown";
 import type {
   ReportBlock,
@@ -8,6 +8,7 @@ import type {
   ReportWorkspaceView,
 } from "../lib/tauri";
 import {
+  cloneBlock,
   moveItem,
   newReportSection,
   newReportTable,
@@ -95,6 +96,30 @@ function WritingCanvas({
     ? `${exportStatusLabel(workspace.last_export.status)} revision ${workspace.last_export.revision} · ${formatTimestamp(workspace.last_export.attempted_at)}`
     : null;
 
+  // Skipped sections never reach the .docx, so the export line says how many
+  // the accepted revision holds back.
+  const skippedSectionCount = workspace.draft.content.sections.filter(
+    (section) => section.skipped
+  ).length;
+  const skippedExportNote =
+    skippedSectionCount === 0
+      ? ""
+      : skippedSectionCount === 1
+        ? " · 1 skipped section was left out"
+        : ` · ${skippedSectionCount} skipped sections were left out`;
+
+  // The edit buffer carries no template copy, so the editor reads each
+  // section's immutable copy off the accepted draft by section ID.
+  const templateBlocksBySection = useMemo(() => {
+    const copies = new Map<string, ReportBlock[]>();
+    for (const section of workspace.draft.content.sections) {
+      if (section.template_blocks && section.template_blocks.length > 0) {
+        copies.set(section.id, section.template_blocks);
+      }
+    }
+    return copies;
+  }, [workspace.draft.content.sections]);
+
   return (
     <section
       aria-label="Accepted report draft"
@@ -177,7 +202,7 @@ function WritingCanvas({
         )}
         {(status || persistedExportStatus) && (
           <p role="status" aria-live="polite" className="text-xs text-gray-600">
-            {status ?? persistedExportStatus}
+            {`${status ?? persistedExportStatus}${skippedExportNote}`}
           </p>
         )}
       </div>
@@ -209,6 +234,7 @@ function WritingCanvas({
                 updateBlock={updateBlock}
                 removeBlock={removeBlock}
                 onReference={onReference}
+                templateBlocksBySection={templateBlocksBySection}
               />
             </>
           ) : (
@@ -254,77 +280,152 @@ export function ReportDocument({
                     <InlineMarkdown text={section.heading} />
                   </h2>
                   <p className="text-xs text-gray-400 italic">
-                    Deferred — not written yet. This section is left out of
-                    exports until content is written into it.
+                    Skipped — kept from the template for reference. Not included
+                    in the exported document.
                   </p>
+                  {section.template_blocks &&
+                    section.template_blocks.length > 0 && (
+                      <SkippedSectionBody
+                        blocks={section.template_blocks}
+                        sectionHeading={section.heading}
+                      />
+                    )}
                 </div>
               ) : (
-              <>
-              <h2 className="text-xl font-semibold text-gray-900 mb-3">
-                <InlineMarkdown text={section.heading} />
-              </h2>
-              <div className="space-y-3 text-sm leading-6 text-gray-700">
-                {section.blocks.map((block, blockIndex) => {
-                  if (block.kind === "paragraph") {
-                    return (
-                      <ParagraphDisplay
-                        key={blockIndex}
-                        text={block.text}
-                        referenceLabel={`Reference ${section.heading}, paragraph ${blockIndex + 1} in Writing chat`}
-                        onReference={
-                          onReference
-                            ? () =>
-                                onReference({
-                                  kind: "paragraph",
-                                  sectionId: section.id,
-                                  blockIndex,
-                                  sectionHeading: section.heading,
-                                  preview: reportBlockReferencePreview(block),
-                                })
-                            : undefined
-                        }
-                      />
-                    );
-                  }
-                  if (block.kind === "bullet_list") {
-                    return (
-                      <ul key={blockIndex} className="list-disc pl-6 space-y-1">
-                        {block.items.map((item, itemIndex) => (
-                          <li key={itemIndex}>
-                            <MarkdownBlock source={item} variant="document-compact" />
-                          </li>
-                        ))}
-                      </ul>
-                    );
-                  }
-                  return (
-                    <ReportTable
-                      key={blockIndex}
-                      table={block}
-                      referenceLabel={`Reference ${section.heading}, table ${blockIndex + 1} in Writing chat`}
-                      onReference={
-                        onReference
-                          ? () =>
-                              onReference({
-                                kind: "table",
-                                sectionId: section.id,
-                                blockIndex,
-                                sectionHeading: section.heading,
-                                preview: reportBlockReferencePreview(block),
-                              })
-                          : undefined
-                      }
-                    />
-                  );
-                })}
-              </div>
-              </>
+                <>
+                  <h2 className="text-xl font-semibold text-gray-900 mb-3">
+                    <InlineMarkdown text={section.heading} />
+                  </h2>
+                  <SectionBlocks
+                    blocks={section.blocks}
+                    sectionId={section.id}
+                    sectionHeading={section.heading}
+                    onReference={onReference}
+                  />
+                </>
               )}
             </section>
           ))}
         </div>
       )}
     </article>
+  );
+}
+
+/**
+ * A section body rendered with the document block renderers. Skipped sections
+ * reuse it for their greyed template copy, so the reference copy and real
+ * content can never drift apart.
+ */
+function SectionBlocks({
+  blocks,
+  sectionId,
+  sectionHeading,
+  onReference,
+  muted = false,
+}: {
+  blocks: ReportBlock[];
+  /** `null` for a section the editor has not saved yet. */
+  sectionId: string | null;
+  sectionHeading: string;
+  onReference?: (reference: WritingBlockReference) => void;
+  /** Drop the body text colour so the muted wrapper's grey shows through. */
+  muted?: boolean;
+}) {
+  // Content that will not be exported cannot be cited, so a muted copy — and
+  // any section without a saved ID — renders without the reference buttons.
+  const referencing =
+    onReference && sectionId && !muted ? { onReference, sectionId } : null;
+
+  return (
+    <div
+      className={
+        muted
+          ? "space-y-3 text-sm leading-6"
+          : "space-y-3 text-sm leading-6 text-gray-700"
+      }
+    >
+      {blocks.map((block, blockIndex) => {
+        if (block.kind === "paragraph") {
+          return (
+            <ParagraphDisplay
+              key={blockIndex}
+              text={block.text}
+              referenceLabel={`Reference ${sectionHeading}, paragraph ${blockIndex + 1} in Writing chat`}
+              onReference={
+                referencing
+                  ? () =>
+                      referencing.onReference({
+                        kind: "paragraph",
+                        sectionId: referencing.sectionId,
+                        blockIndex,
+                        sectionHeading,
+                        preview: reportBlockReferencePreview(block),
+                      })
+                  : undefined
+              }
+            />
+          );
+        }
+        if (block.kind === "bullet_list") {
+          return (
+            <ul key={blockIndex} className="list-disc pl-6 space-y-1">
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>
+                  <MarkdownBlock source={item} variant="document-compact" />
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <ReportTable
+            key={blockIndex}
+            table={block}
+            referenceLabel={`Reference ${sectionHeading}, table ${blockIndex + 1} in Writing chat`}
+            onReference={
+              referencing
+                ? () =>
+                    referencing.onReference({
+                      kind: "table",
+                      sectionId: referencing.sectionId,
+                      blockIndex,
+                      sectionHeading,
+                      preview: reportBlockReferencePreview(block),
+                    })
+                : undefined
+            }
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The template copy kept under a skipped heading. The muted tone lives on this
+ * wrapper rather than on the block renderers, so the memoized Markdown leaves
+ * stay shared with real content.
+ */
+function SkippedSectionBody({
+  blocks,
+  sectionHeading,
+}: {
+  blocks: ReportBlock[];
+  sectionHeading: string;
+}) {
+  return (
+    <div
+      data-testid="skipped-template-body"
+      className="mt-3 text-gray-400 opacity-70 select-text"
+    >
+      <SectionBlocks
+        blocks={blocks}
+        sectionId={null}
+        sectionHeading={sectionHeading}
+        muted
+      />
+    </div>
   );
 }
 
@@ -443,6 +544,7 @@ function EditableReport({
   updateBlock,
   removeBlock,
   onReference,
+  templateBlocksBySection,
 }: {
   edit: ReportDraftEdit;
   disabled: boolean;
@@ -455,6 +557,8 @@ function EditableReport({
   ) => void;
   removeBlock: (sectionIndex: number, blockIndex: number) => void;
   onReference: (reference: WritingBlockReference) => void;
+  /** Immutable template copies from the accepted draft, keyed by section ID. */
+  templateBlocksBySection: Map<string, ReportBlock[]>;
 }) {
   return (
     <div className="space-y-8" data-testid="inline-report-editor">
@@ -467,7 +571,10 @@ function EditableReport({
         className="text-3xl font-semibold text-center text-gray-900 mb-10"
       />
 
-      {edit.sections.map((section, sectionIndex) => (
+      {edit.sections.map((section, sectionIndex) => {
+        const templateBlocks =
+          (section.id && templateBlocksBySection.get(section.id)) || [];
+        return (
         <section
           key={section.id ?? `new-${sectionIndex}`}
           className="group/section relative"
@@ -483,10 +590,32 @@ function EditableReport({
             className="text-xl font-semibold text-gray-900 mb-3"
           />
           {section.skipped && (
-            <p className="text-xs text-gray-400 italic mb-3" data-testid="deferred-section-editing">
-              Deferred — adding content un-defers this section; until then it
-              is left out of exports.
-            </p>
+            <div data-testid="deferred-section-editing">
+              <p className="text-xs text-gray-400 italic">
+                Skipped — kept from the template for reference. Not included in
+                the exported document.
+              </p>
+              {templateBlocks.length > 0 && (
+                <SkippedSectionBody
+                  blocks={templateBlocks}
+                  sectionHeading={section.heading}
+                />
+              )}
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() =>
+                  updateSection(sectionIndex, {
+                    ...section,
+                    skipped: false,
+                    blocks: templateBlocks.map(cloneBlock),
+                  })
+                }
+                className="mt-3 px-2.5 py-1.5 text-xs font-medium border border-gray-300 bg-white rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                Include this section
+              </button>
+            </div>
           )}
 
           <div className="absolute -right-8 top-0 opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100 flex flex-col bg-white border border-gray-200 rounded shadow-sm">
@@ -521,6 +650,8 @@ function EditableReport({
             </button>
           </div>
 
+          {!section.skipped && (
+          <>
           <div className="space-y-3 text-sm leading-6 text-gray-700">
             {section.blocks.map((block, blockIndex) => (
               <div
@@ -670,8 +801,11 @@ function EditableReport({
               Add table
             </button>
           </div>
+          </>
+          )}
         </section>
-      ))}
+        );
+      })}
 
       <button
         type="button"
