@@ -13,17 +13,10 @@ use claria_core::models::{
     report_run::RunSectionState,
 };
 
-use super::{CommandContext, parse_uuid, run, streams::StopRegistration, usage_audit_details};
+use super::{
+    CommandContext, merge_details, parse_uuid, run, streams::StopRegistration, usage_audit_details,
+};
 use crate::state::DesktopState;
-
-/// Overlay `extra`'s fields onto the shared usage details object.
-fn merge_details(base: &mut serde_json::Value, extra: serde_json::Value) {
-    if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
-        for (key, value) in extra {
-            base.insert(key.clone(), value.clone());
-        }
-    }
-}
 
 #[tauri::command]
 #[specta::specta]

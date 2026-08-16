@@ -12,7 +12,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-pub const CURRENT_VERSION: u32 = 10;
+pub const CURRENT_VERSION: u32 = 11;
 
 /// What the user is told when there is no config on disk at all.
 ///
@@ -25,7 +25,7 @@ pub const SETUP_REQUIRED: &str = "No config loaded. Complete setup first.";
 /// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
 /// because the synced subset lives in S3 and may be read by other machines'
 /// builds.
-pub const PREFERENCES_VERSION: u32 = 4;
+pub const PREFERENCES_VERSION: u32 = 5;
 
 fn default_prompt_caching_enabled() -> bool {
     true
@@ -73,6 +73,41 @@ pub struct ClariaConfig {
     /// v10.
     #[serde(default)]
     pub chat_streaming: ChatStreamMode,
+    /// How the sectioned drafting pipeline behaves: whether the plan waits
+    /// for approval, and which models the supporting roles use. Added in v11.
+    #[serde(default)]
+    pub draft_pipeline: DraftPipelinePreferences,
+}
+
+/// Whether a whole-report draft stops for the clinician between planning and
+/// writing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanGateMode {
+    /// The plan lands in the draft-run pane and waits to be read, edited, and
+    /// approved. The default: a plan is cheap to fix and expensive to draft
+    /// against once it is wrong.
+    #[default]
+    Gated,
+    /// Drafting begins as soon as the plan lands.
+    AutoStart,
+}
+
+/// Per-clinician settings for the sectioned drafting pipeline.
+///
+/// The two model IDs name the supporting roles only — the writer keeps its
+/// own picker beside the draft. `None` means "let Claria choose", which
+/// resolves through the capability table at call time rather than being
+/// frozen into the config, so an account that gains a better model gets it
+/// without anyone editing a setting.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DraftPipelinePreferences {
+    #[serde(default)]
+    pub plan_gate: PlanGateMode,
+    #[serde(default)]
+    pub planner_model_id: Option<String>,
+    #[serde(default)]
+    pub reviewer_model_id: Option<String>,
 }
 
 /// How much of a chat reply appears at a time.
@@ -288,6 +323,8 @@ pub struct SyncedPreferences {
     pub model_tuning: ModelTuningPreferences,
     #[serde(default)]
     pub chat_streaming: ChatStreamMode,
+    #[serde(default)]
+    pub draft_pipeline: DraftPipelinePreferences,
 }
 
 impl SyncedPreferences {
@@ -303,6 +340,7 @@ impl SyncedPreferences {
             report_authoring: config.report_authoring.clone(),
             model_tuning: config.model_tuning,
             chat_streaming: config.chat_streaming,
+            draft_pipeline: config.draft_pipeline.clone(),
         }
     }
 
@@ -317,6 +355,7 @@ impl SyncedPreferences {
         config.report_authoring = self.report_authoring.clone();
         config.model_tuning = self.model_tuning;
         config.chat_streaming = self.chat_streaming;
+        config.draft_pipeline = self.draft_pipeline.clone();
     }
 }
 
@@ -353,6 +392,7 @@ pub struct ConfigInfo {
     pub report_authoring: ReportAuthoringPreferences,
     pub model_tuning: ModelTuningPreferences,
     pub chat_streaming: ChatStreamMode,
+    pub draft_pipeline: DraftPipelinePreferences,
 }
 
 fn config_dir() -> eyre::Result<PathBuf> {
@@ -619,6 +659,25 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v9 → v10 (added chat streaming mode)");
     }
 
+    // v10 → v11: add the drafting-pipeline settings. The plan gate defaults
+    // to on, so an existing install gets the review step rather than silently
+    // starting to draft on a plan nobody saw.
+    if from_version < 11 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("draft_pipeline").or_insert(serde_json::json!({
+            "plan_gate": "gated",
+            "planner_model_id": null,
+            "reviewer_model_id": null,
+        }));
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(11.into()),
+        );
+        tracing::info!("migrated config v10 → v11 (added drafting pipeline preferences)");
+    }
+
     Ok(json)
 }
 
@@ -710,6 +769,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         report_authoring: config.report_authoring.clone(),
         model_tuning: config.model_tuning,
         chat_streaming: config.chat_streaming,
+        draft_pipeline: config.draft_pipeline.clone(),
     }
 }
 

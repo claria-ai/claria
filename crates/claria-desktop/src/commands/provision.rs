@@ -360,6 +360,7 @@ pub async fn bootstrap_iam_user(
                 report_authoring: Default::default(),
                 model_tuning: Default::default(),
                 chat_streaming: Default::default(),
+                draft_pipeline: Default::default(),
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -1087,6 +1088,7 @@ pub async fn provision_apply(
                 report_authoring: Default::default(),
                 model_tuning: Default::default(),
                 chat_streaming: Default::default(),
+                draft_pipeline: Default::default(),
             };
 
             config::save_config(&cfg)?;

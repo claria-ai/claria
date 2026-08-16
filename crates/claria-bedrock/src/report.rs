@@ -740,7 +740,7 @@ pub fn report_input_token_budget(model_id: &str) -> u32 {
 /// foundations support Converse before CountTokens; those fall back to the
 /// newest active Haiku tokenizer while retaining the selected model's
 /// conservative context-window limit.
-async fn count_report_tokens(
+pub(crate) async fn count_report_tokens(
     config: &aws_config::SdkConfig,
     client: &aws_sdk_bedrockruntime::Client,
     model_id: &str,
@@ -789,7 +789,7 @@ async fn count_report_tokens(
 /// Character measure of the request used for incremental token estimation.
 /// Only message/system content counts — the fixed tool schemas are covered
 /// by the turn's initial exact count.
-fn protocol_chars(system_prompt: &str, messages: &[ReportProtocolMessage]) -> u64 {
+pub(crate) fn protocol_chars(system_prompt: &str, messages: &[ReportProtocolMessage]) -> u64 {
     let mut chars = system_prompt.len() as u64;
     for message in messages {
         for block in &message.content {
@@ -1152,7 +1152,11 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
         .map_err(|error| BedrockError::Invocation(error.to_string()))
 }
 
-fn tool(name: &str, description: &str, schema: serde_json::Value) -> Result<Tool, BedrockError> {
+pub(crate) fn tool(
+    name: &str,
+    description: &str,
+    schema: serde_json::Value,
+) -> Result<Tool, BedrockError> {
     let specification = ToolSpecification::builder()
         .name(name)
         .description(description)
@@ -1164,7 +1168,9 @@ fn tool(name: &str, description: &str, schema: serde_json::Value) -> Result<Tool
     Ok(Tool::ToolSpec(specification))
 }
 
-fn protocol_message_to_sdk(message: &ReportProtocolMessage) -> Result<Message, BedrockError> {
+pub(crate) fn protocol_message_to_sdk(
+    message: &ReportProtocolMessage,
+) -> Result<Message, BedrockError> {
     let role = match message.role {
         ReportProtocolRole::User => ConversationRole::User,
         ReportProtocolRole::Assistant => ConversationRole::Assistant,
@@ -1257,14 +1263,14 @@ struct PartialToolUse {
 /// the unary path returns, so the protocol validation below has exactly one
 /// implementation regardless of transport.
 #[derive(Debug, Default)]
-struct ReportStreamCollector {
+pub(crate) struct ReportStreamCollector {
     blocks: BTreeMap<usize, PartialReportBlock>,
     stop_reason: Option<StopReason>,
     usage: Option<aws_sdk_bedrockruntime::types::TokenUsage>,
 }
 
 impl ReportStreamCollector {
-    fn absorb(&mut self, event: ConverseStreamOutput) {
+    pub(crate) fn absorb(&mut self, event: ConverseStreamOutput) {
         match event {
             ConverseStreamOutput::ContentBlockStart(event) => {
                 let index = event.content_block_index() as usize;
@@ -1317,7 +1323,7 @@ impl ReportStreamCollector {
 
     /// Rebuild the assistant message in wire order. A missing `messageStop`
     /// is a protocol error rather than a silently-complete turn.
-    fn finish(
+    pub(crate) fn finish(
         self,
     ) -> Result<
         (
@@ -1383,7 +1389,9 @@ impl ReportStreamCollector {
     }
 }
 
-fn map_stop_reason(reason: &aws_sdk_bedrockruntime::types::StopReason) -> ReportStopReason {
+pub(crate) fn map_stop_reason(
+    reason: &aws_sdk_bedrockruntime::types::StopReason,
+) -> ReportStopReason {
     use aws_sdk_bedrockruntime::types::StopReason;
     match reason {
         StopReason::ContentFiltered => ReportStopReason::ContentFiltered,

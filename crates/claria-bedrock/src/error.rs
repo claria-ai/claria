@@ -63,7 +63,10 @@ pub enum BedrockError {
     Agreement(String),
 
     /// The reader pressed Stop while the request was in flight. Not a
-    /// failure — the caller decides what its partial work is worth.
+    /// failure — the caller decides what its partial work is worth: a stopped
+    /// chat turn keeps the partial text as the answer, while a stopped
+    /// structured call produced nothing and keeps nothing. Callers that cannot
+    /// be stopped never construct it.
     #[error("the request was stopped by the user")]
     Stopped,
 }

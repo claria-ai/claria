@@ -36,6 +36,9 @@ All notable changes to Claria are documented here.
 - Skipped sections now show their template text greyed out in the preview and say they are left out of exports
 - Editing a skipped section takes an explicit Include this section button, which fills it with the template text
 - The export line counts how many skipped sections the accepted revision left out
+- A planning pass now assigns scope and record evidence per section before drafting, with an editable plan and per-role model settings
+- Planned evidence quotes are checked against the client's records, and anything that does not resolve is flagged on the plan rather than passed to the writer
+- Picking up an interrupted draft re-plans it when you add instructions, and decides it without a model call when you do not
 
 ## [0.28.0] — 2026-08-15
 

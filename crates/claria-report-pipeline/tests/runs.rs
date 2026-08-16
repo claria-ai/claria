@@ -706,6 +706,7 @@ async fn a_skip_is_challenged_only_when_a_human_approved_the_plan() {
             ],
             user_edited: true,
             approved_at: Some(now),
+            plan_warnings: Vec::new(),
             created_at: now,
         },
         vec![
@@ -837,6 +838,7 @@ async fn a_resume_kicks_off_with_durable_state_and_the_rewrite_source() {
             ],
             user_edited: true,
             approved_at: Some(now),
+            plan_warnings: Vec::new(),
             created_at: now,
         },
         vec![
@@ -1861,6 +1863,7 @@ fn three_section_plan() -> RunPlan {
                 SectionIntent::Draft,
             ),
         ],
+        plan_warnings: Vec::new(),
         user_edited: false,
         approved_at: Some(now),
         created_at: now,

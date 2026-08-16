@@ -36,8 +36,13 @@ use crate::{
         DraftTurnKind, cache_checkpoints, kickoff_instruction, plan_context, template_context,
     },
     prompts::{full_report_system_prompt, report_system_prompt},
-    record_context::{FullRecordContext, load_full_record_context, load_record_inventory},
-    run::{park_stopped_run, release_failed_run, stamp_run_authorship, start_draft_run},
+    record_context::{
+        BudgetRole, FullRecordContext, load_full_record_context, load_record_inventory,
+    },
+    run::{
+        create_run_for_workspace, park_stopped_run, release_failed_run, stamp_run_authorship,
+        synthetic_plan,
+    },
     tools::ToolExecutionContext,
 };
 
@@ -446,7 +451,18 @@ async fn generate_full_report_loaded(
     request: FullReportRequest<'_>,
 ) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     ensure_ready_for_turn(&loaded.workspace, expected_revision)?;
-    let run = start_draft_run(s3, bucket, &mut loaded, model_id, request.guidance.trim()).await?;
+    let now = jiff::Timestamp::now();
+    let plan = synthetic_plan(&loaded.workspace, model_id, now);
+    let run = create_run_for_workspace(
+        s3,
+        bucket,
+        &mut loaded,
+        model_id,
+        request.guidance.trim(),
+        Some(plan),
+        claria_core::models::report_run::DraftRunStatus::Drafting,
+    )
+    .await?;
     execute_full_draft_turn(
         sdk_config,
         s3,
@@ -535,7 +551,8 @@ async fn prepare_full_draft_context(
     let inventory = load_record_inventory(s3, bucket, client_id)
         .await
         .map_err(|source| ReportPipelineError::storage("listing full-draft records", source))?;
-    let record_context = load_full_record_context(s3, bucket, model_id, &inventory).await?;
+    let record_context =
+        load_full_record_context(s3, bucket, &[BudgetRole::writer(model_id)], &inventory).await?;
     request.emit_progress(ReportTurnProgress::RecordContextPrepared {
         included_files: record_context.summary.included_files,
         unavailable_files: record_context.summary.unavailable_files,
@@ -568,7 +585,7 @@ pub(crate) fn validate_model_choice(model_id: &str) -> Result<(), ReportPipeline
     }
 }
 
-fn ensure_ready_for_turn(
+pub(crate) fn ensure_ready_for_turn(
     workspace: &ReportWorkspace,
     expected_revision: u64,
 ) -> Result<(), ReportPipelineError> {
@@ -954,6 +971,14 @@ async fn run_turn(
                     "Claria could not start a durable drafting run for this whole-report request.",
                 )
             })?;
+            // The run is the authority on its own guidance: a gated draft was
+            // planned against instructions typed at the plan step, and the
+            // Start button that follows carries none of its own.
+            let guidance = run
+                .run
+                .instructions
+                .first()
+                .map_or(guidance, |instruction| instruction.text.as_str());
             let base = &loaded.workspace.draft.content;
             let template = template_context(&loaded.workspace, base).map_err(|message| {
                 TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message)
