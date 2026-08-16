@@ -83,6 +83,11 @@ All notable changes to Claria are documented here.
 - Planning calls log how long the model took to send its first token and how long each attempt ran
 - Retry warnings now carry the attempt number and the attempt ceiling
 - The writer says when it is re-sending a Bedrock call that never landed, and which attempt it is on, instead of leaving the line frozen
+- Planning a report is now a sequence of eight-section calls rather than one call for the whole document
+- Each planning call is short enough to stay well inside the stream watchdog, and a call that fails re-plans its own eight sections rather than the document
+- The plan pane announces each batch of sections as it is decided, and Stop is answered between them
+- The planner is no longer sent the template's prose, which it was already ordered to disregard
+- The planner is asked for four records per section instead of eight, with a shorter line on each
 
 ## [0.28.0] — 2026-08-15
 

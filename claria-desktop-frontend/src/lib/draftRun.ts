@@ -200,6 +200,15 @@ export function reduceDraftRun(
         Math.max(state.planned, event.planned),
         event.total
       );
+    // A batch that validated is decided, so its last row is a floor the
+    // count never drops below — including when the next batch's stream
+    // starts counting its own rows from one.
+    case "plan_batch_planned":
+      return commitPlanned(
+        state,
+        Math.max(state.planned, event.last),
+        event.total
+      );
     case "plan_ready":
       return commit(state, {
         total: highest(state.total, event.section_count),

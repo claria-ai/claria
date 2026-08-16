@@ -132,17 +132,45 @@ all keep working exactly as they did before runs existed.
 ## The plan pass
 
 A planning model — a per-role setting, defaulting to the newest capable Sonnet
-the account has — reads the record corpus and the template structure and
-answers one forced `submit_section_plan` call: one row per section, with what
-it must assert and which records support it. The plan is an outline — filenames
-and a one-line reason each, never copied record text.
+the account has — reads the record corpus and the report's section structure and
+answers forced `submit_section_plan` calls: one row per section, with what it
+must assert and which records support it. The plan is an outline — filenames and
+a one-line reason each, never copied record text.
+
+A fresh plan is **batched**. The document's sections are cut into contiguous
+runs of `PLAN_BATCH_SECTIONS` (8) in template order, and each batch is one
+sequential call whose instruction lists the section IDs it answers for and
+forbids a row for any other. The batches share everything expensive — the same
+system blocks, the same tool set, one cache point, one `CountTokens` for the
+whole pass — and share nothing else: a batch's `messages` is its own question
+and nothing more, so no batch carries a predecessor's transcript. Each batch
+gets its own repair round and its own transport retry, so a stalled or severed
+call re-pays for one batch rather than the document.
+
+A batch that validates is a checkpoint: its rows are decided, the reader is
+told so with `plan_batch_planned`, and the pass checks the stop signal before
+opening the next call. Nothing is persisted until every batch has validated —
+`plan_fresh_run` writes the plan once, at the end — so a batch that exhausts
+its repair round and its retries fails the whole pass exactly as a single call
+used to, and a Stop between batches leaves the report as it found it.
+
+The **resume** plan stays a single call over every section: its question is the
+run's whole state table, which means nothing sliced, and its rows are a decision
+word and a line of reasoning rather than a scope and evidence.
+
+The planner's template block carries structure without prose. Its trust rules
+order it to treat template bodies as facts about somebody else, nothing in the
+plan schema or the validator reads one, and the review sweep shares the same
+system blocks — so the prose is left out of all three and the writer's own block
+still carries it.
 
 The host then decides what is decidable:
 
-- **Coverage and identity are hard.** One row per template section, no invented
-  IDs, no duplicates. Failing that costs one repair round — the diagnostic goes
-  back verbatim and the tool is forced again — then the pass fails. A plan
-  missing a section would silently delete it from the document.
+- **Coverage and identity are hard.** One row per section the batch was given,
+  no invented IDs, no duplicates, and no row for a section another batch owns.
+  Failing that costs one repair round — the diagnostic goes back verbatim and
+  the tool is forced again — then the pass fails. A plan missing a section would
+  silently delete it from the document.
 - **Evidence is soft.** A filename the client does not have lands as an
   `unknown_evidence_file:{filename}` warning on the plan. The clinician is about
   to read this plan at the gate; refusing to show it to them because one
@@ -443,10 +471,11 @@ filenames, prompts, or document text: `draft_plan_generated`,
 
 Progress rides one `Channel<ReportTurnProgressView>` shared by the planning,
 drafting, and review phases: `record_context_prepared`, `model_call_started`,
-`model_call_retrying`, `tool_started`, `tool_finished`, `plan_row_planned`, the
-per-section events, and — for the review — `review_pass_started` and
-`review_pass_completed`. Every section and review event carries its own
-counters and total, so a dropped event cannot desync a progress bar.
+`model_call_retrying`, `tool_started`, `tool_finished`, `plan_row_planned`,
+`plan_batch_planned`, the per-section events, and — for the review —
+`review_pass_started` and `review_pass_completed`. Every section and review
+event carries its own counters and total, so a dropped event cannot desync a
+progress bar.
 
 The parallel fan-out emits the same section events, from the coordinator, after
 each durable commit. It emits no `tool_started`/`tool_finished`: a branch
@@ -470,3 +499,11 @@ it arrives, and each new row emits `plan_row_planned` with the document's
 section count as the denominator. Nothing is parsed out of the partial buffer
 but that count, the plan is still validated whole when the call returns, and a
 re-sent call restarts the count without walking the reader's number backwards.
+Batches count on from each other rather than from one, so the number is against
+the whole document however many calls wrote it.
+
+`plan_batch_planned` is the other half of that: `plan_row_planned` says what a
+call is producing, `plan_batch_planned` says what the host has accepted. Its
+`first` and `last` are one-based and inclusive against the document's whole
+section count, so "Planned sections 9–16 of 38" reads without the listener
+knowing the batch size.

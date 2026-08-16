@@ -2158,6 +2158,12 @@ export type ReportTurnProgressView = { kind: "record_context_prepared"; included
  */
 { kind: "plan_row_planned"; planned: number; total: number } | 
 /**
+ * One batch of the plan is decided and will not be asked for again.
+ * `first` and `last` are one-based and inclusive, against the document's
+ * whole section count.
+ */
+{ kind: "plan_batch_planned"; first: number; last: number; total: number } | 
+/**
  * The drafting run's plan is settled, before the first model call: the
  * honest denominator for the progress that follows.
  */

@@ -100,6 +100,23 @@ pub enum ReportTurnProgress {
         planned: u32,
         total: u32,
     },
+    /// One batch of the plan came back and passed host validation.
+    ///
+    /// The planning pass is a sequence of calls, each responsible for a
+    /// contiguous run of sections, so this is the pass's checkpoint: the rows
+    /// it names are decided and will not be asked for again. `first` and
+    /// `last` are one-based and inclusive, against `total` — the document's
+    /// whole section count — so "9–16 of 38" reads without the listener
+    /// knowing the batch size.
+    ///
+    /// Unlike `PlanRowPlanned`, which counts rows off a partial answer and
+    /// restarts when a call is re-sent, this only fires for rows the host has
+    /// accepted.
+    PlanBatchPlanned {
+        first: u32,
+        last: u32,
+        total: u32,
+    },
     /// The drafting run's plan is in place, before the first model call. Its
     /// row count is the honest denominator for everything that follows: the
     /// number of sections the run owes a decision about, not a guess at how

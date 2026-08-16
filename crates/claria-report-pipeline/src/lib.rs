@@ -33,9 +33,9 @@ pub use gate::{
     CompletionCheck, CompletionCheckKind, CompletionReport, evaluate_report_completion,
 };
 pub use plan::{
-    DETERMINISTIC_PLAN_MODEL_ID, DraftPlanOutcome, DraftPlanRequest, PLAN_OUTPUT_TOKEN_RESERVE,
-    PlanModels, generate_draft_plan, plan_draft_resume, resume_planned_draft_run, start_draft_run,
-    update_draft_plan,
+    DETERMINISTIC_PLAN_MODEL_ID, DraftPlanOutcome, DraftPlanRequest, PLAN_BATCH_SECTIONS,
+    PLAN_OUTPUT_TOKEN_RESERVE, PlanModels, generate_draft_plan, plan_draft_resume,
+    resume_planned_draft_run, start_draft_run, update_draft_plan,
 };
 pub use prompt_cache::ReportPromptCache;
 pub use prompts::{

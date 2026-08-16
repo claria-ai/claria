@@ -198,6 +198,11 @@ function agentActivityForSection(
         label: "Planning the report",
         detail: `${progress.planned} of ${progress.total} sections planned`,
       };
+    case "plan_batch_planned":
+      return {
+        label: "Planning the report",
+        detail: `Planned sections ${progress.first}–${progress.last} of ${progress.total}`,
+      };
     case "plan_ready":
       return {
         label: "Planning the report",

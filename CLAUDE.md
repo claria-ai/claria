@@ -133,9 +133,9 @@ The money path, front to back. Each hop is one file.
 | Reducer | `lib/draftRun.ts` — `DraftRunUiState`, `emptyDraftRun`, `runStateFromDraftRun`, `reduceDraftRun`, `overlaySections` |
 | Bridge | `lib/tauri.ts` — `generateDraftPlan`, `updateDraftPlan`, `startDraftRun`, `resumeDraftRun`; each mints the `Channel` |
 | Command | `claria-desktop/src/commands/plan.rs` — the same four commands, each opening a `StopRegistration` (`commands/streams.rs`) keyed by `stream_id` |
-| Plan pass | `claria-report-pipeline/src/plan.rs` — `generate_draft_plan` → `plan_fresh_run`; resume via `plan_draft_resume` |
-| Plan system blocks | `plan.rs::analysis_system_blocks` — `prompts.rs::planner_system_prompt`, then the corpus block from `record_context.rs::load_full_record_context` (one compact JSON blob, per-file bound `claria_core::record_text::MAX_RECORD_TEXT_BYTES`), then `full_draft_context.rs::template_context` (pretty-printed, carries `template_body`) |
-| The model call | `claria-bedrock/src/analysis.rs::converse_structured`, forcing `SUBMIT_SECTION_PLAN_TOOL`; decoded by `decode_section_plan`, checked by `plan.rs::validate_section_plan` |
+| Plan pass | `claria-report-pipeline/src/plan.rs` — `generate_draft_plan` → `plan_fresh_run`, a sequential loop of `PLAN_BATCH_SECTIONS`-section batches over `AnalysisPass::run_call`; resume via `plan_draft_resume`, which calls the same core once |
+| Plan system blocks | `plan.rs::analysis_system_blocks` — `prompts.rs::planner_system_prompt`, then the corpus block from `record_context.rs::load_full_record_context` (one compact JSON blob, per-file bound `claria_core::record_text::MAX_RECORD_TEXT_BYTES`), then `full_draft_context.rs::planner_template_context` (pretty-printed, structure only — the writer's `template_context` is what carries `template_body`) |
+| The model call | `claria-bedrock/src/analysis.rs::converse_structured`, forcing `SUBMIT_SECTION_PLAN_TOOL` once per batch; decoded by `decode_section_plan`, checked by `plan.rs::validate_section_plan` against the batch's own section list |
 | Approved plan → drafting | `parallel_draft.rs` fan-out, `buffer_unordered(BEDROCK_FAN_OUT_CONCURRENCY)` (3, in `lib.rs`); the sequential tool-loop shape lives in `turn.rs` |
 | Completion gate | `gate.rs::evaluate_report_completion` |
 | Run lifecycle | `run.rs` — `resume_draft_run`, `finalize_partial_draft`, `abandon_draft_run`, `park_stopped_run`, `release_failed_run` |
@@ -246,6 +246,14 @@ back over `Channel<ChatStreamEvent>`. History objects live at
   the measured size of the request. The `CountTokens` result is a separate thing.
 - A retry is only visible to the reader if the call site passes a
   `RetryObserver`; the plain `with_throttle_retry` still logs and nothing more.
+- One `AnalysisInputBudget` and one `PlanRowCounter` live on `AnalysisPass`,
+  outside the batch loop. Building either inside it silently buys a
+  `CountTokens` per batch and restarts the reader's row count at every
+  checkpoint.
+- `PLAN_BATCH_SECTIONS` and `PLAN_OUTPUT_TOKEN_RESERVE` are checked against
+  each other by a `const` assertion in `plan.rs` deriving
+  `WORST_CASE_PLAN_ROW_CHARS` from the schema's own ceilings. Widening the
+  evidence schema without widening the reserve fails the build.
 
 ## S3 Key Layout
 

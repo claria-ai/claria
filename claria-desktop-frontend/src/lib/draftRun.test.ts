@@ -336,6 +336,52 @@ describe("reduceDraftRun", () => {
     expect(state.planned).toBe(3);
   });
 
+  it("takes a settled batch as the floor the row count never drops below", () => {
+    const state = apply([
+      { kind: "plan_row_planned", planned: 8, total: 10 },
+      { kind: "plan_batch_planned", first: 1, last: 8, total: 10 },
+      // The next batch's stream counts its own rows from one.
+      { kind: "plan_row_planned", planned: 9, total: 10 },
+      { kind: "plan_batch_planned", first: 9, last: 10, total: 10 },
+    ]);
+
+    expect(state.planned).toBe(10);
+    expect(state.planTotal).toBe(10);
+    // Planning still writes nothing.
+    expect(state.total).toBeNull();
+    expect(state.sections.size).toBe(0);
+  });
+
+  it("never lowers the row count on a redelivered batch checkpoint", () => {
+    const state = apply([
+      { kind: "plan_batch_planned", first: 9, last: 10, total: 10 },
+      { kind: "plan_batch_planned", first: 1, last: 8, total: 10 },
+    ]);
+
+    expect(state.planned).toBe(10);
+  });
+
+  it("retires the retry line on the batch the re-sent call produced", () => {
+    const retrying = apply([
+      {
+        kind: "model_call_retrying",
+        call_number: 1,
+        attempt: 2,
+        max_attempts: 4,
+        delay_ms: 1000,
+      },
+    ]);
+
+    expect(
+      reduceDraftRun(retrying, {
+        kind: "plan_batch_planned",
+        first: 1,
+        last: 8,
+        total: 10,
+      }).retrying
+    ).toBeNull();
+  });
+
   it("returns the same object when a plan row count repeats", () => {
     const event: ReportTurnProgressView = {
       kind: "plan_row_planned",
