@@ -190,7 +190,8 @@ chars/token, `estimated` trusts the estimate until within 10% of the budget, and
 jittered 1s/2s/4s, retrying only `is_retryable_throttle` or
 `is_interrupted_before_completion`. Schema violations, truncated responses, and
 exhausted quotas return on the first attempt. It notifies through
-`tracing::warn!` and nothing else, so a retry is invisible to the UI.
+`tracing::warn!` and, via `with_throttle_retry_observed`, an optional
+`RetryObserver` — which is how the writer surfaces `ModelCallRetrying`.
 
 **Forced-tool calls** share one tool configuration —
 `analysis.rs::analysis_tool_configuration` returns all three tools
@@ -243,8 +244,8 @@ back over `Channel<ChatStreamEvent>`. History objects live at
   (`#[cfg(debug_assertions)]` in `main()`); `cargo build` is not enough.
 - The `log_model_budget` INFO line is the **allowance** (window − reserve), not
   the measured size of the request. The `CountTokens` result is a separate thing.
-- A retry inside `with_throttle_retry` is a `tracing::warn!` and nothing else —
-  the UI shows the same frozen state it showed before.
+- A retry is only visible to the reader if the call site passes a
+  `RetryObserver`; the plain `with_throttle_retry` still logs and nothing more.
 
 ## S3 Key Layout
 
