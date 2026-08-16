@@ -53,16 +53,30 @@ stateDiagram-v2
     AwaitingApproval --> Drafting: start_draft_run
     Drafting --> Completed: finish_full_draft cuts a revision
     Drafting --> Failed: turn fails or is interrupted
+    Drafting --> Stopped: stop_stream
     Failed --> Drafting: resume_draft_run
     Stopped --> Drafting: resume_draft_run
+    Stopped --> Completed: finalize_partial_draft
+    Failed --> Completed: finalize_partial_draft
+    Stopped --> Abandoned: abandon_draft_run
+    Failed --> Abandoned: abandon_draft_run
     Completed --> [*]
+    Abandoned --> [*]
 ```
 
-Two statuses are defined and not yet reachable. `Stopped` is what a
-user-initiated stop will produce; the run model, the resume path, and the
-pipeline's `StopSignal` parameters all handle it, but no command fires one, so
-today an interrupted run arrives as `Failed` and resumes the same way.
-`Abandoned` has no path at all yet — nothing discards a run.
+`Stopped` and `Failed` differ in one way that matters: a failed run releases
+`active_run_id`, a stopped one keeps it. Stopping is a decision, so the session
+stays pointed at the run the reader stopped, and the guards that refuse
+competing edits keep the report still underneath the sections it already wrote.
+`release_failed_run` and `park_stopped_run` are the two halves of that.
+
+Every command that streams opens a `StopRegistration` against its `stream_id`,
+so `stop_stream` reaches the run in flight; the stream loop drops the call
+whole and the run is parked. Resuming it, finalizing what it landed, or
+abandoning it are the three ways the pointer is released. `abandon_draft_run`
+accepts a run in any status but `Completed` — a run that already cut a revision
+is reverted, not discarded — and leaves the sections it landed on the object as
+history.
 
 Every section of the report gets a row on the run — kept and skipped ones
 included — so `run.sections` is the complete section universe and the finisher
@@ -138,8 +152,10 @@ The plan lands on the run `awaiting_approval` and nothing drafts until
 `start_draft_run` is called, so the gate is structural rather than a courtesy.
 `update_draft_plan` takes per-section patches — an absent field is left exactly
 as the planner wrote it — and stamps `user_edited`. Whether the gate is shown
-or skipped is a preference (`draft_pipeline.plan_gate`, gated by default); the
-pane that reads it is not built yet.
+or skipped is a preference (`draft_pipeline.plan_gate`, gated by default), read
+in `useReportWorkspace` and rendered by `DraftPlanPanel` — one `DraftPlanCard`
+per row, editable in place, with Start below them. Set to `auto_start`, the plan
+still lands `awaiting_approval` and the run starts itself.
 
 Two plans are **not** a planning model's work, and both are marked `synthetic`
 so nothing downstream mistakes them for one: the 1:1 plan the un-gated
@@ -406,9 +422,13 @@ A resume refuses if the report moved underneath it — the saved sections no
 longer fit a document at a different revision, and a new run is the honest
 answer.
 
-The pipeline's planner and review entry points already accept a `StopSignal`
-that drops the in-flight stream whole; the command layer does not yet mint one
-for a run, so today's only interruption is a failure.
+A run can also be interrupted deliberately. Every streaming command opens a
+`StopRegistration` keyed by the `stream_id` the frontend passed in, so
+`stop_stream` fires the `StopSignal` the planner, the drafting run, and the
+review sweep are all watching; the stream loop drops the in-flight call whole
+rather than waiting for a frame that may be minutes away. The run is then
+parked `stopped` — sections demoted, `active_run_id` deliberately left in
+place — and resumes exactly as a failed one does.
 
 ---
 
