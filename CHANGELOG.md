@@ -61,6 +61,7 @@ All notable changes to Claria are documented here.
 - A finding whose section changed since the review is greyed out with a note to re-run the review
 - Sections with open findings are flagged on the document, and the flag jumps to the finding
 - The draft run pane closes with a completion checklist counting what is still outstanding
+- Raised the planner's output ceiling so plans for long reports no longer fail partway through
 
 ## [0.28.0] — 2026-08-15
 
