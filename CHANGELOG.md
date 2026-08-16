@@ -77,6 +77,11 @@ All notable changes to Claria are documented here.
 - Stopping a parallel draft keeps every section that had already landed and picks up from there
 - Reports generated without a plan are unchanged
 - Documented the writer, Bedrock, and logging code paths for contributors, and corrected the drafting-runs design doc where it had fallen behind the code
+- Planning and review calls now allow two minutes before the first token and ninety seconds between frames, above the limits chat and writer turns keep
+- An abandoned stream now names the call it belonged to — planning, review, chat, a targeted edit, or a whole-report draft — in the logs and in the error the reader is shown
+- Planning calls log the input-token count they actually measured alongside the budget they were given
+- Planning calls log how long the model took to send its first token and how long each attempt ran
+- Retry warnings now carry the attempt number and the attempt ceiling
 
 ## [0.28.0] — 2026-08-15
 
