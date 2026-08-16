@@ -538,7 +538,11 @@ async fn a_section_marked_failed_is_durable_and_still_lets_the_run_finish() {
     assert_eq!(assembled.id.to_string(), SUMMARY_ID);
     assert!(!assembled.skipped);
     assert_eq!(assembled.blocks, boilerplate());
-    assert!(assembled.authorship.is_none());
+    // Whatever stamp the section already carried survives; what must not
+    // happen is the run taking credit for text it could not write.
+    assert!(assembled.authorship.as_ref().is_none_or(|authorship| {
+        authorship.kind != AuthorshipKind::ModelGenerated && authorship.run_id.is_none()
+    }));
 
     let results = tool_results(&server).await;
     assert!(
@@ -1363,8 +1367,11 @@ async fn a_skip_through_the_run_keeps_the_template_copy() {
     assert!(deferred.skipped);
     assert!(deferred.blocks.is_empty());
     assert_eq!(deferred.template_blocks.as_ref(), Some(&boilerplate()));
-    // The run did not author it, so it is not credited to the run.
-    assert!(deferred.authorship.is_none());
+    // The run did not author it, so it is not credited to the run — whatever
+    // stamp the section carried before the run travels with it untouched.
+    assert!(deferred.authorship.as_ref().is_none_or(|authorship| {
+        authorship.kind != AuthorshipKind::ModelGenerated && authorship.run_id.is_none()
+    }));
 
     let run = only_run(&s3, client_id, report_id).await;
     assert_eq!(run.status, DraftRunStatus::Completed);
