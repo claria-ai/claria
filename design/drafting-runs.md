@@ -328,9 +328,17 @@ filenames, prompts, or document text: `draft_plan_generated`,
 `review_sweep_completed`, `finding_applied`, `finding_undone`,
 `finding_dismissed`. The completion gate records none: it mutates nothing.
 
-Progress rides one `Channel<ReportTurnProgressView>` shared by the drafting and
-review phases: `record_context_prepared`, `model_call_started`, `tool_started`,
-`tool_finished`, and — for the fan-out — `review_pass_started` and
-`review_pass_completed`. The review events carry their own `index`/`completed`
-and `total`, so a dropped event cannot desync a progress bar. Tool calls are
-only executable once complete, so nothing streams below the call boundary.
+Progress rides one `Channel<ReportTurnProgressView>` shared by the planning,
+drafting, and review phases: `record_context_prepared`, `model_call_started`,
+`tool_started`, `tool_finished`, `plan_row_planned`, and — for the fan-out —
+`review_pass_started` and `review_pass_completed`. The review events carry
+their own `index`/`completed` and `total`, so a dropped event cannot desync a
+progress bar.
+
+A tool call is only executable once complete, so nothing the writer does
+streams below the call boundary. Planning is the one exception, and only for
+display: its forced tool's partial JSON is scanned for `"section_id"` keys as
+it arrives, and each new row emits `plan_row_planned` with the document's
+section count as the denominator. Nothing is parsed out of the partial buffer
+but that count, the plan is still validated whole when the call returns, and a
+re-sent call restarts the count without walking the reader's number backwards.

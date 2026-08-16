@@ -172,6 +172,13 @@ pub enum ReportTurnProgressView {
         context: Option<String>,
         status: ReportToolActivityStatus,
     },
+    /// Another plan row has been counted off the answer the planner is still
+    /// streaming. Display only — the plan is validated whole when the call
+    /// returns — so the count may restart if the call is re-sent.
+    PlanRowPlanned {
+        planned: u32,
+        total: u32,
+    },
     /// The drafting run's plan is settled, before the first model call: the
     /// honest denominator for the progress that follows.
     PlanReady {
@@ -249,6 +256,9 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                     ReportToolResultStatus::Error => ReportToolActivityStatus::Failed,
                 },
             },
+            claria_report_pipeline::ReportTurnProgress::PlanRowPlanned { planned, total } => {
+                Self::PlanRowPlanned { planned, total }
+            }
             claria_report_pipeline::ReportTurnProgress::PlanReady { section_count } => {
                 Self::PlanReady { section_count }
             }

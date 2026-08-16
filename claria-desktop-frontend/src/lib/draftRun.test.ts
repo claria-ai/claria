@@ -110,6 +110,8 @@ describe("emptyDraftRun", () => {
       outcome: null,
       reviewCompleted: 0,
       reviewTotal: null,
+      planned: 0,
+      planTotal: null,
     });
   });
 
@@ -306,6 +308,42 @@ describe("reduceDraftRun", () => {
     expect(resumed.live).toBe(true);
     // The run identity survives, so the banner's actions still know it.
     expect(resumed.runId).toBe(stopped.runId);
+  });
+
+  it("counts plan rows against the section count the pass reports", () => {
+    const state = apply([
+      { kind: "plan_row_planned", planned: 1, total: 9 },
+      { kind: "plan_row_planned", planned: 2, total: 9 },
+    ]);
+
+    expect(state.planned).toBe(2);
+    expect(state.planTotal).toBe(9);
+    // Planning writes nothing, so the drafting ledger stays empty and the
+    // canvas cannot draw a section bar off a plan that does not exist yet.
+    expect(state.total).toBeNull();
+    expect(state.drafted).toBe(0);
+    expect(state.sections.size).toBe(0);
+  });
+
+  it("holds the plan row count when a re-sent call starts it again", () => {
+    const state = apply([
+      { kind: "plan_row_planned", planned: 1, total: 3 },
+      { kind: "plan_row_planned", planned: 3, total: 3 },
+      { kind: "plan_row_planned", planned: 1, total: 3 },
+    ]);
+
+    expect(state.planned).toBe(3);
+  });
+
+  it("returns the same object when a plan row count repeats", () => {
+    const event: ReportTurnProgressView = {
+      kind: "plan_row_planned",
+      planned: 2,
+      total: 4,
+    };
+    const state = apply([event]);
+
+    expect(reduceDraftRun(state, event)).toBe(state);
   });
 
   it("counts review passes without claiming a drafting run is live", () => {

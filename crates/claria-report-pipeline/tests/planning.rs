@@ -369,6 +369,80 @@ async fn a_plan_lands_at_the_gate_with_scope_and_evidence() {
     assert_eq!(workspace.draft.revision, 1);
 }
 
+/// The planning call is one request that can run for minutes, so the rows it
+/// has written are counted off the answer while it is still open.
+#[tokio::test]
+async fn planning_counts_its_rows_off_while_the_answer_streams() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![section_plan(vec![
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "State the referral question and who raised it.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(
+                BACKGROUND_ID,
+                "draft",
+                "Summarize developmental and school history.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(SUMMARY_ID, "skip", "Nothing to interpret yet.", None),
+        ])],
+    )
+    .await;
+
+    let progress = std::sync::Mutex::new(Vec::new());
+    let emit_progress = |event| progress.lock().expect("progress lock").push(event);
+    pipeline::generate_draft_plan(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        models(),
+        pipeline::DraftPlanRequest::new("Lead with the referral question.")
+            .with_progress(&emit_progress),
+    )
+    .await
+    .expect("the plan lands");
+
+    let events = progress.into_inner().expect("progress values");
+    let counted: Vec<u32> = events
+        .iter()
+        .filter_map(|event| match event {
+            pipeline::ReportTurnProgress::PlanRowPlanned { planned, total } => {
+                assert_eq!(*total, 3, "the denominator is the document's sections");
+                Some(*planned)
+            }
+            _ => None,
+        })
+        .collect();
+    // Every row is counted, once, in order, and the count arrives before the
+    // call it is describing has returned.
+    assert_eq!(counted, vec![1, 2, 3]);
+    let first_count = events
+        .iter()
+        .position(|event| matches!(event, pipeline::ReportTurnProgress::PlanRowPlanned { .. }))
+        .expect("a row count");
+    let call_started = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                pipeline::ReportTurnProgress::ModelCallStarted { call_number: 1 }
+            )
+        })
+        .expect("the planning call");
+    assert!(call_started < first_count);
+}
+
 #[tokio::test]
 async fn the_planner_request_caches_the_corpus_above_the_question() {
     let (server, sdk, s3) = setup().await;

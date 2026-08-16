@@ -479,7 +479,7 @@ describe("WritingCanvas live drafting", () => {
     expect(onStopRun).toHaveBeenCalledTimes(1);
   });
 
-  it("shows no progress bar while the run is still planning", () => {
+  it("shows no progress bar until the planner has counted a section", () => {
     renderCanvas({
       content: reportContent([writtenSection]),
       run: runState([], { total: null }),
@@ -488,6 +488,22 @@ describe("WritingCanvas live drafting", () => {
     });
 
     expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("draws the planner's own count until there are sections to draft", () => {
+    renderCanvas({
+      content: reportContent([writtenSection]),
+      run: runState([], { total: null, planned: 2, planTotal: 5 }),
+      canStopRun: true,
+      onStopRun: vi.fn(),
+    });
+
+    const bar = screen.getByRole("progressbar", {
+      name: "Report sections planned",
+    });
+    expect(bar.getAttribute("aria-valuenow")).toBe("2");
+    expect(bar.getAttribute("aria-valuemax")).toBe("5");
+    expect(bar.getAttribute("aria-valuetext")).toBe("2 of 5 planned");
   });
 
   it("disables Stop once the stop is already in flight", () => {

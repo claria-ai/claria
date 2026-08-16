@@ -54,6 +54,14 @@ export type DraftRunUiState = {
   reviewCompleted: number;
   /** `null` until the first pass says how many properties there are. */
   reviewTotal: number | null;
+  /**
+   * Rows the planner has written, counted off its answer while the call is
+   * still open. Kept apart from `drafted` for the same reason the review
+   * counters are: planning decides what to write and writes nothing.
+   */
+  planned: number;
+  /** `null` until the planning pass says how many sections it is planning. */
+  planTotal: number | null;
 };
 
 const NO_SECTIONS: ReadonlyMap<string, SectionUiState> = new Map();
@@ -69,6 +77,8 @@ const EMPTY: DraftRunUiState = {
   outcome: null,
   reviewCompleted: 0,
   reviewTotal: null,
+  planned: 0,
+  planTotal: null,
 };
 
 /** The state of a report with no drafting run anywhere near it. */
@@ -130,6 +140,8 @@ export function runStateFromDraftRun(run: DraftRun): DraftRunUiState {
           : null,
     reviewCompleted: 0,
     reviewTotal: null,
+    planned: 0,
+    planTotal: null,
   };
 }
 
@@ -146,6 +158,15 @@ export function reduceDraftRun(
   event: ReportTurnProgressView
 ): DraftRunUiState {
   switch (event.kind) {
+    // Planning never touches `live` or the section ledger, for the same
+    // reason a review pass does not: it decides what to write and writes
+    // nothing. The pass that started it is what put the run on screen.
+    case "plan_row_planned":
+      return commitPlanned(
+        state,
+        Math.max(state.planned, event.planned),
+        event.total
+      );
     case "plan_ready":
       return commit(state, {
         total: highest(state.total, event.section_count),
@@ -273,6 +294,20 @@ function commitReview(
     return state;
   }
   return { ...state, reviewCompleted: completed, reviewTotal };
+}
+
+/**
+ * The planner's row count, which restarts from nothing whenever its call is
+ * re-sent, so the highest one wins and the reader never watches it fall back.
+ */
+function commitPlanned(
+  state: DraftRunUiState,
+  planned: number,
+  total: number
+): DraftRunUiState {
+  const planTotal = highest(state.planTotal, total);
+  if (state.planned === planned && state.planTotal === planTotal) return state;
+  return { ...state, planned, planTotal };
 }
 
 function commit(

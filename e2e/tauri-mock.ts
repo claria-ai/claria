@@ -924,6 +924,7 @@ export function buildInitScript(
             const sections = reportWorkspace.draft.content.sections;
             if (sections.length === 0) throw "This report has no sections to plan. Apply a template, or write a section, before planning a whole-report draft.";
             const emitPlan = progressEmitter(args.onProgress);
+            sections.forEach((_section, index) => emitPlan({ kind: "plan_row_planned", planned: index + 1, total: sections.length }));
             emitPlan({ kind: "plan_ready", section_count: sections.length });
             const now = new Date().toISOString();
             const run = {

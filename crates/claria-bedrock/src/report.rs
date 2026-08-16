@@ -1265,14 +1265,23 @@ struct PartialToolUse {
 /// the unary path returns, so the protocol validation below has exactly one
 /// implementation regardless of transport.
 #[derive(Debug, Default)]
-pub(crate) struct ReportStreamCollector {
+pub struct ReportStreamCollector {
     blocks: BTreeMap<usize, PartialReportBlock>,
     stop_reason: Option<StopReason>,
     usage: Option<aws_sdk_bedrockruntime::types::TokenUsage>,
 }
 
 impl ReportStreamCollector {
-    pub(crate) fn absorb(&mut self, event: ConverseStreamOutput) {
+    /// Absorb one stream event, returning the tool-input fragment it carried
+    /// so a caller can tell the reader how far a structured answer has got.
+    ///
+    /// Tool input rather than text, because that is what the calls on this
+    /// path produce: a forced tool's JSON, arriving a few characters at a
+    /// time. The fragment is partial JSON and stays that way — it is worth
+    /// counting rows off, never parsing, never logging, and never mistaking
+    /// for the answer. [`Self::finish`] is still the only thing that
+    /// validates.
+    pub fn absorb(&mut self, event: ConverseStreamOutput) -> Option<String> {
         match event {
             ConverseStreamOutput::ContentBlockStart(event) => {
                 let index = event.content_block_index() as usize;
@@ -1283,49 +1292,58 @@ impl ReportStreamCollector {
                         input: String::new(),
                     });
                 }
+                None
             }
             ConverseStreamOutput::ContentBlockDelta(event) => {
                 let index = event.content_block_index() as usize;
-                let Some(delta) = event.delta() else { return };
+                let delta = event.delta()?;
                 let block = self.blocks.entry(index).or_default();
                 match delta {
-                    ContentBlockDelta::Text(text) => block.text.push_str(text),
+                    ContentBlockDelta::Text(text) => {
+                        block.text.push_str(text);
+                        None
+                    }
                     ContentBlockDelta::ToolUse(tool) => {
                         // A tool delta before its start event would lose the
                         // ID and name; the service never does that, and the
                         // finalizer rejects a nameless tool if it ever does.
-                        if let Some(partial) = block.tool.as_mut() {
-                            partial.input.push_str(tool.input());
-                        }
+                        let partial = block.tool.as_mut()?;
+                        partial.input.push_str(tool.input());
+                        (!tool.input().is_empty()).then(|| tool.input().to_string())
                     }
-                    ContentBlockDelta::ReasoningContent(reasoning) => match reasoning {
-                        ReasoningContentBlockDelta::Text(text) => {
-                            block.reasoning_text.push_str(text)
+                    ContentBlockDelta::ReasoningContent(reasoning) => {
+                        match reasoning {
+                            ReasoningContentBlockDelta::Text(text) => {
+                                block.reasoning_text.push_str(text)
+                            }
+                            ReasoningContentBlockDelta::Signature(signature) => {
+                                block.reasoning_signature = Some(signature.clone())
+                            }
+                            ReasoningContentBlockDelta::RedactedContent(data) => {
+                                block.reasoning_redacted = Some(data.as_ref().to_vec())
+                            }
+                            _ => {}
                         }
-                        ReasoningContentBlockDelta::Signature(signature) => {
-                            block.reasoning_signature = Some(signature.clone())
-                        }
-                        ReasoningContentBlockDelta::RedactedContent(data) => {
-                            block.reasoning_redacted = Some(data.as_ref().to_vec())
-                        }
-                        _ => {}
-                    },
-                    _ => {}
+                        None
+                    }
+                    _ => None,
                 }
             }
             ConverseStreamOutput::MessageStop(event) => {
                 self.stop_reason = Some(event.stop_reason().clone());
+                None
             }
             ConverseStreamOutput::Metadata(event) => {
                 self.usage = event.usage().cloned();
+                None
             }
-            _ => {}
+            _ => None,
         }
     }
 
     /// Rebuild the assistant message in wire order. A missing `messageStop`
     /// is a protocol error rather than a silently-complete turn.
-    pub(crate) fn finish(
+    pub fn finish(
         self,
     ) -> Result<
         (

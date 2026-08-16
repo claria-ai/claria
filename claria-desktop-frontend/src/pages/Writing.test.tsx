@@ -824,6 +824,66 @@ describe("Writing", () => {
     );
   });
 
+  it("counts the sections off while the plan is still being written", async () => {
+    let emit: ((progress: unknown) => void) | undefined;
+    let settle: ((run: unknown) => void) | undefined;
+    mocks.generateDraftPlan.mockImplementation(
+      (
+        _clientId: string,
+        _reportId: string,
+        _revision: number,
+        _guidance: string,
+        _streamId: string,
+        onProgress?: (progress: unknown) => void
+      ) => {
+        emit = onProgress;
+        return new Promise((resolve) => {
+          settle = resolve;
+        });
+      }
+    );
+
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.click(screen.getByRole("tab", { name: "Get started" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Fill whole report" })
+    );
+    const confirmation = screen.getByRole("dialog", {
+      name: "Replace the working draft?",
+    });
+    await userEvent.click(
+      within(confirmation).getByRole("button", { name: "Fill whole report" })
+    );
+
+    // Before a single row is counted, the pass has no denominator to draw.
+    expect(await screen.findByText("Planning the report…")).toBeDefined();
+    expect(
+      within(screen.getByTestId("draft-run-progress")).queryByRole("progressbar")
+    ).toBeNull();
+
+    await act(async () => {
+      emit!({ kind: "plan_row_planned", planned: 1, total: 3 });
+      emit!({ kind: "plan_row_planned", planned: 2, total: 3 });
+    });
+
+    expect(
+      screen.getByText("Planning — 2 of 3 sections decided")
+    ).toBeDefined();
+    expect(
+      within(screen.getByTestId("draft-run-progress"))
+        .getByRole("progressbar", { name: "Report sections planned" })
+        .getAttribute("aria-valuetext")
+    ).toBe("2 of 3 planned");
+
+    await act(async () => {
+      settle!(plannedRun());
+    });
+    expect(
+      await screen.findByText("Plan ready — review before drafting")
+    ).toBeDefined();
+  });
+
   it("plans the whole report and waits at the gate before drafting", async () => {
     renderWriting();
     await screen.findByText("Accepted report title");

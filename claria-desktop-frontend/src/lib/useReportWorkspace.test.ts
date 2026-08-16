@@ -257,6 +257,55 @@ describe("useReportWorkspace drafting runs", () => {
     expect(hook.result.current.run.sections.size).toBe(0);
   });
 
+  it("counts the plan off while the planning call is still open", async () => {
+    const hook = renderWorkspace();
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+    let emit: ((progress: ReportTurnProgressView) => void) | undefined;
+    let settle: ((run: DraftRun) => void) | undefined;
+    mocks.generateDraftPlan.mockImplementation(
+      (
+        _clientId: string,
+        _reportId: string,
+        _revision: number,
+        _guidance: string,
+        _streamId: string,
+        onProgress?: (progress: ReportTurnProgressView) => void
+      ) => {
+        emit = onProgress;
+        return new Promise<DraftRun>((resolve) => {
+          settle = resolve;
+        });
+      }
+    );
+
+    let planning: Promise<boolean> | undefined;
+    await act(async () => {
+      planning = hook.result.current.planRun("model-1", "Lead with the referral.");
+    });
+
+    act(() => {
+      emit!({ kind: "plan_row_planned", planned: 1, total: 3 });
+      emit!({ kind: "plan_row_planned", planned: 2, total: 3 });
+    });
+
+    expect(hook.result.current.run.planned).toBe(2);
+    expect(hook.result.current.run.planTotal).toBe(3);
+    // Planning replaces the static line, and still claims no drafted section.
+    expect(hook.result.current.agentActivity).toEqual({
+      label: "Planning the report",
+      detail: "2 of 3 sections planned",
+    });
+    expect(hook.result.current.run.total).toBeNull();
+
+    await act(async () => {
+      settle!(stoppedRun());
+      await planning!;
+    });
+    // The gate is not drafting, so the counters retire with the pass.
+    expect(hook.result.current.run.planTotal).toBeNull();
+  });
+
   it("names the section it is drafting and how far along it is", async () => {
     const hook = renderWorkspace();
     await waitFor(() => expect(hook.result.current.loading).toBe(false));

@@ -176,6 +176,15 @@ pub struct StructuredCallRequest<'a> {
     pub cache_plan: CachePlan,
     /// Fired by the reader's Stop button; a default signal never fires.
     pub stop: &'a StopSignal,
+    /// Called with each fragment of the forced tool's input as it streams,
+    /// for callers that would otherwise show a spinner for minutes.
+    ///
+    /// Display only, and deliberately raw: the fragments are partial JSON,
+    /// so the caller may count structure off them and must not parse, store,
+    /// or log them. What reaches the reader is the caller's own decision,
+    /// which is also where the cadence is set — this fires as often as the
+    /// service sends bytes.
+    pub on_partial_tool_input: Option<&'a (dyn Fn(&str) + Send + Sync)>,
     /// Fixed request-family label for the usage log — `"report_plan"`,
     /// `"report_review"`. Never derived from user input.
     pub operation: &'static str,
@@ -255,9 +264,14 @@ pub fn analysis_input_token_budget(model_id: &str, output_token_reserve: u32) ->
 ///
 /// Streamed rather than unary for the same reason the writer is: the response
 /// is a large structured document and the connection has to carry frames
-/// while it is produced. Nothing is forwarded incrementally — a half-written
-/// plan is not a plan — but the stream loop awaits the stop signal beside the
-/// next frame, so Stop does not have to wait for a model that is thinking.
+/// while it is produced. The stream loop also awaits the stop signal beside
+/// the next frame, so Stop does not have to wait for a model that is
+/// thinking.
+///
+/// Partial tool input is handed to `on_partial_tool_input` as it arrives, for
+/// display only — a caller can count rows off it and say how far the answer
+/// has got. It is never a result: a half-written plan is not a plan, and
+/// validation still happens on the whole document once the stream closes.
 ///
 /// The contract is deliberately narrow. Exactly one call to `forced_tool` and
 /// a `tool_use` stop is the only success. `max_tokens` is a typed failure
@@ -289,6 +303,7 @@ pub async fn converse_structured(
         max_tokens,
         cache_plan,
         stop,
+        on_partial_tool_input,
         operation,
     } = request;
 
@@ -382,7 +397,11 @@ pub async fn converse_structured(
             event = converse::recv_stream_event("analysis ConverseStream", &mut stream) => event?,
         };
         let Some(event) = event else { break false };
-        collector.absorb(event);
+        if let Some(fragment) = collector.absorb(event)
+            && let Some(on_partial_tool_input) = on_partial_tool_input
+        {
+            on_partial_tool_input(&fragment);
+        }
     };
     if stopped {
         // Dropping the stream closes the connection so the model stops

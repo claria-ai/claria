@@ -72,6 +72,18 @@ pub enum ReportTurnProgress {
         context: Option<String>,
         status: ReportToolResultStatus,
     },
+    /// The planner has finished another row of the plan it is streaming.
+    ///
+    /// Counted off the partial tool-input JSON while the call is still open,
+    /// so a pass that takes minutes says how far it has got instead of
+    /// spinning. Display only: `planned` is a count of rows seen, not of rows
+    /// the host has accepted, and the plan is still validated whole when the
+    /// call returns. `total` is the document's section count, known before
+    /// the call.
+    PlanRowPlanned {
+        planned: u32,
+        total: u32,
+    },
     /// The drafting run's plan is in place, before the first model call. Its
     /// row count is the honest denominator for everything that follows: the
     /// number of sections the run owes a decision about, not a guess at how

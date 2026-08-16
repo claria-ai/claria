@@ -2146,6 +2146,12 @@ export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
 export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus } | 
 /**
+ * Another plan row has been counted off the answer the planner is still
+ * streaming. Display only — the plan is validated whole when the call
+ * returns — so the count may restart if the call is re-sent.
+ */
+{ kind: "plan_row_planned"; planned: number; total: number } | 
+/**
  * The drafting run's plan is settled, before the first model call: the
  * honest denominator for the progress that follows.
  */

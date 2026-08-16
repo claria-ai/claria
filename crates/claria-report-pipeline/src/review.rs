@@ -472,6 +472,10 @@ async fn run_branch(
                         max_tokens: REVIEW_OUTPUT_TOKEN_RESERVE,
                         cache_plan: cache_plan.clone(),
                         stop,
+                        // A review branch already reports itself pass by
+                        // pass; a row count inside one pass says nothing the
+                        // reader can act on.
+                        on_partial_tool_input: None,
                         operation: "report_review",
                     },
                     &mut *budget.lock().await,

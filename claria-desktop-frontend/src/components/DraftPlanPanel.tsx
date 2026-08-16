@@ -135,7 +135,7 @@ export default function DraftPlanPanel({
           )}
         </div>
         {/* The same numbers the canvas strip draws: one run, one denominator. */}
-        {runState.total !== null && (
+        {runState.total !== null ? (
           <ProgressBar
             label="Report sections drafted"
             value={runState.drafted}
@@ -143,6 +143,16 @@ export default function DraftPlanPanel({
             valueText={`${runState.drafted} of ${runState.total} drafted`}
             showValueText={false}
           />
+        ) : (
+          runState.planTotal !== null && (
+            <ProgressBar
+              label="Report sections planned"
+              value={runState.planned}
+              max={runState.planTotal}
+              valueText={`${runState.planned} of ${runState.planTotal} planned`}
+              showValueText={false}
+            />
+          )
         )}
       </div>
 
@@ -314,7 +324,11 @@ function phaseLine(
       ? `Stopped by an error — ${runState.drafted} of ${total} sections drafted and saved`
       : `Stopped — ${runState.drafted} of ${total} sections drafted and saved`;
   }
-  if (runState.total === null) return "Planning the report…";
+  if (runState.total === null) {
+    return runState.planTotal === null
+      ? "Planning the report…"
+      : `Planning — ${runState.planned} of ${runState.planTotal} sections decided`;
+  }
   return `Drafting — ${runState.drafted} of ${runState.total}`;
 }
 

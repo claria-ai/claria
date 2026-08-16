@@ -1,12 +1,16 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
+use aws_sdk_bedrockruntime::types::{
+    ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStart, ContentBlockStartEvent,
+    ConverseStreamOutput, MessageStopEvent, StopReason, ToolUseBlockDelta, ToolUseBlockStart,
+};
 use claria_bedrock::{
     chat::{ChatMessage, ChatRole},
     converse::StopSignal,
     error::BedrockError,
     report::{
-        PROPOSE_REPORT_CHANGES_TOOL, ReportInputBudget, ReportStopReason, ReportToolRequest,
-        converse_full_report_with_tool_limit, converse_report, converse_report_with_tool_limit,
-        decode_tool_request,
+        PROPOSE_REPORT_CHANGES_TOOL, ReportInputBudget, ReportStopReason, ReportStreamCollector,
+        ReportToolRequest, converse_full_report_with_tool_limit, converse_report,
+        converse_report_with_tool_limit, decode_tool_request,
     },
 };
 use claria_core::models::report::{
@@ -885,4 +889,106 @@ async fn ordinary_chat_still_sends_no_tool_configuration() {
     let state = server.state.read().await;
     assert!(state.bedrock_tool_requests.is_empty());
     assert!(state.bedrock_tool_model_ids.is_empty());
+}
+
+// ── The report/analysis stream collector ────────────────────────────────────
+
+fn tool_start_event(index: usize, tool_use_id: &str, name: &str) -> ConverseStreamOutput {
+    ConverseStreamOutput::ContentBlockStart(
+        ContentBlockStartEvent::builder()
+            .content_block_index(index as i32)
+            .start(ContentBlockStart::ToolUse(
+                ToolUseBlockStart::builder()
+                    .tool_use_id(tool_use_id)
+                    .name(name)
+                    .build()
+                    .expect("tool use start"),
+            ))
+            .build()
+            .expect("content block start"),
+    )
+}
+
+fn tool_input_event(index: usize, input: &str) -> ConverseStreamOutput {
+    ConverseStreamOutput::ContentBlockDelta(
+        ContentBlockDeltaEvent::builder()
+            .content_block_index(index as i32)
+            .delta(ContentBlockDelta::ToolUse(
+                ToolUseBlockDelta::builder()
+                    .input(input)
+                    .build()
+                    .expect("tool use delta"),
+            ))
+            .build()
+            .expect("content block delta"),
+    )
+}
+
+fn text_event(index: usize, text: &str) -> ConverseStreamOutput {
+    ConverseStreamOutput::ContentBlockDelta(
+        ContentBlockDeltaEvent::builder()
+            .content_block_index(index as i32)
+            .delta(ContentBlockDelta::Text(text.to_string()))
+            .build()
+            .expect("content block delta"),
+    )
+}
+
+/// Partial tool input is handed back fragment by fragment so a caller can
+/// report progress on a structured answer that takes minutes, while the
+/// joined document stays the only thing anyone parses.
+#[test]
+fn collector_hands_back_tool_input_as_it_grows() {
+    let mut collector = ReportStreamCollector::default();
+    assert!(collector.absorb(text_event(0, "Planning.")).is_none());
+    assert!(
+        collector
+            .absorb(tool_start_event(1, "plan-1", "submit_section_plan"))
+            .is_none()
+    );
+
+    let fragments = [
+        "{\"rows\":[{\"section",
+        "_id\":\"a\"},{\"section_id\"",
+        ":\"b\"}]}",
+    ];
+    let mut seen = String::new();
+    for fragment in fragments {
+        assert_eq!(
+            collector.absorb(tool_input_event(1, fragment)).as_deref(),
+            Some(fragment)
+        );
+        seen.push_str(fragment);
+    }
+    assert!(
+        collector
+            .absorb(ConverseStreamOutput::MessageStop(
+                MessageStopEvent::builder()
+                    .stop_reason(StopReason::ToolUse)
+                    .build()
+                    .expect("message stop"),
+            ))
+            .is_none()
+    );
+
+    let (content, stop_reason, _usage) = collector.finish().expect("complete stream");
+    assert_eq!(stop_reason, StopReason::ToolUse);
+    let tool = content
+        .iter()
+        .find_map(|block| match block {
+            aws_sdk_bedrockruntime::types::ContentBlock::ToolUse(tool) => Some(tool),
+            _ => None,
+        })
+        .expect("the forced tool call");
+    assert_eq!(tool.name(), "submit_section_plan");
+    assert_eq!(tool.tool_use_id(), "plan-1");
+    // The fragments the caller was shown are the answer, split: two rows are
+    // countable in them, and they are only JSON once joined — which is why a
+    // fragment is worth a progress line and nothing more.
+    assert_eq!(seen.matches("\"section_id\"").count(), 2);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&seen).expect("joined tool input JSON"),
+        serde_json::json!({"rows": [{"section_id": "a"}, {"section_id": "b"}]})
+    );
+    assert!(serde_json::from_str::<serde_json::Value>(fragments[0]).is_err());
 }

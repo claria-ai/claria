@@ -334,9 +334,10 @@ function WritingCanvas({
               className="flex items-end gap-3"
               data-testid="draft-run-progress"
             >
-              {/* No denominator, no bar: a planning run gets the throbber
-                  alone rather than a percentage nobody can stand behind. */}
-              {run.total !== null && (
+              {/* No denominator, no bar: until the pass counting sections
+                  says how many there are, the throbber stands alone rather
+                  than a percentage nobody can stand behind. */}
+              {run.total !== null ? (
                 <ProgressBar
                   className="flex-1"
                   label="Report sections drafted"
@@ -344,6 +345,16 @@ function WritingCanvas({
                   max={run.total}
                   valueText={`${run.drafted} of ${run.total} drafted`}
                 />
+              ) : (
+                run.planTotal !== null && (
+                  <ProgressBar
+                    className="flex-1"
+                    label="Report sections planned"
+                    value={run.planned}
+                    max={run.planTotal}
+                    valueText={`${run.planned} of ${run.planTotal} planned`}
+                  />
+                )
               )}
               {onStopRun && (
                 <button

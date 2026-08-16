@@ -234,6 +234,7 @@ async fn plan_fresh_run(
         &system,
         instruction,
         analysis::SUBMIT_SECTION_PLAN_TOOL,
+        section_total(workspace.draft.content.sections.len()),
         request,
         |input| {
             let rows = analysis::decode_section_plan(input).map_err(bedrock_diagnostic)?;
@@ -555,6 +556,7 @@ pub async fn plan_draft_resume(
         &system,
         instruction,
         analysis::SUBMIT_RESUME_PLAN_TOOL,
+        section_total(run.run.sections.len()),
         request,
         |input| {
             let rows = analysis::decode_resume_plan(input).map_err(bedrock_diagnostic)?;
@@ -589,6 +591,64 @@ struct AnalysisOutcome<T> {
     converse_calls: u32,
 }
 
+/// The key every plan row opens with, in both plan tools' schemas.
+const SECTION_ID_KEY: &str = "\"section_id\"";
+
+/// How many rows this pass is owed, as a progress denominator. The ceiling
+/// on a document's sections is far below `u32`, so saturating is unreachable
+/// rather than a policy.
+fn section_total(sections: usize) -> u32 {
+    u32::try_from(sections).unwrap_or(u32::MAX)
+}
+
+/// Counts finished plan rows in the partial tool-input JSON, so a call that
+/// runs for minutes can say how far along it is.
+///
+/// Deliberately not a parser. It looks for one key and reads nothing else out
+/// of the buffer — a partial plan carries the same untrusted scope text the
+/// whole one does, and the whole one is what gets validated. The count is a
+/// number for a progress line and nothing else depends on it.
+#[derive(Debug, Default)]
+struct PlanRowCounter {
+    /// Bytes since the last key, so one split across two fragments is still
+    /// seen exactly once. Bounded by the length of a single row.
+    carry: String,
+    /// Rows seen in the attempt now streaming.
+    seen: u32,
+    /// Highest count already announced. A throttle retry or a repair round
+    /// starts the JSON again from nothing, and the reader must not watch the
+    /// count walk backwards.
+    announced: u32,
+}
+
+impl PlanRowCounter {
+    /// Begin a fresh attempt. What has already been announced stands.
+    fn restart(&mut self) {
+        self.carry.clear();
+        self.seen = 0;
+    }
+
+    /// Absorb one fragment of partial JSON, returning the new row count when
+    /// it has moved past everything announced so far.
+    fn absorb(&mut self, fragment: &str, total: u32) -> Option<u32> {
+        self.carry.push_str(fragment);
+        let mut consumed = 0;
+        while let Some(at) = self.carry[consumed..].find(SECTION_ID_KEY) {
+            consumed += at + SECTION_ID_KEY.len();
+            self.seen = self.seen.saturating_add(1);
+        }
+        self.carry.drain(..consumed);
+        // A planner that returns more rows than the document has is a
+        // validation failure, not a progress line that counts past its own
+        // denominator.
+        let seen = self.seen.min(total);
+        (seen > self.announced).then(|| {
+            self.announced = seen;
+            seen
+        })
+    }
+}
+
 /// Force one analysis tool, validate the answer, and grant exactly
 /// [`PLAN_REPAIR_ROUNDS`] correction before giving up.
 ///
@@ -602,12 +662,19 @@ struct AnalysisOutcome<T> {
 /// host refused; retries answer a call that never landed — a throttle, or a
 /// stream that stalled or was severed — and re-send the identical request
 /// without spending a round or a second `CountTokens`.
+///
+/// `section_total` is how many rows the document is owed, which is known
+/// before the call and is the denominator the live row count is reported
+/// against.
+// The same explicit orchestration boundary the entry points above keep.
+#[allow(clippy::too_many_arguments)]
 async fn run_analysis_call<T>(
     sdk_config: &aws_config::SdkConfig,
     planner_model_id: &str,
     system: &[String],
     instruction: String,
     forced_tool: &'static str,
+    section_total: u32,
     request: DraftPlanRequest<'_>,
     mut validate: impl FnMut(&serde_json::Value) -> Result<T, String>,
 ) -> Result<AnalysisOutcome<T>, ReportPipelineError> {
@@ -633,6 +700,21 @@ async fn run_analysis_call<T>(
         created_at: jiff::Timestamp::now(),
     }];
 
+    // Rows counted off the partial answer, behind a lock because the stream
+    // hands fragments to a shared callback rather than to this task.
+    let counter = std::sync::Mutex::new(PlanRowCounter::default());
+    let count_row = |fragment: &str| {
+        let Ok(mut counter) = counter.lock() else {
+            return;
+        };
+        if let Some(planned) = counter.absorb(fragment, section_total) {
+            request.emit_progress(ReportTurnProgress::PlanRowPlanned {
+                planned,
+                total: section_total,
+            });
+        }
+    };
+
     let mut usage: Option<TurnUsage> = None;
     let mut converse_calls = 0_u32;
     let mut rejection: Option<String> = None;
@@ -646,6 +728,10 @@ async fn run_analysis_call<T>(
             let tools = &tools;
             let cache_plan = &cache_plan;
             let budget = &budget;
+            let count_row = &count_row;
+            if let Ok(mut counter) = counter.lock() {
+                counter.restart();
+            }
             async move {
                 analysis::converse_structured(
                     sdk_config,
@@ -658,6 +744,7 @@ async fn run_analysis_call<T>(
                         max_tokens: PLAN_OUTPUT_TOKEN_RESERVE,
                         cache_plan: cache_plan.clone(),
                         stop,
+                        on_partial_tool_input: Some(count_row),
                         operation: "report_plan",
                     },
                     &mut *budget.lock().await,
@@ -768,9 +855,11 @@ pub(crate) fn map_bedrock_error(
         // response at all. The wait, not the request, is the actionable
         // fact. Must precede the catch-all, which would otherwise report a
         // service that answered nothing as one Claria could not reach.
-        _ if error.is_interrupted_before_completion() => ReportPipelineError::InvalidInput(format!(
-            "Bedrock appears to be having a hard time: the {pass} got no response, even after retries. Nothing was saved. Try again later."
-        )),
+        _ if error.is_interrupted_before_completion() => {
+            ReportPipelineError::InvalidInput(format!(
+                "Bedrock appears to be having a hard time: the {pass} got no response, even after retries. Nothing was saved. Try again later."
+            ))
+        }
         _ => {
             // Structural, PHI-free: service codes, request IDs, protocol
             // shapes. The user-facing sentence below deliberately carries none

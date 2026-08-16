@@ -67,6 +67,7 @@ All notable changes to Claria are documented here.
 - A response that goes silent part-way through is abandoned after a minute rather than five
 - Planning now produces an outline naming the records each section rests on, instead of copying quoted excerpts out of them, so a plan generates in a fraction of the time
 - The planner's smaller answers hand ~16k tokens back to the record corpus it reads
+- Planning counts its sections off as they are decided instead of showing a spinner for the whole call
 
 ## [0.28.0] — 2026-08-15
 
