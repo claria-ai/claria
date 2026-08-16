@@ -427,10 +427,11 @@ enum ReportToolSet {
 }
 
 impl ReportToolSet {
-    /// The label this tool set's turns carry on the shared usage/cache log
-    /// line, so a console export separates targeted edits from whole-draft
-    /// runs without parsing anything else.
-    fn usage_operation(self) -> &'static str {
+    /// The request-family label this tool set's turns carry — on the shared
+    /// usage/cache log line, on the stream watchdog's failures, and in the
+    /// error prose a reader is shown — so a console export separates
+    /// targeted edits from whole-draft runs without parsing anything else.
+    fn operation(self) -> &'static str {
         match self {
             Self::TargetedEdit => "report_targeted",
             Self::FullDraft => "report_full_draft",
@@ -533,9 +534,12 @@ async fn converse_report_with_tool_set(
     // the model generates. Nothing is forwarded incrementally — the loop
     // needs a whole message before it can execute tool calls — but the
     // connection carries frames throughout instead of idling.
+    let operation = tool_set.operation();
+    let stream_bounds = converse::StreamBounds::conversational();
     let started = std::time::Instant::now();
     let response = converse::start_converse_stream(
-        "report ConverseStream",
+        operation,
+        stream_bounds,
         client
             .converse_stream()
             .model_id(model_id)
@@ -556,7 +560,7 @@ async fn converse_report_with_tool_set(
     let mut stream = response.stream;
     let mut collector = ReportStreamCollector::default();
     loop {
-        let event = converse::recv_stream_event("report ConverseStream", &mut stream).await?;
+        let event = converse::recv_stream_event(operation, stream_bounds, &mut stream).await?;
         let Some(event) = event else { break };
         collector.absorb(event);
     }
@@ -665,7 +669,7 @@ async fn converse_report_with_tool_set(
         cache_plan.effective_ttl(),
     );
     converse::log_turn_usage(
-        tool_set.usage_operation(),
+        operation,
         model_id,
         usage.as_ref(),
         Some(stop_reason.as_str()),
