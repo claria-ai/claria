@@ -13,9 +13,7 @@ use claria_storage::error::StorageError;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{
-    MAX_RESOLUTIONS, ReportAuthoringError, ReportExportSnapshot, ReportTemplateApplication,
-};
+use crate::{MAX_RESOLUTIONS, ReportExportSnapshot, ReportStoreError, ReportTemplateApplication};
 
 /// Legacy-compatible current workspace loader. New UI sessions use
 /// [`start_report_workspace`] and resume by ID with
@@ -24,7 +22,7 @@ pub async fn load_report_workspace(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     Ok(load_or_create(s3, bucket, client_id).await?.workspace)
 }
 
@@ -35,7 +33,7 @@ pub async fn start_report_workspace(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     start_report_workspace_with_id(s3, bucket, client_id, Uuid::new_v4()).await
 }
 
@@ -47,9 +45,9 @@ pub async fn start_report_workspace_with_id(
     bucket: &str,
     client_id: Uuid,
     report_id: Uuid,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     if client_id.is_nil() || report_id.is_nil() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Client and report IDs must not be nil.".to_string(),
         ));
     }
@@ -58,7 +56,7 @@ pub async fn start_report_workspace_with_id(
     match load_existing(s3, bucket, &key, client_id).await {
         Ok(loaded) if loaded.workspace.report_id == report_id => return Ok(loaded.workspace),
         Ok(_) => {
-            return Err(ReportAuthoringError::InvalidWorkspace(
+            return Err(ReportStoreError::InvalidWorkspace(
                 "The Writing session ID does not match its storage key.".to_string(),
             ));
         }
@@ -83,14 +81,14 @@ pub async fn start_report_workspace_with_id(
             &format!("Writer Session ({})", visible_session_count + 1),
             now,
         )
-        .map_err(|error| ReportAuthoringError::InvalidWorkspace(error.to_string()))?;
+        .map_err(|error| ReportStoreError::InvalidWorkspace(error.to_string()))?;
     match claria_storage::state::save_state_if_none_match(s3, bucket, &key, &workspace).await {
         Ok(_) => Ok(workspace),
         Err(StorageError::PreconditionFailed { .. }) => load_existing(s3, bucket, &key, client_id)
             .await
             .map(|loaded| loaded.workspace)
             .map_err(LoadWorkspaceError::into_public),
-        Err(source) => Err(ReportAuthoringError::storage(
+        Err(source) => Err(ReportStoreError::storage(
             "creating the Writing session",
             source,
         )),
@@ -102,9 +100,9 @@ pub async fn load_report_workspace_by_id(
     bucket: &str,
     client_id: Uuid,
     report_id: Uuid,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     if report_id.is_nil() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Report ID must not be nil.".to_string(),
         ));
     }
@@ -119,9 +117,9 @@ pub async fn list_report_workspaces(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<Vec<ReportWorkspace>, ReportAuthoringError> {
+) -> Result<Vec<ReportWorkspace>, ReportStoreError> {
     if client_id.is_nil() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Client ID must not be nil.".to_string(),
         ));
     }
@@ -133,13 +131,13 @@ pub async fn list_report_workspaces(
         &claria_core::s3_keys::report_sessions_prefix(client_id),
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("listing Writing sessions", source))?;
+    .map_err(|source| ReportStoreError::storage("listing Writing sessions", source))?;
     let legacy_key = claria_core::s3_keys::report_workspace(client_id);
     match claria_storage::objects::get_object(s3, bucket, &legacy_key).await {
         Ok(_) => keys.push(legacy_key),
         Err(StorageError::NotFound { .. }) => {}
         Err(source) => {
-            return Err(ReportAuthoringError::storage(
+            return Err(ReportStoreError::storage(
                 "checking the legacy Writing session",
                 source,
             ));
@@ -168,7 +166,7 @@ pub async fn find_report_workspace(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<Option<ReportWorkspace>, ReportAuthoringError> {
+) -> Result<Option<ReportWorkspace>, ReportStoreError> {
     Ok(list_report_workspaces(s3, bucket, client_id)
         .await?
         .into_iter()
@@ -181,12 +179,12 @@ pub async fn rename_report_session(
     client_id: Uuid,
     report_id: Uuid,
     name: &str,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let mut loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     loaded
         .workspace
         .rename_session(name, jiff::Timestamp::now())
-        .map_err(|error| ReportAuthoringError::InvalidInput(error.to_string()))?;
+        .map_err(|error| ReportStoreError::InvalidInput(error.to_string()))?;
     save_loaded(s3, bucket, &mut loaded).await?;
     Ok(loaded.workspace)
 }
@@ -197,7 +195,7 @@ pub async fn save_report_draft(
     client_id: Uuid,
     expected_revision: u64,
     content: ReportContent,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let loaded = load_or_create(s3, bucket, client_id).await?;
     save_report_draft_loaded(s3, bucket, loaded, expected_revision, content).await
 }
@@ -209,7 +207,7 @@ pub async fn save_report_draft_for_report(
     report_id: Uuid,
     expected_revision: u64,
     content: ReportContent,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     save_report_draft_loaded(s3, bucket, loaded, expected_revision, content).await
 }
@@ -220,10 +218,10 @@ async fn save_report_draft_loaded(
     mut loaded: LoadedWorkspace,
     expected_revision: u64,
     content: ReportContent,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     ensure_revision(&loaded.workspace, expected_revision)?;
     if loaded.workspace.session.pending_proposal.is_some() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Accept or reject the pending proposal before editing the report.".to_string(),
         ));
     }
@@ -233,7 +231,7 @@ async fn save_report_draft_loaded(
         .workspace
         .draft
         .replace_content(expected_revision, content, now)
-        .map_err(|error| ReportAuthoringError::InvalidInput(error.to_string()))?;
+        .map_err(|error| ReportStoreError::InvalidInput(error.to_string()))?;
     mark_template_current(&mut loaded.workspace);
     loaded.workspace.updated_at = now;
     save_loaded(s3, bucket, &mut loaded).await?;
@@ -249,9 +247,9 @@ pub async fn store_report_template_source(
     client_id: Uuid,
     source_sha256: &str,
     bytes: Vec<u8>,
-) -> Result<(), ReportAuthoringError> {
+) -> Result<(), ReportStoreError> {
     if bytes.is_empty() || bytes.len() > 10 * 1024 * 1024 {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "The writer template source must be between 1 byte and 10 MiB.".to_string(),
         ));
     }
@@ -260,7 +258,7 @@ pub async fn store_report_template_source(
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     if actual_sha256 != source_sha256 {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "The writer template source did not match its validated content hash.".to_string(),
         ));
     }
@@ -275,7 +273,7 @@ pub async fn store_report_template_source(
     .await
     {
         Ok(_) | Err(StorageError::PreconditionFailed { .. }) => Ok(()),
-        Err(source) => Err(ReportAuthoringError::storage(
+        Err(source) => Err(ReportStoreError::storage(
             "saving the report template formatting",
             source,
         )),
@@ -291,7 +289,7 @@ pub async fn apply_report_template(
     client_id: Uuid,
     expected_revision: u64,
     application: ReportTemplateApplication,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let loaded = load_or_create(s3, bucket, client_id).await?;
     apply_report_template_loaded(s3, bucket, loaded, expected_revision, application).await
 }
@@ -303,7 +301,7 @@ pub async fn apply_report_template_for_report(
     report_id: Uuid,
     expected_revision: u64,
     application: ReportTemplateApplication,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     apply_report_template_loaded(s3, bucket, loaded, expected_revision, application).await
 }
@@ -314,16 +312,16 @@ async fn apply_report_template_loaded(
     mut loaded: LoadedWorkspace,
     expected_revision: u64,
     application: ReportTemplateApplication,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     ensure_revision(&loaded.workspace, expected_revision)?;
     if loaded.workspace.template_import.is_some() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "This Writing session already has a template. Start a new session to use a different template."
                 .to_string(),
         ));
     }
     if loaded.workspace.session.pending_proposal.is_some() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Accept or reject the pending proposal before importing a template.".to_string(),
         ));
     }
@@ -333,7 +331,7 @@ async fn apply_report_template_loaded(
         .workspace
         .draft
         .replace_content(expected_revision, application.content, now)
-        .map_err(|error| ReportAuthoringError::InvalidInput(error.to_string()))?;
+        .map_err(|error| ReportStoreError::InvalidInput(error.to_string()))?;
     loaded.workspace.template_import = Some(ReportTemplateImport {
         source_sha256: application.source_sha256,
         writer_template_id: Some(application.writer_template_id),
@@ -354,7 +352,7 @@ pub async fn resolve_report_proposal(
     client_id: Uuid,
     proposal_id: Uuid,
     decision: ReportProposalDecision,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let loaded = load_or_create(s3, bucket, client_id).await?;
     resolve_report_proposal_loaded(s3, bucket, loaded, proposal_id, decision).await
 }
@@ -366,7 +364,7 @@ pub async fn resolve_report_proposal_for_report(
     report_id: Uuid,
     proposal_id: Uuid,
     decision: ReportProposalDecision,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     resolve_report_proposal_loaded(s3, bucket, loaded, proposal_id, decision).await
 }
@@ -377,7 +375,7 @@ async fn resolve_report_proposal_loaded(
     mut loaded: LoadedWorkspace,
     proposal_id: Uuid,
     decision: ReportProposalDecision,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     if loaded.workspace.session.pending_proposal.is_none()
         && already_resolved(&loaded.workspace, proposal_id, decision)
     {
@@ -390,12 +388,12 @@ async fn resolve_report_proposal_loaded(
         .pending_proposal
         .clone()
         .ok_or_else(|| {
-            ReportAuthoringError::InvalidInput(
+            ReportStoreError::InvalidInput(
                 "There is no pending report proposal to resolve.".to_string(),
             )
         })?;
     if proposal.id != proposal_id {
-        return Err(ReportAuthoringError::Conflict);
+        return Err(ReportStoreError::Conflict);
     }
 
     let now = jiff::Timestamp::now();
@@ -404,7 +402,7 @@ async fn resolve_report_proposal_loaded(
             .workspace
             .draft
             .accept(&proposal, now)
-            .map_err(|error| ReportAuthoringError::InvalidWorkspace(error.to_string()))?;
+            .map_err(|error| ReportStoreError::InvalidWorkspace(error.to_string()))?;
         // The assistant authored this exact proposal, so accepting it does not
         // create a user-edit queue for the next turn.
         loaded.workspace.session.last_agent_revision = Some(loaded.workspace.draft.revision);
@@ -439,10 +437,10 @@ pub async fn record_report_export(
     report_id: Uuid,
     revision: u64,
     status: ReportExportStatus,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let mut loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     if revision > loaded.workspace.draft.revision {
-        return Err(ReportAuthoringError::Conflict);
+        return Err(ReportStoreError::Conflict);
     }
     let now = jiff::Timestamp::now();
     loaded.workspace.session.last_export = Some(ReportExport {
@@ -461,10 +459,10 @@ pub async fn load_export_snapshot(
     client_id: Uuid,
     report_id: Uuid,
     expected_revision: u64,
-) -> Result<ReportExportSnapshot, ReportAuthoringError> {
+) -> Result<ReportExportSnapshot, ReportStoreError> {
     let loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     if loaded.workspace.draft.revision != expected_revision {
-        return Err(ReportAuthoringError::Conflict);
+        return Err(ReportStoreError::Conflict);
     }
     let mut template_missing = false;
     let template_source = if let Some(template) = &loaded.workspace.template_import {
@@ -477,7 +475,7 @@ pub async fn load_export_snapshot(
                 None
             }
             Err(source) => {
-                return Err(ReportAuthoringError::storage(
+                return Err(ReportStoreError::storage(
                     "loading the report template formatting",
                     source,
                 ));
@@ -499,14 +497,14 @@ pub async fn delete_report_workspace_for_client(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<usize, ReportAuthoringError> {
+) -> Result<usize, ReportStoreError> {
     claria_storage::objects::delete_objects_by_prefix(
         s3,
         bucket,
         &claria_core::s3_keys::report_authoring_client_prefix(client_id),
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("deleting the report workspace", source))
+    .map_err(|source| ReportStoreError::storage("deleting the report workspace", source))
 }
 
 /// Restore every independently stored Writing session (plus its attempt,
@@ -515,7 +513,7 @@ pub async fn restore_report_workspace_for_client(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<bool, ReportAuthoringError> {
+) -> Result<bool, ReportStoreError> {
     ensure_client_exists(s3, bucket, client_id).await?;
     claria_storage::objects::restore_deleted_objects_by_prefix(
         s3,
@@ -523,7 +521,7 @@ pub async fn restore_report_workspace_for_client(
         &claria_core::s3_keys::report_authoring_client_prefix(client_id),
     )
     .await
-    .map_err(|source| ReportAuthoringError::storage("restoring Writing sessions", source))?;
+    .map_err(|source| ReportStoreError::storage("restoring Writing sessions", source))?;
 
     // Validate every restored workspace. Returning true when sessions are
     // already current keeps retries and concurrent restores idempotent.
@@ -567,19 +565,28 @@ pub fn suggested_docx_filename(title: &str) -> String {
     format!("{value}.docx")
 }
 
-pub(crate) struct LoadedWorkspace {
-    pub(crate) workspace: ReportWorkspace,
-    pub(crate) key: String,
-    pub(crate) etag: String,
+/// A workspace object read together with the concurrency token that lets it
+/// be written back. Callers that run multi-step work against one workspace
+/// (the writer turn loop) hold this across the whole operation and save it
+/// once at the end.
+pub struct LoadedWorkspace {
+    pub workspace: ReportWorkspace,
+    /// The S3 key this workspace was read from — session or legacy singleton.
+    pub key: String,
+    /// ETag of the body currently stored at `key`; every save is conditional
+    /// on it and refreshes it in place.
+    pub etag: String,
 }
 
-pub(crate) async fn load_or_create(
+/// Load this client's legacy singleton workspace, creating an empty one if it
+/// does not exist yet.
+pub async fn load_or_create(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<LoadedWorkspace, ReportAuthoringError> {
+) -> Result<LoadedWorkspace, ReportStoreError> {
     if client_id.is_nil() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Client ID must not be nil.".to_string(),
         ));
     }
@@ -591,7 +598,7 @@ pub(crate) async fn load_or_create(
             let workspace = ReportWorkspace::new(client_id, jiff::Timestamp::now());
             workspace
                 .validate()
-                .map_err(|error| ReportAuthoringError::InvalidWorkspace(error.to_string()))?;
+                .map_err(|error| ReportStoreError::InvalidWorkspace(error.to_string()))?;
             match claria_storage::state::save_state_if_none_match(s3, bucket, &key, &workspace)
                 .await
             {
@@ -605,7 +612,7 @@ pub(crate) async fn load_or_create(
                         .await
                         .map_err(LoadWorkspaceError::into_public)
                 }
-                Err(source) => Err(ReportAuthoringError::storage(
+                Err(source) => Err(ReportStoreError::storage(
                     "creating the report workspace",
                     source,
                 )),
@@ -615,17 +622,19 @@ pub(crate) async fn load_or_create(
     }
 }
 
-pub(crate) async fn load_for_report(
+/// Load one independently resumable Writing session by ID, falling back to
+/// the pre-multi-session singleton when it holds that report.
+pub async fn load_for_report(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
     report_id: Uuid,
-) -> Result<LoadedWorkspace, ReportAuthoringError> {
+) -> Result<LoadedWorkspace, ReportStoreError> {
     let session_key = claria_core::s3_keys::report_session_workspace(client_id, report_id);
     match load_existing(s3, bucket, &session_key, client_id).await {
         Ok(loaded) if loaded.workspace.report_id == report_id => return Ok(loaded),
         Ok(_) => {
-            return Err(ReportAuthoringError::InvalidWorkspace(
+            return Err(ReportStoreError::InvalidWorkspace(
                 "The Writing session ID does not match its storage key.".to_string(),
             ));
         }
@@ -637,7 +646,7 @@ pub(crate) async fn load_for_report(
     let legacy_key = claria_core::s3_keys::report_workspace(client_id);
     match load_existing(s3, bucket, &legacy_key, client_id).await {
         Ok(loaded) if loaded.workspace.report_id == report_id => Ok(loaded),
-        Ok(_) | Err(LoadWorkspaceError::NotFound) => Err(ReportAuthoringError::InvalidInput(
+        Ok(_) | Err(LoadWorkspaceError::NotFound) => Err(ReportStoreError::InvalidInput(
             "That Writing session is no longer available.".to_string(),
         )),
         Err(error) => Err(error.into_public()),
@@ -648,19 +657,19 @@ async fn ensure_client_exists(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
-) -> Result<(), ReportAuthoringError> {
+) -> Result<(), ReportStoreError> {
     let key = claria_core::s3_keys::client(client_id);
     let output = claria_storage::objects::get_object(s3, bucket, &key)
         .await
         .map_err(|source| match source {
-            StorageError::NotFound { .. } => ReportAuthoringError::ClientNotFound,
-            other => ReportAuthoringError::storage("validating the client", other),
+            StorageError::NotFound { .. } => ReportStoreError::ClientNotFound,
+            other => ReportStoreError::storage("validating the client", other),
         })?;
     let client: Client = serde_json::from_slice(&output.body).map_err(|_| {
-        ReportAuthoringError::InvalidWorkspace("the client record is invalid".to_string())
+        ReportStoreError::InvalidWorkspace("the client record is invalid".to_string())
     })?;
     if client.id != client_id || client_id.is_nil() {
-        return Err(ReportAuthoringError::InvalidWorkspace(
+        return Err(ReportStoreError::InvalidWorkspace(
             "the client record ID does not match its key".to_string(),
         ));
     }
@@ -669,15 +678,15 @@ async fn ensure_client_exists(
 
 enum LoadWorkspaceError {
     NotFound,
-    Public(ReportAuthoringError),
+    Public(ReportStoreError),
 }
 
 impl LoadWorkspaceError {
-    fn into_public(self) -> ReportAuthoringError {
+    fn into_public(self) -> ReportStoreError {
         match self {
-            Self::NotFound => ReportAuthoringError::InvalidWorkspace(
-                "Report workspace was not found.".to_string(),
-            ),
+            Self::NotFound => {
+                ReportStoreError::InvalidWorkspace("Report workspace was not found.".to_string())
+            }
             Self::Public(error) => error,
         }
     }
@@ -693,17 +702,17 @@ async fn load_existing(
         .await
         .map_err(|source| match source {
             StorageError::NotFound { .. } => LoadWorkspaceError::NotFound,
-            other => LoadWorkspaceError::Public(ReportAuthoringError::storage(
+            other => LoadWorkspaceError::Public(ReportStoreError::storage(
                 "loading the report workspace",
                 other,
             )),
         })?;
     let workspace = decode_report_workspace(&output.body).map_err(|error| {
-        LoadWorkspaceError::Public(ReportAuthoringError::InvalidWorkspace(error.to_string()))
+        LoadWorkspaceError::Public(ReportStoreError::InvalidWorkspace(error.to_string()))
     })?;
     if workspace.client_id != client_id {
         return Err(LoadWorkspaceError::Public(
-            ReportAuthoringError::InvalidWorkspace(
+            ReportStoreError::InvalidWorkspace(
                 "The report workspace belongs to another client.".to_string(),
             ),
         ));
@@ -716,15 +725,18 @@ async fn load_existing(
     })
 }
 
-pub(crate) async fn save_loaded(
+/// Validate and conditionally write a loaded workspace back to its key,
+/// refreshing its ETag. A concurrent write elsewhere surfaces as
+/// [`ReportStoreError::Conflict`] and leaves the stored object untouched.
+pub async fn save_loaded(
     s3: &S3Client,
     bucket: &str,
     loaded: &mut LoadedWorkspace,
-) -> Result<(), ReportAuthoringError> {
+) -> Result<(), ReportStoreError> {
     loaded
         .workspace
         .validate()
-        .map_err(|error| ReportAuthoringError::InvalidWorkspace(error.to_string()))?;
+        .map_err(|error| ReportStoreError::InvalidWorkspace(error.to_string()))?;
     let etag = claria_storage::state::save_state_if_match(
         s3,
         bucket,
@@ -734,16 +746,16 @@ pub(crate) async fn save_loaded(
     )
     .await
     .map_err(|source| match source {
-        StorageError::PreconditionFailed { .. } => ReportAuthoringError::Conflict,
-        other => ReportAuthoringError::storage("saving the report workspace", other),
+        StorageError::PreconditionFailed { .. } => ReportStoreError::Conflict,
+        other => ReportStoreError::storage("saving the report workspace", other),
     })?;
     loaded.etag = require_etag(etag)?;
     Ok(())
 }
 
-fn require_etag(etag: String) -> Result<String, ReportAuthoringError> {
+fn require_etag(etag: String) -> Result<String, ReportStoreError> {
     if etag.trim().is_empty() {
-        Err(ReportAuthoringError::InvalidWorkspace(
+        Err(ReportStoreError::InvalidWorkspace(
             "S3 did not return an ETag for the report workspace.".to_string(),
         ))
     } else {
@@ -751,18 +763,21 @@ fn require_etag(etag: String) -> Result<String, ReportAuthoringError> {
     }
 }
 
-pub(crate) fn ensure_revision(
+/// Refuse to act on a workspace the caller has a stale view of.
+pub fn ensure_revision(
     workspace: &ReportWorkspace,
     expected_revision: u64,
-) -> Result<(), ReportAuthoringError> {
+) -> Result<(), ReportStoreError> {
     if workspace.draft.revision != expected_revision {
-        Err(ReportAuthoringError::Conflict)
+        Err(ReportStoreError::Conflict)
     } else {
         Ok(())
     }
 }
 
-pub(crate) fn mark_template_current(workspace: &mut ReportWorkspace) {
+/// Record that the imported template has been reviewed at the draft's current
+/// revision, so an edit does not leave a stale "template changed" banner.
+pub fn mark_template_current(workspace: &mut ReportWorkspace) {
     if let Some(template) = &mut workspace.template_import {
         template.reviewed_revision = Some(workspace.draft.revision);
     }

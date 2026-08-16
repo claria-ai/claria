@@ -78,7 +78,12 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Record inventory: the S3 walk behind the sidecar-visibility rules (the pure rule itself lives in `claria-core`'s `s3_keys.rs`)
 - ETag-revalidated read-through cache for record objects
 - Retryable, compensating client delete/restore lifecycle
-- Depends on `claria-report-authoring` (lifecycle restores report workspaces), so report authoring must never depend on this crate
+- Depends on `claria-report-store` (lifecycle restores report workspaces), so the report crates must never depend on this one
+
+**`claria-report-store` — Durable writer state**
+- Workspace objects and their optimistic-concurrency protocol, immutable revisions, attempt and per-call usage receipts
+- The global writer prompt and writer template libraries
+- No Bedrock knowledge: callers hand it fully built records
 
 **`claria-bedrock` — LLM interactions**
 - Bedrock API calls for chat, text extraction, and translation

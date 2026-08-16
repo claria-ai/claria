@@ -9,6 +9,7 @@ members = [
     "crates/claria-billing",
     "crates/claria-records",
     "crates/claria-report-authoring",
+    "crates/claria-report-store",
     "crates/claria-docx",
     "crates/claria-desktop",
     "crates/claria-mock-aws",
@@ -28,6 +29,7 @@ claria-mock-aws = { path = "crates/claria-mock-aws" }
 claria-provisioner = { path = "crates/claria-provisioner" }
 claria-records = { path = "crates/claria-records" }
 claria-report-authoring = { path = "crates/claria-report-authoring" }
+claria-report-store = { path = "crates/claria-report-store" }
 claria-storage = { path = "crates/claria-storage" }
 claria-transcribe = { path = "crates/claria-transcribe" }
 

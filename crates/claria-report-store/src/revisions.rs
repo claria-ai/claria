@@ -8,7 +8,7 @@ use claria_core::models::report::{ReportDraft, ReportWorkspace, decode_report_wo
 use uuid::Uuid;
 
 use crate::{
-    ReportAuthoringError, ReportRevisionSummary,
+    ReportRevisionSummary, ReportStoreError,
     workspace::{ensure_revision, load_for_report, mark_template_current, save_loaded},
 };
 
@@ -18,7 +18,7 @@ pub async fn list_report_revisions(
     client_id: Uuid,
     report_id: Uuid,
     cache: &RevisionCache,
-) -> Result<Vec<ReportRevisionSummary>, ReportAuthoringError> {
+) -> Result<Vec<ReportRevisionSummary>, ReportStoreError> {
     let current = load_for_report(s3, bucket, client_id, report_id).await?;
 
     let mut seen = HashSet::new();
@@ -43,7 +43,7 @@ pub async fn load_report_revision(
     report_id: Uuid,
     revision: u64,
     cache: &RevisionCache,
-) -> Result<ReportDraft, ReportAuthoringError> {
+) -> Result<ReportDraft, ReportStoreError> {
     let current = load_for_report(s3, bucket, client_id, report_id).await?;
     Ok(load_workspace_revision(
         s3,
@@ -66,16 +66,16 @@ pub async fn revert_report_revision(
     expected_revision: u64,
     revision: u64,
     cache: &RevisionCache,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let mut loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     ensure_revision(&loaded.workspace, expected_revision)?;
     if revision >= expected_revision {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Choose an earlier report revision to restore.".to_string(),
         ));
     }
     if loaded.workspace.session.pending_proposal.is_some() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Accept or reject the pending proposal before restoring a report revision.".to_string(),
         ));
     }
@@ -95,7 +95,7 @@ pub async fn revert_report_revision(
         .workspace
         .draft
         .replace_content(expected_revision, historical.draft.content, now)
-        .map_err(|error| ReportAuthoringError::InvalidInput(error.to_string()))?;
+        .map_err(|error| ReportStoreError::InvalidInput(error.to_string()))?;
     // A revert restores report content, not session-level provenance. Keep the
     // current proposal/template metadata and save the historical content as a
     // new draft revision.
@@ -115,17 +115,17 @@ pub async fn discard_queued_report_edits(
     report_id: Uuid,
     expected_revision: u64,
     cache: &RevisionCache,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let mut loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     ensure_revision(&loaded.workspace, expected_revision)?;
     if loaded.workspace.session.pending_proposal.is_some() {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "Accept or reject the pending proposal before discarding report edits.".to_string(),
         ));
     }
     let baseline_revision = loaded.workspace.session.last_agent_revision.unwrap_or(0);
     if baseline_revision >= expected_revision {
-        return Err(ReportAuthoringError::InvalidInput(
+        return Err(ReportStoreError::InvalidInput(
             "There are no saved report edits queued for the next message.".to_string(),
         ));
     }
@@ -145,7 +145,7 @@ pub async fn discard_queued_report_edits(
         .workspace
         .draft
         .replace_content(expected_revision, historical.draft.content, now)
-        .map_err(|error| ReportAuthoringError::InvalidInput(error.to_string()))?;
+        .map_err(|error| ReportStoreError::InvalidInput(error.to_string()))?;
     loaded.workspace.template_import = historical.template_import;
     loaded.workspace.session.last_agent_revision = Some(loaded.workspace.draft.revision);
     loaded.workspace.updated_at = now;
@@ -216,12 +216,12 @@ async fn load_revision_summaries(
     client_id: Uuid,
     workspace_key: &str,
     cache: &RevisionCache,
-) -> Result<Vec<(String, RevisionSummary)>, ReportAuthoringError> {
+) -> Result<Vec<(String, RevisionSummary)>, ReportStoreError> {
     use futures::stream::StreamExt;
 
     let versions = claria_storage::objects::list_object_versions(s3, bucket, workspace_key)
         .await
-        .map_err(|source| ReportAuthoringError::storage("listing report revisions", source))?;
+        .map_err(|source| ReportStoreError::storage("listing report revisions", source))?;
 
     let lookups = versions
         .into_iter()
@@ -245,7 +245,7 @@ async fn load_revision_summaries(
                 updated_at: workspace.draft.updated_at,
             };
             cache.insert(workspace_key, version.version_id.clone(), summary.clone());
-            Ok::<_, ReportAuthoringError>((version.version_id, summary))
+            Ok::<_, ReportStoreError>((version.version_id, summary))
         })
         .collect::<Vec<_>>();
 
@@ -265,7 +265,7 @@ async fn load_workspace_revision(
     revision: u64,
     workspace_key: &str,
     cache: &RevisionCache,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     // The summaries name which immutable version holds the wanted revision,
     // so only that one body is fetched.
     let summaries = load_revision_summaries(s3, bucket, client_id, workspace_key, cache).await?;
@@ -281,7 +281,7 @@ async fn load_workspace_revision(
             .await;
         }
     }
-    Err(ReportAuthoringError::InvalidInput(format!(
+    Err(ReportStoreError::InvalidInput(format!(
         "Report revision {revision} is no longer available."
     )))
 }
@@ -292,17 +292,15 @@ async fn load_workspace_object_version(
     key: &str,
     client_id: Uuid,
     version_id: &str,
-) -> Result<ReportWorkspace, ReportAuthoringError> {
+) -> Result<ReportWorkspace, ReportStoreError> {
     let output = claria_storage::objects::get_object_version(s3, bucket, key, version_id)
         .await
-        .map_err(|source| ReportAuthoringError::storage("reading a report revision", source))?;
+        .map_err(|source| ReportStoreError::storage("reading a report revision", source))?;
     let workspace = decode_report_workspace(&output.body).map_err(|error| {
-        ReportAuthoringError::InvalidWorkspace(format!(
-            "a stored report revision is invalid: {error}"
-        ))
+        ReportStoreError::InvalidWorkspace(format!("a stored report revision is invalid: {error}"))
     })?;
     if workspace.client_id != client_id {
-        return Err(ReportAuthoringError::InvalidWorkspace(
+        return Err(ReportStoreError::InvalidWorkspace(
             "A report revision belongs to another client.".to_string(),
         ));
     }

@@ -1382,7 +1382,7 @@ dependencies = [
  "aws-sdk-s3",
  "claria-core",
  "claria-mock-aws",
- "claria-report-authoring",
+ "claria-report-store",
  "claria-storage",
  "futures",
  "jiff",
@@ -1406,6 +1406,26 @@ dependencies = [
  "claria-bedrock",
  "claria-core",
  "claria-mock-aws",
+ "claria-report-store",
+ "claria-storage",
+ "futures",
+ "jiff",
+ "lru 0.18.0",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "claria-report-store"
+version = "0.28.0"
+dependencies = [
+ "aws-sdk-s3",
+ "claria-core",
  "claria-storage",
  "futures",
  "jiff",
@@ -1415,8 +1435,6 @@ dependencies = [
  "sha2 0.10.9",
  "specta",
  "thiserror 2.0.18",
- "tokio",
- "tracing",
  "uuid",
 ]
 

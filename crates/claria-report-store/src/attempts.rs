@@ -1,18 +1,20 @@
 //! Durable attempt metadata and per-call usage receipts.
 
 use aws_sdk_s3::Client as S3Client;
-use claria_bedrock::report;
 use claria_core::models::turn_usage::TurnUsage;
-use claria_storage::error::StorageError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{ReportFailureCode, turn::AttemptProgress};
+use crate::{ReportFailureCode, ReportStoreError};
 
 // v2 adds stop_reason, latency_ms, max_output_tokens, system_prompt_sha256,
 // and app_version to ReportCallUsageRecord; v1 records deserialize with the
 // new fields defaulted.
-pub(crate) const ATTEMPT_SCHEMA_VERSION: u32 = 2;
+//
+// Public because the crate that runs the turn loop builds these records: it
+// is the half that knows the wire stop reason, the enforced output ceiling,
+// and the composed system prompt.
+pub const ATTEMPT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -69,49 +71,33 @@ pub struct ReportCallUsageRecord {
     pub app_version: Option<String>,
 }
 
-pub(crate) async fn persist_call_usage(
+/// Write one append-only per-call usage receipt. The record is built by the
+/// caller, which owns the Bedrock-side facts it carries.
+pub async fn persist_call_usage(
     s3: &S3Client,
     bucket: &str,
-    progress: &AttemptProgress,
-    call_number: u32,
-    usage: Option<TurnUsage>,
-    stop_reason: claria_bedrock::report::ReportStopReason,
-    latency_ms: Option<u64>,
-) -> Result<(), StorageError> {
-    let record = ReportCallUsageRecord {
-        schema_version: ATTEMPT_SCHEMA_VERSION,
-        attempt_id: progress.attempt_id,
-        report_id: progress.report_id,
-        client_id: progress.client_id,
-        model_id: progress.model_id.clone(),
-        call_number,
-        usage_complete: usage.is_some(),
-        usage,
-        recorded_at: jiff::Timestamp::now(),
-        stop_reason: Some(stop_reason.as_str().to_string()),
-        latency_ms,
-        max_output_tokens: report::REPORT_OUTPUT_TOKEN_RESERVE,
-        system_prompt_sha256: progress.system_prompt_sha256.clone(),
-        // Workspace crates version in lockstep with the desktop binary.
-        app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-    };
+    record: &ReportCallUsageRecord,
+) -> Result<(), ReportStoreError> {
     let key = claria_core::s3_keys::report_call_usage(
-        progress.client_id,
-        progress.attempt_id,
-        call_number,
+        record.client_id,
+        record.attempt_id,
+        record.call_number,
     );
-    claria_storage::state::save_state_if_none_match(s3, bucket, &key, &record)
+    claria_storage::state::save_state_if_none_match(s3, bucket, &key, record)
         .await
         .map(|_| ())
+        .map_err(|source| ReportStoreError::storage("recording Bedrock call usage", source))
 }
 
-pub(crate) async fn persist_attempt(
+/// Write the append-only final status record for one writer attempt.
+pub async fn persist_attempt(
     s3: &S3Client,
     bucket: &str,
     metadata: &ReportAttemptMetadata,
-) -> Result<(), StorageError> {
+) -> Result<(), ReportStoreError> {
     let key = claria_core::s3_keys::report_attempt(metadata.client_id, metadata.attempt_id);
     claria_storage::state::save_state_if_none_match(s3, bucket, &key, metadata)
         .await
         .map(|_| ())
+        .map_err(|source| ReportStoreError::storage("recording the writer attempt", source))
 }

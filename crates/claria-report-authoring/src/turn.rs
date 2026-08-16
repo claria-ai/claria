@@ -13,6 +13,11 @@ use claria_core::models::{
     },
     turn_usage::TurnUsage,
 };
+use claria_report_store::{
+    ATTEMPT_SCHEMA_VERSION, LoadedWorkspace, ReportCallUsageRecord, ReportStoreError,
+    ensure_revision, load_for_report, load_or_create, mark_template_current, persist_attempt,
+    persist_call_usage, save_loaded,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -22,17 +27,12 @@ use crate::{
     REPORT_CONFLICT_MESSAGE, REPORT_TRUNCATED_NOTICE, ReportAttemptMetadata, ReportAttemptStatus,
     ReportAuthoringError, ReportBlockReference, ReportFailureCode, ReportPromptCache,
     ReportTurnLimits, ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL, WRITER_LIMITS_SECTION,
-    attempts::{ATTEMPT_SCHEMA_VERSION, persist_attempt, persist_call_usage},
     context::{
         build_untrusted_context, flatten_protocol_history, sanitize_turn_messages, sha256_hex,
     },
     prompts::{full_report_system_prompt, report_system_prompt},
     record_context::{FullRecordContext, load_full_record_context, load_record_inventory},
     tools::ToolExecutionContext,
-    workspace::{
-        LoadedWorkspace, ensure_revision, load_for_report, load_or_create, mark_template_current,
-        save_loaded,
-    },
 };
 
 /// Ephemeral progress emitted while a single report-writing request runs.
@@ -621,6 +621,37 @@ impl AttemptProgress {
     }
 }
 
+/// Build the durable receipt for one completed Converse call.
+///
+/// The store persists these but does not know Bedrock, so the wire stop
+/// reason, the enforced output ceiling, and the app version are stamped here,
+/// where the call was actually made.
+fn call_usage_record(
+    progress: &AttemptProgress,
+    call_number: u32,
+    usage: Option<TurnUsage>,
+    stop_reason: ReportStopReason,
+    latency_ms: Option<u64>,
+) -> ReportCallUsageRecord {
+    ReportCallUsageRecord {
+        schema_version: ATTEMPT_SCHEMA_VERSION,
+        attempt_id: progress.attempt_id,
+        report_id: progress.report_id,
+        client_id: progress.client_id,
+        model_id: progress.model_id.clone(),
+        call_number,
+        usage_complete: usage.is_some(),
+        usage,
+        recorded_at: jiff::Timestamp::now(),
+        stop_reason: Some(stop_reason.as_str().to_string()),
+        latency_ms,
+        max_output_tokens: report::REPORT_OUTPUT_TOKEN_RESERVE,
+        system_prompt_sha256: progress.system_prompt_sha256.clone(),
+        // Workspace crates version in lockstep with the desktop binary.
+        app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+    }
+}
+
 pub(crate) struct TurnRunFailure {
     code: ReportFailureCode,
     message: String,
@@ -870,11 +901,13 @@ async fn run_turn(
         persist_call_usage(
             s3,
             bucket,
-            progress,
-            call_number,
-            output.usage.clone(),
-            output.stop_reason,
-            output.latency_ms,
+            &call_usage_record(
+                progress,
+                call_number,
+                output.usage.clone(),
+                output.stop_reason,
+                output.latency_ms,
+            ),
         )
         .await
         .map_err(|error| {
@@ -1162,7 +1195,7 @@ async fn run_turn(
         })?;
     loaded.workspace.updated_at = completed_at;
     save_loaded(s3, bucket, loaded).await.map_err(|error| match error {
-        ReportAuthoringError::Conflict => TurnRunFailure::new(
+        ReportStoreError::Conflict => TurnRunFailure::new(
             ReportFailureCode::WorkspaceConflict,
             REPORT_CONFLICT_MESSAGE,
         ),

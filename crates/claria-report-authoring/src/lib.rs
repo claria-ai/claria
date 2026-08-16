@@ -1,52 +1,50 @@
 //! Opt-in report-authoring workflows for atomic full drafts and targeted proposals.
 //!
-//! This crate owns report workflow policy, optimistic persistence, bounded
-//! record tools, proposal staging, and usage receipts. Bedrock wire details
-//! stay in `claria-bedrock`, generic S3 operations stay in `claria-storage`,
-//! and persisted domain types stay in `claria-core`.
+//! This crate owns report workflow policy, bounded record tools, proposal
+//! staging, and the turn loop that drives them. Durable writer state lives in
+//! `claria-report-store`, Bedrock wire details stay in `claria-bedrock`,
+//! generic S3 operations stay in `claria-storage`, and persisted domain types
+//! stay in `claria-core`.
 
-mod attempts;
 mod context;
 mod error;
 mod prompt_cache;
 mod prompts;
 mod record_context;
-mod revisions;
+mod shim;
 mod tools;
 mod turn;
-mod workspace;
 pub mod writer_prompts;
 pub mod writer_templates;
 
-use claria_core::models::report::{
-    MAX_REPORT_TURNS, ReportContent, ReportDraft, ReportTemplateWarning, ReportWorkspace,
-};
+use claria_core::models::report::{MAX_REPORT_TURNS, ReportWorkspace};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub use attempts::{ReportAttemptMetadata, ReportAttemptStatus, ReportCallUsageRecord};
-pub use error::{ReportAuthoringError, ReportFailureCode};
+pub use claria_report_store::{
+    MAX_INSTRUCTION_CHARACTERS, REPORT_CONFLICT_MESSAGE, ReportAttemptMetadata,
+    ReportAttemptStatus, ReportCallUsageRecord, ReportExportSnapshot, ReportFailureCode,
+    ReportRevisionSummary, ReportTemplateApplication, RevisionCache, suggested_docx_filename,
+};
+pub use error::ReportAuthoringError;
 pub use prompt_cache::ReportPromptCache;
 pub use prompts::{
     FULL_REPORT_SYSTEM_PROMPT_BODY, FULL_REPORT_TRUST_RULES, REPORT_SYSTEM_PROMPT_BODY,
     REPORT_TRUST_RULES, full_report_system_prompt, report_system_prompt,
 };
-pub use revisions::{
-    RevisionCache, discard_queued_report_edits, list_report_revisions, load_report_revision,
-    revert_report_revision,
+pub use shim::{
+    apply_report_template, apply_report_template_for_report, delete_report_workspace_for_client,
+    discard_queued_report_edits, find_report_workspace, list_report_revisions,
+    list_report_workspaces, load_export_snapshot, load_report_revision, load_report_workspace,
+    load_report_workspace_by_id, record_report_export, rename_report_session,
+    resolve_report_proposal, resolve_report_proposal_for_report,
+    restore_report_workspace_for_client, revert_report_revision, save_report_draft,
+    save_report_draft_for_report, start_report_workspace, start_report_workspace_with_id,
+    store_report_template_source,
 };
 pub use turn::{
     FullReportRequest, ReportMessageRequest, ReportTurnProgress, generate_full_report,
     generate_full_report_for_report, send_report_message, send_report_message_for_report,
-};
-pub use workspace::{
-    apply_report_template, apply_report_template_for_report, delete_report_workspace_for_client,
-    find_report_workspace, list_report_workspaces, load_export_snapshot, load_report_workspace,
-    load_report_workspace_by_id, record_report_export, rename_report_session,
-    resolve_report_proposal, resolve_report_proposal_for_report,
-    restore_report_workspace_for_client, save_report_draft, save_report_draft_for_report,
-    start_report_workspace, start_report_workspace_with_id, store_report_template_source,
-    suggested_docx_filename,
 };
 
 pub(crate) const DEFAULT_READ_LIMIT: u32 = 8_000;
@@ -67,15 +65,7 @@ pub const MAX_CONFIGURABLE_CONVERSE_CALLS: u32 = MAX_CONFIGURABLE_TOOL_ROUNDS + 
 pub const MAX_CONFIGURABLE_TOOL_USES_PER_RESPONSE: u32 =
     claria_bedrock::report::MAX_TOOL_USES_PER_RESPONSE as u32;
 pub const MAX_CONFIGURABLE_RETAINED_TURNS: u32 = MAX_REPORT_TURNS as u32;
-/// Ceiling for one writer instruction or whole-report guidance message.
-/// Public because saved library prompts prefill the instruction box, so
-/// their body ceiling is this ceiling.
-pub const MAX_INSTRUCTION_CHARACTERS: usize = 20_000;
 pub(crate) const MAX_REPORT_REFERENCES: usize = 10;
-pub(crate) const MAX_RESOLUTIONS: usize = 100;
-
-pub const REPORT_CONFLICT_MESSAGE: &str =
-    "The report changed on another computer. Reload it before continuing.";
 
 /// Where a clinician raises the guardrails below, and the exact field labels
 /// they will read there. These mirror `WRITER_LIMIT_FIELDS` in
@@ -191,32 +181,6 @@ pub struct FullReportGenerationOutcome {
     pub assistant_text: String,
     pub record_context: FullRecordContextSummary,
     pub attempt: ReportAttemptMetadata,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReportExportSnapshot {
-    pub draft: ReportDraft,
-    pub template_source: Option<Vec<u8>>,
-    /// The workspace references a template whose stored source object no
-    /// longer exists (imports predating v0.22 never retained it). The caller
-    /// must surface this instead of silently exporting without formatting.
-    pub template_missing: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReportRevisionSummary {
-    pub revision: u64,
-    pub title: String,
-    pub updated_at: jiff::Timestamp,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReportTemplateApplication {
-    pub content: ReportContent,
-    pub source_sha256: String,
-    pub writer_template_id: Uuid,
-    pub writer_template_name: String,
-    pub warnings: Vec<ReportTemplateWarning>,
 }
 
 /// A paragraph or table the user explicitly attached to their next writing

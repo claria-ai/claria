@@ -1,21 +1,8 @@
+use claria_report_store::{ReportFailureCode, ReportStoreError};
 use claria_storage::error::StorageError;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ReportAttemptMetadata;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReportFailureCode {
-    Bedrock,
-    ContextBudget,
-    InvalidProtocol,
-    RecordStorage,
-    ToolRoundLimit,
-    UnexpectedStop,
-    WorkspaceConflict,
-    UsagePersistence,
-}
 
 #[derive(Debug, Error)]
 pub enum ReportAuthoringError {
@@ -46,6 +33,21 @@ pub enum ReportAuthoringError {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
+}
+
+/// Durable-store failures reach the writer API unchanged: the store owns the
+/// same persistence variants under its own name, and every message here is
+/// byte-identical to the one it replaces.
+impl From<ReportStoreError> for ReportAuthoringError {
+    fn from(error: ReportStoreError) -> Self {
+        match error {
+            ReportStoreError::InvalidInput(message) => Self::InvalidInput(message),
+            ReportStoreError::ClientNotFound => Self::ClientNotFound,
+            ReportStoreError::Conflict => Self::Conflict,
+            ReportStoreError::InvalidWorkspace(message) => Self::InvalidWorkspace(message),
+            ReportStoreError::Storage { operation, source } => Self::Storage { operation, source },
+        }
+    }
 }
 
 impl ReportAuthoringError {

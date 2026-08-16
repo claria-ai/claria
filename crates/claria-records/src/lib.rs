@@ -6,9 +6,9 @@
 //! an ETag-revalidated cache, and the retryable, compensating delete/restore
 //! lifecycle for a client's data.
 //!
-//! `claria-report-authoring` deliberately does not depend on this crate (the
-//! lifecycle here depends on it, and the edge must not be a cycle); it applies
-//! the same visibility rules through the pure helper in `claria-core`.
+//! The lifecycle restores report workspaces through `claria-report-store`,
+//! which is durable state only — no writer crate depends on this one, and no
+//! LLM client is pulled in behind the restore.
 
 pub mod cache;
 pub mod clients;
