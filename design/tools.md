@@ -1,9 +1,9 @@
 # Writer tools
 
 The writer exposes two disjoint tool sets over Bedrock Converse tool use.
-Targeted editing gets record access plus proposal staging; whole-report
-generation gets run-building tools and **no** record tools (its
-snapshot is injected up front). Tool descriptions are contracts: ID-copying
+Targeted editing gets record access, on-demand section reads, and proposal
+staging; whole-report generation gets run-building tools and **no** reader
+tools (its record snapshot and template bodies are injected up front). Tool descriptions are contracts: ID-copying
 rules, 0-based positions, character units, per-turn limits, and the
 truncation-salvage behavior are all stated in the description or the
 per-property schema the model sees. Schema ceilings are derived from the
@@ -14,7 +14,7 @@ cheap.
 
 | Mode | Tools |
 |---|---|
-| Targeted edit | `list_record_files`, `read_record_file`, `propose_report_changes` |
+| Targeted edit | `list_record_files`, `read_record_file`, `read_report_section`, `propose_report_changes` |
 | Whole report | `set_full_draft_title`, `write_full_draft_section`, `skip_full_draft_section`, `mark_section_failed`, `finish_full_draft` |
 
 Every tool result is JSON with a success/error status. Persisted history is
@@ -96,6 +96,53 @@ metadata and `{"content_retained": false}`.
 
 ---
 
+## `read_report_section`
+
+| Field | Constraint |
+|---|---|
+| `section_id` | required, 36-char UUID copied exactly from a `document_outline` row |
+
+A targeted turn carries `document_title`, `document_outline` (headings,
+block counts, and character counts for every section — no bodies), and full
+bodies for the `target_sections` the user focused. Every other body is fetched here, and
+section reads share the **same 48,000-character per-turn budget** as
+`read_record_file`.
+
+```json
+{ "section_id": "3f9d2c1e-8a4b-4c6d-9e0f-112233445566" }
+```
+
+Success result:
+
+```json
+{
+  "section_id": "3f9d2c1e-8a4b-4c6d-9e0f-112233445566",
+  "heading": "Assessment Results",
+  "skipped": false,
+  "blocks": [
+    { "kind": "paragraph", "text": "The BASC-3 was completed by the parent..." }
+  ],
+  "characters": 412
+}
+```
+
+Error codes: `unknown_section_id` (unparseable or not in the current
+report), `turn_read_limit_reached` (the section is larger than the budget
+left — the message names both numbers), `tool_not_available` (full-draft
+mode, where the template structure and per-section bodies are already in
+context).
+
+**Internal mapping.** Serves the section straight from the loaded workspace
+— no S3 traffic — through the same `prompt_section_view` field policy the
+context uses, so `template_blocks` and authorship stamps never reach the
+model. `characters` is the serialized size charged to the budget, which is
+what the outline's per-section `characters` estimates. Persisted history
+keeps `{section_id, characters, sha256, content_retained: false}`; the
+blocks do not survive the turn, so a later turn re-reads rather than mining
+a stale copy.
+
+---
+
 ## `propose_report_changes`
 
 At most one successful call per turn — a second call fails. Nothing is
@@ -112,7 +159,7 @@ Operations (discriminated on `kind`):
 |---|---|
 | `set_title` | `title` (1–200) |
 | `add_section` | `position` (0-based insertion index), `heading` (1–200), `blocks` (≤200) |
-| `replace_section` | `section_id` (36-char UUID copied from the untrusted context), `heading`, `blocks` (≤200) — replaces the **whole** section, heading included; unchanged blocks must be restated |
+| `replace_section` | `section_id` (36-char UUID copied from a `document_outline` row), `heading`, `blocks` (≤200) — replaces the **whole** section, heading included; unchanged blocks must be restated, so read the section first unless it is in `target_sections` |
 | `remove_section` | `section_id` |
 
 Blocks (discriminated on `kind`): `paragraph` (`text` ≤20,000 chars, plain

@@ -32,6 +32,7 @@ use crate::{converse, error::BedrockError};
 
 pub const LIST_RECORD_FILES_TOOL: &str = "list_record_files";
 pub const READ_RECORD_FILE_TOOL: &str = "read_record_file";
+pub const READ_REPORT_SECTION_TOOL: &str = "read_report_section";
 pub const PROPOSE_REPORT_CHANGES_TOOL: &str = "propose_report_changes";
 pub const SET_FULL_DRAFT_TITLE_TOOL: &str = "set_full_draft_title";
 pub const WRITE_FULL_DRAFT_SECTION_TOOL: &str = "write_full_draft_section";
@@ -152,6 +153,7 @@ pub struct ReportToolCall {
 pub enum ReportToolRequest {
     ListRecordFiles(ListRecordFilesRequest),
     ReadRecordFile(ReadRecordFileRequest),
+    ReadReportSection(ReadReportSectionRequest),
     ProposeReportChanges(ProposeReportChangesRequest),
     SetFullDraftTitle(SetFullDraftTitleRequest),
     WriteFullDraftSection(WriteFullDraftSectionRequest),
@@ -172,6 +174,14 @@ pub struct ReadRecordFileRequest {
     pub offset: Option<u32>,
     #[serde(default)]
     pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReadReportSectionRequest {
+    /// A section's 36-character UUID, copied exactly from the per-turn
+    /// document outline.
+    pub section_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -283,6 +293,9 @@ pub fn decode_tool_request(call: &ReportToolCall) -> Result<ReportToolRequest, B
             .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
         READ_RECORD_FILE_TOOL => serde_json::from_value(call.input.clone())
             .map(ReportToolRequest::ReadRecordFile)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        READ_REPORT_SECTION_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::ReadReportSection)
             .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
         PROPOSE_REPORT_CHANGES_TOOL => serde_json::from_value(call.input.clone())
             .map(ReportToolRequest::ProposeReportChanges)
@@ -894,9 +907,30 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
             }
         ]
     });
+    // Where a copyable section UUID comes from differs by mode: a targeted
+    // turn carries the document outline, a whole-report run carries the
+    // approved plan. Naming a source the model was never given is how invented
+    // IDs start.
+    let section_id_source = match tool_set {
+        ReportToolSet::TargetedEdit => "the document_outline in the untrusted context",
+        ReportToolSet::FullDraft => "plan_context",
+    };
     let section_id_schema = serde_json::json!({
         "type": "string", "minLength": 36, "maxLength": 36,
-        "description": "The 36-character section UUID copied exactly from the accepted_report in the untrusted context. Never invent or modify an ID."
+        "description": format!(
+            "The 36-character section UUID copied exactly from {section_id_source}. Never invent or modify an ID."
+        )
+    });
+    let read_section_schema = serde_json::json!({
+        "type": "object",
+        "required": ["section_id"],
+        "additionalProperties": false,
+        "properties": {
+            "section_id": {
+                "type": "string", "minLength": 36, "maxLength": 36,
+                "description": "The 36-character section UUID copied exactly from a document_outline row. Never invent or modify an ID."
+            }
+        }
     });
     let heading_schema = serde_json::json!({
         "type": "string", "minLength": 1, "maxLength": 200,
@@ -1088,10 +1122,22 @@ fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguratio
                 read_schema,
             )?,
             tool(
+                READ_REPORT_SECTION_TOOL,
+                "Return the full current content of one report section — every block, exactly as the \
+                 accepted report holds it. The untrusted context lists every section in \
+                 document_outline with headings only; bodies arrive up front solely for the sections \
+                 in target_sections. Call this for any other section before proposing a \
+                 replace_section for it, because replace_section replaces the whole section and \
+                 unchanged blocks must be restated verbatim. Section reads draw down the same \
+                 48000-character per-turn budget as read_record_file.",
+                read_section_schema,
+            )?,
+            tool(
                 PROPOSE_REPORT_CHANGES_TOOL,
                 "Stage typed report changes for user review. Copy each section_id exactly from the \
-                 accepted_report in the untrusted context; positions are 0-based; replace_section \
-                 replaces the entire section including its heading. At most one call per turn — a \
+                 document_outline in the untrusted context; positions are 0-based; replace_section \
+                 replaces the entire section including its heading, so read the section first unless \
+                 its full body is already in target_sections. At most one call per turn — a \
                  second call fails. Nothing is saved or applied until the user accepts the proposal, so \
                  never claim a change was saved. If a response is cut off at the output-token limit, \
                  completed tool calls still execute and you can continue in the next response.",

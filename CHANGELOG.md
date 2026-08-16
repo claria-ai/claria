@@ -31,6 +31,8 @@ All notable changes to Claria are documented here.
 - An interrupted whole-report draft can be finalized from the sections it wrote, or discarded outright
 - Writer runs can now be stopped mid-generation, keeping every section already saved and resuming later
 - A stop that arrives after a whole-report draft has been finished leaves the saved revision standing
+- Targeted editing now sends a document outline instead of the whole report, reading sections on demand
+- Section reads share the writer's per-turn read budget with record reads, and leave only a digest in the conversation history
 
 ## [0.28.0] — 2026-08-15
 

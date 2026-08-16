@@ -16,7 +16,8 @@ use claria_bedrock::{
 use claria_core::models::{
     report::{
         ReportBlock, ReportContent, ReportOperation, ReportProposal, ReportSection,
-        ReportToolResultStatus, ReportWorkspace, validate_report_content, validate_report_summary,
+        ReportToolResultStatus, ReportWorkspace, prompt_section_view, validate_report_content,
+        validate_report_summary,
     },
     report_run::{
         DraftRun, MAX_CITATION_QUOTE_CHARACTERS, MAX_SECTION_CITATIONS,
@@ -271,6 +272,15 @@ impl<'a> ToolExecutionContext<'a> {
                 }
                 self.read_record_file(request.filename, request.offset, request.limit)
                     .await
+            }
+            ReportToolRequest::ReadReportSection(request) => {
+                if self.full_draft.is_some() {
+                    return Ok(tool_error(
+                        "tool_not_available",
+                        "The report's template structure and per-section bodies are already in context; read_report_section is unavailable in full-draft mode.",
+                    ));
+                }
+                Ok(self.read_report_section(&request.section_id))
             }
             ReportToolRequest::ProposeReportChanges(request) => {
                 if self.full_draft.is_some() {
@@ -936,6 +946,68 @@ impl<'a> ToolExecutionContext<'a> {
                 "skipped_section_count": skipped_section_count,
                 "failed_section_count": failed_section_count,
                 "base_revision": base_revision
+            }),
+        }
+    }
+
+    /// Return one accepted section in full.
+    ///
+    /// A targeted turn carries headings and sizes for the whole document but
+    /// bodies only for the sections the user focused. Everything else arrives
+    /// through this call, and it draws down the same per-turn read budget as
+    /// the record reader — a budget one of two readers can dodge is not a
+    /// budget. The section is already in memory, so this costs no S3 traffic.
+    fn read_report_section(&mut self, section_id: &str) -> ExecutedTool {
+        // Rebind so the section borrows the workspace rather than `self`,
+        // leaving the budget field free to move.
+        let workspace = self.workspace;
+        let Ok(id) = section_id.parse::<Uuid>() else {
+            return tool_error(
+                "unknown_section_id",
+                "section_id must be a 36-character section UUID copied exactly from a document_outline row.",
+            );
+        };
+        let Some(section) = workspace
+            .draft
+            .content
+            .sections
+            .iter()
+            .find(|section| section.id == id)
+        else {
+            return tool_error(
+                "unknown_section_id",
+                "The current report has no section with that ID. Copy an ID exactly from a document_outline row in this turn's context.",
+            );
+        };
+        // The model is charged for what the section costs it: the serialized
+        // JSON it is about to receive, not the bare text inside it.
+        let characters = match serde_json::to_string_pretty(&prompt_section_view(section)) {
+            Ok(json) => u32::try_from(json.chars().count()).unwrap_or(u32::MAX),
+            Err(_) => {
+                return tool_error(
+                    "section_not_readable",
+                    "Claria could not serialize that section for reading.",
+                );
+            }
+        };
+        let remaining = MAX_READ_CHARACTERS_PER_TURN.saturating_sub(self.read_characters);
+        if characters > remaining {
+            return tool_error(
+                "turn_read_limit_reached",
+                &format!(
+                    "This turn's {MAX_READ_CHARACTERS_PER_TURN}-character read budget has {remaining} characters left and this section needs {characters}. Propose changes from what is already in context, or continue in a new turn."
+                ),
+            );
+        }
+        self.read_characters = self.read_characters.saturating_add(characters);
+        ExecutedTool {
+            status: ReportToolResultStatus::Success,
+            content: serde_json::json!({
+                "section_id": section.id.to_string(),
+                "heading": section.heading,
+                "skipped": section.skipped,
+                "blocks": section.blocks,
+                "characters": characters
             }),
         }
     }

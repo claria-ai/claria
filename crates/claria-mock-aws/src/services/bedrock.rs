@@ -127,6 +127,12 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
             {
                 return Err("read_record_file schema must require filename");
             }
+            "read_report_section"
+                if required != std::collections::HashSet::from(["section_id"])
+                    || !properties.contains_key("section_id") =>
+            {
+                return Err("read_report_section schema must require section_id");
+            }
             "propose_report_changes"
                 if required != std::collections::HashSet::from(["summary", "operations"])
                     || !properties.contains_key("operations") =>
@@ -178,6 +184,7 @@ fn validate_report_request(body: &Value) -> Result<(), &'static str> {
     let targeted_tools = [
         "list_record_files",
         "read_record_file",
+        "read_report_section",
         "propose_report_changes",
     ];
     let full_draft_tools = [
