@@ -122,7 +122,11 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import Preferences from "./Preferences";
-import { savePreferencesPatch } from "../lib/tauri";
+import {
+  fetchCloudPreferences,
+  loadConfig,
+  savePreferencesPatch,
+} from "../lib/tauri";
 import { PREFERENCES_NAV } from "../lib/preferencesNav";
 import { ChatModelsContext, type ChatModelsState } from "../lib/chatModels";
 
@@ -146,6 +150,15 @@ function renderWithModels() {
   );
 }
 
+/** What each section that edits a synced setting shows before values land. */
+const SYNCED_SECTION_LOADING_LABELS = [
+  "Loading chat streaming...",
+  "Loading model tuning...",
+  "Loading document writer limits...",
+  "Loading draft run settings...",
+  "Loading transcription preferences...",
+];
+
 function categoryVisible(paneOrHeading: Element): boolean {
   return paneOrHeading.closest("div[hidden]") === null;
 }
@@ -157,6 +170,42 @@ function paneElement(paneId: string): Element {
 }
 
 describe("Preferences", () => {
+  it("reads the synced preferences once for every section that needs them", async () => {
+    const fetchMock = vi.mocked(fetchCloudPreferences);
+    const configMock = vi.mocked(loadConfig);
+    fetchMock.mockClear();
+    configMock.mockClear();
+
+    renderWithModels();
+    await screen.findByLabelText(/Word by word/);
+
+    // Sections spread across four categories are all mounted at once, and
+    // every one of them has its values — no section is still waiting on a
+    // read of its own.
+    for (const label of SYNCED_SECTION_LOADING_LABELS) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // The local config is the fallback for that one read, not a second source.
+    expect(configMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the local config when the cloud read fails", async () => {
+    const fetchMock = vi.mocked(fetchCloudPreferences);
+    const configMock = vi.mocked(loadConfig);
+    fetchMock.mockClear();
+    configMock.mockClear();
+    // One-shot, so the shared mock is back to its normal answer afterwards.
+    fetchMock.mockRejectedValueOnce(new Error("no bucket"));
+
+    renderWithModels();
+    await screen.findByLabelText(/Word by word/);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(configMock).toHaveBeenCalledTimes(1);
+  });
+
   it("mounts a pane for every entry in the nav map", async () => {
     render(<Preferences navigate={vi.fn()} />);
     await screen.findByText("Preferred Model");

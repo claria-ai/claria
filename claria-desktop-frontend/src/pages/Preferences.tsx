@@ -118,6 +118,67 @@ const PaneControlContext = createContext<{
 }>({ isOpen: () => false, setOpen: () => {} });
 
 /**
+ * The page's single read of the synced preferences.
+ *
+ * Every section that edits a synced setting needs the same `ConfigInfo`, and
+ * they all mount together — inactive categories stay mounted. Reading it per
+ * section meant one `_state/preferences.json` GET per section on every visit,
+ * plus one local config rewrite each. The page reads it once and the sections
+ * consume the result. `data` is null while a read is in flight, so a section
+ * never seeds its draft from a superseded snapshot.
+ */
+type SyncedPreferencesState = {
+  data: ConfigInfo | null;
+  loading: boolean;
+  error: string | null;
+};
+
+const SyncedPreferencesContext = createContext<SyncedPreferencesState>({
+  data: null,
+  loading: true,
+  error: null,
+});
+
+function useSyncedPreferences(): SyncedPreferencesState {
+  return useContext(SyncedPreferencesContext);
+}
+
+/** Cloud first; the local config carries a machine that has no S3 read yet. */
+function readSyncedPreferences(): Promise<ConfigInfo> {
+  return fetchCloudPreferences().catch(() => loadConfig());
+}
+
+/**
+ * What a synced section shows before that read lands — the same spinner and
+ * banner each of them used to render from its own copy of the load.
+ */
+function PendingSyncedPane({
+  paneId,
+  loadingLabel,
+  errorMessage,
+  contentClassName,
+}: {
+  paneId: PaneId;
+  loadingLabel: string;
+  errorMessage: string;
+  contentClassName?: string;
+}) {
+  const { loading, error } = useSyncedPreferences();
+  return (
+    <NavPane paneId={paneId} contentClassName={contentClassName}>
+      {loading ? (
+        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+          <Spinner />
+          <span>{loadingLabel}</span>
+        </div>
+      ) : (
+        <ErrorBanner message={error ?? errorMessage} className="" />
+      )}
+    </NavPane>
+  );
+}
+
+/**
  * One pane of a category: the accordion card, with its title and blurb pulled
  * from `PREFERENCES_NAV` (the single source of truth search also reads), a
  * "This Mac" badge for machine-local panes, and the `data-pane` container
@@ -202,9 +263,22 @@ export default function Preferences({
     [openPanes, setPaneOpen]
   );
 
-  // Bumped after a preferences import or version restore; keys the category
-  // subtree so every mounted section refetches its freshly changed values.
+  // Bumped after a preferences import or version restore; re-reads the synced
+  // file and keys the category subtree so every mounted section re-seeds from
+  // the freshly changed values.
   const [reloadNonce, setReloadNonce] = useState(0);
+
+  // One read for the whole page, shared with every section that edits a
+  // synced setting.
+  const preferencesLoad = useAsyncLoad(readSyncedPreferences, [reloadNonce]);
+  const syncedPreferences = useMemo<SyncedPreferencesState>(
+    () => ({
+      data: preferencesLoad.loading ? null : preferencesLoad.data,
+      loading: preferencesLoad.loading,
+      error: preferencesLoad.error,
+    }),
+    [preferencesLoad.data, preferencesLoad.loading, preferencesLoad.error]
+  );
 
   // Search over the static index, plus (opt-in) the user's saved text.
   const [query, setQuery] = useState("");
@@ -361,24 +435,26 @@ export default function Preferences({
               onPick={openHit}
             />
           )}
-          <PaneControlContext.Provider value={paneControl} key={reloadNonce}>
-            {PREFERENCES_NAV.map((category) => (
-              <div
-                key={category.id}
-                hidden={searching || category.id !== activeCategory}
-              >
-                <header className="mb-4">
-                  <h3 className="text-xl font-semibold text-gray-900">
-                    {category.title}
-                  </h3>
-                  <p className="text-sm text-gray-500">{category.blurb}</p>
-                </header>
-                <div className="space-y-4">
-                  <CategoryPanes category={category} />
+          <SyncedPreferencesContext.Provider value={syncedPreferences}>
+            <PaneControlContext.Provider value={paneControl} key={reloadNonce}>
+              {PREFERENCES_NAV.map((category) => (
+                <div
+                  key={category.id}
+                  hidden={searching || category.id !== activeCategory}
+                >
+                  <header className="mb-4">
+                    <h3 className="text-xl font-semibold text-gray-900">
+                      {category.title}
+                    </h3>
+                    <p className="text-sm text-gray-500">{category.blurb}</p>
+                  </header>
+                  <div className="space-y-4">
+                    <CategoryPanes category={category} />
+                  </div>
                 </div>
-              </div>
-            ))}
-          </PaneControlContext.Provider>
+              ))}
+            </PaneControlContext.Provider>
+          </SyncedPreferencesContext.Provider>
         </div>
       </main>
     </div>
@@ -721,39 +797,27 @@ const CHAT_STREAM_OPTIONS: {
 ];
 
 function ChatStreamingSection() {
-  const [snapshot, setSnapshot] = useState<ChatStreamMode | null>(null);
-  const [draft, setDraft] = useState<ChatStreamMode | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <ChatStreamingBody initial={data.chat_streaming} />
+  ) : (
+    <PendingSyncedPane
+      paneId="claude.chat-streaming"
+      loadingLabel="Loading chat streaming..."
+      errorMessage="Could not load the chat streaming setting."
+      contentClassName="border-t border-gray-100 p-4 space-y-3"
+    />
+  );
+}
+
+function ChatStreamingBody({ initial }: { initial: ChatStreamMode }) {
+  const [snapshot, setSnapshot] = useState(initial);
+  const [draft, setDraft] = useState(initial);
   const [syncing, setSyncing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [syncedOnce, setSyncedOnce] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const info = await fetchCloudPreferences();
-      setSnapshot(info.chat_streaming);
-      setDraft(info.chat_streaming);
-    } catch (e) {
-      try {
-        const info = await loadConfig();
-        setSnapshot(info.chat_streaming);
-        setDraft(info.chat_streaming);
-      } catch (fallbackError) {
-        setLoadError(String(fallbackError ?? e));
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const dirty = snapshot != null && draft != null && snapshot !== draft;
+  const dirty = snapshot !== draft;
 
   const sync = useCallback(async (next: ChatStreamMode) => {
     setSyncing(true);
@@ -775,7 +839,7 @@ function ChatStreamingSection() {
   // The draft that still needs saving; null when clean or already flushed.
   const pendingRef = useRef<ChatStreamMode | null>(null);
   useEffect(() => {
-    pendingRef.current = dirty && draft ? draft : null;
+    pendingRef.current = dirty ? draft : null;
   }, [dirty, draft]);
   const flush = useCallback(() => {
     const pending = pendingRef.current;
@@ -797,61 +861,43 @@ function ChatStreamingSection() {
       }
       contentClassName="border-t border-gray-100 p-4 space-y-3"
     >
-      {loading ? (
-        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-          <Spinner />
-          <span>Loading chat streaming...</span>
-        </div>
-      ) : draft == null ? (
-        <ErrorBanner
-          message={loadError ?? "Could not load the chat streaming setting."}
-          className=""
-        />
-      ) : (
-        <div
-          ref={containerRef}
-          onBlur={onContainerBlur}
-          className="space-y-3"
-        >
-          <div className="space-y-3" data-pref-anchor="chat_streaming">
-            {CHAT_STREAM_OPTIONS.map((option) => (
-              <label key={option.value} className="flex items-start gap-2">
-                <input
-                  type="radio"
-                  name="chat-streaming"
-                  value={option.value}
-                  checked={draft === option.value}
-                  onChange={() => setDraft(option.value)}
-                  className="mt-0.5"
-                />
-                <span>
-                  <span className="text-sm text-gray-700 block">
-                    {option.label}
-                  </span>
-                  <span className="text-xs text-gray-500 block">
-                    {option.description}
-                  </span>
+      <div ref={containerRef} onBlur={onContainerBlur} className="space-y-3">
+        <div className="space-y-3" data-pref-anchor="chat_streaming">
+          {CHAT_STREAM_OPTIONS.map((option) => (
+            <label key={option.value} className="flex items-start gap-2">
+              <input
+                type="radio"
+                name="chat-streaming"
+                value={option.value}
+                checked={draft === option.value}
+                onChange={() => setDraft(option.value)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm text-gray-700 block">
+                  {option.label}
                 </span>
-              </label>
-            ))}
-          </div>
-          {saveError ? (
-            <ErrorBanner
-              message={`Could not save chat streaming: ${saveError}`}
-              onRetry={() => {
-                if (draft) void sync(draft);
-              }}
-              className=""
-            />
-          ) : (
-            <SectionSaveStatus
-              syncing={syncing}
-              dirty={dirty}
-              syncedOnce={syncedOnce}
-            />
-          )}
+                <span className="text-xs text-gray-500 block">
+                  {option.description}
+                </span>
+              </span>
+            </label>
+          ))}
         </div>
-      )}
+        {saveError ? (
+          <ErrorBanner
+            message={`Could not save chat streaming: ${saveError}`}
+            onRetry={() => void sync(draft)}
+            className=""
+          />
+        ) : (
+          <SectionSaveStatus
+            syncing={syncing}
+            dirty={dirty}
+            syncedOnce={syncedOnce}
+          />
+        )}
+      </div>
     </NavPane>
   );
 }
@@ -869,48 +915,36 @@ const EFFORT_OPTIONS: { value: "" | EffortPreference; label: string }[] = [
 ];
 
 function ModelTuningSection() {
-  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
-  const [draft, setDraft] = useState<ModelTuningPreferences | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <ModelTuningBody initial={data} />
+  ) : (
+    <PendingSyncedPane
+      paneId="claude.model-tuning"
+      loadingLabel="Loading model tuning..."
+      errorMessage="Could not load model tuning preferences."
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    />
+  );
+}
+
+function ModelTuningBody({ initial }: { initial: ConfigInfo }) {
+  const [snapshot, setSnapshot] = useState<ConfigInfo>(initial);
+  const [draft, setDraft] = useState<ModelTuningPreferences>(
+    initial.model_tuning
+  );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const info = await fetchCloudPreferences();
-      setSnapshot(info);
-      setDraft(info.model_tuning);
-    } catch (e) {
-      try {
-        const info = await loadConfig();
-        setSnapshot(info);
-        setDraft(info.model_tuning);
-      } catch (fallbackError) {
-        setLoadError(String(fallbackError ?? e));
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
   const dirty =
-    snapshot != null &&
-    draft != null &&
     JSON.stringify(snapshot.model_tuning) !== JSON.stringify(draft);
   const temperatureInvalid =
-    draft?.temperature != null &&
+    draft.temperature != null &&
     (draft.temperature < 0 || draft.temperature > 1);
 
   async function save() {
-    if (!snapshot || !draft || temperatureInvalid) return;
+    if (temperatureInvalid) return;
     setSaving(true);
     setSaveError(null);
     setSaved(false);
@@ -945,119 +979,105 @@ function ModelTuningSection() {
       }
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
-      {loading ? (
-        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-          <Spinner />
-          <span>Loading model tuning...</span>
-        </div>
-      ) : !draft ? (
+      <label
+        className="flex items-start gap-2"
+        data-pref-anchor="reasoning_enabled"
+      >
+        <input
+          type="checkbox"
+          checked={draft.reasoning_enabled}
+          onChange={(e) => {
+            setSaved(false);
+            setDraft({ ...draft, reasoning_enabled: e.target.checked });
+          }}
+          className="mt-0.5"
+        />
+        <span>
+          <span className="text-sm text-gray-700 block">
+            Adaptive reasoning
+          </span>
+          <span className="text-xs text-gray-500 block">
+            Lets supported models (Claude 4.6 and newer) think before
+            answering, which can improve report quality. Reasoning tokens
+            bill as output and count against the response budget, so
+            turns cost more and take longer.
+          </span>
+        </span>
+      </label>
+
+      <div data-pref-anchor="effort">
+        <label className="text-sm text-gray-700 block mb-1">Effort</label>
+        <select
+          value={draft.effort ?? ""}
+          onChange={(e) => {
+            setSaved(false);
+            setDraft({
+              ...draft,
+              effort: (e.target.value || null) as EffortPreference | null,
+            });
+          }}
+          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        >
+          {EFFORT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-500 mt-1">
+          How much reasoning supported models put into each response.
+          Sent to Opus 4.5 and every model from Claude 4.6 on.
+        </p>
+      </div>
+
+      <div data-pref-anchor="temperature">
+        <label className="text-sm text-gray-700 block mb-1">
+          Temperature
+        </label>
+        <input
+          type="number"
+          min={0}
+          max={1}
+          step={0.1}
+          placeholder="Model default"
+          value={draft.temperature ?? ""}
+          onChange={(e) => {
+            setSaved(false);
+            setDraft({
+              ...draft,
+              temperature:
+                e.target.value === "" ? null : Number(e.target.value),
+            });
+          }}
+          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          0.0 to 1.0; leave blank for the model default. Only sent to
+          model generations that accept it (through Claude 4.6) — newer
+          models always use their own default.
+        </p>
+      </div>
+
+      {temperatureInvalid && (
         <ErrorBanner
-          message={loadError ?? "Could not load model tuning preferences."}
+          message="Temperature must be between 0.0 and 1.0."
           className=""
         />
-      ) : (
-        <>
-          <label
-            className="flex items-start gap-2"
-            data-pref-anchor="reasoning_enabled"
-          >
-            <input
-              type="checkbox"
-              checked={draft.reasoning_enabled}
-              onChange={(e) => {
-                setSaved(false);
-                setDraft({ ...draft, reasoning_enabled: e.target.checked });
-              }}
-              className="mt-0.5"
-            />
-            <span>
-              <span className="text-sm text-gray-700 block">
-                Adaptive reasoning
-              </span>
-              <span className="text-xs text-gray-500 block">
-                Lets supported models (Claude 4.6 and newer) think before
-                answering, which can improve report quality. Reasoning tokens
-                bill as output and count against the response budget, so
-                turns cost more and take longer.
-              </span>
-            </span>
-          </label>
-
-          <div data-pref-anchor="effort">
-            <label className="text-sm text-gray-700 block mb-1">Effort</label>
-            <select
-              value={draft.effort ?? ""}
-              onChange={(e) => {
-                setSaved(false);
-                setDraft({
-                  ...draft,
-                  effort: (e.target.value || null) as EffortPreference | null,
-                });
-              }}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {EFFORT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-500 mt-1">
-              How much reasoning supported models put into each response.
-              Sent to Opus 4.5 and every model from Claude 4.6 on.
-            </p>
-          </div>
-
-          <div data-pref-anchor="temperature">
-            <label className="text-sm text-gray-700 block mb-1">
-              Temperature
-            </label>
-            <input
-              type="number"
-              min={0}
-              max={1}
-              step={0.1}
-              placeholder="Model default"
-              value={draft.temperature ?? ""}
-              onChange={(e) => {
-                setSaved(false);
-                setDraft({
-                  ...draft,
-                  temperature:
-                    e.target.value === "" ? null : Number(e.target.value),
-                });
-              }}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              0.0 to 1.0; leave blank for the model default. Only sent to
-              model generations that accept it (through Claude 4.6) — newer
-              models always use their own default.
-            </p>
-          </div>
-
-          {temperatureInvalid && (
-            <ErrorBanner
-              message="Temperature must be between 0.0 and 1.0."
-              className=""
-            />
-          )}
-          {saveError && <ErrorBanner message={saveError} className="" />}
-
-          <div className="flex items-center justify-end gap-3">
-            {saved && !dirty && (
-              <span className="text-xs text-green-600">Saved</span>
-            )}
-            <button
-              onClick={save}
-              disabled={!dirty || saving || temperatureInvalid}
-              className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-            >
-              {saving ? "Saving..." : "Save"}
-            </button>
-          </div>
-        </>
       )}
+      {saveError && <ErrorBanner message={saveError} className="" />}
+
+      <div className="flex items-center justify-end gap-3">
+        {saved && !dirty && (
+          <span className="text-xs text-green-600">Saved</span>
+        )}
+        <button
+          onClick={save}
+          disabled={!dirty || saving || temperatureInvalid}
+          className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+        >
+          {saving ? "Saving..." : "Save"}
+        </button>
+      </div>
     </NavPane>
   );
 }
@@ -1808,17 +1828,22 @@ function NumberSetting({
 // ---------------------------------------------------------------------------
 
 function CostExplorerSection() {
-  const [hourlyEnabled, setHourlyEnabled] = useState<boolean | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <CostExplorerBody initial={data.hourly_cost_data} />
+  ) : (
+    <PendingSyncedPane
+      paneId="billing.cost-explorer"
+      loadingLabel="Loading..."
+      errorMessage="Could not load the Cost Explorer setting."
+    />
+  );
+}
+
+function CostExplorerBody({ initial }: { initial: boolean }) {
+  const [hourlyEnabled, setHourlyEnabled] = useState(initial);
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    loadConfig()
-      .then((info) => setHourlyEnabled(info.hourly_cost_data))
-      .catch(() => setHourlyEnabled(false))
-      .finally(() => setLoading(false));
-  }, []);
 
   async function handleToggle() {
     if (hourlyEnabled) {
@@ -1874,36 +1899,29 @@ function CostExplorerSection() {
         ) : undefined
       }
     >
-      {loading ? (
-        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-          <Spinner />
-          <span>Loading...</span>
+      <label className="flex items-start gap-3" data-pref-anchor="hourly_cost_data">
+        <input
+          type="checkbox"
+          checked={hourlyEnabled}
+          onChange={handleToggle}
+          disabled={verifying}
+          className="mt-0.5 rounded border-gray-300"
+        />
+        <div className="flex-1">
+          <span className="text-sm text-gray-900">
+            Hourly data resolution
+            {verifying && (
+              <span className="ml-2 text-xs text-gray-400 inline-flex items-center gap-1">
+                <Spinner /> Verifying...
+              </span>
+            )}
+          </span>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Shows hourly cost breakdowns for the last 14 days. Must be enabled in
+            AWS Console under Billing &rarr; Cost Explorer &rarr; Settings first.
+          </p>
         </div>
-      ) : (
-        <label className="flex items-start gap-3" data-pref-anchor="hourly_cost_data">
-          <input
-            type="checkbox"
-            checked={hourlyEnabled ?? false}
-            onChange={handleToggle}
-            disabled={verifying}
-            className="mt-0.5 rounded border-gray-300"
-          />
-          <div className="flex-1">
-            <span className="text-sm text-gray-900">
-              Hourly data resolution
-              {verifying && (
-                <span className="ml-2 text-xs text-gray-400 inline-flex items-center gap-1">
-                  <Spinner /> Verifying...
-                </span>
-              )}
-            </span>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Shows hourly cost breakdowns for the last 14 days. Must be enabled in
-              AWS Console under Billing &rarr; Cost Explorer &rarr; Settings first.
-            </p>
-          </div>
-        </label>
-      )}
+      </label>
 
       {error && (
         <ErrorBanner message={error} className="mt-3" />
@@ -2317,61 +2335,44 @@ function writerLimitsError(value: WriterLimits): string | null {
 }
 
 function ReportAuthoringSection() {
-  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
-  const [draft, setDraft] = useState<WriterLimits | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <ReportAuthoringBody initial={data} />
+  ) : (
+    <PendingSyncedPane
+      paneId="writer.limits"
+      loadingLabel="Loading document writer limits..."
+      errorMessage="Could not load document writer limits."
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    />
+  );
+}
+
+function ReportAuthoringBody({ initial }: { initial: ConfigInfo }) {
+  const [snapshot, setSnapshot] = useState<ConfigInfo>(initial);
+  const [draft, setDraft] = useState<WriterLimits>(() =>
+    normalizeWriterPreferences(initial.report_authoring)
+  );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const info = await fetchCloudPreferences();
-      setSnapshot(info);
-      setDraft(normalizeWriterPreferences(info.report_authoring));
-    } catch (e) {
-      try {
-        const info = await loadConfig();
-        setSnapshot(info);
-        setDraft(normalizeWriterPreferences(info.report_authoring));
-      } catch (fallbackError) {
-        setLoadError(String(fallbackError ?? e));
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const original = snapshot
-    ? normalizeWriterPreferences(snapshot.report_authoring)
-    : null;
-  const dirty =
-    original != null &&
-    draft != null &&
-    JSON.stringify(original) !== JSON.stringify(draft);
-  const validationError = draft ? writerLimitsError(draft) : null;
-  const effectiveToolRounds = draft
-    ? Math.min(
-        draft.max_tool_rounds,
-        Math.max(0, draft.max_converse_calls - 1)
-      )
-    : 0;
-  const effectiveModelCalls = draft
-    ? Math.min(draft.max_converse_calls, draft.max_tool_rounds + 1)
-    : 0;
-  const theoreticalToolCalls = draft
-    ? effectiveToolRounds * draft.max_tool_uses_per_response
-    : 0;
+  const original = normalizeWriterPreferences(snapshot.report_authoring);
+  const dirty = JSON.stringify(original) !== JSON.stringify(draft);
+  const validationError = writerLimitsError(draft);
+  const effectiveToolRounds = Math.min(
+    draft.max_tool_rounds,
+    Math.max(0, draft.max_converse_calls - 1)
+  );
+  const effectiveModelCalls = Math.min(
+    draft.max_converse_calls,
+    draft.max_tool_rounds + 1
+  );
+  const theoreticalToolCalls =
+    effectiveToolRounds * draft.max_tool_uses_per_response;
 
   async function save() {
-    if (!snapshot || !draft || validationError) return;
+    if (validationError) return;
     setSaving(true);
     setSaveError(null);
     setSaved(false);
@@ -2401,107 +2402,93 @@ function ReportAuthoringSection() {
       }
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
-        {loading ? (
-          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-            <Spinner />
-            <span>Loading document writer limits...</span>
-          </div>
-        ) : !draft ? (
-          <ErrorBanner
-            message={loadError ?? "Could not load document writer limits."}
-            className=""
-          />
-        ) : (
-          <>
-            <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-1.5">
-              <p className="text-sm font-medium text-amber-950">
-                Higher limits increase cost and runaway-loop exposure
-              </p>
-              <p className="text-xs text-amber-900">
-                These are spend and runtime guardrails, not targets. With this
-                combination, one request may make up to {effectiveModelCalls} billed
-                Bedrock calls and theoretically issue{" "}
-                {theoreticalToolCalls.toLocaleString()} tool calls. It can run much
-                longer, repeatedly read client records, and cost substantially more.
-              </p>
-              <p className="text-xs text-amber-900">
-                Opus is generally reliable, but no model is guaranteed not to
-                repeat tools or fail to finish. Writer changes still remain
-                proposals until you explicitly accept them.
-              </p>
-            </div>
+      <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-1.5">
+        <p className="text-sm font-medium text-amber-950">
+          Higher limits increase cost and runaway-loop exposure
+        </p>
+        <p className="text-xs text-amber-900">
+          These are spend and runtime guardrails, not targets. With this
+          combination, one request may make up to {effectiveModelCalls} billed
+          Bedrock calls and theoretically issue{" "}
+          {theoreticalToolCalls.toLocaleString()} tool calls. It can run much
+          longer, repeatedly read client records, and cost substantially more.
+        </p>
+        <p className="text-xs text-amber-900">
+          Opus is generally reliable, but no model is guaranteed not to
+          repeat tools or fail to finish. Writer changes still remain
+          proposals until you explicitly accept them.
+        </p>
+      </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {WRITER_LIMIT_FIELDS.map((field) => (
-                <label
-                  key={field.key}
-                  className="block"
-                  data-pref-anchor={field.key}
-                >
-                  <span className="text-sm font-medium text-gray-700">
-                    {field.label}
-                  </span>
-                  <input
-                    type="number"
-                    min={field.min}
-                    max={field.max}
-                    step={1}
-                    value={draft[field.key]}
-                    onChange={(event) => {
-                      const next = event.currentTarget.valueAsNumber;
-                      setDraft({
-                        ...draft,
-                        [field.key]: Number.isFinite(next) ? next : 0,
-                      });
-                      setSaved(false);
-                    }}
-                    className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                  <span className="block text-xs text-gray-500 mt-1">
-                    {field.description}
-                  </span>
-                </label>
-              ))}
-            </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {WRITER_LIMIT_FIELDS.map((field) => (
+          <label
+            key={field.key}
+            className="block"
+            data-pref-anchor={field.key}
+          >
+            <span className="text-sm font-medium text-gray-700">
+              {field.label}
+            </span>
+            <input
+              type="number"
+              min={field.min}
+              max={field.max}
+              step={1}
+              value={draft[field.key]}
+              onChange={(event) => {
+                const next = event.currentTarget.valueAsNumber;
+                setDraft({
+                  ...draft,
+                  [field.key]: Number.isFinite(next) ? next : 0,
+                });
+                setSaved(false);
+              }}
+              className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+            <span className="block text-xs text-gray-500 mt-1">
+              {field.description}
+            </span>
+          </label>
+        ))}
+      </div>
 
-            {validationError && (
-              <ErrorBanner message={validationError} className="" />
-            )}
-            {saveError && (
-              <ErrorBanner
-                message={`Could not save document writer limits: ${saveError}`}
-                className=""
-              />
-            )}
+      {validationError && (
+        <ErrorBanner message={validationError} className="" />
+      )}
+      {saveError && (
+        <ErrorBanner
+          message={`Could not save document writer limits: ${saveError}`}
+          className=""
+        />
+      )}
 
-            <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setDraft(WRITER_LIMIT_DEFAULTS);
-                  setSaved(false);
-                }}
-                disabled={saving}
-                className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
-              >
-                Restore recommended defaults
-              </button>
-              <div className="flex items-center gap-2">
-                {saved && !dirty && (
-                  <span className="text-xs text-green-700">Saved</span>
-                )}
-                <button
-                  type="button"
-                  onClick={save}
-                  disabled={saving || !dirty || validationError != null}
-                  className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-                >
-                  {saving ? "Saving..." : "Save limits"}
-                </button>
-              </div>
-            </div>
-          </>
-        )}
+      <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(WRITER_LIMIT_DEFAULTS);
+            setSaved(false);
+          }}
+          disabled={saving}
+          className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+        >
+          Restore recommended defaults
+        </button>
+        <div className="flex items-center gap-2">
+          {saved && !dirty && (
+            <span className="text-xs text-green-700">Saved</span>
+          )}
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || !dirty || validationError != null}
+            className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            {saving ? "Saving..." : "Save limits"}
+          </button>
+        </div>
+      </div>
     </NavPane>
   );
 }
@@ -2514,25 +2501,36 @@ function ReportAuthoringSection() {
  * Transcription defaults applied to drag-and-drop audio uploads. The wizard
  * uses these as starting values too, but lets the user override per file.
  *
- * Cross-machine sync: on mount we call `fetchCloudPreferences` to pull the
- * latest values from S3 (so the editing machine sees its own recent changes
- * without an app restart). Edits accumulate in a draft and are patch-saved
- * once when the user leaves the section or the screen goes away
- * (`useSaveOnLeave`) — one preferences-file version per editing burst, not
- * one per click. Only this section's fields travel, so sibling sections are
- * never clobbered.
+ * Cross-machine sync: the page's synced-preferences read pulls the latest
+ * values from S3, so the editing machine sees its own recent changes without
+ * an app restart. Edits accumulate in a draft and are patch-saved once when
+ * the user leaves the section or the screen goes away (`useSaveOnLeave`) —
+ * one preferences-file version per editing burst, not one per click. Only
+ * this section's fields travel, so sibling sections are never clobbered.
  */
 function TranscriptionSection() {
-  // The full set of synced fields, fetched on mount.
-  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <TranscriptionBody initial={data} />
+  ) : (
+    <PendingSyncedPane
+      paneId="transcription.imported-audio"
+      loadingLabel="Loading transcription preferences..."
+      errorMessage="Could not load preferences."
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    />
+  );
+}
+
+function TranscriptionBody({ initial }: { initial: ConfigInfo }) {
+  // The full set of synced fields, as the page read them.
+  const [snapshot, setSnapshot] = useState<ConfigInfo>(initial);
 
   // Editable copy of the transcription section only.
-  const [draft, setDraft] = useState<TranscriptionPreferences | null>(null);
+  const [draft, setDraft] = useState<TranscriptionPreferences>(
+    initial.transcription
+  );
   const dirty =
-    snapshot != null &&
-    draft != null &&
     JSON.stringify(snapshot.transcription) !== JSON.stringify(draft);
 
   // Sync status, shown under the controls.
@@ -2564,7 +2562,7 @@ function TranscriptionSection() {
   // The draft that still needs saving; null when clean or already flushed.
   const pendingRef = useRef<TranscriptionPreferences | null>(null);
   useEffect(() => {
-    pendingRef.current = dirty && draft ? draft : null;
+    pendingRef.current = dirty ? draft : null;
   }, [dirty, draft]);
   const flush = useCallback(() => {
     const pending = pendingRef.current;
@@ -2574,49 +2572,19 @@ function TranscriptionSection() {
   }, [sync]);
   const { containerRef, onContainerBlur } = useSaveOnLeave(flush);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const info = await fetchCloudPreferences();
-      setSnapshot(info);
-      setDraft(info.transcription);
-    } catch (e) {
-      // Fall back to whatever's in local config — fetchCloudPreferences
-      // requires a configured SDK; without one we still want to render.
-      try {
-        const info = await loadConfig();
-        setSnapshot(info);
-        setDraft(info.transcription);
-      } catch (e2) {
-        setError(String(e2 ?? e));
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
   function handleLanguageChange(value: TranscriptionLanguage) {
-    if (!draft) return;
     setDraft({ ...draft, default_language: value });
   }
 
   function handleSpeakerCountChange(value: number) {
-    if (!draft) return;
     setDraft({ ...draft, default_speaker_count: value });
   }
 
   function handleMedicalToggle(value: boolean) {
-    if (!draft) return;
     setDraft({ ...draft, use_medical_for_english: value });
   }
 
   function handleTranslateToggle(value: boolean) {
-    if (!draft) return;
     setDraft({ ...draft, translate_to_english: value });
   }
 
@@ -2624,151 +2592,131 @@ function TranscriptionSection() {
     <NavPane
       paneId="transcription.imported-audio"
       summary={
-        draft ? (
-          <span className="text-xs text-gray-400">
-            {labelForLanguage(draft.default_language ?? "english")} ·{" "}
-            {draft.default_speaker_count ?? 2}{" "}
-            {(draft.default_speaker_count ?? 2) === 1 ? "speaker" : "speakers"}
-            {draft.use_medical_for_english ? " · Medical" : ""}
-            {draft.translate_to_english ? " · translate" : ""}
-          </span>
-        ) : undefined
+        <span className="text-xs text-gray-400">
+          {labelForLanguage(draft.default_language ?? "english")} ·{" "}
+          {draft.default_speaker_count ?? 2}{" "}
+          {(draft.default_speaker_count ?? 2) === 1 ? "speaker" : "speakers"}
+          {draft.use_medical_for_english ? " · Medical" : ""}
+          {draft.translate_to_english ? " · translate" : ""}
+        </span>
       }
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
-        {loading ? (
-          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-            <Spinner />
-            <span>Loading transcription preferences...</span>
+      <div ref={containerRef} onBlur={onContainerBlur} className="space-y-4">
+        {/* Language */}
+        <fieldset data-pref-anchor="default_language">
+          <legend className="text-sm font-medium text-gray-700 mb-2">
+            Default language
+          </legend>
+          <div className="space-y-1.5">
+            {(["english", "spanish", "mixed"] as TranscriptionLanguage[]).map(
+              (lang) => (
+                <label
+                  key={lang}
+                  className="flex items-start gap-2.5 cursor-pointer"
+                >
+                  <input
+                    type="radio"
+                    name="default-language"
+                    checked={draft.default_language === lang}
+                    onChange={() => handleLanguageChange(lang)}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <span className="text-sm text-gray-900">
+                      {labelForLanguage(lang)}
+                    </span>
+                    <p className="text-xs text-gray-500">
+                      {descriptionForLanguage(lang)}
+                    </p>
+                  </div>
+                </label>
+              )
+            )}
           </div>
-        ) : !draft ? (
+        </fieldset>
+
+        {/* Speakers */}
+        <div data-pref-anchor="default_speaker_count">
+          <label className="text-sm font-medium text-gray-700 block mb-1.5">
+            Default speakers
+          </label>
+          <select
+            value={draft.default_speaker_count}
+            onChange={(e) => handleSpeakerCountChange(Number(e.target.value))}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            <option value={1}>1 — single speaker (no diarization)</option>
+            <option value={2}>2 — typical clinician + patient</option>
+            <option value={3}>3 — small group</option>
+            <option value={4}>4 — family or panel</option>
+          </select>
+          <p className="text-xs text-gray-500 mt-1">
+            Picking "1" turns diarization off and produces a single text
+            block (cheaper, faster).
+          </p>
+        </div>
+
+        {/* Medical toggle */}
+        <label
+          className="flex items-start gap-2.5 cursor-pointer"
+          data-pref-anchor="use_medical_for_english"
+        >
+          <input
+            type="checkbox"
+            checked={draft.use_medical_for_english}
+            onChange={(e) => handleMedicalToggle(e.target.checked)}
+            className="mt-0.5"
+          />
+          <div>
+            <span className="text-sm text-gray-900">
+              Use Transcribe Medical for English sessions
+            </span>
+            <p className="text-xs text-gray-500">
+              $0.075/min vs Standard $0.024/min — better recognition of
+              clinical vocabulary, drug names, and PHI tagging. Spanish and
+              Mixed sessions always use Standard.
+            </p>
+          </div>
+        </label>
+
+        {/* Translation toggle */}
+        <label
+          className="flex items-start gap-2.5 cursor-pointer"
+          data-pref-anchor="translate_to_english"
+        >
+          <input
+            type="checkbox"
+            checked={draft.translate_to_english}
+            onChange={(e) => handleTranslateToggle(e.target.checked)}
+            className="mt-0.5"
+          />
+          <div>
+            <span className="text-sm text-gray-900">
+              Translate non-English segments to English
+            </span>
+            <p className="text-xs text-gray-500">
+              When a segment's detected language isn't English, render an
+              English translation alongside the original using your
+              preferred chat model. Adds a few cents per session.
+            </p>
+          </div>
+        </label>
+
+        {syncError ? (
           <ErrorBanner
-            message={error ?? "Could not load preferences."}
+            message={`Could not save transcription preferences: ${syncError}`}
+            onRetry={() => void sync(draft)}
             className=""
           />
         ) : (
-          <div
-            ref={containerRef}
-            onBlur={onContainerBlur}
-            className="space-y-4"
-          >
-            {/* Language */}
-            <fieldset data-pref-anchor="default_language">
-              <legend className="text-sm font-medium text-gray-700 mb-2">
-                Default language
-              </legend>
-              <div className="space-y-1.5">
-                {(["english", "spanish", "mixed"] as TranscriptionLanguage[]).map(
-                  (lang) => (
-                    <label
-                      key={lang}
-                      className="flex items-start gap-2.5 cursor-pointer"
-                    >
-                      <input
-                        type="radio"
-                        name="default-language"
-                        checked={draft.default_language === lang}
-                        onChange={() => handleLanguageChange(lang)}
-                        className="mt-0.5"
-                      />
-                      <div>
-                        <span className="text-sm text-gray-900">
-                          {labelForLanguage(lang)}
-                        </span>
-                        <p className="text-xs text-gray-500">
-                          {descriptionForLanguage(lang)}
-                        </p>
-                      </div>
-                    </label>
-                  )
-                )}
-              </div>
-            </fieldset>
-
-            {/* Speakers */}
-            <div data-pref-anchor="default_speaker_count">
-              <label className="text-sm font-medium text-gray-700 block mb-1.5">
-                Default speakers
-              </label>
-              <select
-                value={draft.default_speaker_count}
-                onChange={(e) => handleSpeakerCountChange(Number(e.target.value))}
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                <option value={1}>1 — single speaker (no diarization)</option>
-                <option value={2}>2 — typical clinician + patient</option>
-                <option value={3}>3 — small group</option>
-                <option value={4}>4 — family or panel</option>
-              </select>
-              <p className="text-xs text-gray-500 mt-1">
-                Picking "1" turns diarization off and produces a single text
-                block (cheaper, faster).
-              </p>
-            </div>
-
-            {/* Medical toggle */}
-            <label
-              className="flex items-start gap-2.5 cursor-pointer"
-              data-pref-anchor="use_medical_for_english"
-            >
-              <input
-                type="checkbox"
-                checked={draft.use_medical_for_english}
-                onChange={(e) => handleMedicalToggle(e.target.checked)}
-                className="mt-0.5"
-              />
-              <div>
-                <span className="text-sm text-gray-900">
-                  Use Transcribe Medical for English sessions
-                </span>
-                <p className="text-xs text-gray-500">
-                  $0.075/min vs Standard $0.024/min — better recognition of
-                  clinical vocabulary, drug names, and PHI tagging. Spanish and
-                  Mixed sessions always use Standard.
-                </p>
-              </div>
-            </label>
-
-            {/* Translation toggle */}
-            <label
-              className="flex items-start gap-2.5 cursor-pointer"
-              data-pref-anchor="translate_to_english"
-            >
-              <input
-                type="checkbox"
-                checked={draft.translate_to_english}
-                onChange={(e) => handleTranslateToggle(e.target.checked)}
-                className="mt-0.5"
-              />
-              <div>
-                <span className="text-sm text-gray-900">
-                  Translate non-English segments to English
-                </span>
-                <p className="text-xs text-gray-500">
-                  When a segment's detected language isn't English, render an
-                  English translation alongside the original using your
-                  preferred chat model. Adds a few cents per session.
-                </p>
-              </div>
-            </label>
-
-            {syncError ? (
-              <ErrorBanner
-                message={`Could not save transcription preferences: ${syncError}`}
-                onRetry={() => {
-                  if (draft) void sync(draft);
-                }}
-                className=""
-              />
-            ) : (
-              <SectionSaveStatus
-                syncing={syncing}
-                dirty={dirty}
-                syncedOnce={syncedOnce}
-              />
-            )}
-          </div>
+          <SectionSaveStatus
+            syncing={syncing}
+            dirty={dirty}
+            syncedOnce={syncedOnce}
+          />
         )}
+      </div>
     </NavPane>
   );
 }
@@ -2828,49 +2776,32 @@ const PLAN_GATE_OPTIONS: {
  * without anyone editing a setting.
  */
 function DraftRunsSection() {
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <DraftRunsBody initial={data.draft_pipeline} />
+  ) : (
+    <PendingSyncedPane
+      paneId="writer.draft-runs"
+      loadingLabel="Loading draft run settings..."
+      errorMessage="Could not load the draft run settings."
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    />
+  );
+}
+
+function DraftRunsBody({ initial }: { initial: DraftPipelinePreferences }) {
   const {
     models: chatModels,
     loading: modelsLoading,
     error: modelsError,
   } = useChatModels();
-  const [snapshot, setSnapshot] = useState<DraftPipelinePreferences | null>(
-    null
-  );
-  const [draft, setDraft] = useState<DraftPipelinePreferences | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<DraftPipelinePreferences>(initial);
+  const [draft, setDraft] = useState<DraftPipelinePreferences>(initial);
   const [syncing, setSyncing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [syncedOnce, setSyncedOnce] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const info = await fetchCloudPreferences();
-      setSnapshot(info.draft_pipeline);
-      setDraft(info.draft_pipeline);
-    } catch (e) {
-      try {
-        const info = await loadConfig();
-        setSnapshot(info.draft_pipeline);
-        setDraft(info.draft_pipeline);
-      } catch (fallbackError) {
-        setLoadError(String(fallbackError ?? e));
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const dirty =
-    snapshot != null &&
-    draft != null &&
-    JSON.stringify(snapshot) !== JSON.stringify(draft);
+  const dirty = JSON.stringify(snapshot) !== JSON.stringify(draft);
 
   const sync = useCallback(async (next: DraftPipelinePreferences) => {
     setSyncing(true);
@@ -2891,7 +2822,7 @@ function DraftRunsSection() {
 
   const pendingRef = useRef<DraftPipelinePreferences | null>(null);
   useEffect(() => {
-    pendingRef.current = dirty && draft ? draft : null;
+    pendingRef.current = dirty ? draft : null;
   }, [dirty, draft]);
   const flush = useCallback(() => {
     const pending = pendingRef.current;
@@ -2901,7 +2832,7 @@ function DraftRunsSection() {
   }, [sync]);
   const { containerRef, onContainerBlur } = useSaveOnLeave(flush);
 
-  const gate = draft?.plan_gate ?? "gated";
+  const gate = draft.plan_gate;
   const active = PLAN_GATE_OPTIONS.find((option) => option.value === gate);
 
   return (
@@ -2916,112 +2847,98 @@ function DraftRunsSection() {
       }
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
-      {loading ? (
-        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-          <Spinner />
-          <span>Loading draft run settings...</span>
-        </div>
-      ) : draft == null ? (
-        <ErrorBanner
-          message={loadError ?? "Could not load the draft run settings."}
-          className=""
-        />
-      ) : (
-        <div ref={containerRef} onBlur={onContainerBlur} className="space-y-4">
-          <fieldset className="space-y-3" data-pref-anchor="plan_gate">
-            <legend className="text-xs font-medium text-gray-700">
-              Before drafting starts
-            </legend>
-            {PLAN_GATE_OPTIONS.map((option) => (
-              <label key={option.value} className="flex items-start gap-2">
-                <input
-                  type="radio"
-                  name="plan-gate"
-                  value={option.value}
-                  checked={gate === option.value}
-                  onChange={() =>
-                    setDraft({ ...draft, plan_gate: option.value })
-                  }
-                  className="mt-0.5"
-                />
-                <span>
-                  <span className="text-sm text-gray-700 block">
-                    {option.label}
-                  </span>
-                  <span className="text-xs text-gray-500 block">
-                    {option.description}
-                  </span>
+      <div ref={containerRef} onBlur={onContainerBlur} className="space-y-4">
+        <fieldset className="space-y-3" data-pref-anchor="plan_gate">
+          <legend className="text-xs font-medium text-gray-700">
+            Before drafting starts
+          </legend>
+          {PLAN_GATE_OPTIONS.map((option) => (
+            <label key={option.value} className="flex items-start gap-2">
+              <input
+                type="radio"
+                name="plan-gate"
+                value={option.value}
+                checked={gate === option.value}
+                onChange={() =>
+                  setDraft({ ...draft, plan_gate: option.value })
+                }
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm text-gray-700 block">
+                  {option.label}
                 </span>
-              </label>
-            ))}
-          </fieldset>
+                <span className="text-xs text-gray-500 block">
+                  {option.description}
+                </span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
 
-          <div className="space-y-3">
-            <div data-pref-anchor="planner_model_id">
-              <label className="text-xs text-gray-600" htmlFor="planner-model">
-                Planning model
-              </label>
-              <p className="text-xs text-gray-500">
-                Reads the records and decides what each section should cover.
-              </p>
-              <ModelSelect
-                models={chatModels}
-                loading={modelsLoading}
-                error={modelsError}
-                value={draft.planner_model_id ?? ""}
-                onChange={(modelId) =>
-                  setDraft({
-                    ...draft,
-                    planner_model_id: modelId === "" ? null : modelId,
-                  })
-                }
-                ariaLabel="Planning model"
-                className="mt-1 w-full"
-                defaultOption
-              />
-            </div>
-            <div data-pref-anchor="reviewer_model_id">
-              <label className="text-xs text-gray-600" htmlFor="reviewer-model">
-                Review model
-              </label>
-              <p className="text-xs text-gray-500">
-                Reads the finished draft back and raises findings against it.
-              </p>
-              <ModelSelect
-                models={chatModels}
-                loading={modelsLoading}
-                error={modelsError}
-                value={draft.reviewer_model_id ?? ""}
-                onChange={(modelId) =>
-                  setDraft({
-                    ...draft,
-                    reviewer_model_id: modelId === "" ? null : modelId,
-                  })
-                }
-                ariaLabel="Review model"
-                className="mt-1 w-full"
-                defaultOption
-              />
-            </div>
+        <div className="space-y-3">
+          <div data-pref-anchor="planner_model_id">
+            <label className="text-xs text-gray-600" htmlFor="planner-model">
+              Planning model
+            </label>
+            <p className="text-xs text-gray-500">
+              Reads the records and decides what each section should cover.
+            </p>
+            <ModelSelect
+              models={chatModels}
+              loading={modelsLoading}
+              error={modelsError}
+              value={draft.planner_model_id ?? ""}
+              onChange={(modelId) =>
+                setDraft({
+                  ...draft,
+                  planner_model_id: modelId === "" ? null : modelId,
+                })
+              }
+              ariaLabel="Planning model"
+              className="mt-1 w-full"
+              defaultOption
+            />
           </div>
-
-          {saveError ? (
-            <ErrorBanner
-              message={`Could not save draft run settings: ${saveError}`}
-              onRetry={() => {
-                if (draft) void sync(draft);
-              }}
-              className=""
+          <div data-pref-anchor="reviewer_model_id">
+            <label className="text-xs text-gray-600" htmlFor="reviewer-model">
+              Review model
+            </label>
+            <p className="text-xs text-gray-500">
+              Reads the finished draft back and raises findings against it.
+            </p>
+            <ModelSelect
+              models={chatModels}
+              loading={modelsLoading}
+              error={modelsError}
+              value={draft.reviewer_model_id ?? ""}
+              onChange={(modelId) =>
+                setDraft({
+                  ...draft,
+                  reviewer_model_id: modelId === "" ? null : modelId,
+                })
+              }
+              ariaLabel="Review model"
+              className="mt-1 w-full"
+              defaultOption
             />
-          ) : (
-            <SectionSaveStatus
-              syncing={syncing}
-              dirty={dirty}
-              syncedOnce={syncedOnce}
-            />
-          )}
+          </div>
         </div>
-      )}
+
+        {saveError ? (
+          <ErrorBanner
+            message={`Could not save draft run settings: ${saveError}`}
+            onRetry={() => void sync(draft)}
+            className=""
+          />
+        ) : (
+          <SectionSaveStatus
+            syncing={syncing}
+            dirty={dirty}
+            syncedOnce={syncedOnce}
+          />
+        )}
+      </div>
     </NavPane>
   );
 }
