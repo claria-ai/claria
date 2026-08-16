@@ -12,6 +12,7 @@ use claria_core::models::{
     report::{ReportDraft, ReportExportStatus},
     report_run::RunSectionState,
 };
+use claria_report_pipeline::CompletionReport;
 
 use super::{
     CommandContext, merge_details, parse_uuid, run, streams::StopRegistration, usage_audit_details,
@@ -682,6 +683,30 @@ pub async fn resolve_report_proposal(
         .await;
 
         Ok(workspace)
+    })
+    .await
+}
+
+/// Answer the completion checklist for one report.
+///
+/// Read-only and model-free: it loads durable state, checks it, and returns
+/// what failed. Nothing is mutated, so there is no audit event to record.
+#[tauri::command]
+#[specta::specta]
+pub async fn evaluate_report_completion(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+) -> Result<CompletionReport, String> {
+    run("evaluate_report_completion", async {
+        let ctx = CommandContext::new(&state).await?;
+        Ok(claria_report_pipeline::evaluate_report_completion(
+            &ctx.s3,
+            &ctx.bucket,
+            parse_uuid(&client_id)?,
+            parse_uuid(&report_id)?,
+        )
+        .await?)
     })
     .await
 }

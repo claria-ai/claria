@@ -565,9 +565,36 @@ impl ReportDraft {
         Ok(candidate)
     }
 
+    /// Apply a proposal without recording authorship. Sections keep whatever
+    /// stamp they already carried.
     pub fn accept(
         &self,
         proposal: &ReportProposal,
+        accepted_at: Timestamp,
+    ) -> Result<ReportDraft, CoreError> {
+        self.accept_stamped(proposal, None, accepted_at)
+    }
+
+    /// Apply a proposal and credit `model_id` for every section the proposal
+    /// wrote.
+    ///
+    /// Only [`ReportOperation::AddSection`] and
+    /// [`ReportOperation::ReplaceSection`] name a section whose text the model
+    /// authored. A title change touches no section body, and a removed section
+    /// has nothing left to stamp.
+    pub fn accept_with_authorship(
+        &self,
+        proposal: &ReportProposal,
+        model_id: &str,
+        accepted_at: Timestamp,
+    ) -> Result<ReportDraft, CoreError> {
+        self.accept_stamped(proposal, Some(model_id), accepted_at)
+    }
+
+    fn accept_stamped(
+        &self,
+        proposal: &ReportProposal,
+        model_id: Option<&str>,
         accepted_at: Timestamp,
     ) -> Result<ReportDraft, CoreError> {
         if proposal.base_revision != self.revision {
@@ -577,7 +604,7 @@ impl ReportDraft {
             )));
         }
         validate_proposal(proposal, None)?;
-        let recomputed = self.preview(&proposal.operations)?;
+        let mut recomputed = self.preview(&proposal.operations)?;
         if recomputed != proposal.proposed_content {
             return Err(invalid("proposal candidate does not match its operations"));
         }
@@ -585,6 +612,33 @@ impl ReportDraft {
             .revision
             .checked_add(1)
             .ok_or_else(|| invalid("report revision overflow"))?;
+        if let Some(model_id) = model_id {
+            let authorship = SectionAuthorship {
+                kind: AuthorshipKind::ModelRevised,
+                revision,
+                model_id: Some(model_id.to_string()),
+                run_id: None,
+                updated_at: accepted_at,
+            };
+            for operation in &proposal.operations {
+                let section_id = match operation {
+                    ReportOperation::AddSection { section, .. } => section.id,
+                    ReportOperation::ReplaceSection { section_id, .. } => *section_id,
+                    // A title change touches no body; a section removed later
+                    // in the same proposal is no longer there to stamp.
+                    ReportOperation::SetTitle { .. } | ReportOperation::RemoveSection { .. } => {
+                        continue;
+                    }
+                };
+                if let Some(section) = recomputed
+                    .sections
+                    .iter_mut()
+                    .find(|section| section.id == section_id)
+                {
+                    section.authorship = Some(authorship.clone());
+                }
+            }
+        }
         Ok(Self {
             revision,
             content: recomputed,
@@ -774,28 +828,52 @@ pub fn validate_report_summary(summary: &str) -> Result<(), CoreError> {
 /// report text. This is a review hint, not a claim that all carryover can be
 /// detected automatically.
 pub fn report_template_placeholder_count(content: &ReportContent) -> u32 {
-    let mut count = placeholder_count(&content.title);
-    for section in &content.sections {
-        count = count.saturating_add(placeholder_count(&section.heading));
-        for block in &section.blocks {
-            match block {
-                ReportBlock::Paragraph { text } => {
-                    count = count.saturating_add(placeholder_count(text));
+    content
+        .sections
+        .iter()
+        .map(report_section_placeholder_count)
+        .fold(
+            report_text_placeholder_count(&content.title),
+            u32::saturating_add,
+        )
+}
+
+/// Unresolved template markers in one section's heading and body.
+///
+/// The completion gate reports carryover per section, so the per-section and
+/// per-string counts are the primitives and the document-wide count above is
+/// their sum. Two independent scans would let the checklist and the import
+/// statistics disagree about what counts as a placeholder.
+pub fn report_section_placeholder_count(section: &ReportSection) -> u32 {
+    let mut count = report_text_placeholder_count(&section.heading);
+    for block in &section.blocks {
+        match block {
+            ReportBlock::Paragraph { text } => {
+                count = count.saturating_add(report_text_placeholder_count(text));
+            }
+            ReportBlock::BulletList { items } => {
+                for item in items {
+                    count = count.saturating_add(report_text_placeholder_count(item));
                 }
-                ReportBlock::BulletList { items } => {
-                    for item in items {
-                        count = count.saturating_add(placeholder_count(item));
-                    }
-                }
-                ReportBlock::Table { rows, .. } => {
-                    for cell in rows.iter().flatten() {
-                        count = count.saturating_add(placeholder_count(cell));
-                    }
+            }
+            ReportBlock::Table { rows, .. } => {
+                for cell in rows.iter().flatten() {
+                    count = count.saturating_add(report_text_placeholder_count(cell));
                 }
             }
         }
     }
     count
+}
+
+/// Unresolved template markers in one string — a title, a heading, a
+/// paragraph, a table cell.
+pub fn report_text_placeholder_count(text: &str) -> u32 {
+    let lowercase = text.to_lowercase();
+    ["{{", "<<", "[client", "[name", "[date", "_____"]
+        .iter()
+        .map(|marker| u32::try_from(lowercase.matches(marker).count()).unwrap_or(u32::MAX))
+        .fold(0_u32, u32::saturating_add)
 }
 
 /// Validate Bedrock message ordering and exact tool-use/result correlation.
@@ -1024,6 +1102,8 @@ fn validate_template_import(
     Ok(())
 }
 
+/// Shared by every model in this crate that persists user- or model-authored
+/// text into a Word-renderable document.
 pub(crate) fn validate_nonempty_text(
     label: &str,
     value: &str,
@@ -1057,14 +1137,6 @@ pub(crate) fn validate_xml_text(
         )));
     }
     Ok(())
-}
-
-fn placeholder_count(text: &str) -> u32 {
-    let lowercase = text.to_lowercase();
-    ["{{", "<<", "[client", "[name", "[date", "_____"]
-        .iter()
-        .map(|marker| u32::try_from(lowercase.matches(marker).count()).unwrap_or(u32::MAX))
-        .fold(0_u32, u32::saturating_add)
 }
 
 fn validate_proposal(

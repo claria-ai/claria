@@ -17,7 +17,7 @@ cheap.
 |---|---|
 | Targeted edit | `list_record_files`, `read_record_file`, `propose_report_changes` |
 | Whole report | `set_full_draft_title`, `write_full_draft_section`, `skip_full_draft_section`, `mark_section_failed`, `finish_full_draft` |
-| Analysis | `submit_section_plan`, `submit_resume_plan` |
+| Analysis | `submit_section_plan`, `submit_resume_plan`, `submit_review_rows` |
 
 The analysis set is different in kind: it is sent with `tool_choice` forcing
 exactly one of its tools, so the answer is structure by construction rather
@@ -347,6 +347,33 @@ draft) and never calls a model.
 is not `drafted`. A `rewrite` or `draft` decision clears that section back to
 pending — including one that already landed — so the writer really replaces
 it instead of the finisher treating it as already decided.
+
+---
+
+## `submit_review_rows`
+
+Forced, once per review branch. One union tool for all seven properties, with
+an identical `tool_choice` on every branch: a per-property tool would move the
+tools tier of the prompt cache and cost each branch the corpus prefix its
+sibling paid to write. Which fields are legal for which property is stated in
+the description and enforced by the host, not by the shape.
+
+| Field | Constraint |
+|---|---|
+| `property` | one of the seven; must equal the property the instruction named |
+| `rows` | exactly one row per drafted section, in the order the drafted-section block lists them |
+| `rows[].status` | `no_issues` or `findings` — an omitted section is a validation failure, not silence |
+| `rows[].findings[].span` | `{quote, block_index?}` — the index is a hint the host searches first, not an address it trusts |
+| `rows[].findings[].replacement` | required on the four style properties, rejected on the three consistency ones |
+
+**Internal mapping.** Every quote is resolved to a `(block_index, char range)`
+against the section's own text by whitespace-normalized search; one that does
+not resolve discards the finding rather than anchoring it somewhere plausible,
+and one that resolves twice anchors the first occurrence and appends a
+`duplicate_anchor` note. The anchor revision and the model ID are stamped from
+the request the host sent, never read from the answer. A branch that fails
+validation twice fails alone: the other six keep their findings, and the
+property it covered contributes no coverage row.
 
 ---
 

@@ -15,6 +15,7 @@ import type {
   ChatHistorySummary,
   ChatMessage,
   ChatStreamEvent,
+  CompletionReport,
   ConfigInfo,
   ConsoleDelta,
   CostAndUsageResult,
@@ -27,6 +28,7 @@ import type {
   DraftRun,
   EditorHistoryEntry,
   FileVersion,
+  FindingAction,
   FullReportGenerationResponse,
   InfraChatResponse,
   LocalModelId,
@@ -46,6 +48,8 @@ import type {
   ReportDraftEdit,
   ReportDraft,
   ReportExportResult,
+  ReportFindings,
+  ReportFindingResolution,
   ReportProposalChoice,
   ReportRevisionView,
   ReportTemplatePreview,
@@ -85,9 +89,13 @@ export type {
   ClientRecordDetails,
   ClientSummary,
   CacheTtlChoice,
+  CompletionCheck,
+  CompletionCheckKind,
+  CompletionReport,
   ConfigInfo,
   ConsoleDelta,
   ConsoleEntry,
+  ConflictingRef,
   CredentialAssessment,
   CredentialClass,
   CredentialInput,
@@ -102,6 +110,10 @@ export type {
   EvidenceRef,
   FieldDrift,
   FileVersion,
+  Finding,
+  FindingAction,
+  FindingAnchor,
+  FindingStatus,
   FullReportGenerationResponse,
   InfraChatResponse,
   Lifecycle,
@@ -138,6 +150,8 @@ export type {
   ReportExportResult,
   ReportExportStatus,
   ReportExport,
+  ReportFindings,
+  ReportFindingResolution,
   ReportOperation,
   ReportProposalChoice,
   ReportProposalDecision,
@@ -157,11 +171,15 @@ export type {
   ReportTurnResponse,
   ReportWorkspaceView,
   ResourceSpec,
+  ReviewCoverage,
+  ReviewPass,
   RunInstruction,
   RunPlan,
   RunSection,
   RunSectionState,
   SectionIntent,
+  StyleProposal,
+  TextSpan,
   Severity,
   SpeakerMode,
   StepStatus,
@@ -770,6 +788,52 @@ export async function resolveReportProposal(
   return unwrap(
     await commands.resolveReportProposal(clientId, reportId, proposalId, decision)
   );
+}
+
+/**
+ * Review one accepted revision for every property at once. The seven passes
+ * run in parallel, so this resolves when the slowest of them does.
+ */
+export async function runReviewSweeps(
+  clientId: string,
+  reportId: string,
+  revision: number,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<ReportFindings> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.runReviewSweeps(clientId, reportId, revision, channel)
+  );
+}
+
+export async function listReportFindings(
+  clientId: string,
+  reportId: string
+): Promise<ReportFindings> {
+  return unwrap(await commands.listReportFindings(clientId, reportId));
+}
+
+export async function resolveReportFinding(
+  clientId: string,
+  reportId: string,
+  findingId: string,
+  action: FindingAction
+): Promise<ReportFindingResolution> {
+  return unwrap(
+    await commands.resolveReportFinding(clientId, reportId, findingId, action)
+  );
+}
+
+/**
+ * Answer the completion checklist for one report. Read-only, and decided
+ * entirely by code — no model is asked whether the report is finished.
+ */
+export async function evaluateReportCompletion(
+  clientId: string,
+  reportId: string
+): Promise<CompletionReport> {
+  return unwrap(await commands.evaluateReportCompletion(clientId, reportId));
 }
 
 export async function exportReportDocx(

@@ -58,6 +58,7 @@ pub(crate) fn synthetic_plan(
             })
             .collect(),
         user_edited: false,
+        synthetic: true,
         approved_at: Some(now),
         plan_warnings: Vec::new(),
         created_at: now,

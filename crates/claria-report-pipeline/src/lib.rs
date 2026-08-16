@@ -10,11 +10,15 @@
 mod context;
 mod error;
 mod full_draft_context;
+mod gate;
 mod plan;
 mod prompt_cache;
 mod prompts;
 mod record_context;
+mod review;
+mod review_instructions;
 mod run;
+mod text;
 mod tools;
 mod turn;
 
@@ -24,6 +28,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use error::ReportPipelineError;
+pub use gate::{
+    CompletionCheck, CompletionCheckKind, CompletionReport, evaluate_report_completion,
+};
 pub use plan::{
     DETERMINISTIC_PLAN_MODEL_ID, DraftPlanOutcome, DraftPlanRequest, PLAN_OUTPUT_TOKEN_RESERVE,
     PlanModels, generate_draft_plan, plan_draft_resume, resume_planned_draft_run, start_draft_run,
@@ -34,6 +41,10 @@ pub use prompts::{
     FULL_REPORT_SYSTEM_PROMPT_BODY, FULL_REPORT_TRUST_RULES, PLANNER_SYSTEM_PROMPT_BODY,
     PLANNER_TRUST_RULES, REPORT_SYSTEM_PROMPT_BODY, REPORT_TRUST_RULES, full_report_system_prompt,
     planner_system_prompt, report_system_prompt,
+};
+pub use review::{
+    REVIEW_FAN_OUT_CONCURRENCY, REVIEW_OUTPUT_TOKEN_RESERVE, ReviewPropertyStatus,
+    ReviewSweepOutcome, ReviewSweepRequest, run_review_sweeps,
 };
 pub use run::{
     PartialDraftFinalization, abandon_draft_run, finalize_partial_draft, load_resumable_draft_run,

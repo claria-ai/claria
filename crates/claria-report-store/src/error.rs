@@ -39,6 +39,9 @@ pub enum ReportStoreError {
     #[error("The persisted drafting run is invalid: {0}")]
     InvalidRun(String),
 
+    #[error("The persisted review findings are invalid: {0}")]
+    InvalidFindings(String),
+
     #[error("Report storage is unavailable while {operation}. Try again.")]
     Storage {
         operation: &'static str,

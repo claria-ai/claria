@@ -252,6 +252,24 @@ impl CachePlan {
         .gated(capabilities, true)
     }
 
+    /// The review fan-out's placement: [`Self::analysis`] plus a second point
+    /// after the first block of the opening message.
+    ///
+    /// Every branch of the fan-out sends the same system blocks and the same
+    /// drafted-sections block and differs only in the instruction that trails
+    /// them, so the second point is what lets six parallel branches read the
+    /// draft the warming branch paid to write. `after_blocks` names the block
+    /// rather than assuming it, because the caller owns the message layout.
+    pub fn review(
+        capabilities: claria_core::model_id::ModelCapabilities,
+        after_blocks: Vec<(usize, usize)>,
+    ) -> Result<Self, BedrockError> {
+        Ok(
+            Self::new(CacheTtlChoice::OneHour, true, false, after_blocks)?
+                .gated(capabilities, true),
+        )
+    }
+
     /// Gate a plan on what the model can do and what the user asked for:
     /// either saying no yields [`Self::disabled`], and a one-hour TTL the
     /// family does not accept is downgraded rather than sent and rejected.
@@ -819,6 +837,23 @@ impl InputTokenBudget {
             verified: None,
             verify_first: false,
         }
+    }
+
+    /// A budget that starts from a count already taken against an
+    /// identically shaped request, so a fan-out of sibling requests pays for
+    /// one `CountTokens` rather than one per branch.
+    pub(crate) fn seeded(budget: u32, tokens: u32, chars: u64) -> Self {
+        Self {
+            budget,
+            verified: Some((tokens, chars)),
+            verify_first: false,
+        }
+    }
+
+    /// The last real count and the request size it was taken at, for a caller
+    /// seeding siblings from it.
+    pub(crate) fn verified(&self) -> Option<(u32, u64)> {
+        self.verified
     }
 
     /// Check a request of `current_chars` characters against the budget.

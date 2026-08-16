@@ -120,6 +120,24 @@ pub enum ReportTurnProgress {
     TitleSet {
         title: String,
     },
+    /// One branch of the review fan-out went out. `index` is one-based and
+    /// `total` is the property count, so the bar is honest without the
+    /// listener having to know how many properties there are.
+    ReviewPassStarted {
+        property: String,
+        index: u32,
+        total: u32,
+    },
+    /// One branch came back. `completed` and `total` ride on the event rather
+    /// than being counted by the listener, so a dropped event cannot desync
+    /// the bar — and because branches finish out of order, `completed` is the
+    /// branch's own position, not a running total.
+    ReviewPassCompleted {
+        property: String,
+        findings: u32,
+        completed: u32,
+        total: u32,
+    },
 }
 
 /// The signal a request with no Stop button behind it watches.

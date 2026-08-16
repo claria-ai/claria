@@ -119,6 +119,15 @@ function modelActivityLabel(callNumber: number): string {
   return `Claude is ${MODEL_ACTIVITY_WORDS[index]}`;
 }
 
+/**
+ * The backend names review properties in snake_case, and that is the name the
+ * findings themselves carry. Rendering it as prose is presentation, so it
+ * happens here rather than being sent over the bridge twice.
+ */
+function reviewPropertyLabel(property: string): string {
+  return property.replaceAll("_", " ");
+}
+
 function agentActivityForTool(name: string, context: string | null) {
   if (name === "list_record_files") {
     return { label: "Checking available records", detail: context ?? undefined };
@@ -205,6 +214,19 @@ function agentActivityForSection(
           ? `Could not write “${headingFor(progress.section_id)}”`
           : "Could not write a section",
         detail: progress.message,
+      };
+    case "review_pass_started":
+      return {
+        label: `Reviewing for ${reviewPropertyLabel(progress.property)}`,
+        detail: `check ${progress.index} of ${progress.total}`,
+      };
+    case "review_pass_completed":
+      return {
+        label:
+          progress.findings === 0
+            ? `No ${reviewPropertyLabel(progress.property)} issues found`
+            : `${progress.findings} ${reviewPropertyLabel(progress.property)} finding${progress.findings === 1 ? "" : "s"}`,
+        detail: `${progress.completed} of ${progress.total} checks done`,
       };
     default:
       return null;
@@ -517,9 +539,9 @@ export function useReportWorkspace({
       return;
     }
 
-    // Section-level progress drives the canvas through the run reducer. It
-    // also carries the qualitative line, because "Drafting section 5 of 9" is
-    // a better answer to "what is it doing" than any tool name.
+    // Section- and review-level progress drives the pane through the run
+    // reducer. It also carries the qualitative line, because "Drafting section
+    // 5 of 9" is a better answer to "what is it doing" than any tool name.
     if (progress.kind !== "tool_started" && progress.kind !== "tool_finished") {
       dispatchRun({ kind: "progress", event: progress });
       const activity = agentActivityForSection(progress, (sectionId) =>

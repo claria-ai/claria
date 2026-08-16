@@ -456,6 +456,41 @@ async fn converse(path: &str, body: Value, state: SharedState) -> Response {
     plain_converse(body, state).await
 }
 
+/// The registered marker this request's message text contains, if any.
+///
+/// Longest first, so a marker that is a prefix of another cannot shadow it.
+/// Only `text` blocks in `messages` are searched — never the tool schemas,
+/// which are identical across the requests a fan-out sends.
+async fn matching_marker(body: &Value, state: &SharedState) -> Option<String> {
+    let markers: Vec<String> = {
+        let st = state.read().await;
+        if st.bedrock_tool_responses_by_marker.is_empty() {
+            return None;
+        }
+        st.bedrock_tool_responses_by_marker
+            .keys()
+            .cloned()
+            .collect()
+    };
+    let text: String = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|message| message.get("content"))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut candidates: Vec<String> = markers
+        .into_iter()
+        .filter(|marker| text.contains(marker.as_str()))
+        .collect();
+    candidates.sort_by_key(|marker| std::cmp::Reverse(marker.len()));
+    candidates.into_iter().next()
+}
+
 /// Pop the next scripted tool-configured Converse payload, capturing the
 /// request and its model ID.
 ///
@@ -477,13 +512,18 @@ async fn tool_converse_payload(
         })
         .unwrap_or_default();
     let scripted = {
+        let marker = matching_marker(&body, &state).await;
         let mut st = state.write().await;
         st.bedrock_tool_model_ids.push(model_id);
         st.bedrock_tool_requests.push(body);
-        if st.bedrock_tool_responses.is_empty() {
-            None
-        } else {
-            Some(st.bedrock_tool_responses.remove(0))
+        let keyed = marker
+            .and_then(|marker| st.bedrock_tool_responses_by_marker.get_mut(&marker))
+            .filter(|queue| !queue.is_empty())
+            .map(|queue| queue.remove(0));
+        match keyed {
+            Some(response) => Some(response),
+            None if st.bedrock_tool_responses.is_empty() => None,
+            None => Some(st.bedrock_tool_responses.remove(0)),
         }
     };
 

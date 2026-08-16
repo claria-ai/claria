@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use claria_core::models::{
+    findings::ReportFindings,
     report::{
         ReportBlock, ReportContent, ReportDraft, ReportExport, ReportExportStatus, ReportOperation,
         ReportProposal, ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
@@ -205,6 +206,17 @@ pub enum ReportTurnProgressView {
     TitleSet {
         title: String,
     },
+    ReviewPassStarted {
+        property: String,
+        index: u32,
+        total: u32,
+    },
+    ReviewPassCompleted {
+        property: String,
+        findings: u32,
+        completed: u32,
+        total: u32,
+    },
 }
 
 impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView {
@@ -283,6 +295,26 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
             claria_report_pipeline::ReportTurnProgress::TitleSet { title } => {
                 Self::TitleSet { title }
             }
+            claria_report_pipeline::ReportTurnProgress::ReviewPassStarted {
+                property,
+                index,
+                total,
+            } => Self::ReviewPassStarted {
+                property,
+                index,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::ReviewPassCompleted {
+                property,
+                findings,
+                completed,
+                total,
+            } => Self::ReviewPassCompleted {
+                property,
+                findings,
+                completed,
+                total,
+            },
         }
     }
 }
@@ -355,6 +387,14 @@ impl From<ReportProposalChoice> for CoreProposalDecision {
             ReportProposalChoice::Reject => Self::Rejected,
         }
     }
+}
+
+/// Earns its life: resolving a finding changes both the report and the
+/// findings that describe it, and the caller needs the pair to stay in step.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportFindingResolution {
+    pub workspace: ReportWorkspaceView,
+    pub findings: ReportFindings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

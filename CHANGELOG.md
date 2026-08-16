@@ -46,6 +46,15 @@ All notable changes to Claria are documented here.
 - The writer now shows an editable section plan before drafting, with per-section scope, evidence, and skip control, and resumes stopped runs from the same view
 - A new Draft runs preference chooses whether the plan waits for review or drafting starts as soon as it lands, and picks the models that plan and review
 - A resumed draft run can now be stopped like the first attempt
+- Report sections now record who last changed them, whether that was you, a template, or the model
+- Accepting a writer proposal credits the model that wrote it, and saving a hand edit credits you only on the sections you actually changed
+- Review findings have durable storage, so a style suggestion can be applied as a new revision and undone again
+- A finding whose text has moved on since the review is refused rather than applied to the wrong place
+- Draft reviews now sweep the report once per property in parallel, producing anchored findings with uniform per-section coverage
+- A review pass that fails leaves the other six intact, and the properties nobody reviewed are named rather than left to look clean
+- A deterministic completion check now verifies sections, citations, placeholders, and open findings — no model opinion involved
+- Cited record quotes are re-read from the records themselves, so a citation that no longer resolves is named with the file it came from
+- Export is unaffected by the completion check, which reports rather than blocks
 
 ## [0.28.0] — 2026-08-15
 
