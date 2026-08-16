@@ -24,6 +24,7 @@ import type {
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  DraftRun,
   EditorHistoryEntry,
   FileVersion,
   FullReportGenerationResponse,
@@ -34,6 +35,7 @@ import type {
   ModelDownloadProgress,
   ModelPricing,
   PlanEntry,
+  PlanEntryEdit,
   PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
@@ -571,6 +573,83 @@ export async function generateFullReport(
       expectedRevision,
       modelId,
       guidance,
+      channel
+    )
+  );
+}
+
+/**
+ * Plan a whole-report draft and leave it at the gate. The report is held by
+ * the returned run until the plan is started or the run is abandoned.
+ */
+export async function generateDraftPlan(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number,
+  instructions: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<DraftRun> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.generateDraftPlan(
+      clientId,
+      reportId,
+      expectedRevision,
+      instructions,
+      channel
+    )
+  );
+}
+
+/** Apply the clinician's gate edits to a plan waiting for approval. */
+export async function updateDraftPlan(
+  clientId: string,
+  reportId: string,
+  runId: string,
+  edits: PlanEntryEdit[]
+): Promise<DraftRun> {
+  return unwrap(
+    await commands.updateDraftPlan(clientId, reportId, runId, edits)
+  );
+}
+
+/** Approve the plan and draft the report it describes. */
+export async function startDraftRun(
+  clientId: string,
+  reportId: string,
+  runId: string,
+  modelId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<FullReportGenerationResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.startDraftRun(clientId, reportId, runId, modelId, channel)
+  );
+}
+
+/**
+ * Pick an interrupted drafting run back up. Passing instructions re-plans the
+ * run through the planning model first; passing none decides it in code.
+ */
+export async function resumeDraftRun(
+  clientId: string,
+  reportId: string,
+  runId: string,
+  updatedInstructions: string | null,
+  modelId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<FullReportGenerationResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.resumeDraftRun(
+      clientId,
+      reportId,
+      runId,
+      updatedInstructions,
+      modelId,
       channel
     )
   );

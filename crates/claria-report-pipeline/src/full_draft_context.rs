@@ -210,7 +210,10 @@ pub(crate) fn kickoff_instruction(
     text
 }
 
-fn section_state_table(sections: &[RunSection]) -> String {
+/// The run's durable per-section state, in document order, as host data.
+/// Shared with the resume planner, which decides what to do next from exactly
+/// the same table the writer is shown.
+pub(crate) fn section_state_table(sections: &[RunSection]) -> String {
     let mut ordered: Vec<&RunSection> = sections.iter().collect();
     ordered.sort_by_key(|section| section.position);
     let rows: Vec<serde_json::Value> = ordered

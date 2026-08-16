@@ -43,6 +43,46 @@ pub(crate) async fn load_record_inventory(
         .collect())
 }
 
+/// One model the record corpus has to fit inside, named for the error
+/// message. The corpus is built once and sent to every role that reads it, so
+/// the smallest window binds — and a clinician told only "too large" cannot
+/// tell whether to change the writer's model or the planner's.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BudgetRole<'a> {
+    /// Human phrasing of the role, used in the failure message.
+    pub(crate) role: &'static str,
+    pub(crate) model_id: &'a str,
+}
+
+impl<'a> BudgetRole<'a> {
+    pub(crate) fn writer(model_id: &'a str) -> Self {
+        Self {
+            role: "writing model",
+            model_id,
+        }
+    }
+
+    pub(crate) fn planner(model_id: &'a str) -> Self {
+        Self {
+            role: "planning model",
+            model_id,
+        }
+    }
+}
+
+/// Bytes of the request that are structure rather than records: the system
+/// policy, the template block, the plan block, the tool schemas, and the
+/// kick-off instruction. Subtracted from the corpus allowance so a document
+/// with a hundred sections does not push a corpus that just fits over the
+/// budget on the first call.
+///
+/// A round 36 KiB, sized against the largest of those the writer builds (a
+/// hundred-section template structure with per-section bodies) rather than
+/// measured per request: the point is headroom, and a preflight that had to
+/// build the whole request to decide whether to build the whole request would
+/// buy precision nobody needs.
+pub(crate) const STRUCTURAL_ALLOWANCE_BYTES: u64 = 36 * 1024;
+
 pub(crate) struct FullRecordContext {
     pub(crate) prompt: String,
     pub(crate) summary: FullRecordContextSummary,
@@ -51,6 +91,36 @@ pub(crate) struct FullRecordContext {
     /// lists them. Only files whose text actually reached the snapshot: a
     /// record nobody could read is a record nobody can quote.
     pub(crate) citable_filenames: Vec<String>,
+    /// Whitespace-normalized record text, keyed by filename, so a quote can
+    /// be resolved against the snapshot the model was actually shown instead
+    /// of re-reading S3 per quote. Held in memory for the life of the pass
+    /// and never persisted.
+    normalized_texts: std::collections::HashMap<String, String>,
+}
+
+impl FullRecordContext {
+    /// Whether `quote` appears in `filename` as the model was shown it.
+    ///
+    /// Compared with whitespace collapsed on both sides: a model copying a
+    /// span out of a wrapped clinical note reliably reflows the line breaks
+    /// and nothing else, and failing an otherwise verbatim quote over a
+    /// newline would make evidence unusable. Anything beyond whitespace —
+    /// a corrected typo, a trimmed clause, a paraphrase — still fails, which
+    /// is the point.
+    pub(crate) fn resolves_quote(&self, filename: &str, quote: &str) -> bool {
+        let normalized_quote = normalize_whitespace(quote);
+        if normalized_quote.is_empty() {
+            return false;
+        }
+        self.normalized_texts
+            .get(filename)
+            .is_some_and(|text| text.contains(&normalized_quote))
+    }
+}
+
+/// Collapse every run of whitespace to one space and trim the ends.
+fn normalize_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 enum LoadedFullRecord {
@@ -86,24 +156,37 @@ impl LoadedFullRecord {
 pub(crate) async fn load_full_record_context(
     s3: &S3Client,
     bucket: &str,
-    model_id: &str,
+    roles: &[BudgetRole<'_>],
     inventory: &[RecordInventoryEntry],
 ) -> Result<FullRecordContext, ReportPipelineError> {
     use futures::stream::{self, StreamExt};
 
-    // Three source bytes per available input token leaves headroom for the
-    // fixed tool schemas, current report/template, and retained conversation.
-    // It is deliberately conservative because UTF-8 and JSON escaping can
-    // expand before the provider tokenizer sees the request.
-    let max_source_bytes = u64::from(report::report_input_token_budget(model_id)).saturating_mul(3);
+    // Three source bytes per available input token leaves headroom for UTF-8
+    // and JSON escaping, which can expand before the provider tokenizer sees
+    // the request; the fixed structure of the request is then subtracted
+    // outright. The smallest role window binds, because the same corpus goes
+    // to every role that reads it.
+    let binding = roles
+        .iter()
+        .min_by_key(|role| report::report_input_token_budget(role.model_id))
+        .ok_or_else(|| {
+            ReportPipelineError::InvalidInput(
+                "Claria could not size the record snapshot: no model was named for it.".to_string(),
+            )
+        })?;
+    let max_source_bytes = u64::from(report::report_input_token_budget(binding.model_id))
+        .saturating_mul(3)
+        .saturating_sub(STRUCTURAL_ALLOWANCE_BYTES);
     let eligible_source_bytes = inventory
         .iter()
         .filter(|entry| entry.source_bytes <= claria_core::record_text::MAX_RECORD_TEXT_BYTES)
         .map(|entry| entry.source_bytes)
         .fold(0_u64, u64::saturating_add);
     if eligible_source_bytes > max_source_bytes {
+        let role = binding.role;
+        let model_id = binding.model_id;
         return Err(ReportPipelineError::InvalidInput(format!(
-            "The readable client-record snapshot is too large to place in this model's initial context ({eligible_source_bytes} bytes; safe limit {max_source_bytes}). Remove or split oversized records before generating the whole report."
+            "The readable client-record snapshot is too large for the {role} ({model_id}) to hold in its initial context ({eligible_source_bytes} bytes; safe limit {max_source_bytes}). Remove or split oversized records, or choose a model with a larger context window, before generating the whole report."
         )));
     }
 
@@ -161,6 +244,7 @@ pub(crate) async fn load_full_record_context(
     let mut unavailable = Vec::new();
     let mut record_context_files = Vec::new();
     let mut citable_filenames = Vec::new();
+    let mut normalized_texts = std::collections::HashMap::new();
     let mut total_characters = 0_u64;
     for record in loaded {
         match record.map_err(|source| {
@@ -179,6 +263,7 @@ pub(crate) async fn load_full_record_context(
                     characters,
                 });
                 citable_filenames.push(filename.clone());
+                normalized_texts.insert(filename.clone(), normalize_whitespace(&text));
                 files.push(serde_json::json!({
                     "filename": filename,
                     "sha256": sha256,
@@ -231,5 +316,6 @@ pub(crate) async fn load_full_record_context(
         },
         files: record_context_files,
         citable_filenames,
+        normalized_texts,
     })
 }

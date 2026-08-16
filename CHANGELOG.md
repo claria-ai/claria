@@ -27,6 +27,9 @@ All notable changes to Claria are documented here.
 - Whole-report drafting now caches its records and plan across the session, follows an explicit section plan, and can mark sections failed instead of stalling
 - A whole-report draft can cite the record quotes a section rests on
 - Whole-report call and tool-round ceilings now scale with the number of sections being drafted
+- A planning pass now assigns scope and record evidence per section before drafting, with an editable plan and per-role model settings
+- Planned evidence quotes are checked against the client's records, and anything that does not resolve is flagged on the plan rather than passed to the writer
+- Picking up an interrupted draft re-plans it when you add instructions, and decides it without a model call when you do not
 
 ## [0.28.0] — 2026-08-15
 

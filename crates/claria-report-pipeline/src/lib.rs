@@ -10,6 +10,7 @@
 mod context;
 mod error;
 mod full_draft_context;
+mod plan;
 mod prompt_cache;
 mod prompts;
 mod record_context;
@@ -23,10 +24,16 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use error::ReportPipelineError;
+pub use plan::{
+    DETERMINISTIC_PLAN_MODEL_ID, DraftPlanOutcome, DraftPlanRequest, PLAN_OUTPUT_TOKEN_RESERVE,
+    PlanModels, generate_draft_plan, plan_draft_resume, resume_planned_draft_run, start_draft_run,
+    update_draft_plan,
+};
 pub use prompt_cache::ReportPromptCache;
 pub use prompts::{
-    FULL_REPORT_SYSTEM_PROMPT_BODY, FULL_REPORT_TRUST_RULES, REPORT_SYSTEM_PROMPT_BODY,
-    REPORT_TRUST_RULES, full_report_system_prompt, report_system_prompt,
+    FULL_REPORT_SYSTEM_PROMPT_BODY, FULL_REPORT_TRUST_RULES, PLANNER_SYSTEM_PROMPT_BODY,
+    PLANNER_TRUST_RULES, REPORT_SYSTEM_PROMPT_BODY, REPORT_TRUST_RULES, full_report_system_prompt,
+    planner_system_prompt, report_system_prompt,
 };
 pub use run::resume_draft_run;
 pub use turn::{

@@ -46,13 +46,21 @@ events.
    and the imported structured content — headings **and** boilerplate body
    text — becomes the working draft. The template's paragraphs are now data
    the model will see, not instructions (see `templates.md`).
-5. **Hydrate as the first turn.** "Fill the whole report" snapshots every
+5. **Plan the draft.** A planning model reads the same record snapshot and
+   template structure and returns one row per section — what it must assert
+   and which record quotes support it — through a forced `submit_section_plan`
+   call. The host checks coverage itself and resolves every quote against the
+   records; the plan lands on the run unapproved, for the clinician to edit
+   and start. Which model does this is a per-role setting, defaulting to the
+   newest capable Sonnet the account has.
+6. **Hydrate as the first turn.** Starting the approved plan snapshots every
    readable record into `<untrusted_record_context>`, injects the base
    revision's structure and per-section template bodies as
    `<untrusted_template_context>`, injects the run's section plan as
    `<plan_context>`, and runs the full-draft tool protocol until
-   `finish_full_draft` lands revision 1.
-6. From there the session continues as targeted editing: instructions,
+   `finish_full_draft` lands revision 1. Sections the plan marks skip are
+   already skipped on the run, so the writer is never asked about them.
+7. From there the session continues as targeted editing: instructions,
    record reads on demand, reviewable proposals, and eventually a DOCX
    export rendered back through the stored template package.
 
