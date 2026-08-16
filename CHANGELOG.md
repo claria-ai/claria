@@ -76,6 +76,7 @@ All notable changes to Claria are documented here.
 - A section that cannot be written fails on its own; the rest of the report is still drafted and saved
 - Stopping a parallel draft keeps every section that had already landed and picks up from there
 - Reports generated without a plan are unchanged
+- Documented the writer, Bedrock, and logging code paths for contributors, and corrected the drafting-runs design doc where it had fallen behind the code
 
 ## [0.28.0] — 2026-08-15
 
