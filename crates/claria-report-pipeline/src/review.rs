@@ -81,6 +81,7 @@ use crate::{
         load_record_inventory,
     },
     review_instructions::instruction,
+    text::normalize_whitespace,
     turn::{ReportTurnProgress, ensure_ready_for_turn, validate_model_choice},
 };
 
@@ -1062,10 +1063,6 @@ fn normalize_with_origins(text: &str) -> (String, Vec<(usize, usize)>) {
         origins.push((index, index + 1));
     }
     (normalized, origins)
-}
-
-fn normalize_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ── Persistence and instrumentation ─────────────────────────────────────────

@@ -7,7 +7,10 @@ use claria_storage::error::StorageError;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{FullRecordContextSummary, ReportPipelineError, context::escape_delimiter_characters};
+use crate::{
+    FullRecordContextSummary, ReportPipelineError, context::escape_delimiter_characters,
+    text::normalize_whitespace,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecordInventoryEntry {
@@ -106,14 +109,8 @@ pub(crate) struct FullRecordContext {
 }
 
 impl FullRecordContext {
-    /// Whether `quote` appears in `filename` as the model was shown it.
-    ///
-    /// Compared with whitespace collapsed on both sides: a model copying a
-    /// span out of a wrapped clinical note reliably reflows the line breaks
-    /// and nothing else, and failing an otherwise verbatim quote over a
-    /// newline would make evidence unusable. Anything beyond whitespace —
-    /// a corrected typo, a trimmed clause, a paraphrase — still fails, which
-    /// is the point.
+    /// Whether `quote` appears in `filename` as the model was shown it,
+    /// under the shared rule in [`crate::text`].
     pub(crate) fn resolves_quote(&self, filename: &str, quote: &str) -> bool {
         let normalized_quote = normalize_whitespace(quote);
         if normalized_quote.is_empty() {
@@ -123,11 +120,6 @@ impl FullRecordContext {
             .get(filename)
             .is_some_and(|text| text.contains(&normalized_quote))
     }
-}
-
-/// Collapse every run of whitespace to one space and trim the ends.
-fn normalize_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 enum LoadedFullRecord {

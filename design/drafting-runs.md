@@ -1,0 +1,335 @@
+# Drafting runs
+
+A **drafting run** is the writer's resumable unit of whole-report work. One
+run covers a document from the plan a clinician approves, through the sections
+an Opus conversation writes one call at a time, to the revision the finisher
+cuts — and it survives every way that sequence can be interrupted, because the
+run object is rewritten to S3 after every section that lands.
+
+This is the successor document to `writer.md`'s whole-report section: that file
+describes the two writing modes and the turn loop they share; this one
+describes the durable machinery underneath the whole-report mode. Targeted
+editing has no run.
+
+Crates: `claria-report-store` owns the run and findings objects and their
+optimistic-concurrency protocol; `claria-report-pipeline` owns the planner, the
+run executor, the review fan-out, and the completion gate; `claria-bedrock`
+owns the Converse wire shape, forced-tool calls, and cache placement.
+
+---
+
+## The objects
+
+| Object | Key | What it is |
+|---|---|---|
+| Workspace | `report-authoring/{client}/sessions/{report_id}.json` | The accepted draft, the session, and `active_run_id` |
+| Run | `report-authoring/{client}/runs/{report_id}/{run_id}.json` | One run's plan, per-section state, and staged content |
+| Findings | `report-authoring/{client}/findings/{report_id}.json` | Every review finding for the report, with apply/undo history |
+
+The workspace and the run are two objects on purpose, written in a fixed order:
+**workspace first, run second**. The revision is the clinician's document and
+the run is bookkeeping about it, so the one crash window the protocol leaves
+open — a cut revision whose run never recorded its own finish — is healed on
+the next load from evidence in the workspace, rather than failing a generation
+that already landed.
+
+`active_run_id` is the lock. While it is set, a run owns the session: hand
+saves, template applies, reverts, queued-edit discards, and further writer
+turns are all refused. A run cannot start over a pending proposal in the first
+place, so the two never overlap. A failed run releases the lock immediately; a
+completed run clears it as part of the cut.
+
+---
+
+## Run lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Planning: generate_draft_plan
+    [*] --> Drafting: generate_full_report (synthetic plan, no gate)
+    Planning --> AwaitingApproval: plan lands, unapproved
+    Planning --> Failed: planner call fails
+    AwaitingApproval --> AwaitingApproval: update_draft_plan
+    AwaitingApproval --> Drafting: start_draft_run
+    Drafting --> Completed: finish_full_draft cuts a revision
+    Drafting --> Failed: turn fails or is interrupted
+    Failed --> Drafting: resume_draft_run
+    Stopped --> Drafting: resume_draft_run
+    Completed --> [*]
+```
+
+Two statuses are defined and not yet reachable. `Stopped` is what a
+user-initiated stop will produce; the run model, the resume path, and the
+pipeline's `StopSignal` parameters all handle it, but no command fires one, so
+today an interrupted run arrives as `Failed` and resumes the same way.
+`Abandoned` has no path at all yet — nothing discards a run.
+
+Every section of the report gets a row on the run — kept and skipped ones
+included — so `run.sections` is the complete section universe and the finisher
+assembles from it rather than re-deciding which sections exist. Each row runs
+its own small machine:
+
+`Pending → Drafting → Drafted | Failed | Skipped | Kept`, plus `Flagged` for a
+drafted section a review pass raised something against.
+
+**`Drafting` is transient and never true across a load.** A section found
+`Drafting` on disk belongs to an interrupted run; every load demotes it to
+`Pending` before anything else looks at it.
+
+### Per-section durability
+
+The whole point of the run object:
+
+```
+write_full_draft_section
+  → validate the blocks against the domain ceilings
+  → mutate the RunSection (state = Drafted, blocks, citations)
+  → PUT the run object, conditional on its ETag
+  → only then return the success tool_result
+```
+
+The conversation never believes more than durable truth. A run that dies on
+its forty-seventh section has forty-six sections on disk and resumes into the
+forty-seventh. The cost is one whole-object PUT per section — accepted
+deliberately over per-section objects, which would buy smaller writes at the
+price of atomic resume, one GET, and one ETag.
+
+### The revision cut
+
+`finish_full_draft` refuses unless **every plan row** has been written,
+explicitly skipped, or marked failed. Then it assembles in position order —
+drafted rows contribute their staged blocks, kept rows their base-revision
+content, skipped rows an empty placeholder that keeps the heading and its
+template copy — and calls `replace_content` with the run's `base_revision` as
+the expected revision, so a report edited underneath a run conflicts instead of
+being silently overwritten.
+
+**An interruption cuts nothing.** The run object is the durable truth, and the
+workspace is released rather than left locked, so editing, retrying, and saving
+all keep working exactly as they did before runs existed.
+
+---
+
+## The plan pass
+
+A planning model — a per-role setting, defaulting to the newest capable Sonnet
+the account has — reads the record corpus and the template structure and
+answers one forced `submit_section_plan` call: one row per section, with what
+it must assert and which record quotes support it.
+
+The host then decides what is decidable:
+
+- **Coverage and identity are hard.** One row per template section, no invented
+  IDs, no duplicates. Failing that costs one repair round — the diagnostic goes
+  back verbatim and the tool is forced again — then the pass fails. A plan
+  missing a section would silently delete it from the document.
+- **Evidence is soft.** A quote that resolves against no record lands as a
+  `unresolved_quote:{filename}` warning on the plan. The clinician is about to
+  read this plan at the gate; refusing to show it to them because one quote was
+  reflowed helps nobody.
+
+The plan lands on the run `awaiting_approval` and nothing drafts until
+`start_draft_run` is called, so the gate is structural rather than a courtesy.
+`update_draft_plan` takes per-section patches — an absent field is left exactly
+as the planner wrote it — and stamps `user_edited`. Whether the gate is shown
+or skipped is a preference (`draft_pipeline.plan_gate`, gated by default); the
+pane that reads it is not built yet.
+
+Two plans are **not** a planning model's work, and both are marked `synthetic`
+so nothing downstream mistakes them for one: the 1:1 plan the un-gated
+whole-report command manufactures, and a deterministic resume plan derived from
+one. A resume with no new instructions skips the model entirely — drafted →
+keep, skipped → skip, everything else → draft — and inherits the source plan's
+`synthetic` flag, because a derived plan is no more decided than its source.
+
+---
+
+## The drafting conversation
+
+One Opus conversation writes the whole document, one section per tool call,
+over a prompt built so the expensive half is cached:
+
+```
+toolConfig: full-draft set                        identical every call
+system:     composed prompt + fixed trust rules
+messages[0] (byte-frozen for the run):
+  <untrusted_record_context>    compact record corpus
+  <untrusted_template_context>  structure + per-section template bodies
+  ● CachePoint 1 (1h)           ← session-stable
+  <plan_context>                the approved plan
+  ● CachePoint 2 (1h)           ← plan-stable; re-planning invalidates only this
+  kick-off instruction                             (uncached tail)
+… tool_use / tool_result rounds …  ● CachePoint 3 = moving tail (1h)
+```
+
+Two properties make this work, and both are load-bearing:
+
+- **Every block builder is byte-deterministic.** The corpus is a pure function
+  of a pinned `{filename, sha256}` snapshot with files sorted by filename byte
+  order; the template and plan blocks are fixed-shape JSON. One reordered map
+  key costs the run its cache on every later call.
+- **The mutable draft is never above a checkpoint.** Drafted content exists
+  only as appended tool blocks in the tail. The accepted report the run is
+  about to replace is not sent at all — the writer gets the base revision's
+  *structure* and template prose instead.
+
+Cache placement is capability-gated. Each model's `min_cache_prefix_tokens`,
+plus 18% slack over the ~4-chars-per-token estimate, decides whether a
+checkpoint clears the provider's floor; one below it is not emitted rather than
+emitted uselessly, because a `cachePoint` under the real minimum caches nothing
+while still looking placed. Bedrock accepts at most four points per request and
+rejects mixed TTLs, so one tier covers the whole plan.
+
+Call ceilings scale with the plan (`plan_len * 2 + 8`, clamped to what a
+clinician could configure by hand), because a forty-five-section plan cannot
+fit under a request-sized default.
+
+---
+
+## Review fan-out
+
+Once a revision is cut, seven review properties sweep it — four style
+(`tense_drift`, `terminology`, `transitions`, `redundancy`) and three
+consistency (`internal_contradiction`, `unsupported_claim`,
+`cross_section_conflict`) — as seven requests over one shared prefix:
+
+```
+system:      analysis policy + record corpus + template structure   ┐ identical
+             ● CachePoint 1 (1h)                                    ┘
+messages[0]: <untrusted_draft_sections>  pretty, revision-anchored  ┐ identical
+             ● CachePoint 2 (1h)                                    ┘
+             per-property instruction                ← the only differing bytes
+```
+
+One request asked to watch for seven things finds four problems in the first
+section and nothing after it. Splitting them keeps each pass's job small enough
+to carry across a document, and every pass answers with one row per section —
+including the sections it found nothing in, so "found nothing" is a claim the
+host can check.
+
+A single union `submit_review_rows` tool with an identical `tool_choice` across
+all seven branches is what preserves the shared prefix: a per-property forced
+tool would move the tools tier of the cache, which sits above system and
+messages, and every branch would pay full input rates.
+
+Execution is **warm-then-fan-out**: branch one runs alone and writes both
+checkpoints, the remaining six follow at `buffered(3)` with throttle backoff.
+A branch that fails twice fails alone, leaving no coverage row — so the
+returned findings say which properties were actually read.
+
+Nothing the model says about where a finding belongs is trusted: quotes are
+resolved to `(block, char range)` against the section's own text host-side, the
+anchor and model ID are stamped from the request the host sent, and a
+consistency property that proposes replacement text is refused by the domain
+validator.
+
+---
+
+## Findings
+
+A finding is anchored to a `(section_id, revision)` pair. **Staleness is
+derived, never written**: a finding is stale when its section is gone or when
+the section's authorship stamp has moved past the revision the review read.
+Nothing that edits a report has to remember to walk the findings, so no
+mutation path can forget to. The `invalidated` status the list path writes back
+is a display cache of that answer, not the answer.
+
+The two passes are asymmetric by construction:
+
+- **Style** findings carry an anchored `{block_index, original_text,
+  replacement_text}` proposal. Applying one verifies the anchor is fresh and
+  that `original_text` still matches uniquely in the block, then replaces it as
+  a new revision. Undo is the inverse replacement as another revision.
+- **Consistency** findings have no apply path at all. The domain validator
+  refuses a consistency finding that carries a proposal, so no review sweep,
+  tool schema, or apply path can hand one a write.
+
+---
+
+## The completion gate
+
+Completion is decided by code. Every other quality judgment in the pipeline is
+a model's opinion a human then accepts or rejects; this one is not, because the
+clinician signs the document under their own license and "an LLM approved it"
+is not something anyone can sign under.
+
+`evaluate_report_completion` loads the workspace, the relevant run — the one
+`active_run_id` points at, else the most recent run whose finish produced
+exactly the current revision — and the findings, then answers six decidable
+questions:
+
+| Check | Fails when |
+|---|---|
+| `section_not_terminal` | an unfinished run left a section pending, drafting, or failed |
+| `required_section_empty` | a `required` plan row's section is missing, skipped, or empty in the saved draft |
+| `unresolved_citation` | a quote the writer attributed to a record is not in that record now |
+| `missing_citation` | a `required` section was drafted citing nothing |
+| `placeholder_text` | unresolved template markers survive in the title or a non-skipped section |
+| `unresolved_finding` | a finding is open and its anchor still describes the section |
+
+Citations are re-read from S3 rather than checked against the run's snapshot —
+the claim under test is that the quote is in the file *now*, and a snapshot is
+exactly the thing that could have gone stale. Matching is by
+whitespace-normalized substring, the same rule the planner and the review
+anchors use, so a quote one pass accepted cannot be rejected by another over a
+line break.
+
+Two deliberate abstentions. A report with **no run** skips the run-dependent
+checks rather than failing them: a hand-written or imported document has no run
+to hold anything against. A run on a **synthetic plan** is never asked for
+citations: nobody ever requested them, so their absence says nothing.
+
+Checks are ordered by kind, then by position in the document, so two
+evaluations of unchanged state produce the same list row for row. Details are
+codes, counts, and record filenames — never section text, never the quote that
+failed.
+
+**The gate is advisory for export.** It decides the explicit "complete" status
+and the checklist the Writing pane renders. Export keeps working with the
+warnings surfaced: taking away a capability the clinician already has, to
+enforce a new opinion, would be a regression dressed as rigor.
+
+---
+
+## Interruption and resume
+
+An interrupted run releases the workspace and stays resumable. The run is
+stamped `failed`, every `Drafting` section is demoted to `Pending`, and
+`active_run_id` is cleared unconditionally — a run that ends must never leave
+the session locked behind it, so the release happens even when the failure that
+caused it is about to be surfaced.
+
+`resume_draft_run` re-enters the same conversation shape over the same frozen
+corpus, template, and plan, so the cached prefix the interrupted attempt paid
+for is still there to read. What changes is the kick-off block below the
+checkpoints: the run's durable per-section state, the instructions typed at the
+resume, and a template copy for every section the plan wants rewritten. The
+finisher only demands decisions for sections the run has not already decided,
+and an already-drafted section keeps its staged blocks unless the writer writes
+over them.
+
+A resume refuses if the report moved underneath it — the saved sections no
+longer fit a document at a different revision, and a new run is the honest
+answer.
+
+The pipeline's planner and review entry points already accept a `StopSignal`
+that drops the in-flight stream whole; the command layer does not yet mint one
+for a run, so today's only interruption is a failure.
+
+---
+
+## Audit and progress
+
+Audit events carry counts, UUIDs, model IDs, and token usage — never names,
+filenames, prompts, or document text: `draft_plan_generated`,
+`draft_plan_edited`, `draft_run_started`, `draft_run_resumed`,
+`report_full_draft_generated`, `report_full_draft_failed`,
+`review_sweep_completed`, `finding_applied`, `finding_undone`,
+`finding_dismissed`. The completion gate records none: it mutates nothing.
+
+Progress rides one `Channel<ReportTurnProgressView>` shared by the drafting and
+review phases: `record_context_prepared`, `model_call_started`, `tool_started`,
+`tool_finished`, and — for the fan-out — `review_pass_started` and
+`review_pass_completed`. The review events carry their own `index`/`completed`
+and `total`, so a dropped event cannot desync a progress bar. Tool calls are
+only executable once complete, so nothing streams below the call boundary.

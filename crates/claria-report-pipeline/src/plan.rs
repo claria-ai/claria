@@ -243,6 +243,7 @@ async fn plan_fresh_run(
         model_id: models.planner_model_id.to_string(),
         entries: call.value.entries,
         user_edited: false,
+        synthetic: false,
         approved_at: None,
         plan_warnings: call.value.warnings,
         created_at: now,
@@ -491,12 +492,17 @@ pub async fn plan_draft_resume(
     }
 
     let now = jiff::Timestamp::now();
+    // A resume plan is only as decided as the plan it rebuilds from: it
+    // carries that plan's evidence forward row by row, so a synthetic source
+    // yields a synthetic resume.
+    let synthetic = run.run.plan.as_ref().is_some_and(|plan| plan.synthetic);
     if instructions.is_empty() {
         let entries = deterministic_resume_entries(&run.run);
         run.run.plan = Some(RunPlan {
             model_id: DETERMINISTIC_PLAN_MODEL_ID.to_string(),
             entries,
             user_edited: false,
+            synthetic,
             approved_at: Some(now),
             plan_warnings: Vec::new(),
             created_at: now,
@@ -532,6 +538,7 @@ pub async fn plan_draft_resume(
         model_id: models.planner_model_id.to_string(),
         entries: call.value.entries,
         user_edited: false,
+        synthetic: false,
         approved_at: Some(now),
         plan_warnings: call.value.warnings,
         created_at: now,

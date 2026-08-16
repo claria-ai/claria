@@ -131,6 +131,14 @@ pub struct RunPlan {
     pub entries: Vec<PlanEntry>,
     /// The user changed the plan at the gate before approving it.
     pub user_edited: bool,
+    /// Nobody decided this plan: it was manufactured from the sections the
+    /// report already had, one `Draft` row each, on a path with no planning
+    /// pass in front of it. A synthetic plan has never been through evidence
+    /// assignment, so the completion gate cannot hold a section against it for
+    /// citing nothing. Inherited when a plan is rebuilt from an earlier one,
+    /// because a derived plan is no more decided than its source.
+    #[serde(default)]
+    pub synthetic: bool,
     /// Unset while the plan is still waiting at the gate.
     #[specta(type = Option<String>)]
     pub approved_at: Option<Timestamp>,

@@ -1171,6 +1171,7 @@ async fn seed_interrupted_run(s3: &aws_sdk_s3::Client, client_id: Uuid, report_i
                 ),
             ],
             user_edited: true,
+            synthetic: false,
             approved_at: Some(now),
             plan_warnings: Vec::new(),
             created_at: now,

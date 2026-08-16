@@ -15,6 +15,7 @@ import type {
   ChatHistorySummary,
   ChatMessage,
   ChatStreamEvent,
+  CompletionReport,
   ConfigInfo,
   ConsoleDelta,
   CostAndUsageResult,
@@ -88,6 +89,9 @@ export type {
   ClientRecordDetails,
   ClientSummary,
   CacheTtlChoice,
+  CompletionCheck,
+  CompletionCheckKind,
+  CompletionReport,
   ConfigInfo,
   ConsoleDelta,
   ConsoleEntry,
@@ -738,6 +742,17 @@ export async function resolveReportFinding(
   return unwrap(
     await commands.resolveReportFinding(clientId, reportId, findingId, action)
   );
+}
+
+/**
+ * Answer the completion checklist for one report. Read-only, and decided
+ * entirely by code — no model is asked whether the report is finished.
+ */
+export async function evaluateReportCompletion(
+  clientId: string,
+  reportId: string
+): Promise<CompletionReport> {
+  return unwrap(await commands.evaluateReportCompletion(clientId, reportId));
 }
 
 export async function exportReportDocx(

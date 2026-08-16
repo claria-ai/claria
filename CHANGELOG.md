@@ -36,6 +36,9 @@ All notable changes to Claria are documented here.
 - A finding whose text has moved on since the review is refused rather than applied to the wrong place
 - Draft reviews now sweep the report once per property in parallel, producing anchored findings with uniform per-section coverage
 - A review pass that fails leaves the other six intact, and the properties nobody reviewed are named rather than left to look clean
+- A deterministic completion check now verifies sections, citations, placeholders, and open findings — no model opinion involved
+- Cited record quotes are re-read from the records themselves, so a citation that no longer resolves is named with the file it came from
+- Export is unaffected by the completion check, which reports rather than blocks
 
 ## [0.28.0] — 2026-08-15
 

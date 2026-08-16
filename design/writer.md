@@ -28,6 +28,14 @@ shape, tool schemas, and stop-reason handling; `claria-docx` owns template
 import and export; `claria-desktop` wires commands, preferences, and audit
 events.
 
+**`drafting-runs.md` is the companion to this document.** This file covers the
+two writing modes and the loop they share; that one covers the durable
+machinery under whole-report generation — the run object and its per-section
+state machine, the plan pass and its gate, the cached conversation layout, the
+review fan-out, the findings lifecycle, and the deterministic completion gate.
+Read it for anything about how a whole-report draft survives being interrupted,
+or about what "complete" means.
+
 ## Scenario: from empty account to a hydrated report
 
 1. **Upload a template to the account.** Preferences → Document Writer → Writer Templates

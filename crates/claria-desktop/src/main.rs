@@ -121,6 +121,7 @@ fn main() -> Result<()> {
         commands::run_review_sweeps,
         commands::list_report_findings,
         commands::resolve_report_finding,
+        commands::evaluate_report_completion,
         commands::export_report_docx,
         commands::list_record_files,
         commands::search_record_contents,

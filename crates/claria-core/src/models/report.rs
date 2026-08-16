@@ -828,28 +828,52 @@ pub fn validate_report_summary(summary: &str) -> Result<(), CoreError> {
 /// report text. This is a review hint, not a claim that all carryover can be
 /// detected automatically.
 pub fn report_template_placeholder_count(content: &ReportContent) -> u32 {
-    let mut count = placeholder_count(&content.title);
-    for section in &content.sections {
-        count = count.saturating_add(placeholder_count(&section.heading));
-        for block in &section.blocks {
-            match block {
-                ReportBlock::Paragraph { text } => {
-                    count = count.saturating_add(placeholder_count(text));
+    content
+        .sections
+        .iter()
+        .map(report_section_placeholder_count)
+        .fold(
+            report_text_placeholder_count(&content.title),
+            u32::saturating_add,
+        )
+}
+
+/// Unresolved template markers in one section's heading and body.
+///
+/// The completion gate reports carryover per section, so the per-section and
+/// per-string counts are the primitives and the document-wide count above is
+/// their sum. Two independent scans would let the checklist and the import
+/// statistics disagree about what counts as a placeholder.
+pub fn report_section_placeholder_count(section: &ReportSection) -> u32 {
+    let mut count = report_text_placeholder_count(&section.heading);
+    for block in &section.blocks {
+        match block {
+            ReportBlock::Paragraph { text } => {
+                count = count.saturating_add(report_text_placeholder_count(text));
+            }
+            ReportBlock::BulletList { items } => {
+                for item in items {
+                    count = count.saturating_add(report_text_placeholder_count(item));
                 }
-                ReportBlock::BulletList { items } => {
-                    for item in items {
-                        count = count.saturating_add(placeholder_count(item));
-                    }
-                }
-                ReportBlock::Table { rows, .. } => {
-                    for cell in rows.iter().flatten() {
-                        count = count.saturating_add(placeholder_count(cell));
-                    }
+            }
+            ReportBlock::Table { rows, .. } => {
+                for cell in rows.iter().flatten() {
+                    count = count.saturating_add(report_text_placeholder_count(cell));
                 }
             }
         }
     }
     count
+}
+
+/// Unresolved template markers in one string — a title, a heading, a
+/// paragraph, a table cell.
+pub fn report_text_placeholder_count(text: &str) -> u32 {
+    let lowercase = text.to_lowercase();
+    ["{{", "<<", "[client", "[name", "[date", "_____"]
+        .iter()
+        .map(|marker| u32::try_from(lowercase.matches(marker).count()).unwrap_or(u32::MAX))
+        .fold(0_u32, u32::saturating_add)
 }
 
 /// Validate Bedrock message ordering and exact tool-use/result correlation.
@@ -1113,14 +1137,6 @@ pub(crate) fn validate_xml_text(
         )));
     }
     Ok(())
-}
-
-fn placeholder_count(text: &str) -> u32 {
-    let lowercase = text.to_lowercase();
-    ["{{", "<<", "[client", "[name", "[date", "_____"]
-        .iter()
-        .map(|marker| u32::try_from(lowercase.matches(marker).count()).unwrap_or(u32::MAX))
-        .fold(0_u32, u32::saturating_add)
 }
 
 fn validate_proposal(

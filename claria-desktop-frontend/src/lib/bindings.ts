@@ -711,6 +711,20 @@ async resolveReportFinding(clientId: string, reportId: string, findingId: string
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Answer the completion checklist for one report.
+ * 
+ * Read-only and model-free: it loads durable state, checks it, and returns
+ * what failed. Nothing is mutated, so there is no audit event to record.
+ */
+async evaluateReportCompletion(clientId: string, reportId: string) : Promise<Result<CompletionReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("evaluate_report_completion", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async exportReportDocx(clientId: string, reportId: string, expectedRevision: number) : Promise<Result<ReportExportResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("export_report_docx", { clientId, reportId, expectedRevision }) };
@@ -1529,6 +1543,63 @@ export type ClientNameUpdate = { id: string; name: string; updated_at: string }
 export type ClientRecordDetails = { id: string; name: string; created_at: string; updated_at: string; file_count: number; storage_bytes: number; storage_bytes_with_history: number; name_history: ClientNameHistoryEntry[] }
 export type ClientSummary = { id: string; name: string; created_at: string }
 /**
+ * One reason the report is not complete.
+ */
+export type CompletionCheck = { kind: CompletionCheckKind; 
+/**
+ * The section at fault, or `None` for a document-wide failure such as a
+ * placeholder left in the title.
+ */
+section_id: string | null; 
+/**
+ * PHI-free: state names, counts, and record filenames. Never section
+ * text, and never the quote that failed to resolve.
+ */
+detail: string }
+export type CompletionCheckKind = 
+/**
+ * The drafting run never reached a decision about this section.
+ */
+"section_not_terminal" | 
+/**
+ * The plan marked this section required and the saved draft has no body
+ * for it.
+ */
+"required_section_empty" | 
+/**
+ * A quote the writer attributed to a record is not in that record.
+ */
+"unresolved_citation" | 
+/**
+ * A required section was drafted without citing anything.
+ */
+"missing_citation" | 
+/**
+ * Unresolved template markers survive in the saved draft.
+ */
+"placeholder_text" | 
+/**
+ * A review finding is still open against a section nobody has rewritten.
+ */
+"unresolved_finding"
+/**
+ * Everything the completion checklist knows about one report at one moment.
+ * 
+ * `checks` holds failures only, so an empty list and `complete` say the same
+ * thing twice on purpose: the frontend renders the list, and the backend
+ * answers the question.
+ */
+export type CompletionReport = { complete: boolean; 
+/**
+ * Failures only — an empty list means the report is complete.
+ */
+checks: CompletionCheck[]; 
+/**
+ * The accepted draft revision these checks describe. A later edit makes
+ * the whole report stale, which is why the revision travels with it.
+ */
+evaluated_revision: number; evaluated_at: string }
+/**
  * Redacted config info safe to send to the frontend.
  */
 export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences; chat_streaming: ChatStreamMode; draft_pipeline: DraftPipelinePreferences }
@@ -2122,6 +2193,15 @@ model_id: string; entries: DraftPlanEntry[];
  * The user changed the plan at the gate before approving it.
  */
 user_edited: boolean; 
+/**
+ * Nobody decided this plan: it was manufactured from the sections the
+ * report already had, one `Draft` row each, on a path with no planning
+ * pass in front of it. A synthetic plan has never been through evidence
+ * assignment, so the completion gate cannot hold a section against it for
+ * citing nothing. Inherited when a plan is rebuilt from an earlier one,
+ * because a derived plan is no more decided than its source.
+ */
+synthetic?: boolean; 
 /**
  * Unset while the plan is still waiting at the gate.
  */
