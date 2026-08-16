@@ -65,7 +65,10 @@ struct FullDraftRun<'a> {
 /// tells the writer to move on. Two attempts is a repair round; a third
 /// identical failure is a section the writer cannot land, and spending the
 /// remaining call budget on it costs every section after it.
-const MAX_SECTION_WRITE_ATTEMPTS: u32 = 3;
+///
+/// The parallel drafting fan-out bounds each branch by the same number, so a
+/// section gets the same number of chances however it is being written.
+pub(crate) const MAX_SECTION_WRITE_ATTEMPTS: u32 = 3;
 
 pub(crate) struct FinalizedFullDraft {
     pub(crate) content: ReportContent,
@@ -424,7 +427,13 @@ impl<'a> ToolExecutionContext<'a> {
         };
         self.emit_section_started(section_id);
 
-        let prepared = match self.prepare_section_write(section_id, request) {
+        let prepared = match prepare_section_write(
+            run,
+            &self.workspace.draft.content.title,
+            self.citable_filenames,
+            section_id,
+            request,
+        ) {
             Ok(prepared) => prepared,
             Err(rejection) if !attributable => {
                 return Ok(tool_error(rejection.code, &rejection.message));
@@ -440,6 +449,14 @@ impl<'a> ToolExecutionContext<'a> {
             .iter()
             .map(|section| section.id)
             .collect();
+        let PreparedSectionWrite {
+            content,
+            position,
+            section_count,
+            written_order,
+        } = prepared;
+        let block_count = content.block_count;
+        let citation_count = content.citation_count;
         let now = jiff::Timestamp::now();
         let Some(draft) = self.full_draft.as_mut() else {
             return Ok(tool_error(
@@ -449,54 +466,8 @@ impl<'a> ToolExecutionContext<'a> {
         };
         draft.consecutive_write_failures.remove(&section_id);
         let run = &mut draft.run.run;
-        match run
-            .sections
-            .iter_mut()
-            .find(|section| section.section_id == section_id)
-        {
-            Some(section) => {
-                section.heading = prepared.heading.clone();
-                section.blocks = prepared.blocks;
-                section.citations = prepared.citations;
-                // A write is the stronger decision: it overrides an earlier
-                // skip, exactly as the in-memory candidate did.
-                section.state = RunSectionState::Drafted;
-                section.attempts = section.attempts.saturating_add(1);
-                section.error = None;
-                section.updated_at = now;
-            }
-            None => {
-                // A section the writer invented. It joins the run's section
-                // universe, and the plan gains the matching row that keeps
-                // "one entry per section" true.
-                run.sections.push(RunSection {
-                    section_id,
-                    heading: prepared.heading.clone(),
-                    position: 0,
-                    state: RunSectionState::Drafted,
-                    blocks: prepared.blocks,
-                    citations: prepared.citations,
-                    attempts: 1,
-                    error: None,
-                    updated_at: now,
-                });
-                if let Some(plan) = run.plan.as_mut() {
-                    plan.entries.push(PlanEntry {
-                        section_id,
-                        heading: prepared.heading,
-                        intent: SectionIntent::Draft,
-                        // The host never asked for this section, so it is not
-                        // one the finisher demands a decision about — and a
-                        // skip of it is still an invented ID.
-                        required: false,
-                        scope: String::new(),
-                        evidence: Vec::new(),
-                        instruction: None,
-                    });
-                }
-            }
-        }
-        renumber_positions(run, &prepared.written_order, &supplied_order);
+        apply_section_content(run, section_id, content, now);
+        renumber_positions(run, &written_order, &supplied_order);
         self.commit_run().await?;
         self.emit_section_completed(section_id);
         Ok(ExecutedTool {
@@ -504,133 +475,12 @@ impl<'a> ToolExecutionContext<'a> {
             content: serde_json::json!({
                 "status": "section_staged",
                 "section_id": section_id.to_string(),
-                "position": prepared.position,
-                "block_count": prepared.block_count,
-                "citation_count": prepared.citation_count,
-                "section_count": prepared.section_count
+                "position": position,
+                "block_count": block_count,
+                "citation_count": citation_count,
+                "section_count": section_count
             }),
         })
-    }
-
-    /// Validate one section write against the candidate it would produce,
-    /// without touching the run. Read-only so the attempt bound below can
-    /// decide what to do with a rejection before anything is committed.
-    fn prepare_section_write(
-        &self,
-        section_id: Uuid,
-        request: WriteFullDraftSectionRequest,
-    ) -> Result<PreparedSectionWrite, WriteRejection> {
-        let Some(draft) = self.full_draft.as_ref() else {
-            return Err(WriteRejection::new(
-                "tool_not_available",
-                "write_full_draft_section is available only during explicit full-draft generation.",
-            ));
-        };
-        let run = &draft.run.run;
-        let position = usize::try_from(request.position).map_err(|_| {
-            WriteRejection::new(
-                "invalid_section_position",
-                "The section position is too large.",
-            )
-        })?;
-        let mut sections = written_sections(run);
-        if let Some(existing) = sections.iter().position(|section| section.id == section_id) {
-            sections.remove(existing);
-        }
-        if position > sections.len() {
-            return Err(WriteRejection::new(
-                "invalid_section_position",
-                format!(
-                    "Section position {position} is outside 0..={}; write sections in final order.",
-                    sections.len()
-                ),
-            ));
-        }
-        let citations = self.validate_citations(request.citations.unwrap_or_default())?;
-        let block_count = request.blocks.len();
-        let heading = request.heading;
-        let blocks: Vec<ReportBlock> = request.blocks.into_iter().map(block_from_request).collect();
-        sections.insert(
-            position,
-            ReportSection {
-                id: section_id,
-                heading: heading.clone(),
-                blocks: blocks.clone(),
-                skipped: false,
-                template_blocks: None,
-                authorship: None,
-            },
-        );
-        let proposed = ReportContent {
-            title: run
-                .title
-                .clone()
-                .unwrap_or_else(|| self.workspace.draft.content.title.clone()),
-            sections: sections.clone(),
-        };
-        validate_report_content(&proposed).map_err(|error| {
-            WriteRejection::new(
-                "invalid_full_draft_section",
-                format!("The full-draft section was invalid: {error}"),
-            )
-        })?;
-        Ok(PreparedSectionWrite {
-            position,
-            block_count,
-            citation_count: citations.len(),
-            section_count: sections.len(),
-            written_order: sections.iter().map(|section| section.id).collect(),
-            heading,
-            blocks,
-            citations,
-        })
-    }
-
-    /// Check each quote names a file the run actually put in front of the
-    /// model, and is long enough to be resolvable later. The quote itself is
-    /// deliberately NOT matched against the record text here: that is the
-    /// completion gate's job, and doing it per write would re-read the corpus
-    /// on every section.
-    fn validate_citations(
-        &self,
-        citations: Vec<RecordCitationRequest>,
-    ) -> Result<Vec<RecordCitation>, WriteRejection> {
-        if citations.len() > MAX_SECTION_CITATIONS {
-            return Err(WriteRejection::new(
-                "too_many_citations",
-                format!("A section may cite at most {MAX_SECTION_CITATIONS} record quotes."),
-            ));
-        }
-        citations
-            .into_iter()
-            .map(|citation| {
-                if !self
-                    .citable_filenames
-                    .iter()
-                    .any(|filename| filename == &citation.filename)
-                {
-                    return Err(WriteRejection::new(
-                        "unknown_citation_file",
-                        "A citation named a file that is not in this run's record snapshot. Copy filenames exactly from the record context; unreadable records cannot be cited.",
-                    ));
-                }
-                let quote_characters = citation.quote.chars().count();
-                if !(MIN_CITATION_QUOTE_CHARACTERS..=MAX_CITATION_QUOTE_CHARACTERS)
-                    .contains(&quote_characters)
-                {
-                    return Err(WriteRejection::new(
-                        "invalid_citation_quote",
-                        format!(
-                            "A citation quote was {quote_characters} Unicode characters; quotes must be {MIN_CITATION_QUOTE_CHARACTERS}–{MAX_CITATION_QUOTE_CHARACTERS}."
-                        ),
-                    ));
-                }
-                Ok(RecordCitation {
-                    filename: citation.filename,
-                    quote: citation.quote,
-                })
-            })
-            .collect()
     }
 
     /// Count one rejected write against its section, and fail the section
@@ -639,7 +489,7 @@ impl<'a> ToolExecutionContext<'a> {
     async fn record_write_rejection(
         &mut self,
         section_id: Uuid,
-        rejection: WriteRejection,
+        rejection: ToolRejection,
     ) -> Result<ExecutedTool, TurnRunFailure> {
         let Some(draft) = self.full_draft.as_mut() else {
             return Ok(tool_error(rejection.code, &rejection.message));
@@ -652,26 +502,13 @@ impl<'a> ToolExecutionContext<'a> {
         if *strikes < MAX_SECTION_WRITE_ATTEMPTS {
             return Ok(tool_error(rejection.code, &rejection.message));
         }
-        // The diagnostic is the tool error's own code and message: structural
-        // JSON/validator wording, never report or record text.
-        let diagnostic = truncate_characters(
-            &format!("{}: {}", rejection.code, rejection.message),
-            MAX_SECTION_ERROR_CHARACTERS,
+        let diagnostic = section_failure_diagnostic(rejection.code, &rejection.message);
+        apply_section_failure(
+            &mut draft.run.run,
+            section_id,
+            diagnostic.clone(),
+            jiff::Timestamp::now(),
         );
-        let now = jiff::Timestamp::now();
-        if let Some(section) = draft
-            .run
-            .run
-            .sections
-            .iter_mut()
-            .find(|section| section.section_id == section_id)
-        {
-            section.state = RunSectionState::Failed;
-            section.blocks.clear();
-            section.attempts = section.attempts.saturating_add(1);
-            section.error = Some(diagnostic.clone());
-            section.updated_at = now;
-        }
         self.commit_run().await?;
         self.emit_section_failed(section_id, diagnostic.clone());
         Ok(tool_error(
@@ -712,26 +549,19 @@ impl<'a> ToolExecutionContext<'a> {
             ));
         }
         let now = jiff::Timestamp::now();
-        let Some(section) = draft
+        if !draft
             .run
             .run
             .sections
-            .iter_mut()
-            .find(|section| section.section_id == section_id)
-        else {
+            .iter()
+            .any(|section| section.section_id == section_id)
+        {
             return Ok(tool_error(
                 "invented_section_id",
                 "Only a planned section can be marked failed. Copy its ID exactly from plan_context.",
             ));
-        };
-        section.state = RunSectionState::Failed;
-        // A failed section carries no staged content: the assembly falls back
-        // to the base revision, and the run validator refuses blocks outside
-        // the drafted state.
-        section.blocks.clear();
-        section.attempts = section.attempts.saturating_add(1);
-        section.error = Some(reason.clone());
-        section.updated_at = now;
+        }
+        apply_section_failure(&mut draft.run.run, section_id, reason.clone(), now);
         self.commit_run().await?;
         self.emit_section_failed(section_id, reason);
         Ok(ExecutedTool {
@@ -866,61 +696,23 @@ impl<'a> ToolExecutionContext<'a> {
                 "The complete draft is already finalized.",
             );
         }
-        let run = &draft.run.run;
-        let Some(title) = run.title.clone() else {
-            return tool_error(
-                "full_draft_incomplete",
-                "Call set_full_draft_title before finishing the complete draft.",
-            );
-        };
-        let written = written_sections(run);
-        if written.is_empty() {
-            return tool_error(
-                "full_draft_incomplete",
-                "Write at least one complete report section before finishing.",
-            );
-        }
-        let skipped_section_ids = sections_in_state(run, RunSectionState::Skipped);
-        let failed_section_ids = sections_in_state(run, RunSectionState::Failed);
-        let drafted_section_ids = sections_in_state(run, RunSectionState::Drafted);
-        // Failed joins drafted and skipped as a decision. A section the writer
-        // genuinely could not draft must not hold the whole run hostage — the
-        // run completes with the failure visible instead.
-        let mut missing = required_section_ids(run)
-            .difference(&drafted_section_ids)
-            .filter(|id| !skipped_section_ids.contains(id) && !failed_section_ids.contains(id))
-            .copied()
-            .collect::<Vec<_>>();
-        missing.sort();
-        if !missing.is_empty() {
-            return tool_error(
-                "full_draft_incomplete",
-                &format!(
-                    "Write, explicitly skip, or mark failed every planned section before finishing. Undecided section IDs: {}",
-                    missing
-                        .iter()
-                        .map(Uuid::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            );
-        }
-        let sections = merge_undrafted_sections(
-            &written,
-            &skipped_section_ids,
-            &failed_section_ids,
+        // No fallback title in the conversation: the serial protocol demands
+        // the writer set one itself, and silently substituting the base title
+        // would let it finish a document it never named.
+        let assembled = match assemble_finished_draft(
+            &draft.run.run,
             &self.workspace.draft.content.sections,
-        );
-        let content = ReportContent { title, sections };
-        if let Err(error) = validate_report_content(&content) {
-            return tool_error(
-                "invalid_full_draft",
-                &format!("The complete draft was invalid: {error}"),
-            );
-        }
+            None,
+        ) {
+            Ok(assembled) => assembled,
+            Err(rejection) => return tool_error(rejection.code, &rejection.message),
+        };
+        let AssembledDraft {
+            content,
+            skipped_section_count,
+            failed_section_count,
+        } = assembled;
         let section_count = content.sections.len();
-        let skipped_section_count = skipped_section_ids.len();
-        let failed_section_count = failed_section_ids.len();
         let base_revision = self.workspace.draft.revision;
         if let Some(draft) = self.full_draft.as_mut() {
             draft.finalized = Some(FinalizedFullDraft {
@@ -1069,6 +861,332 @@ impl<'a> ToolExecutionContext<'a> {
     }
 }
 
+/// The document a finished run assembles to, plus the counts its receipt
+/// reports.
+pub(crate) struct AssembledDraft {
+    pub(crate) content: ReportContent,
+    pub(crate) skipped_section_count: usize,
+    pub(crate) failed_section_count: usize,
+}
+
+/// Assemble the complete document from what the run decided.
+///
+/// The two finishers — the in-conversation `finish_full_draft` tool and the
+/// parallel coordinator, which calls no model at all — share this so they
+/// cannot drift about what "finished" means. Every planned row must have been
+/// written, explicitly skipped, or marked failed; drafted rows contribute
+/// their staged blocks, skipped rows an empty placeholder keeping the heading
+/// and its template copy, and failed or kept rows the base revision verbatim.
+///
+/// `fallback_title` is the title to use when the run never set one. The serial
+/// path passes `None` — its protocol requires `set_full_draft_title` — while
+/// the coordinator passes the base revision's title, because a failed title
+/// branch must not cost a document that is otherwise complete.
+pub(crate) fn assemble_finished_draft(
+    run: &DraftRun,
+    supplied: &[ReportSection],
+    fallback_title: Option<&str>,
+) -> Result<AssembledDraft, ToolRejection> {
+    let title = match run.title.clone().or_else(|| fallback_title.map(str::to_string)) {
+        Some(title) => title,
+        None => {
+            return Err(ToolRejection::new(
+                "full_draft_incomplete",
+                "Call set_full_draft_title before finishing the complete draft.",
+            ));
+        }
+    };
+    let written = written_sections(run);
+    if written.is_empty() {
+        return Err(ToolRejection::new(
+            "full_draft_incomplete",
+            "Write at least one complete report section before finishing.",
+        ));
+    }
+    let skipped_section_ids = sections_in_state(run, RunSectionState::Skipped);
+    let failed_section_ids = sections_in_state(run, RunSectionState::Failed);
+    let kept_section_ids = sections_in_state(run, RunSectionState::Kept);
+    let drafted_section_ids = sections_in_state(run, RunSectionState::Drafted);
+    // Failed joins drafted, skipped, and kept as a decision. A section the
+    // writer genuinely could not draft must not hold the whole run hostage —
+    // the run completes with the failure visible instead.
+    let mut missing = required_section_ids(run)
+        .difference(&drafted_section_ids)
+        .filter(|id| {
+            !skipped_section_ids.contains(id)
+                && !failed_section_ids.contains(id)
+                && !kept_section_ids.contains(id)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    missing.sort();
+    if !missing.is_empty() {
+        return Err(ToolRejection::new(
+            "full_draft_incomplete",
+            format!(
+                "Write, explicitly skip, or mark failed every planned section before finishing. Undecided section IDs: {}",
+                missing
+                    .iter()
+                    .map(Uuid::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ));
+    }
+    // Failed and kept sections are both "the base revision stands": the writer
+    // did not replace that text, so leaving it alone is the honest outcome.
+    let retained: HashSet<Uuid> = failed_section_ids
+        .union(&kept_section_ids)
+        .copied()
+        .collect();
+    let content = ReportContent {
+        title,
+        sections: merge_undrafted_sections(&written, &skipped_section_ids, &retained, supplied),
+    };
+    validate_report_content(&content).map_err(|error| {
+        ToolRejection::new(
+            "invalid_full_draft",
+            format!("The complete draft was invalid: {error}"),
+        )
+    })?;
+    Ok(AssembledDraft {
+        content,
+        skipped_section_count: skipped_section_ids.len(),
+        failed_section_count: failed_section_ids.len(),
+    })
+}
+
+/// The PHI-free note a refused write leaves on its section: the tool error's
+/// own code and message, which is structural JSON/validator wording and never
+/// report or record text.
+pub(crate) fn section_failure_diagnostic(code: &str, message: &str) -> String {
+    truncate_characters(&format!("{code}: {message}"), MAX_SECTION_ERROR_CHARACTERS)
+}
+
+/// Validate one section write against the candidate it would produce, without
+/// touching the run.
+///
+/// Read-only, so the serial loop's attempt bound can decide what to do with a
+/// rejection before anything is committed — and so a drafting branch, which
+/// holds a frozen snapshot of the run and no write access to it at all, can
+/// run exactly the same checks the tool loop runs.
+fn prepare_section_write(
+    run: &DraftRun,
+    base_title: &str,
+    citable_filenames: &[String],
+    section_id: Uuid,
+    request: WriteFullDraftSectionRequest,
+) -> Result<PreparedSectionWrite, ToolRejection> {
+    let position = usize::try_from(request.position).map_err(|_| {
+        ToolRejection::new(
+            "invalid_section_position",
+            "The section position is too large.",
+        )
+    })?;
+    let mut sections = written_sections(run);
+    if let Some(existing) = sections.iter().position(|section| section.id == section_id) {
+        sections.remove(existing);
+    }
+    if position > sections.len() {
+        return Err(ToolRejection::new(
+            "invalid_section_position",
+            format!(
+                "Section position {position} is outside 0..={}; write sections in final order.",
+                sections.len()
+            ),
+        ));
+    }
+    let citations = validate_citations(citable_filenames, request.citations.unwrap_or_default())?;
+    let block_count = request.blocks.len();
+    let heading = request.heading;
+    let blocks: Vec<ReportBlock> = request.blocks.into_iter().map(block_from_request).collect();
+    sections.insert(
+        position,
+        ReportSection {
+            id: section_id,
+            heading: heading.clone(),
+            blocks: blocks.clone(),
+            skipped: false,
+            template_blocks: None,
+            authorship: None,
+        },
+    );
+    let proposed = ReportContent {
+        title: run
+            .title
+            .clone()
+            .unwrap_or_else(|| base_title.to_string()),
+        sections: sections.clone(),
+    };
+    validate_report_content(&proposed).map_err(|error| {
+        ToolRejection::new(
+            "invalid_full_draft_section",
+            format!("The full-draft section was invalid: {error}"),
+        )
+    })?;
+    Ok(PreparedSectionWrite {
+        content: PreparedSectionContent {
+            citation_count: citations.len(),
+            block_count,
+            heading,
+            blocks,
+            citations,
+        },
+        position,
+        section_count: sections.len(),
+        written_order: sections.iter().map(|section| section.id).collect(),
+    })
+}
+
+/// Validate a section write issued by one branch of the parallel fan-out.
+///
+/// Same validator as the serial path, minus the one judgement a branch is not
+/// entitled to make: where the section goes. Positions are plan-order and
+/// assigned before any branch starts, so the position the model typed is
+/// replaced with a slot that is always in range rather than argued with — a
+/// branch cannot see what its siblings have written and has nothing to order
+/// itself against.
+pub(crate) fn validate_branch_section_write(
+    run: &DraftRun,
+    base_title: &str,
+    citable_filenames: &[String],
+    section_id: Uuid,
+    mut request: WriteFullDraftSectionRequest,
+) -> Result<PreparedSectionContent, ToolRejection> {
+    request.position = 0;
+    prepare_section_write(run, base_title, citable_filenames, section_id, request)
+        .map(|prepared| prepared.content)
+}
+
+/// Check each quote names a file the run actually put in front of the model,
+/// and is long enough to be resolvable later. The quote itself is deliberately
+/// NOT matched against the record text here: that is the completion gate's
+/// job, and doing it per write would re-read the corpus on every section.
+fn validate_citations(
+    citable_filenames: &[String],
+    citations: Vec<RecordCitationRequest>,
+) -> Result<Vec<RecordCitation>, ToolRejection> {
+    if citations.len() > MAX_SECTION_CITATIONS {
+        return Err(ToolRejection::new(
+            "too_many_citations",
+            format!("A section may cite at most {MAX_SECTION_CITATIONS} record quotes."),
+        ));
+    }
+    citations
+        .into_iter()
+        .map(|citation| {
+            if !citable_filenames
+                .iter()
+                .any(|filename| filename == &citation.filename)
+            {
+                return Err(ToolRejection::new(
+                    "unknown_citation_file",
+                    "A citation named a file that is not in this run's record snapshot. Copy filenames exactly from the record context; unreadable records cannot be cited.",
+                ));
+            }
+            let quote_characters = citation.quote.chars().count();
+            if !(MIN_CITATION_QUOTE_CHARACTERS..=MAX_CITATION_QUOTE_CHARACTERS)
+                .contains(&quote_characters)
+            {
+                return Err(ToolRejection::new(
+                    "invalid_citation_quote",
+                    format!(
+                        "A citation quote was {quote_characters} Unicode characters; quotes must be {MIN_CITATION_QUOTE_CHARACTERS}–{MAX_CITATION_QUOTE_CHARACTERS}."
+                    ),
+                ));
+            }
+            Ok(RecordCitation {
+                filename: citation.filename,
+                quote: citation.quote,
+            })
+        })
+        .collect()
+}
+
+/// Land one validated section on the run.
+///
+/// The serial tool loop and the parallel coordinator both come through here,
+/// so the field discipline — a write overrides an earlier skip, the attempt
+/// count moves, the stale error is cleared — is written once.
+pub(crate) fn apply_section_content(
+    run: &mut DraftRun,
+    section_id: Uuid,
+    content: PreparedSectionContent,
+    now: jiff::Timestamp,
+) {
+    match run
+        .sections
+        .iter_mut()
+        .find(|section| section.section_id == section_id)
+    {
+        Some(section) => {
+            section.heading = content.heading;
+            section.blocks = content.blocks;
+            section.citations = content.citations;
+            // A write is the stronger decision: it overrides an earlier skip,
+            // exactly as the in-memory candidate did.
+            section.state = RunSectionState::Drafted;
+            section.attempts = section.attempts.saturating_add(1);
+            section.error = None;
+            section.updated_at = now;
+        }
+        None => {
+            // A section the writer invented. It joins the run's section
+            // universe, and the plan gains the matching row that keeps "one
+            // entry per section" true.
+            run.sections.push(RunSection {
+                section_id,
+                heading: content.heading.clone(),
+                position: 0,
+                state: RunSectionState::Drafted,
+                blocks: content.blocks,
+                citations: content.citations,
+                attempts: 1,
+                error: None,
+                updated_at: now,
+            });
+            if let Some(plan) = run.plan.as_mut() {
+                plan.entries.push(PlanEntry {
+                    section_id,
+                    heading: content.heading,
+                    intent: SectionIntent::Draft,
+                    // The host never asked for this section, so it is not one
+                    // the finisher demands a decision about — and a skip of it
+                    // is still an invented ID.
+                    required: false,
+                    scope: String::new(),
+                    evidence: Vec::new(),
+                    instruction: None,
+                });
+            }
+        }
+    }
+}
+
+/// Mark one section failed with a PHI-free diagnostic.
+///
+/// A failed section carries no staged content: the assembly falls back to the
+/// base revision, and the run validator refuses blocks outside the drafted
+/// state.
+pub(crate) fn apply_section_failure(
+    run: &mut DraftRun,
+    section_id: Uuid,
+    diagnostic: String,
+    now: jiff::Timestamp,
+) {
+    if let Some(section) = run
+        .sections
+        .iter_mut()
+        .find(|section| section.section_id == section_id)
+    {
+        section.state = RunSectionState::Failed;
+        section.blocks.clear();
+        section.attempts = section.attempts.saturating_add(1);
+        section.error = Some(diagnostic);
+        section.updated_at = now;
+    }
+}
+
 /// Sections the host demands an explicit written-or-skipped decision about.
 ///
 /// The plan is the authority: with today's synthetic 1:1 plan this is exactly
@@ -1093,7 +1211,7 @@ fn required_section_ids(run: &DraftRun) -> HashSet<Uuid> {
 
 /// The run's progress denominator: one row per planned section, falling back
 /// to the sections themselves for a run that has no plan.
-fn plan_total(run: &DraftRun) -> u32 {
+pub(crate) fn plan_total(run: &DraftRun) -> u32 {
     let total = run
         .plan
         .as_ref()
@@ -1102,7 +1220,7 @@ fn plan_total(run: &DraftRun) -> u32 {
 }
 
 /// Sections the run has finished deciding, in the sense the finisher demands.
-fn terminal_section_count(run: &DraftRun) -> u32 {
+pub(crate) fn terminal_section_count(run: &DraftRun) -> u32 {
     u32::try_from(
         run.sections
             .iter()
@@ -1139,7 +1257,7 @@ pub(crate) fn written_sections(run: &DraftRun) -> Vec<ReportSection> {
 /// One drafted run section as the report section it becomes. The finish cut
 /// and the progress channel both go through here, so what the preview renders
 /// mid-run is byte-identical to what lands at the end.
-fn staged_section(section: &RunSection) -> ReportSection {
+pub(crate) fn staged_section(section: &RunSection) -> ReportSection {
     ReportSection {
         id: section.section_id,
         heading: section.heading.clone(),
@@ -1171,6 +1289,53 @@ fn renumber_positions(run: &mut DraftRun, written: &[Uuid], supplied_order: &[Uu
     {
         if run_ids.contains(id) && !positions.contains_key(id) {
             positions.insert(*id, next);
+            next = next.saturating_add(1);
+        }
+    }
+    for section in &mut run.sections {
+        if let Some(position) = positions.get(&section.section_id) {
+            section.position = *position;
+        }
+    }
+}
+
+/// Lay the run's positions out in plan order, once, before anything is
+/// written.
+///
+/// The serial writer decides document order as it goes, so its positions can
+/// only be assigned per write ([`renumber_positions`]). A fan-out has no
+/// "as it goes": branches finish in whatever order Bedrock answers them, and
+/// letting completion order decide the document would make the same plan
+/// produce a different report on every run. The plan already states the order
+/// a clinician approved, so the slots are handed out from it up front and
+/// never move — a section that lands third still sits where its plan row put
+/// it.
+///
+/// Sections the plan does not name keep their relative order behind the ones
+/// it does, and positions stay unique across the run either way.
+pub(crate) fn renumber_positions_plan_order(run: &mut DraftRun) {
+    let planned: Vec<Uuid> = run
+        .plan
+        .iter()
+        .flat_map(|plan| plan.entries.iter())
+        .map(|entry| entry.section_id)
+        .collect();
+    let mut unplanned: Vec<&RunSection> = run
+        .sections
+        .iter()
+        .filter(|section| !planned.contains(&section.section_id))
+        .collect();
+    unplanned.sort_by_key(|section| section.position);
+    let order: Vec<Uuid> = planned
+        .iter()
+        .copied()
+        .chain(unplanned.into_iter().map(|section| section.section_id))
+        .collect();
+    let mut positions: HashMap<Uuid, u32> = HashMap::with_capacity(order.len());
+    let mut next = 0_u32;
+    for id in order {
+        if !positions.contains_key(&id) {
+            positions.insert(id, next);
             next = next.saturating_add(1);
         }
     }
@@ -1236,14 +1401,15 @@ pub(crate) fn merge_undrafted_sections(
     sections
 }
 
-/// A section write the host refused, carrying the diagnostic the model gets
-/// back — structural wording only, so it is safe to persist on the run.
-struct WriteRejection {
-    code: &'static str,
-    message: String,
+/// Work the host refused, carrying the diagnostic the model gets back —
+/// structural wording only, so it is safe to persist on the run and to hand
+/// straight back as an error `tool_result`.
+pub(crate) struct ToolRejection {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
 }
 
-impl WriteRejection {
+impl ToolRejection {
     fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -1254,14 +1420,23 @@ impl WriteRejection {
 
 /// A validated section write, ready to be applied to the run.
 struct PreparedSectionWrite {
-    heading: String,
-    blocks: Vec<ReportBlock>,
-    citations: Vec<RecordCitation>,
+    content: PreparedSectionContent,
     position: usize,
-    block_count: usize,
-    citation_count: usize,
     section_count: usize,
     written_order: Vec<Uuid>,
+}
+
+/// The part of a validated section write that is the section itself.
+///
+/// The serial tool loop applies this straight to the run; a drafting branch
+/// carries it back to the coordinator, which owns the run and is the only
+/// thing allowed to write it.
+pub(crate) struct PreparedSectionContent {
+    pub(crate) heading: String,
+    pub(crate) blocks: Vec<ReportBlock>,
+    pub(crate) citations: Vec<RecordCitation>,
+    pub(crate) block_count: usize,
+    pub(crate) citation_count: usize,
 }
 
 /// Whether the run has an answer for a section, in the sense the finisher
