@@ -67,6 +67,11 @@ All notable changes to Claria are documented here.
 - A response that goes silent part-way through is abandoned after a minute rather than five
 - Planning now produces an outline naming the records each section rests on, instead of copying quoted excerpts out of them, so a plan generates in a fraction of the time
 - The planner's smaller answers hand ~16k tokens back to the record corpus it reads
+- Planning and review calls now allow two minutes before the first token and ninety seconds between frames, above the limits chat and writer turns keep
+- An abandoned stream now names the call it belonged to — planning, review, chat, a targeted edit, or a whole-report draft — in the logs and in the error the reader is shown
+- Planning calls log the input-token count they actually measured alongside the budget they were given
+- Planning calls log how long the model took to send its first token and how long each attempt ran
+- Retry warnings now carry the attempt number and the attempt ceiling
 
 ## [0.28.0] — 2026-08-15
 
