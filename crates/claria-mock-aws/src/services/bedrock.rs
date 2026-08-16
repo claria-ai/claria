@@ -782,17 +782,20 @@ async fn converse_stream(path: &str, body: Value, state: SharedState) -> Respons
     } else {
         plain_converse_payload(body, state.clone()).await
     };
-    let (stall, drop_body) = {
+    let (stall, drop_body, silence) = {
         let mut state = state.write().await;
         state.bedrock_stream_request_count += 1;
         if state.bedrock_stream_stalls > 0 {
             state.bedrock_stream_stalls -= 1;
-            (true, false)
+            (true, false, false)
         } else if state.bedrock_stream_drops > 0 {
             state.bedrock_stream_drops -= 1;
-            (false, true)
+            (false, true, false)
+        } else if state.bedrock_stream_silences > 0 {
+            state.bedrock_stream_silences -= 1;
+            (false, false, true)
         } else {
-            (false, false)
+            (false, false, false)
         }
     };
     if stall {
@@ -806,6 +809,9 @@ async fn converse_stream(path: &str, body: Value, state: SharedState) -> Respons
             Ok(response) => response,
             Err(error) => encoding_failure(error),
         };
+    }
+    if silence {
+        return silent_converse_stream();
     }
 
     if status != StatusCode::OK {
@@ -910,6 +916,37 @@ fn dropped_converse_stream() -> Result<Response, aws_smithy_eventstream::error::
         body,
     )
         .into_response())
+}
+
+/// A `ConverseStream` response that answers and then says nothing: the
+/// response opens and no event frame ever completes.
+///
+/// The body starts with fewer bytes than one frame prelude, so the decoder
+/// buffers them and hands the caller nothing. Sending those bytes rather
+/// than none is what makes this a stream failure: it puts the response head
+/// on the wire, so the client is waiting on the first frame and not on
+/// headers, which is a different failure the SDK's read timeout already
+/// covers.
+///
+/// The shape the SDK is least equipped for. `ConverseStream::send` resolves
+/// only once the first frame arrives — it has to look at that frame to rule
+/// out an `initial-response` — so the wait lands inside the send, where
+/// nothing in the SDK bounds it.
+fn silent_converse_stream() -> Response {
+    use futures::StreamExt;
+
+    let opening = futures::stream::once(async {
+        Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from_static(&[0_u8; 8]))
+    });
+    let never_ends = futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
+    let body = axum::body::Body::from_stream(opening.chain(never_ends));
+
+    (
+        StatusCode::OK,
+        [("content-type", "application/vnd.amazon.eventstream")],
+        body,
+    )
+        .into_response()
 }
 
 /// Decompose a unary Converse JSON payload into encoded event-stream frames.

@@ -68,9 +68,10 @@ pub fn timeout_config() -> TimeoutConfig {
 /// Explicit stalled-stream protection, in both directions.
 ///
 /// Note this does not reach `ConverseStream`: the generated streaming
-/// Bedrock operations register no stalled-stream interceptor, so their idle
-/// bound lives in `claria-bedrock`'s stream loop instead. This covers the
-/// unary calls and every S3 transfer.
+/// Bedrock operations register no stalled-stream interceptor, so their
+/// silence bounds live in `claria-bedrock` instead — one on the wait for
+/// the first frame, one on the gaps between frames. This covers the unary
+/// calls and every S3 transfer.
 pub fn stalled_stream_protection() -> StalledStreamProtectionConfig {
     StalledStreamProtectionConfig::enabled()
         .grace_period(STALLED_STREAM_GRACE_PERIOD)
