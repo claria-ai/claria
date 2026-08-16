@@ -82,6 +82,7 @@ fn run() -> DraftRun {
             ],
             user_edited: false,
             approved_at: Some(timestamp("2026-08-01T12:05:00Z")),
+            plan_warnings: Vec::new(),
             created_at: created(),
         }),
         title: Some("Neuropsychological evaluation".to_string()),

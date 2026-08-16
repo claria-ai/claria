@@ -61,6 +61,13 @@ pub enum BedrockError {
 
     #[error("model agreement error: {0}")]
     Agreement(String),
+
+    /// The reader ended the call from the UI before it completed. Nothing was
+    /// produced, so there is nothing to keep — unlike a stopped chat turn,
+    /// whose partial text is the answer the reader chose. Callers that cannot
+    /// be stopped never construct it.
+    #[error("the request was stopped by the user")]
+    Stopped,
 }
 
 impl BedrockError {

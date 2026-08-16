@@ -231,6 +231,27 @@ impl CachePlan {
         )
     }
 
+    /// The analysis family's placement: one point after the last system
+    /// block, nothing else.
+    ///
+    /// The planner and the review passes put the record corpus and the
+    /// template structure in the system blocks, above that point, and vary
+    /// only the messages below it. Bedrock invalidates in tool → system →
+    /// message order, so every analysis request on a given model reads the
+    /// same corpus prefix from cache no matter which tool it forces or which
+    /// property it asks about. The extended tier is the right trade for the
+    /// same reason the drafting run takes it: one write, many reads, spread
+    /// over a session rather than seconds.
+    pub fn analysis(capabilities: claria_core::model_id::ModelCapabilities) -> Self {
+        Self {
+            ttl: CacheTtlChoice::OneHour,
+            after_system: true,
+            tail: false,
+            after_blocks: Vec::new(),
+        }
+        .gated(capabilities, true)
+    }
+
     /// Gate a plan on what the model can do and what the user asked for:
     /// either saying no yields [`Self::disabled`], and a one-hour TTL the
     /// family does not accept is downgraded rather than sent and rejected.

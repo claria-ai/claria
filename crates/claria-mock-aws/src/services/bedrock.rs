@@ -304,7 +304,14 @@ async fn count_tokens(path: &str, body: Value, state: SharedState) -> Response {
         .unwrap_or(&body);
     // Tool-configured (report) counting requests get the full report-shape
     // validation; plain chat counting requests only need messages.
-    if converse.get("toolConfig").is_some() {
+    if let Some(forced_tool) = converse
+        .pointer("/toolConfig/toolChoice/tool/name")
+        .and_then(Value::as_str)
+    {
+        if let Err(message) = validate_forced_tool_request(converse, forced_tool) {
+            return validation_error(message);
+        }
+    } else if converse.get("toolConfig").is_some() {
         if let Err(message) = validate_report_request(converse) {
             return validation_error(message);
         }
@@ -501,7 +508,12 @@ async fn tool_converse_payload(
 /// (the tool FIFO) win; otherwise a translation-shaped envelope is
 /// synthesized from the request's `segments` payload so SDK tests can drive
 /// the real client end to end.
-async fn forced_tool_converse(forced_tool: &str, body: Value, state: SharedState) -> Response {
+/// The checks Bedrock applies to a `toolChoice.tool` request regardless of
+/// transport: the named tool has to be in the request's own tool list, the
+/// conversation has to have something in it, and any cache points have to be
+/// well formed. Shared by the unary and streaming endpoints so a forced call
+/// cannot pass one and fail the other.
+fn validate_forced_tool_request(body: &Value, forced_tool: &str) -> Result<(), &'static str> {
     let declared = body
         .pointer("/toolConfig/tools")
         .and_then(Value::as_array)
@@ -513,14 +525,40 @@ async fn forced_tool_converse(forced_tool: &str, body: Value, state: SharedState
         })
         .unwrap_or(false);
     if !declared {
-        return validation_error("toolChoice names a tool absent from the tool list");
+        return Err("toolChoice names a tool absent from the tool list");
     }
     if body
         .get("messages")
         .and_then(Value::as_array)
         .is_none_or(Vec::is_empty)
     {
-        return validation_error("messages must be a non-empty array");
+        return Err("messages must be a non-empty array");
+    }
+    for block in body
+        .get("system")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(
+            body.get("messages")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|message| message.get("content"))
+                .filter_map(Value::as_array)
+                .flatten(),
+        )
+    {
+        if let Some(cache_point) = block.get("cachePoint") {
+            validate_cache_point(cache_point)?;
+        }
+    }
+    Ok(())
+}
+
+async fn forced_tool_converse(forced_tool: &str, body: Value, state: SharedState) -> Response {
+    if let Err(message) = validate_forced_tool_request(&body, forced_tool) {
+        return validation_error(message);
     }
 
     let (scripted, segments) = {
@@ -683,7 +721,20 @@ const STREAM_DELTA_CHARS: usize = 24;
 /// Non-200 scripted responses return as ordinary JSON errors, which the SDK
 /// surfaces before streaming begins.
 async fn converse_stream(path: &str, body: Value, state: SharedState) -> Response {
-    let (status, payload) = if body.get("toolConfig").is_some() {
+    // A forced-tool request is the analysis family (planner, review passes):
+    // its tool set is its own, so the report-protocol validation above does
+    // not apply, but it draws from the same scripted FIFO and lands in the
+    // same capture surface as every other tool-configured request.
+    let forced_tool = body
+        .pointer("/toolConfig/toolChoice/tool/name")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let (status, payload) = if let Some(forced_tool) = forced_tool {
+        if let Err(message) = validate_forced_tool_request(&body, &forced_tool) {
+            return validation_error(message);
+        }
+        tool_converse_payload(path, "/converse-stream", body, state.clone()).await
+    } else if body.get("toolConfig").is_some() {
         if let Err(message) = validate_report_request(&body) {
             return validation_error(message);
         }
