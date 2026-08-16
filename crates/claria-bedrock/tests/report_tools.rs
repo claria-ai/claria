@@ -28,6 +28,14 @@ fn sdk_config(endpoint: &str) -> aws_config::SdkConfig {
         .build()
 }
 
+/// The placement every writer turn uses today, so a test that is not about
+/// caching still sends the shape production sends.
+fn default_cache_plan() -> claria_bedrock::converse::CachePlan {
+    claria_bedrock::converse::CachePlan::report_default(
+        claria_core::model_id::ModelCapabilities::for_id(MODEL_ID),
+    )
+}
+
 fn user_message(text: &str) -> ReportProtocolMessage {
     ReportProtocolMessage {
         role: ReportProtocolRole::User,
@@ -150,6 +158,7 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
         12,
         &mut ReportInputBudget::new(MODEL_ID),
         claria_bedrock::converse::ModelTuning::default(),
+        default_cache_plan(),
     )
     .await
     .expect("full-draft converse");
@@ -214,6 +223,7 @@ async fn model_tuning_shapes_the_wire_request() {
             effort: Some(claria_bedrock::converse::EffortLevel::High),
             temperature: Some(0.3),
         },
+        default_cache_plan(),
     )
     .await
     .expect("tuned converse");
@@ -365,6 +375,7 @@ async fn configured_tool_limit_rejects_oversized_model_responses() {
         1,
         &mut claria_bedrock::report::ReportInputBudget::new(MODEL_ID),
         claria_bedrock::converse::ModelTuning::default(),
+        default_cache_plan(),
     )
     .await
     .expect_err("configured tool limit");

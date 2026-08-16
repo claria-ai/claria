@@ -192,6 +192,49 @@ fn extended_cache_ttl_is_denied_only_for_pre_45_families() {
     assert!(!ModelCapabilities::for_id("us.amazon.nova-pro-v1:0").supports_extended_cache_ttl);
 }
 
+/// The cacheable-prefix floor is per-model and does not move monotonically
+/// with generation, so every representative ID states its own value. A
+/// caller that assumed one number for the tier would place cache points
+/// Bedrock silently ignores on exactly the models the primary user runs.
+#[test]
+fn minimum_cacheable_prefix_is_per_model_and_not_monotonic() {
+    for id in REPRESENTATIVE_MODEL_IDS {
+        let expected = match *id {
+            "us.anthropic.claude-haiku-4-5-20251001-v1:0" | "us.anthropic.claude-opus-4-6-v1" => {
+                4_096
+            }
+            _ => 1_024,
+        };
+        assert_eq!(
+            ModelCapabilities::for_id(id).min_cache_prefix_tokens,
+            expected,
+            "{id}"
+        );
+    }
+    // Generations outside the representative list, where the non-monotonic
+    // shape shows: 4.5/4.6 Opus need four times the 4.7 floor's predecessor
+    // and twice 4.7's own.
+    assert_eq!(
+        ModelCapabilities::for_id("us.anthropic.claude-opus-4-5-20251101-v1:0")
+            .min_cache_prefix_tokens,
+        4_096
+    );
+    assert_eq!(
+        ModelCapabilities::for_id("us.anthropic.claude-opus-4-7-v1").min_cache_prefix_tokens,
+        2_048
+    );
+    // Unknown Claude generations and non-Claude models take the permissive
+    // default rather than a floor invented for them.
+    assert_eq!(
+        ModelCapabilities::for_id("us.anthropic.claude-opus-6-v1:0").min_cache_prefix_tokens,
+        1_024
+    );
+    assert_eq!(
+        ModelCapabilities::for_id("us.amazon.nova-pro-v1:0").min_cache_prefix_tokens,
+        1_024
+    );
+}
+
 #[test]
 fn adaptive_thinking_and_effort_follow_their_generation_boundaries() {
     // Pre-4.6 families never get adaptive thinking.

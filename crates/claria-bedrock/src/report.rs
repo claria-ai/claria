@@ -317,6 +317,9 @@ pub async fn converse_report(
         DEFAULT_MAX_TOOL_USES_PER_RESPONSE,
         &mut ReportInputBudget::new(model_id),
         converse::ModelTuning::default(),
+        converse::CachePlan::report_default(claria_core::model_id::ModelCapabilities::for_id(
+            model_id,
+        )),
     )
     .await
 }
@@ -324,9 +327,11 @@ pub async fn converse_report(
 /// Send one targeted-edit Converse request with a caller-selected tool-use
 /// limit.
 ///
-/// The caller owns the bounded tool loop and persistence. This function owns
-/// the exact Bedrock wire shape, validates safe tool correlation, and returns
-/// the response usage priced at this individual call's rates.
+/// The caller owns the bounded tool loop, persistence, and — via
+/// `cache_plan` — where the request's `cachePoint` blocks go. This function
+/// owns the exact Bedrock wire shape, validates safe tool correlation, and
+/// returns the response usage priced at this individual call's rates.
+#[allow(clippy::too_many_arguments)]
 pub async fn converse_report_with_tool_limit(
     config: &aws_config::SdkConfig,
     model_id: &str,
@@ -335,6 +340,7 @@ pub async fn converse_report_with_tool_limit(
     max_tool_uses_per_response: usize,
     budget: &mut ReportInputBudget,
     tuning: converse::ModelTuning,
+    cache_plan: converse::CachePlan,
 ) -> Result<ReportConverseOutput, BedrockError> {
     converse_report_with_tool_set(
         config,
@@ -345,6 +351,7 @@ pub async fn converse_report_with_tool_limit(
         budget,
         ReportToolSet::TargetedEdit,
         tuning,
+        cache_plan,
     )
     .await
 }
@@ -353,6 +360,7 @@ pub async fn converse_report_with_tool_limit(
 /// isolated candidate section by section and finalizes it; it cannot stage a
 /// targeted proposal or fetch records because the host supplies the complete
 /// readable-record snapshot in the initial context.
+#[allow(clippy::too_many_arguments)]
 pub async fn converse_full_report_with_tool_limit(
     config: &aws_config::SdkConfig,
     model_id: &str,
@@ -361,6 +369,7 @@ pub async fn converse_full_report_with_tool_limit(
     max_tool_uses_per_response: usize,
     budget: &mut ReportInputBudget,
     tuning: converse::ModelTuning,
+    cache_plan: converse::CachePlan,
 ) -> Result<ReportConverseOutput, BedrockError> {
     converse_report_with_tool_set(
         config,
@@ -371,6 +380,7 @@ pub async fn converse_full_report_with_tool_limit(
         budget,
         ReportToolSet::FullDraft,
         tuning,
+        cache_plan,
     )
     .await
 }
@@ -379,6 +389,18 @@ pub async fn converse_full_report_with_tool_limit(
 enum ReportToolSet {
     TargetedEdit,
     FullDraft,
+}
+
+impl ReportToolSet {
+    /// The label this tool set's turns carry on the shared usage/cache log
+    /// line, so a console export separates targeted edits from whole-draft
+    /// runs without parsing anything else.
+    fn usage_operation(self) -> &'static str {
+        match self {
+            Self::TargetedEdit => "report_targeted",
+            Self::FullDraft => "report_full_draft",
+        }
+    }
 }
 
 #[tracing::instrument(
@@ -401,6 +423,7 @@ async fn converse_report_with_tool_set(
     budget: &mut ReportInputBudget,
     tool_set: ReportToolSet,
     tuning: converse::ModelTuning,
+    cache_plan: converse::CachePlan,
 ) -> Result<ReportConverseOutput, BedrockError> {
     if max_tool_uses_per_response == 0 || max_tool_uses_per_response > MAX_TOOL_USES_PER_RESPONSE {
         return Err(BedrockError::SchemaViolation(format!(
@@ -445,24 +468,29 @@ async fn converse_report_with_tool_set(
         )
         .await?;
 
-    // Prompt caching, gated on the central capability table: one cache point
-    // after the immutable system policy and one at the conversation tail, so
-    // each loop iteration re-reads the previous iterations' prefix from
-    // cache instead of re-paying full input rates. The writer stays on the
-    // default 5-minute TTL (`None` on the wire) — its loop cadence re-reads
-    // within minutes, so the doubled 1-hour write rate would never pay off.
-    let supports_caching =
-        claria_core::model_id::ModelCapabilities::for_id(model_id).prompt_caching;
-    let (system_blocks, converse_messages) = if supports_caching {
-        (
-            vec![
-                system,
-                SystemContentBlock::CachePoint(converse::cache_point(None)?),
-            ],
-            converse::with_tail_cache_point(sdk_messages, None)?,
-        )
+    // Prompt caching, exactly where the caller's plan says: each point makes
+    // the prefix ahead of it readable from cache on the next call in the
+    // loop instead of re-paying full input rates. The plan already resolved
+    // model capability, the user's setting, and the tier, so this applies it
+    // and decides nothing.
+    let cache_ttl = converse::sdk_cache_ttl(cache_plan.ttl);
+    let converse_messages = converse::with_cache_points_after(
+        sdk_messages,
+        &cache_plan.after_blocks,
+        cache_ttl.clone(),
+    )?;
+    let converse_messages = if cache_plan.tail {
+        converse::with_tail_cache_point(converse_messages, cache_ttl.clone())?
     } else {
-        (vec![system], sdk_messages)
+        converse_messages
+    };
+    let system_blocks = if cache_plan.after_system {
+        vec![
+            system,
+            SystemContentBlock::CachePoint(converse::cache_point(cache_ttl)?),
+        ]
+    } else {
+        vec![system]
     };
 
     // Streamed, not unary: the writer's output ceiling is far above the
@@ -594,9 +622,13 @@ async fn converse_report_with_tool_set(
     // inconsistency must reach it as data via `stop_tool_mismatch`.
     let stop_reason = map_stop_reason(&streamed_stop_reason);
 
-    let usage = converse::optional_usage(streamed_usage.as_ref(), model_id, None);
+    let usage = converse::optional_usage(
+        streamed_usage.as_ref(),
+        model_id,
+        cache_plan.effective_ttl(),
+    );
     converse::log_turn_usage(
-        "report ConverseStream",
+        tool_set.usage_operation(),
         model_id,
         usage.as_ref(),
         Some(stop_reason.as_str()),

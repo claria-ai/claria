@@ -821,6 +821,13 @@ async fn run_turn(
     // across the loop body, and the model is fixed for the whole attempt.
     let model_id = progress.model_id.clone();
 
+    // Where this turn's `cachePoint` blocks go. Fixed for the attempt
+    // because the model is: a plan built per call could drift mid-loop and
+    // move the prefix boundary the previous call just paid to write.
+    let cache_plan = claria_bedrock::converse::CachePlan::report_default(
+        claria_core::model_id::ModelCapabilities::for_id(&model_id),
+    );
+
     loop {
         if progress.converse_calls >= limits.max_converse_calls {
             return Err(limit_exhausted_failure(
@@ -849,6 +856,7 @@ async fn run_turn(
                     limits.max_tool_uses_per_response as usize,
                     &mut input_budget,
                     request.model_tuning,
+                    cache_plan.clone(),
                 )
                 .await
             } else {
@@ -860,6 +868,7 @@ async fn run_turn(
                     limits.max_tool_uses_per_response as usize,
                     &mut input_budget,
                     request.model_tuning,
+                    cache_plan.clone(),
                 )
                 .await
             };

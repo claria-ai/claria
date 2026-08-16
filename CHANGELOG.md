@@ -15,6 +15,9 @@ All notable changes to Claria are documented here.
 - Split the report-authoring crate into focused modules ahead of the drafting-pipeline rework
 - Extracted durable writer storage into its own crate, dropping the Bedrock dependency from client-record lifecycle code
 - Renamed the report-authoring crate to report-pipeline now that storage lives in its own crate
+- Prompt-cache checkpoints now respect each model's real minimum prefix size, and cache TTL is threaded through report usage records
+- Writer turns are labelled by kind in the cache logs, separating targeted edits from whole-draft runs
+- Bedrock throttling and capacity errors can now be retried with backoff, while an exhausted account quota still fails immediately
 
 ## [0.28.0] — 2026-08-15
 

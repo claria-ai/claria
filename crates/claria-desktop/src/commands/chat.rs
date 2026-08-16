@@ -736,8 +736,9 @@ fn assemble_chat_prompt(
 }
 
 /// Derive a [`claria_bedrock::chat::CacheStrategy`] from config + the
-/// inference profile we're about to invoke. Model support comes from the
-/// central capability table in `claria-core`.
+/// inference profile we're about to invoke. Model support, the cache tier,
+/// and the minimum prefix worth marking all come from the central
+/// capability table in `claria-core`.
 ///
 /// Chat caches at the one-hour tier wherever the capability table allows
 /// it. Clinical sessions are interrupted by design — a message, a patient,
@@ -758,7 +759,7 @@ fn build_cache_strategy(cfg: &ClariaConfig, model_id: &str) -> claria_bedrock::c
     } else {
         claria_core::model_id::CacheTtlChoice::FiveMinutes
     };
-    claria_bedrock::chat::CacheStrategy::enabled_for_model(capabilities.prompt_caching, ttl)
+    claria_bedrock::chat::CacheStrategy::enabled_for_model(capabilities, ttl)
 }
 
 fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {

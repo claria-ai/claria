@@ -121,6 +121,186 @@ pub(crate) fn with_tail_cache_point(
     Ok(messages)
 }
 
+/// Caller-decided placement of the `cachePoint` blocks on one report-family
+/// request.
+///
+/// Bedrock caches a *prefix*, so where the markers go decides what survives
+/// the next call — and the service rejects mixed TTLs in one request, so a
+/// single [`Self::ttl`] covers every point the plan emits. The wire level
+/// owns none of that judgement: a plan says where the points go, and
+/// [`crate::report`] puts them exactly there.
+///
+/// Placement is expressed in three places because that is where Bedrock will
+/// take a marker: after the system blocks, after a chosen content block of a
+/// chosen message, and at the conversation tail.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CachePlan {
+    /// Tier every cache point in this plan is written at. `FiveMinutes` maps
+    /// to no `ttl` field on the wire — see [`sdk_cache_ttl`].
+    pub ttl: CacheTtlChoice,
+    /// Emit a `cachePoint` as the last system block, so the system policy
+    /// (and the tool schemas rendered ahead of it) read from cache.
+    pub after_system: bool,
+    /// Emit a `cachePoint` at the end of the last message, so the next call
+    /// in the loop reads the whole conversation so far from cache.
+    pub tail: bool,
+    /// `(message index, block index)` coordinates, zero-based, after each of
+    /// which a `cachePoint` is inserted. Both indices address the request's
+    /// protocol messages as the caller passed them, before any cache point
+    /// was added.
+    pub after_blocks: Vec<(usize, usize)>,
+}
+
+impl CachePlan {
+    /// Bedrock's ceiling on `cachePoint` blocks in one request. A request
+    /// over it is rejected outright, so the plan is validated at
+    /// construction rather than discovered at the wire.
+    pub const MAX_CACHE_POINTS: usize = 4;
+
+    /// A plan that emits nothing, producing the exact request shape a
+    /// caching-incapable model gets.
+    pub fn disabled() -> Self {
+        Self {
+            ttl: CacheTtlChoice::FiveMinutes,
+            after_system: false,
+            tail: false,
+            after_blocks: Vec::new(),
+        }
+    }
+
+    /// Build a plan, rejecting one that asks for more cache points than
+    /// Bedrock accepts.
+    pub fn new(
+        ttl: CacheTtlChoice,
+        after_system: bool,
+        tail: bool,
+        after_blocks: Vec<(usize, usize)>,
+    ) -> Result<Self, BedrockError> {
+        let plan = Self {
+            ttl,
+            after_system,
+            tail,
+            after_blocks,
+        };
+        let points = plan.point_count();
+        if points > Self::MAX_CACHE_POINTS {
+            return Err(BedrockError::SchemaViolation(format!(
+                "cache plan asks for {points} cache points; Bedrock accepts at most {}",
+                Self::MAX_CACHE_POINTS
+            )));
+        }
+        Ok(plan)
+    }
+
+    /// The placement the report family has always used: one point after the
+    /// system policy and one at the conversation tail, at the default
+    /// five-minute tier. The writer's loop re-reads within minutes, so the
+    /// doubled one-hour write rate would never pay off.
+    ///
+    /// Gated on the model family alone, reproducing today's behaviour: the
+    /// writer has never consulted the desktop's `prompt_caching_enabled`
+    /// flag, so this passes it as on.
+    pub fn report_default(capabilities: claria_core::model_id::ModelCapabilities) -> Self {
+        Self {
+            ttl: CacheTtlChoice::FiveMinutes,
+            after_system: true,
+            tail: true,
+            after_blocks: Vec::new(),
+        }
+        .gated(capabilities, true)
+    }
+
+    /// Gate a plan on what the model can do and what the user asked for:
+    /// either saying no yields [`Self::disabled`], and a one-hour TTL the
+    /// family does not accept is downgraded rather than sent and rejected.
+    pub fn gated(
+        self,
+        capabilities: claria_core::model_id::ModelCapabilities,
+        prompt_caching_enabled: bool,
+    ) -> Self {
+        if !prompt_caching_enabled || !capabilities.prompt_caching {
+            return Self::disabled();
+        }
+        let ttl = match self.ttl {
+            CacheTtlChoice::OneHour if !capabilities.supports_extended_cache_ttl => {
+                CacheTtlChoice::FiveMinutes
+            }
+            ttl => ttl,
+        };
+        Self { ttl, ..self }
+    }
+
+    /// How many `cachePoint` blocks this plan puts on the wire.
+    pub fn point_count(&self) -> usize {
+        usize::from(self.after_system) + usize::from(self.tail) + self.after_blocks.len()
+    }
+
+    /// Whether the plan emits any cache point at all.
+    pub fn is_enabled(&self) -> bool {
+        self.point_count() > 0
+    }
+
+    /// The TTL to record on the turn's usage: `Some` only when the request
+    /// actually carried cache points, so an uncached turn prices as uncached
+    /// instead of claiming a tier it never wrote at.
+    pub fn effective_ttl(&self) -> Option<CacheTtlChoice> {
+        self.is_enabled().then_some(self.ttl)
+    }
+}
+
+/// Caching off unless a caller asks for it, so a default-constructed plan
+/// cannot silently start writing cache entries.
+impl Default for CachePlan {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+/// Insert a `cachePoint` immediately after each `(message, block)`
+/// coordinate, both zero-based against `messages` as passed in.
+///
+/// Insertions run back to front so every coordinate keeps addressing the
+/// block the caller meant; a coordinate that does not exist is an error
+/// rather than a silently skipped cache point, because a plan that misses is
+/// a plan that quietly stops caching.
+pub(crate) fn with_cache_points_after(
+    mut messages: Vec<Message>,
+    after_blocks: &[(usize, usize)],
+    ttl: Option<CacheTtl>,
+) -> Result<Vec<Message>, BedrockError> {
+    if after_blocks.is_empty() {
+        return Ok(messages);
+    }
+    let mut coordinates = after_blocks.to_vec();
+    coordinates.sort_unstable();
+    coordinates.dedup();
+    for &(message_index, block_index) in coordinates.iter().rev() {
+        let message = messages.get(message_index).ok_or_else(|| {
+            BedrockError::SchemaViolation(format!(
+                "cache plan names message {message_index}, but the request has {} messages",
+                messages.len()
+            ))
+        })?;
+        let mut content = message.content().to_vec();
+        if block_index >= content.len() {
+            return Err(BedrockError::SchemaViolation(format!(
+                "cache plan names block {block_index} of message {message_index}, which has {} blocks",
+                content.len()
+            )));
+        }
+        content.insert(
+            block_index + 1,
+            ContentBlock::CachePoint(cache_point(ttl.clone())?),
+        );
+        messages[message_index] = Message::builder()
+            .role(message.role().clone())
+            .set_content(Some(content))
+            .build()
+            .map_err(|error| BedrockError::Invocation(error.to_string()))?;
+    }
+    Ok(messages)
+}
+
 /// Concatenate the text blocks of an assistant message.
 pub(crate) fn collect_text(message: &Message) -> String {
     message
@@ -506,7 +686,12 @@ pub(crate) fn log_model_budget(
 }
 
 /// Structured cache/usage observability line for one completed Converse
-/// call, shared by the chat and report flows. `hit_rate` is the fraction of
+/// call, shared by the chat and report flows.
+///
+/// `operation` names the request family rather than the SDK call — `chat`,
+/// `report_targeted`, `report_full_draft` — because cache behaviour differs
+/// per family and a console export that lumps them together answers nothing.
+/// It is a fixed label, never derived from user input. `hit_rate` is the fraction of
 /// input tokens served from cache; `cache_ttl` names the write tier, and
 /// `stop_reason`, `latency_ms`, and `max_tokens` let a console export answer
 /// "was it truncated, how long did it take, at which ceiling?". Fields are

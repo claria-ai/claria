@@ -1,17 +1,19 @@
 //! Process-local transient protocol cache aligned to the provider's
 //! prompt-cache window.
 
-use std::{
-    num::NonZeroUsize,
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::{num::NonZeroUsize, sync::Mutex, time::Instant};
 
-use claria_core::models::report::ReportProtocolMessage;
+use claria_core::{model_id::CacheTtlChoice, models::report::ReportProtocolMessage};
 use uuid::Uuid;
 
 const REPORT_PROMPT_CACHE_CAPACITY: usize = 8;
-const REPORT_PROMPT_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// How long a cached protocol is worth keeping: exactly the window Bedrock
+/// holds the writer's cache entry for, read from the tier the writer's cache
+/// points are written at rather than restated here. A mirror on its own
+/// schedule would keep serving a prefix the provider had already dropped, or
+/// throw one away that was still live.
+const REPORT_PROMPT_CACHE_TTL: std::time::Duration = CacheTtlChoice::FiveMinutes.window();
 
 #[derive(Clone)]
 struct CachedReportProtocol {
