@@ -12,6 +12,8 @@ All notable changes to Claria are documented here.
 - The Preferences sidebar can export the synced preferences file for support or backup, and import one back after validation
 - Preferences file history lists past versions with view, restore, and a two-version diff; imports and restores keep the replaced values one version back
 - Transcription and chat-streaming edits now save once when you leave the section or close the screen, instead of writing a preferences version on every click
+- Document extraction logs a file's extension and byte size instead of its name
+- Storage errors reduce a record's location to its client folder, so an uploaded file's name no longer reaches the console, the exported logs, or an on-screen error
 
 ## [0.28.0] — 2026-08-15
 
