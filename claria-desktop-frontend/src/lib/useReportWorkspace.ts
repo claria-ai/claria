@@ -293,6 +293,14 @@ export function useReportWorkspace({
       return;
     }
 
+    // Section-level progress (plan_ready, section_*, title_set) is what the
+    // live drafting canvas will read; this hook has no use for it yet and
+    // must not fold it into the tool throbber, which would report every
+    // landed section as "Context unavailable".
+    if (progress.kind !== "tool_started" && progress.kind !== "tool_finished") {
+      return;
+    }
+
     const context = progress.context;
     if (progress.kind === "tool_started") {
       setAgentActivity(agentActivityForTool(progress.name, context));

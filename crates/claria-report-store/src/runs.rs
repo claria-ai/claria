@@ -124,8 +124,11 @@ pub async fn list_draft_runs(
     .map_err(|source| ReportStoreError::storage("listing drafting runs", source))?;
 
     use futures::StreamExt;
-    let loads = keys.iter().map(|key| async move {
-        load_existing(s3, bucket, key)
+    // Each future owns its key. Borrowing from `keys` instead makes this a
+    // closure over a reference with a bound lifetime, which callers inside a
+    // `#[tauri::command]` async block cannot prove is higher-ranked.
+    let loads = keys.into_iter().map(|key| async move {
+        load_existing(s3, bucket, &key)
             .await
             .map(|loaded| loaded.run)
     });

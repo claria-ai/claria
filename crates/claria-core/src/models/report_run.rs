@@ -134,7 +134,12 @@ pub struct RunPlan {
 
 /// What the plan decided for exactly one section. There is one entry per
 /// [`RunSection`] and no entry without one.
+///
+/// Renamed on the way to TypeScript: the provisioner already exports a
+/// `PlanEntry`, and two types of that name in one bindings file is an export
+/// failure, not a merge.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[specta(rename = "DraftPlanEntry")]
 pub struct PlanEntry {
     pub section_id: Uuid,
     pub heading: String,

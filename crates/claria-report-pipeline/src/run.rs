@@ -1,6 +1,10 @@
 //! The durable drafting run behind whole-report generation: creating it,
 //! releasing it when a turn fails, healing one whose completion write was lost,
-//! and re-entering the turn loop to finish an interrupted one.
+//! re-entering the turn loop to finish an interrupted one, and the two ways a
+//! run that will never be picked back up ends — finalized from what it landed,
+//! or abandoned.
+
+use std::collections::HashSet;
 
 use aws_sdk_s3::Client as S3Client;
 use claria_core::models::{
@@ -11,14 +15,15 @@ use claria_core::models::{
     },
 };
 use claria_report_store::{
-    LoadedRun, LoadedWorkspace, MAX_INSTRUCTION_CHARACTERS, create_draft_run, load_draft_run,
-    load_for_report, save_draft_run, save_loaded,
+    LoadedRun, LoadedWorkspace, MAX_INSTRUCTION_CHARACTERS, create_draft_run, list_draft_runs,
+    load_draft_run, load_for_report, mark_template_current, save_draft_run, save_loaded,
 };
 use uuid::Uuid;
 
 use crate::{
     FullReportGenerationOutcome, ReportPipelineError,
     full_draft_context::DraftTurnKind,
+    tools::{merge_undrafted_sections, written_sections},
     turn::{FullReportRequest, execute_full_draft_turn, validate_model_choice},
 };
 
@@ -163,21 +168,23 @@ pub(crate) async fn release_failed_run(
     }
 }
 
+/// Re-read the workspace and, if it still points at `run_id`, release it.
+/// Returns the workspace as it now stands either way.
 async fn clear_active_run(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
     report_id: Uuid,
     run_id: Uuid,
-) -> Result<(), ReportPipelineError> {
+) -> Result<LoadedWorkspace, ReportPipelineError> {
     let mut loaded = load_for_report(s3, bucket, client_id, report_id).await?;
     if loaded.workspace.active_run_id != Some(run_id) {
-        return Ok(());
+        return Ok(loaded);
     }
     loaded.workspace.active_run_id = None;
     loaded.workspace.updated_at = jiff::Timestamp::now();
     save_loaded(s3, bucket, &mut loaded).await?;
-    Ok(())
+    Ok(loaded)
 }
 
 /// Stamp a run whose revision cut succeeded but whose own completion write was
@@ -321,4 +328,201 @@ pub async fn resume_draft_run(
         DraftTurnKind::Resume,
     )
     .await
+}
+
+/// The drafting run a Writing session should hydrate from, if any.
+///
+/// The workspace's own pointer wins whenever it is set: that run owns the
+/// session right now, so nothing else is a candidate. Otherwise the newest
+/// interrupted run counts — and only while the report still stands exactly
+/// where the run left it. A run whose `base_revision` has moved on can be
+/// neither resumed nor finalized, so offering it would buy the user a refusal
+/// instead of a choice.
+pub async fn load_resumable_draft_run(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    report_id: Uuid,
+) -> Result<Option<DraftRun>, ReportPipelineError> {
+    let loaded = load_for_report(s3, bucket, client_id, report_id).await?;
+    if let Some(run_id) = loaded.workspace.active_run_id {
+        let run = load_draft_run(s3, bucket, client_id, report_id, run_id).await?;
+        return Ok(Some(run.run));
+    }
+    let revision = loaded.workspace.draft.revision;
+    Ok(list_draft_runs(s3, bucket, client_id, report_id)
+        .await?
+        .into_iter()
+        .find(|run| {
+            matches!(run.status, DraftRunStatus::Stopped | DraftRunStatus::Failed)
+                && run.base_revision == revision
+        }))
+}
+
+/// What [`finalize_partial_draft`] changed, so the caller can record it
+/// without re-deriving the counts from the saved workspace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartialDraftFinalization {
+    pub workspace: ReportWorkspace,
+    pub drafted_sections: u32,
+    pub skipped_sections: u32,
+    pub revision: u64,
+}
+
+/// Cut a revision from what an interrupted run actually landed, instead of
+/// picking it back up.
+///
+/// Every section the run never finished becomes a skipped placeholder — the
+/// same shape a deliberate `skip_full_draft_section` produces, template copy
+/// and all — so the document is whole, the preview greys out what was not
+/// written, and the export elides it. The run is stamped `partial` against the
+/// revision it produced. No model is called: this is store reads, the finish
+/// cut's own assembly, and two writes.
+pub async fn finalize_partial_draft(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    report_id: Uuid,
+    run_id: Uuid,
+) -> Result<PartialDraftFinalization, ReportPipelineError> {
+    let mut loaded = load_for_report(s3, bucket, client_id, report_id).await?;
+    let mut run = load_draft_run(s3, bucket, client_id, report_id, run_id).await?;
+    ensure_finalizable(&run.run, &loaded.workspace, run_id)?;
+
+    let now = jiff::Timestamp::now();
+    run.run.demote_interrupted_sections(now);
+    let drafted = written_sections(&run.run);
+    if drafted.is_empty() {
+        return Err(ReportPipelineError::InvalidInput(
+            "This whole-report draft has no finished sections to keep. Pick it back up, or discard it."
+                .to_string(),
+        ));
+    }
+    // Everything the run left undecided is deferred, not lost: the model never
+    // replaced that text, and a skipped placeholder is how the report says so.
+    let mut skipped = HashSet::new();
+    let mut kept = HashSet::new();
+    for section in &mut run.run.sections {
+        match section.state {
+            RunSectionState::Pending | RunSectionState::Failed => {
+                section.state = RunSectionState::Skipped;
+                section.blocks.clear();
+                section.updated_at = now;
+                skipped.insert(section.section_id);
+            }
+            RunSectionState::Skipped => {
+                skipped.insert(section.section_id);
+            }
+            RunSectionState::Kept => {
+                kept.insert(section.section_id);
+            }
+            RunSectionState::Drafted | RunSectionState::Drafting | RunSectionState::Flagged => {}
+        }
+    }
+
+    let content = ReportContent {
+        title: run
+            .run
+            .title
+            .clone()
+            .unwrap_or_else(|| loaded.workspace.draft.content.title.clone()),
+        sections: merge_undrafted_sections(
+            &drafted,
+            &skipped,
+            &kept,
+            &loaded.workspace.draft.content.sections,
+        ),
+    };
+    let expected_revision = loaded.workspace.draft.revision;
+    loaded.workspace.draft = loaded
+        .workspace
+        .draft
+        .replace_content(expected_revision, content, now)
+        .map_err(|error| ReportPipelineError::InvalidRun(error.to_string()))?;
+    let revision = loaded.workspace.draft.revision;
+    stamp_run_authorship(&mut loaded.workspace.draft.content, &run.run, revision, now);
+    loaded.workspace.active_run_id = None;
+    loaded.workspace.session.last_agent_revision = Some(revision);
+    mark_template_current(&mut loaded.workspace);
+    loaded.workspace.updated_at = now;
+    // Workspace first, run second — the same ordering the finish cut uses, so
+    // a lost run write heals from the workspace rather than losing a revision.
+    save_loaded(s3, bucket, &mut loaded).await?;
+
+    run.run.status = DraftRunStatus::Completed;
+    run.run.finalized_revision = Some(revision);
+    run.run.partial = true;
+    if let Err(error) = save_draft_run(s3, bucket, &mut run).await {
+        tracing::warn!(
+            run_id = %run_id,
+            error = %error,
+            "the drafting run was finalized but could not record its own finish"
+        );
+    }
+
+    Ok(PartialDraftFinalization {
+        drafted_sections: u32::try_from(drafted.len()).unwrap_or(u32::MAX),
+        skipped_sections: u32::try_from(skipped.len()).unwrap_or(u32::MAX),
+        revision,
+        workspace: loaded.workspace,
+    })
+}
+
+fn ensure_finalizable(
+    run: &DraftRun,
+    workspace: &ReportWorkspace,
+    run_id: Uuid,
+) -> Result<(), ReportPipelineError> {
+    if !matches!(run.status, DraftRunStatus::Failed | DraftRunStatus::Stopped) {
+        return Err(ReportPipelineError::InvalidInput(
+            "Only an interrupted whole-report draft can be finalized from what it wrote."
+                .to_string(),
+        ));
+    }
+    if workspace.draft.revision != run.base_revision {
+        return Err(ReportPipelineError::InvalidInput(
+            "The report has changed since this whole-report draft was interrupted, so its saved sections no longer fit. Start a new whole-report draft."
+                .to_string(),
+        ));
+    }
+    if workspace.session.pending_proposal.is_some() {
+        return Err(ReportPipelineError::InvalidInput(
+            "Accept or reject the pending proposal before starting another writer action."
+                .to_string(),
+        ));
+    }
+    if workspace
+        .active_run_id
+        .is_some_and(|active| active != run_id)
+    {
+        return Err(ReportPipelineError::InvalidInput(
+            claria_report_store::ACTIVE_RUN_MESSAGE.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Give up on a drafting run without touching the report.
+///
+/// The sections it landed stay in the run object as history — abandoning is
+/// about releasing the session, not erasing what was written — and the
+/// workspace pointer is cleared only if it still names this run.
+pub async fn abandon_draft_run(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    report_id: Uuid,
+    run_id: Uuid,
+) -> Result<ReportWorkspace, ReportPipelineError> {
+    let mut run = load_draft_run(s3, bucket, client_id, report_id, run_id).await?;
+    if run.run.status == DraftRunStatus::Completed {
+        return Err(ReportPipelineError::InvalidInput(
+            "This whole-report draft already produced a saved revision, so it cannot be discarded. Revert the report instead."
+                .to_string(),
+        ));
+    }
+    run.run.status = DraftRunStatus::Abandoned;
+    save_draft_run(s3, bucket, &mut run).await?;
+    let loaded = clear_active_run(s3, bucket, client_id, report_id, run_id).await?;
+    Ok(loaded.workspace)
 }

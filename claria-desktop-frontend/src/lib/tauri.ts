@@ -24,6 +24,7 @@ import type {
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  DraftRun,
   EditorHistoryEntry,
   FileVersion,
   FullReportGenerationResponse,
@@ -92,7 +93,11 @@ export type {
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  DraftPlanEntry,
+  DraftRun,
+  DraftRunStatus,
   EditorHistoryEntry,
+  EvidenceRef,
   FieldDrift,
   FileVersion,
   FullReportGenerationResponse,
@@ -114,6 +119,7 @@ export type {
   ProvisionApplyOutcome,
   ProvisionScanResult,
   ProvisionerProgress,
+  RecordCitation,
   RecordContext,
   RecordFile,
   ReportAuthoringPreferences,
@@ -147,6 +153,11 @@ export type {
   ReportTurnResponse,
   ReportWorkspaceView,
   ResourceSpec,
+  RunInstruction,
+  RunPlan,
+  RunSection,
+  RunSectionState,
+  SectionIntent,
   Severity,
   SpeakerMode,
   StepStatus,
@@ -574,6 +585,39 @@ export async function generateFullReport(
       channel
     )
   );
+}
+
+/**
+ * The drafting run the writer should reattach to, or `null` when this report
+ * has nothing resumable: no run owns the session, and no interrupted run still
+ * matches the current revision.
+ */
+export async function loadDraftRun(
+  clientId: string,
+  reportId: string
+): Promise<DraftRun | null> {
+  return unwrap(await commands.loadDraftRun(clientId, reportId));
+}
+
+/**
+ * Keep what an interrupted run wrote as a new revision. Sections it never
+ * finished are saved as skipped placeholders.
+ */
+export async function finalizePartialDraft(
+  clientId: string,
+  reportId: string,
+  runId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.finalizePartialDraft(clientId, reportId, runId));
+}
+
+/** Discard a drafting run. The report itself is left exactly as it is. */
+export async function abandonDraftRun(
+  clientId: string,
+  reportId: string,
+  runId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.abandonDraftRun(clientId, reportId, runId));
 }
 
 export async function sendReportMessage(

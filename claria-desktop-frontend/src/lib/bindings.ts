@@ -604,6 +604,42 @@ async generateFullReport(clientId: string, reportId: string, expectedRevision: n
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * The drafting run the Writing surface should reattach to, or `null` when
+ * there is nothing resumable for this report.
+ */
+async loadDraftRun(clientId: string, reportId: string) : Promise<Result<DraftRun | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_draft_run", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Keep what an interrupted run wrote: undone sections become skipped
+ * placeholders and the result is saved as a new revision.
+ */
+async finalizePartialDraft(clientId: string, reportId: string, runId: string) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("finalize_partial_draft", { clientId, reportId, runId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Discard a drafting run. The report is untouched; the sections the run
+ * landed stay in the run object as history.
+ */
+async abandonDraftRun(clientId: string, reportId: string, runId: string) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("abandon_draft_run", { clientId, reportId, runId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async sendReportMessage(clientId: string, reportId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, reportId, expectedRevision, modelId, instruction, references, onProgress }) };
@@ -1525,8 +1561,65 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  * A file that has been deleted (has a delete marker as the latest version).
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
+/**
+ * What the plan decided for exactly one section. There is one entry per
+ * [`RunSection`] and no entry without one.
+ * 
+ * Renamed on the way to TypeScript: the provisioner already exports a
+ * `PlanEntry`, and two types of that name in one bindings file is an export
+ * failure, not a merge.
+ */
+export type DraftPlanEntry = { section_id: string; heading: string; intent: SectionIntent; 
+/**
+ * The report cannot be considered complete while this section is empty.
+ */
+required: boolean; 
+/**
+ * What the section should cover, in the planner's words. May be empty for
+ * a section the plan does not intend to write.
+ */
+scope: string; evidence: EvidenceRef[]; 
+/**
+ * Per-section steering that overrides the run-wide instructions.
+ */
+instruction: string | null }
+/**
+ * One resumable whole-report drafting run.
+ * 
+ * The object is rewritten (conditionally, on its ETag) after every section
+ * the writer lands, so an interrupted run resumes from durable state instead
+ * of restarting.
+ */
+export type DraftRun = { schema_version: number; run_id: string; report_id: string; client_id: string; 
+/**
+ * Accepted revision the run builds on. The finish cut uses it as the
+ * expected revision, so concurrent edits to the report conflict rather
+ * than being overwritten by assembled sections.
+ */
+base_revision: number; status: DraftRunStatus; plan: RunPlan | null; title: string | null; 
+/**
+ * Every section of the report, in no particular order — read
+ * [`RunSection::position`] for document order.
+ */
+sections: RunSection[]; instructions: RunInstruction[]; writer_model_id: string; 
+/**
+ * Revision produced by the finish cut. Present only once the run is
+ * [`DraftRunStatus::Completed`].
+ */
+finalized_revision: number | null; 
+/**
+ * The run was finalized from a stopped state: sections that never landed
+ * were skipped rather than drafted.
+ */
+partial: boolean; created_at: string; updated_at: string }
+export type DraftRunStatus = "planning" | "awaiting_approval" | "drafting" | "stopped" | "failed" | "completed" | "abandoned"
 export type EditorHistoryEntry = { report_id: string; name: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExport | null }
 export type EffortPreference = "low" | "medium" | "high" | "max"
+/**
+ * A record the planner expects a section to draw on. Records are referenced
+ * by filename; the note is the planner's own reason, never record text.
+ */
+export type EvidenceRef = { filename: string; note: string | null }
 /**
  * Structured before/after for a single field that doesn't match desired state.
  * 
@@ -1677,6 +1770,11 @@ needs_escalation: boolean;
 account_id: string }
 export type ProvisionerProgress = { kind: "scan_started"; label: string; index: number; total: number } | { kind: "scan_completed"; label: string; index: number; total: number } | { kind: "apply_started"; label: string; action: string; index: number; total: number } | { kind: "apply_completed"; label: string; action: string; index: number; total: number } | { kind: "escalation_step"; label: string; status: string }
 /**
+ * A quote the writer attributed to a record, used by the completion gate to
+ * check that cited text actually exists in the client's records.
+ */
+export type RecordCitation = { filename: string; quote: string }
+/**
  * A record file with its readable text content, for chat context.
  */
 export type RecordContext = { filename: string; text: string }
@@ -1764,7 +1862,19 @@ export type ReportTemplateWarningView = { code: string; message: string; count: 
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
-export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus }
+export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus } | 
+/**
+ * The drafting run's plan is settled, before the first model call: the
+ * honest denominator for the progress that follows.
+ */
+{ kind: "plan_ready"; section_count: number } | { kind: "section_started"; section_id: string; index: number; total: number } | 
+/**
+ * A section landed durably, carrying its content so the preview can
+ * render it without a refetch. The section needs no redaction here: it is
+ * the host-validated staged content the finish cut copies verbatim into
+ * the workspace this same command returns.
+ */
+{ kind: "section_completed"; section_id: string; section: ReportSection; drafted: number; total: number } | { kind: "section_skipped"; section_id: string; drafted: number; total: number } | { kind: "section_failed"; section_id: string; message: string; drafted: number; total: number } | { kind: "title_set"; title: string }
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
 /**
  * Earns its life over `ReportWorkspace`: flattens the session container and
@@ -1817,6 +1927,68 @@ severity: Severity;
  */
 iam_actions: string[] }
 /**
+ * User guidance for the run: the instruction it started from, plus anything
+ * added when a stopped run was picked back up.
+ */
+export type RunInstruction = { text: string; added_at: string }
+/**
+ * The section plan the user approved before drafting started.
+ */
+export type RunPlan = { 
+/**
+ * Model that produced the plan, which is not the model that writes the
+ * sections.
+ */
+model_id: string; entries: DraftPlanEntry[]; 
+/**
+ * The user changed the plan at the gate before approving it.
+ */
+user_edited: boolean; 
+/**
+ * Unset while the plan is still waiting at the gate.
+ */
+approved_at: string | null; created_at: string }
+/**
+ * The durable state machine for one section of the report.
+ */
+export type RunSection = { section_id: string; heading: string; 
+/**
+ * Zero-based ordering slot, unique across the run. A drafted section's
+ * slot is where the writer put it, so sorting the drafted rows by it
+ * reproduces the document the run is assembling; everything still
+ * undecided trails behind them in the order the report supplied it.
+ */
+position: number; state: RunSectionState; 
+/**
+ * Staged content that has already survived a write. Nonempty only in
+ * [`RunSectionState::Drafted`]; the finish cut reads it verbatim.
+ */
+blocks: ReportBlock[]; citations: RecordCitation[]; 
+/**
+ * How many times the writer has tried this section.
+ */
+attempts: number; 
+/**
+ * PHI-free note about why the section failed: error codes and counts,
+ * never record or draft content.
+ */
+error: string | null; updated_at: string }
+export type RunSectionState = "pending" | 
+/**
+ * Transient: correct only while the writer is mid-section. Any section
+ * still `Drafting` when a run is loaded was interrupted and must be
+ * demoted to `Pending` — see [`DraftRun::demote_interrupted_sections`].
+ */
+"drafting" | "drafted" | "failed" | 
+/**
+ * Drafted, but a review pass raised a finding against it.
+ */
+"flagged" | "skipped" | 
+/**
+ * The base-revision content stands; the run does not touch this section.
+ */
+"kept"
+/**
  * The latest authorship stamp for one section — not a log, and not per-block.
  */
 export type SectionAuthorship = { kind: AuthorshipKind; 
@@ -1825,6 +1997,11 @@ export type SectionAuthorship = { kind: AuthorshipKind;
  * draft it rides on.
  */
 revision: number; model_id: string | null; run_id: string | null; updated_at: string }
+export type SectionIntent = "draft" | "rewrite" | 
+/**
+ * Leave the section's base-revision content exactly as it is.
+ */
+"keep" | "skip"
 export type Severity = 
 /**
  * Data sources — read-only checks

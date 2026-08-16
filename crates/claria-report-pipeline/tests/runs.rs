@@ -1593,3 +1593,516 @@ async fn a_run_that_fails_before_any_section_leaves_the_writer_usable() {
     assert_eq!(outcome.assistant_text, "Nothing to change yet.");
     assert_eq!(outcome.workspace.active_run_id, None);
 }
+
+// ---------------------------------------------------------------------------
+// Progress: what the run tells the writing surface while it works
+// ---------------------------------------------------------------------------
+
+/// A drafted run section carrying staged content, which `run_section` (always
+/// empty, never drafted) cannot express.
+fn drafted_run_section(id: &str, heading: &str, position: u32, text: &str) -> RunSection {
+    RunSection {
+        blocks: vec![paragraph(text)],
+        ..run_section(id, heading, position, RunSectionState::Drafted)
+    }
+}
+
+/// Point the workspace at a hand-seeded run, standing in for the pointer a
+/// live run writes before its first model call.
+async fn point_workspace_at_run(
+    s3: &aws_sdk_s3::Client,
+    client_id: Uuid,
+    report_id: Uuid,
+    run_id: Uuid,
+) {
+    let mut workspace = store::load_report_workspace_by_id(s3, BUCKET, client_id, report_id)
+        .await
+        .expect("load workspace");
+    workspace.active_run_id = Some(run_id);
+    claria_storage::objects::put_object(
+        s3,
+        BUCKET,
+        &claria_core::s3_keys::report_session_workspace(client_id, report_id),
+        serde_json::to_vec(&workspace).expect("workspace JSON"),
+        Some("application/json"),
+    )
+    .await
+    .expect("re-put workspace pointing at the run");
+}
+
+/// The run's own progress, with the per-call and per-tool events dropped —
+/// those predate runs and are asserted in `workflow.rs`.
+fn section_progress(events: &[pipeline::ReportTurnProgress]) -> Vec<&pipeline::ReportTurnProgress> {
+    events
+        .iter()
+        .filter(|event| {
+            !matches!(
+                event,
+                pipeline::ReportTurnProgress::RecordContextPrepared { .. }
+                    | pipeline::ReportTurnProgress::ModelCallStarted { .. }
+                    | pipeline::ReportTurnProgress::ToolStarted { .. }
+                    | pipeline::ReportTurnProgress::ToolFinished { .. }
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn every_landed_section_is_reported_with_its_content_and_counters() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![
+            tool_round(vec![title_call("title-1", "Psychoeducational Evaluation")]),
+            tool_round(vec![write_call(
+                "section-1",
+                REFERRAL_ID,
+                0,
+                "Reason for Referral",
+                "Referred for attention concerns.",
+            )]),
+            tool_round(vec![write_call(
+                "section-2",
+                BACKGROUND_ID,
+                1,
+                "Background",
+                "Documented developmental history.",
+            )]),
+            tool_round(vec![write_call(
+                "section-3",
+                SUMMARY_ID,
+                2,
+                "Summary and Clinical Interpretation",
+                "Findings are consistent with the referral question.",
+            )]),
+            tool_round(vec![finish_call("finish-1", "Completed the evaluation.")]),
+            closing_text("The evaluation is complete."),
+        ],
+    )
+    .await;
+
+    let progress = std::sync::Mutex::new(Vec::new());
+    let emit_progress = |event| progress.lock().expect("progress lock").push(event);
+    pipeline::generate_full_report_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Write the whole evaluation.")
+            .with_progress(&emit_progress),
+    )
+    .await
+    .expect("generate the whole evaluation");
+
+    let events = progress.into_inner().expect("progress values");
+    // The denominator is announced before any model call, so a progress bar
+    // never has to guess how many sections are coming.
+    let first_model_call = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                pipeline::ReportTurnProgress::ModelCallStarted { call_number: 1 }
+            )
+        })
+        .expect("a first model call");
+    let plan_ready = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                pipeline::ReportTurnProgress::PlanReady { section_count: 3 }
+            )
+        })
+        .expect("the plan's section count");
+    assert!(
+        plan_ready < first_model_call,
+        "the plan was announced after the first model call"
+    );
+
+    let sections = section_progress(&events);
+    assert_eq!(sections.len(), 8, "unexpected section-progress sequence");
+    assert!(matches!(
+        sections[0],
+        pipeline::ReportTurnProgress::PlanReady { section_count: 3 }
+    ));
+    assert!(matches!(
+        sections[1],
+        pipeline::ReportTurnProgress::TitleSet { title }
+            if title == "Psychoeducational Evaluation"
+    ));
+    for (index, section_id) in [REFERRAL_ID, BACKGROUND_ID, SUMMARY_ID].iter().enumerate() {
+        let started = sections[2 + index * 2];
+        let completed = sections[3 + index * 2];
+        let slot = u32::try_from(index).expect("section index");
+        assert!(
+            matches!(
+                started,
+                pipeline::ReportTurnProgress::SectionStarted { section_id: id, index, total: 3 }
+                    if id == section_id && *index == slot
+            ),
+            "unexpected start event at slot {slot}: {started:?}"
+        );
+        assert!(
+            matches!(
+                completed,
+                pipeline::ReportTurnProgress::SectionCompleted {
+                    section_id: id,
+                    drafted,
+                    total: 3,
+                    ..
+                } if id == section_id && *drafted == slot + 1
+            ),
+            "unexpected completion event at slot {slot}: {completed:?}"
+        );
+    }
+
+    // The completion event carries the section whole, so the preview renders
+    // it without asking for the workspace again.
+    let pipeline::ReportTurnProgress::SectionCompleted { section, .. } = sections[3] else {
+        panic!("expected the first section's completion event");
+    };
+    assert_eq!(section.id.to_string(), REFERRAL_ID);
+    assert_eq!(section.heading, "Reason for Referral");
+    assert_eq!(
+        section.blocks,
+        vec![paragraph("Referred for attention concerns.")]
+    );
+    assert!(!section.skipped);
+}
+
+#[tokio::test]
+async fn a_skip_and_a_failure_report_themselves_with_the_same_counters() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Psychoeducational Evaluation"),
+                write_call(
+                    "section-1",
+                    REFERRAL_ID,
+                    0,
+                    "Reason for Referral",
+                    "Referred for attention concerns.",
+                ),
+                skip_call("skip-1", BACKGROUND_ID),
+                fail_call("fail-1", SUMMARY_ID, "No testing data is present."),
+            ]),
+            tool_round(vec![finish_call("finish-1", "Drafted the referral only.")]),
+            closing_text("One section was deferred and one could not be written."),
+        ],
+    )
+    .await;
+
+    let progress = std::sync::Mutex::new(Vec::new());
+    let emit_progress = |event| progress.lock().expect("progress lock").push(event);
+    pipeline::generate_full_report_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Write what the records support.")
+            .with_progress(&emit_progress),
+    )
+    .await
+    .expect("a skip and a failure still finish the run");
+
+    let events = progress.into_inner().expect("progress values");
+    let sections = section_progress(&events);
+    assert!(
+        sections.iter().any(|event| matches!(
+            event,
+            pipeline::ReportTurnProgress::SectionSkipped { section_id, drafted: 2, total: 3 }
+                if section_id == BACKGROUND_ID
+        )),
+        "the skip was not reported with its counters: {sections:?}"
+    );
+    assert!(
+        sections.iter().any(|event| matches!(
+            event,
+            pipeline::ReportTurnProgress::SectionFailed {
+                section_id,
+                message,
+                drafted: 3,
+                total: 3,
+            } if section_id == SUMMARY_ID && message == "No testing data is present."
+        )),
+        "the failure was not reported with its stored reason: {sections:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Hydration, and the two ways an interrupted run ends without a model
+// ---------------------------------------------------------------------------
+
+fn three_section_plan() -> RunPlan {
+    let now = jiff::Timestamp::now();
+    RunPlan {
+        model_id: MODEL_ID.to_string(),
+        entries: vec![
+            plan_entry(REFERRAL_ID, "Reason for Referral", SectionIntent::Draft),
+            plan_entry(BACKGROUND_ID, "Background", SectionIntent::Draft),
+            plan_entry(
+                SUMMARY_ID,
+                "Summary and Clinical Interpretation",
+                SectionIntent::Draft,
+            ),
+        ],
+        user_edited: false,
+        approved_at: Some(now),
+        created_at: now,
+    }
+}
+
+/// One stopped run with a referral in `referral_state`, a section it never
+/// reached, and a section it failed — the shape a partial finalize handles.
+async fn seed_interrupted_run(
+    s3: &aws_sdk_s3::Client,
+    client_id: Uuid,
+    report_id: Uuid,
+    referral_state: RunSectionState,
+) -> Uuid {
+    let referral = if referral_state == RunSectionState::Drafted {
+        drafted_run_section(
+            REFERRAL_ID,
+            "Reason for Referral",
+            0,
+            "Referred for attention concerns.",
+        )
+    } else {
+        run_section(REFERRAL_ID, "Reason for Referral", 0, referral_state)
+    };
+    seed_run(
+        s3,
+        client_id,
+        report_id,
+        three_section_plan(),
+        vec![
+            referral,
+            run_section(BACKGROUND_ID, "Background", 1, RunSectionState::Pending),
+            RunSection {
+                error: Some("section_attempts_exhausted".to_string()),
+                ..run_section(
+                    SUMMARY_ID,
+                    "Summary and Clinical Interpretation",
+                    2,
+                    RunSectionState::Failed,
+                )
+            },
+        ],
+    )
+    .await
+}
+
+#[tokio::test]
+async fn hydration_offers_only_a_run_the_report_still_fits() {
+    let (_server, _sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    assert!(
+        pipeline::load_resumable_draft_run(&s3, BUCKET, client_id, report_id)
+            .await
+            .expect("hydration read")
+            .is_none(),
+        "a report with no runs offered one"
+    );
+
+    let run_id = seed_interrupted_run(&s3, client_id, report_id, RunSectionState::Drafted).await;
+    let hydrated = pipeline::load_resumable_draft_run(&s3, BUCKET, client_id, report_id)
+        .await
+        .expect("hydration read")
+        .expect("the stopped run is resumable");
+    assert_eq!(hydrated.run_id, run_id);
+
+    // A hand edit moves the report past the revision the run built on, and a
+    // run whose sections no longer fit must not be offered.
+    store::save_report_draft_for_report(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        ReportContent {
+            title: "Evaluation Template".to_string(),
+            sections: vec![template_section(REFERRAL_ID, "Reason for Referral")],
+        },
+    )
+    .await
+    .expect("hand edit");
+    assert!(
+        pipeline::load_resumable_draft_run(&s3, BUCKET, client_id, report_id)
+            .await
+            .expect("hydration read")
+            .is_none(),
+        "a run built on an older revision was still offered"
+    );
+}
+
+#[tokio::test]
+async fn finalizing_a_partial_draft_keeps_what_landed_and_defers_the_rest() {
+    let (_server, _sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let run_id = seed_interrupted_run(&s3, client_id, report_id, RunSectionState::Drafted).await;
+    point_workspace_at_run(&s3, client_id, report_id, run_id).await;
+
+    let outcome = pipeline::finalize_partial_draft(&s3, BUCKET, client_id, report_id, run_id)
+        .await
+        .expect("finalize what the interrupted run wrote");
+
+    assert_eq!(outcome.revision, 2);
+    assert_eq!(outcome.drafted_sections, 1);
+    assert_eq!(outcome.skipped_sections, 2);
+    assert_eq!(outcome.workspace.draft.revision, 2);
+    assert_eq!(outcome.workspace.active_run_id, None);
+    assert_eq!(
+        outcome.workspace.draft.content.title,
+        "Psychoeducational Evaluation"
+    );
+    assert_eq!(
+        body(&outcome.workspace.draft.content),
+        vec![
+            (
+                "Reason for Referral".to_string(),
+                vec![paragraph("Referred for attention concerns.")],
+                false,
+            ),
+            ("Background".to_string(), Vec::new(), true),
+            (
+                "Summary and Clinical Interpretation".to_string(),
+                Vec::new(),
+                true,
+            ),
+        ]
+    );
+    // The deferred sections keep the template copy the greyed-out preview
+    // renders, exactly as a deliberate skip does.
+    for section in &outcome.workspace.draft.content.sections[1..] {
+        assert_eq!(section.template_blocks.as_ref(), Some(&boilerplate()));
+    }
+    // Only the section the run actually authored is credited to it.
+    assert_eq!(
+        outcome.workspace.draft.content.sections[0]
+            .authorship
+            .as_ref()
+            .map(|authorship| authorship.kind),
+        Some(AuthorshipKind::ModelGenerated)
+    );
+    assert!(
+        outcome.workspace.draft.content.sections[1]
+            .authorship
+            .is_none()
+    );
+
+    let run = only_run(&s3, client_id, report_id).await;
+    assert_eq!(run.status, DraftRunStatus::Completed);
+    assert!(run.partial);
+    assert_eq!(run.finalized_revision, Some(2));
+}
+
+#[tokio::test]
+async fn a_partial_finalize_needs_a_finished_section_and_a_matching_revision() {
+    let (_server, _sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    // Nothing landed, so there is no revision worth cutting.
+    let empty_run = seed_interrupted_run(&s3, client_id, report_id, RunSectionState::Pending).await;
+    let error = pipeline::finalize_partial_draft(&s3, BUCKET, client_id, report_id, empty_run)
+        .await
+        .expect_err("a run with no drafted sections cannot be finalized");
+    assert!(
+        error.to_string().contains("no finished sections"),
+        "unexpected refusal: {error}"
+    );
+
+    // The report moved on underneath the run, so its sections no longer fit.
+    store::save_report_draft_for_report(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        ReportContent {
+            title: "Evaluation Template".to_string(),
+            sections: vec![template_section(REFERRAL_ID, "Reason for Referral")],
+        },
+    )
+    .await
+    .expect("hand edit");
+    let error = pipeline::finalize_partial_draft(&s3, BUCKET, client_id, report_id, empty_run)
+        .await
+        .expect_err("a run built on an older revision cannot be finalized");
+    assert!(
+        error.to_string().contains("has changed since"),
+        "unexpected refusal: {error}"
+    );
+
+    let reloaded = store::load_report_workspace_by_id(&s3, BUCKET, client_id, report_id)
+        .await
+        .expect("reload workspace");
+    assert_eq!(
+        reloaded.draft.revision, 2,
+        "a refused finalize cut a revision"
+    );
+}
+
+#[tokio::test]
+async fn abandoning_a_run_releases_the_session_and_leaves_the_report_alone() {
+    let (_server, _sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let run_id = seed_interrupted_run(&s3, client_id, report_id, RunSectionState::Drafted).await;
+    point_workspace_at_run(&s3, client_id, report_id, run_id).await;
+
+    let workspace = pipeline::abandon_draft_run(&s3, BUCKET, client_id, report_id, run_id)
+        .await
+        .expect("abandon the run");
+
+    assert_eq!(workspace.active_run_id, None);
+    assert_eq!(workspace.draft.revision, 1);
+    assert_eq!(
+        body(&workspace.draft.content),
+        body(&ReportContent {
+            title: "Evaluation Template".to_string(),
+            sections: vec![
+                template_section(REFERRAL_ID, "Reason for Referral"),
+                template_section(BACKGROUND_ID, "Background"),
+                template_section(SUMMARY_ID, "Summary and Clinical Interpretation"),
+            ],
+        })
+    );
+
+    // The drafted section stays in the run object as history.
+    let run = only_run(&s3, client_id, report_id).await;
+    assert_eq!(run.status, DraftRunStatus::Abandoned);
+    assert_eq!(
+        drafted(&run),
+        vec![(
+            "Reason for Referral",
+            &vec![paragraph("Referred for attention concerns.")]
+        )]
+    );
+
+    assert!(
+        pipeline::load_resumable_draft_run(&s3, BUCKET, client_id, report_id)
+            .await
+            .expect("hydration read")
+            .is_none(),
+        "an abandoned run was still offered for hydration"
+    );
+}

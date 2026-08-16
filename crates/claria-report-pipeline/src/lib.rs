@@ -28,7 +28,10 @@ pub use prompts::{
     FULL_REPORT_SYSTEM_PROMPT_BODY, FULL_REPORT_TRUST_RULES, REPORT_SYSTEM_PROMPT_BODY,
     REPORT_TRUST_RULES, full_report_system_prompt, report_system_prompt,
 };
-pub use run::resume_draft_run;
+pub use run::{
+    PartialDraftFinalization, abandon_draft_run, finalize_partial_draft, load_resumable_draft_run,
+    resume_draft_run,
+};
 pub use turn::{
     FullReportRequest, ReportMessageRequest, ReportTurnProgress, generate_full_report,
     generate_full_report_for_report, send_report_message, send_report_message_for_report,

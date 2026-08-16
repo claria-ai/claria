@@ -9,7 +9,7 @@ use claria_bedrock::{
 use claria_core::models::{
     report::{
         ReportAuthoringTurn, ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole,
-        ReportToolResultStatus, ReportWorkspace,
+        ReportSection, ReportToolResultStatus, ReportWorkspace,
     },
     turn_usage::TurnUsage,
 };
@@ -41,6 +41,11 @@ use crate::{
 };
 
 /// Ephemeral progress emitted while a single report-writing request runs.
+///
+/// The section-level variants carry `drafted` and `total` on every event
+/// rather than an increment. Progress is a fire-and-forget channel, so a
+/// dropped event must cost the reader one refresh, not leave its progress bar
+/// permanently out of step with the run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReportTurnProgress {
@@ -60,6 +65,54 @@ pub enum ReportTurnProgress {
         name: String,
         context: Option<String>,
         status: ReportToolResultStatus,
+    },
+    /// The drafting run's plan is in place, before the first model call. Its
+    /// row count is the honest denominator for everything that follows: the
+    /// number of sections the run owes a decision about, not a guess at how
+    /// long the model will take.
+    PlanReady {
+        section_count: u32,
+    },
+    /// A section write is about to be executed. This is the earliest moment
+    /// the section is known — the model names it in the tool call.
+    SectionStarted {
+        section_id: String,
+        /// Zero-based slot of the section in the run's document order, or
+        /// `total` for a section the writer invented that the plan never
+        /// listed.
+        index: u32,
+        total: u32,
+    },
+    /// A section landed durably. The staged section rides along whole so the
+    /// preview can render it the moment it arrives instead of refetching the
+    /// workspace.
+    ///
+    /// The payload needs no extra sanitization: it is the host-validated
+    /// content the finish cut will copy verbatim into the workspace, so it
+    /// crosses exactly the trust boundary the returned workspace already does.
+    SectionCompleted {
+        section_id: String,
+        section: ReportSection,
+        /// Sections now in a terminal state — drafted, skipped, failed, or
+        /// deliberately kept.
+        drafted: u32,
+        total: u32,
+    },
+    SectionSkipped {
+        section_id: String,
+        drafted: u32,
+        total: u32,
+    },
+    SectionFailed {
+        section_id: String,
+        /// The PHI-free reason stored on the run's section: an error code and
+        /// structural diagnostic, never report or record text.
+        message: String,
+        drafted: u32,
+        total: u32,
+    },
+    TitleSet {
+        title: String,
     },
 }
 
@@ -772,14 +825,21 @@ async fn run_turn(
         ));
     }
     // A whole-report run's ceilings follow its plan; a targeted edit keeps
-    // exactly what the clinician configured.
+    // exactly what the clinician configured. The same row count is the
+    // progress denominator, announced here — the plan is settled (synthetic or
+    // real) and no model has been called yet.
     let limits = match run.as_deref() {
-        Some(run) if request.is_full_draft() => request.limits.scaled_for_plan(
-            run.run
+        Some(run) if request.is_full_draft() => {
+            let plan_len = run
+                .run
                 .plan
                 .as_ref()
-                .map_or(run.run.sections.len(), |plan| plan.entries.len()),
-        ),
+                .map_or(run.run.sections.len(), |plan| plan.entries.len());
+            request.emit_progress(ReportTurnProgress::PlanReady {
+                section_count: u32::try_from(plan_len).unwrap_or(u32::MAX),
+            });
+            request.limits.scaled_for_plan(plan_len)
+        }
         _ => request.limits,
     };
     loaded
@@ -926,6 +986,7 @@ async fn run_turn(
         &progress.model_id,
         run.as_deref_mut().filter(|_| request.is_full_draft()),
         citable_filenames,
+        request.progress,
     );
     let terminal_text: String;
     // Named once for the failure messages: `progress` is borrowed mutably

@@ -31,7 +31,9 @@ use uuid::Uuid;
 
 use crate::{
     DEFAULT_READ_LIMIT, MAX_LIST_RESULT_BYTES, MAX_LISTED_FILES, MAX_READ_CHARACTERS_PER_TURN,
-    MAX_READ_LIMIT, record_context::RecordInventoryEntry, turn::TurnRunFailure,
+    MAX_READ_LIMIT,
+    record_context::RecordInventoryEntry,
+    turn::{ReportTurnProgress, TurnRunFailure},
 };
 
 pub(crate) struct ExecutedTool {
@@ -84,6 +86,10 @@ pub(crate) struct ToolExecutionContext<'a> {
     /// be checked against what the model was given rather than against the
     /// client's whole bucket.
     citable_filenames: &'a [String],
+    /// Where section-level progress goes. Every event is emitted after the
+    /// mutation it describes is durable, so a reader that renders it is never
+    /// ahead of S3.
+    progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
 }
 
 impl<'a> ToolExecutionContext<'a> {
@@ -99,6 +105,7 @@ impl<'a> ToolExecutionContext<'a> {
         model_id: &'a str,
         full_draft_run: Option<&'a mut LoadedRun>,
         citable_filenames: &'a [String],
+        progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
     ) -> Self {
         Self {
             s3,
@@ -116,7 +123,80 @@ impl<'a> ToolExecutionContext<'a> {
                 plan_conflicts_raised: HashSet::new(),
             }),
             citable_filenames,
+            progress,
         }
+    }
+
+    fn emit(&self, event: ReportTurnProgress) {
+        if let Some(progress) = self.progress {
+            progress(event);
+        }
+    }
+
+    /// The counters every section event carries: sections the run has finished
+    /// deciding, over the plan's row count.
+    fn section_counters(&self) -> (u32, u32) {
+        self.full_draft.as_ref().map_or((0, 0), |draft| {
+            (
+                terminal_section_count(&draft.run.run),
+                plan_total(&draft.run.run),
+            )
+        })
+    }
+
+    /// Announce the section a write is about to be applied to, before any of
+    /// its validation can reject it.
+    fn emit_section_started(&self, section_id: Uuid) {
+        let (_, total) = self.section_counters();
+        let index = self
+            .full_draft
+            .as_ref()
+            .and_then(|draft| {
+                draft
+                    .run
+                    .run
+                    .sections
+                    .iter()
+                    .find(|section| section.section_id == section_id)
+            })
+            .map_or(total, |section| section.position);
+        self.emit(ReportTurnProgress::SectionStarted {
+            section_id: section_id.to_string(),
+            index,
+            total,
+        });
+    }
+
+    /// Announce a section that just became durable, carrying the staged
+    /// content the finish cut will copy verbatim.
+    fn emit_section_completed(&self, section_id: Uuid) {
+        let (drafted, total) = self.section_counters();
+        let Some(section) = self.full_draft.as_ref().and_then(|draft| {
+            draft
+                .run
+                .run
+                .sections
+                .iter()
+                .find(|section| section.section_id == section_id)
+        }) else {
+            return;
+        };
+        self.emit(ReportTurnProgress::SectionCompleted {
+            section_id: section_id.to_string(),
+            section: staged_section(section),
+            drafted,
+            total,
+        });
+    }
+
+    fn emit_section_failed(&self, section_id: Uuid, message: String) {
+        let (drafted, total) = self.section_counters();
+        self.emit(ReportTurnProgress::SectionFailed {
+            section_id: section_id.to_string(),
+            message,
+            drafted,
+            total,
+        });
     }
 
     pub(crate) fn full_draft_is_finalized(&self) -> bool {
@@ -286,8 +366,11 @@ impl<'a> ToolExecutionContext<'a> {
                 &format!("The full-draft title was invalid: {error}"),
             ));
         }
-        draft.run.run.title = Some(request.title);
+        draft.run.run.title = Some(request.title.clone());
         self.commit_run().await?;
+        self.emit(ReportTurnProgress::TitleSet {
+            title: request.title,
+        });
         Ok(ExecutedTool {
             status: ReportToolResultStatus::Success,
             content: serde_json::json!({"status": "title_staged"}),
@@ -339,6 +422,7 @@ impl<'a> ToolExecutionContext<'a> {
             }
             None => (Uuid::new_v4(), false),
         };
+        self.emit_section_started(section_id);
 
         let prepared = match self.prepare_section_write(section_id, request) {
             Ok(prepared) => prepared,
@@ -414,6 +498,7 @@ impl<'a> ToolExecutionContext<'a> {
         }
         renumber_positions(run, &prepared.written_order, &supplied_order);
         self.commit_run().await?;
+        self.emit_section_completed(section_id);
         Ok(ExecutedTool {
             status: ReportToolResultStatus::Success,
             content: serde_json::json!({
@@ -588,6 +673,7 @@ impl<'a> ToolExecutionContext<'a> {
             section.updated_at = now;
         }
         self.commit_run().await?;
+        self.emit_section_failed(section_id, diagnostic.clone());
         Ok(tool_error(
             "section_attempts_exhausted",
             &format!(
@@ -644,9 +730,10 @@ impl<'a> ToolExecutionContext<'a> {
         // the drafted state.
         section.blocks.clear();
         section.attempts = section.attempts.saturating_add(1);
-        section.error = Some(reason);
+        section.error = Some(reason.clone());
         section.updated_at = now;
         self.commit_run().await?;
+        self.emit_section_failed(section_id, reason);
         Ok(ExecutedTool {
             status: ReportToolResultStatus::Success,
             content: serde_json::json!({
@@ -745,6 +832,12 @@ impl<'a> ToolExecutionContext<'a> {
         }
         section.updated_at = jiff::Timestamp::now();
         self.commit_run().await?;
+        let (drafted, total) = self.section_counters();
+        self.emit(ReportTurnProgress::SectionSkipped {
+            section_id: section_id.to_string(),
+            drafted,
+            total,
+        });
         Ok(ExecutedTool {
             status: ReportToolResultStatus::Success,
             content: serde_json::json!({
@@ -998,6 +1091,27 @@ fn required_section_ids(run: &DraftRun) -> HashSet<Uuid> {
     }
 }
 
+/// The run's progress denominator: one row per planned section, falling back
+/// to the sections themselves for a run that has no plan.
+fn plan_total(run: &DraftRun) -> u32 {
+    let total = run
+        .plan
+        .as_ref()
+        .map_or(run.sections.len(), |plan| plan.entries.len());
+    u32::try_from(total).unwrap_or(u32::MAX)
+}
+
+/// Sections the run has finished deciding, in the sense the finisher demands.
+fn terminal_section_count(run: &DraftRun) -> u32 {
+    u32::try_from(
+        run.sections
+            .iter()
+            .filter(|section| is_decided(section.state))
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+}
+
 fn sections_in_state(run: &DraftRun, state: RunSectionState) -> HashSet<Uuid> {
     run.sections
         .iter()
@@ -1012,24 +1126,28 @@ fn sections_in_state(run: &DraftRun, state: RunSectionState) -> HashSet<Uuid> {
 /// sorting the drafted rows by it reproduces the ordered candidate the
 /// in-memory staging used to keep — which is what makes the assembled
 /// document byte-identical to a pre-run draft over the same tool calls.
-fn written_sections(run: &DraftRun) -> Vec<ReportSection> {
+pub(crate) fn written_sections(run: &DraftRun) -> Vec<ReportSection> {
     let mut drafted = run
         .sections
         .iter()
         .filter(|section| section.state == RunSectionState::Drafted)
         .collect::<Vec<_>>();
     drafted.sort_by_key(|section| section.position);
-    drafted
-        .into_iter()
-        .map(|section| ReportSection {
-            id: section.section_id,
-            heading: section.heading.clone(),
-            blocks: section.blocks.clone(),
-            skipped: false,
-            template_blocks: None,
-            authorship: None,
-        })
-        .collect()
+    drafted.into_iter().map(staged_section).collect()
+}
+
+/// One drafted run section as the report section it becomes. The finish cut
+/// and the progress channel both go through here, so what the preview renders
+/// mid-run is byte-identical to what lands at the end.
+fn staged_section(section: &RunSection) -> ReportSection {
+    ReportSection {
+        id: section.section_id,
+        heading: section.heading.clone(),
+        blocks: section.blocks.clone(),
+        skipped: false,
+        template_blocks: None,
+        authorship: None,
+    }
 }
 
 /// Re-lay the run's positions after a write: the drafted sections take
@@ -1074,20 +1192,21 @@ fn renumber_positions(run: &mut DraftRun, written: &[Uuid], supplied_order: &[Uu
 /// What it re-enters as differs by decision. A **skipped** section becomes an
 /// empty `skipped` placeholder carrying its supplied heading, ID, template
 /// copy, and authorship: the authored body stays empty and the template copy
-/// is what the greyed-out preview renders. A **failed** section is copied from
-/// the base revision verbatim instead — the writer could not replace that
-/// text, so leaving it alone is the honest outcome, and a base section that
-/// was already an empty placeholder stays exactly that.
-fn merge_undrafted_sections(
+/// is what the greyed-out preview renders. A **retained** section — one the
+/// run failed at or deliberately kept — is copied from the base revision
+/// verbatim instead: the writer did not replace that text, so leaving it alone
+/// is the honest outcome, and a base section that was already an empty
+/// placeholder stays exactly that.
+pub(crate) fn merge_undrafted_sections(
     written: &[ReportSection],
     skipped_section_ids: &HashSet<Uuid>,
-    failed_section_ids: &HashSet<Uuid>,
+    retained_section_ids: &HashSet<Uuid>,
     supplied: &[ReportSection],
 ) -> Vec<ReportSection> {
     let mut sections = written.to_vec();
     for (supplied_index, supplied_section) in supplied.iter().enumerate() {
         let skipped = skipped_section_ids.contains(&supplied_section.id);
-        if !skipped && !failed_section_ids.contains(&supplied_section.id) {
+        if !skipped && !retained_section_ids.contains(&supplied_section.id) {
             continue;
         }
         let insert_at = supplied[..supplied_index]

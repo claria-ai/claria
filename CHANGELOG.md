@@ -27,6 +27,8 @@ All notable changes to Claria are documented here.
 - Whole-report drafting now caches its records and plan across the session, follows an explicit section plan, and can mark sections failed instead of stalling
 - A whole-report draft can cite the record quotes a section rests on
 - Whole-report call and tool-round ceilings now scale with the number of sections being drafted
+- Drafting progress now reports each section as it lands, with the plan's section count as the denominator
+- An interrupted whole-report draft can be finalized from the sections it wrote, or discarded outright
 
 ## [0.28.0] — 2026-08-15
 

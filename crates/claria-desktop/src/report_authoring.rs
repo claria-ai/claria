@@ -171,6 +171,40 @@ pub enum ReportTurnProgressView {
         context: Option<String>,
         status: ReportToolActivityStatus,
     },
+    /// The drafting run's plan is settled, before the first model call: the
+    /// honest denominator for the progress that follows.
+    PlanReady {
+        section_count: u32,
+    },
+    SectionStarted {
+        section_id: String,
+        index: u32,
+        total: u32,
+    },
+    /// A section landed durably, carrying its content so the preview can
+    /// render it without a refetch. The section needs no redaction here: it is
+    /// the host-validated staged content the finish cut copies verbatim into
+    /// the workspace this same command returns.
+    SectionCompleted {
+        section_id: String,
+        section: ReportSection,
+        drafted: u32,
+        total: u32,
+    },
+    SectionSkipped {
+        section_id: String,
+        drafted: u32,
+        total: u32,
+    },
+    SectionFailed {
+        section_id: String,
+        message: String,
+        drafted: u32,
+        total: u32,
+    },
+    TitleSet {
+        title: String,
+    },
 }
 
 impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView {
@@ -203,6 +237,52 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                     ReportToolResultStatus::Error => ReportToolActivityStatus::Failed,
                 },
             },
+            claria_report_pipeline::ReportTurnProgress::PlanReady { section_count } => {
+                Self::PlanReady { section_count }
+            }
+            claria_report_pipeline::ReportTurnProgress::SectionStarted {
+                section_id,
+                index,
+                total,
+            } => Self::SectionStarted {
+                section_id,
+                index,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::SectionCompleted {
+                section_id,
+                section,
+                drafted,
+                total,
+            } => Self::SectionCompleted {
+                section_id,
+                section,
+                drafted,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::SectionSkipped {
+                section_id,
+                drafted,
+                total,
+            } => Self::SectionSkipped {
+                section_id,
+                drafted,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::SectionFailed {
+                section_id,
+                message,
+                drafted,
+                total,
+            } => Self::SectionFailed {
+                section_id,
+                message,
+                drafted,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::TitleSet { title } => {
+                Self::TitleSet { title }
+            }
         }
     }
 }
