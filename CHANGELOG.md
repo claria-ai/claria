@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.29.0] — 2026-08-17
 
 - Preferences is reorganized into an Apple-style settings screen: a category sidebar — Claude, Prompts, Document Writer, Transcription, Billing — with the existing accordion panes grouped inside each category
 - Settings search covers category names, pane titles, and field labels with synonyms, and jumps to and highlights the matched control
