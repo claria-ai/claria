@@ -315,7 +315,13 @@ The coordinator also owns the ends of the run:
   better reported once than as an empty revision.
 - **Stop** finishes draining, commits the verdicts that had already arrived,
   and parks the run. Every branch checks the signal before its first call, so a
-  queued one never opens a billed conversation after a Stop.
+  queued one never opens a billed conversation after a Stop. Past the cut it is
+  a no-op, the same rule the serial loop keeps: once every branch has handed
+  back its verdict there is no model call left to cancel, so a Stop landing in
+  the moment before the revision is cut lets the finish stand rather than
+  parking a run the user would only have to finalize by hand. The flag is set
+  by a branch the Stop actually cut short, never by the signal itself, which is
+  what keeps the two windows apart.
 
 A resume needs no special case: the fan-out covers whatever is still `Pending`
 after the plan is applied, drafted sections are untouched by construction, and

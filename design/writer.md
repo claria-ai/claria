@@ -154,7 +154,10 @@ What survives a stop is what was already durable:
   discards it. The stop is checked twice between rounds — after a tool
   batch is executed and again before the next call is issued — so a stop
   pressed while a section is being written to S3 keeps that section and
-  does not open one more billed conversation.
+  does not open one more billed conversation. Past the cut the stop is a
+  no-op on both paths: once the serial writer has called
+  `finish_full_draft`, or once every parallel branch has handed back its
+  verdict, the revision is cut and stands.
 - **A targeted turn** keeps nothing, which is the whole of its state: it
   saves only at the end, so a stopped turn is a clean abort.
 

@@ -4,6 +4,8 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Stopping a parallel whole-report draft after its last section has landed now cuts the revision instead of parking the run
+- The drafting activity line counts finished sections instead of naming a position that parallel branches contradict
 - Release screenshots render the Writing tab again, after a new preference field went unmocked and took the page down to the error boundary
 - The writer release screenshot now shows the whole-report section plan waiting for approval, with its scope, evidence, and per-section directive
 - A screenshot capture can be pointed at a port other than the one a live dev session holds

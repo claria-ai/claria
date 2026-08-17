@@ -185,13 +185,15 @@ function agentActivityForSection(
   progress: ReportTurnProgressView,
   headingFor: (sectionId: string) => string | null
 ): AgentActivity {
-  const named = (sectionId: string, verb: string, index: number, total: number) => {
+  const named = (sectionId: string, verb: string, detail?: string) => {
     const heading = headingFor(sectionId);
-    return {
-      label: heading ? `${verb} “${heading}”` : verb,
-      detail: `section ${index} of ${total}`,
-    };
+    return { label: heading ? `${verb} “${heading}”` : verb, detail };
   };
+  // A count, never an ordinal. Sections are drafted in parallel and settle in
+  // completion order, so "section 2 of 5" beside a heading the reader can see
+  // sitting fourth in the document is a number that contradicts the page.
+  const settled = (done: number, total: number) =>
+    `${done} of ${total} sections done`;
   switch (progress.kind) {
     case "plan_row_planned":
       return {
@@ -208,26 +210,23 @@ function agentActivityForSection(
         label: "Planning the report",
         detail: `${progress.section_count} section${progress.section_count === 1 ? "" : "s"} to decide`,
       };
+    // No number at all: the event carries the section's document slot, and
+    // several branches are open at once, so any count derived from it would
+    // be a position dressed up as progress. The progress bar directly above
+    // the throbber already carries the honest one.
     case "section_started":
-      return named(
-        progress.section_id,
-        "Drafting",
-        progress.index + 1,
-        progress.total
-      );
+      return named(progress.section_id, "Drafting");
     case "section_completed":
       return named(
         progress.section_id,
         "Saved",
-        progress.drafted,
-        progress.total
+        settled(progress.drafted, progress.total)
       );
     case "section_skipped":
       return named(
         progress.section_id,
         "Skipped",
-        progress.drafted,
-        progress.total
+        settled(progress.drafted, progress.total)
       );
     case "section_failed":
       return {

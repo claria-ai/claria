@@ -159,6 +159,17 @@ function WritingCanvas({
       : overlaid;
   }, [run, workspace.draft.content]);
 
+  /**
+   * The section the viewport follows: the first one still being written, in
+   * the order the run named them — which is the plan's order, because that is
+   * the order branches are handed out in.
+   *
+   * A fan-out has several sections writing at once, so this is a choice. The
+   * earliest unfinished one is the only target that moves monotonically down
+   * the document: it changes only when it lands, and then to the next one
+   * still open. Following the newest branch to start would throw the viewport
+   * backwards and forwards across the report several times per section.
+   */
   const draftingSectionId = useMemo(() => {
     if (!run) return null;
     for (const [sectionId, state] of run.sections) {
