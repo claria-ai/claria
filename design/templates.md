@@ -58,12 +58,24 @@ media, page setup all remain the original bytes — and rewrites only
 
 - Unchanged content returns the source bytes exactly.
 - Same-structure edits patch text in place, keeping every run property.
-- Structural changes rebuild the body by cloning template paragraphs as
-  formatting **exemplars**, chosen proportionally by kind (title, heading,
-  body, list, table). Text unrelated to an exemplar's own words lands in
-  its dominant run with direct bold/underline/italic stripped, so a field
-  label or signature blank can't stamp its decoration onto generated prose;
-  fonts, sizes, and paragraph spacing carry over.
+- Structural changes rebuild the body **section by section**. The export
+  imports the template and classifies its paragraphs against that carve, so
+  it can never disagree with the import about what a heading is. Draft
+  sections align to template sections by heading text, renamed headings
+  included; a section's blocks map in order by kind onto the paragraphs the
+  author wrote for it, so a rewritten heading keeps the author's own bold
+  paragraph. Blocks that outgrow a section clone a formatting **exemplar**
+  from within it, then from the nearest same-kind paragraph document-wide.
+  Text unrelated to a cloned exemplar's own words lands in its dominant run
+  with direct bold/underline/italic stripped — except on headings, where
+  that decoration is what makes the paragraph a heading — so a field label
+  or signature blank can't stamp its decoration onto generated prose; fonts,
+  sizes, and paragraph spacing carry over.
+- Content the accepted draft does not hold is never re-emitted. Template
+  material between recognised paragraphs survives only when it carries no
+  content (blank spacers, `sectPr`, bookmarks); a table the walker cannot
+  represent — merged cells — is dropped rather than scattered through the
+  export.
 
 Every export reports a fidelity level (`Exact`, `PatchedInPlace`,
 `Reconstructed`, `PlainBodyFallback`) and the UI says so when formatting
