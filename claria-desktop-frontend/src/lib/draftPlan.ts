@@ -49,6 +49,17 @@ export type PlanRow = {
   evidence: EvidenceRef[];
   /** Empty string rather than null: this is a text-input buffer. */
   instruction: string;
+  /**
+   * The records this section's writer may read, or `null` for the shared
+   * corpus every other section sees.
+   *
+   * `null` and `[]` are different answers here, and the toggle is what
+   * separates them: `null` is "no restriction", while `[]` is a restriction
+   * the reader has opened but not filled in yet. The gate refuses to start on
+   * the second, because a section drafted from no records is never what
+   * anybody meant.
+   */
+  curatedRecords: string[] | null;
   /** What the interrupted run left this section in. `null` at a fresh gate. */
   priorState: RunSectionState | null;
   /** PHI-free note about why the section failed, when one did. */
@@ -102,6 +113,7 @@ export function planRows(run: DraftRun, kind: PlanGateKind): PlanRow[] {
         scope: entry?.scope ?? "",
         evidence: entry?.evidence ?? [],
         instruction: entry?.instruction ?? "",
+        curatedRecords: entry?.curated_records ?? null,
         priorState: kind === "resume" ? section.state : null,
         priorError: section.error,
       };
@@ -153,9 +165,37 @@ export function changedPlanEdits(
       edit.instruction = row.instruction;
       changed = true;
     }
+    if (!sameRecords(was.curatedRecords, row.curatedRecords)) {
+      // The backend reads an empty list as "clear the restriction", which is
+      // exactly what `null` means here, so both collapse to `[]` on the wire.
+      edit.curated_records = row.curatedRecords ?? [];
+      changed = true;
+    }
     if (changed) edits.push(edit);
   }
   return edits;
+}
+
+/** Sections the gate cannot start: a restriction opened but left empty. */
+export function emptyRestrictionCount(rows: readonly PlanRow[]): number {
+  return rows.filter(
+    (row) =>
+      row.intent !== "skip" &&
+      row.intent !== "keep" &&
+      row.curatedRecords !== null &&
+      row.curatedRecords.length === 0
+  ).length;
+}
+
+function sameRecords(
+  left: readonly string[] | null,
+  right: readonly string[] | null
+): boolean {
+  if (left === null || right === null) return left === right;
+  return (
+    left.length === right.length &&
+    left.every((filename, index) => filename === right[index])
+  );
 }
 
 function sameEvidence(

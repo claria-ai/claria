@@ -4,10 +4,10 @@ use claria_core::models::{
     report::{MAX_REPORT_SECTIONS, ReportBlock},
     report_run::{
         DRAFT_RUN_SCHEMA_VERSION, DraftRun, DraftRunStatus, EvidenceRef,
-        MAX_CITATION_QUOTE_CHARACTERS, MAX_INSTRUCTION_CHARACTERS, MAX_PLAN_EVIDENCE,
-        MAX_PLAN_SCOPE_CHARACTERS, MAX_RUN_INSTRUCTIONS, MAX_SECTION_CITATIONS, PlanEntry,
-        RecordCitation, RunInstruction, RunPlan, RunSection, RunSectionState, SectionIntent,
-        decode_draft_run,
+        MAX_CITATION_QUOTE_CHARACTERS, MAX_CURATED_RECORDS, MAX_INSTRUCTION_CHARACTERS,
+        MAX_PLAN_EVIDENCE, MAX_PLAN_SCOPE_CHARACTERS, MAX_RUN_INSTRUCTIONS, MAX_SECTION_CITATIONS,
+        PlanEntry, RecordCitation, RunInstruction, RunPlan, RunSection, RunSectionState,
+        SectionIntent, decode_draft_run,
     },
 };
 use jiff::Timestamp;
@@ -53,6 +53,7 @@ fn plan_entry(section: &RunSection, intent: SectionIntent) -> PlanEntry {
             note: Some("Presenting concerns".to_string()),
         }],
         instruction: None,
+        curated_records: None,
     }
 }
 
@@ -381,4 +382,105 @@ fn interrupted_sections_demote_to_pending() {
     assert_eq!(decoded.sections[0].state, RunSectionState::Drafted);
     assert_eq!(decoded.sections[0].updated_at, created());
     assert_eq!(decoded.demote_interrupted_sections(demoted_at), 0);
+}
+
+// ── User-curated per-section record context ─────────────────────────────────
+
+/// The field is new, so every run object written before it existed omits it
+/// entirely. Those runs are resumable, so they have to decode — and decode to
+/// the unrestricted default rather than to anything the resume could act on.
+#[test]
+fn a_plan_written_before_curation_existed_decodes_unrestricted() {
+    let run = run();
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&encode(&run)).expect("run serializes");
+    for entry in value["plan"]["entries"]
+        .as_array_mut()
+        .expect("plan entries")
+    {
+        let entry = entry.as_object_mut().expect("plan entry object");
+        assert!(
+            entry.remove("curated_records").is_some(),
+            "a curated_records key should have been written to remove"
+        );
+    }
+    let bytes = serde_json::to_vec(&value).expect("re-serialize");
+
+    let decoded = decode_draft_run(&bytes).expect("an older plan still decodes");
+    for entry in &decoded.plan.expect("plan").entries {
+        assert_eq!(entry.curated_records, None);
+    }
+}
+
+#[test]
+fn a_curated_restriction_round_trips_through_decoding() {
+    let mut run = run();
+    let plan = run.plan.as_mut().expect("plan");
+    plan.entries[0].curated_records = Some(vec![
+        "intake.pdf".to_string(),
+        "teacher-form.pdf".to_string(),
+    ]);
+
+    let decoded = decode_draft_run(&encode(&run)).expect("decode a curated run");
+    let entries = decoded.plan.expect("plan").entries;
+    assert_eq!(
+        entries[0].curated_records.as_deref(),
+        Some(["intake.pdf".to_string(), "teacher-form.pdf".to_string()].as_slice())
+    );
+    // Restricting one section says nothing about the others.
+    assert_eq!(entries[1].curated_records, None);
+}
+
+/// The four shapes a restriction cannot take. An empty list is the sharpest
+/// of them: it would mean a section drafted from no records at all, which is
+/// never what anybody asked for, so it is refused rather than read as "no
+/// restriction".
+#[test]
+fn a_curated_restriction_refuses_the_shapes_that_cannot_mean_anything() {
+    let curated = |records: Vec<String>| {
+        let mut run = run();
+        run.plan.as_mut().expect("plan").entries[0].curated_records = Some(records);
+        decode_error(&run)
+    };
+
+    assert!(
+        curated(Vec::new()).contains("must name at least one record"),
+        "{}",
+        curated(Vec::new())
+    );
+
+    let over_cap: Vec<String> = (0..=MAX_CURATED_RECORDS)
+        .map(|index| format!("record-{index}.pdf"))
+        .collect();
+    assert!(
+        curated(over_cap.clone()).contains(&format!("at most {MAX_CURATED_RECORDS} records")),
+        "{}",
+        curated(over_cap)
+    );
+
+    let blank = vec!["intake.pdf".to_string(), "   ".to_string()];
+    assert!(
+        curated(blank.clone()).contains("curated record filename must not be empty"),
+        "{}",
+        curated(blank)
+    );
+
+    let repeated = vec!["intake.pdf".to_string(), "intake.pdf".to_string()];
+    assert!(
+        curated(repeated.clone()).contains("named twice"),
+        "{}",
+        curated(repeated)
+    );
+}
+
+/// The ceiling is exactly what it says, not one either side of it.
+#[test]
+fn a_curated_restriction_may_name_the_whole_ceiling() {
+    let mut run = run();
+    run.plan.as_mut().expect("plan").entries[0].curated_records = Some(
+        (0..MAX_CURATED_RECORDS)
+            .map(|index| format!("record-{index}.pdf"))
+            .collect(),
+    );
+    decode_draft_run(&encode(&run)).expect("a restriction at the ceiling is valid");
 }

@@ -117,7 +117,12 @@ pub struct ReportSection {
     /// host-extracted guidance about the document's *form* — how long a
     /// section runs, how it must open, which subsections to drop. They are
     /// never a source of client facts.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // `#[serde(default)]` alone, deliberately: specta (rc.18) turns any
+    // `skip_serializing_if` other than `Option::is_none` into a *required*
+    // TypeScript field, overriding both `default` and an explicit
+    // `#[specta(optional)]`. An always-present empty array in stored JSON is
+    // cheaper than a generated type that disagrees with the wire.
+    #[serde(default)]
     pub template_directives: Vec<String>,
     /// Who last wrote this section, and at which revision.
     #[serde(default, skip_serializing_if = "Option::is_none")]

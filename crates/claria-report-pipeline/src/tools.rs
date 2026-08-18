@@ -1159,6 +1159,7 @@ pub(crate) fn apply_section_content(
                     scope: String::new(),
                     evidence: Vec::new(),
                     instruction: None,
+                    curated_records: None,
                 });
             }
         }

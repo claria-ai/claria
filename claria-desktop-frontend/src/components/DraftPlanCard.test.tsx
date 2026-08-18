@@ -19,6 +19,7 @@ function row(overrides: Partial<PlanRow> = {}): PlanRow {
     scope: "Summarise the assessment results.",
     evidence: [{ filename: "intake.txt", note: null }],
     instruction: "",
+    curatedRecords: null,
     priorState: null,
     priorError: null,
     ...overrides,
@@ -170,5 +171,113 @@ describe("DraftPlanCard", () => {
       (screen.getByLabelText("Scope for Findings") as HTMLTextAreaElement)
         .readOnly
     ).toBe(true);
+  });
+
+  describe("record restriction", () => {
+    const TOGGLE = "Restrict drafting to selected records for Findings";
+
+    it("hides the record list until the restriction is switched on", () => {
+      renderCard();
+      expect(screen.queryByLabelText("teacher-observation.txt")).toBeNull();
+    });
+
+    // An empty list, not null: the reader has opened a restriction and has not
+    // filled it in, which is a different state from having no restriction.
+    it("opens an empty restriction", async () => {
+      const onChange = renderCard();
+
+      await userEvent.click(screen.getByLabelText(TOGGLE));
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ curatedRecords: [] })
+      );
+    });
+
+    it("closes a restriction back to no restriction at all", async () => {
+      const onChange = renderCard({ curatedRecords: ["intake.txt"] });
+
+      await userEvent.click(screen.getByLabelText(TOGGLE));
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ curatedRecords: null })
+      );
+    });
+
+    it("adds and removes records from the restriction", async () => {
+      const onChange = renderCard({ curatedRecords: ["intake.txt"] });
+
+      await userEvent.click(screen.getByLabelText("teacher-observation.txt"));
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          curatedRecords: ["intake.txt", "teacher-observation.txt"],
+        })
+      );
+
+      await userEvent.click(screen.getByLabelText("intake.txt"));
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ curatedRecords: [] })
+      );
+    });
+
+    it("fills the restriction from the evidence the plan already names", async () => {
+      const onChange = renderCard({
+        curatedRecords: [],
+        evidence: [
+          { filename: "intake.txt", note: null },
+          { filename: "teacher-observation.txt", note: null },
+        ],
+      });
+
+      await userEvent.click(
+        screen.getByRole("button", { name: "Use evidence list" })
+      );
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          curatedRecords: ["intake.txt", "teacher-observation.txt"],
+        })
+      );
+    });
+
+    it("badges a restricted section and warns when it names nothing", () => {
+      const { unmount } = render(
+        <DraftPlanCard
+          row={row({ curatedRecords: ["intake.txt"] })}
+          intents={FRESH_INTENTS}
+          chip={{ tone: "info", label: "Draft" }}
+          recordFilenames={["intake.txt"]}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.getByText("1 record only")).toBeDefined();
+      unmount();
+
+      render(
+        <DraftPlanCard
+          row={row({ curatedRecords: [] })}
+          intents={FRESH_INTENTS}
+          chip={{ tone: "info", label: "Draft" }}
+          recordFilenames={["intake.txt"]}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.getByText("No records chosen")).toBeDefined();
+    });
+
+    it("shows a run's restriction read-only", () => {
+      render(
+        <DraftPlanCard
+          row={row({ curatedRecords: ["intake.txt"] })}
+          intents={[]}
+          chip={{ tone: "progress", label: "Writing", animated: true }}
+          recordFilenames={["intake.txt", "teacher-observation.txt"]}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.getByText("1 record only")).toBeDefined();
+      expect((screen.getByLabelText(TOGGLE) as HTMLInputElement).disabled).toBe(
+        true
+      );
+      expect(
+        (screen.getByLabelText("intake.txt") as HTMLInputElement).disabled
+      ).toBe(true);
+    });
   });
 });

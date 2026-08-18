@@ -280,6 +280,7 @@ fn plan_entry(id: &str, heading: &str, intent: SectionIntent) -> PlanEntry {
         scope: String::new(),
         evidence: Vec::new(),
         instruction: None,
+        curated_records: None,
     }
 }
 
