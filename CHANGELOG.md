@@ -4,6 +4,11 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Preferences → Document Writer → Writer Limits now sets how long a Bedrock call may take and how much it may write, alongside the existing call guardrails
+- The writer's wait for Bedrock to start responding, and its wait between response chunks, are settings rather than compiled-in values
+- The planner and reviewer carry their own pair of waits, set from the same place
+- The writer's response-length ceiling is a setting, and raising it shrinks that call's input allowance by the same amount
+- A writing call that gets no response now names the wait it gave up after and where to raise it
 - Release screenshots render the Writing tab again, after a new preference field went unmocked and took the page down to the error boundary
 - The writer release screenshot now shows the whole-report section plan waiting for approval, with its scope, evidence, and per-section directive
 - A screenshot capture can be pointed at a port other than the one a live dev session holds

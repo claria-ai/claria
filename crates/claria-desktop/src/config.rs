@@ -12,7 +12,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-pub const CURRENT_VERSION: u32 = 11;
+pub const CURRENT_VERSION: u32 = 12;
 
 /// What the user is told when there is no config on disk at all.
 ///
@@ -199,6 +199,16 @@ pub struct ReportAuthoringPreferences {
     pub max_tool_uses_per_response: u32,
     #[serde(default = "default_max_retained_turns")]
     pub max_retained_turns: u32,
+    #[serde(default = "default_writer_first_frame_timeout_secs")]
+    pub writer_first_frame_timeout_secs: u32,
+    #[serde(default = "default_writer_idle_timeout_secs")]
+    pub writer_idle_timeout_secs: u32,
+    #[serde(default = "default_writer_max_output_tokens")]
+    pub writer_max_output_tokens: u32,
+    #[serde(default = "default_analysis_first_frame_timeout_secs")]
+    pub analysis_first_frame_timeout_secs: u32,
+    #[serde(default = "default_analysis_idle_timeout_secs")]
+    pub analysis_idle_timeout_secs: u32,
 }
 
 impl ReportAuthoringPreferences {
@@ -209,7 +219,19 @@ impl ReportAuthoringPreferences {
             self.max_tool_uses_per_response,
             self.max_retained_turns,
         )
+        .and_then(|limits| limits.with_runtime(self.runtime()))
         .map_err(|error| error.to_string())
+    }
+
+    /// The per-call runtime dials, in the shape the pipeline takes them.
+    pub fn runtime(&self) -> claria_report_pipeline::BedrockRuntimeLimits {
+        claria_report_pipeline::BedrockRuntimeLimits {
+            writer_first_frame_timeout_secs: self.writer_first_frame_timeout_secs,
+            writer_idle_timeout_secs: self.writer_idle_timeout_secs,
+            writer_max_output_tokens: self.writer_max_output_tokens,
+            analysis_first_frame_timeout_secs: self.analysis_first_frame_timeout_secs,
+            analysis_idle_timeout_secs: self.analysis_idle_timeout_secs,
+        }
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -224,6 +246,11 @@ impl Default for ReportAuthoringPreferences {
             max_converse_calls: default_max_converse_calls(),
             max_tool_uses_per_response: default_max_tool_uses_per_response(),
             max_retained_turns: default_max_retained_turns(),
+            writer_first_frame_timeout_secs: default_writer_first_frame_timeout_secs(),
+            writer_idle_timeout_secs: default_writer_idle_timeout_secs(),
+            writer_max_output_tokens: default_writer_max_output_tokens(),
+            analysis_first_frame_timeout_secs: default_analysis_first_frame_timeout_secs(),
+            analysis_idle_timeout_secs: default_analysis_idle_timeout_secs(),
         }
     }
 }
@@ -242,6 +269,26 @@ fn default_max_tool_uses_per_response() -> u32 {
 
 fn default_max_retained_turns() -> u32 {
     claria_report_pipeline::DEFAULT_MAX_RETAINED_TURNS
+}
+
+fn default_writer_first_frame_timeout_secs() -> u32 {
+    claria_report_pipeline::DEFAULT_WRITER_FIRST_FRAME_TIMEOUT_SECS
+}
+
+fn default_writer_idle_timeout_secs() -> u32 {
+    claria_report_pipeline::DEFAULT_WRITER_IDLE_TIMEOUT_SECS
+}
+
+fn default_writer_max_output_tokens() -> u32 {
+    claria_report_pipeline::DEFAULT_WRITER_MAX_OUTPUT_TOKENS
+}
+
+fn default_analysis_first_frame_timeout_secs() -> u32 {
+    claria_report_pipeline::DEFAULT_ANALYSIS_FIRST_FRAME_TIMEOUT_SECS
+}
+
+fn default_analysis_idle_timeout_secs() -> u32 {
+    claria_report_pipeline::DEFAULT_ANALYSIS_IDLE_TIMEOUT_SECS
 }
 
 /// Per-clinician defaults for the transcription pipeline.
@@ -676,6 +723,40 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
             serde_json::Value::Number(11.into()),
         );
         tracing::info!("migrated config v10 → v11 (added drafting pipeline preferences)");
+    }
+
+    // v11 → v12: add the per-call Bedrock runtime dials — the four stream
+    // waits and the writer's output ceiling. Existing installs land on the
+    // values that were compiled in until now, so nothing changes for anyone
+    // who does not go and raise them.
+    if from_version < 12 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        if let Some(serde_json::Value::Object(report_authoring)) = obj.get_mut("report_authoring") {
+            report_authoring
+                .entry("writer_first_frame_timeout_secs")
+                .or_insert(serde_json::json!(default_writer_first_frame_timeout_secs()));
+            report_authoring
+                .entry("writer_idle_timeout_secs")
+                .or_insert(serde_json::json!(default_writer_idle_timeout_secs()));
+            report_authoring
+                .entry("writer_max_output_tokens")
+                .or_insert(serde_json::json!(default_writer_max_output_tokens()));
+            report_authoring
+                .entry("analysis_first_frame_timeout_secs")
+                .or_insert(serde_json::json!(
+                    default_analysis_first_frame_timeout_secs()
+                ));
+            report_authoring
+                .entry("analysis_idle_timeout_secs")
+                .or_insert(serde_json::json!(default_analysis_idle_timeout_secs()));
+        }
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(12.into()),
+        );
+        tracing::info!("migrated config v11 → v12 (added Bedrock runtime limits)");
     }
 
     Ok(json)

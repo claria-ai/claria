@@ -39,7 +39,7 @@ use claria_bedrock::{
         self, AnalysisInputBudget, PlanAction, PlanEvidence, ResumeDecision, SectionPlanRow,
         StructuredCallOutput, StructuredCallRequest,
     },
-    converse::StopSignal,
+    converse::{StopSignal, StreamBounds},
     error::BedrockError,
     retry::{MAX_ATTEMPTS, with_throttle_retry_observed},
 };
@@ -178,6 +178,7 @@ pub struct DraftPlanRequest<'a> {
     pub instructions: &'a str,
     progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
     stop: Option<&'a StopSignal>,
+    stream_bounds: StreamBounds,
 }
 
 impl<'a> DraftPlanRequest<'a> {
@@ -186,7 +187,15 @@ impl<'a> DraftPlanRequest<'a> {
             instructions,
             progress: None,
             stop: None,
+            stream_bounds: StreamBounds::analysis(),
         }
+    }
+
+    /// How long each planning call may stay silent. Without this the pass
+    /// runs at the analysis family's compiled-in waits.
+    pub fn with_stream_bounds(mut self, stream_bounds: StreamBounds) -> Self {
+        self.stream_bounds = stream_bounds;
+        self
     }
 
     pub fn with_progress(
@@ -588,7 +597,8 @@ pub async fn resume_planned_draft_run(
             planner_model_id,
             writer_model_id: model_id,
         },
-        DraftPlanRequest::new(request.guidance),
+        DraftPlanRequest::new(request.guidance)
+            .with_stream_bounds(request.limits.runtime().analysis_stream_bounds()),
     )
     .await?;
     crate::run::resume_draft_run(
@@ -928,6 +938,7 @@ impl<'a> AnalysisPass<'a> {
                                 forced_tool,
                                 max_tokens: PLAN_OUTPUT_TOKEN_RESERVE,
                                 cache_plan: self.cache_plan.clone(),
+                                stream_bounds: self.request.stream_bounds,
                                 stop: self.stop,
                                 on_partial_tool_input: Some(count_row),
                                 operation: "report_plan",
@@ -1105,7 +1116,13 @@ async fn prepare_analysis_corpus(
         bucket,
         &[
             BudgetRole::planner(models.planner_model_id),
-            BudgetRole::writer(models.writer_model_id),
+            // The writer's own ceiling is a per-request setting the plan pass
+            // never sees; the default is what sizes this corpus, exactly as
+            // it did before that ceiling became configurable.
+            BudgetRole::writer(
+                models.writer_model_id,
+                claria_bedrock::report::DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE,
+            ),
         ],
         &inventory,
     )

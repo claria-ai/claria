@@ -2059,7 +2059,7 @@ export type RecordFile = { filename: string; size: number; uploaded_at: string |
  * across machines. The report-pipeline crate validates the
  * relationship between the limits before they are saved or used.
  */
-export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
+export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number; writer_first_frame_timeout_secs?: number; writer_idle_timeout_secs?: number; writer_max_output_tokens?: number; analysis_first_frame_timeout_secs?: number; analysis_idle_timeout_secs?: number }
 export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; 
 /**
  * Records preloaded outside the model's record-reading tools. Only the

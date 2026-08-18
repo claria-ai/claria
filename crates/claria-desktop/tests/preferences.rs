@@ -69,6 +69,7 @@ fn apply_to_config_leaves_machine_local_fields_alone() {
             max_converse_calls: 13,
             max_tool_uses_per_response: 16,
             max_retained_turns: 30,
+            ..ReportAuthoringPreferences::default()
         },
         model_tuning: Default::default(),
         chat_streaming: ChatStreamMode::Off,

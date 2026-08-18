@@ -15,7 +15,7 @@ use claria_bedrock::{
         CHAT_TRUNCATED_NOTICE, CacheStrategy, ChatMessage, ChatRole, ChatStreamOptions,
         chat_converse_stream,
     },
-    converse::{CachePlan, STOPPED_BY_USER, StopSignal, StreamCollector},
+    converse::{CachePlan, STOPPED_BY_USER, StopSignal, StreamBounds, StreamCollector},
     error::BedrockError,
     pacing::StreamPacing,
 };
@@ -778,6 +778,7 @@ async fn planner_call(endpoint: &str) -> BedrockError {
             forced_tool: SUBMIT_SECTION_PLAN_TOOL,
             max_tokens: PLAN_OUTPUT_TOKENS,
             cache_plan: CachePlan::analysis(ModelCapabilities::for_id(MODEL_ID)),
+            stream_bounds: StreamBounds::analysis(),
             stop: &stop,
             on_partial_tool_input: None,
             operation: PLANNER_OPERATION,

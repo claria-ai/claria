@@ -55,13 +55,17 @@ pub(crate) struct BudgetRole<'a> {
     /// Human phrasing of the role, used in the failure message.
     pub(crate) role: &'static str,
     pub(crate) model_id: &'a str,
+    /// Output reserve this role's calls hold back, which is what turns its
+    /// context window into an input allowance.
+    pub(crate) output_token_reserve: u32,
 }
 
 impl<'a> BudgetRole<'a> {
-    pub(crate) fn writer(model_id: &'a str) -> Self {
+    pub(crate) fn writer(model_id: &'a str, output_token_reserve: u32) -> Self {
         Self {
             role: "writing model",
             model_id,
+            output_token_reserve,
         }
     }
 
@@ -69,6 +73,7 @@ impl<'a> BudgetRole<'a> {
         Self {
             role: "planning model",
             model_id,
+            output_token_reserve: report::DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE,
         }
     }
 
@@ -76,6 +81,7 @@ impl<'a> BudgetRole<'a> {
         Self {
             role: "reviewing model",
             model_id,
+            output_token_reserve: report::DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE,
         }
     }
 }
@@ -167,15 +173,20 @@ pub(crate) async fn load_full_record_context(
     // to every role that reads it.
     let binding = roles
         .iter()
-        .min_by_key(|role| report::report_input_token_budget(role.model_id))
+        .min_by_key(|role| {
+            report::report_input_token_budget(role.model_id, role.output_token_reserve)
+        })
         .ok_or_else(|| {
             ReportPipelineError::InvalidInput(
                 "Claria could not size the record snapshot: no model was named for it.".to_string(),
             )
         })?;
-    let max_source_bytes = u64::from(report::report_input_token_budget(binding.model_id))
-        .saturating_mul(3)
-        .saturating_sub(STRUCTURAL_ALLOWANCE_BYTES);
+    let max_source_bytes = u64::from(report::report_input_token_budget(
+        binding.model_id,
+        binding.output_token_reserve,
+    ))
+    .saturating_mul(3)
+    .saturating_sub(STRUCTURAL_ALLOWANCE_BYTES);
     let eligible_source_bytes = inventory
         .iter()
         .filter(|entry| entry.source_bytes <= claria_core::record_text::MAX_RECORD_TEXT_BYTES)

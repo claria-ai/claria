@@ -259,6 +259,31 @@ export const PREFERENCES_NAV: CategorySpec[] = [
             label: "Conversation turns retained",
             terms: ["context", "history"],
           },
+          {
+            anchor: "writer_first_frame_timeout_secs",
+            label: "Wait for the writer to start responding",
+            terms: ["timeout", "slow", "hang", "disconnect", "seconds"],
+          },
+          {
+            anchor: "writer_idle_timeout_secs",
+            label: "Wait between writer response chunks",
+            terms: ["timeout", "stall", "disconnect", "seconds"],
+          },
+          {
+            anchor: "writer_max_output_tokens",
+            label: "Writer response length ceiling",
+            terms: ["truncated", "cut short", "max tokens", "length"],
+          },
+          {
+            anchor: "analysis_first_frame_timeout_secs",
+            label: "Wait for the planner and reviewer to start responding",
+            terms: ["timeout", "planner", "reviewer", "slow", "seconds"],
+          },
+          {
+            anchor: "analysis_idle_timeout_secs",
+            label: "Wait between planner and reviewer response chunks",
+            terms: ["timeout", "planner", "reviewer", "stall", "seconds"],
+          },
         ],
       },
     ],

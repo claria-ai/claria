@@ -463,8 +463,10 @@ pub struct StreamOutcome {
 /// waits below shared a single five-minute bound. Ninety seconds and a
 /// fresh request beat waiting out a five-minute silence, and a request that
 /// produced nothing is safe to send again verbatim.
+pub const DEFAULT_STREAM_FIRST_FRAME_TIMEOUT_SECS: u64 = 90;
+
 pub(crate) const STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(90);
+    std::time::Duration::from_secs(DEFAULT_STREAM_FIRST_FRAME_TIMEOUT_SECS);
 
 /// Longest silence tolerated between two frames of a response stream that
 /// has already started.
@@ -479,29 +481,45 @@ pub(crate) const STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
 /// Frames flow continuously once generation starts — the gaps are the
 /// pauses between reasoning deltas, not minutes — so a silent minute
 /// mid-response means the connection is gone, not that the model is busy.
-pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
+
+pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(DEFAULT_STREAM_IDLE_TIMEOUT_SECS);
+
+/// Ceiling for either configured wait.
+///
+/// Ten minutes is past any prefill a real request has: it exists so a knob
+/// set to "never give up" still gives up, because a socket that died
+/// silently has to fail eventually or the turn hangs forever.
+pub const MAX_STREAM_TIMEOUT_SECS: u64 = 600;
 
 /// First-frame wait for the analysis family, which sends the largest input
 /// of any flow — the whole record corpus, in system blocks — and gets no
 /// frame until the model has read all of it.
+pub const DEFAULT_ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT_SECS: u64 = 120;
+
 pub(crate) const ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(120);
+    std::time::Duration::from_secs(DEFAULT_ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT_SECS);
 
 /// Inter-frame wait for the analysis family. One forced tool call emits a
 /// single large structured document, and the model deliberates inside it
 /// rather than between sentences, so the pauses that count as normal are
 /// longer than a chat reply's.
+pub const DEFAULT_ANALYSIS_STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
+
 pub(crate) const ANALYSIS_STREAM_IDLE_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(90);
+    std::time::Duration::from_secs(DEFAULT_ANALYSIS_STREAM_IDLE_TIMEOUT_SECS);
 
 /// How long one call's stream may stay quiet, before it starts and after.
 ///
 /// Carried per call rather than read from a global const, because the two
 /// waits that are generous for a forced-tool analysis request are a hang
-/// for a chat reply. Every value is a compile-time family default — there
-/// is no preference knob and no per-request tuning.
+/// for a chat reply. Chat and analysis use the compile-time family default;
+/// the writer can be handed a clinician's own pair through [`Self::writer`],
+/// because the prefill it waits on is as long as the template and record
+/// corpus a particular practice works with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StreamBounds {
+pub struct StreamBounds {
     /// Longest wait for the first event frame; exceeding it means the
     /// service never began the response.
     pub(crate) first_frame: std::time::Duration,
@@ -512,7 +530,7 @@ pub(crate) struct StreamBounds {
 impl StreamBounds {
     /// Chat and writer turns: text arrives continuously once generation
     /// starts, so a silent minute is a dead socket.
-    pub(crate) const fn conversational() -> Self {
+    pub const fn conversational() -> Self {
         Self {
             first_frame: STREAM_FIRST_FRAME_TIMEOUT,
             idle: STREAM_IDLE_TIMEOUT,
@@ -521,11 +539,52 @@ impl StreamBounds {
 
     /// Forced-tool analysis calls: the biggest input and the longest
     /// single structured answer of any family.
-    pub(crate) const fn analysis() -> Self {
+    pub const fn analysis() -> Self {
         Self {
             first_frame: ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT,
             idle: ANALYSIS_STREAM_IDLE_TIMEOUT,
         }
+    }
+
+    /// Planner and reviewer calls, at the waits a clinician configured.
+    ///
+    /// Same clamping as [`Self::writer`]; the two are separate constructors
+    /// only so a call site reads as the family it belongs to.
+    pub const fn structured(first_frame_secs: u64, idle_secs: u64) -> Self {
+        Self::writer(first_frame_secs, idle_secs)
+    }
+
+    /// Writer turns, at the waits a clinician configured.
+    ///
+    /// Both values are clamped to `1..=`[`MAX_STREAM_TIMEOUT_SECS`] rather
+    /// than rejected: this is the last place the numbers pass through
+    /// before they bound a live request, and a zero here would abandon
+    /// every call before the service could answer it.
+    pub const fn writer(first_frame_secs: u64, idle_secs: u64) -> Self {
+        Self {
+            first_frame: std::time::Duration::from_secs(clamp_timeout_secs(first_frame_secs)),
+            idle: std::time::Duration::from_secs(clamp_timeout_secs(idle_secs)),
+        }
+    }
+
+    /// The configured first-frame wait, in whole seconds.
+    pub const fn first_frame_secs(self) -> u64 {
+        self.first_frame.as_secs()
+    }
+
+    /// The configured inter-frame wait, in whole seconds.
+    pub const fn idle_secs(self) -> u64 {
+        self.idle.as_secs()
+    }
+}
+
+const fn clamp_timeout_secs(secs: u64) -> u64 {
+    if secs < 1 {
+        1
+    } else if secs > MAX_STREAM_TIMEOUT_SECS {
+        MAX_STREAM_TIMEOUT_SECS
+    } else {
+        secs
     }
 }
 
