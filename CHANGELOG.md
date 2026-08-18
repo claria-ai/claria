@@ -7,6 +7,7 @@ All notable changes to Claria are documented here.
 - A template that never applied Word heading styles is now split into sections at its bold and capitalized headings, instead of importing as one section holding the whole document
 - An inferred split says so in the import warnings, and applying Heading styles in Word still overrides it exactly
 - Added a `claria-docx` command that reports how the importer read a template and why it carved the way it did
+- Async worker threads get an 8 MiB stack, so an AWS call cannot exhaust one and abort the app mid-draft
 
 ## [0.30.0] — 2026-08-18
 

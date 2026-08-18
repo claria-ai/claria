@@ -386,6 +386,22 @@ npm's `@tauri-apps/api` stops at 2.11.1 — so match `X.Y` and take the newest
 patch npm offers rather than hunting for a version number that does not exist.
 Both are pinned exactly; bump them together and re-run `npm install`.
 
+## Async runtime
+
+`claria-desktop` builds the Tokio runtime itself
+(`async_runtime::install`) instead of letting Tauri create one lazily, and
+gives each worker an 8 MiB stack. Tauri's default is Tokio's, which is the
+2 MiB a platform thread gets, and that is not enough for one AWS SDK request
+in an unoptimized build: the smithy orchestrator, hyper pool, TLS connector
+and rustls handshake nest as futures rather than calls, so a handshake sits
+about a hundred `poll` frames deep before webpki starts parsing DER. Release
+builds survive only because `opt-level = "z"` and LTO inline the combinators
+away; `cargo tauri dev` overflows the guard page and aborts.
+
+`install` must run before anything spawns — `tauri::async_runtime::set`
+panics once the global runtime exists, and the first `spawn` or `block_on`
+anywhere creates it.
+
 ## Local Build Environment
 
 Machine-local, configured in the user-level `~/.cargo/config.toml` — not committed, and CI does its own setup (`.github/workflows/ci.yml`). A fresh machine hits both of these from zero.
