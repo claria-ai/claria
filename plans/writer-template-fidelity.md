@@ -97,8 +97,10 @@ docx import/export pipeline and in what the prompts withhold from or forbid to t
 
 ## Remediation work items
 
-Three PRs. Item 1 and Item 3 are independent and can proceed in parallel. Item 2 builds
+Four PRs. Item 1 and Item 3 are independent and can proceed in parallel. Item 2 builds
 on Item 1's refactor of `template_render.rs` and must branch from / land after it.
+Item 4 builds on Item 3's context-builder and prompt changes and must branch from /
+land after it.
 
 ### Item 1 — Section-aware template export (claria-docx)
 
@@ -183,6 +185,56 @@ Owner file: `crates/claria-docx/src/template_render.rs` (+ shared classifier hel
 5. **Tests.** Unit tests for extraction and both context builders (byte-determinism
    included). No Bedrock calls: validation runs come later via `claria-eval` / a manual
    Jordan Rivera re-run.
+
+### Item 4 — User-curated per-section record context (claria-core, claria-report-pipeline, claria-desktop, frontend; after Item 3)
+
+Motivation: clinicians today simulate this by opening a separate chat per section so
+they control which documents the model sees. Formalize it as an opt-in, per-plan-row
+restriction. In a HIPAA app a hard context boundary is auditable: the durable run
+object records exactly which files were in the model call that wrote a section.
+
+1. **Model.** `PlanEntry` (`claria-core/src/models/report_run.rs`) gains
+   `curated_records: Option<Vec<String>>` (`#[serde(default)]`; filenames as the corpus
+   lists them; cap the list length with a validated ceiling, e.g. 16, and reject
+   `Some(empty)`). `None` means the shared-corpus default. The run object embeds the
+   plan, so resume and audit get the field for free — verify `plan_draft_resume`
+   round-trips it. The planner does NOT set this field; it is user-set via plan editing
+   (`update_draft_plan`), and the planner always sees the full corpus. The plan schema
+   in `claria-bedrock/src/analysis.rs` must NOT change.
+2. **Validation.** On plan update/approve, validate each curated filename against the
+   record corpus exactly the way evidence filenames are validated in
+   `plan.rs::validate_section_plan` (reuse, don't fork). Unknown names are an error at
+   update time (user-facing), not silently dropped like planner evidence.
+3. **Record context.** `record_context.rs::load_full_record_context` gains a filter
+   parameter (same builder, not a fork). Filtered output preserves the full-corpus
+   ordering and stays byte-deterministic.
+4. **Fan-out.** In `parallel_draft.rs`, a branch whose plan entry has `curated_records`
+   builds its own message-0 record block from the filtered builder. It does not read the
+   shared warm prefix and must not use the `seeded` token budget — use
+   `estimated`/`exact` for that branch. Keep the branch's own cache checkpoints (its
+   retry/second attempt still benefits). Uncurated branches are untouched, as is the
+   warm call.
+5. **Kickoff + review.** `section_kickoff_instruction` states the restriction for
+   curated branches ("your record snapshot for this section was restricted by the user
+   to the files in your plan row's curated_records; write only from them").
+   `plan_entry_view` serializes the new field, which propagates curation visibility to
+   `<plan_context>` for both the writer and the review sweep automatically; add a
+   review-instructions sentence so findings against a curated section note that the
+   drafter deliberately saw a subset. Builders stay byte-deterministic.
+6. **UI.** DraftPlanCard: per-section "Restrict drafting to selected records" toggle
+   with a record multi-select (offer a "use evidence list" shortcut, since the plan row
+   already names files). Flows through the existing `updateDraftPlan` command. Show a
+   curation badge on drafted sections. Note: `lib/bindings.ts` regenerates only when the
+   desktop binary runs; if bindings change, note it in the PR for a follow-up dev run —
+   do not hand-edit.
+7. **Logging/audit.** Tracing fields carry counts only (`curated_record_count`), never
+   filenames (PHI rule). The durable run object is the auditable record of the curated
+   set; no new audit event type needed.
+8. **Tests.** Filter determinism; plan-update validation rejects unknown filenames and
+   over-cap lists; serde round-trip with the field absent (old plans must deserialize);
+   fan-out builds the filtered block and skips seeding for curated branches (follow
+   existing `claria-report-pipeline/tests/` patterns); Vitest coverage for the plan-edit
+   flow where the frontend has testable logic.
 
 ## Validation
 
