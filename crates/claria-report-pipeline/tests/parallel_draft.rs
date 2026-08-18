@@ -31,6 +31,10 @@ const BACKGROUND_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const SUMMARY_ID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 const REFERRAL_TEXT: &str = "Referred for attention concerns.";
+/// The kind of instruction a clinical template writes into its own body, and
+/// the one this run's referral section carries.
+const REFERRAL_DIRECTIVE: &str =
+    "a one sentence briefly stating why the child was referred and by whom";
 const BACKGROUND_TEXT: &str = "Documented developmental history.";
 const SUMMARY_TEXT: &str = "Findings are consistent with the referral question.";
 const TITLE: &str = "Psychoeducational Evaluation";
@@ -84,13 +88,54 @@ fn template_section(id: &str, heading: &str) -> ReportSection {
         blocks: boilerplate(),
         skipped: false,
         template_blocks: Some(boilerplate()),
+        template_directives: Vec::new(),
         authorship: None,
+    }
+}
+
+/// The same section, carrying the bracketed instruction its template author
+/// wrote into it.
+fn directed_template_section(id: &str, heading: &str, directive: &str) -> ReportSection {
+    ReportSection {
+        template_directives: vec![directive.to_string()],
+        ..template_section(id, heading)
     }
 }
 
 /// A client with one readable record and a three-section template applied as
 /// revision 1 — the shape every run in this file builds on.
 async fn seed_templated_report(s3: &aws_sdk_s3::Client, client_id: Uuid) -> Uuid {
+    seed_report(
+        s3,
+        client_id,
+        vec![
+            template_section(REFERRAL_ID, "Reason for Referral"),
+            template_section(BACKGROUND_ID, "Background"),
+            template_section(SUMMARY_ID, "Summary and Clinical Interpretation"),
+        ],
+    )
+    .await
+}
+
+/// The same report, with an authoring directive on the referral section only.
+async fn seed_directed_report(s3: &aws_sdk_s3::Client, client_id: Uuid) -> Uuid {
+    seed_report(
+        s3,
+        client_id,
+        vec![
+            directed_template_section(REFERRAL_ID, "Reason for Referral", REFERRAL_DIRECTIVE),
+            template_section(BACKGROUND_ID, "Background"),
+            template_section(SUMMARY_ID, "Summary and Clinical Interpretation"),
+        ],
+    )
+    .await
+}
+
+async fn seed_report(
+    s3: &aws_sdk_s3::Client,
+    client_id: Uuid,
+    sections: Vec<ReportSection>,
+) -> Uuid {
     let now = jiff::Timestamp::now();
     let client = claria_core::models::client::Client {
         id: client_id,
@@ -127,11 +172,7 @@ async fn seed_templated_report(s3: &aws_sdk_s3::Client, client_id: Uuid) -> Uuid
         0,
         ReportContent {
             title: BASE_TITLE.to_string(),
-            sections: vec![
-                template_section(REFERRAL_ID, "Reason for Referral"),
-                template_section(BACKGROUND_ID, "Background"),
-                template_section(SUMMARY_ID, "Summary and Clinical Interpretation"),
-            ],
+            sections,
         },
     )
     .await
@@ -685,6 +726,80 @@ async fn every_branch_sends_the_same_prefix_and_differs_only_in_its_kickoff() {
     kickoffs.sort();
     kickoffs.dedup();
     assert_eq!(kickoffs.len(), 4, "two branches sent the same kick-off");
+}
+
+/// The template's instruction for a section reaches the branch that writes it,
+/// as host guidance in the kick-off rather than as prose inside the untrusted
+/// block the writer is ordered to ignore. Only the assigned branch gets it,
+/// and only the branch whose section has one.
+#[tokio::test]
+async fn a_branch_is_handed_its_own_sections_authoring_directives() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_directed_report(&s3, client_id).await;
+    let run_id = seed_gated_run(&s3, client_id, report_id, all_draft()).await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the fan-out drafts the report");
+
+    let captured = requests(&server).await;
+    for request in &captured {
+        let branch = branch_of(request);
+        let kickoff = kickoff(request);
+        if branch == REFERRAL_ID {
+            assert!(
+                kickoff.contains("Template authoring directives for this section"),
+                "the referral branch was not handed its directives: {kickoff}"
+            );
+            assert!(kickoff.contains(REFERRAL_DIRECTIVE));
+            assert!(
+                kickoff.contains("never as a source of client facts"),
+                "the directives arrived without the rule that bounds them: {kickoff}"
+            );
+        } else {
+            assert!(
+                !kickoff.contains(REFERRAL_DIRECTIVE),
+                "{branch} was handed another section's directives: {kickoff}"
+            );
+            assert!(
+                !kickoff.contains("Template authoring directives"),
+                "{branch} was handed a directive block for a section that has none: {kickoff}"
+            );
+        }
+    }
+
+    // The same sentence still rides in the shared template block, where it is
+    // named as a field the host extracted rather than left as loose prose.
+    let template = text_blocks(&captured[0]["messages"][0])[1].clone();
+    assert!(template.contains("template_directives"));
+    assert!(template.contains(REFERRAL_DIRECTIVE));
+}
+
+/// Two runs over the same durable state build the same kick-off, directives
+/// included: the branch block is the only thing separating one request from
+/// its siblings, so an unstable byte in it costs a resume its cached prefix.
+#[tokio::test]
+async fn the_directive_block_is_byte_identical_across_runs() {
+    let mut kickoffs = Vec::new();
+    for _ in 0..2 {
+        let (server, sdk, s3) = setup().await;
+        let client_id = Uuid::new_v4();
+        let report_id = seed_directed_report(&s3, client_id).await;
+        let run_id = seed_gated_run(&s3, client_id, report_id, all_draft()).await;
+        script_clean_fan_out(&server).await;
+        start(&sdk, &s3, client_id, report_id, run_id)
+            .await
+            .expect("the fan-out drafts the report");
+        let referral = requests(&server)
+            .await
+            .into_iter()
+            .find(|request| branch_of(request) == REFERRAL_ID)
+            .expect("the referral branch");
+        kickoffs.push(kickoff(&referral));
+    }
+    assert_eq!(kickoffs[0], kickoffs[1]);
 }
 
 #[tokio::test]

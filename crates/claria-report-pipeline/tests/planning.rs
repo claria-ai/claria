@@ -30,6 +30,10 @@ const INTAKE_TEXT: &str =
     "Referred by pediatrician for attention concerns.\nParent reports homework avoidance.";
 /// The name that record is listed under in the corpus.
 const INTAKE_FILE: &str = "intake.txt";
+/// The kind of instruction a clinical template writes into its own body — the
+/// one the planner could not see before it was extracted.
+const REFERRAL_DIRECTIVE: &str =
+    "a one sentence briefly stating why the child was referred and by whom";
 
 fn sdk_config(endpoint: &str) -> aws_config::SdkConfig {
     let credentials = Credentials::new("test", "test", None, None, "test");
@@ -70,6 +74,7 @@ fn template_section(id: &str, heading: &str) -> ReportSection {
         blocks: boilerplate(),
         skipped: false,
         template_blocks: Some(boilerplate()),
+        template_directives: Vec::new(),
         authorship: None,
     }
 }
@@ -132,6 +137,24 @@ async fn seed_templated_report(s3: &aws_sdk_s3::Client, client_id: Uuid) -> Uuid
         client_id,
         vec![
             template_section(REFERRAL_ID, "Reason for Referral"),
+            template_section(BACKGROUND_ID, "Background"),
+            template_section(SUMMARY_ID, "Summary and Clinical Interpretation"),
+        ],
+    )
+    .await
+}
+
+/// The same template, with the authoring directive its author wrote into the
+/// referral section.
+async fn seed_directed_report(s3: &aws_sdk_s3::Client, client_id: Uuid) -> Uuid {
+    seed_report(
+        s3,
+        client_id,
+        vec![
+            ReportSection {
+                template_directives: vec![REFERRAL_DIRECTIVE.to_string()],
+                ..template_section(REFERRAL_ID, "Reason for Referral")
+            },
             template_section(BACKGROUND_ID, "Background"),
             template_section(SUMMARY_ID, "Summary and Clinical Interpretation"),
         ],
@@ -1446,6 +1469,152 @@ async fn the_planner_is_never_shown_the_template_prose() {
     // that say what each section is.
     assert!(template.contains(REFERRAL_ID));
     assert!(template.contains("Reason for Referral"));
+}
+
+/// The prose stays out; the template's own authoring directives come in. A
+/// planner that cannot read "a one sentence…" plans a multi-assertion scope
+/// for a section the template holds to one sentence, which is what it did.
+#[tokio::test]
+async fn the_planner_is_shown_the_templates_authoring_directives() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_directed_report(&s3, client_id).await;
+    script(
+        &server,
+        vec![section_plan(vec![
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "Referral question.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(BACKGROUND_ID, "skip", "Deferred.", None),
+            plan_row(SUMMARY_ID, "skip", "Deferred.", None),
+        ])],
+    )
+    .await;
+    pipeline::generate_draft_plan(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        models(),
+        pipeline::DraftPlanRequest::new(""),
+    )
+    .await
+    .expect("the plan lands");
+
+    let request = requests(&server).await.remove(0);
+    let template = request["system"][2]
+        .as_str()
+        .or_else(|| request["system"][2]["text"].as_str())
+        .expect("template block");
+    assert!(template.contains("template_directives"));
+    assert!(template.contains(REFERRAL_DIRECTIVE));
+    // Still no prose: the directive is the extracted instruction, not the body.
+    assert!(!template.contains("template_body"));
+    assert!(!template.contains("Template boilerplate."));
+
+    // And the policy above it says what a directive may and may not govern.
+    let policy = request["system"][0]["text"].as_str().expect("policy");
+    assert!(policy.contains("template_directives"));
+    assert!(policy.contains("never what it asserts about this client"));
+}
+
+/// One builder serves the fresh planner, the resume planner, and the review
+/// sweep, so the block they share stays byte-identical and the cache point
+/// underneath it survives. Two of the three roles are exercised here; all
+/// three call the same function.
+#[tokio::test]
+async fn the_directive_block_is_byte_identical_across_analysis_roles() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_directed_report(&s3, client_id).await;
+    script(
+        &server,
+        vec![section_plan(vec![
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "Referral question.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(BACKGROUND_ID, "skip", "Deferred.", None),
+            plan_row(SUMMARY_ID, "skip", "Deferred.", None),
+        ])],
+    )
+    .await;
+    pipeline::generate_draft_plan(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        models(),
+        pipeline::DraftPlanRequest::new(""),
+    )
+    .await
+    .expect("the plan lands");
+    let planned = requests(&server).await.remove(0)["system"][2]["text"]
+        .as_str()
+        .expect("template block")
+        .to_string();
+
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_directed_report(&s3, client_id).await;
+    let run_id = seed_interrupted_run(&s3, client_id, report_id).await;
+    script(
+        &server,
+        vec![resume_plan(vec![
+            resume_row(REFERRAL_ID, "keep", "Already written.", None, None),
+            resume_row(
+                BACKGROUND_ID,
+                "skip",
+                "Still nothing to write from.",
+                None,
+                None,
+            ),
+            resume_row(
+                SUMMARY_ID,
+                "draft",
+                "Never written.",
+                Some("Interpret the referral question."),
+                Some(INTAKE_FILE),
+            ),
+        ])],
+    )
+    .await;
+    script_branch(
+        &server,
+        SUMMARY_ID,
+        "Summary and Clinical Interpretation",
+        "Findings match the referral question.",
+    )
+    .await;
+    pipeline::resume_planned_draft_run(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        PLANNER_MODEL_ID,
+        WRITER_MODEL_ID,
+        pipeline::FullReportRequest::new("Finish the summary."),
+    )
+    .await
+    .expect("resume with new instructions");
+    let resumed = requests(&server).await.remove(0)["system"][2]["text"]
+        .as_str()
+        .expect("template block")
+        .to_string();
+
+    assert_eq!(planned, resumed);
+    assert!(planned.contains(REFERRAL_DIRECTIVE));
 }
 
 #[tokio::test]

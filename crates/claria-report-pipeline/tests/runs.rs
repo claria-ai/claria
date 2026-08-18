@@ -81,6 +81,7 @@ fn template_section(id: &str, heading: &str) -> ReportSection {
         blocks: boilerplate(),
         skipped: false,
         template_blocks: Some(boilerplate()),
+        template_directives: Vec::new(),
         authorship: None,
     }
 }

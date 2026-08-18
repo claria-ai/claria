@@ -991,7 +991,7 @@ async fn run_branch(
                 index: assignment.position,
                 total: plan_total(context.snapshot),
             });
-            section_kickoff_instruction(context.guidance, &assignment.entry)
+            section_kickoff_instruction(context.guidance, &assignment.entry, context.base)
         }
         BranchKind::Title => title_kickoff_instruction(context.guidance, context.base),
     };

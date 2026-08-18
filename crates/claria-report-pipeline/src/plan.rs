@@ -1142,11 +1142,14 @@ async fn prepare_analysis_corpus(
 /// data-not-instructions rule stated in the policy above it — the same
 /// posture the writer uses, in a different transport tier.
 ///
-/// The template block here carries structure without prose. Every analysis
-/// role — fresh plan, resume plan, review sweep — reads these same blocks and
-/// none of them reads a template body, so leaving the prose out is one
-/// smaller shared prefix rather than a saving one role takes at the others'
-/// expense. The writer's own block still carries it.
+/// The template block here carries structure and the host-extracted authoring
+/// directives, but no prose. Every analysis role — fresh plan, resume plan,
+/// review sweep — reads these same blocks and none of them reads a template
+/// body, so leaving the prose out is one smaller shared prefix rather than a
+/// saving one role takes at the others' expense. The writer's own block still
+/// carries it. One builder for all three is also what keeps the block
+/// byte-identical between them, which is the whole value of the cache point
+/// underneath it.
 pub(crate) fn analysis_system_blocks(
     workspace: &ReportWorkspace,
     corpus: &FullRecordContext,
