@@ -9,6 +9,11 @@ All notable changes to Claria are documented here.
 - Each writer branch is handed its own section's notes as authoring guidance for form, length, and structure
 - A note may steer the shape of a section and never a fact about the client; template prose itself stays untrusted data
 - A section carries at most eight notes of at most 500 characters each, so the guidance cannot grow into an unbounded prompt
+- A section of the plan can now be restricted to a chosen handful of the client's records, and is written from those alone
+- A restricted section's writer is told it was restricted, and cannot cite a record it was not shown
+- The run records which files were in the model call that wrote each section
+- A restriction may name up to sixteen records, each of which the client must actually have
+- Sections with no restriction cost exactly what they cost before
 
 ## [0.31.0] — 2026-08-18
 

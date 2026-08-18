@@ -5,6 +5,7 @@ import {
   RESUME_INTENTS,
   INTENT_LABELS,
   changedPlanEdits,
+  emptyRestrictionCount,
   plannedSectionCount,
   planRows,
   remainingSectionCount,
@@ -115,6 +116,10 @@ export default function DraftPlanPanel({
   const warnings = run?.plan?.plan_warnings ?? [];
   const plannedGuidance = run?.instructions[0]?.text ?? "";
   const total = runState.total ?? rows.length;
+  // A restriction switched on but left empty would be a section drafted from
+  // nothing. The backend refuses it; the gate says so before the reader gets
+  // that far.
+  const unfilledRestrictions = emptyRestrictionCount(rows);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -249,7 +254,12 @@ export default function DraftPlanPanel({
         <div className="flex items-center gap-2 border-t border-gray-200 bg-white px-5 py-3">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || unfilledRestrictions > 0}
+            title={
+              unfilledRestrictions > 0
+                ? "A section is restricted to selected records but none are selected."
+                : undefined
+            }
             onClick={() =>
               onStart(changedPlanEdits(original, rows), instructions.trim())
             }

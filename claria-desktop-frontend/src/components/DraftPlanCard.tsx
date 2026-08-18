@@ -53,6 +53,30 @@ export default function DraftPlanCard({
     (filename) => !row.evidence.some((item) => item.filename === filename)
   );
 
+  const curated = row.curatedRecords;
+  const toggleRestriction = useCallback(
+    () => update({ curatedRecords: curated === null ? [] : null }),
+    [curated, update]
+  );
+  const toggleRecord = useCallback(
+    (filename: string) => {
+      const current = curated ?? [];
+      update({
+        curatedRecords: current.includes(filename)
+          ? current.filter((candidate) => candidate !== filename)
+          : [...current, filename],
+      });
+    },
+    [curated, update]
+  );
+  const useEvidenceList = useCallback(
+    () =>
+      update({
+        curatedRecords: row.evidence.map((item) => item.filename),
+      }),
+    [row.evidence, update]
+  );
+
   return (
     <details
       data-testid="draft-plan-card"
@@ -73,6 +97,17 @@ export default function DraftPlanCard({
             </span>
           )}
         </span>
+        {curated !== null && (
+          <StatusChip
+            tone={curated.length === 0 ? "warning" : "info"}
+            label={
+              curated.length === 0
+                ? "No records chosen"
+                : `${curated.length} record${curated.length === 1 ? "" : "s"} only`
+            }
+            className="shrink-0"
+          />
+        )}
         {prior && (
           <StatusChip
             tone={prior.tone}
@@ -214,6 +249,74 @@ export default function DraftPlanCard({
                 ))
               )}
             </div>
+          )}
+        </div>
+
+        <div>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              aria-label={`Restrict drafting to selected records for ${row.heading}`}
+              checked={curated !== null}
+              disabled={disabled || !editable}
+              onChange={toggleRestriction}
+              className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+            />
+            <span className="text-[11px] font-medium text-gray-600">
+              Restrict drafting to selected records
+            </span>
+          </label>
+          {curated !== null && (
+            <>
+              <p className="mt-1 text-[11px] text-gray-500">
+                This section is written from these records alone. The rest of
+                this client's records are not sent with it.
+              </p>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={disabled || !editable || row.evidence.length === 0}
+                  onClick={useEvidenceList}
+                  className="rounded-full border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Use evidence list
+                </button>
+                {curated.length === 0 && (
+                  <span className="text-[11px] text-amber-700">
+                    Choose at least one record, or turn the restriction off.
+                  </span>
+                )}
+              </div>
+              <div
+                aria-label={`Records available to ${row.heading} while restricted`}
+                className="mt-1.5 max-h-40 overflow-y-auto rounded-md border border-gray-200 bg-gray-50 p-1.5"
+              >
+                {recordFilenames.length === 0 ? (
+                  <p className="px-1 py-0.5 text-[11px] text-gray-500">
+                    This client has no records to choose from.
+                  </p>
+                ) : (
+                  recordFilenames.map((filename) => (
+                    <label
+                      key={filename}
+                      className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-white"
+                    >
+                      <input
+                        type="checkbox"
+                        aria-label={filename}
+                        checked={curated.includes(filename)}
+                        disabled={disabled || !editable}
+                        onChange={() => toggleRecord(filename)}
+                        className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+                      />
+                      <span className="truncate text-[11px] text-gray-700">
+                        {filename}
+                      </span>
+                    </label>
+                  ))
+                )}
+              </div>
+            </>
           )}
         </div>
 
