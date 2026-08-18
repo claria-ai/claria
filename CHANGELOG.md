@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.30.0] — 2026-08-18
 
 - Preferences → Document Writer → Writer Limits now sets how long a Bedrock call may take and how much it may write, alongside the existing call guardrails
 - The writer's wait for Bedrock to start responding, and its wait between response chunks, are settings rather than compiled-in values
