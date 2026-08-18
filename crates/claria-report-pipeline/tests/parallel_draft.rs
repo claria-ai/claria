@@ -189,6 +189,7 @@ fn plan_entry(id: &str, heading: &str, intent: SectionIntent) -> PlanEntry {
         scope: "State what this section must assert.".to_string(),
         evidence: Vec::new(),
         instruction: None,
+        curated_records: None,
     }
 }
 
@@ -1399,4 +1400,421 @@ async fn section_progress_counters_never_walk_backwards() {
     assert!(events.iter().any(
         |event| matches!(event, pipeline::ReportTurnProgress::TitleSet { title } if title == TITLE)
     ));
+}
+
+// ── User-curated per-section record context ─────────────────────────────────
+
+const TEACHER_FILE: &str = "teacher-form.txt";
+const INTAKE_FILE: &str = "intake.txt";
+
+/// A second readable record, so that restricting a section to one of them is
+/// a restriction to something.
+async fn seed_second_record(s3: &aws_sdk_s3::Client, client_id: Uuid) {
+    claria_storage::objects::put_object(
+        s3,
+        BUCKET,
+        &claria_core::s3_keys::client_record_file(client_id, TEACHER_FILE),
+        b"Teacher rating scales completed in April.".to_vec(),
+        Some("text/plain"),
+    )
+    .await
+    .expect("put the second record");
+}
+
+/// The same approved plan, with one section restricted to `records`.
+fn plan_curating(section_id: &str, records: &[&str]) -> RunPlan {
+    let mut plan = all_draft();
+    let entry = plan
+        .entries
+        .iter_mut()
+        .find(|entry| entry.section_id.to_string() == section_id)
+        .expect("a plan entry for the curated section");
+    entry.curated_records = Some(records.iter().map(|name| (*name).to_string()).collect());
+    plan
+}
+
+/// One request's record block: block 0 of its opening message, and the only
+/// block a restriction changes.
+fn record_block(request: &serde_json::Value) -> String {
+    text_blocks(&request["messages"][0])[0].clone()
+}
+
+/// A curated branch sends a snapshot of only the files its plan row names,
+/// while its siblings send the shared corpus untouched. The template and plan
+/// blocks are the document's, not the section's, so they do not move.
+#[tokio::test]
+async fn a_curated_branch_sends_its_own_restricted_record_block() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = seed_gated_run(
+        &s3,
+        client_id,
+        report_id,
+        plan_curating(SUMMARY_ID, &[TEACHER_FILE]),
+    )
+    .await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the fan-out drafts the report");
+
+    let captured = requests(&server).await;
+    let shared = record_block(&captured[0]);
+    assert!(shared.contains(INTAKE_FILE) && shared.contains(TEACHER_FILE));
+
+    for request in &captured {
+        let branch = branch_of(request);
+        let blocks = text_blocks(&request["messages"][0]);
+        assert_eq!(
+            blocks[1..3],
+            text_blocks(&captured[0]["messages"][0])[1..3],
+            "{branch} sent a different template or plan block"
+        );
+        if branch == SUMMARY_ID {
+            assert!(
+                blocks[0].contains(TEACHER_FILE) && !blocks[0].contains(INTAKE_FILE),
+                "the curated branch was shown a record it was restricted from: {}",
+                blocks[0]
+            );
+        } else {
+            assert_eq!(
+                blocks[0], shared,
+                "{branch} did not send the shared record snapshot"
+            );
+        }
+    }
+}
+
+/// The restriction is stated to the curated branch twice — in the plan row it
+/// copies and in the rule under it — and to nobody else.
+#[tokio::test]
+async fn only_the_curated_branch_is_told_it_was_restricted() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = seed_gated_run(
+        &s3,
+        client_id,
+        report_id,
+        plan_curating(SUMMARY_ID, &[TEACHER_FILE]),
+    )
+    .await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the fan-out drafts the report");
+
+    let captured = requests(&server).await;
+    for request in &captured {
+        let branch = branch_of(request);
+        let kickoff = kickoff(request);
+        if branch == SUMMARY_ID {
+            assert!(
+                kickoff.contains(
+                    "restricted by the user to the files in your plan row's curated_records"
+                ),
+                "the curated branch was not told about its restriction: {kickoff}"
+            );
+            assert!(
+                kickoff.contains("curated_records") && kickoff.contains(TEACHER_FILE),
+                "the curated branch's plan row did not name the files: {kickoff}"
+            );
+        } else {
+            assert!(
+                !kickoff.contains("curated_records"),
+                "{branch} was told about another section's restriction: {kickoff}"
+            );
+        }
+    }
+
+    // The whole plan rides in every branch's shared block, so the restriction
+    // is visible to the writers of the sections around it too.
+    let plan_block = text_blocks(&captured[0]["messages"][0])[2].clone();
+    assert!(plan_block.contains("curated_records"));
+}
+
+/// A curated branch is not seeded from the warming branch's count: it sends
+/// different bytes, so estimating forward from that number would under-count
+/// every call it bills. It pays for its own exact count instead.
+#[tokio::test]
+async fn a_curated_branch_takes_its_own_token_count_instead_of_the_shared_seed() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = seed_gated_run(
+        &s3,
+        client_id,
+        report_id,
+        plan_curating(SUMMARY_ID, &[TEACHER_FILE]),
+    )
+    .await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the fan-out drafts the report");
+
+    // Two, not one: the warming branch's count for the shared prefix, and the
+    // curated branch's for its own. Background and the title still estimate.
+    assert_eq!(
+        server.state.read().await.bedrock_count_token_requests.len(),
+        2
+    );
+}
+
+/// The warming branch is the first section that reads the SHARED prefix. A
+/// curated section cannot warm anything — the prefix it writes is not the one
+/// its siblings read — so it never goes first however the plan is ordered.
+#[tokio::test]
+async fn a_curated_first_row_does_not_become_the_warming_branch() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = seed_gated_run(
+        &s3,
+        client_id,
+        report_id,
+        plan_curating(REFERRAL_ID, &[TEACHER_FILE]),
+    )
+    .await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the fan-out drafts the report");
+
+    let captured = requests(&server).await;
+    assert_eq!(
+        branch_of(&captured[0]),
+        BACKGROUND_ID,
+        "the curated first plan row warmed a prefix its siblings do not send"
+    );
+    assert_eq!(record_block(&captured[0]), record_block(&captured[1]));
+}
+
+/// A curated branch may cite only what it was shown. Checking it against the
+/// whole corpus would accept a citation to a file deliberately withheld from
+/// it, which is the one thing the restriction exists to make impossible.
+#[tokio::test]
+async fn a_curated_branch_cannot_cite_a_record_it_was_restricted_from() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = seed_gated_run(
+        &s3,
+        client_id,
+        report_id,
+        plan_curating(SUMMARY_ID, &[TEACHER_FILE]),
+    )
+    .await;
+
+    let mut citing_withheld = write_call(
+        SUMMARY_ID,
+        "Summary and Clinical Interpretation",
+        SUMMARY_TEXT,
+    );
+    citing_withheld["toolUse"]["input"]["citations"] = serde_json::json!([{
+        "filename": INTAKE_FILE,
+        "quote": "Referred by pediatrician for attention concerns."
+    }]);
+    // The curated branch cites a withheld record first, is refused, and lands
+    // its section on the repair round. Scripted before the clean fan-out so
+    // the refusal is the branch's first answer rather than its second.
+    script_section(
+        &server,
+        SUMMARY_ID,
+        vec![
+            tool_round(vec![citing_withheld]),
+            tool_round(vec![write_call(
+                SUMMARY_ID,
+                "Summary and Clinical Interpretation",
+                SUMMARY_TEXT,
+            )]),
+        ],
+    )
+    .await;
+    script_section(
+        &server,
+        REFERRAL_ID,
+        vec![tool_round(vec![write_call(
+            REFERRAL_ID,
+            "Reason for Referral",
+            REFERRAL_TEXT,
+        )])],
+    )
+    .await;
+    script_section(
+        &server,
+        BACKGROUND_ID,
+        vec![tool_round(vec![write_call(
+            BACKGROUND_ID,
+            "Background",
+            BACKGROUND_TEXT,
+        )])],
+    )
+    .await;
+    script_title(&server, vec![tool_round(vec![title_call(TITLE)])]).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the fan-out drafts the report");
+
+    let errors = branch_errors(&server, SUMMARY_ID).await;
+    assert!(
+        errors
+            .iter()
+            .any(|(code, _)| code == "unknown_citation_file"),
+        "a curated branch cited a withheld record without being refused: {errors:?}"
+    );
+    // The record it cited is one the run really does hold — the section that
+    // was shown it drafted fine — so what refused the citation was the
+    // restriction and not a missing file.
+    let run = only_run(&s3, client_id, report_id).await;
+    assert_eq!(
+        section_of(&run, REFERRAL_ID).state,
+        RunSectionState::Drafted
+    );
+    assert_eq!(section_of(&run, SUMMARY_ID).state, RunSectionState::Drafted);
+}
+
+/// Two runs over the same durable state build the same restricted snapshot.
+/// The filtered block is a cached prefix like any other — the curated branch's
+/// own repair round reads it — so an unstable byte in it costs that branch the
+/// prefix it just paid full write rates for.
+#[tokio::test]
+async fn a_curated_snapshot_is_byte_identical_across_runs() {
+    let mut snapshots = Vec::new();
+    for _ in 0..2 {
+        let (server, sdk, s3) = setup().await;
+        let client_id = Uuid::new_v4();
+        let report_id = seed_templated_report(&s3, client_id).await;
+        seed_second_record(&s3, client_id).await;
+        let run_id = seed_gated_run(
+            &s3,
+            client_id,
+            report_id,
+            plan_curating(SUMMARY_ID, &[TEACHER_FILE, INTAKE_FILE]),
+        )
+        .await;
+        script_clean_fan_out(&server).await;
+        start(&sdk, &s3, client_id, report_id, run_id)
+            .await
+            .expect("the fan-out drafts the report");
+        let curated = requests(&server)
+            .await
+            .into_iter()
+            .find(|request| branch_of(request) == SUMMARY_ID)
+            .expect("the curated branch");
+        snapshots.push(record_block(&curated));
+    }
+    assert_eq!(snapshots[0], snapshots[1]);
+}
+
+/// A restriction naming every readable record is still a restriction — but it
+/// has to reproduce the corpus byte for byte, or the ordering the filtered
+/// builder imposes has drifted from the shared one. Named here in the opposite
+/// order to the byte order the corpus lists them in, so a builder that
+/// inherited its caller's order would be caught.
+#[tokio::test]
+async fn a_restriction_naming_every_record_reproduces_the_shared_corpus() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = seed_gated_run(
+        &s3,
+        client_id,
+        report_id,
+        plan_curating(SUMMARY_ID, &[TEACHER_FILE, INTAKE_FILE]),
+    )
+    .await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the fan-out drafts the report");
+
+    let captured = requests(&server).await;
+    let curated = captured
+        .iter()
+        .find(|request| branch_of(request) == SUMMARY_ID)
+        .expect("the curated branch");
+    assert_eq!(record_block(curated), record_block(&captured[0]));
+}
+
+/// The cache-regression guard. Nothing about curation may appear anywhere in
+/// the three shared blocks of a run where no row is curated: those bytes are
+/// the cached prefix of every drafting run in flight, and a key added to them
+/// costs every one of those runs its prefix at the one-hour write rate.
+#[tokio::test]
+async fn an_uncurated_run_carries_no_trace_of_curation_in_its_shared_blocks() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = seed_gated_run(&s3, client_id, report_id, all_draft()).await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the fan-out drafts the report");
+
+    let captured = requests(&server).await;
+    let shared = text_blocks(&captured[0]["messages"][0]);
+    for request in &captured {
+        let branch = branch_of(request);
+        let blocks = text_blocks(&request["messages"][0]);
+        assert_eq!(
+            blocks[..3],
+            shared[..3],
+            "{branch} sent a different corpus, template, or plan"
+        );
+        for block in &blocks {
+            assert!(
+                !block.contains("curated"),
+                "{branch} carried curation bytes on a run where nothing was curated: {block}"
+            );
+        }
+    }
+    // And the run still costs exactly one count: the warming branch's.
+    assert_eq!(
+        server.state.read().await.bedrock_count_token_requests.len(),
+        1
+    );
+}
+
+/// A restriction naming a record the client no longer has is reported to the
+/// branch rather than silently dropped. A section quietly written from fewer
+/// records than its plan row names is what the restriction exists to prevent.
+#[tokio::test]
+async fn a_curated_record_the_client_has_lost_is_reported_as_unavailable() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    // Approved while the record existed; deleted before the run started.
+    let plan = plan_curating(SUMMARY_ID, &[TEACHER_FILE, "deleted.txt"]);
+    let run_id = seed_gated_run(&s3, client_id, report_id, plan).await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the fan-out drafts the report");
+
+    let curated = requests(&server)
+        .await
+        .into_iter()
+        .find(|request| branch_of(request) == SUMMARY_ID)
+        .expect("the curated branch");
+    let block = record_block(&curated);
+    assert!(block.contains("not_in_record_inventory"), "{block}");
+    assert!(block.contains("\"snapshot_complete\":false"), "{block}");
 }

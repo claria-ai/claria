@@ -28,8 +28,12 @@ use claria_core::models::{
 use crate::context::{escape_delimiter_characters, template_provenance};
 
 /// Zero-based index of each block of message 0, named once so the cache-point
-/// coordinates and the layout cannot drift apart. Block 0 is the record
-/// corpus; it needs no name because no cache point lands on it.
+/// coordinates and the layout cannot drift apart.
+///
+/// No cache point lands on the record block, but the parallel fan-out swaps it
+/// out for a curated branch, so it is named for the same reason the others
+/// are: a positional index written twice is an index that drifts.
+pub(crate) const RECORD_CONTEXT_BLOCK: usize = 0;
 const TEMPLATE_CONTEXT_BLOCK: usize = 1;
 const PLAN_CONTEXT_BLOCK: usize = 2;
 
@@ -165,8 +169,16 @@ pub(crate) fn plan_context(plan: Option<&RunPlan>) -> Result<String, String> {
         .map_err(|_| "Claria could not serialize the drafting plan.".to_string())
 }
 
+/// One plan row as host data.
+///
+/// `curated_records` is written only when the row carries a restriction, and
+/// that omission is load-bearing rather than tidiness: an uncurated run's
+/// `<plan_context>` has to stay byte-identical to the one before this field
+/// existed, or every run in flight re-pays full input rates for a key whose
+/// value is always null. Where the field is present it says so to the writer
+/// and, through the same builder, to the review sweep.
 fn plan_entry_view(entry: &PlanEntry) -> serde_json::Value {
-    serde_json::json!({
+    let mut row = serde_json::json!({
         "section_id": entry.section_id,
         "heading": entry.heading,
         "intent": entry.intent,
@@ -174,7 +186,13 @@ fn plan_entry_view(entry: &PlanEntry) -> serde_json::Value {
         "scope": entry.scope,
         "evidence": entry.evidence,
         "instruction": entry.instruction
-    })
+    });
+    if let Some(curated) = &entry.curated_records
+        && let Some(object) = row.as_object_mut()
+    {
+        object.insert("curated_records".to_string(), serde_json::json!(curated));
+    }
+    row
 }
 
 /// Whether this turn opens a fresh run or picks an interrupted one back up.
@@ -304,6 +322,9 @@ pub(crate) fn section_kickoff_instruction(
         "\nYour plan row:\n{}\n",
         serde_json::to_string_pretty(&plan_entry_view(entry)).unwrap_or_else(|_| "{}".to_string())
     ));
+    if entry.curated_records.is_some() {
+        text.push_str(CURATED_RECORDS_RULE);
+    }
     if let Some(directives) = section_directives_block(
         base.sections
             .iter()
@@ -325,6 +346,21 @@ pub(crate) fn section_kickoff_instruction(
     );
     text
 }
+
+/// What a branch is told when the clinician restricted its records.
+///
+/// It says the restriction twice over — the snapshot is already filtered, and
+/// the plan row above already lists the files — because the two facts answer
+/// different questions. The model has no way to tell a corpus that is small
+/// from a corpus that was cut, and a writer that reads a four-file snapshot as
+/// the whole of what this client has will hedge, apologize, or invent the rest.
+const CURATED_RECORDS_RULE: &str = "\n\
+    Your record snapshot for this section was restricted by the user to the files in your plan \
+    row's curated_records; write only from them. This is a deliberate clinical decision, not a \
+    gap: the client has other records, and they are being read by the writers of other sections. \
+    Do not remark on what is missing, do not ask for more, and do not describe the snapshot as \
+    incomplete. If the files you were given genuinely cannot support the section's scope, call \
+    mark_section_failed and say which part of the scope they do not reach.\n";
 
 /// The opening of the assigned section's authoring-directive block. Named once
 /// because it states the rule that bounds the directives underneath it, and a
