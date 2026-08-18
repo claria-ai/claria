@@ -7,6 +7,8 @@ All notable changes to Claria are documented here.
 - A report exported through a template whose headings are bold body text keeps those headings bold after the model rewrites them
 - Word export places each drafted section back into the template section it came from, so paragraphs, tables, and blank spacing stay where their author put them
 - Template tables the importer could not read no longer reappear scattered through the exported report
+- Score tables built from merged cells now import, so the model can fill them in or delete them instead of leaving them behind
+- A merged table the draft filled exports back into the template's own merged cells, with its spans intact
 - Tab-separated label lines export with real tabs, and a filled-in value no longer inherits its label's bolding
 - A template with no title paragraph no longer gains one on export, and the placeholder heading the importer invents for a document's opening block is never written out
 

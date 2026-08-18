@@ -93,8 +93,8 @@ CLINICAL_DOCUMENT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 # ordinary prose and bracketed instructions (copy-paste residue that says
 # nothing about structure), a tab-separated label/value header block above
 # the first heading, underlined test-name paragraphs, bracketed authoring
-# instructions, and merged-cell tables (gridSpan and vMerge) that neither
-# the importer nor the exporter can represent.
+# instructions, and the merged-cell score tables (gridSpan and vMerge) that
+# both halves of the pipeline read as rectangles.
 TEMPLATE_C_LIKE_DOCUMENT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
 <w:body>

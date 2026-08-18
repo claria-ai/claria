@@ -524,10 +524,42 @@ fn empty_template_cells_do_not_swallow_generated_content() {
     assert!(body_paragraph(&flattened, "82").in_table);
 }
 
+/// The score table the fixture builds with `gridSpan`: a header spanning both
+/// columns, then a scored row. The spanning cell's text sits at the first
+/// position it covers and the position it covers is empty — the rectangle the
+/// import produces, which the draft must hand back.
+fn filled_grid_span_table() -> ReportBlock {
+    ReportBlock::Table {
+        rows: vec![
+            vec!["BASC-3 Parent Rating Scales".to_string(), String::new()],
+            vec!["Externalizing Problems".to_string(), "68".to_string()],
+        ],
+        has_header: false,
+        column_widths: None,
+    }
+}
+
+/// The score table the fixture builds with `vMerge`: a row label spanning two
+/// rows, so the continuation position below it is empty.
+fn filled_vertical_merge_table() -> ReportBlock {
+    ReportBlock::Table {
+        rows: vec![
+            vec![
+                "BRIEF2 Composite Summary".to_string(),
+                "Behavior Regulation Index: 58".to_string(),
+            ],
+            vec![String::new(), "Emotion Regulation Index: 71".to_string()],
+        ],
+        has_header: false,
+        column_widths: None,
+    }
+}
+
 /// A drafting run against the appearance-carved template: the tabbed header
 /// block filled in and grown by a row the template never had, one section
-/// renamed, bodies rewritten, the results table filled, the two underlined
-/// test names left alone, and one section added at the end.
+/// renamed, bodies rewritten, all three results tables filled — including the
+/// two with merged cells — the two underlined test names left alone, and one
+/// section added at the end.
 fn template_c_draft() -> ReportDraft {
     let mut content = import_template(TEMPLATE_C_LIKE)
         .expect("import template-c-like")
@@ -571,6 +603,8 @@ fn template_c_draft() -> ReportDraft {
             has_header: true,
             column_widths: None,
         },
+        filled_grid_span_table(),
+        filled_vertical_merge_table(),
     ];
 
     let summary = find(&content, "Summary and Clinical Interpretation");
@@ -593,6 +627,75 @@ fn template_c_draft() -> ReportDraft {
     let mut report = draft("placeholder", Vec::new());
     report.content = content;
     report
+}
+
+/// The same run, except the drafter deleted the two merged score tables —
+/// the template's instruction says to delete the subsections of tests that
+/// were not administered, and now that the model can see those tables it can
+/// obey.
+fn template_c_draft_without_merged_tables() -> ReportDraft {
+    let mut report = template_c_draft();
+    let results = report
+        .content
+        .sections
+        .iter()
+        .position(|section| section.heading == "Results")
+        .expect("the results section");
+    report.content.sections[results].blocks.retain(|block| {
+        block != &filled_grid_span_table() && block != &filled_vertical_merge_table()
+    });
+    report
+}
+
+#[test]
+fn merged_template_tables_reach_the_model_as_rectangles() {
+    let imported = import_template(TEMPLATE_C_LIKE).expect("import template-c-like");
+    assert_eq!(imported.stats.tables, 3);
+    assert!(
+        !imported.warnings.iter().any(|warning| warning.code
+            == claria_core::models::report::ReportTemplateWarningCode::MergedTablesOmitted),
+        "a representable merged table was reported as omitted: {:?}",
+        imported.warnings
+    );
+
+    let results = imported
+        .content
+        .sections
+        .iter()
+        .find(|section| section.heading == "Results")
+        .expect("the results section");
+    let tables = results
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            ReportBlock::Table { rows, .. } => Some(rows.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tables,
+        vec![
+            vec![
+                vec!["Conners CPT3 Scale".to_string(), "T-Score".to_string()],
+                vec!["Detectability".to_string(), "--".to_string()],
+            ],
+            // The gridSpan header owns the first position it covers; the
+            // second is empty.
+            vec![
+                vec!["BASC-3 Parent Rating Scales".to_string(), String::new()],
+                vec!["Externalizing Problems".to_string(), "--".to_string()],
+            ],
+            // The vMerge restart keeps the label; its continuation below is
+            // empty.
+            vec![
+                vec![
+                    "BRIEF2 Composite Summary".to_string(),
+                    "Behavior Regulation Index".to_string(),
+                ],
+                vec![String::new(), "Emotion Regulation Index".to_string()],
+            ],
+        ]
+    );
 }
 
 #[test]
@@ -666,6 +769,35 @@ fn the_export_re_imports_with_the_sections_the_report_had() {
             .map(|section| section.heading.as_str())
             .collect::<Vec<_>>()
     );
+
+    // The exported merges re-import as the same rectangles they were written
+    // from, so a second drafting round against the export sees what the first
+    // one wrote.
+    let results = |content: &ReportContent| {
+        content
+            .sections
+            .iter()
+            .find(|section| section.heading == "Results")
+            .expect("the results section")
+            .blocks
+            .iter()
+            .filter(|block| matches!(block, ReportBlock::Table { .. }))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let reimported = results(&round_trip.content);
+    assert_eq!(reimported.len(), 3, "{reimported:?}");
+    for (index, expected) in [filled_grid_span_table(), filled_vertical_merge_table()]
+        .into_iter()
+        .enumerate()
+    {
+        let (ReportBlock::Table { rows, .. }, ReportBlock::Table { rows: want, .. }) =
+            (&reimported[index + 1], &expected)
+        else {
+            panic!("not a table: {:?}", reimported[index + 1]);
+        };
+        assert_eq!(rows, want);
+    }
 }
 
 #[test]
@@ -732,12 +864,87 @@ fn the_export_invents_neither_a_title_nor_an_imported_content_heading() {
 }
 
 #[test]
-fn merged_template_tables_never_reappear_in_the_export() {
+fn filled_merged_tables_are_written_back_into_their_own_merged_geometry() {
     let (output, _) =
         render_report_with_template(TEMPLATE_C_LIKE, &template_c_draft()).expect("template render");
     let xml = String::from_utf8(document_xml(&output)).expect("document XML is UTF-8");
-    assert!(!xml.contains("gridSpan"), "a merged table survived");
-    assert!(!xml.contains("vMerge"), "a merged table survived");
+
+    // The merges are the template author's formatting, and a filled table
+    // keeps them: the draft's rows go back into the cells that own each grid
+    // position rather than into a regenerated flat table.
+    assert_eq!(xml.matches("gridSpan").count(), 1, "the gridSpan was lost");
+    assert_eq!(xml.matches("vMerge").count(), 2, "the vMerge was lost");
+
+    let flattened = paragraphs(&output);
+    for filled in [
+        "BASC-3 Parent Rating Scales",
+        "Externalizing Problems",
+        "68",
+        "BRIEF2 Composite Summary",
+        "Behavior Regulation Index: 58",
+        "Emotion Regulation Index: 71",
+    ] {
+        assert!(
+            body_paragraph(&flattened, filled).in_table,
+            "{filled:?} did not land in a table"
+        );
+    }
+
+    // The unmerged table the draft also holds is untouched by any of this.
+    assert!(body_paragraph(&flattened, "Detectability").in_table);
+    assert!(body_paragraph(&flattened, "62").in_table);
+}
+
+#[test]
+fn a_draft_value_in_a_merged_away_position_falls_back_to_an_unmerged_table() {
+    // Nothing written into a position a merge covers would be visible in
+    // Word, so the patch fails and the table is regenerated flat. Losing the
+    // merge is the acceptable outcome; losing the value is not.
+    let mut report = template_c_draft_without_merged_tables();
+    let results = report
+        .content
+        .sections
+        .iter()
+        .position(|section| section.heading == "Results")
+        .expect("the results section");
+    report.content.sections[results]
+        .blocks
+        .push(ReportBlock::Table {
+            rows: vec![
+                vec![
+                    "BASC-3 Parent Rating Scales".to_string(),
+                    "Teacher".to_string(),
+                ],
+                vec!["Externalizing Problems".to_string(), "68".to_string()],
+            ],
+            has_header: false,
+            column_widths: None,
+        });
+
+    let (output, _) =
+        render_report_with_template(TEMPLATE_C_LIKE, &report).expect("template render");
+    let xml = String::from_utf8(document_xml(&output)).expect("document XML is UTF-8");
+    assert!(
+        !xml.contains("gridSpan"),
+        "the merged geometry was kept over a value that cannot live in it"
+    );
+    let flattened = paragraphs(&output);
+    for value in ["BASC-3 Parent Rating Scales", "Teacher", "68"] {
+        assert!(
+            body_paragraph(&flattened, value).in_table,
+            "{value:?} was dropped instead of regenerated"
+        );
+    }
+}
+
+#[test]
+fn merged_tables_the_draft_deleted_never_reappear_in_the_export() {
+    let (output, _) =
+        render_report_with_template(TEMPLATE_C_LIKE, &template_c_draft_without_merged_tables())
+            .expect("template render");
+    let xml = String::from_utf8(document_xml(&output)).expect("document XML is UTF-8");
+    assert!(!xml.contains("gridSpan"), "a deleted merged table survived");
+    assert!(!xml.contains("vMerge"), "a deleted merged table survived");
 
     let flattened = paragraphs(&output);
     for absent in [
@@ -750,17 +957,25 @@ fn merged_template_tables_never_reappear_in_the_export() {
             flattened
                 .iter()
                 .all(|paragraph| !paragraph.text.contains(absent)),
-            "{absent:?} came back from a table the draft never held"
+            "{absent:?} came back from a table the draft deleted"
         );
     }
 
     // The table the draft does hold is written back into the template's own.
     assert!(body_paragraph(&flattened, "Detectability").in_table);
     assert!(body_paragraph(&flattened, "62").in_table);
+
+    // The two spacers the deleted tables sat between go with them: a blank
+    // line is layout for the block it precedes, and that block is gone.
+    let blanks = flattened
+        .iter()
+        .filter(|paragraph| !paragraph.in_table && paragraph.is_blank())
+        .count();
+    assert_eq!(blanks, 3, "{flattened:?}");
 }
 
 #[test]
-fn spacers_stay_in_their_sections_when_merged_tables_are_dropped() {
+fn spacers_stay_in_their_sections_across_the_appearance_carved_template() {
     let (output, _) =
         render_report_with_template(TEMPLATE_C_LIKE, &template_c_draft()).expect("template render");
     let flattened = paragraphs(&output);
@@ -782,10 +997,12 @@ fn spacers_stay_in_their_sections_when_merged_tables_are_dropped() {
     assert!(
         index_of("Referral Question") < blanks[1] && blanks[1] < index_of("Background Information")
     );
-    // The two spacers that framed the merged tables stay where the tables
-    // were, above the next heading.
+    // Each of the two spacers between the results tables rides with the
+    // table it precedes, so it stays between them.
     assert!(index_of("Detectability") < blanks[2]);
-    assert!(blanks[3] < index_of("Summary and Clinical Interpretation"));
+    assert!(blanks[2] < index_of("BASC-3 Parent Rating Scales"));
+    assert!(index_of("BASC-3 Parent Rating Scales") < blanks[3]);
+    assert!(blanks[3] < index_of("BRIEF2 Composite Summary"));
     assert!(
         index_of("Summary and Clinical Interpretation") < blanks[4]
             && blanks[4] < index_of("Recommendations")

@@ -74,8 +74,13 @@ media, page setup all remain the original bytes — and rewrites only
 - Content the accepted draft does not hold is never re-emitted. Template
   material between recognised paragraphs survives only when it carries no
   content (blank spacers, `sectPr`, bookmarks); a table the walker cannot
-  represent — merged cells — is dropped rather than scattered through the
-  export.
+  represent is dropped rather than scattered through the export.
+- Merged cells (`gridSpan`/`vMerge`) are read as the rectangle they
+  describe, by one rule both the import and the export call, so the score
+  tables clinical templates are built from reach the model — which can then
+  fill them or delete them, and could do neither while they were dropped. A
+  filled table is written back into the template's own merged cells; the
+  merges survive.
 
 Every export reports a fidelity level (`Exact`, `PatchedInPlace`,
 `Reconstructed`, `PlainBodyFallback`) and the UI says so when formatting

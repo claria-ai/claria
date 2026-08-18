@@ -27,6 +27,7 @@ use zip::ZipArchive;
 use crate::{
     error::DocxError,
     style_catalog::{StyleCatalog, normalize_style},
+    table_grid::{CellGeometry, TableGeometry, expand_rows},
 };
 
 pub const MAX_TEMPLATE_DOCX_BYTES: u64 = 10 * 1024 * 1024;
@@ -878,52 +879,91 @@ fn run_text(run: &Run) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TableImportIssue {
     Nested,
+    /// Merged geometry that does not expand to a rectangle — spans that
+    /// leave rows of different widths, or that contradict the table's own
+    /// `w:tblGrid`. Ordinary `gridSpan`/`vMerge` tables import.
     Merged,
 }
 
+/// Import a table as the rectangular grid its merges describe.
+///
+/// A `gridSpan` cell contributes its text at the first position it covers
+/// and the empty string at the rest; a `vMerge` continuation contributes the
+/// empty string, its text belonging to the `restart` cell above. What the
+/// model sees is therefore always a rectangle, and merged tables reach it
+/// instead of vanishing — a score table the model never saw is one it can
+/// neither fill nor delete.
 fn import_table(table: &Table) -> Result<Option<ReportBlock>, TableImportIssue> {
-    let mut rows = Vec::new();
+    let mut geometry = Vec::with_capacity(table.rows.len());
+    let mut texts = Vec::with_capacity(table.rows.len());
     let mut header_cells = Vec::new();
     for (row_index, child) in table.rows.iter().enumerate() {
         let TableChild::TableRow(row) = child;
-        let mut cells = Vec::new();
-        let mut row_header_cells = Vec::new();
+        let mut row_geometry = Vec::with_capacity(row.cells.len());
+        let mut row_texts = Vec::with_capacity(row.cells.len());
         for child in &row.cells {
             let TableRowChild::TableCell(cell) = child;
-            if cell_is_merged(cell) {
-                return Err(TableImportIssue::Merged);
-            }
-            cells.push(table_cell_text(cell)?);
+            row_geometry.push(cell_geometry(cell).ok_or(TableImportIssue::Merged)?);
+            // Read every cell, including merge continuations whose text is
+            // then discarded: a nested table inside one is still a nested
+            // table, and the reader must report it.
+            row_texts.push(table_cell_text(cell)?);
             if row_index == 0 {
-                row_header_cells.push(cell_looks_like_header(cell));
+                header_cells.push(cell_looks_like_header(cell));
             }
         }
-        if row_index == 0 {
-            header_cells = row_header_cells;
-        }
-        rows.push(cells);
+        geometry.push(row_geometry);
+        texts.push(row_texts);
     }
-    let Some(columns) = rows.first().map(Vec::len) else {
-        return Ok(None);
+
+    let grid = match expand_rows(&geometry, declared_columns(&table.grid)) {
+        TableGeometry::Rectangular(grid) => grid,
+        TableGeometry::Merged => return Err(TableImportIssue::Merged),
+        TableGeometry::Irregular => return Ok(None),
     };
-    if columns == 0
-        || columns > claria_core::models::report::MAX_TABLE_COLUMNS
-        || rows.len() > claria_core::models::report::MAX_TABLE_ROWS
-        || rows.iter().any(|row| row.len() != columns)
+    let rows = grid
+        .iter()
+        .zip(&texts)
+        .map(|(positions, row_texts)| {
+            positions
+                .iter()
+                .map(|owner| {
+                    owner
+                        .and_then(|index| row_texts.get(index).cloned())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<String>>()
+        })
+        .collect::<Vec<_>>();
+
+    // Width is already bounded by the expansion; row count and emptiness are
+    // this function's to check.
+    if rows.len() > claria_core::models::report::MAX_TABLE_ROWS
         || rows.iter().flatten().all(|cell| cell.trim().is_empty())
     {
         return Ok(None);
     }
 
+    let columns = rows.first().map_or(0, Vec::len);
+    let header_row = grid.first().map(|positions| {
+        positions
+            .iter()
+            .map(|owner| owner.is_some_and(|index| header_cells.get(index) == Some(&true)))
+            .collect::<Vec<bool>>()
+    });
     let has_header = rows.len() > 1
-        && header_cells.len() == columns
-        && header_cells.iter().all(|header| *header)
+        && header_row.is_some_and(|header| header.iter().all(|cell| *cell))
         && rows[0].iter().all(|cell| !cell.trim().is_empty());
     Ok(Some(ReportBlock::Table {
         column_widths: normalized_widths(&table.grid, columns),
         rows,
         has_header,
     }))
+}
+
+/// The `w:tblGrid` column count, or `None` when the package declares no grid.
+fn declared_columns(grid: &[usize]) -> Option<usize> {
+    (!grid.is_empty()).then_some(grid.len())
 }
 
 fn table_cell_text(cell: &TableCell) -> Result<String, TableImportIssue> {
@@ -954,14 +994,30 @@ fn tag_contains_table(tag: &StructuredDataTag) -> bool {
     })
 }
 
-fn cell_is_merged(cell: &TableCell) -> bool {
-    serde_json::to_value(&cell.property).is_ok_and(|property| {
-        property
-            .get("gridSpan")
-            .is_some_and(|value| !value.is_null())
-            || property
-                .get("verticalMerge")
-                .is_some_and(|value| !value.is_null())
+/// How this cell occupies the table grid, or `None` when its `w:tcPr` states
+/// a geometry the rectangular model cannot express (a `w:vMerge` value
+/// neither `restart` nor `continue`, or a span that is not a count).
+///
+/// docx-rs keeps `TableCellProperty`'s fields private, so the properties are
+/// read back through its own serialization: `gridSpan` serializes as a
+/// number and `verticalMerge` as the merge type's name.
+fn cell_geometry(cell: &TableCell) -> Option<CellGeometry> {
+    let property = serde_json::to_value(&cell.property).ok()?;
+    let span = match property.get("gridSpan") {
+        None | Some(serde_json::Value::Null) => 1,
+        Some(value) => usize::try_from(value.as_u64()?).ok()?,
+    };
+    let continues_merge = match property.get("verticalMerge") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(value) => match value.as_str()? {
+            "continue" => true,
+            "restart" => false,
+            _ => return None,
+        },
+    };
+    Some(CellGeometry {
+        span,
+        continues_merge,
     })
 }
 
