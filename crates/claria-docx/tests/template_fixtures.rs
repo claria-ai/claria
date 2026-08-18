@@ -11,7 +11,7 @@
 use std::io::{Cursor, Read};
 
 use claria_core::models::report::{ReportBlock, ReportContent, ReportDraft, ReportSection};
-use claria_docx::render_report_with_template;
+use claria_docx::{import_template, render_report_with_template};
 use quick_xml::{Reader, events::Event};
 use uuid::Uuid;
 
@@ -19,6 +19,16 @@ const CLINICAL_TEMPLATE: &[u8] =
     include_bytes!("../../../fixtures/docx-templates/clinical-eval.docx");
 const CONTENT_CONTROLS_TEMPLATE: &[u8] =
     include_bytes!("../../../fixtures/docx-templates/content-controls.docx");
+const TEMPLATE_C_LIKE: &[u8] =
+    include_bytes!("../../../fixtures/docx-templates/template-c-like.docx");
+
+/// One `<w:r>` of the exported document that carries visible text.
+#[derive(Debug, Clone)]
+struct TextRun {
+    text: String,
+    bold: bool,
+    underlined: bool,
+}
 
 /// One `<w:p>` of the exported document, flattened for assertions.
 #[derive(Debug, Clone)]
@@ -32,11 +42,22 @@ struct Paragraph {
     text_run_fonts: Vec<String>,
     line_breaks: usize,
     numbered: bool,
+    /// Real `<w:tab/>` elements inside runs — tab *stops* in `w:pPr` are
+    /// paragraph properties and are not counted.
+    tabs: usize,
+    runs: Vec<TextRun>,
 }
 
 impl Paragraph {
     fn is_blank(&self) -> bool {
         self.text.trim().is_empty()
+    }
+
+    fn run_with(&self, needle: &str) -> &TextRun {
+        self.runs
+            .iter()
+            .find(|run| run.text.contains(needle))
+            .unwrap_or_else(|| panic!("no run of {:?} contains {needle:?}", self.text))
     }
 }
 
@@ -65,6 +86,8 @@ fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
     let mut run_underline = false;
     let mut run_bold = false;
     let mut run_font: Option<String> = None;
+    let mut run_text = String::new();
+    let mut in_run = false;
     let mut in_text = false;
     loop {
         let event = reader.read_event_into(&mut buffer).expect("fixture XML");
@@ -83,6 +106,8 @@ fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
                             text_run_fonts: Vec::new(),
                             line_breaks: 0,
                             numbered: false,
+                            tabs: 0,
+                            runs: Vec::new(),
                         };
                         if is_empty {
                             output.push(paragraph);
@@ -102,9 +127,16 @@ fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
                     b"b" if in_rpr => run_bold = true,
                     b"rFonts" if in_rpr => run_font = attribute(start, b"ascii"),
                     b"r" if !is_empty => {
+                        in_run = true;
                         run_underline = false;
                         run_bold = false;
                         run_font = None;
+                        run_text.clear();
+                    }
+                    b"tab" if in_run && !in_rpr => {
+                        if let Some(paragraph) = &mut current {
+                            paragraph.tabs += 1;
+                        }
                     }
                     b"br" => {
                         if let Some(paragraph) = &mut current {
@@ -122,7 +154,9 @@ fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
             }
             Event::Text(text) if in_text => {
                 if let Some(paragraph) = &mut current {
-                    paragraph.text.push_str(&text.decode().expect("text"));
+                    let decoded = text.decode().expect("text");
+                    paragraph.text.push_str(&decoded);
+                    run_text.push_str(&decoded);
                     paragraph.text_run_underlined |= run_underline;
                     paragraph.text_run_bold |= run_bold;
                     if let Some(font) = &run_font
@@ -138,6 +172,19 @@ fn paragraphs(package: &[u8]) -> Vec<Paragraph> {
                     if let Some(paragraph) = current.take() {
                         output.push(paragraph);
                     }
+                }
+                b"r" => {
+                    in_run = false;
+                    if let Some(paragraph) = &mut current
+                        && !run_text.is_empty()
+                    {
+                        paragraph.runs.push(TextRun {
+                            text: std::mem::take(&mut run_text),
+                            bold: run_bold,
+                            underlined: run_underline,
+                        });
+                    }
+                    run_text.clear();
                 }
                 b"rPr" => in_rpr = false,
                 b"t" => in_text = false,
@@ -290,7 +337,7 @@ fn clinical_fixture_reconstructs_and_keeps_package_parts() {
 }
 
 #[test]
-fn blank_spacers_follow_the_report_instead_of_piling_at_the_top() {
+fn blank_spacers_stay_inside_the_section_they_were_authored_in() {
     let (output, _) = render_report_with_template(CLINICAL_TEMPLATE, &clinical_growth_draft())
         .expect("template render");
     let flattened = paragraphs(&output);
@@ -308,14 +355,16 @@ fn blank_spacers_follow_the_report_instead_of_piling_at_the_top() {
         .collect::<Vec<_>>();
     assert_eq!(blank_indexes.len(), 2);
 
-    // The template's two spacers spread with the report as it grows. The
-    // v0.22 renderer emitted every gap while walking the first
-    // template-length prefix of the generated report, bunching both
-    // spacers into the opening paragraphs.
-    assert!(blank_indexes[0] > index_of("The BASC-3 was completed by the parent and teacher."));
+    // Each spacer rides with the template paragraph it precedes, so it
+    // stays in the section its author put it in however far the report
+    // outgrows the template. The v0.22 renderer scattered spacers at
+    // proportional positions instead.
     assert!(
-        blank_indexes[1] > index_of("Findings are consistent with attention-related difficulties.")
+        index_of("Teacher reports difficulty sustaining attention in class.") < blank_indexes[0]
     );
+    assert!(blank_indexes[0] < index_of("Assessment Results"));
+    assert!(index_of("Assessment Results") < blank_indexes[1]);
+    assert!(blank_indexes[1] < index_of("Summary and Recommendations"));
 }
 
 #[test]
@@ -324,26 +373,40 @@ fn generated_body_text_never_inherits_label_or_signature_decoration() {
         .expect("template render");
     let flattened = paragraphs(&output);
 
-    // This paragraph's exemplar is the template's "Assessment: Pending
-    // review." label paragraph — the inserted text must take the plain
-    // Garamond body run, not the bold underlined label run.
-    let body = body_paragraph(
+    // The first body paragraph of "Assessment Results" is written back into
+    // the template's own paragraph for that slot — the "Assessment: Pending
+    // review." label line — so it keeps the Garamond body run and lands in
+    // it rather than in the bold underlined label run.
+    let aligned = body_paragraph(
+        &flattened,
+        "The BASC-3 was completed by the parent and teacher.",
+    );
+    assert_eq!(aligned.text_run_fonts, ["Garamond"]);
+    assert!(!aligned.text_run_bold, "label bold leaked: {aligned:?}");
+    assert!(
+        !aligned.text_run_underlined,
+        "label underline leaked: {aligned:?}"
+    );
+
+    // This paragraph outgrew the section's template paragraphs, so it is a
+    // clone of the underlined signature line — borrowed formatting, whose
+    // direct decoration must be stripped.
+    let cloned = body_paragraph(
         &flattened,
         "Working memory performance fell below the 10th percentile.",
     );
     assert!(
-        !body.text_run_underlined,
-        "label underline leaked: {body:?}"
+        !cloned.text_run_underlined,
+        "signature underline leaked: {cloned:?}"
     );
-    assert!(!body.text_run_bold, "label bold leaked: {body:?}");
-    assert_eq!(body.text_run_fonts, ["Garamond"]);
+    assert!(!cloned.text_run_bold, "signature bold leaked: {cloned:?}");
 
-    // The final body paragraph's exemplar is the underlined signature
-    // line; direct decoration must be stripped for unrelated text.
-    let last = body_paragraph(&flattened, "Classroom accommodations are recommended.");
+    // A section the template never had clones its exemplars document-wide,
+    // and strips them the same way.
+    let added = body_paragraph(&flattened, "Classroom accommodations are recommended.");
     assert!(
-        !last.text_run_underlined,
-        "signature underline leaked: {last:?}"
+        !added.text_run_underlined,
+        "signature underline leaked: {added:?}"
     );
 }
 
@@ -459,6 +522,274 @@ fn empty_template_cells_do_not_swallow_generated_content() {
         .expect("template render");
     let flattened = paragraphs(&output);
     assert!(body_paragraph(&flattened, "82").in_table);
+}
+
+/// A drafting run against the appearance-carved template: the tabbed header
+/// block filled in and grown by a row the template never had, one section
+/// renamed, bodies rewritten, the results table filled, the two underlined
+/// test names left alone, and one section added at the end.
+fn template_c_draft() -> ReportDraft {
+    let mut content = import_template(TEMPLATE_C_LIKE)
+        .expect("import template-c-like")
+        .content;
+    let find = |content: &ReportContent, heading: &str| {
+        content
+            .sections
+            .iter()
+            .position(|section| section.heading == heading)
+            .unwrap_or_else(|| panic!("no imported section {heading:?}"))
+    };
+
+    let header = find(&content, "Imported content");
+    content.sections[header].blocks = vec![
+        paragraph("Name of Patient\tJordan Thomas Rivera"),
+        paragraph("Date of Birth\tNovember 4, 2002"),
+        paragraph("Age\t\t23 years, 9 months"),
+        paragraph("Examiner\tAlice Chen, PsyD"),
+    ];
+
+    let referral = find(&content, "Reason for Referral");
+    content.sections[referral].heading = "Referral Question".to_string();
+    content.sections[referral].blocks = vec![paragraph(
+        "Aiden was referred by his classroom teacher for concerns about attention and impulsivity.",
+    )];
+
+    let background = find(&content, "Background Information");
+    content.sections[background].blocks = vec![
+        paragraph("Aiden lives with his mother and sister and attends the neighborhood school."),
+        paragraph("Prenatal and birth history were unremarkable per maternal report."),
+    ];
+
+    let results = find(&content, "Results");
+    content.sections[results].blocks = vec![
+        paragraph("The Conners CPT3 was administered under standard conditions."),
+        ReportBlock::Table {
+            rows: vec![
+                vec!["Conners CPT3 Scale".to_string(), "T-Score".to_string()],
+                vec!["Detectability".to_string(), "62".to_string()],
+            ],
+            has_header: true,
+            column_widths: None,
+        },
+    ];
+
+    let summary = find(&content, "Summary and Clinical Interpretation");
+    content.sections[summary].blocks = vec![paragraph(
+        "Findings are consistent with an attention-related presentation.",
+    )];
+
+    let recommendations = find(&content, "Recommendations");
+    content.sections[recommendations].blocks = vec![paragraph(
+        "Classroom accommodations and a follow-up review in six months are advised.",
+    )];
+
+    content.sections.push(section(
+        "Diagnostic Impression",
+        vec![paragraph(
+            "Attention-Deficit/Hyperactivity Disorder, predominantly inattentive presentation.",
+        )],
+    ));
+
+    let mut report = draft("placeholder", Vec::new());
+    report.content = content;
+    report
+}
+
+#[test]
+fn appearance_carved_headings_keep_their_bold_when_rewritten() {
+    let (output, fidelity) =
+        render_report_with_template(TEMPLATE_C_LIKE, &template_c_draft()).expect("template render");
+    assert_eq!(fidelity, claria_docx::TemplateRenderFidelity::Reconstructed);
+    let flattened = paragraphs(&output);
+
+    // The template applies no heading style at all: bold is the only thing
+    // that makes these paragraphs headings, including the renamed one and
+    // the section the report added.
+    for heading in [
+        "Referral Question",
+        "Background Information",
+        "Assessment Procedures",
+        "Results",
+        "Summary and Clinical Interpretation",
+        "Recommendations",
+        "Diagnostic Impression",
+    ] {
+        let paragraph = body_paragraph(&flattened, heading);
+        assert!(
+            paragraph.text_run_bold,
+            "heading {heading:?} lost its bold: {paragraph:?}"
+        );
+    }
+
+    // Prose and instruction paragraphs of this template class carry stray
+    // w:outlineLvl. Classifying by it promoted them to headings and pushed
+    // the real headings into body text.
+    for body in [
+        "Aiden was referred by his classroom teacher",
+        "Prenatal and birth history were unremarkable",
+        "The Conners CPT3 was administered",
+    ] {
+        let paragraph = body_paragraph(&flattened, body);
+        assert!(
+            !paragraph.text_run_bold,
+            "body text {body:?} landed on a heading exemplar: {paragraph:?}"
+        );
+    }
+
+    // Body text the report did not rewrite keeps the template's own direct
+    // formatting.
+    assert!(
+        body_paragraph(&flattened, "Conners Continuous Performance Test")
+            .run_with("Conners Continuous Performance Test")
+            .underlined,
+        "an unrewritten test name lost its underline"
+    );
+}
+
+#[test]
+fn the_export_re_imports_with_the_sections_the_report_had() {
+    let report = template_c_draft();
+    let (output, _) =
+        render_report_with_template(TEMPLATE_C_LIKE, &report).expect("template render");
+    let round_trip = import_template(&output).expect("re-import the export");
+    assert_eq!(
+        round_trip
+            .content
+            .sections
+            .iter()
+            .map(|section| section.heading.as_str())
+            .collect::<Vec<_>>(),
+        report
+            .content
+            .sections
+            .iter()
+            .map(|section| section.heading.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn tabbed_header_rows_export_real_tabs_and_keep_their_label_bolding() {
+    let (output, _) =
+        render_report_with_template(TEMPLATE_C_LIKE, &template_c_draft()).expect("template render");
+    let flattened = paragraphs(&output);
+
+    // A literal tab inside <w:t> is not a tab in Word.
+    for paragraph in &flattened {
+        assert!(
+            !paragraph.text.contains('\t'),
+            "literal tab inside <w:t>: {paragraph:?}"
+        );
+    }
+
+    let patient = body_paragraph(&flattened, "Jordan Thomas Rivera");
+    assert_eq!(patient.tabs, 1, "{patient:?}");
+    assert!(patient.run_with("Name of Patient").bold);
+    assert!(
+        !patient.run_with("Jordan Thomas Rivera").bold,
+        "the label's bold bled onto the value: {patient:?}"
+    );
+
+    let age = body_paragraph(&flattened, "23 years, 9 months");
+    assert_eq!(age.tabs, 2, "{age:?}");
+    assert!(age.run_with("Age").bold);
+
+    // A row the template never had brings its own tab and leaves the
+    // exemplar's tab stops behind, instead of opening with tab soup.
+    let examiner = body_paragraph(&flattened, "Alice Chen");
+    assert_eq!(examiner.tabs, 1, "{examiner:?}");
+    assert!(!examiner.run_with("Examiner").bold);
+}
+
+#[test]
+fn the_export_invents_neither_a_title_nor_an_imported_content_heading() {
+    let (output, _) =
+        render_report_with_template(TEMPLATE_C_LIKE, &template_c_draft()).expect("template render");
+    let flattened = paragraphs(&output);
+    for invented in ["Imported content", "Imported report template"] {
+        assert!(
+            flattened
+                .iter()
+                .all(|paragraph| !paragraph.text.contains(invented)),
+            "the importer's invented {invented:?} was written into the document"
+        );
+    }
+    assert!(
+        flattened
+            .iter()
+            .all(|paragraph| paragraph.style.as_deref() != Some("Title")),
+        "a template with no title paragraph gained one"
+    );
+
+    // The header block still leads the document, it just has no heading.
+    let index_of = |needle: &str| {
+        flattened
+            .iter()
+            .position(|paragraph| paragraph.text.contains(needle))
+            .unwrap_or_else(|| panic!("no paragraph contains {needle:?}"))
+    };
+    assert!(index_of("Jordan Thomas Rivera") < index_of("Referral Question"));
+}
+
+#[test]
+fn merged_template_tables_never_reappear_in_the_export() {
+    let (output, _) =
+        render_report_with_template(TEMPLATE_C_LIKE, &template_c_draft()).expect("template render");
+    let xml = String::from_utf8(document_xml(&output)).expect("document XML is UTF-8");
+    assert!(!xml.contains("gridSpan"), "a merged table survived");
+    assert!(!xml.contains("vMerge"), "a merged table survived");
+
+    let flattened = paragraphs(&output);
+    for absent in [
+        "BASC-3 Parent Rating Scales",
+        "Externalizing Problems",
+        "BRIEF2 Composite Summary",
+        "Behavior Regulation Index",
+    ] {
+        assert!(
+            flattened
+                .iter()
+                .all(|paragraph| !paragraph.text.contains(absent)),
+            "{absent:?} came back from a table the draft never held"
+        );
+    }
+
+    // The table the draft does hold is written back into the template's own.
+    assert!(body_paragraph(&flattened, "Detectability").in_table);
+    assert!(body_paragraph(&flattened, "62").in_table);
+}
+
+#[test]
+fn spacers_stay_in_their_sections_when_merged_tables_are_dropped() {
+    let (output, _) =
+        render_report_with_template(TEMPLATE_C_LIKE, &template_c_draft()).expect("template render");
+    let flattened = paragraphs(&output);
+    let index_of = |needle: &str| {
+        flattened
+            .iter()
+            .position(|paragraph| paragraph.text.contains(needle))
+            .unwrap_or_else(|| panic!("no paragraph contains {needle:?}"))
+    };
+    let blanks = flattened
+        .iter()
+        .enumerate()
+        .filter(|(_, paragraph)| !paragraph.in_table && paragraph.is_blank())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(blanks.len(), 5, "{blanks:?}");
+
+    assert!(index_of("Alice Chen") < blanks[0] && blanks[0] < index_of("Referral Question"));
+    assert!(
+        index_of("Referral Question") < blanks[1] && blanks[1] < index_of("Background Information")
+    );
+    // The two spacers that framed the merged tables stay where the tables
+    // were, above the next heading.
+    assert!(index_of("Detectability") < blanks[2]);
+    assert!(blanks[3] < index_of("Summary and Clinical Interpretation"));
+    assert!(
+        index_of("Summary and Clinical Interpretation") < blanks[4]
+            && blanks[4] < index_of("Recommendations")
+    );
 }
 
 #[test]

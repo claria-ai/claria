@@ -30,6 +30,13 @@ use crate::{
 };
 
 pub const MAX_TEMPLATE_DOCX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Heading the importer invents for content that precedes the document's
+/// first real heading. No paragraph of the package carries this text, so a
+/// template-faithful export must never write it out — the renderer detects
+/// the invented section by comparing against this one constant.
+pub(crate) const SYNTHETIC_SECTION_HEADING: &str = "Imported content";
+
 const MAX_TEMPLATE_UNCOMPRESSED_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TEMPLATE_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TEMPLATE_ZIP_ENTRIES: usize = 512;
@@ -654,7 +661,7 @@ impl ImportBuilder {
 
     fn ensure_section(&mut self) {
         if self.current_heading.is_none() {
-            self.current_heading = Some("Imported content".to_string());
+            self.current_heading = Some(SYNTHETIC_SECTION_HEADING.to_string());
         }
     }
 

@@ -97,15 +97,33 @@ headers, footers, media, page setup stay original bytes) and only
 1. **Exact** — visible content matches the template: source bytes returned.
 2. **Patched in place** — same structure, changed text: only text events
    rewritten; every run and paragraph property survives.
-3. **Reconstructed** — structure changed: each target block clones a
-   template paragraph/table of the same kind as its formatting *exemplar*
-   (chosen proportionally along the document), text lands in the exemplar's
-   dominant run, and direct bold/underline/italic is stripped when the new
-   text is unrelated to the exemplar's own words. Headings classify through
-   a style catalog (literal `Heading*`, outline levels, `basedOn` chains),
-   shared with the importer. Blank spacer paragraphs interleave at the
-   proportional boundaries. Bullets without a template exemplar bring their
-   numbering definition into the package.
+3. **Reconstructed** — structure changed, so the body is rebuilt
+   **section by section**. The renderer imports the template first and uses
+   *that* carve to classify its paragraphs, so export cannot hold a second
+   opinion about what a heading is. Draft sections descend from the same
+   import, so they align to template sections by heading text, and a run of
+   renamed headings takes the template sections between its matched
+   neighbours. Inside a section the heading patches its own template
+   heading paragraph — identical text short-circuits, and nothing is
+   stripped, so an appearance-carved template's bold headings survive being
+   rewritten — and blocks map in order by kind. A block that outgrows its
+   section clones an exemplar: nearest in the section, then the nearest of
+   that kind document-wide, then generated formatting. Only cloned
+   exemplars have direct bold/underline/italic stripped, and never for a
+   heading, whose bold may be the only thing making it a heading. Text
+   lands in the exemplar's dominant run; `'\n'` and `'\t'` in it become real
+   `<w:br/>` and `<w:tab/>` elements, and a paragraph whose tabs match the
+   target's is patched between the tabs so label runs keep their own words
+   and bolding. Blank spacer paragraphs ride with the template paragraph
+   they precede, so they stay in their own section. Bullets without a
+   template exemplar bring their numbering definition into the package.
+
+   Everything between spans is a **gap**, and a gap may carry only
+   non-content events — blank paragraphs, `sectPr`, bookmarks. A `w:tbl`
+   the walker could not recognise (merged cells) or a text-bearing
+   paragraph is dropped: the accepted draft is the only source of content.
+   The importer's invented `Imported content` heading is never written out,
+   and a template that reported `MissingTitle` gains no title paragraph.
 4. **Plain-body fallback** — a body the walker can't handle (content
    controls): generated body formatting inside the template package.
 
@@ -161,7 +179,9 @@ looks like the better signal — an authored claim rather than an appearance
 — but real templates set it indiscriminately. One field example carried it
 on 140 paragraphs including table cells and blank lines, marked each
 heading *and* the body paragraph after it, and still missed half the real
-headings.
+headings. The export renderer used to consult it and disagreed with the
+carve on almost every paragraph, which is why it now classifies against the
+import's result instead of re-deriving anything.
 
 `claria-docx-cli` (`cargo run -p claria-docx-cli -- <file.docx>`) reports
 what both tiers did to a package, including which style rule fired and
