@@ -2,6 +2,12 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- A template that never applied Word heading styles is now split into sections at its bold and capitalized headings, instead of importing as one section holding the whole document
+- An inferred split says so in the import warnings, and applying Heading styles in Word still overrides it exactly
+- Added a `claria-docx` command that reports how the importer read a template and why it carved the way it did
+
 ## [0.30.0] — 2026-08-18
 
 - Preferences → Document Writer → Writer Limits now sets how long a Bedrock call may take and how much it may write, alongside the existing call guardrails

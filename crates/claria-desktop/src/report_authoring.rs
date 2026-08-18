@@ -690,6 +690,9 @@ fn template_warning_code(code: ReportTemplateWarningCode) -> &'static str {
         ReportTemplateWarningCode::NumberedListsImportedAsBullets => {
             "numbered_lists_imported_as_bullets"
         }
+        ReportTemplateWarningCode::SectionsInferredFromFormatting => {
+            "sections_inferred_from_formatting"
+        }
         ReportTemplateWarningCode::TextBoxesOmitted => "text_boxes_omitted",
         ReportTemplateWarningCode::TrackedChangesResolved => "tracked_changes_resolved",
         ReportTemplateWarningCode::UnsupportedElementsOmitted => "unsupported_elements_omitted",
@@ -720,6 +723,9 @@ fn template_warning_message(code: ReportTemplateWarningCode) -> &'static str {
         ReportTemplateWarningCode::NestedTablesOmitted => "Nested tables were omitted.",
         ReportTemplateWarningCode::NumberedListsImportedAsBullets => {
             "Word list paragraphs were imported as bullet lists."
+        }
+        ReportTemplateWarningCode::SectionsInferredFromFormatting => {
+            "No Word heading styles were applied, so sections were split at the bold and capitalized lines that look like headings. Check the section list; applying Heading styles in Word makes the split exact."
         }
         ReportTemplateWarningCode::TextBoxesOmitted => "Text-box content was omitted.",
         ReportTemplateWarningCode::TrackedChangesResolved => {

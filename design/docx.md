@@ -120,6 +120,53 @@ would look bold in the preview and export as literal asterisks. This
 divergence is a known sharp edge and one argument for the inline-markup
 option below.
 
+## How a template becomes sections
+
+Carving is style-driven, and only falls back to appearance when the styles
+say nothing at all.
+
+**Tier 1 — applied heading styles.** A paragraph opens a section when its
+style resolves to a heading through `StyleCatalog`: the normalized styleId
+starts with `heading`, the style's display name starts with `heading`, or
+the style definition carries `<w:outlineLvl>` — each followed up the
+`basedOn` chain. A template that applied Word's heading styles gets exactly
+the carve it asks for, and nothing below can change that.
+
+**Tier 2 — appearance, only when tier 1 promoted nothing.** Most real
+clinical templates never apply a heading style: their headers are body text
+someone bolded, and the whole document used to import as one section
+holding everything. When no paragraph carried a heading style, a second
+pass promotes paragraphs that are **emphasized** (every text run bold, or
+no lowercase letters), **label-shaped** (≤80 characters and not ending in
+`. ? ! : ; ,`), and **lettered** (at least one letter, so a typed rule of
+underscores is not a heading). All three are load-bearing: length or the
+missing full stop alone each match ordinary sentences, and a field label
+ending in a colon is not a section.
+
+Two guards decide whether that result is adopted at all — at least
+`MIN_INFERRED_HEADINGS` (2), and at most `MAX_INFERRED_HEADING_DENSITY`
+(60%) of paragraphs. A template that strictly alternates heading and
+paragraph is already half headings and is a good structure, so the bar sits
+above one half; past it there is more heading than content, which is what a
+document set entirely in bold looks like. Failing either guard keeps the
+single invented section.
+
+An inferred carve always emits `SectionsInferredFromFormatting`, because it
+is a guess about someone's document rather than a reading of it, and the
+plan gate lets the clinician correct the section list before drafting
+spends anything.
+
+**Paragraph-level `<w:outlineLvl>` is deliberately not consulted.** It
+looks like the better signal — an authored claim rather than an appearance
+— but real templates set it indiscriminately. One field example carried it
+on 140 paragraphs including table cells and blank lines, marked each
+heading *and* the body paragraph after it, and still missed half the real
+headings.
+
+`claria-docx-cli` (`cargo run -p claria-docx-cli -- <file.docx>`) reports
+what both tiers did to a package, including which style rule fired and
+which paragraphs read as headings but carry no heading style.
+
 ## Feature inventory
 
 **In the model — the LLM can author these:**

@@ -186,6 +186,10 @@ pub enum ReportTemplateWarningCode {
     MissingTitle,
     NestedTablesOmitted,
     NumberedListsImportedAsBullets,
+    /// No paragraph carried a heading style, so sections were inferred from
+    /// how the headings are formatted. The reader has to be told: the carve
+    /// is a guess about their document, not a reading of it.
+    SectionsInferredFromFormatting,
     TextBoxesOmitted,
     TrackedChangesResolved,
     UnsupportedElementsOmitted,
