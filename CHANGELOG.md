@@ -11,6 +11,11 @@ All notable changes to Claria are documented here.
 - A merged table the draft filled exports back into the template's own merged cells, with its spans intact
 - Tab-separated label lines export with real tabs, and a filled-in value no longer inherits its label's bolding
 - A template with no title paragraph no longer gains one on export, and the placeholder heading the importer invents for a document's opening block is never written out
+- The bracketed authoring notes a clinical template writes into its own sections are extracted at import and carried with the report
+- The planner is shown those notes, so a section the template holds to one sentence is no longer scoped as five assertions
+- Each writer branch is handed its own section's notes as authoring guidance for form, length, and structure
+- A note may steer the shape of a section and never a fact about the client; template prose itself stays untrusted data
+- A section carries at most eight notes of at most 500 characters each, so the guidance cannot grow into an unbounded prompt
 
 ## [0.31.0] — 2026-08-18
 

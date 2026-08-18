@@ -85,6 +85,7 @@ fn section(id: &str, heading: &str, text: &str) -> ReportSection {
         blocks: vec![paragraph(text)],
         skipped: false,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship: None,
     }
 }

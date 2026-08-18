@@ -11,7 +11,8 @@ use std::{
 };
 
 use claria_core::models::report::{
-    ReportBlock, ReportContent, ReportSection, ReportTemplateWarning, ReportTemplateWarningCode,
+    MAX_SECTION_TEMPLATE_DIRECTIVES, MAX_TEMPLATE_DIRECTIVE_CHARACTERS, ReportBlock, ReportContent,
+    ReportSection, ReportTemplateWarning, ReportTemplateWarningCode,
     report_template_placeholder_count, validate_report_content,
 };
 use docx_rs::{
@@ -679,10 +680,12 @@ impl ImportBuilder {
     fn flush_section(&mut self) {
         self.flush_bullets();
         if let Some(heading) = self.current_heading.take() {
+            let blocks = std::mem::take(&mut self.current_blocks);
             self.sections.push(ReportSection {
                 id: Uuid::new_v4(),
                 heading,
-                blocks: std::mem::take(&mut self.current_blocks),
+                template_directives: extract_template_directives(&blocks),
+                blocks,
                 skipped: false,
                 template_blocks: None,
                 authorship: None,
@@ -723,6 +726,107 @@ impl ImportBuilder {
             self.trail,
         ))
     }
+}
+
+/// The authoring directives one section's body carries.
+///
+/// A clinical template talks to whoever fills it in, in square brackets: "[a
+/// one sentence briefly stating why child was referred]", "[Delete the
+/// subsections of the tests that were not uploaded]". Those sentences are the
+/// clinician's own instructions about the document's form, and the planner and
+/// the writer are both better for reading them — but only if the host lifts
+/// them out deterministically instead of the model deciding for itself which
+/// part of an untrusted template body is an instruction.
+///
+/// The rule, in full:
+///
+/// - Every block of the section is scanned in document order — paragraph text,
+///   each bullet item, then each table cell row-major.
+/// - Within one string, `[` opens a directive and the matching `]` closes it;
+///   nesting is counted, so `[a child's age, format = [number] years]` is one
+///   directive and not two. A bracket left open at the end of its string is
+///   dropped: it is a typo or a stray glyph, not an instruction.
+/// - The captured text is trimmed and dropped when empty.
+/// - Exact repeats are dropped, keeping the first occurrence's position. A
+///   template that says `[child's first name]` in eight paragraphs is saying
+///   one thing.
+/// - A directive longer than [`MAX_TEMPLATE_DIRECTIVE_CHARACTERS`] is
+///   **truncated** to that many characters, the last of which becomes `…` so
+///   the reader can tell it was cut.
+/// - Directives past [`MAX_SECTION_TEMPLATE_DIRECTIVES`] are **dropped**. The
+///   earliest ones are kept, because a template's directive for a section
+///   generally opens it.
+///
+/// Bracketed fill-in placeholders — `[CLIENT NAME]`, `[number]` — are captured
+/// too. Separating a slot from an instruction is not something a deterministic
+/// rule can do, and both say something true about the form the section takes.
+fn extract_template_directives(blocks: &[ReportBlock]) -> Vec<String> {
+    let mut directives: Vec<String> = Vec::new();
+    for block in blocks {
+        match block {
+            ReportBlock::Paragraph { text } => append_bracketed(text, &mut directives),
+            ReportBlock::BulletList { items } => {
+                for item in items {
+                    append_bracketed(item, &mut directives);
+                }
+            }
+            ReportBlock::Table { rows, .. } => {
+                for cell in rows.iter().flatten() {
+                    append_bracketed(cell, &mut directives);
+                }
+            }
+        }
+        if directives.len() >= MAX_SECTION_TEMPLATE_DIRECTIVES {
+            break;
+        }
+    }
+    directives.truncate(MAX_SECTION_TEMPLATE_DIRECTIVES);
+    directives
+}
+
+/// Every balanced `[…]` span in one string, appended to `directives` without
+/// duplicating anything already there.
+fn append_bracketed(text: &str, directives: &mut Vec<String>) {
+    let mut depth = 0_usize;
+    let mut start = 0_usize;
+    for (offset, character) in text.char_indices() {
+        match character {
+            '[' => {
+                if depth == 0 {
+                    start = offset.saturating_add(character.len_utf8());
+                }
+                depth = depth.saturating_add(1);
+            }
+            ']' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    let directive = bounded_directive(text[start..offset].trim());
+                    if !directive.is_empty()
+                        && !directives.contains(&directive)
+                        && directives.len() < MAX_SECTION_TEMPLATE_DIRECTIVES
+                    {
+                        directives.push(directive);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One directive, cut to the per-directive ceiling. The ellipsis replaces the
+/// last kept character rather than following it, so the result is exactly
+/// [`MAX_TEMPLATE_DIRECTIVE_CHARACTERS`] characters and never one over.
+fn bounded_directive(directive: &str) -> String {
+    if directive.chars().count() <= MAX_TEMPLATE_DIRECTIVE_CHARACTERS {
+        return directive.to_string();
+    }
+    let mut bounded: String = directive
+        .chars()
+        .take(MAX_TEMPLATE_DIRECTIVE_CHARACTERS.saturating_sub(1))
+        .collect();
+    bounded.push('\u{2026}');
+    bounded
 }
 
 /// Leading characters of a paragraph, for naming it in a report a human

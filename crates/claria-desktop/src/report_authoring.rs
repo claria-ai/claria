@@ -555,6 +555,7 @@ pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String>
                 blocks: section.blocks,
                 skipped,
                 template_blocks: None,
+                template_directives: Vec::new(),
                 authorship: None,
             })
         })

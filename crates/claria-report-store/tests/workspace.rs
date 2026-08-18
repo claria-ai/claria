@@ -200,6 +200,7 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: Uuid::new_v4(),
                     heading: "First".to_string(),
@@ -208,6 +209,7 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: Uuid::new_v4(),
                     heading: "Second".to_string(),
@@ -260,6 +262,7 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: second_id,
                     heading: "Second".to_string(),
@@ -268,6 +271,7 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: first_id,
                     heading: "First".to_string(),
@@ -472,6 +476,9 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
                 sections: vec![ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: vec![
+                        "Delete the rows for tests that were not administered".to_string(),
+                    ],
                     authorship: None,
                     id: Uuid::new_v4(),
                     heading: "Scores".to_string(),
@@ -502,6 +509,12 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
         imported_section.template_blocks.as_ref(),
         Some(&imported_section.blocks)
     );
+    // The importer extracted these; stamping the template copy must not lose
+    // them.
+    assert_eq!(
+        imported_section.template_directives,
+        vec!["Delete the rows for tests that were not administered".to_string()]
+    );
     let authorship = imported_section
         .authorship
         .as_ref()
@@ -527,8 +540,8 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
     assert_eq!(snapshot.draft.revision, 1);
     assert_eq!(snapshot.template_source, Some(template_source.clone()));
 
-    // The editor never sees template copies, so a hand edit arrives without
-    // them and the store has to put them back.
+    // The editor never sees template copies or authoring directives, so a hand
+    // edit arrives without them and the store has to put them back.
     let edited = store::save_report_draft(
         &s3,
         BUCKET,
@@ -544,6 +557,7 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
                 .cloned()
                 .map(|section| ReportSection {
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     ..section
                 })
@@ -556,6 +570,10 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
     assert_eq!(
         edited.draft.content.sections[0].template_blocks.as_ref(),
         imported_section.template_blocks.as_ref()
+    );
+    assert_eq!(
+        edited.draft.content.sections[0].template_directives,
+        imported_section.template_directives
     );
     assert_eq!(
         edited
@@ -971,6 +989,7 @@ fn section(id: Uuid, heading: &str, text: &str) -> ReportSection {
         blocks: vec![paragraph(text)],
         skipped: false,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship: None,
     }
 }
