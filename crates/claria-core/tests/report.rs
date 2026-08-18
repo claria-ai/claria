@@ -462,15 +462,21 @@ fn prompt_content_view_hides_template_copies_and_authorship() {
     assert!(viewed.get("template_blocks").is_none());
     assert!(viewed.get("authorship").is_none());
 
-    // A section with neither field serializes exactly as it always did.
+    // The view hides exactly three things — template copies, authoring
+    // directives, and authorship — and adds nothing: stripping those keys
+    // from the plain serialization reproduces it.
     let plain = ReportContent {
         title: "Assessment".to_string(),
         sections: vec![section(Uuid::new_v4(), "History", "Documented.")],
     };
-    assert_eq!(
-        prompt_content_view(&plain),
-        serde_json::to_value(&plain).expect("serialize content")
-    );
+    let mut expected = serde_json::to_value(&plain).expect("serialize content");
+    for viewed in expected["sections"].as_array_mut().expect("sections array") {
+        let section = viewed.as_object_mut().expect("section object");
+        section.remove("template_directives");
+        section.remove("template_blocks");
+        section.remove("authorship");
+    }
+    assert_eq!(prompt_content_view(&plain), expected);
 }
 
 #[test]
