@@ -234,14 +234,15 @@ async fn save_report_draft_loaded(
     let saved_revision = expected_revision
         .checked_add(1)
         .ok_or_else(|| ReportStoreError::InvalidInput("Report revision overflow.".to_string()))?;
-    // A hand edit arrives without template copies or authorship, because the
-    // editor shows neither. Diff each section against the prior content by
-    // ID: re-attach the template copy so editing one section does not throw
-    // away the template body of the whole document, and stamp the user only
-    // on the sections they actually changed. Carrying the prior stamp on an
-    // untouched section is the point — saving the editor re-sends every
-    // section, so stamping them all would erase the model's provenance for
-    // the whole report on one typo fix.
+    // A hand edit arrives without template copies, authoring directives, or
+    // authorship, because the editor shows none of them. Diff each section
+    // against the prior content by ID: re-attach the template copy and the
+    // directives so editing one section does not throw away what the template
+    // said about the whole document, and stamp the user only on the sections
+    // they actually changed. Carrying the prior stamp on an untouched section
+    // is the point — saving the editor re-sends every section, so stamping
+    // them all would erase the model's provenance for the whole report on one
+    // typo fix.
     for section in &mut content.sections {
         let prior = loaded
             .workspace
@@ -252,6 +253,11 @@ async fn save_report_draft_loaded(
             .find(|existing| existing.id == section.id);
         if section.template_blocks.is_none() {
             section.template_blocks = prior.and_then(|existing| existing.template_blocks.clone());
+        }
+        if section.template_directives.is_empty() {
+            section.template_directives = prior
+                .map(|existing| existing.template_directives.clone())
+                .unwrap_or_default();
         }
         section.authorship = match prior {
             Some(prior)
@@ -380,7 +386,9 @@ async fn apply_report_template_loaded(
     // Keep an immutable copy of what the template supplied for each section.
     // Skipping a section drops its authored body, and rewriting one replaces
     // it; either way the original stays available for the greyed-out preview
-    // and for a later rewrite from the template.
+    // and for a later rewrite from the template. The section's authoring
+    // directives are already on the imported content and ride through
+    // untouched — the importer extracted them from these same blocks.
     let template_revision = loaded.workspace.draft.revision;
     for section in &mut loaded.workspace.draft.content.sections {
         section.template_blocks = Some(section.blocks.clone());

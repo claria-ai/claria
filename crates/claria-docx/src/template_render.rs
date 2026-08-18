@@ -994,6 +994,7 @@ fn single_target_draft(target: &TargetFlow) -> Result<ReportDraft, DocxError> {
             blocks,
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
         };
     let (title, sections) = match (&target.kind, &target.content) {
@@ -1078,6 +1079,7 @@ fn draft_from_targets(targets: &[TargetFlow]) -> Result<ReportDraft, DocxError> 
                     blocks: Vec::new(),
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                 });
             }

@@ -22,6 +22,7 @@ fn draft() -> ReportDraft {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: "11111111-1111-4111-8111-111111111111".parse().unwrap(),
                     heading: "History — 東京".to_string(),
@@ -32,6 +33,7 @@ fn draft() -> ReportDraft {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: "22222222-2222-4222-8222-222222222222".parse().unwrap(),
                     heading: "Recommendations".to_string(),
@@ -235,6 +237,7 @@ fn deferred_sections_are_left_out_of_both_exports() {
             blocks: Vec::new(),
             skipped: true,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
         },
     );
@@ -493,6 +496,7 @@ fn template_render_reuses_source_styles_for_new_sections() {
     report.content.sections.push(ReportSection {
         skipped: false,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship: None,
         id: "33333333-3333-4333-8333-333333333333".parse().unwrap(),
         heading: "Added section".to_string(),
