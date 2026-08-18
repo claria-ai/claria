@@ -1042,7 +1042,13 @@ async fn run_branch(
         // The reserved number, not the coordinator's: a branch cannot know
         // what commit order will call this, and the reader needs the retry
         // named while it is happening rather than after the merge.
+        // The retry wrapper knows how many attempts it made; the failure
+        // message has to say so, or a call that was re-sent three times
+        // reports itself as one and the reader reads a five-minute wait as a
+        // single slow request.
+        let attempts_made = std::sync::atomic::AtomicU32::new(1);
         let on_retry = |attempt, delay| {
+            attempts_made.store(attempt, std::sync::atomic::Ordering::Release);
             context.emit(ReportTurnProgress::retrying(
                 call_number,
                 attempt,
@@ -1090,8 +1096,9 @@ async fn run_branch(
                         ceiling: context.limits.max_converse_calls(),
                         model_id: context.model_id,
                         first_frame_secs: context.limits.writer_first_frame_timeout_secs(),
+                        idle_secs: context.limits.writer_idle_timeout_secs(),
                     },
-                    1,
+                    attempts_made.load(std::sync::atomic::Ordering::Acquire),
                     started.elapsed(),
                 );
                 return finished(
