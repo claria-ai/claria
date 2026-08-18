@@ -2480,3 +2480,95 @@ async fn a_restriction_survives_the_deterministic_resume() {
         .expect("record block");
     assert!(record_block.contains(TEACHER_FILE) && !record_block.contains(INTAKE_FILE));
 }
+
+/// A synthetic 1:1 plan resumes on the serial executor, which sends every
+/// section the shared corpus. A restriction stored on one would be a boundary
+/// no drafting call enforces, so the gate refuses to record it at all.
+#[tokio::test]
+async fn a_synthetic_plan_refuses_a_record_restriction() {
+    let (_server, _sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    let now = jiff::Timestamp::now();
+    let run_id = Uuid::new_v4();
+    let run = DraftRun {
+        schema_version: DRAFT_RUN_SCHEMA_VERSION,
+        run_id,
+        report_id,
+        client_id,
+        base_revision: 1,
+        status: DraftRunStatus::Stopped,
+        plan: Some(RunPlan {
+            model_id: WRITER_MODEL_ID.to_string(),
+            entries: vec![plan_entry(
+                SUMMARY_ID,
+                "Summary and Clinical Interpretation",
+                SectionIntent::Draft,
+            )],
+            user_edited: false,
+            synthetic: true,
+            approved_at: Some(now),
+            plan_warnings: Vec::new(),
+            created_at: now,
+        }),
+        title: None,
+        sections: vec![run_section(
+            SUMMARY_ID,
+            "Summary and Clinical Interpretation",
+            0,
+            RunSectionState::Pending,
+        )],
+        instructions: Vec::new(),
+        writer_model_id: WRITER_MODEL_ID.to_string(),
+        finalized_revision: None,
+        partial: false,
+        created_at: now,
+        updated_at: now,
+    };
+    claria_storage::objects::put_object(
+        &s3,
+        BUCKET,
+        &claria_core::s3_keys::report_draft_run(client_id, report_id, run_id),
+        serde_json::to_vec(&run).expect("run JSON"),
+        Some("application/json"),
+    )
+    .await
+    .expect("seed the synthetic run");
+
+    let error = pipeline::update_draft_plan(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        &[PlanEntryEdit {
+            section_id: SUMMARY_ID.parse().expect("section UUID"),
+            curated_records: Some(vec![INTAKE_FILE.to_string()]),
+            ..Default::default()
+        }],
+    )
+    .await
+    .expect_err("a synthetic plan must refuse a restriction");
+    assert!(
+        error.to_string().contains("not planned at the gate"),
+        "unexpected error: {error}"
+    );
+
+    // Clearing is a no-op, not a boundary, and stays allowed so the gate can
+    // always converge on the unrestricted shape.
+    pipeline::update_draft_plan(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        &[PlanEntryEdit {
+            section_id: SUMMARY_ID.parse().expect("section UUID"),
+            curated_records: Some(Vec::new()),
+            ..Default::default()
+        }],
+    )
+    .await
+    .expect("clearing a restriction on a synthetic plan is a no-op");
+}

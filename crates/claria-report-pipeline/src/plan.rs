@@ -458,6 +458,17 @@ pub async fn update_draft_plan(
             entry.instruction = (!instruction.trim().is_empty()).then(|| instruction.clone());
         }
         if let Some(curated) = &edit.curated_records {
+            // A synthetic 1:1 plan resumes on the serial executor, which
+            // sends every section the shared corpus. Accepting a restriction
+            // here would record a boundary no drafting call enforces — the
+            // one shape this feature must never produce.
+            if plan.synthetic && !curated.is_empty() {
+                return Err(ReportPipelineError::InvalidInput(
+                    "This run was not planned at the gate, so its sections cannot be restricted \
+                     to selected records."
+                        .to_string(),
+                ));
+            }
             entry.curated_records = validate_curated_records(curated, &known_files)?;
         }
     }
