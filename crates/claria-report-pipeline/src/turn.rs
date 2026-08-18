@@ -38,7 +38,8 @@ use crate::{
     },
     prompts::{full_report_system_prompt, report_system_prompt},
     record_context::{
-        BudgetRole, FullRecordContext, load_full_record_context, load_record_inventory,
+        BudgetRole, FullRecordContext, RecordInventoryEntry, load_full_record_context,
+        load_record_inventory,
     },
     run::{
         create_run_for_workspace, park_stopped_run, release_failed_run, stamp_run_authorship,
@@ -592,7 +593,7 @@ pub(crate) async fn execute_full_draft_turn(
     let report_id = loaded.workspace.report_id;
     let prepared = prepare_full_draft_context(s3, bucket, client_id, model_id, request).await;
     let record_context = match prepared {
-        Ok(record_context) => record_context,
+        Ok(prepared) => prepared.record_context,
         Err(error) => {
             release_failed_run(s3, bucket, client_id, report_id, &mut run).await;
             return Err(error);
@@ -629,13 +630,25 @@ pub(crate) async fn execute_full_draft_turn(
     }
 }
 
+/// The shared corpus a whole-report turn was prepared with, and the inventory
+/// it was built from.
+///
+/// The inventory rides along because the parallel fan-out needs it again: a
+/// section the clinician restricted builds its own snapshot from a subset of
+/// exactly these entries, and re-listing the prefix to learn what it already
+/// knows would be a second `ListObjectsV2` for the same answer.
+pub(crate) struct PreparedDraftContext {
+    pub(crate) record_context: FullRecordContext,
+    pub(crate) inventory: Vec<RecordInventoryEntry>,
+}
+
 pub(crate) async fn prepare_full_draft_context(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
     model_id: &str,
     request: FullReportRequest<'_>,
-) -> Result<FullRecordContext, ReportPipelineError> {
+) -> Result<PreparedDraftContext, ReportPipelineError> {
     let output_token_reserve = request.limits.writer_max_output_tokens();
     let inventory = load_record_inventory(s3, bucket, client_id)
         .await
@@ -645,6 +658,7 @@ pub(crate) async fn prepare_full_draft_context(
         bucket,
         &[BudgetRole::writer(model_id, output_token_reserve)],
         &inventory,
+        None,
     )
     .await?;
     request.emit_progress(ReportTurnProgress::RecordContextPrepared {
@@ -652,7 +666,10 @@ pub(crate) async fn prepare_full_draft_context(
         unavailable_files: record_context.summary.unavailable_files,
         total_characters: record_context.summary.total_characters,
     });
-    Ok(record_context)
+    Ok(PreparedDraftContext {
+        record_context,
+        inventory,
+    })
 }
 
 fn validate_instruction(instruction: &str) -> Result<(), ReportPipelineError> {

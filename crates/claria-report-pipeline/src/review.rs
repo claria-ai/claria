@@ -581,6 +581,7 @@ async fn prepare_review_corpus(
         bucket,
         &[BudgetRole::reviewer(reviewer_model_id)],
         &inventory,
+        None,
     )
     .await?;
     request.emit_progress(ReportTurnProgress::RecordContextPrepared {
