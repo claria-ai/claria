@@ -1,6 +1,9 @@
 use std::io::{Cursor, Write};
 
-use claria_core::models::report::{ReportBlock, ReportTemplateWarningCode};
+use claria_core::models::report::{
+    MAX_SECTION_TEMPLATE_DIRECTIVES, MAX_TEMPLATE_DIRECTIVE_CHARACTERS, ReportBlock,
+    ReportTemplateWarningCode,
+};
 use claria_docx::{DocxError, MAX_TEMPLATE_DOCX_BYTES, import_template};
 use docx_rs::{
     Docx, IndentLevel, NumberingId, Paragraph, Run, Shading, Table, TableCell, TableRow, VMergeType,
@@ -320,4 +323,132 @@ fn oversized_and_macro_enabled_packages_are_rejected_before_parsing() {
         import_template(&output.into_inner()),
         Err(DocxError::UnsafeTemplate(_))
     ));
+}
+
+// ── Template authoring directives ───────────────────────────────────────────
+
+fn heading(text: &str) -> Paragraph {
+    Paragraph::new()
+        .style("Heading1")
+        .add_run(Run::new().add_text(text))
+}
+
+fn body(text: &str) -> Paragraph {
+    Paragraph::new().add_run(Run::new().add_text(text))
+}
+
+/// The specimen behaviour: a clinical template's bracketed notes to whoever
+/// fills it in are carried per section, in document order, out of paragraphs,
+/// bullets, and table cells alike.
+#[test]
+fn bracketed_authoring_directives_are_extracted_per_section() {
+    let bytes = pack(
+        Docx::new()
+            .add_paragraph(heading("Reason for Referral"))
+            .add_paragraph(body(
+                "[a one sentence briefly stating why child was referred]",
+            ))
+            .add_paragraph(heading("Test Results"))
+            .add_paragraph(body("Scores follow."))
+            .add_paragraph(
+                Paragraph::new()
+                    .numbering(NumberingId::new(1), IndentLevel::new(0))
+                    .add_run(Run::new().add_text("[Add a validity line]")),
+            )
+            .add_table(
+                Table::new(vec![TableRow::new(vec![
+                    TableCell::new().add_paragraph(body("Composite")),
+                    TableCell::new().add_paragraph(body("[score]")),
+                ])])
+                .set_grid(vec![5_000, 5_000]),
+            ),
+    );
+
+    let imported = import_template(&bytes).expect("import template");
+    let sections = &imported.content.sections;
+    assert_eq!(sections.len(), 2);
+    assert_eq!(
+        sections[0].template_directives,
+        vec!["a one sentence briefly stating why child was referred".to_string()]
+    );
+    // Bullet items and table cells are read too, in the order their blocks
+    // appear in the section.
+    assert_eq!(
+        sections[1].template_directives,
+        vec!["Add a validity line".to_string(), "score".to_string()]
+    );
+}
+
+/// A directive that quotes a slot inside itself is one directive, and a stray
+/// bracket on either side is not a directive at all.
+#[test]
+fn nested_brackets_nest_and_an_unclosed_bracket_is_dropped() {
+    let bytes = pack(
+        Docx::new()
+            .add_paragraph(heading("Identifying Information"))
+            .add_paragraph(body(
+                "[child's age ; format = [number] years, [number] months]",
+            ))
+            .add_paragraph(body("[this one never closes"))
+            .add_paragraph(body("Closing bracket with no opener] is ignored."))
+            .add_paragraph(body("[]  [   ]")),
+    );
+
+    let imported = import_template(&bytes).expect("import template");
+    assert_eq!(
+        imported.content.sections[0].template_directives,
+        vec!["child's age ; format = [number] years, [number] months".to_string()]
+    );
+}
+
+/// A template that repeats the same slot in every paragraph is saying one
+/// thing, and the count cap keeps the earliest directives rather than the
+/// loudest.
+#[test]
+fn repeated_directives_collapse_and_the_count_cap_keeps_the_earliest() {
+    let mut document = Docx::new().add_paragraph(heading("Behavioral Observations"));
+    for _ in 0..4 {
+        document = document.add_paragraph(body("[child's first name]"));
+    }
+    for index in 0..12 {
+        document = document.add_paragraph(body(&format!("[directive number {index}]")));
+    }
+    let imported = import_template(&pack(document)).expect("import template");
+
+    let directives = &imported.content.sections[0].template_directives;
+    assert_eq!(directives.len(), MAX_SECTION_TEMPLATE_DIRECTIVES);
+    assert_eq!(directives[0], "child's first name");
+    assert_eq!(directives[1], "directive number 0");
+    assert_eq!(directives[7], "directive number 6");
+}
+
+/// A directive longer than the ceiling is cut rather than dropped: the opening
+/// of a long instruction still says what form the section takes.
+#[test]
+fn an_overlong_directive_is_truncated_to_the_ceiling() {
+    let long = "x".repeat(MAX_TEMPLATE_DIRECTIVE_CHARACTERS + 40);
+    let bytes = pack(
+        Docx::new()
+            .add_paragraph(heading("Summary"))
+            .add_paragraph(body(&format!("[{long}]"))),
+    );
+
+    let imported = import_template(&bytes).expect("import template");
+    let directive = &imported.content.sections[0].template_directives[0];
+    assert_eq!(directive.chars().count(), MAX_TEMPLATE_DIRECTIVE_CHARACTERS);
+    assert!(directive.ends_with('\u{2026}'));
+}
+
+/// A template with no brackets carries no directives, so the field costs an
+/// ordinary document nothing.
+#[test]
+fn a_template_without_brackets_carries_no_directives() {
+    let bytes = pack(
+        Docx::new()
+            .add_paragraph(heading("Recommendations"))
+            .add_paragraph(body("Continue weekly sessions.")),
+    );
+
+    let imported = import_template(&bytes).expect("import template");
+    assert!(imported.content.sections[0].template_directives.is_empty());
 }

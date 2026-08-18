@@ -72,6 +72,7 @@ fn section(id: &str, heading: &str, text: &str) -> ReportSection {
         blocks: vec![paragraph(text)],
         skipped: false,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship: None,
     }
 }
@@ -83,6 +84,7 @@ fn skipped_section(id: &str, heading: &str) -> ReportSection {
         blocks: Vec::new(),
         skipped: true,
         template_blocks: Some(vec![paragraph("Template boilerplate.")]),
+        template_directives: Vec::new(),
         authorship: None,
     }
 }

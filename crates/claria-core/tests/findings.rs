@@ -97,6 +97,7 @@ fn section(id: Uuid, authorship: Option<SectionAuthorship>) -> ReportSection {
         }],
         skipped: false,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship,
     }
 }

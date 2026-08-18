@@ -229,6 +229,7 @@ fn table_and_template_review_metadata_are_exposed_without_source_identity() {
                 sections: vec![ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: Uuid::new_v4(),
                     heading: "Scores".to_string(),

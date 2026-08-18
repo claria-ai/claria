@@ -1708,6 +1708,7 @@ fn single_target_draft(target: &TargetFlow) -> Result<ReportDraft, DocxError> {
             blocks,
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
         };
     let (title, sections) = match (&target.kind, &target.content) {
@@ -1786,6 +1787,7 @@ impl TargetDocument {
                 blocks: blocks_from_targets(&section.blocks),
                 skipped: false,
                 template_blocks: None,
+                template_directives: Vec::new(),
                 authorship: None,
             })
             .collect();

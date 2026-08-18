@@ -226,6 +226,7 @@ fn section(heading: &str, blocks: Vec<ReportBlock>) -> ReportSection {
     ReportSection {
         skipped: false,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship: None,
         id: Uuid::new_v4(),
         heading: heading.to_string(),
