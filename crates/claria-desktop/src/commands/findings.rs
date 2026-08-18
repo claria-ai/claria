@@ -53,7 +53,9 @@ pub async fn run_review_sweeps(
             report_id,
             revision,
             &reviewer_model_id,
-            claria_report_pipeline::ReviewSweepRequest::new().with_progress(&progress),
+            claria_report_pipeline::ReviewSweepRequest::new()
+                .with_progress(&progress)
+                .with_stream_bounds(ctx.cfg.report_authoring.runtime().analysis_stream_bounds()),
         )
         .await?;
         let mut details = usage_audit_details(&reviewer_model_id, outcome.usage.as_ref(), None);

@@ -92,6 +92,7 @@ pub async fn generate_draft_plan(
             },
             claria_report_pipeline::DraftPlanRequest::new(&instructions)
                 .with_progress(&progress)
+                .with_stream_bounds(ctx.cfg.report_authoring.runtime().analysis_stream_bounds())
                 .with_stop(&stop.signal),
         )
         .await?;

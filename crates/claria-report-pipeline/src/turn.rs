@@ -25,10 +25,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    CONVERSE_CALLS_FIELD_LABEL, FullReportGenerationOutcome, MAX_CONFIGURABLE_CONVERSE_CALLS,
-    MAX_CONFIGURABLE_TOOL_ROUNDS, MAX_REPORT_REFERENCES, REPORT_TRUNCATED_NOTICE,
-    ReportBlockReference, ReportPipelineError, ReportPromptCache, ReportTurnLimits,
-    ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL, WRITER_LIMITS_SECTION,
+    CONVERSE_CALLS_FIELD_LABEL, FIRST_FRAME_TIMEOUT_FIELD_LABEL, FullReportGenerationOutcome,
+    MAX_CONFIGURABLE_CONVERSE_CALLS, MAX_CONFIGURABLE_TOOL_ROUNDS, MAX_REPORT_REFERENCES,
+    REPORT_TRUNCATED_NOTICE, ReportBlockReference, ReportPipelineError, ReportPromptCache,
+    ReportTurnLimits, ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL, WRITER_LIMITS_SECTION,
     context::{
         build_untrusted_context, flatten_protocol_history, sanitize_turn_messages, sha256_hex,
     },
@@ -635,11 +635,17 @@ pub(crate) async fn prepare_full_draft_context(
     model_id: &str,
     request: FullReportRequest<'_>,
 ) -> Result<FullRecordContext, ReportPipelineError> {
+    let output_token_reserve = request.limits.writer_max_output_tokens();
     let inventory = load_record_inventory(s3, bucket, client_id)
         .await
         .map_err(|source| ReportPipelineError::storage("listing full-draft records", source))?;
-    let record_context =
-        load_full_record_context(s3, bucket, &[BudgetRole::writer(model_id)], &inventory).await?;
+    let record_context = load_full_record_context(
+        s3,
+        bucket,
+        &[BudgetRole::writer(model_id, output_token_reserve)],
+        &inventory,
+    )
+    .await?;
     request.emit_progress(ReportTurnProgress::RecordContextPrepared {
         included_files: record_context.summary.included_files,
         unavailable_files: record_context.summary.unavailable_files,
@@ -928,6 +934,7 @@ pub(crate) fn call_usage_record(
     usage: Option<TurnUsage>,
     stop_reason: ReportStopReason,
     latency_ms: Option<u64>,
+    max_output_tokens: u32,
 ) -> ReportCallUsageRecord {
     ReportCallUsageRecord {
         schema_version: ATTEMPT_SCHEMA_VERSION,
@@ -941,7 +948,7 @@ pub(crate) fn call_usage_record(
         recorded_at: jiff::Timestamp::now(),
         stop_reason: Some(stop_reason.as_str().to_string()),
         latency_ms,
-        max_output_tokens: report::REPORT_OUTPUT_TOKEN_RESERVE,
+        max_output_tokens,
         system_prompt_sha256: progress.system_prompt_sha256.clone(),
         // Workspace crates version in lockstep with the desktop binary.
         app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -1171,7 +1178,8 @@ async fn run_turn(
     progress.system_prompt_sha256 = sha256_hex(&system_prompt);
     // One exact CountTokens per turn; later calls estimate appended messages
     // and re-verify only near the budget.
-    let mut input_budget = report::ReportInputBudget::new(&progress.model_id);
+    let mut input_budget =
+        report::ReportInputBudget::new(&progress.model_id, limits.writer_max_output_tokens());
     let citable_filenames = match request.kind {
         TurnRunKind::FullDraft { record_context, .. } => {
             record_context.citable_filenames.as_slice()
@@ -1210,6 +1218,9 @@ async fn run_turn(
     } else {
         claria_bedrock::converse::CachePlan::report_default(capabilities)
     };
+    // Fixed for the attempt for the same reason as the cache plan: the two
+    // waits are the clinician's setting, not something a call may narrow.
+    let stream_bounds = limits.stream_bounds();
 
     loop {
         // Past the cut, Stop is deliberately a no-op: `finish_full_draft` has
@@ -1261,6 +1272,7 @@ async fn run_turn(
                     &mut input_budget,
                     request.model_tuning,
                     cache_plan.clone(),
+                    stream_bounds,
                     stop,
                 )
                 .await
@@ -1274,6 +1286,7 @@ async fn run_turn(
                     &mut input_budget,
                     request.model_tuning,
                     cache_plan.clone(),
+                    stream_bounds,
                     stop,
                 )
                 .await
@@ -1310,6 +1323,7 @@ async fn run_turn(
                             number: call_number,
                             ceiling: limits.max_converse_calls,
                             model_id: &model_id,
+                            first_frame_secs: limits.writer_first_frame_timeout_secs(),
                         },
                         interruptions.saturating_add(1),
                         call_started.elapsed(),
@@ -1333,6 +1347,7 @@ async fn run_turn(
                 output.usage.clone(),
                 output.stop_reason,
                 output.latency_ms,
+                limits.writer_max_output_tokens(),
             ),
         )
         .await
@@ -1802,6 +1817,9 @@ pub(crate) struct FailedReportCall<'a> {
     pub(crate) number: u32,
     pub(crate) ceiling: u32,
     pub(crate) model_id: &'a str,
+    /// The first-response wait these attempts each spent, so a call that
+    /// never got answered can name the setting that governs it.
+    pub(crate) first_frame_secs: u32,
 }
 
 /// Retries granted to one Bedrock call whose request never completed —
@@ -1851,6 +1869,7 @@ pub(crate) fn map_bedrock_failure(
         number,
         ceiling,
         model_id,
+        first_frame_secs,
     } = call;
     let failure = match &error {
         BedrockError::ContextBudgetExceeded { .. } => TurnRunFailure::new(
@@ -1875,7 +1894,7 @@ pub(crate) fn map_bedrock_failure(
         _ if error.is_interrupted_before_completion() => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
             format!(
-                "Bedrock appears to be having a hard time: {attempts} attempts at call {number} of {ceiling} got no response over the last {}. Try again later. Usage for the calls that completed was retained.",
+                "Bedrock appears to be having a hard time: {attempts} attempts at call {number} of {ceiling} got no response over the last {}. Try again later, or raise \"{FIRST_FRAME_TIMEOUT_FIELD_LABEL}\" in {WRITER_LIMITS_SECTION} — each attempt gave up after {first_frame_secs} seconds, and a long template on a cold prompt cache can need longer than that to start. Usage for the calls that completed was retained.",
                 elapsed_phrase(elapsed)
             ),
         )

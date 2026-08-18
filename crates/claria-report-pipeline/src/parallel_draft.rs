@@ -627,6 +627,7 @@ async fn commit_branch(
                 receipt.usage,
                 receipt.stop_reason,
                 receipt.latency_ms,
+                request.limits.writer_max_output_tokens(),
             ),
         )
         .await
@@ -1003,8 +1004,16 @@ async fn run_branch(
     }];
 
     let budget = tokio::sync::Mutex::new(match seed {
-        Some((tokens, chars)) => report::ReportInputBudget::seeded(context.model_id, tokens, chars),
-        None => report::ReportInputBudget::new(context.model_id),
+        Some((tokens, chars)) => report::ReportInputBudget::seeded(
+            context.model_id,
+            context.limits.writer_max_output_tokens(),
+            tokens,
+            chars,
+        ),
+        None => report::ReportInputBudget::new(
+            context.model_id,
+            context.limits.writer_max_output_tokens(),
+        ),
     });
     let mut strikes = 0_u32;
     let mut corrective_used = false;
@@ -1054,6 +1063,7 @@ async fn run_branch(
                     &mut *budget.lock().await,
                     context.tuning,
                     context.cache_plan.clone(),
+                    context.limits.stream_bounds(),
                     context.stop,
                 )
                 .await
@@ -1079,6 +1089,7 @@ async fn run_branch(
                         number: call_number,
                         ceiling: context.limits.max_converse_calls(),
                         model_id: context.model_id,
+                        first_frame_secs: context.limits.writer_first_frame_timeout_secs(),
                     },
                     1,
                     started.elapsed(),

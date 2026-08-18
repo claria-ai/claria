@@ -164,23 +164,41 @@ a run resumable.
 | `converse.rs` | Stream bounds, cache points, budgets, usage/budget logging, `StopSignal` |
 | `retry.rs` | `with_throttle_retry` |
 | `analysis.rs` | Forced-tool structured calls: `StructuredCallRequest`, `converse_structured`, `AnalysisInputBudget`, the tool schemas |
-| `report.rs` | Writer turns and `REPORT_OUTPUT_TOKEN_RESERVE` |
+| `report.rs` | Writer turns and `DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE` |
 | `chat.rs` | Chat turns and `CHAT_MAX_OUTPUT_TOKENS` |
 
-**Stream silence** is bounded by two consts in `converse.rs`:
-`STREAM_FIRST_FRAME_TIMEOUT` (90s, in `start_converse_stream`) and
-`STREAM_IDLE_TIMEOUT` (60s, per-`recv` in `recv_stream_event`, clock restarting
-each frame). These exist because the AWS SDK's stalled-stream protection does
-not cover `ConverseStream` — the generated operation registers no
-`StalledStreamProtectionInterceptor` — and the SDK read timeout bounds only the
-wait for response headers. Neither bound is configurable.
+**Stream silence** is bounded per call by a `StreamBounds` pair in
+`converse.rs`: a first-frame wait (in `start_converse_stream`) and an idle wait
+(per-`recv` in `recv_stream_event`, clock restarting each frame). These exist
+because the AWS SDK's stalled-stream protection does not cover `ConverseStream`
+— the generated operation registers no `StalledStreamProtectionInterceptor` —
+and the SDK read timeout bounds only the wait for response headers.
+
+Both are clinician-configurable through `BedrockRuntimeLimits`, which reaches
+the writer as `ReportTurnLimits::stream_bounds` and the planner/reviewer through
+`DraftPlanRequest::with_stream_bounds` / `ReviewSweepRequest::with_stream_bounds`.
+The family defaults are unchanged (`DEFAULT_STREAM_*` 90s/60s conversational,
+`DEFAULT_ANALYSIS_STREAM_*` 120s/90s), and every configured value is clamped to
+`1..=MAX_STREAM_TIMEOUT_SECS` in `StreamBounds::writer`. Chat is not
+configurable and still reads the const default.
+
+**The writer's output ceiling** is configurable the same way. The `max_tokens`
+one writer call sends and the reserve subtracted from the model's window are the
+same number by construction — `ReportInputBudget` carries it, and
+`converse_report_with_tool_set` reads it back off the budget rather than a
+const. `effective_output_reserve` clamps a configured ceiling to
+`MIN`/`MAX_REPORT_OUTPUT_TOKEN_RESERVE` and then to half the model's window, so
+raising it can never leave a budget of nothing. The planner and reviewer
+reserves stay compile-time: both are tied to their JSON-schema ceilings by
+`const` assertions.
 
 **Budgets** are the model's context window minus a per-operation output reserve.
 The window comes from the central capability table
 `claria-core/src/model_id.rs::ModelCapabilities::for_id`, which is suffix-driven
 (`:48k` / `:200k` / `:1m`) and otherwise an assumption. Reserves:
 `PLAN_OUTPUT_TOKEN_RESERVE` and `REVIEW_OUTPUT_TOKEN_RESERVE` in
-`claria-report-pipeline` (`plan.rs`, `review.rs`), `REPORT_OUTPUT_TOKEN_RESERVE`
+`claria-report-pipeline` (`plan.rs`, `review.rs`), the writer's configured
+reserve (defaulting to `DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE`)
 and `CHAT_MAX_OUTPUT_TOKENS` in `claria-bedrock`. Actual counting is
 `converse.rs::InputTokenBudget` — `exact` counts once then estimates at ~4
 chars/token, `estimated` trusts the estimate until within 10% of the budget, and
@@ -302,7 +320,7 @@ credentials, may permanently purge S3 version history.
 
 ## Config Versioning
 
-`config.json` carries a `config_version` field (u32). Current version: **9**.
+`config.json` carries a `config_version` field (u32). Current version: **12**.
 
 ### Rules
 - Every schema change to `ClariaConfig` (new field, renamed field, changed type) bumps `CURRENT_VERSION` in `config.rs`

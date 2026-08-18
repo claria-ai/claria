@@ -48,7 +48,7 @@ use claria_bedrock::{
         ReviewProperty, ReviewRow, ReviewRowFinding, ReviewRowStatus, ReviewRowsRequest,
         StructuredCallOutput, StructuredCallRequest,
     },
-    converse::StopSignal,
+    converse::{StopSignal, StreamBounds},
     retry::{MAX_ATTEMPTS, with_throttle_retry_observed},
 };
 use claria_core::models::{
@@ -172,11 +172,19 @@ impl ReviewSweepOutcome {
 pub struct ReviewSweepRequest<'a> {
     progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
     stop: Option<&'a StopSignal>,
+    stream_bounds: Option<StreamBounds>,
 }
 
 impl<'a> ReviewSweepRequest<'a> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// How long each review call may stay silent. Without this every sweep
+    /// runs at the analysis family's compiled-in waits.
+    pub fn with_stream_bounds(mut self, stream_bounds: StreamBounds) -> Self {
+        self.stream_bounds = Some(stream_bounds);
+        self
     }
 
     pub fn with_progress(
@@ -254,6 +262,7 @@ pub async fn run_review_sweeps(
             reviewed: &reviewed,
             corpus: &corpus,
             revision,
+            stream_bounds: request.stream_bounds.unwrap_or_else(StreamBounds::analysis),
         },
         request,
     )
@@ -284,6 +293,7 @@ struct BranchContext<'a> {
     reviewed: &'a [&'a ReportSection],
     corpus: &'a FullRecordContext,
     revision: u64,
+    stream_bounds: StreamBounds,
 }
 
 /// One completed branch.
@@ -477,6 +487,7 @@ async fn run_branch(
                             forced_tool: analysis::SUBMIT_REVIEW_ROWS_TOOL,
                             max_tokens: REVIEW_OUTPUT_TOKEN_RESERVE,
                             cache_plan: cache_plan.clone(),
+                            stream_bounds: context.stream_bounds,
                             stop,
                             // A review branch already reports itself pass by
                             // pass; a row count inside one pass says nothing

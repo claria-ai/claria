@@ -195,9 +195,9 @@ one call for the document:
   template is ten decisions minimum.
 
 So a typical templated report is N+2 calls at minimum, spread across several
-Converse rounds: each response is capped at the 32k output reserve, and a
-response cut off mid-call is salvaged (completed calls execute, the model
-continues in the next round). The activity feed shows every call, which is
+Converse rounds: each response is capped at the output reserve (32k by
+default, raisable in Preferences), and a response cut off mid-call is
+salvaged (completed calls execute, the model continues in the next round). The activity feed shows every call, which is
 why a fresh ten-section report reads as 12+ tool calls even when nothing is
 wrong.
 
@@ -206,6 +206,15 @@ before the loop acts on it. Nothing reaches the UI incrementally — a tool
 call is only executable once complete — but at a 32k output reserve a unary
 request would sit idle long enough to risk an HTTP timeout while the model
 generates, so the connection carries frames throughout instead.
+
+Two waits bound one round's silence: how long Bedrock may take to produce
+the first frame (90s by default) and how long it may then go quiet (60s).
+Both are Preferences settings, as is the output reserve. They exist for the
+case the defaults were sized against and then outgrown — a template long
+enough that a cold prompt cache spends minutes re-reading the request before
+the first token, which the default wait reads as a request that never
+landed. The planner and reviewer carry their own pair (120s/90s), set from
+the same section.
 
 A round whose request never completes — the stream never starts, goes
 silent past the idle bound, or drops mid-response, or the request never
@@ -269,7 +278,10 @@ Note the coupling: raising the output reserve (8k → 32k in the quality-
 regression fix) shrank both the input budget and the whole-report snapshot
 ceiling (~575 KiB → ~490 KiB). Reserve, input budget, and snapshot preflight
 are all derived from each other by design — see the Bedrock rules in
-CLAUDE.md.
+CLAUDE.md. The reserve being a setting does not loosen that: a raised
+ceiling shrinks the input budget and the snapshot allowance by the same
+amount on the same call, and is itself capped at half the model's window so
+there is always room left to ask the question.
 
 ## What travels on each turn
 
