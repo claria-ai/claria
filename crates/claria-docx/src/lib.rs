@@ -9,6 +9,7 @@ mod error;
 mod import;
 mod render;
 mod style_catalog;
+mod table_grid;
 mod template_render;
 
 pub use diagnose::{

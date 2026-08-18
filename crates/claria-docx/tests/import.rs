@@ -3,7 +3,7 @@ use std::io::{Cursor, Write};
 use claria_core::models::report::{ReportBlock, ReportTemplateWarningCode};
 use claria_docx::{DocxError, MAX_TEMPLATE_DOCX_BYTES, import_template};
 use docx_rs::{
-    Docx, IndentLevel, NumberingId, Paragraph, Run, Shading, Table, TableCell, TableRow,
+    Docx, IndentLevel, NumberingId, Paragraph, Run, Shading, Table, TableCell, TableRow, VMergeType,
 };
 use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -111,7 +111,12 @@ fn headings_lists_and_simple_tables_become_structured_report_content() {
 }
 
 #[test]
-fn missing_title_and_merged_table_are_reported_without_carrying_the_table() {
+fn merged_cells_import_as_the_rectangle_they_describe() {
+    // A `gridSpan` header over two columns and a `vMerge` row label down two
+    // rows: the spanning cell's text sits at the first position it covers,
+    // and every position a merge covers is the empty string. Clinical score
+    // tables are built this way, and dropping them left the model unable to
+    // fill or delete them.
     let bytes = pack(
         Docx::new()
             .add_paragraph(
@@ -120,22 +125,135 @@ fn missing_title_and_merged_table_are_reported_without_carrying_the_table() {
                     .add_run(Run::new().add_text("Narrative")),
             )
             .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Keep this")))
-            .add_table(Table::new(vec![TableRow::new(vec![
-                TableCell::new()
-                    .grid_span(2)
-                    .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Merged"))),
-            ])])),
+            .add_table(
+                Table::new(vec![
+                    TableRow::new(vec![TableCell::new().grid_span(2).add_paragraph(
+                        Paragraph::new().add_run(Run::new().add_text("T score")),
+                    )]),
+                    TableRow::new(vec![
+                        TableCell::new()
+                            .vertical_merge(VMergeType::Restart)
+                            .add_paragraph(
+                                Paragraph::new().add_run(Run::new().add_text("Attention")),
+                            ),
+                        TableCell::new()
+                            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Parent"))),
+                    ]),
+                    TableRow::new(vec![
+                        TableCell::new().vertical_merge(VMergeType::Continue),
+                        TableCell::new().add_paragraph(
+                            Paragraph::new().add_run(Run::new().add_text("Teacher")),
+                        ),
+                    ]),
+                ])
+                .set_grid(vec![4_675, 4_675]),
+            ),
     );
 
     let imported = import_template(&bytes).expect("partial import");
     assert_eq!(imported.content.title, "Imported report template");
-    assert_eq!(imported.content.sections[0].blocks.len(), 1);
     assert_eq!(
         warning_count(&imported, ReportTemplateWarningCode::MissingTitle),
         1
     );
     assert_eq!(
-        warning_count(&imported, ReportTemplateWarningCode::MergedTablesOmitted,),
+        warning_count(&imported, ReportTemplateWarningCode::MergedTablesOmitted),
+        0
+    );
+    assert_eq!(imported.stats.tables, 1);
+    let Some(ReportBlock::Table {
+        rows,
+        has_header,
+        column_widths,
+    }) = imported.content.sections[0].blocks.get(1)
+    else {
+        panic!("the merged table did not import: {:?}", imported.content);
+    };
+    assert_eq!(
+        *rows,
+        vec![
+            vec!["T score".to_string(), String::new()],
+            vec!["Attention".to_string(), "Parent".to_string()],
+            vec![String::new(), "Teacher".to_string()],
+        ]
+    );
+    // A merged header row is not a header row: the positions its span covers
+    // are empty.
+    assert!(!has_header);
+    assert_eq!(*column_widths, Some(vec![5_000, 5_000]));
+}
+
+#[test]
+fn merged_geometry_that_is_not_a_rectangle_is_still_omitted() {
+    // Row one spans three columns, row two holds two cells: no rectangle
+    // exists, so the table cannot reach the model at all.
+    let bytes = pack(
+        Docx::new()
+            .add_paragraph(
+                Paragraph::new()
+                    .style("Heading1")
+                    .add_run(Run::new().add_text("Narrative")),
+            )
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Keep this")))
+            .add_table(
+                Table::new(vec![
+                    TableRow::new(vec![TableCell::new().grid_span(3).add_paragraph(
+                        Paragraph::new().add_run(Run::new().add_text("Merged")),
+                    )]),
+                    TableRow::new(vec![
+                        TableCell::new()
+                            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Left"))),
+                        TableCell::new()
+                            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Right"))),
+                    ]),
+                ])
+                .set_grid(vec![3_000, 3_000, 3_000]),
+            ),
+    );
+
+    let imported = import_template(&bytes).expect("partial import");
+    assert_eq!(imported.content.sections[0].blocks.len(), 1);
+    assert_eq!(imported.stats.tables, 0);
+    assert_eq!(
+        warning_count(&imported, ReportTemplateWarningCode::MergedTablesOmitted),
+        1
+    );
+}
+
+#[test]
+fn a_span_that_contradicts_the_table_grid_is_omitted() {
+    // Both rows expand to two positions, but the table declares three
+    // columns — the geometry the package states and the geometry its cells
+    // describe disagree, and guessing which one is right would put text in
+    // the wrong column.
+    let bytes = pack(
+        Docx::new()
+            .add_paragraph(
+                Paragraph::new()
+                    .style("Heading1")
+                    .add_run(Run::new().add_text("Narrative")),
+            )
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Keep this")))
+            .add_table(
+                Table::new(vec![
+                    TableRow::new(vec![TableCell::new().grid_span(2).add_paragraph(
+                        Paragraph::new().add_run(Run::new().add_text("Merged")),
+                    )]),
+                    TableRow::new(vec![
+                        TableCell::new()
+                            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Left"))),
+                        TableCell::new()
+                            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Right"))),
+                    ]),
+                ])
+                .set_grid(vec![3_000, 3_000, 3_000]),
+            ),
+    );
+
+    let imported = import_template(&bytes).expect("partial import");
+    assert_eq!(imported.stats.tables, 0);
+    assert_eq!(
+        warning_count(&imported, ReportTemplateWarningCode::MergedTablesOmitted),
         1
     );
 }

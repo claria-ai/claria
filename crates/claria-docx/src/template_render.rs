@@ -22,6 +22,7 @@ use crate::{
     render::BULLET_NUMBERING_ID,
     render_report,
     style_catalog::{StyleCatalog, normalize_style},
+    table_grid::{CellGeometry, TableGeometry, expand_rows},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,7 +108,22 @@ struct TextSlot {
 }
 
 type ParagraphRange = (usize, usize);
-type TableCells = Vec<Vec<Vec<ParagraphRange>>>;
+
+/// One position of a table's rectangular grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GridCell {
+    /// The cell that owns this position: its paragraphs hold the text.
+    Owner(Vec<ParagraphRange>),
+    /// A position a merge covers — the tail of a `gridSpan` run, or a
+    /// `vMerge` continuation Word paints the restart cell across. It holds
+    /// no text of its own, which is exactly the empty string the import put
+    /// in the draft for it.
+    Covered,
+}
+
+/// A template table as the same rectangle the import produced, with each
+/// position pointing at the events that can hold its text.
+type TableGrid = Vec<Vec<GridCell>>;
 
 /// How faithfully a template export could reuse the source package's
 /// formatting. Anything but [`TemplateRenderFidelity::PlainBodyFallback`]
@@ -750,81 +766,164 @@ fn text_slots(events: &[Event<'static>]) -> Result<Vec<TextSlot>, DocxError> {
 }
 
 fn table_flow(events: &[Event<'static>]) -> Result<Option<Vec<Vec<String>>>, DocxError> {
-    let cells = table_cells(events)?;
-    if cells.is_empty() || cells.iter().any(Vec::is_empty) {
+    let Some(grid) = table_grid(events) else {
         return Ok(None);
-    }
-    let columns = cells[0].len();
-    if cells.iter().any(|row| row.len() != columns) {
-        return Ok(None);
-    }
-    let mut rows = Vec::with_capacity(cells.len());
-    for row in cells {
+    };
+    let mut rows = Vec::with_capacity(grid.len());
+    for row in &grid {
         let mut values = Vec::with_capacity(row.len());
         for cell in row {
-            let mut paragraphs = Vec::new();
-            for (start, end) in cell {
-                paragraphs.push(visible_paragraph_text(&events[start..=end])?);
-            }
-            values.push(paragraphs.join("\n").trim().to_string());
+            values.push(match cell {
+                GridCell::Covered => String::new(),
+                GridCell::Owner(ranges) => {
+                    let mut paragraphs = Vec::with_capacity(ranges.len());
+                    for (start, end) in ranges.iter().copied() {
+                        paragraphs.push(visible_paragraph_text(&events[start..=end])?);
+                    }
+                    paragraphs.join("\n").trim().to_string()
+                }
+            });
         }
         rows.push(values);
     }
-    if rows.iter().flatten().all(|cell| cell.is_empty()) {
+    if rows.iter().flatten().all(String::is_empty) {
         Ok(None)
     } else {
         Ok(Some(rows))
     }
 }
 
-/// Rows → cells → paragraph event ranges, all relative to `events`.
-fn table_cells(events: &[Event<'static>]) -> Result<TableCells, DocxError> {
-    let mut rows = Vec::new();
-    let mut current_row: Option<Vec<Vec<(usize, usize)>>> = None;
-    let mut current_cell: Option<Vec<(usize, usize)>> = None;
+/// Elements holding the *previous* revision of a table's properties. Their
+/// `w:tcPr` carries the merges the document used to have, and docx-rs skips
+/// them, so the walker must too or export and import read different tables.
+const REVISION_PROPERTIES: [&[u8]; 4] = [
+    b"tblPrChange",
+    b"tblGridChange",
+    b"trPrChange",
+    b"tcPrChange",
+];
+
+/// The table's rectangular grid, or `None` when its geometry is not a
+/// rectangle the model can hold — the same refusal
+/// [`crate::import`] makes, through the same
+/// [`expand_rows`] rule.
+fn table_grid(events: &[Event<'static>]) -> Option<TableGrid> {
+    let mut row_geometry: Vec<Vec<CellGeometry>> = Vec::new();
+    let mut row_cells: Vec<Vec<Vec<ParagraphRange>>> = Vec::new();
+    let mut row: Option<(Vec<CellGeometry>, Vec<Vec<ParagraphRange>>)> = None;
+    let mut cell: Option<(CellGeometry, Vec<ParagraphRange>)> = None;
     let mut paragraph_start = None;
-    let mut nested_table_depth = 0_usize;
+    let mut declared_columns = 0_usize;
+    let mut table_depth = 0_usize;
+    let mut revision_depth = 0_usize;
+
     for (index, event) in events.iter().enumerate() {
         match event {
-            Event::Start(start) => match local_name(start.name().as_ref()) {
-                b"tbl" => nested_table_depth += 1,
-                b"tr" if nested_table_depth == 1 => current_row = Some(Vec::new()),
-                b"tc" if nested_table_depth == 1 => current_cell = Some(Vec::new()),
-                b"p" if nested_table_depth == 1 => paragraph_start = Some(index),
-                b"gridSpan" | b"vMerge" if nested_table_depth == 1 => return Ok(Vec::new()),
-                _ => {}
-            },
-            Event::Empty(empty)
-                if nested_table_depth == 1
-                    && matches!(local_name(empty.name().as_ref()), b"gridSpan" | b"vMerge") =>
-            {
-                return Ok(Vec::new());
+            Event::Start(start) | Event::Empty(start) => {
+                let opening = matches!(event, Event::Start(_));
+                let name = start.name();
+                let local = local_name(name.as_ref());
+                if REVISION_PROPERTIES.contains(&local) {
+                    if opening {
+                        revision_depth += 1;
+                    }
+                    continue;
+                }
+                if revision_depth > 0 {
+                    continue;
+                }
+                match local {
+                    b"tbl" if opening => table_depth += 1,
+                    _ if table_depth != 1 => {}
+                    b"gridCol" => declared_columns += 1,
+                    b"tr" if opening => row = Some((Vec::new(), Vec::new())),
+                    b"tc" if opening => cell = Some((CellGeometry::PLAIN, Vec::new())),
+                    b"gridSpan" => {
+                        let span = attribute_value(start, b"val")?.parse::<usize>().ok()?;
+                        if let Some((geometry, _)) = &mut cell {
+                            geometry.span = span;
+                        }
+                    }
+                    b"vMerge" => {
+                        // A bare `<w:vMerge/>` is a continuation; only
+                        // `restart` opens one.
+                        let continues = match attribute_value(start, b"val").as_deref() {
+                            None | Some("continue") => true,
+                            Some("restart") => false,
+                            Some(_) => return None,
+                        };
+                        if let Some((geometry, _)) = &mut cell {
+                            geometry.continues_merge = continues;
+                        }
+                    }
+                    b"p" if opening => paragraph_start = Some(index),
+                    _ => {}
+                }
             }
-            Event::End(end) => match local_name(end.name().as_ref()) {
-                b"p" if nested_table_depth == 1 => {
-                    if let Some(start) = paragraph_start.take()
-                        && let Some(cell) = &mut current_cell
-                    {
-                        cell.push((start, index));
-                    }
+            Event::End(end) => {
+                let name = end.name();
+                let local = local_name(name.as_ref());
+                if REVISION_PROPERTIES.contains(&local) {
+                    revision_depth = revision_depth.saturating_sub(1);
+                    continue;
                 }
-                b"tc" if nested_table_depth == 1 => {
-                    if let (Some(row), Some(cell)) = (&mut current_row, current_cell.take()) {
-                        row.push(cell);
-                    }
+                if revision_depth > 0 {
+                    continue;
                 }
-                b"tr" if nested_table_depth == 1 => {
-                    if let Some(row) = current_row.take() {
-                        rows.push(row);
-                    }
+                if local == b"tbl" {
+                    table_depth = table_depth.saturating_sub(1);
+                    continue;
                 }
-                b"tbl" => nested_table_depth = nested_table_depth.saturating_sub(1),
-                _ => {}
-            },
+                if table_depth != 1 {
+                    continue;
+                }
+                match local {
+                    b"p" => {
+                        if let Some(start) = paragraph_start.take()
+                            && let Some((_, paragraphs)) = &mut cell
+                        {
+                            paragraphs.push((start, index));
+                        }
+                    }
+                    b"tc" => {
+                        if let (Some((geometry, paragraphs)), Some((geometries, cells))) =
+                            (cell.take(), &mut row)
+                        {
+                            geometries.push(geometry);
+                            cells.push(paragraphs);
+                        }
+                    }
+                    b"tr" => {
+                        if let Some((geometries, cells)) = row.take() {
+                            row_geometry.push(geometries);
+                            row_cells.push(cells);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
-    Ok(rows)
+
+    let TableGeometry::Rectangular(grid) = expand_rows(
+        &row_geometry,
+        (declared_columns > 0).then_some(declared_columns),
+    ) else {
+        return None;
+    };
+    let mut output = Vec::with_capacity(grid.len());
+    for (positions, cells) in grid.into_iter().zip(row_cells) {
+        let mut row = Vec::with_capacity(positions.len());
+        for owner in positions {
+            row.push(match owner {
+                Some(index) => GridCell::Owner(cells.get(index)?.clone()),
+                None => GridCell::Covered,
+            });
+        }
+        output.push(row);
+    }
+    Some(output)
 }
 
 fn patch_in_place(
@@ -1139,22 +1238,43 @@ fn strip_direct_decoration(events: &mut [Event<'static>], text_event_index: usiz
     }
 }
 
+/// Write a draft table's rows back into the template's own table, merges and
+/// all.
+///
+/// The draft's rows are the rectangle the import produced, so each value maps
+/// to the grid position of the same coordinates: text goes to the cell that
+/// owns the position — the spanning cell, or the `vMerge` restart — and a
+/// covered position takes only the empty string it was given. A nonempty
+/// draft value in a covered position means the model wrote into a merged-away
+/// cell; that fails the patch, and the caller renders an unmerged table
+/// instead of dropping the value.
 fn patch_table(
     events: &mut [Event<'static>],
     target_rows: &[Vec<String>],
     exemplar: bool,
 ) -> Result<bool, DocxError> {
-    let cells = table_cells(events)?;
-    if cells.len() != target_rows.len()
-        || cells
+    let Some(grid) = table_grid(events) else {
+        return Ok(false);
+    };
+    if grid.len() != target_rows.len()
+        || grid
             .iter()
             .zip(target_rows)
             .any(|(source, target)| source.len() != target.len())
     {
         return Ok(false);
     }
-    for (source_row, target_row) in cells.into_iter().zip(target_rows) {
-        for (paragraphs, target) in source_row.into_iter().zip(target_row) {
+    for (source_row, target_row) in grid.into_iter().zip(target_rows) {
+        for (cell, target) in source_row.into_iter().zip(target_row) {
+            let paragraphs = match cell {
+                GridCell::Covered => {
+                    if target.trim().is_empty() {
+                        continue;
+                    }
+                    return Ok(false);
+                }
+                GridCell::Owner(paragraphs) => paragraphs,
+            };
             if paragraphs.is_empty() {
                 // A cell with no writable paragraph cannot hold a nonempty
                 // target; report failure so the caller regenerates the

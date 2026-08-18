@@ -120,10 +120,20 @@ headers, footers, media, page setup stay original bytes) and only
 
    Everything between spans is a **gap**, and a gap may carry only
    non-content events — blank paragraphs, `sectPr`, bookmarks. A `w:tbl`
-   the walker could not recognise (merged cells) or a text-bearing
-   paragraph is dropped: the accepted draft is the only source of content.
-   The importer's invented `Imported content` heading is never written out,
-   and a template that reported `MissingTitle` gains no title paragraph.
+   the walker could not recognise or a text-bearing paragraph is dropped:
+   the accepted draft is the only source of content. The importer's
+   invented `Imported content` heading is never written out, and a
+   template that reported `MissingTitle` gains no title paragraph.
+
+   **Merged tables.** `gridSpan` and `vMerge` are read as the rectangle
+   they describe (`table_grid.rs::expand_rows`, shared with the import so
+   the two halves cannot disagree about a table's shape): the spanning cell
+   owns the first position it covers, every covered position is the empty
+   string, and a `vMerge` continuation belongs to the `restart` above it. A
+   draft row is written back into the cell that owns each position, merges
+   untouched. A nonempty value in a covered position would be invisible in
+   Word, so it fails the patch and the table is regenerated flat — the
+   merge is expendable, the value is not.
 4. **Plain-body fallback** — a body the walker can't handle (content
    controls): generated body formatting inside the template package.
 
@@ -205,7 +215,8 @@ never sees or controls these — the template package supplies them):
 fonts and run styles · paragraph spacing and indentation · heading
 typography (incl. underlined headers) · blank spacer paragraphs · page
 size/margins · headers and footers · embedded media · table borders and
-shading · numbering glyphs and indents.
+shading · merged table cells (`gridSpan`/`vMerge`) · numbering glyphs and
+indents.
 
 **Unsupported — would break the LLM abstraction** (each would force the
 model from semantic content into layout/typography decisions, and most
@@ -213,8 +224,9 @@ would break the exemplar-patching contract, which is paragraph-granular):
 
 inline character formatting (bold/italic/underline spans) · hyperlinks ·
 nested and ordered lists · multiple heading levels (import flattens >1 with
-a warning) · merged cells (`gridSpan`/`vMerge` — import rejects such
-tables) · nested tables (omitted with warning) · per-cell formatting ·
+a warning) · authoring merged cells (`gridSpan`/`vMerge` are preserved on a
+template's own tables but the model cannot create or reshape one) · nested
+tables (omitted with warning) · per-cell formatting ·
 text boxes · footnotes/endnotes · fields (page numbers, TOC, cross-refs) ·
 section breaks and multi-column layout · content controls (`w:sdt`) ·
 tracked changes and comments.
