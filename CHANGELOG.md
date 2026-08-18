@@ -2,6 +2,10 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Async worker threads get an 8 MiB stack, so an AWS call cannot exhaust one and abort the app mid-draft
+
 ## [0.30.0] — 2026-08-18
 
 - Preferences → Document Writer → Writer Limits now sets how long a Bedrock call may take and how much it may write, alongside the existing call guardrails
