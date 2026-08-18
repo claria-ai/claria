@@ -19,6 +19,11 @@ mod state;
 fn main() -> Result<()> {
     color_eyre::install()?;
 
+    // Before anything can spawn: `tauri::async_runtime::set` panics once the
+    // global runtime has been initialized, and the first `spawn` or
+    // `block_on` anywhere initializes it.
+    claria_desktop::async_runtime::install()?;
+
     let console_buffer = console::ConsoleBuffer::new();
     let console_layer = console::ConsoleLayer::new(console_buffer.clone());
 
