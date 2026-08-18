@@ -53,7 +53,8 @@ pub use run::{
 };
 pub use turn::{
     FullReportRequest, ReportMessageRequest, ReportTurnProgress, generate_full_report,
-    generate_full_report_for_report, send_report_message, send_report_message_for_report,
+    generate_full_report_for_report, interruption_advice, send_report_message,
+    send_report_message_for_report,
 };
 
 /// Bedrock requests one fan-out keeps in flight at once.
@@ -335,6 +336,10 @@ impl ReportTurnLimits {
 
     pub const fn writer_first_frame_timeout_secs(self) -> u32 {
         self.runtime.writer_first_frame_timeout_secs
+    }
+
+    pub const fn writer_idle_timeout_secs(self) -> u32 {
+        self.runtime.writer_idle_timeout_secs
     }
 
     pub const fn writer_max_output_tokens(self) -> u32 {

@@ -4,7 +4,7 @@
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::{
     converse::StopSignal,
-    error::BedrockError,
+    error::{BedrockError, StreamInterruption},
     report::{self, ReportStopReason},
 };
 use claria_core::models::{
@@ -26,9 +26,10 @@ use uuid::Uuid;
 
 use crate::{
     CONVERSE_CALLS_FIELD_LABEL, FIRST_FRAME_TIMEOUT_FIELD_LABEL, FullReportGenerationOutcome,
-    MAX_CONFIGURABLE_CONVERSE_CALLS, MAX_CONFIGURABLE_TOOL_ROUNDS, MAX_REPORT_REFERENCES,
-    REPORT_TRUNCATED_NOTICE, ReportBlockReference, ReportPipelineError, ReportPromptCache,
-    ReportTurnLimits, ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL, WRITER_LIMITS_SECTION,
+    IDLE_TIMEOUT_FIELD_LABEL, MAX_CONFIGURABLE_CONVERSE_CALLS, MAX_CONFIGURABLE_TOOL_ROUNDS,
+    MAX_REPORT_REFERENCES, REPORT_TRUNCATED_NOTICE, ReportBlockReference, ReportPipelineError,
+    ReportPromptCache, ReportTurnLimits, ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL,
+    WRITER_LIMITS_SECTION,
     context::{
         build_untrusted_context, flatten_protocol_history, sanitize_turn_messages, sha256_hex,
     },
@@ -1324,6 +1325,7 @@ async fn run_turn(
                             ceiling: limits.max_converse_calls,
                             model_id: &model_id,
                             first_frame_secs: limits.writer_first_frame_timeout_secs(),
+                            idle_secs: limits.writer_idle_timeout_secs(),
                         },
                         interruptions.saturating_add(1),
                         call_started.elapsed(),
@@ -1820,6 +1822,9 @@ pub(crate) struct FailedReportCall<'a> {
     /// The first-response wait these attempts each spent, so a call that
     /// never got answered can name the setting that governs it.
     pub(crate) first_frame_secs: u32,
+    /// The inter-chunk wait, named instead when the response started and
+    /// then stopped — a different failure with a different remedy.
+    pub(crate) idle_secs: u32,
 }
 
 /// Retries granted to one Bedrock call whose request never completed —
@@ -1851,6 +1856,31 @@ fn elapsed_phrase(elapsed: std::time::Duration) -> String {
     }
 }
 
+/// What to tell a reader whose call kept being interrupted, chosen by which
+/// wait ran out.
+///
+/// Naming the wrong setting is worse than naming none: a response that never
+/// started and a response that stopped mid-flight are different problems, and
+/// only one of the two settings governs each. Public because which sentence
+/// a reader gets is behaviour worth pinning directly — reproducing it
+/// through a live stream means racing two real timeouts against the SDK's
+/// own dispatch retries.
+pub fn interruption_advice(
+    interruption: Option<StreamInterruption>,
+    first_frame_secs: u32,
+    idle_secs: u32,
+) -> String {
+    match interruption {
+        Some(StreamInterruption::NeverStarted) => format!(
+            " Every attempt gave up after {first_frame_secs} seconds of waiting for Bedrock to start, which a long template on a cold prompt cache can exceed. Raise \"{FIRST_FRAME_TIMEOUT_FIELD_LABEL}\" in {WRITER_LIMITS_SECTION}, or try again later."
+        ),
+        Some(StreamInterruption::WentSilent) => format!(
+            " Every attempt started and then went quiet for {idle_secs} seconds, which is what a single very large section looks like while the model composes it. Raise \"{IDLE_TIMEOUT_FIELD_LABEL}\" in {WRITER_LIMITS_SECTION}, or plan the report into more, smaller sections."
+        ),
+        _ => " Try again later.".to_string(),
+    }
+}
+
 pub(crate) fn map_bedrock_failure(
     error: BedrockError,
     call: FailedReportCall<'_>,
@@ -1870,6 +1900,7 @@ pub(crate) fn map_bedrock_failure(
         ceiling,
         model_id,
         first_frame_secs,
+        idle_secs,
     } = call;
     let failure = match &error {
         BedrockError::ContextBudgetExceeded { .. } => TurnRunFailure::new(
@@ -1894,8 +1925,9 @@ pub(crate) fn map_bedrock_failure(
         _ if error.is_interrupted_before_completion() => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
             format!(
-                "Bedrock appears to be having a hard time: {attempts} attempts at call {number} of {ceiling} got no response over the last {}. Try again later, or raise \"{FIRST_FRAME_TIMEOUT_FIELD_LABEL}\" in {WRITER_LIMITS_SECTION} — each attempt gave up after {first_frame_secs} seconds, and a long template on a cold prompt cache can need longer than that to start. Usage for the calls that completed was retained.",
-                elapsed_phrase(elapsed)
+                "Bedrock appears to be having a hard time: {attempts} attempts at call {number} of {ceiling} got no complete response over the last {}.{} Usage for the calls that completed was retained.",
+                elapsed_phrase(elapsed),
+                interruption_advice(error.stream_interruption(), first_frame_secs, idle_secs),
             ),
         )
         .uncertain_usage(),

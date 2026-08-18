@@ -16,7 +16,7 @@ use claria_bedrock::{
         chat_converse_stream,
     },
     converse::{CachePlan, STOPPED_BY_USER, StopSignal, StreamBounds, StreamCollector},
-    error::BedrockError,
+    error::{BedrockError, StreamInterruption},
     pacing::StreamPacing,
 };
 use claria_core::{
@@ -484,8 +484,13 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
     .expect_err("a stalled stream must not hang forever");
 
     match error {
-        BedrockError::StreamInterrupted { operation, message } => {
+        BedrockError::StreamInterrupted {
+            operation,
+            kind,
+            message,
+        } => {
             assert_eq!(operation, "chat");
+            assert_eq!(kind, StreamInterruption::WentSilent);
             assert!(
                 message.contains("chat stopped sending data"),
                 "the failure does not name the operation that went silent: {message}"
@@ -532,8 +537,13 @@ async fn a_stream_that_never_starts_says_it_never_started() {
     .expect_err("a stream that never starts must not hang forever");
 
     match error {
-        BedrockError::StreamInterrupted { operation, message } => {
+        BedrockError::StreamInterrupted {
+            operation,
+            kind,
+            message,
+        } => {
             assert_eq!(operation, "chat");
+            assert_eq!(kind, StreamInterruption::NeverStarted);
             assert!(
                 message.contains("chat never started responding"),
                 "the failure does not name the operation that never began: {message}"
@@ -804,8 +814,13 @@ async fn an_analysis_stream_that_never_starts_waits_the_analysis_first_frame_bou
     let error = planner_call(&server.endpoint).await;
 
     match error {
-        BedrockError::StreamInterrupted { operation, message } => {
+        BedrockError::StreamInterrupted {
+            operation,
+            kind,
+            message,
+        } => {
             assert_eq!(operation, PLANNER_OPERATION);
+            assert_eq!(kind, StreamInterruption::NeverStarted);
             assert!(
                 message.contains("report_plan never started responding"),
                 "the failure does not name the request family: {message}"
@@ -837,8 +852,13 @@ async fn an_analysis_stream_that_goes_silent_waits_the_analysis_idle_bound() {
     let error = planner_call(&server.endpoint).await;
 
     match error {
-        BedrockError::StreamInterrupted { operation, message } => {
+        BedrockError::StreamInterrupted {
+            operation,
+            kind,
+            message,
+        } => {
             assert_eq!(operation, PLANNER_OPERATION);
+            assert_eq!(kind, StreamInterruption::WentSilent);
             assert!(
                 message.contains("report_plan stopped sending data"),
                 "the failure does not name the request family: {message}"

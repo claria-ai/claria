@@ -686,6 +686,7 @@ where
             tracing::error!(operation, seconds, "Bedrock never started responding");
             Err(BedrockError::StreamInterrupted {
                 operation,
+                kind: crate::error::StreamInterruption::NeverStarted,
                 message: format!(
                     "{operation} never started responding within {seconds} seconds and was \
                      abandoned. The request was queued or the connection was lost before the \
@@ -719,6 +720,7 @@ pub(crate) async fn recv_stream_event(
             tracing::error!(operation, "Bedrock stream failed");
             Err(BedrockError::StreamInterrupted {
                 operation,
+                kind: crate::error::StreamInterruption::Dropped,
                 message: format!(
                     "{operation} failed before the response completed: {}",
                     DisplayErrorContext(&error)
@@ -730,6 +732,7 @@ pub(crate) async fn recv_stream_event(
             tracing::error!(operation, seconds, "Bedrock stream went silent");
             Err(BedrockError::StreamInterrupted {
                 operation,
+                kind: crate::error::StreamInterruption::WentSilent,
                 message: format!(
                     "{operation} stopped sending data for {seconds} seconds and was abandoned. \
                      The connection to Bedrock was lost mid-response; the request was not completed."
