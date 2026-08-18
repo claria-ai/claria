@@ -6,8 +6,8 @@ use claria_bedrock::converse::StopSignal;
 use claria_core::models::{
     report::{ReportBlock, ReportContent, ReportSection},
     report_run::{
-        DRAFT_RUN_SCHEMA_VERSION, DraftRun, DraftRunStatus, PlanEntry, PlanEntryEdit,
-        RunInstruction, RunPlan, RunSection, RunSectionState, SectionIntent,
+        DRAFT_RUN_SCHEMA_VERSION, DraftRun, DraftRunStatus, MAX_CURATED_RECORDS, PlanEntry,
+        PlanEntryEdit, RunInstruction, RunPlan, RunSection, RunSectionState, SectionIntent,
     },
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
@@ -2229,5 +2229,254 @@ fn plan_entry(id: &str, heading: &str, intent: SectionIntent) -> PlanEntry {
         scope: String::new(),
         evidence: Vec::new(),
         instruction: None,
+        curated_records: None,
     }
+}
+
+// ── User-curated per-section record context ─────────────────────────────────
+
+const TEACHER_FILE: &str = "teacher-form.txt";
+
+/// A second readable record, so a restriction to one of them restricts
+/// something.
+async fn seed_second_record(s3: &aws_sdk_s3::Client, client_id: Uuid) {
+    claria_storage::objects::put_object(
+        s3,
+        BUCKET,
+        &claria_core::s3_keys::client_record_file(client_id, TEACHER_FILE),
+        b"Teacher rating scales completed in April.".to_vec(),
+        Some("text/plain"),
+    )
+    .await
+    .expect("put the second record");
+}
+
+/// A plan waiting at the gate, and the run it belongs to.
+async fn planned_at_the_gate(
+    server: &MockServer,
+    sdk: &aws_config::SdkConfig,
+    s3: &aws_sdk_s3::Client,
+    client_id: Uuid,
+    report_id: Uuid,
+) -> Uuid {
+    script(
+        server,
+        vec![section_plan(vec![
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "Referral question.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(BACKGROUND_ID, "draft", "History.", Some(INTAKE_FILE)),
+            plan_row(SUMMARY_ID, "draft", "Interpretation.", Some(INTAKE_FILE)),
+        ])],
+    )
+    .await;
+    pipeline::generate_draft_plan(
+        sdk,
+        s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        models(),
+        pipeline::DraftPlanRequest::new(""),
+    )
+    .await
+    .expect("plan")
+    .run
+    .run_id
+}
+
+/// The restriction is a named-field patch like every other gate edit: setting
+/// it touches nothing else, and an empty list clears it the way an
+/// all-whitespace instruction does.
+#[tokio::test]
+async fn a_gate_edit_restricts_a_section_to_the_records_the_reader_chose() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = planned_at_the_gate(&server, &sdk, &s3, client_id, report_id).await;
+
+    let edit = |records: Vec<String>| PlanEntryEdit {
+        section_id: SUMMARY_ID.parse().expect("section UUID"),
+        curated_records: Some(records),
+        ..Default::default()
+    };
+
+    let restricted = pipeline::update_draft_plan(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        &[edit(vec![
+            TEACHER_FILE.to_string(),
+            INTAKE_FILE.to_string(),
+        ])],
+    )
+    .await
+    .expect("the restriction applies");
+    let plan = restricted.plan.as_ref().expect("plan");
+    assert_eq!(
+        entry(plan, SUMMARY_ID).curated_records.as_deref(),
+        Some([TEACHER_FILE.to_string(), INTAKE_FILE.to_string()].as_slice())
+    );
+    // The patch said nothing about evidence or scope, so neither moved.
+    assert_eq!(entry(plan, SUMMARY_ID).evidence.len(), 1);
+    assert_eq!(entry(plan, SUMMARY_ID).scope, "Interpretation.");
+    // And restricting one section says nothing about the others.
+    assert_eq!(entry(plan, REFERRAL_ID).curated_records, None);
+
+    let cleared = pipeline::update_draft_plan(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        &[edit(Vec::new())],
+    )
+    .await
+    .expect("the restriction clears");
+    assert_eq!(
+        entry(cleared.plan.as_ref().expect("plan"), SUMMARY_ID).curated_records,
+        None,
+        "an empty list should put the section back on the shared corpus"
+    );
+}
+
+/// Unlike the planner's evidence, which is dropped with a warning when it
+/// names nothing, a restriction the clinician typed is refused outright: it is
+/// their instruction about what a model may see, and quietly narrowing it
+/// would change a boundary they set on purpose.
+#[tokio::test]
+async fn a_gate_edit_refuses_a_curated_record_the_client_does_not_have() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let run_id = planned_at_the_gate(&server, &sdk, &s3, client_id, report_id).await;
+
+    let refuse = async |records: Vec<String>| {
+        pipeline::update_draft_plan(
+            &s3,
+            BUCKET,
+            client_id,
+            report_id,
+            run_id,
+            &[PlanEntryEdit {
+                section_id: SUMMARY_ID.parse().expect("section UUID"),
+                curated_records: Some(records),
+                ..Default::default()
+            }],
+        )
+        .await
+        .expect_err("the restriction is refused")
+        .to_string()
+    };
+
+    let unknown = refuse(vec!["not-a-record.pdf".to_string()]).await;
+    assert!(
+        unknown.contains("no record named not-a-record.pdf"),
+        "{unknown}"
+    );
+
+    let over_cap: Vec<String> = (0..=MAX_CURATED_RECORDS)
+        .map(|index| format!("record-{index}.pdf"))
+        .collect();
+    let capped = refuse(over_cap).await;
+    assert!(
+        capped.contains(&format!("at most {MAX_CURATED_RECORDS} records")),
+        "{capped}"
+    );
+
+    let blank = refuse(vec![INTAKE_FILE.to_string(), "  ".to_string()]).await;
+    assert!(blank.contains("blank filename"), "{blank}");
+
+    let repeated = refuse(vec![INTAKE_FILE.to_string(), INTAKE_FILE.to_string()]).await;
+    assert!(repeated.contains("named twice"), "{repeated}");
+
+    // Nothing was stored by any of the refusals.
+    let run = only_run(&s3, client_id, report_id).await;
+    assert_eq!(
+        entry(run.plan.as_ref().expect("plan"), SUMMARY_ID).curated_records,
+        None
+    );
+}
+
+/// The run object embeds the plan, so a restriction taken at the resume gate
+/// has to survive the re-derivation the resume runs. The resume planner is
+/// never offered the field and cannot restate it, so a row rebuilt without
+/// carrying it forward would silently unrestrict the section.
+#[tokio::test]
+async fn a_restriction_survives_the_deterministic_resume() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = seed_interrupted_run(&s3, client_id, report_id).await;
+
+    pipeline::update_draft_plan(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        &[PlanEntryEdit {
+            section_id: SUMMARY_ID.parse().expect("section UUID"),
+            curated_records: Some(vec![TEACHER_FILE.to_string()]),
+            ..Default::default()
+        }],
+    )
+    .await
+    .expect("the resume-gate restriction applies");
+
+    script_branch(
+        &server,
+        SUMMARY_ID,
+        "Summary and Clinical Interpretation",
+        "Findings match the referral question.",
+    )
+    .await;
+    pipeline::resume_planned_draft_run(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        PLANNER_MODEL_ID,
+        WRITER_MODEL_ID,
+        pipeline::FullReportRequest::new(""),
+    )
+    .await
+    .expect("resume after a gate restriction");
+
+    let run = only_run(&s3, client_id, report_id).await;
+    let plan = run.plan.as_ref().expect("plan");
+    assert_eq!(
+        entry(plan, SUMMARY_ID).curated_records.as_deref(),
+        Some([TEACHER_FILE.to_string()].as_slice()),
+        "the resume re-derived the plan and dropped the restriction"
+    );
+
+    // The branch that wrote the section was actually restricted, not merely
+    // recorded as such.
+    let drafting = requests(&server)
+        .await
+        .into_iter()
+        .find(|request| {
+            request["messages"][0]["content"]
+                .as_array()
+                .and_then(|blocks| blocks.last())
+                .and_then(|block| block.get("text"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|text| text.starts_with(&format!("Assigned section: {SUMMARY_ID}")))
+        })
+        .expect("the curated drafting branch");
+    let record_block = drafting["messages"][0]["content"][0]["text"]
+        .as_str()
+        .expect("record block");
+    assert!(record_block.contains(TEACHER_FILE) && !record_block.contains(INTAKE_FILE));
 }

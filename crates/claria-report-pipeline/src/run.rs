@@ -56,6 +56,7 @@ pub(crate) fn synthetic_plan(
                 scope: String::new(),
                 evidence: Vec::new(),
                 instruction: None,
+                curated_records: None,
             })
             .collect(),
         user_edited: false,

@@ -49,9 +49,9 @@ use claria_core::models::{
         ReportWorkspace,
     },
     report_run::{
-        DraftRun, DraftRunStatus, EvidenceRef, MAX_PLAN_EVIDENCE, MAX_PLAN_SCOPE_CHARACTERS,
-        MAX_PLAN_WARNINGS, PlanEntry, PlanEntryEdit, RunPlan, RunSection, RunSectionState,
-        SectionIntent,
+        DraftRun, DraftRunStatus, EvidenceRef, MAX_CURATED_RECORDS, MAX_PLAN_EVIDENCE,
+        MAX_PLAN_SCOPE_CHARACTERS, MAX_PLAN_WARNINGS, PlanEntry, PlanEntryEdit, RunPlan,
+        RunSection, RunSectionState, SectionIntent,
     },
     turn_usage::TurnUsage,
 };
@@ -456,6 +456,9 @@ pub async fn update_draft_plan(
         }
         if let Some(instruction) = &edit.instruction {
             entry.instruction = (!instruction.trim().is_empty()).then(|| instruction.clone());
+        }
+        if let Some(curated) = &edit.curated_records {
+            entry.curated_records = validate_curated_records(curated, &known_files)?;
         }
     }
     plan.user_edited = true;
@@ -1125,6 +1128,7 @@ async fn prepare_analysis_corpus(
             ),
         ],
         &inventory,
+        None,
     )
     .await?;
     request.emit_progress(ReportTurnProgress::RecordContextPrepared {
@@ -1306,6 +1310,10 @@ fn validate_section_plan(
             scope: truncate_characters(row.scope.trim(), MAX_PLAN_SCOPE_CHARACTERS),
             evidence,
             instruction: None,
+            // The planner is never told a section was restricted and never
+            // sets one: it plans from the whole corpus, and the restriction
+            // is the clinician's decision, taken at the gate afterwards.
+            curated_records: None,
         });
     }
     Ok(entries)
@@ -1405,6 +1413,13 @@ fn validate_resume_plan(
             instruction: previous
                 .get(section_id)
                 .and_then(|entry| entry.instruction.clone()),
+            // Carried forward for the same reason the instruction is: the
+            // resume planner is not offered the field and cannot restate it,
+            // so re-deriving the plan would silently unrestrict a section the
+            // clinician restricted before the run was interrupted.
+            curated_records: previous
+                .get(section_id)
+                .and_then(|entry| entry.curated_records.clone()),
         });
     }
     Ok(entries)
@@ -1454,6 +1469,49 @@ pub(crate) fn index_rows<'a>(
         ));
     }
     Ok(by_id)
+}
+
+/// Check a section's record restriction against the records the client
+/// actually has, returning the restriction to store — `None` for an empty
+/// list, which is how the gate clears one.
+///
+/// Deliberately harsher than [`resolve_evidence`], against the same corpus
+/// list. Evidence is the planner's guess and a name it got wrong is a warning
+/// the clinician reads at the gate; a curated list is the clinician's own
+/// instruction about what a model may see, typed by someone looking at the
+/// record list, and quietly dropping a name from it would silently widen or
+/// narrow a boundary they set on purpose.
+fn validate_curated_records(
+    supplied: &[String],
+    known_files: &HashSet<&str>,
+) -> Result<Option<Vec<String>>, ReportPipelineError> {
+    if supplied.is_empty() {
+        return Ok(None);
+    }
+    if supplied.len() > MAX_CURATED_RECORDS {
+        return Err(ReportPipelineError::InvalidInput(format!(
+            "A section may be restricted to at most {MAX_CURATED_RECORDS} records."
+        )));
+    }
+    let mut seen = HashSet::with_capacity(supplied.len());
+    for filename in supplied {
+        if filename.trim().is_empty() {
+            return Err(ReportPipelineError::InvalidInput(
+                "A section's record restriction cannot name a blank filename.".to_string(),
+            ));
+        }
+        if !known_files.contains(filename.as_str()) {
+            return Err(ReportPipelineError::InvalidInput(format!(
+                "This client has no record named {filename}."
+            )));
+        }
+        if !seen.insert(filename.as_str()) {
+            return Err(ReportPipelineError::InvalidInput(format!(
+                "{filename} is named twice in this section's record restriction."
+            )));
+        }
+    }
+    Ok(Some(supplied.to_vec()))
 }
 
 /// Keep the evidence that names a file in the pinned corpus, and record a
@@ -1551,6 +1609,7 @@ fn deterministic_resume_entries(run: &DraftRun) -> Vec<PlanEntry> {
                     .map(|entry| entry.evidence.clone())
                     .unwrap_or_default(),
                 instruction: earlier.and_then(|entry| entry.instruction.clone()),
+                curated_records: earlier.and_then(|entry| entry.curated_records.clone()),
             }
         })
         .collect()
