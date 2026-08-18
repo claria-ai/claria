@@ -105,6 +105,11 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Domain types shared across multiple crates
 - `s3_keys.rs` is the single source of truth for all S3 object paths
 
+**`claria-docx-cli` — Template import diagnostics**
+- `claria-docx` binary: reports how the importer classified every paragraph of a `.docx`, which style rule decided each heading, and what the appearance fallback would add
+- A support tool, not part of the app — its own crate so `clap` and `eyre` stay out of the desktop binary
+- Runs the real importer rather than a second reader, so its explanation cannot drift from the behaviour it explains
+
 **`claria-mock-aws` — Fake AWS for tests**
 - axum server that speaks the S3, STS, IAM, Bedrock, CloudTrail, Cost Explorer, Transcribe, and Artifact wire protocols
 - Runs as a standalone binary or in-process via `testing::MockServer`, so tests drive real AWS SDK clients against an ephemeral port

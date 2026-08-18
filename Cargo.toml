@@ -11,6 +11,7 @@ members = [
     "crates/claria-report-pipeline",
     "crates/claria-report-store",
     "crates/claria-docx",
+    "crates/claria-docx-cli",
     "crates/claria-desktop",
     "crates/claria-eval",
     "crates/claria-mock-aws",
