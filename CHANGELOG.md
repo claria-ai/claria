@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.31.0] — 2026-08-18
 
 - A template that never applied Word heading styles is now split into sections at its bold and capitalized headings, instead of importing as one section holding the whole document
 - An inferred split says so in the import warnings, and applying Heading styles in Word still overrides it exactly
