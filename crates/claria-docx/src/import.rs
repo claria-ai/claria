@@ -11,7 +11,8 @@ use std::{
 };
 
 use claria_core::models::report::{
-    ReportBlock, ReportContent, ReportSection, ReportTemplateWarning, ReportTemplateWarningCode,
+    MAX_SECTION_TEMPLATE_DIRECTIVES, MAX_TEMPLATE_DIRECTIVE_CHARACTERS, ReportBlock, ReportContent,
+    ReportSection, ReportTemplateWarning, ReportTemplateWarningCode,
     report_template_placeholder_count, validate_report_content,
 };
 use docx_rs::{
@@ -27,9 +28,17 @@ use zip::ZipArchive;
 use crate::{
     error::DocxError,
     style_catalog::{StyleCatalog, normalize_style},
+    table_grid::{CellGeometry, TableGeometry, expand_rows},
 };
 
 pub const MAX_TEMPLATE_DOCX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Heading the importer invents for content that precedes the document's
+/// first real heading. No paragraph of the package carries this text, so a
+/// template-faithful export must never write it out — the renderer detects
+/// the invented section by comparing against this one constant.
+pub(crate) const SYNTHETIC_SECTION_HEADING: &str = "Imported content";
+
 const MAX_TEMPLATE_UNCOMPRESSED_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TEMPLATE_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TEMPLATE_ZIP_ENTRIES: usize = 512;
@@ -52,7 +61,91 @@ pub struct TemplateImportStats {
     pub placeholder_count: u32,
 }
 
+/// Fewest inferred headings worth re-carving for: one produces the same
+/// single section the fallback exists to avoid.
+pub(crate) const MIN_INFERRED_HEADINGS: usize = 2;
+
+/// Largest share of paragraphs the appearance rule may promote before its
+/// result is refused.
+///
+/// A template that strictly alternates heading and paragraph is already
+/// half headings and is a perfectly good structure, so the bar has to sit
+/// above one half. Past it there is more heading than content, which is
+/// what a document set entirely in bold looks like — and a section per
+/// paragraph is worse for a writer than one section.
+pub(crate) const MAX_INFERRED_HEADING_DENSITY: f32 = 0.6;
+
 pub fn import_template(bytes: &[u8]) -> Result<ImportedTemplate, DocxError> {
+    // Styles first, always. A template whose author applied Word's heading
+    // styles gets exactly the carve it asks for, and nothing below can
+    // change that.
+    let (template, trail) = import_package(bytes, Headings::StylesOnly, Detail::Skip)?;
+    if trail
+        .iter()
+        .any(|verdict| verdict.kind == ParagraphKind::Heading)
+    {
+        return Ok(template);
+    }
+
+    // No paragraph carried one, so the whole document is sitting in one
+    // invented section. Appearance is all that is left to read.
+    if !inferred_headings_are_trustworthy(&trail) {
+        return Ok(template);
+    }
+    let (inferred, _) = import_package(bytes, Headings::StylesOrAppearance, Detail::Skip)?;
+    Ok(inferred)
+}
+
+/// Whether the appearance rule found something that looks like a structure
+/// rather than a formatting habit.
+fn inferred_headings_are_trustworthy(trail: &[ParagraphVerdict]) -> bool {
+    if trail.is_empty() {
+        return false;
+    }
+    let inferred = trail
+        .iter()
+        .filter(|verdict| verdict.shape.reads_as_heading())
+        .count();
+    let density = inferred as f32 / trail.len() as f32;
+    inferred >= MIN_INFERRED_HEADINGS && density <= MAX_INFERRED_HEADING_DENSITY
+}
+
+/// Which paragraphs may open a section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Headings {
+    /// Only paragraphs whose style resolves to a heading.
+    StylesOnly,
+    /// Those, plus paragraphs that read as headings by appearance. Used
+    /// only after a styles-only pass found none.
+    StylesOrAppearance,
+}
+
+/// Whether a pass keeps the text and style of each paragraph, which only
+/// the diagnostic needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Detail {
+    Keep,
+    Skip,
+}
+
+/// The same import, keeping a per-paragraph record of how each one was
+/// classified.
+///
+/// The diagnostic reports what the importer actually did rather than a second
+/// implementation of the rules, which is the only way its answer to "why is
+/// this one section" can be trusted.
+pub(crate) fn import_with_trail(
+    bytes: &[u8],
+    headings: Headings,
+) -> Result<(ImportedTemplate, Vec<ParagraphVerdict>), DocxError> {
+    import_package(bytes, headings, Detail::Keep)
+}
+
+fn import_package(
+    bytes: &[u8],
+    headings: Headings,
+    detail: Detail,
+) -> Result<(ImportedTemplate, Vec<ParagraphVerdict>), DocxError> {
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_TEMPLATE_DOCX_BYTES {
         return Err(DocxError::UnsafeTemplate(
             "the file exceeds the 10 MiB import limit".to_string(),
@@ -69,11 +162,11 @@ pub fn import_template(bytes: &[u8]) -> Result<ImportedTemplate, DocxError> {
     .map_err(|_| DocxError::Import("the DOCX package is malformed or unsupported".to_string()))?;
 
     let catalog = StyleCatalog::from_package(bytes);
-    let mut builder = ImportBuilder::new(preflight.warnings, catalog);
+    let mut builder = ImportBuilder::new(preflight.warnings, catalog, headings, detail);
     for child in &parsed.document.children {
         builder.document_child(child);
     }
-    let (content, mut stats, warnings) = builder.finish()?;
+    let (content, mut stats, warnings, trail) = builder.finish()?;
     validate_report_content(&content)
         .map_err(|error| DocxError::Import(format!("imported content is not valid: {error}")))?;
     stats.placeholder_count = report_template_placeholder_count(&content);
@@ -82,12 +175,115 @@ pub fn import_template(bytes: &[u8]) -> Result<ImportedTemplate, DocxError> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    Ok(ImportedTemplate {
-        content,
-        source_sha256: digest,
-        warnings,
-        stats,
-    })
+    Ok((
+        ImportedTemplate {
+            content,
+            source_sha256: digest,
+            warnings,
+            stats,
+        },
+        trail,
+    ))
+}
+
+/// How one paragraph with visible text was classified, and the shape signals
+/// a reader would have used to call it a heading by eye.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParagraphVerdict {
+    /// Ordinal among paragraphs that carried visible text.
+    pub(crate) index: usize,
+    /// The styleId as the package spells it; `None` when the paragraph names
+    /// no style at all, which is what Word writes for body text.
+    pub(crate) style_id: Option<String>,
+    pub(crate) kind: ParagraphKind,
+    /// Leading characters of the text, for identifying the paragraph.
+    pub(crate) preview: String,
+    pub(crate) characters: usize,
+    pub(crate) shape: HeadingShape,
+}
+
+/// Signals that make a paragraph *look* like a heading. Never consulted by
+/// the importer — carving is style-driven and stays that way — but a
+/// paragraph carrying several of them and classified as body text is the
+/// exact thing a reader means by "this heading wasn't picked up".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeadingShape {
+    /// The paragraph itself carries `<w:outlineLvl>`, independently of its
+    /// style. Word writes this when a paragraph is promoted in the
+    /// navigation pane, so it is an authored claim rather than an
+    /// appearance.
+    pub outline_level: bool,
+    /// Every run in the paragraph is bold, counting paragraph-level direct
+    /// formatting as well as run-level.
+    pub all_bold: bool,
+    /// The text has no lowercase letters.
+    pub all_caps: bool,
+    /// Short enough to be a label rather than a sentence.
+    pub short: bool,
+    /// Does not end in sentence punctuation.
+    pub unpunctuated: bool,
+    /// Contains at least one letter. A rule made of underscores is short,
+    /// bold and unpunctuated, and is not a heading.
+    pub lettered: bool,
+}
+
+impl HeadingShape {
+    /// Longest a paragraph can be and still read as a label.
+    const SHORT_CHARACTERS: usize = 80;
+
+    /// How many signals fired. Two or more is what the report treats as a
+    /// heading a human would have seen.
+    pub fn signals(self) -> u8 {
+        u8::from(self.all_bold)
+            + u8::from(self.all_caps)
+            + u8::from(self.short)
+            + u8::from(self.unpunctuated)
+    }
+
+    /// Whether this paragraph would be treated as a heading by the
+    /// appearance fallback: emphasized, label-shaped, and made of words.
+    ///
+    /// Bold or all-caps is the emphasis — a template author picks one and
+    /// keeps to it. Both length and the absent full stop are required
+    /// because either alone matches ordinary sentences: a short field label
+    /// ends in a colon, and a fragment that runs to two lines is prose.
+    pub fn reads_as_heading(self) -> bool {
+        self.lettered && self.short && self.unpunctuated && (self.all_bold || self.all_caps)
+    }
+
+    fn of(paragraph: &Paragraph, text: &str) -> Self {
+        Self {
+            outline_level: paragraph.property.outline_lvl.is_some(),
+            all_bold: paragraph_is_all_bold(paragraph),
+            all_caps: text.chars().any(char::is_alphabetic)
+                && !text.chars().any(char::is_lowercase),
+            short: text.chars().count() <= Self::SHORT_CHARACTERS,
+            unpunctuated: !text.trim_end().ends_with(['.', '?', '!', ':', ';', ',']),
+            lettered: text.chars().any(char::is_alphabetic),
+        }
+    }
+}
+
+/// Whether every run carrying text in this paragraph is bold. An empty
+/// paragraph is not bold, and one unbolded run is enough to say no.
+fn paragraph_is_all_bold(paragraph: &Paragraph) -> bool {
+    // Word writes bold either on every run or once on the paragraph mark,
+    // depending on how the text was typed and edited. Both mean the same
+    // thing to a reader, so both count.
+    let paragraph_bold = paragraph.property.run_property.bold.is_some();
+    let mut saw_text = false;
+    for child in &paragraph.children {
+        if let ParagraphChild::Run(run) = child {
+            if run_text(run).trim().is_empty() {
+                continue;
+            }
+            saw_text = true;
+            if run.run_property.bold.is_none() && !paragraph_bold {
+                return false;
+            }
+        }
+    }
+    saw_text
 }
 
 struct Preflight {
@@ -250,7 +446,13 @@ impl WarningCounts {
     }
 }
 
+/// The order warnings are shown in, most consequential first.
+///
+/// This list is also the filter: [`WarningCounts::into_sorted`] drops any
+/// code missing from it, so a new variant that is not added here is counted
+/// and then silently thrown away.
 const WARNING_ORDER: &[ReportTemplateWarningCode] = &[
+    ReportTemplateWarningCode::SectionsInferredFromFormatting,
     ReportTemplateWarningCode::MissingTitle,
     ReportTemplateWarningCode::HeadersFootersOmitted,
     ReportTemplateWarningCode::HeadingLevelsFlattened,
@@ -276,10 +478,23 @@ struct ImportBuilder {
     warnings: WarningCounts,
     stats: TemplateImportStats,
     catalog: StyleCatalog,
+    headings: Headings,
+    /// Kept on every pass: the styles-only pass has to report whether it
+    /// found a heading and what the appearance rule would have found, which
+    /// is what decides whether a second pass runs.
+    trail: Vec<ParagraphVerdict>,
+    /// Text and style are carried only for the diagnostic, so an ordinary
+    /// import does not hold a preview of every paragraph in the document.
+    detail: Detail,
 }
 
 impl ImportBuilder {
-    fn new(warnings: WarningCounts, catalog: StyleCatalog) -> Self {
+    fn new(
+        warnings: WarningCounts,
+        catalog: StyleCatalog,
+        headings: Headings,
+        detail: Detail,
+    ) -> Self {
         Self {
             title: None,
             sections: Vec::new(),
@@ -289,6 +504,9 @@ impl ImportBuilder {
             warnings,
             stats: TemplateImportStats::default(),
             catalog,
+            headings,
+            trail: Vec::new(),
+            detail,
         }
     }
 
@@ -354,7 +572,40 @@ impl ImportBuilder {
         if text.is_empty() {
             return;
         }
-        match paragraph_kind(paragraph, &self.catalog) {
+        let styled = paragraph_kind(paragraph, &self.catalog);
+        let shape = HeadingShape::of(paragraph, &text);
+        // Appearance is consulted only on a pass that was told to, and only
+        // for paragraphs the styles left as body text. It can promote a
+        // paragraph, never demote one.
+        let kind = if self.headings == Headings::StylesOrAppearance
+            && styled == ParagraphKind::Body
+            && shape.reads_as_heading()
+        {
+            self.warnings
+                .add(ReportTemplateWarningCode::SectionsInferredFromFormatting, 1);
+            ParagraphKind::Heading
+        } else {
+            styled
+        };
+        self.trail.push(ParagraphVerdict {
+            index: self.trail.len(),
+            style_id: match self.detail {
+                Detail::Keep => paragraph
+                    .property
+                    .style
+                    .as_ref()
+                    .map(|style| style.val.clone()),
+                Detail::Skip => None,
+            },
+            kind: styled,
+            preview: match self.detail {
+                Detail::Keep => preview_of(&text),
+                Detail::Skip => String::new(),
+            },
+            characters: text.chars().count(),
+            shape,
+        });
+        match kind {
             ParagraphKind::Title if self.title.is_none() => {
                 self.flush_bullets();
                 self.title = Some(text);
@@ -412,7 +663,7 @@ impl ImportBuilder {
 
     fn ensure_section(&mut self) {
         if self.current_heading.is_none() {
-            self.current_heading = Some("Imported content".to_string());
+            self.current_heading = Some(SYNTHETIC_SECTION_HEADING.to_string());
         }
     }
 
@@ -429,10 +680,12 @@ impl ImportBuilder {
     fn flush_section(&mut self) {
         self.flush_bullets();
         if let Some(heading) = self.current_heading.take() {
+            let blocks = std::mem::take(&mut self.current_blocks);
             self.sections.push(ReportSection {
                 id: Uuid::new_v4(),
                 heading,
-                blocks: std::mem::take(&mut self.current_blocks),
+                template_directives: extract_template_directives(&blocks),
+                blocks,
                 skipped: false,
                 template_blocks: None,
                 authorship: None,
@@ -447,6 +700,7 @@ impl ImportBuilder {
             ReportContent,
             TemplateImportStats,
             Vec<ReportTemplateWarning>,
+            Vec<ParagraphVerdict>,
         ),
         DocxError,
     > {
@@ -469,16 +723,141 @@ impl ImportBuilder {
             },
             self.stats,
             self.warnings.into_sorted(),
+            self.trail,
         ))
     }
 }
 
+/// The authoring directives one section's body carries.
+///
+/// A clinical template talks to whoever fills it in, in square brackets: "[a
+/// one sentence briefly stating why child was referred]", "[Delete the
+/// subsections of the tests that were not uploaded]". Those sentences are the
+/// clinician's own instructions about the document's form, and the planner and
+/// the writer are both better for reading them — but only if the host lifts
+/// them out deterministically instead of the model deciding for itself which
+/// part of an untrusted template body is an instruction.
+///
+/// The rule, in full:
+///
+/// - Every block of the section is scanned in document order — paragraph text,
+///   each bullet item, then each table cell row-major.
+/// - Within one string, `[` opens a directive and the matching `]` closes it;
+///   nesting is counted, so `[a child's age, format = [number] years]` is one
+///   directive and not two. A bracket left open at the end of its string is
+///   dropped: it is a typo or a stray glyph, not an instruction.
+/// - The captured text is trimmed and dropped when empty.
+/// - Exact repeats are dropped, keeping the first occurrence's position. A
+///   template that says `[child's first name]` in eight paragraphs is saying
+///   one thing.
+/// - A directive longer than [`MAX_TEMPLATE_DIRECTIVE_CHARACTERS`] is
+///   **truncated** to that many characters, the last of which becomes `…` so
+///   the reader can tell it was cut.
+/// - Directives past [`MAX_SECTION_TEMPLATE_DIRECTIVES`] are **dropped**. The
+///   earliest ones are kept, because a template's directive for a section
+///   generally opens it.
+///
+/// Bracketed fill-in placeholders — `[CLIENT NAME]`, `[number]` — are captured
+/// too. Separating a slot from an instruction is not something a deterministic
+/// rule can do, and both say something true about the form the section takes.
+fn extract_template_directives(blocks: &[ReportBlock]) -> Vec<String> {
+    let mut directives: Vec<String> = Vec::new();
+    for block in blocks {
+        match block {
+            ReportBlock::Paragraph { text } => append_bracketed(text, &mut directives),
+            ReportBlock::BulletList { items } => {
+                for item in items {
+                    append_bracketed(item, &mut directives);
+                }
+            }
+            ReportBlock::Table { rows, .. } => {
+                for cell in rows.iter().flatten() {
+                    append_bracketed(cell, &mut directives);
+                }
+            }
+        }
+        if directives.len() >= MAX_SECTION_TEMPLATE_DIRECTIVES {
+            break;
+        }
+    }
+    directives.truncate(MAX_SECTION_TEMPLATE_DIRECTIVES);
+    directives
+}
+
+/// Every balanced `[…]` span in one string, appended to `directives` without
+/// duplicating anything already there.
+fn append_bracketed(text: &str, directives: &mut Vec<String>) {
+    let mut depth = 0_usize;
+    let mut start = 0_usize;
+    for (offset, character) in text.char_indices() {
+        match character {
+            '[' => {
+                if depth == 0 {
+                    start = offset.saturating_add(character.len_utf8());
+                }
+                depth = depth.saturating_add(1);
+            }
+            ']' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    let directive = bounded_directive(text[start..offset].trim());
+                    if !directive.is_empty()
+                        && !directives.contains(&directive)
+                        && directives.len() < MAX_SECTION_TEMPLATE_DIRECTIVES
+                    {
+                        directives.push(directive);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One directive, cut to the per-directive ceiling. The ellipsis replaces the
+/// last kept character rather than following it, so the result is exactly
+/// [`MAX_TEMPLATE_DIRECTIVE_CHARACTERS`] characters and never one over.
+fn bounded_directive(directive: &str) -> String {
+    if directive.chars().count() <= MAX_TEMPLATE_DIRECTIVE_CHARACTERS {
+        return directive.to_string();
+    }
+    let mut bounded: String = directive
+        .chars()
+        .take(MAX_TEMPLATE_DIRECTIVE_CHARACTERS.saturating_sub(1))
+        .collect();
+    bounded.push('\u{2026}');
+    bounded
+}
+
+/// Leading characters of a paragraph, for naming it in a report a human
+/// reads. Bounded so a diagnostic over a clinical template stays a summary
+/// rather than a second copy of the document.
+fn preview_of(text: &str) -> String {
+    const PREVIEW_CHARACTERS: usize = 72;
+    let mut preview: String = text.chars().take(PREVIEW_CHARACTERS).collect();
+    if text.chars().count() > PREVIEW_CHARACTERS {
+        preview.push('\u{2026}');
+    }
+    preview
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ParagraphKind {
+pub(crate) enum ParagraphKind {
     Title,
     Heading,
     List,
     Body,
+}
+
+impl ParagraphKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Heading => "heading",
+            Self::List => "list item",
+            Self::Body => "body",
+        }
+    }
 }
 
 fn paragraph_kind(paragraph: &Paragraph, catalog: &StyleCatalog) -> ParagraphKind {
@@ -604,52 +983,91 @@ fn run_text(run: &Run) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TableImportIssue {
     Nested,
+    /// Merged geometry that does not expand to a rectangle — spans that
+    /// leave rows of different widths, or that contradict the table's own
+    /// `w:tblGrid`. Ordinary `gridSpan`/`vMerge` tables import.
     Merged,
 }
 
+/// Import a table as the rectangular grid its merges describe.
+///
+/// A `gridSpan` cell contributes its text at the first position it covers
+/// and the empty string at the rest; a `vMerge` continuation contributes the
+/// empty string, its text belonging to the `restart` cell above. What the
+/// model sees is therefore always a rectangle, and merged tables reach it
+/// instead of vanishing — a score table the model never saw is one it can
+/// neither fill nor delete.
 fn import_table(table: &Table) -> Result<Option<ReportBlock>, TableImportIssue> {
-    let mut rows = Vec::new();
+    let mut geometry = Vec::with_capacity(table.rows.len());
+    let mut texts = Vec::with_capacity(table.rows.len());
     let mut header_cells = Vec::new();
     for (row_index, child) in table.rows.iter().enumerate() {
         let TableChild::TableRow(row) = child;
-        let mut cells = Vec::new();
-        let mut row_header_cells = Vec::new();
+        let mut row_geometry = Vec::with_capacity(row.cells.len());
+        let mut row_texts = Vec::with_capacity(row.cells.len());
         for child in &row.cells {
             let TableRowChild::TableCell(cell) = child;
-            if cell_is_merged(cell) {
-                return Err(TableImportIssue::Merged);
-            }
-            cells.push(table_cell_text(cell)?);
+            row_geometry.push(cell_geometry(cell).ok_or(TableImportIssue::Merged)?);
+            // Read every cell, including merge continuations whose text is
+            // then discarded: a nested table inside one is still a nested
+            // table, and the reader must report it.
+            row_texts.push(table_cell_text(cell)?);
             if row_index == 0 {
-                row_header_cells.push(cell_looks_like_header(cell));
+                header_cells.push(cell_looks_like_header(cell));
             }
         }
-        if row_index == 0 {
-            header_cells = row_header_cells;
-        }
-        rows.push(cells);
+        geometry.push(row_geometry);
+        texts.push(row_texts);
     }
-    let Some(columns) = rows.first().map(Vec::len) else {
-        return Ok(None);
+
+    let grid = match expand_rows(&geometry, declared_columns(&table.grid)) {
+        TableGeometry::Rectangular(grid) => grid,
+        TableGeometry::Merged => return Err(TableImportIssue::Merged),
+        TableGeometry::Irregular => return Ok(None),
     };
-    if columns == 0
-        || columns > claria_core::models::report::MAX_TABLE_COLUMNS
-        || rows.len() > claria_core::models::report::MAX_TABLE_ROWS
-        || rows.iter().any(|row| row.len() != columns)
+    let rows = grid
+        .iter()
+        .zip(&texts)
+        .map(|(positions, row_texts)| {
+            positions
+                .iter()
+                .map(|owner| {
+                    owner
+                        .and_then(|index| row_texts.get(index).cloned())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<String>>()
+        })
+        .collect::<Vec<_>>();
+
+    // Width is already bounded by the expansion; row count and emptiness are
+    // this function's to check.
+    if rows.len() > claria_core::models::report::MAX_TABLE_ROWS
         || rows.iter().flatten().all(|cell| cell.trim().is_empty())
     {
         return Ok(None);
     }
 
+    let columns = rows.first().map_or(0, Vec::len);
+    let header_row = grid.first().map(|positions| {
+        positions
+            .iter()
+            .map(|owner| owner.is_some_and(|index| header_cells.get(index) == Some(&true)))
+            .collect::<Vec<bool>>()
+    });
     let has_header = rows.len() > 1
-        && header_cells.len() == columns
-        && header_cells.iter().all(|header| *header)
+        && header_row.is_some_and(|header| header.iter().all(|cell| *cell))
         && rows[0].iter().all(|cell| !cell.trim().is_empty());
     Ok(Some(ReportBlock::Table {
         column_widths: normalized_widths(&table.grid, columns),
         rows,
         has_header,
     }))
+}
+
+/// The `w:tblGrid` column count, or `None` when the package declares no grid.
+fn declared_columns(grid: &[usize]) -> Option<usize> {
+    (!grid.is_empty()).then_some(grid.len())
 }
 
 fn table_cell_text(cell: &TableCell) -> Result<String, TableImportIssue> {
@@ -680,14 +1098,30 @@ fn tag_contains_table(tag: &StructuredDataTag) -> bool {
     })
 }
 
-fn cell_is_merged(cell: &TableCell) -> bool {
-    serde_json::to_value(&cell.property).is_ok_and(|property| {
-        property
-            .get("gridSpan")
-            .is_some_and(|value| !value.is_null())
-            || property
-                .get("verticalMerge")
-                .is_some_and(|value| !value.is_null())
+/// How this cell occupies the table grid, or `None` when its `w:tcPr` states
+/// a geometry the rectangular model cannot express (a `w:vMerge` value
+/// neither `restart` nor `continue`, or a span that is not a count).
+///
+/// docx-rs keeps `TableCellProperty`'s fields private, so the properties are
+/// read back through its own serialization: `gridSpan` serializes as a
+/// number and `verticalMerge` as the merge type's name.
+fn cell_geometry(cell: &TableCell) -> Option<CellGeometry> {
+    let property = serde_json::to_value(&cell.property).ok()?;
+    let span = match property.get("gridSpan") {
+        None | Some(serde_json::Value::Null) => 1,
+        Some(value) => usize::try_from(value.as_u64()?).ok()?,
+    };
+    let continues_merge = match property.get("verticalMerge") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(value) => match value.as_str()? {
+            "continue" => true,
+            "restart" => false,
+            _ => return None,
+        },
+    };
+    Some(CellGeometry {
+        span,
+        continues_merge,
     })
 }
 

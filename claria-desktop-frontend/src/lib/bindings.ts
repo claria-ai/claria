@@ -1767,7 +1767,23 @@ scope: string; evidence: EvidenceRef[];
 /**
  * Per-section steering that overrides the run-wide instructions.
  */
-instruction: string | null }
+instruction: string | null; 
+/**
+ * The records this section's writer may read, when the clinician has
+ * restricted it to a subset. `None` — the default, and what the planner
+ * always produces — means the shared corpus every other section sees.
+ * 
+ * The planner never sets this: it is a user decision taken at the plan
+ * gate, which is why the plan tool schema has no field for it. The run
+ * object embeds the plan, so the durable record of what one section's
+ * model call could see survives resume, audit, and export for free.
+ * 
+ * `Some` is always a non-empty list of filenames as the record corpus
+ * lists them. An empty restriction would be a section drafted from
+ * nothing, which is a plan mistake rather than a request, so the
+ * validator refuses it.
+ */
+curated_records?: string[] | null }
 /**
  * One resumable whole-report drafting run.
  * 
@@ -1978,7 +1994,16 @@ export type PlanEntryEdit = { section_id: string; intent?: SectionIntent | null;
  * Per-section steering. An all-whitespace value clears the instruction
  * rather than storing a blank one.
  */
-instruction?: string | null }
+instruction?: string | null; 
+/**
+ * The record restriction for this section, as filenames the corpus lists.
+ * 
+ * Absent leaves the row's restriction alone; an empty list clears it and
+ * puts the section back on the shared corpus, exactly as an all-whitespace
+ * `instruction` clears the instruction. A non-empty list is validated
+ * against the client's records before it is stored.
+ */
+curated_records?: string[] | null }
 /**
  * Whether a whole-report draft stops for the clinician between planning and
  * writing.
@@ -2059,7 +2084,7 @@ export type RecordFile = { filename: string; size: number; uploaded_at: string |
  * across machines. The report-pipeline crate validates the
  * relationship between the limits before they are saved or used.
  */
-export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
+export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number; writer_first_frame_timeout_secs?: number; writer_idle_timeout_secs?: number; writer_max_output_tokens?: number; analysis_first_frame_timeout_secs?: number; analysis_idle_timeout_secs?: number }
 export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; 
 /**
  * Records preloaded outside the model's record-reading tools. Only the
@@ -2132,6 +2157,20 @@ skipped?: boolean;
  * the template" still has the original text.
  */
 template_blocks?: ReportBlock[] | null; 
+/**
+ * The authoring directives the template's author wrote into this section:
+ * the bracketed instructions a clinical template carries — "[a one
+ * sentence stating why the child was referred]", "[Delete the subsections
+ * of the tests that were not uploaded]". Extracted verbatim at import and
+ * bounded by [`MAX_SECTION_TEMPLATE_DIRECTIVES`] and
+ * [`MAX_TEMPLATE_DIRECTIVE_CHARACTERS`].
+ * 
+ * Unlike [`ReportSection::template_blocks`] these do reach a model, as
+ * host-extracted guidance about the document's *form* — how long a
+ * section runs, how it must open, which subsections to drop. They are
+ * never a source of client facts.
+ */
+template_directives?: string[]; 
 /**
  * Who last wrote this section, and at which revision.
  */

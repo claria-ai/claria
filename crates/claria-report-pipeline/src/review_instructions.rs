@@ -54,6 +54,13 @@ pub(crate) fn instruction(property: ReviewProperty) -> String {
          exactly. A section where you find nothing gets a row with status \"no_issues\" and an \
          empty findings array — that row is the evidence the section was read, and omitting it \
          fails validation.\n\n\
+         A section may have been drafted under a clinician-set record restriction: its writer was \
+         deliberately given a subset of the corpus and could not have read the rest. You are not \
+         told which sections those are. So where a finding amounts to \"this section is thinner \
+         than the records allow\" or \"this omits what the corpus has\", file it, but say in the \
+         detail that the drafter may have been restricted to a subset — that turns the row into a \
+         question about the section's sources, which the clinician can answer, instead of an \
+         accusation about the writer, which they cannot.\n\n\
          Quote from the section you are filing against, character for character. The host \
          searches that section's own text for your quote, treating any run of whitespace as \
          equal to any other; a quote you have tidied, shortened, or restated resolves against \

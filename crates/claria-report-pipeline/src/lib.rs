@@ -53,7 +53,8 @@ pub use run::{
 };
 pub use turn::{
     FullReportRequest, ReportMessageRequest, ReportTurnProgress, generate_full_report,
-    generate_full_report_for_report, send_report_message, send_report_message_for_report,
+    generate_full_report_for_report, interruption_advice, send_report_message,
+    send_report_message_for_report,
 };
 
 /// Bedrock requests one fan-out keeps in flight at once.
@@ -89,6 +90,22 @@ pub const MAX_CONFIGURABLE_CONVERSE_CALLS: u32 = MAX_CONFIGURABLE_TOOL_ROUNDS + 
 pub const MAX_CONFIGURABLE_TOOL_USES_PER_RESPONSE: u32 =
     claria_bedrock::report::MAX_TOOL_USES_PER_RESPONSE as u32;
 pub const MAX_CONFIGURABLE_RETAINED_TURNS: u32 = MAX_REPORT_TURNS as u32;
+pub const DEFAULT_WRITER_FIRST_FRAME_TIMEOUT_SECS: u32 =
+    claria_bedrock::converse::DEFAULT_STREAM_FIRST_FRAME_TIMEOUT_SECS as u32;
+pub const DEFAULT_WRITER_IDLE_TIMEOUT_SECS: u32 =
+    claria_bedrock::converse::DEFAULT_STREAM_IDLE_TIMEOUT_SECS as u32;
+pub const DEFAULT_ANALYSIS_FIRST_FRAME_TIMEOUT_SECS: u32 =
+    claria_bedrock::converse::DEFAULT_ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT_SECS as u32;
+pub const DEFAULT_ANALYSIS_IDLE_TIMEOUT_SECS: u32 =
+    claria_bedrock::converse::DEFAULT_ANALYSIS_STREAM_IDLE_TIMEOUT_SECS as u32;
+pub const MAX_CONFIGURABLE_TIMEOUT_SECS: u32 =
+    claria_bedrock::converse::MAX_STREAM_TIMEOUT_SECS as u32;
+pub const DEFAULT_WRITER_MAX_OUTPUT_TOKENS: u32 =
+    claria_bedrock::report::DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE;
+pub const MIN_CONFIGURABLE_WRITER_MAX_OUTPUT_TOKENS: u32 =
+    claria_bedrock::report::MIN_REPORT_OUTPUT_TOKEN_RESERVE;
+pub const MAX_CONFIGURABLE_WRITER_MAX_OUTPUT_TOKENS: u32 =
+    claria_bedrock::report::MAX_REPORT_OUTPUT_TOKEN_RESERVE;
 pub(crate) const MAX_REPORT_REFERENCES: usize = 10;
 
 /// Where a clinician raises the guardrails below, and the exact field labels
@@ -99,6 +116,13 @@ pub(crate) const WRITER_LIMITS_SECTION: &str =
     "Preferences \u{2192} Document Writer \u{2192} Writer Limits";
 pub(crate) const TOOL_ROUNDS_FIELD_LABEL: &str = "Tool-use rounds per request";
 pub(crate) const CONVERSE_CALLS_FIELD_LABEL: &str = "Bedrock calls per request";
+pub const FIRST_FRAME_TIMEOUT_FIELD_LABEL: &str = "Wait for the writer to start responding";
+pub const IDLE_TIMEOUT_FIELD_LABEL: &str = "Wait between writer response chunks";
+pub const WRITER_MAX_OUTPUT_TOKENS_FIELD_LABEL: &str = "Writer response length ceiling";
+pub const ANALYSIS_FIRST_FRAME_TIMEOUT_FIELD_LABEL: &str =
+    "Wait for the planner and reviewer to start responding";
+pub const ANALYSIS_IDLE_TIMEOUT_FIELD_LABEL: &str =
+    "Wait between planner and reviewer response chunks";
 
 /// Appended to the visible reply when the final response hit its
 /// output-token limit after a proposal was already staged: the staged work
@@ -115,6 +139,99 @@ pub struct ReportTurnLimits {
     max_converse_calls: u32,
     max_tool_uses_per_response: u32,
     max_retained_turns: u32,
+    runtime: BedrockRuntimeLimits,
+}
+
+/// The low-level dials one Bedrock call is made under, as opposed to the
+/// guardrails above that bound how many calls a request may make.
+///
+/// Separate from [`ReportTurnLimits`]'s counts, and named rather than
+/// positional, because these are times and token counts: six bare `u32`
+/// arguments in a row is a transposition waiting to happen. Every field has
+/// a compile-time default that reproduces the behaviour these values were
+/// frozen at, so a host that sets none of them changes nothing.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BedrockRuntimeLimits {
+    /// Longest wait for a writer call to start answering.
+    pub writer_first_frame_timeout_secs: u32,
+    /// Longest silence inside a writer response already under way.
+    pub writer_idle_timeout_secs: u32,
+    /// `max_tokens` for one writer call, and the reserve subtracted from the
+    /// model's window to form its input allowance.
+    pub writer_max_output_tokens: u32,
+    /// Longest wait for a planner or reviewer call to start answering.
+    pub analysis_first_frame_timeout_secs: u32,
+    /// Longest silence inside a planner or reviewer response already under
+    /// way.
+    pub analysis_idle_timeout_secs: u32,
+}
+
+impl BedrockRuntimeLimits {
+    /// Reject anything that would make every call fail rather than making a
+    /// slow one survive: a zero wait, a wait past the point where a dead
+    /// socket has to be declared dead, or an output ceiling outside what a
+    /// Claude model will produce.
+    pub fn validate(self) -> Result<(), ReportPipelineError> {
+        for (label, secs) in [
+            (
+                FIRST_FRAME_TIMEOUT_FIELD_LABEL,
+                self.writer_first_frame_timeout_secs,
+            ),
+            (IDLE_TIMEOUT_FIELD_LABEL, self.writer_idle_timeout_secs),
+            (
+                ANALYSIS_FIRST_FRAME_TIMEOUT_FIELD_LABEL,
+                self.analysis_first_frame_timeout_secs,
+            ),
+            (
+                ANALYSIS_IDLE_TIMEOUT_FIELD_LABEL,
+                self.analysis_idle_timeout_secs,
+            ),
+        ] {
+            if secs == 0 || secs > MAX_CONFIGURABLE_TIMEOUT_SECS {
+                return Err(ReportPipelineError::InvalidInput(format!(
+                    "\"{label}\" must be between 1 and {MAX_CONFIGURABLE_TIMEOUT_SECS} seconds."
+                )));
+            }
+        }
+        if self.writer_max_output_tokens < MIN_CONFIGURABLE_WRITER_MAX_OUTPUT_TOKENS
+            || self.writer_max_output_tokens > MAX_CONFIGURABLE_WRITER_MAX_OUTPUT_TOKENS
+        {
+            return Err(ReportPipelineError::InvalidInput(format!(
+                "\"{WRITER_MAX_OUTPUT_TOKENS_FIELD_LABEL}\" must be between \
+                 {MIN_CONFIGURABLE_WRITER_MAX_OUTPUT_TOKENS} and \
+                 {MAX_CONFIGURABLE_WRITER_MAX_OUTPUT_TOKENS} tokens."
+            )));
+        }
+        Ok(())
+    }
+
+    /// The two writer waits in the shape one Bedrock call takes them.
+    pub const fn writer_stream_bounds(self) -> claria_bedrock::converse::StreamBounds {
+        claria_bedrock::converse::StreamBounds::writer(
+            self.writer_first_frame_timeout_secs as u64,
+            self.writer_idle_timeout_secs as u64,
+        )
+    }
+
+    /// The two planner/reviewer waits in the same shape.
+    pub const fn analysis_stream_bounds(self) -> claria_bedrock::converse::StreamBounds {
+        claria_bedrock::converse::StreamBounds::structured(
+            self.analysis_first_frame_timeout_secs as u64,
+            self.analysis_idle_timeout_secs as u64,
+        )
+    }
+}
+
+impl Default for BedrockRuntimeLimits {
+    fn default() -> Self {
+        Self {
+            writer_first_frame_timeout_secs: DEFAULT_WRITER_FIRST_FRAME_TIMEOUT_SECS,
+            writer_idle_timeout_secs: DEFAULT_WRITER_IDLE_TIMEOUT_SECS,
+            writer_max_output_tokens: DEFAULT_WRITER_MAX_OUTPUT_TOKENS,
+            analysis_first_frame_timeout_secs: DEFAULT_ANALYSIS_FIRST_FRAME_TIMEOUT_SECS,
+            analysis_idle_timeout_secs: DEFAULT_ANALYSIS_IDLE_TIMEOUT_SECS,
+        }
+    }
 }
 
 impl ReportTurnLimits {
@@ -151,7 +268,15 @@ impl ReportTurnLimits {
             max_converse_calls,
             max_tool_uses_per_response,
             max_retained_turns,
+            runtime: BedrockRuntimeLimits::default(),
         })
+    }
+
+    /// Replace the per-call runtime dials, leaving the guardrail counts
+    /// alone. Every existing caller means "use the compiled-in defaults".
+    pub fn with_runtime(self, runtime: BedrockRuntimeLimits) -> Result<Self, ReportPipelineError> {
+        runtime.validate()?;
+        Ok(Self { runtime, ..self })
     }
 
     /// Raise these ceilings to fit a plan of `plan_len` sections, never
@@ -204,6 +329,27 @@ impl ReportTurnLimits {
     pub const fn max_retained_turns(self) -> u32 {
         self.max_retained_turns
     }
+
+    pub const fn runtime(self) -> BedrockRuntimeLimits {
+        self.runtime
+    }
+
+    pub const fn writer_first_frame_timeout_secs(self) -> u32 {
+        self.runtime.writer_first_frame_timeout_secs
+    }
+
+    pub const fn writer_idle_timeout_secs(self) -> u32 {
+        self.runtime.writer_idle_timeout_secs
+    }
+
+    pub const fn writer_max_output_tokens(self) -> u32 {
+        self.runtime.writer_max_output_tokens
+    }
+
+    /// The configured writer waits in the shape one Bedrock call takes them.
+    pub const fn stream_bounds(self) -> claria_bedrock::converse::StreamBounds {
+        self.runtime.writer_stream_bounds()
+    }
 }
 
 impl Default for ReportTurnLimits {
@@ -213,6 +359,7 @@ impl Default for ReportTurnLimits {
             max_converse_calls: DEFAULT_MAX_CONVERSE_CALLS,
             max_tool_uses_per_response: DEFAULT_MAX_TOOL_USES_PER_RESPONSE,
             max_retained_turns: DEFAULT_MAX_RETAINED_TURNS,
+            runtime: BedrockRuntimeLimits::default(),
         }
     }
 }

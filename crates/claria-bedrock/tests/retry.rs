@@ -8,7 +8,7 @@ use std::sync::{
 };
 
 use claria_bedrock::{
-    error::BedrockError,
+    error::{BedrockError, StreamInterruption},
     retry::{MAX_ATTEMPTS, with_throttle_retry, with_throttle_retry_observed},
 };
 
@@ -58,10 +58,19 @@ fn quota_exhaustion_and_request_faults_stay_terminal() {
 fn interrupted_calls_are_not_reported_as_throttles() {
     let interrupted = BedrockError::StreamInterrupted {
         operation: "report ConverseStream",
+        kind: StreamInterruption::WentSilent,
         message: "synthetic".to_string(),
     };
     assert!(interrupted.is_interrupted_before_completion());
     assert!(!interrupted.is_retryable_throttle());
+    // Both timeouts are retried the same way; only the advice differs.
+    assert_eq!(
+        interrupted.stream_interruption(),
+        Some(StreamInterruption::WentSilent)
+    );
+    assert!(StreamInterruption::NeverStarted.is_timeout());
+    assert!(StreamInterruption::WentSilent.is_timeout());
+    assert!(!StreamInterruption::Dropped.is_timeout());
 }
 
 #[tokio::test(start_paused = true)]

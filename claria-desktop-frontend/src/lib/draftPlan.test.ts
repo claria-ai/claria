@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DraftRun } from "./tauri";
 import {
   changedPlanEdits,
+  emptyRestrictionCount,
   plannedSectionCount,
   planRows,
   remainingSectionCount,
@@ -160,5 +161,72 @@ describe("changedPlanEdits", () => {
       rows[1],
     ];
     expect(changedPlanEdits(rows, same)).toEqual([]);
+  });
+});
+
+describe("curated records", () => {
+  it("reads an unrestricted plan as null rather than an empty list", () => {
+    expect(planRows(run(), "fresh").map((row) => row.curatedRecords)).toEqual([
+      null,
+      null,
+    ]);
+  });
+
+  it("carries a restriction the plan already holds onto its row", () => {
+    const restricted = run();
+    restricted.plan!.entries[0].curated_records = ["intake.txt"];
+    expect(planRows(restricted, "fresh")[0].curatedRecords).toEqual([
+      "intake.txt",
+    ]);
+  });
+
+  it("patches a new restriction as its own field", () => {
+    const rows = planRows(run(), "fresh");
+    const edited = [{ ...rows[0], curatedRecords: ["intake.txt"] }, rows[1]];
+    expect(changedPlanEdits(rows, edited)).toEqual([
+      { section_id: A, curated_records: ["intake.txt"] },
+    ]);
+  });
+
+  // `null` and `[]` mean the same thing to the backend — no restriction — so
+  // clearing one has to travel as the empty list rather than as nothing.
+  it("clears a restriction by sending an empty list", () => {
+    const restricted = run();
+    restricted.plan!.entries[0].curated_records = ["intake.txt"];
+    const rows = planRows(restricted, "fresh");
+    const edited = [{ ...rows[0], curatedRecords: null }, rows[1]];
+    expect(changedPlanEdits(rows, edited)).toEqual([
+      { section_id: A, curated_records: [] },
+    ]);
+  });
+
+  it("treats an unchanged restriction as unchanged", () => {
+    const restricted = run();
+    restricted.plan!.entries[0].curated_records = ["intake.txt", "teacher.txt"];
+    const rows = planRows(restricted, "fresh");
+    const same = [
+      { ...rows[0], curatedRecords: ["intake.txt", "teacher.txt"] },
+      rows[1],
+    ];
+    expect(changedPlanEdits(rows, same)).toEqual([]);
+  });
+
+  it("counts a restriction switched on but left empty, and nothing else", () => {
+    const rows = planRows(run(), "fresh");
+    expect(emptyRestrictionCount(rows)).toBe(0);
+    expect(
+      emptyRestrictionCount([{ ...rows[0], curatedRecords: [] }, rows[1]])
+    ).toBe(1);
+    expect(
+      emptyRestrictionCount([
+        { ...rows[0], curatedRecords: ["intake.txt"] },
+        rows[1],
+      ])
+    ).toBe(0);
+    // A skipped section is not going to be drafted at all, so an empty
+    // restriction on one blocks nothing.
+    expect(
+      emptyRestrictionCount([rows[0], { ...rows[1], curatedRecords: [] }])
+    ).toBe(0);
   });
 });

@@ -4,6 +4,39 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- A report exported through a template whose headings are bold body text keeps those headings bold after the model rewrites them
+- Word export places each drafted section back into the template section it came from, so paragraphs, tables, and blank spacing stay where their author put them
+- Template tables the importer could not read no longer reappear scattered through the exported report
+- Score tables built from merged cells now import, so the model can fill them in or delete them instead of leaving them behind
+- A merged table the draft filled exports back into the template's own merged cells, with its spans intact
+- Tab-separated label lines export with real tabs, and a filled-in value no longer inherits its label's bolding
+- A template with no title paragraph no longer gains one on export, and the placeholder heading the importer invents for a document's opening block is never written out
+- The bracketed authoring notes a clinical template writes into its own sections are extracted at import and carried with the report
+- The planner is shown those notes, so a section the template holds to one sentence is no longer scoped as five assertions
+- Each writer branch is handed its own section's notes as authoring guidance for form, length, and structure
+- A note may steer the shape of a section and never a fact about the client; template prose itself stays untrusted data
+- A section carries at most eight notes of at most 500 characters each, so the guidance cannot grow into an unbounded prompt
+- A section of the plan can now be restricted to a chosen handful of the client's records, and is written from those alone
+- A restricted section's writer is told it was restricted, and cannot cite a record it was not shown
+- The run records which files were in the model call that wrote each section
+- A restriction may name up to sixteen records, each of which the client must actually have
+- Sections with no restriction cost exactly what they cost before
+
+## [0.31.0] — 2026-08-18
+
+- A template that never applied Word heading styles is now split into sections at its bold and capitalized headings, instead of importing as one section holding the whole document
+- An inferred split says so in the import warnings, and applying Heading styles in Word still overrides it exactly
+- Added a `claria-docx` command that reports how the importer read a template and why it carved the way it did
+- Async worker threads get an 8 MiB stack, so an AWS call cannot exhaust one and abort the app mid-draft
+
+## [0.30.0] — 2026-08-18
+
+- Preferences → Document Writer → Writer Limits now sets how long a Bedrock call may take and how much it may write, alongside the existing call guardrails
+- The writer's wait for Bedrock to start responding, and its wait between response chunks, are settings rather than compiled-in values
+- The planner and reviewer carry their own pair of waits, set from the same place
+- The writer's response-length ceiling is a setting, and raising it shrinks that call's input allowance by the same amount
+- A writing call that gets no response now names the wait that actually ran out — the one for the first token, or the one between chunks — and where to raise it
+- A whole-report draft that exhausted its retries reports how many attempts it made instead of always reporting one
 - Stopping a parallel whole-report draft after its last section has landed now cuts the revision instead of parking the run
 - The drafting activity line counts finished sections instead of naming a position that parallel branches contradict
 - Release screenshots render the Writing tab again, after a new preference field went unmocked and took the page down to the error boundary

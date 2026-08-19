@@ -2261,6 +2261,11 @@ const WRITER_LIMIT_DEFAULTS: WriterLimits = {
   max_converse_calls: 50,
   max_tool_uses_per_response: 80,
   max_retained_turns: 200,
+  writer_first_frame_timeout_secs: 90,
+  writer_idle_timeout_secs: 60,
+  writer_max_output_tokens: 32768,
+  analysis_first_frame_timeout_secs: 120,
+  analysis_idle_timeout_secs: 90,
 };
 
 // The `label` values below are quoted verbatim in the writer's
@@ -2308,6 +2313,60 @@ const WRITER_LIMIT_FIELDS: Array<{
   },
 ];
 
+// The dials below bound one Bedrock call rather than how many a request may
+// make. They exist so a run that is merely slow, or a section longer than one
+// response can hold, can be fixed from here instead of by shipping a build.
+// `label` values are quoted in the writer's timeout failure; renaming one here
+// means renaming it in `claria-report-pipeline`'s field-label constants.
+const BEDROCK_RUNTIME_FIELDS: Array<{
+  key: WriterLimitField;
+  label: string;
+  description: string;
+  min: number;
+  max: number;
+}> = [
+  {
+    key: "writer_first_frame_timeout_secs",
+    label: "Wait for the writer to start responding",
+    description:
+      "Seconds a writing call may take to produce its first output before Claria abandons it and re-sends. Raise this for long templates: a cold prompt cache re-reads the whole request before answering.",
+    min: 1,
+    max: 600,
+  },
+  {
+    key: "writer_idle_timeout_secs",
+    label: "Wait between writer response chunks",
+    description:
+      "Seconds a writing call may go silent mid-response before Claria treats the connection as lost.",
+    min: 1,
+    max: 600,
+  },
+  {
+    key: "writer_max_output_tokens",
+    label: "Writer response length ceiling",
+    description:
+      "Largest single writer response, in tokens. Raise it when a section is cut short; it is also held back from the model's context window, so raising it leaves less room for records.",
+    min: 4096,
+    max: 65536,
+  },
+  {
+    key: "analysis_first_frame_timeout_secs",
+    label: "Wait for the planner and reviewer to start responding",
+    description:
+      "Seconds a planning or review call may take to produce its first output. These send the whole record corpus and answer only after reading all of it.",
+    min: 1,
+    max: 600,
+  },
+  {
+    key: "analysis_idle_timeout_secs",
+    label: "Wait between planner and reviewer response chunks",
+    description:
+      "Seconds a planning or review call may go silent mid-response before Claria treats the connection as lost.",
+    min: 1,
+    max: 600,
+  },
+];
+
 function normalizeWriterPreferences(
   value: ReportAuthoringPreferences | null | undefined
 ): WriterLimits {
@@ -2321,11 +2380,26 @@ function normalizeWriterPreferences(
       WRITER_LIMIT_DEFAULTS.max_tool_uses_per_response,
     max_retained_turns:
       value?.max_retained_turns ?? WRITER_LIMIT_DEFAULTS.max_retained_turns,
+    writer_first_frame_timeout_secs:
+      value?.writer_first_frame_timeout_secs ??
+      WRITER_LIMIT_DEFAULTS.writer_first_frame_timeout_secs,
+    writer_idle_timeout_secs:
+      value?.writer_idle_timeout_secs ??
+      WRITER_LIMIT_DEFAULTS.writer_idle_timeout_secs,
+    writer_max_output_tokens:
+      value?.writer_max_output_tokens ??
+      WRITER_LIMIT_DEFAULTS.writer_max_output_tokens,
+    analysis_first_frame_timeout_secs:
+      value?.analysis_first_frame_timeout_secs ??
+      WRITER_LIMIT_DEFAULTS.analysis_first_frame_timeout_secs,
+    analysis_idle_timeout_secs:
+      value?.analysis_idle_timeout_secs ??
+      WRITER_LIMIT_DEFAULTS.analysis_idle_timeout_secs,
   };
 }
 
 function writerLimitsError(value: WriterLimits): string | null {
-  for (const field of WRITER_LIMIT_FIELDS) {
+  for (const field of [...WRITER_LIMIT_FIELDS, ...BEDROCK_RUNTIME_FIELDS]) {
     const input = value[field.key];
     if (!Number.isInteger(input) || input < field.min || input > field.max) {
       return `${field.label} must be a whole number from ${field.min} to ${field.max}.`;
@@ -2390,6 +2464,31 @@ function ReportAuthoringBody({ initial }: { initial: ConfigInfo }) {
     }
   }
 
+  const renderField = (field: (typeof WRITER_LIMIT_FIELDS)[number]) => (
+    <label key={field.key} className="block" data-pref-anchor={field.key}>
+      <span className="text-sm font-medium text-gray-700">{field.label}</span>
+      <input
+        type="number"
+        min={field.min}
+        max={field.max}
+        step={1}
+        value={draft[field.key]}
+        onChange={(event) => {
+          const next = event.currentTarget.valueAsNumber;
+          setDraft({
+            ...draft,
+            [field.key]: Number.isFinite(next) ? next : 0,
+          });
+          setSaved(false);
+        }}
+        className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+      />
+      <span className="block text-xs text-gray-500 mt-1">
+        {field.description}
+      </span>
+    </label>
+  );
+
   return (
     <NavPane
       paneId="writer.limits"
@@ -2421,36 +2520,24 @@ function ReportAuthoringBody({ initial }: { initial: ConfigInfo }) {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {WRITER_LIMIT_FIELDS.map((field) => (
-          <label
-            key={field.key}
-            className="block"
-            data-pref-anchor={field.key}
-          >
-            <span className="text-sm font-medium text-gray-700">
-              {field.label}
-            </span>
-            <input
-              type="number"
-              min={field.min}
-              max={field.max}
-              step={1}
-              value={draft[field.key]}
-              onChange={(event) => {
-                const next = event.currentTarget.valueAsNumber;
-                setDraft({
-                  ...draft,
-                  [field.key]: Number.isFinite(next) ? next : 0,
-                });
-                setSaved(false);
-              }}
-              className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            <span className="block text-xs text-gray-500 mt-1">
-              {field.description}
-            </span>
-          </label>
-        ))}
+        {WRITER_LIMIT_FIELDS.map(renderField)}
+      </div>
+
+      <div className="pt-2 border-t border-gray-100 space-y-3">
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-gray-700">
+            Bedrock call limits
+          </p>
+          <p className="text-xs text-gray-500">
+            How long one call may take and how much it may write. Raise these
+            when a draft fails on time or comes back cut short rather than on
+            the guardrails above. Waiting longer costs nothing extra; a larger
+            response ceiling is billed for what it uses.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {BEDROCK_RUNTIME_FIELDS.map(renderField)}
+        </div>
       </div>
 
       {validationError && (

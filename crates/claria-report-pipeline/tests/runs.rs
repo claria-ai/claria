@@ -81,6 +81,7 @@ fn template_section(id: &str, heading: &str) -> ReportSection {
         blocks: boilerplate(),
         skipped: false,
         template_blocks: Some(boilerplate()),
+        template_directives: Vec::new(),
         authorship: None,
     }
 }
@@ -279,6 +280,7 @@ fn plan_entry(id: &str, heading: &str, intent: SectionIntent) -> PlanEntry {
         scope: String::new(),
         evidence: Vec::new(),
         instruction: None,
+        curated_records: None,
     }
 }
 

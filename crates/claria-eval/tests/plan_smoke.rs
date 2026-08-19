@@ -46,6 +46,7 @@ fn template_section(id: &str, heading: &str) -> ReportSection {
         blocks: vec![paragraph("Template boilerplate.")],
         skipped: false,
         template_blocks: Some(vec![paragraph("Template boilerplate.")]),
+        template_directives: Vec::new(),
         authorship: None,
     }
 }

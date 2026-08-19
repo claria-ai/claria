@@ -1012,6 +1012,7 @@ fn prepare_section_write(
             blocks: blocks.clone(),
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
         },
     );
@@ -1158,6 +1159,7 @@ pub(crate) fn apply_section_content(
                     scope: String::new(),
                     evidence: Vec::new(),
                     instruction: None,
+                    curated_records: None,
                 });
             }
         }
@@ -1265,6 +1267,7 @@ pub(crate) fn staged_section(section: &RunSection) -> ReportSection {
         blocks: section.blocks.clone(),
         skipped: false,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship: None,
     }
 }
@@ -1392,6 +1395,7 @@ pub(crate) fn merge_undrafted_sections(
                 blocks: Vec::new(),
                 skipped: true,
                 template_blocks: supplied_section.template_blocks.clone(),
+                template_directives: supplied_section.template_directives.clone(),
                 authorship: supplied_section.authorship.clone(),
             }
         } else {
@@ -1541,6 +1545,7 @@ fn operation_from_request(
                 blocks: blocks.into_iter().map(block_from_request).collect(),
                 skipped: false,
                 template_blocks: None,
+                template_directives: Vec::new(),
                 authorship: None,
             },
         }),

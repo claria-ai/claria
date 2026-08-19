@@ -4,7 +4,7 @@
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::{
     converse::StopSignal,
-    error::BedrockError,
+    error::{BedrockError, StreamInterruption},
     report::{self, ReportStopReason},
 };
 use claria_core::models::{
@@ -25,10 +25,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    CONVERSE_CALLS_FIELD_LABEL, FullReportGenerationOutcome, MAX_CONFIGURABLE_CONVERSE_CALLS,
-    MAX_CONFIGURABLE_TOOL_ROUNDS, MAX_REPORT_REFERENCES, REPORT_TRUNCATED_NOTICE,
-    ReportBlockReference, ReportPipelineError, ReportPromptCache, ReportTurnLimits,
-    ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL, WRITER_LIMITS_SECTION,
+    CONVERSE_CALLS_FIELD_LABEL, FIRST_FRAME_TIMEOUT_FIELD_LABEL, FullReportGenerationOutcome,
+    IDLE_TIMEOUT_FIELD_LABEL, MAX_CONFIGURABLE_CONVERSE_CALLS, MAX_CONFIGURABLE_TOOL_ROUNDS,
+    MAX_REPORT_REFERENCES, REPORT_TRUNCATED_NOTICE, ReportBlockReference, ReportPipelineError,
+    ReportPromptCache, ReportTurnLimits, ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL,
+    WRITER_LIMITS_SECTION,
     context::{
         build_untrusted_context, flatten_protocol_history, sanitize_turn_messages, sha256_hex,
     },
@@ -37,7 +38,8 @@ use crate::{
     },
     prompts::{full_report_system_prompt, report_system_prompt},
     record_context::{
-        BudgetRole, FullRecordContext, load_full_record_context, load_record_inventory,
+        BudgetRole, FullRecordContext, RecordInventoryEntry, load_full_record_context,
+        load_record_inventory,
     },
     run::{
         create_run_for_workspace, park_stopped_run, release_failed_run, stamp_run_authorship,
@@ -591,7 +593,7 @@ pub(crate) async fn execute_full_draft_turn(
     let report_id = loaded.workspace.report_id;
     let prepared = prepare_full_draft_context(s3, bucket, client_id, model_id, request).await;
     let record_context = match prepared {
-        Ok(record_context) => record_context,
+        Ok(prepared) => prepared.record_context,
         Err(error) => {
             release_failed_run(s3, bucket, client_id, report_id, &mut run).await;
             return Err(error);
@@ -628,24 +630,46 @@ pub(crate) async fn execute_full_draft_turn(
     }
 }
 
+/// The shared corpus a whole-report turn was prepared with, and the inventory
+/// it was built from.
+///
+/// The inventory rides along because the parallel fan-out needs it again: a
+/// section the clinician restricted builds its own snapshot from a subset of
+/// exactly these entries, and re-listing the prefix to learn what it already
+/// knows would be a second `ListObjectsV2` for the same answer.
+pub(crate) struct PreparedDraftContext {
+    pub(crate) record_context: FullRecordContext,
+    pub(crate) inventory: Vec<RecordInventoryEntry>,
+}
+
 pub(crate) async fn prepare_full_draft_context(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
     model_id: &str,
     request: FullReportRequest<'_>,
-) -> Result<FullRecordContext, ReportPipelineError> {
+) -> Result<PreparedDraftContext, ReportPipelineError> {
+    let output_token_reserve = request.limits.writer_max_output_tokens();
     let inventory = load_record_inventory(s3, bucket, client_id)
         .await
         .map_err(|source| ReportPipelineError::storage("listing full-draft records", source))?;
-    let record_context =
-        load_full_record_context(s3, bucket, &[BudgetRole::writer(model_id)], &inventory).await?;
+    let record_context = load_full_record_context(
+        s3,
+        bucket,
+        &[BudgetRole::writer(model_id, output_token_reserve)],
+        &inventory,
+        None,
+    )
+    .await?;
     request.emit_progress(ReportTurnProgress::RecordContextPrepared {
         included_files: record_context.summary.included_files,
         unavailable_files: record_context.summary.unavailable_files,
         total_characters: record_context.summary.total_characters,
     });
-    Ok(record_context)
+    Ok(PreparedDraftContext {
+        record_context,
+        inventory,
+    })
 }
 
 fn validate_instruction(instruction: &str) -> Result<(), ReportPipelineError> {
@@ -928,6 +952,7 @@ pub(crate) fn call_usage_record(
     usage: Option<TurnUsage>,
     stop_reason: ReportStopReason,
     latency_ms: Option<u64>,
+    max_output_tokens: u32,
 ) -> ReportCallUsageRecord {
     ReportCallUsageRecord {
         schema_version: ATTEMPT_SCHEMA_VERSION,
@@ -941,7 +966,7 @@ pub(crate) fn call_usage_record(
         recorded_at: jiff::Timestamp::now(),
         stop_reason: Some(stop_reason.as_str().to_string()),
         latency_ms,
-        max_output_tokens: report::REPORT_OUTPUT_TOKEN_RESERVE,
+        max_output_tokens,
         system_prompt_sha256: progress.system_prompt_sha256.clone(),
         // Workspace crates version in lockstep with the desktop binary.
         app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -1171,7 +1196,8 @@ async fn run_turn(
     progress.system_prompt_sha256 = sha256_hex(&system_prompt);
     // One exact CountTokens per turn; later calls estimate appended messages
     // and re-verify only near the budget.
-    let mut input_budget = report::ReportInputBudget::new(&progress.model_id);
+    let mut input_budget =
+        report::ReportInputBudget::new(&progress.model_id, limits.writer_max_output_tokens());
     let citable_filenames = match request.kind {
         TurnRunKind::FullDraft { record_context, .. } => {
             record_context.citable_filenames.as_slice()
@@ -1210,6 +1236,9 @@ async fn run_turn(
     } else {
         claria_bedrock::converse::CachePlan::report_default(capabilities)
     };
+    // Fixed for the attempt for the same reason as the cache plan: the two
+    // waits are the clinician's setting, not something a call may narrow.
+    let stream_bounds = limits.stream_bounds();
 
     loop {
         // Past the cut, Stop is deliberately a no-op: `finish_full_draft` has
@@ -1261,6 +1290,7 @@ async fn run_turn(
                     &mut input_budget,
                     request.model_tuning,
                     cache_plan.clone(),
+                    stream_bounds,
                     stop,
                 )
                 .await
@@ -1274,6 +1304,7 @@ async fn run_turn(
                     &mut input_budget,
                     request.model_tuning,
                     cache_plan.clone(),
+                    stream_bounds,
                     stop,
                 )
                 .await
@@ -1310,6 +1341,8 @@ async fn run_turn(
                             number: call_number,
                             ceiling: limits.max_converse_calls,
                             model_id: &model_id,
+                            first_frame_secs: limits.writer_first_frame_timeout_secs(),
+                            idle_secs: limits.writer_idle_timeout_secs(),
                         },
                         interruptions.saturating_add(1),
                         call_started.elapsed(),
@@ -1333,6 +1366,7 @@ async fn run_turn(
                 output.usage.clone(),
                 output.stop_reason,
                 output.latency_ms,
+                limits.writer_max_output_tokens(),
             ),
         )
         .await
@@ -1802,6 +1836,12 @@ pub(crate) struct FailedReportCall<'a> {
     pub(crate) number: u32,
     pub(crate) ceiling: u32,
     pub(crate) model_id: &'a str,
+    /// The first-response wait these attempts each spent, so a call that
+    /// never got answered can name the setting that governs it.
+    pub(crate) first_frame_secs: u32,
+    /// The inter-chunk wait, named instead when the response started and
+    /// then stopped — a different failure with a different remedy.
+    pub(crate) idle_secs: u32,
 }
 
 /// Retries granted to one Bedrock call whose request never completed —
@@ -1833,6 +1873,31 @@ fn elapsed_phrase(elapsed: std::time::Duration) -> String {
     }
 }
 
+/// What to tell a reader whose call kept being interrupted, chosen by which
+/// wait ran out.
+///
+/// Naming the wrong setting is worse than naming none: a response that never
+/// started and a response that stopped mid-flight are different problems, and
+/// only one of the two settings governs each. Public because which sentence
+/// a reader gets is behaviour worth pinning directly — reproducing it
+/// through a live stream means racing two real timeouts against the SDK's
+/// own dispatch retries.
+pub fn interruption_advice(
+    interruption: Option<StreamInterruption>,
+    first_frame_secs: u32,
+    idle_secs: u32,
+) -> String {
+    match interruption {
+        Some(StreamInterruption::NeverStarted) => format!(
+            " Every attempt gave up after {first_frame_secs} seconds of waiting for Bedrock to start, which a long template on a cold prompt cache can exceed. Raise \"{FIRST_FRAME_TIMEOUT_FIELD_LABEL}\" in {WRITER_LIMITS_SECTION}, or try again later."
+        ),
+        Some(StreamInterruption::WentSilent) => format!(
+            " Every attempt started and then went quiet for {idle_secs} seconds, which is what a single very large section looks like while the model composes it. Raise \"{IDLE_TIMEOUT_FIELD_LABEL}\" in {WRITER_LIMITS_SECTION}, or plan the report into more, smaller sections."
+        ),
+        _ => " Try again later.".to_string(),
+    }
+}
+
 pub(crate) fn map_bedrock_failure(
     error: BedrockError,
     call: FailedReportCall<'_>,
@@ -1851,6 +1916,8 @@ pub(crate) fn map_bedrock_failure(
         number,
         ceiling,
         model_id,
+        first_frame_secs,
+        idle_secs,
     } = call;
     let failure = match &error {
         BedrockError::ContextBudgetExceeded { .. } => TurnRunFailure::new(
@@ -1875,8 +1942,9 @@ pub(crate) fn map_bedrock_failure(
         _ if error.is_interrupted_before_completion() => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
             format!(
-                "Bedrock appears to be having a hard time: {attempts} attempts at call {number} of {ceiling} got no response over the last {}. Try again later. Usage for the calls that completed was retained.",
-                elapsed_phrase(elapsed)
+                "Bedrock appears to be having a hard time: {attempts} attempts at call {number} of {ceiling} got no complete response over the last {}.{} Usage for the calls that completed was retained.",
+                elapsed_phrase(elapsed),
+                interruption_advice(error.stream_interruption(), first_frame_secs, idle_secs),
             ),
         )
         .uncertain_usage(),

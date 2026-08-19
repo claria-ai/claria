@@ -1,5 +1,7 @@
 //! Record inventory and the whole-report readable-record snapshot.
 
+use std::collections::BTreeSet;
+
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::report;
 use claria_core::models::report::ReportRecordContextFile;
@@ -55,13 +57,17 @@ pub(crate) struct BudgetRole<'a> {
     /// Human phrasing of the role, used in the failure message.
     pub(crate) role: &'static str,
     pub(crate) model_id: &'a str,
+    /// Output reserve this role's calls hold back, which is what turns its
+    /// context window into an input allowance.
+    pub(crate) output_token_reserve: u32,
 }
 
 impl<'a> BudgetRole<'a> {
-    pub(crate) fn writer(model_id: &'a str) -> Self {
+    pub(crate) fn writer(model_id: &'a str, output_token_reserve: u32) -> Self {
         Self {
             role: "writing model",
             model_id,
+            output_token_reserve,
         }
     }
 
@@ -69,6 +75,7 @@ impl<'a> BudgetRole<'a> {
         Self {
             role: "planning model",
             model_id,
+            output_token_reserve: report::DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE,
         }
     }
 
@@ -76,6 +83,7 @@ impl<'a> BudgetRole<'a> {
         Self {
             role: "reviewing model",
             model_id,
+            output_token_reserve: report::DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE,
         }
     }
 }
@@ -92,6 +100,36 @@ impl<'a> BudgetRole<'a> {
 /// build the whole request to decide whether to build the whole request would
 /// buy precision nobody needs.
 pub(crate) const STRUCTURAL_ALLOWANCE_BYTES: u64 = 36 * 1024;
+
+/// The clinician's restriction on which records one section may be written
+/// from, as the corpus builder reads it.
+///
+/// A `BTreeSet` rather than the plan's `Vec`, for two reasons that both matter
+/// to the cache: membership is what the walk asks, and the sorted iteration
+/// order is what makes the "curated file the client no longer has" rows land in
+/// the same place on every build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordFilter {
+    allowed: BTreeSet<String>,
+}
+
+impl RecordFilter {
+    pub(crate) fn new(filenames: &[String]) -> Self {
+        Self {
+            allowed: filenames.iter().cloned().collect(),
+        }
+    }
+
+    fn allows(&self, filename: &str) -> bool {
+        self.allowed.contains(filename)
+    }
+
+    /// How many distinct records the restriction names. The only number about
+    /// a restriction that may be logged: the filenames themselves are PHI.
+    pub(crate) fn len(&self) -> usize {
+        self.allowed.len()
+    }
+}
 
 pub(crate) struct FullRecordContext {
     pub(crate) prompt: String,
@@ -152,14 +190,32 @@ impl LoadedFullRecord {
 /// and the JSON shape is fixed. A drafting run builds it once and then reads
 /// it from the prompt cache on every later call, so two builds over the same
 /// records that differed by a byte would cost the run its cache.
+///
+/// `filter` restricts the snapshot to the records a clinician curated for one
+/// section. It is a parameter of this builder rather than a builder of its own
+/// so a curated snapshot and the shared corpus cannot drift: same ordering,
+/// same JSON shape, same escaping, same budget preflight. A curated name the
+/// client no longer has is reported as unavailable rather than dropped — the
+/// restriction is durable state, and a section quietly written from fewer
+/// records than its plan row names is exactly what the feature exists to
+/// prevent.
 pub(crate) async fn load_full_record_context(
     s3: &S3Client,
     bucket: &str,
     roles: &[BudgetRole<'_>],
     inventory: &[RecordInventoryEntry],
+    filter: Option<&RecordFilter>,
 ) -> Result<FullRecordContext, ReportPipelineError> {
     use futures::stream::{self, StreamExt};
 
+    // Owned rather than borrowed: the fetch below moves one entry into each
+    // future, and the entries are three short fields apiece — a listing, not
+    // record text.
+    let inventory: Vec<RecordInventoryEntry> = inventory
+        .iter()
+        .filter(|entry| filter.is_none_or(|filter| filter.allows(&entry.filename)))
+        .cloned()
+        .collect();
     // Three source bytes per available input token leaves headroom for UTF-8
     // and JSON escaping, which can expand before the provider tokenizer sees
     // the request; the fixed structure of the request is then subtracted
@@ -167,15 +223,20 @@ pub(crate) async fn load_full_record_context(
     // to every role that reads it.
     let binding = roles
         .iter()
-        .min_by_key(|role| report::report_input_token_budget(role.model_id))
+        .min_by_key(|role| {
+            report::report_input_token_budget(role.model_id, role.output_token_reserve)
+        })
         .ok_or_else(|| {
             ReportPipelineError::InvalidInput(
                 "Claria could not size the record snapshot: no model was named for it.".to_string(),
             )
         })?;
-    let max_source_bytes = u64::from(report::report_input_token_budget(binding.model_id))
-        .saturating_mul(3)
-        .saturating_sub(STRUCTURAL_ALLOWANCE_BYTES);
+    let max_source_bytes = u64::from(report::report_input_token_budget(
+        binding.model_id,
+        binding.output_token_reserve,
+    ))
+    .saturating_mul(3)
+    .saturating_sub(STRUCTURAL_ALLOWANCE_BYTES);
     let eligible_source_bytes = inventory
         .iter()
         .filter(|entry| entry.source_bytes <= claria_core::record_text::MAX_RECORD_TEXT_BYTES)
@@ -223,6 +284,29 @@ pub(crate) async fn load_full_record_context(
         .buffered(claria_storage::objects::S3_FETCH_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
+    // A curated name that matched nothing in the inventory: the record was
+    // deleted or renamed between the plan gate and the drafting call. It goes
+    // in as an unavailable row so `snapshot_complete` turns false and the
+    // branch is told what it is missing, in place of a silently smaller
+    // snapshot.
+    if let Some(filter) = filter {
+        let present: BTreeSet<&str> = inventory
+            .iter()
+            .map(|entry| entry.filename.as_str())
+            .collect();
+        loaded.extend(
+            filter
+                .allowed
+                .iter()
+                .filter(|filename| !present.contains(filename.as_str()))
+                .map(|filename| {
+                    Ok(LoadedFullRecord::Unavailable {
+                        filename: filename.clone(),
+                        reason: "not_in_record_inventory",
+                    })
+                }),
+        );
+    }
     // Byte-determinism, stated once and here: the corpus is the frozen head of
     // a drafting run's cached prefix, so two builds over the same records have
     // to produce the same bytes or every later call in the run re-pays full
@@ -282,10 +366,10 @@ pub(crate) async fn load_full_record_context(
         }
     }
     if files.is_empty() {
-        return Err(ReportPipelineError::InvalidInput(
-            "No readable client-record text is available. Generate text extraction for at least one record before filling the whole report."
-                .to_string(),
-        ));
+        return Err(ReportPipelineError::InvalidInput(match filter {
+            Some(_) => "None of the records this section was restricted to has readable text. Widen the section's record list at the plan gate, or generate text extraction for the records it names.".to_string(),
+            None => "No readable client-record text is available. Generate text extraction for at least one record before filling the whole report.".to_string(),
+        }));
     }
 
     let included_files = u32::try_from(files.len()).unwrap_or(u32::MAX);

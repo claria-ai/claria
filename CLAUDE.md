@@ -105,6 +105,11 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Domain types shared across multiple crates
 - `s3_keys.rs` is the single source of truth for all S3 object paths
 
+**`claria-docx-cli` — Template import diagnostics**
+- `claria-docx` binary: reports how the importer classified every paragraph of a `.docx`, which style rule decided each heading, and what the appearance fallback would add
+- A support tool, not part of the app — its own crate so `clap` and `eyre` stay out of the desktop binary
+- Runs the real importer rather than a second reader, so its explanation cannot drift from the behaviour it explains
+
 **`claria-mock-aws` — Fake AWS for tests**
 - axum server that speaks the S3, STS, IAM, Bedrock, CloudTrail, Cost Explorer, Transcribe, and Artifact wire protocols
 - Runs as a standalone binary or in-process via `testing::MockServer`, so tests drive real AWS SDK clients against an ephemeral port
@@ -164,23 +169,41 @@ a run resumable.
 | `converse.rs` | Stream bounds, cache points, budgets, usage/budget logging, `StopSignal` |
 | `retry.rs` | `with_throttle_retry` |
 | `analysis.rs` | Forced-tool structured calls: `StructuredCallRequest`, `converse_structured`, `AnalysisInputBudget`, the tool schemas |
-| `report.rs` | Writer turns and `REPORT_OUTPUT_TOKEN_RESERVE` |
+| `report.rs` | Writer turns and `DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE` |
 | `chat.rs` | Chat turns and `CHAT_MAX_OUTPUT_TOKENS` |
 
-**Stream silence** is bounded by two consts in `converse.rs`:
-`STREAM_FIRST_FRAME_TIMEOUT` (90s, in `start_converse_stream`) and
-`STREAM_IDLE_TIMEOUT` (60s, per-`recv` in `recv_stream_event`, clock restarting
-each frame). These exist because the AWS SDK's stalled-stream protection does
-not cover `ConverseStream` — the generated operation registers no
-`StalledStreamProtectionInterceptor` — and the SDK read timeout bounds only the
-wait for response headers. Neither bound is configurable.
+**Stream silence** is bounded per call by a `StreamBounds` pair in
+`converse.rs`: a first-frame wait (in `start_converse_stream`) and an idle wait
+(per-`recv` in `recv_stream_event`, clock restarting each frame). These exist
+because the AWS SDK's stalled-stream protection does not cover `ConverseStream`
+— the generated operation registers no `StalledStreamProtectionInterceptor` —
+and the SDK read timeout bounds only the wait for response headers.
+
+Both are clinician-configurable through `BedrockRuntimeLimits`, which reaches
+the writer as `ReportTurnLimits::stream_bounds` and the planner/reviewer through
+`DraftPlanRequest::with_stream_bounds` / `ReviewSweepRequest::with_stream_bounds`.
+The family defaults are unchanged (`DEFAULT_STREAM_*` 90s/60s conversational,
+`DEFAULT_ANALYSIS_STREAM_*` 120s/90s), and every configured value is clamped to
+`1..=MAX_STREAM_TIMEOUT_SECS` in `StreamBounds::writer`. Chat is not
+configurable and still reads the const default.
+
+**The writer's output ceiling** is configurable the same way. The `max_tokens`
+one writer call sends and the reserve subtracted from the model's window are the
+same number by construction — `ReportInputBudget` carries it, and
+`converse_report_with_tool_set` reads it back off the budget rather than a
+const. `effective_output_reserve` clamps a configured ceiling to
+`MIN`/`MAX_REPORT_OUTPUT_TOKEN_RESERVE` and then to half the model's window, so
+raising it can never leave a budget of nothing. The planner and reviewer
+reserves stay compile-time: both are tied to their JSON-schema ceilings by
+`const` assertions.
 
 **Budgets** are the model's context window minus a per-operation output reserve.
 The window comes from the central capability table
 `claria-core/src/model_id.rs::ModelCapabilities::for_id`, which is suffix-driven
 (`:48k` / `:200k` / `:1m`) and otherwise an assumption. Reserves:
 `PLAN_OUTPUT_TOKEN_RESERVE` and `REVIEW_OUTPUT_TOKEN_RESERVE` in
-`claria-report-pipeline` (`plan.rs`, `review.rs`), `REPORT_OUTPUT_TOKEN_RESERVE`
+`claria-report-pipeline` (`plan.rs`, `review.rs`), the writer's configured
+reserve (defaulting to `DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE`)
 and `CHAT_MAX_OUTPUT_TOKENS` in `claria-bedrock`. Actual counting is
 `converse.rs::InputTokenBudget` — `exact` counts once then estimates at ~4
 chars/token, `estimated` trusts the estimate until within 10% of the budget, and
@@ -254,6 +277,168 @@ back over `Channel<ChatStreamEvent>`. History objects live at
   each other by a `const` assertion in `plan.rs` deriving
   `WORST_CASE_PLAN_ROW_CHARS` from the schema's own ceilings. Widening the
   evidence schema without widening the reserve fails the build.
+- A new `ReportTemplateWarningCode` variant that is not added to
+  `WARNING_ORDER` in `import.rs` is counted and then silently discarded —
+  `into_sorted` uses that list as a filter, not just an ordering.
+- `claria-desktop` builds its own Tokio runtime (see **Async runtime**). Any
+  `spawn` or `block_on` before `async_runtime::install()` initializes the
+  global one and makes the install panic.
+
+### Feature map
+
+The surfaces, and what owns each. Ownership is stated only where it was
+traced; see **Coverage of this guide** for what is listed but unexplored.
+
+| Surface | Frontend | Backend |
+|---|---|---|
+| Writer (whole-report drafting) | `pages/Writing.tsx`, `lib/useReportWorkspace.ts`, `lib/draftRun.ts`, `lib/draftPlan.ts` | `claria-report-pipeline` (`plan.rs`, `turn.rs`, `parallel_draft.rs`, `run.rs`, `gate.rs`), `claria-report-store`, `claria-bedrock/report.rs` |
+| Review / findings | `lib/findings.ts` | `claria-report-pipeline/review.rs`, `claria-bedrock/analysis.rs` |
+| Chat (per-client and infra) | `pages/ClientChat.tsx`, `pages/InfraChat.tsx` | `commands/chat.rs`, `claria-bedrock/chat.rs` |
+| Preferences | `pages/Preferences.tsx`, `lib/preferencesNav.ts`, `lib/preferencesSearchContent.ts` | `claria-desktop/config.rs`, `commands/config.rs` |
+| Templates (import/export) | template panes inside Writing | `claria-docx`, `claria-docx-cli`, `report_template_commands.rs` |
+| Client records | `pages/ClientList.tsx`, `ClientRecord.tsx`, `RecordTab.tsx`, `ClientRecordSettings.tsx` | `claria-records`, `claria-storage` |
+| Transcription | `lib/transcribe.ts`, `lib/useMemoRecorder.ts`, `lib/transcript.ts` | `claria-transcribe` |
+| Cost / billing | `pages/CostExplorer.tsx`, `lib/cost*.ts`, `lib/usePricingMap.ts` | `claria-billing` |
+| Provisioning / onboarding | `pages/Provision.tsx`, `StartScreen.tsx`, the `*Guide.tsx` pages | `claria-provisioner`, `commands/provision.rs` |
+| Console / diagnostics | `pages/Console.tsx`, `lib/logBridge.ts` | `console.rs`, `logging.rs` |
+
+Chat and the Writer are separate flows that happen to share `claria-bedrock`.
+They do **not** share prompt composition, retry policy, stream bounds, or
+budget code, and a change to one is not a change to the other. The writer is
+the only flow with a tool loop, a plan gate, durable runs, or per-call usage
+receipts.
+
+### Preferences trace
+
+Two stores, deliberately: `config.json` on disk (machine-local, versioned by
+`CURRENT_VERSION`) and `_state/preferences.json` in S3 (synced across a
+clinician's machines, versioned independently by `PREFERENCES_VERSION`).
+`SyncedPreferences` is the subset that travels.
+
+Reads flow `useSyncedPreferences()` → `load_config` → `ClariaConfig`, and the
+redacted `ConfigInfo` is what reaches the frontend — secret-bearing fields
+never derive `Serialize`/`specta::Type`.
+
+Writes are **patch-saves**: `savePreferencesPatch({ report_authoring: draft })`
+sends only that section's fields, so one pane cannot roll back another's edit.
+
+`load_config_at` calls `report_authoring.validate()` and **fails the load** on
+an out-of-range value. Bad settings are refused at startup, not at the call
+site that would have used them.
+
+Adding one writer-limit field touches, in order:
+
+1. `claria-desktop/src/config.rs` — field, `#[serde(default = "…")]`, the
+   default fn, and a migration block (bump `CURRENT_VERSION`)
+2. `claria-report-pipeline/src/lib.rs` — `DEFAULT_*`/`MAX_CONFIGURABLE_*`
+   consts, validation, accessor
+3. `pages/Preferences.tsx` — `WRITER_LIMIT_DEFAULTS`, the field-descriptor
+   array, `normalizeWriterPreferences`. `WriterLimits` is
+   `Required<ReportAuthoringPreferences>`, so the type follows the bindings
+4. `lib/preferencesNav.ts` — an anchor entry, or settings search cannot find it
+5. `lib/bindings.ts` — regenerated by **running** the debug binary
+6. `e2e/tauri-mock.ts` — every `report_authoring` fixture, or the Writing tab
+   drops to its error boundary (this is what broke release screenshots once)
+7. tests: `claria-report-pipeline/tests/limits.rs`,
+   `claria-desktop/tests/config_load.rs`
+
+Field-label constants in `claria-report-pipeline/src/lib.rs`
+(`TOOL_ROUNDS_FIELD_LABEL`, `IDLE_TIMEOUT_FIELD_LABEL`, …) are quoted verbatim
+in failure messages and must match the labels in `Preferences.tsx`, or an
+error sends a clinician looking for a control that does not exist.
+
+### Two writer executors, two retry budgets
+
+`turn.rs` and `parallel_draft.rs` are both executors for `FullReportRequest`,
+and they do not retry alike:
+
+| | sequential (`turn.rs`) | parallel (`parallel_draft.rs`) |
+|---|---|---|
+| Retries | `STREAM_INTERRUPTION_RETRIES = 2` → **3 attempts** | `retry::MAX_ATTEMPTS = 4`, jittered 1s/2s/4s |
+| Backoff | fixed `STREAM_INTERRUPTION_RETRY_DELAY` | `backon` exponential |
+| Concurrency | one call at a time | `BEDROCK_FAN_OUT_CONCURRENCY` (3) branches |
+
+"N attempts" in a console log therefore tells you which executor ran. Both end
+at `map_bedrock_failure`, so failure prose is shared even though the policies
+are not.
+
+Section count drives everything downstream: a plan of N sections becomes N
+branches, and `ReportTurnLimits::scaled_for_plan` raises the call and round
+ceilings to fit. One section means one branch writing the entire report in a
+single response — which is how a template with no heading styles turns into a
+stream that goes quiet past its idle bound.
+
+### Frontend shape
+
+Vite + React + Tailwind, no router library — `App.tsx` switches on state.
+Pages in `src/pages/`, everything reusable in `src/lib/` (hooks and pure
+modules side by side, tests next to their module).
+
+- **Rust is the only source of types.** `lib/bindings.ts` is generated;
+  `lib/tauri.ts` wraps each command in an `unwrap` that turns
+  `Result<T, String>` into a throw.
+- **Progress arrives on an IPC `Channel`**, minted per call in `lib/tauri.ts`,
+  never Tauri events. `lib/draftRun.ts` is a pure reducer over those events —
+  which is why it is unit-testable and why its `default:` arm silently
+  swallows event kinds nobody added.
+- `lib/useAsyncLoad.ts` is the blessed load hook; the review rules forbid
+  hand-rolled `let cancelled = false`.
+- Preferences panes are `NavPane`s with `data-pref-anchor` attributes, which
+  is what settings search scrolls to.
+
+### Testing topology
+
+~109 Rust test binaries; frontend is Vitest (46 files) plus a non-CI Playwright
+suite in `e2e/`.
+
+`claria-mock-aws` speaks the real wire protocols, so tests drive genuine AWS
+SDK clients at an ephemeral port. Its failure knobs matter more than its happy
+path — `state.rs` exposes `bedrock_stream_stalls` (starts, then goes quiet),
+`bedrock_stream_silences` (never sends a first frame), `bedrock_stream_drops`
+(severs mid-response), `bedrock_stream_stalls_after`, and
+`ScriptedBedrockResponse` queues.
+
+To test a timeout without waiting it out, spawn a task that sleeps briefly in
+real time and then calls `tokio::time::pause()`; virtual time then jumps the
+bound instantly. `converse_stream.rs` does this, and it needs tokio's
+`test-util` feature.
+
+That trick has a limit worth knowing: at the **pipeline** layer it races the
+AWS SDK's own dispatch-retry, which under parallel test load surfaces a
+`DispatchFailure` before our bound fires. Timeout *behaviour* is pinned at the
+`claria-bedrock` layer; the pipeline's *reaction* to it is pinned by calling
+`interruption_advice` directly (`tests/failure_advice.rs`). Reproducing both
+through a live stream is not worth the flake.
+
+### Release mechanics
+
+`cargo release minor --execute --no-confirm` from a clean `main`. The
+`pre-release-replacements` live in **`crates/claria-desktop/Cargo.toml`**, not
+the workspace root — they rewrite `tauri.conf.json` and the CHANGELOG's
+`## [Unreleased]` header. `shared-version = true` moves every crate together,
+so a **new crate must be created with the current workspace version** or the
+release warns and bumps it out of step.
+
+Wait for `main`'s CI before tagging: the tag starts the artifact build, and CI
+runs ~13 min with the Release job ~18 min (Windows tests are the long pole).
+Merging a second PR cancels the first's in-flight run — a `cancelled` status on
+the older merge is normal, not a failure.
+
+### Coverage of this guide
+
+Written from work actually done in the repo, so it is uneven on purpose.
+
+**Traced end to end:** the writer draft run and both its executors; Bedrock
+call plumbing (bounds, budgets, retries, cache points); the preferences chain
+from Word-visible setting to Bedrock request; DOCX import and section carving;
+the async runtime and its stack requirements; the release process.
+
+**Listed but not explored** — treat the table above as a map of *where* to
+look, not a claim about how they work: transcription, provisioning and IAM
+setup, cost/billing, the records and storage internals, the review/findings
+model beyond its call shape, DOCX *export* (`render.rs`,
+`template_render.rs`), `claria-eval`, and most page components other than
+`Preferences.tsx`.
 
 ## S3 Key Layout
 
@@ -302,7 +487,7 @@ credentials, may permanently purge S3 version history.
 
 ## Config Versioning
 
-`config.json` carries a `config_version` field (u32). Current version: **9**.
+`config.json` carries a `config_version` field (u32). Current version: **12**.
 
 ### Rules
 - Every schema change to `ClariaConfig` (new field, renamed field, changed type) bumps `CURRENT_VERSION` in `config.rs`
@@ -362,6 +547,22 @@ their patch numbers routinely diverge — the crate has shipped 2.11.5 while
 npm's `@tauri-apps/api` stops at 2.11.1 — so match `X.Y` and take the newest
 patch npm offers rather than hunting for a version number that does not exist.
 Both are pinned exactly; bump them together and re-run `npm install`.
+
+## Async runtime
+
+`claria-desktop` builds the Tokio runtime itself
+(`async_runtime::install`) instead of letting Tauri create one lazily, and
+gives each worker an 8 MiB stack. Tauri's default is Tokio's, which is the
+2 MiB a platform thread gets, and that is not enough for one AWS SDK request
+in an unoptimized build: the smithy orchestrator, hyper pool, TLS connector
+and rustls handshake nest as futures rather than calls, so a handshake sits
+about a hundred `poll` frames deep before webpki starts parsing DER. Release
+builds survive only because `opt-level = "z"` and LTO inline the combinators
+away; `cargo tauri dev` overflows the guard page and aborts.
+
+`install` must run before anything spawns — `tauri::async_runtime::set`
+panics once the global runtime exists, and the first `spawn` or `block_on`
+anywhere creates it.
 
 ## Local Build Environment
 

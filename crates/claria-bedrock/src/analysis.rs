@@ -37,7 +37,7 @@ use claria_core::models::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    converse::{self, CachePlan, StopSignal},
+    converse::{self, CachePlan, StopSignal, StreamBounds},
     error::BedrockError,
     report::{self, ReportStopReason},
 };
@@ -206,6 +206,10 @@ pub struct StructuredCallRequest<'a> {
     pub forced_tool: &'a str,
     pub max_tokens: u32,
     pub cache_plan: CachePlan,
+    /// How long this call may stay silent before and after its first frame.
+    /// [`StreamBounds::analysis`] is the family default; a host that lets a
+    /// clinician raise the wait passes their pair instead.
+    pub stream_bounds: StreamBounds,
     /// Fired by the reader's Stop button; a default signal never fires.
     pub stop: &'a StopSignal,
     /// Called with each fragment of the forced tool's input as it streams,
@@ -337,6 +341,7 @@ pub async fn converse_structured(
         forced_tool,
         max_tokens,
         cache_plan,
+        stream_bounds,
         stop,
         on_partial_tool_input,
         operation,
@@ -420,7 +425,7 @@ pub async fn converse_structured(
         system_blocks
     };
 
-    let bounds = converse::StreamBounds::analysis();
+    let bounds = stream_bounds;
     let started = std::time::Instant::now();
     // How long the service took to produce the first frame, filled in the
     // moment it does. It is the number that separates "the model is still

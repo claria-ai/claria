@@ -127,3 +127,104 @@ fn a_v10_config_migrates_to_v11_with_the_plan_gate_on() {
         .expect("present");
     assert_eq!(on_disk_version, CURRENT_VERSION);
 }
+
+#[test]
+fn a_v11_config_migrates_to_v12_at_the_waits_it_already_ran_at() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 11,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "report_authoring": {
+                "max_tool_rounds": 12,
+                "max_converse_calls": 13,
+                "max_tool_uses_per_response": 16,
+                "max_retained_turns": 30
+            }
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v11 config migrates forward");
+
+    // The values that were compiled in until now, so an install that says
+    // nothing about them behaves exactly as it did before the upgrade.
+    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 90);
+    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 60);
+    assert_eq!(config.report_authoring.writer_max_output_tokens, 32_768);
+    assert_eq!(
+        config.report_authoring.analysis_first_frame_timeout_secs,
+        120
+    );
+    assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 90);
+    // The guardrails the clinician had already chosen survive.
+    assert_eq!(config.report_authoring.max_tool_rounds, 12);
+    assert_eq!(config.report_authoring.max_retained_turns, 30);
+
+    let (_, on_disk_version) = config::read_config_at(&path)
+        .expect("reread")
+        .expect("present");
+    assert_eq!(on_disk_version, CURRENT_VERSION);
+}
+
+#[test]
+fn a_raised_wait_survives_the_round_trip_into_the_pipeline() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 12,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "report_authoring": {
+                "writer_first_frame_timeout_secs": 420,
+                "writer_idle_timeout_secs": 240,
+                "writer_max_output_tokens": 65536,
+                "analysis_first_frame_timeout_secs": 500,
+                "analysis_idle_timeout_secs": 300
+            }
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v12 config loads");
+    let limits = config.report_authoring.limits().expect("within range");
+
+    assert_eq!(limits.stream_bounds().first_frame_secs(), 420);
+    assert_eq!(limits.stream_bounds().idle_secs(), 240);
+    assert_eq!(limits.writer_max_output_tokens(), 65_536);
+    assert_eq!(
+        limits.runtime().analysis_stream_bounds().first_frame_secs(),
+        500
+    );
+    assert_eq!(limits.runtime().analysis_stream_bounds().idle_secs(), 300);
+}
+
+#[test]
+fn a_wait_past_the_ceiling_is_refused_before_it_reaches_bedrock() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 12,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "report_authoring": { "writer_first_frame_timeout_secs": 6000 }
+        }"#,
+    );
+
+    // Refused at load, not at call time: a wait nobody can honour must not
+    // reach the point where it would fail a clinician's draft instead.
+    let error = config::load_config_at(&path).expect_err("6000 seconds is past the ceiling");
+    let message = error.to_string();
+    assert!(message.contains("600"), "{message}");
+}

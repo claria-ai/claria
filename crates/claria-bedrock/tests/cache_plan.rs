@@ -3,9 +3,11 @@
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_bedrock::{
-    converse::{CachePlan, StopSignal},
+    converse::{CachePlan, StopSignal, StreamBounds},
     error::BedrockError,
-    report::{ReportInputBudget, converse_report_with_tool_limit},
+    report::{
+        DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE, ReportInputBudget, converse_report_with_tool_limit,
+    },
 };
 use claria_core::{
     model_id::{CacheTtlChoice, ModelCapabilities},
@@ -126,14 +128,19 @@ fn the_parallel_draft_plan_follows_the_family_gates() {
 /// count rather than taking one of its own.
 #[test]
 fn a_seeded_report_budget_carries_the_warm_branch_count() {
-    let unseeded = ReportInputBudget::new(MODEL_ID);
+    let unseeded = ReportInputBudget::new(MODEL_ID, DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE);
     assert_eq!(
         unseeded.verified(),
         None,
         "a fresh budget has taken no count yet"
     );
 
-    let seeded = ReportInputBudget::seeded(MODEL_ID, 41_000, 160_000);
+    let seeded = ReportInputBudget::seeded(
+        MODEL_ID,
+        DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE,
+        41_000,
+        160_000,
+    );
     assert_eq!(seeded.verified(), Some((41_000, 160_000)));
 }
 
@@ -151,9 +158,10 @@ async fn a_seeded_budget_sends_no_count_tokens_call() {
         "System prompt",
         &[user_message("Draft")],
         8,
-        &mut ReportInputBudget::seeded(MODEL_ID, 1_000, 4_000),
+        &mut ReportInputBudget::seeded(MODEL_ID, DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE, 1_000, 4_000),
         claria_bedrock::converse::ModelTuning::default(),
         CachePlan::parallel_draft(caps(MODEL_ID), vec![(0, 0)]).expect("one point"),
+        StreamBounds::conversational(),
         &StopSignal::new(),
     )
     .await
@@ -225,9 +233,10 @@ async fn an_after_block_coordinate_places_the_point_mid_message() {
         "System prompt",
         &[user_message("Draft")],
         8,
-        &mut ReportInputBudget::new(MODEL_ID),
+        &mut ReportInputBudget::new(MODEL_ID, DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE),
         claria_bedrock::converse::ModelTuning::default(),
         plan,
+        StreamBounds::conversational(),
         &StopSignal::new(),
     )
     .await
@@ -272,9 +281,10 @@ async fn a_coordinate_outside_the_conversation_is_an_error() {
         "System prompt",
         &[user_message("Draft")],
         8,
-        &mut ReportInputBudget::new(MODEL_ID),
+        &mut ReportInputBudget::new(MODEL_ID, DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE),
         claria_bedrock::converse::ModelTuning::default(),
         plan,
+        StreamBounds::conversational(),
         &StopSignal::new(),
     )
     .await

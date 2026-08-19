@@ -92,6 +92,7 @@ pub async fn generate_draft_plan(
             },
             claria_report_pipeline::DraftPlanRequest::new(&instructions)
                 .with_progress(&progress)
+                .with_stream_bounds(ctx.cfg.report_authoring.runtime().analysis_stream_bounds())
                 .with_stop(&stop.signal),
         )
         .await?;
@@ -129,6 +130,14 @@ pub async fn update_draft_plan(
             &edits,
         )
         .await?;
+        // Counts, never the curated filenames themselves: which of a client's
+        // documents a clinician thinks belong to a section is PHI.
+        let curated_sections = updated.plan.as_ref().map_or(0, |plan| {
+            plan.entries
+                .iter()
+                .filter(|entry| entry.curated_records.is_some())
+                .count()
+        });
         ctx.record_audit(
             ctx.audit_event("draft_plan_edited", "report", report_id.to_string())
                 .with_details(serde_json::json!({
@@ -136,6 +145,7 @@ pub async fn update_draft_plan(
                     "run_id": run_id.to_string(),
                     "edited_sections": edits.len(),
                     "section_count": updated.sections.len(),
+                    "curated_sections": curated_sections,
                 })),
         )
         .await;

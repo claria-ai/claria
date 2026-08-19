@@ -62,6 +62,16 @@ pub const MAX_EVIDENCE_RELEVANCE_CHARACTERS: usize = 200;
 /// Bounded so a pathological plan cannot grow the run object without limit.
 pub const MAX_PLAN_WARNINGS: usize = 200;
 
+/// Ceiling on a section's user-curated record restriction.
+///
+/// Deliberately larger than [`MAX_PLAN_EVIDENCE`]: evidence is the planner's
+/// shortlist of what a section rests on, while a curated list is the whole
+/// world a section's writer is allowed to see, and a clinician restricting a
+/// section to "the four BASC protocols and every teacher form" needs room for
+/// the second without being pushed into the first's shape. Bounded all the
+/// same, because the list is durable state that has to fit in a run object.
+pub const MAX_CURATED_RECORDS: usize = 16;
+
 /// Record filenames are client-chosen and can be long; this only stops a
 /// pathological value from being persisted.
 const MAX_RECORD_FILENAME_CHARACTERS: usize = 1_024;
@@ -171,6 +181,14 @@ pub struct PlanEntryEdit {
     /// rather than storing a blank one.
     #[serde(default)]
     pub instruction: Option<String>,
+    /// The record restriction for this section, as filenames the corpus lists.
+    ///
+    /// Absent leaves the row's restriction alone; an empty list clears it and
+    /// puts the section back on the shared corpus, exactly as an all-whitespace
+    /// `instruction` clears the instruction. A non-empty list is validated
+    /// against the client's records before it is stored.
+    #[serde(default)]
+    pub curated_records: Option<Vec<String>>,
 }
 
 /// What the plan decided for exactly one section. There is one entry per
@@ -193,6 +211,21 @@ pub struct PlanEntry {
     pub evidence: Vec<EvidenceRef>,
     /// Per-section steering that overrides the run-wide instructions.
     pub instruction: Option<String>,
+    /// The records this section's writer may read, when the clinician has
+    /// restricted it to a subset. `None` — the default, and what the planner
+    /// always produces — means the shared corpus every other section sees.
+    ///
+    /// The planner never sets this: it is a user decision taken at the plan
+    /// gate, which is why the plan tool schema has no field for it. The run
+    /// object embeds the plan, so the durable record of what one section's
+    /// model call could see survives resume, audit, and export for free.
+    ///
+    /// `Some` is always a non-empty list of filenames as the record corpus
+    /// lists them. An empty restriction would be a section drafted from
+    /// nothing, which is a plan mistake rather than a request, so the
+    /// validator refuses it.
+    #[serde(default)]
+    pub curated_records: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
@@ -486,6 +519,43 @@ impl PlanEntry {
             )?;
             if let Some(note) = &evidence.note {
                 validate_nonempty_text("evidence note", note, MAX_EVIDENCE_RELEVANCE_CHARACTERS)?;
+            }
+        }
+        self.validate_curated_records()?;
+        Ok(())
+    }
+
+    /// The restriction is a hard context boundary the run is the audit record
+    /// for, so the shapes that cannot mean anything are refused rather than
+    /// normalized away: an empty list would be a section drafted from no
+    /// records at all, and a repeated filename would make the durable record
+    /// disagree with the set the model was actually shown.
+    fn validate_curated_records(&self) -> Result<(), CoreError> {
+        let Some(curated) = &self.curated_records else {
+            return Ok(());
+        };
+        if curated.is_empty() {
+            return Err(invalid(
+                "a curated record restriction must name at least one record; leave it unset to \
+                 draft the section from every readable record",
+            ));
+        }
+        if curated.len() > MAX_CURATED_RECORDS {
+            return Err(invalid(format!(
+                "a plan entry may restrict drafting to at most {MAX_CURATED_RECORDS} records"
+            )));
+        }
+        let mut seen = HashSet::with_capacity(curated.len());
+        for filename in curated {
+            validate_nonempty_text(
+                "curated record filename",
+                filename,
+                MAX_RECORD_FILENAME_CHARACTERS,
+            )?;
+            if !seen.insert(filename.as_str()) {
+                return Err(invalid(format!(
+                    "curated record {filename} is named twice for the same section"
+                )));
             }
         }
         Ok(())

@@ -26,6 +26,13 @@ pub const MAX_PROPOSAL_OPERATIONS: usize = 25;
 pub const MAX_REPORT_TURNS: usize = 200;
 pub const MAX_REPORT_PROTOCOL_BYTES: usize = 512 * 1024;
 pub const MAX_REPORT_SESSION_NAME_CHARACTERS: usize = 120;
+/// How many authoring directives one section may carry, and how long each may
+/// be. The extractor that fills [`ReportSection::template_directives`] enforces
+/// both, and this validator refuses a section that got past it: the directives
+/// ride in every analysis and drafting request, so an unbounded field would be
+/// an unbounded prompt.
+pub const MAX_SECTION_TEMPLATE_DIRECTIVES: usize = 8;
+pub const MAX_TEMPLATE_DIRECTIVE_CHARACTERS: usize = 500;
 
 // Crate-visible so the drafting-run model bounds its own titles and headings
 // with the ceilings the accepted report already enforces.
@@ -99,6 +106,24 @@ pub struct ReportSection {
     /// the template" still has the original text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_blocks: Option<Vec<ReportBlock>>,
+    /// The authoring directives the template's author wrote into this section:
+    /// the bracketed instructions a clinical template carries — "[a one
+    /// sentence stating why the child was referred]", "[Delete the subsections
+    /// of the tests that were not uploaded]". Extracted verbatim at import and
+    /// bounded by [`MAX_SECTION_TEMPLATE_DIRECTIVES`] and
+    /// [`MAX_TEMPLATE_DIRECTIVE_CHARACTERS`].
+    ///
+    /// Unlike [`ReportSection::template_blocks`] these do reach a model, as
+    /// host-extracted guidance about the document's *form* — how long a
+    /// section runs, how it must open, which subsections to drop. They are
+    /// never a source of client facts.
+    // `#[serde(default)]` alone, deliberately: specta (rc.18) turns any
+    // `skip_serializing_if` other than `Option::is_none` into a *required*
+    // TypeScript field, overriding both `default` and an explicit
+    // `#[specta(optional)]`. An always-present empty array in stored JSON is
+    // cheaper than a generated type that disagrees with the wire.
+    #[serde(default)]
+    pub template_directives: Vec<String>,
     /// Who last wrote this section, and at which revision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorship: Option<SectionAuthorship>,
@@ -186,6 +211,10 @@ pub enum ReportTemplateWarningCode {
     MissingTitle,
     NestedTablesOmitted,
     NumberedListsImportedAsBullets,
+    /// No paragraph carried a heading style, so sections were inferred from
+    /// how the headings are formatted. The reader has to be told: the carve
+    /// is a guess about their document, not a reading of it.
+    SectionsInferredFromFormatting,
     TextBoxesOmitted,
     TrackedChangesResolved,
     UnsupportedElementsOmitted,
@@ -910,7 +939,10 @@ fn validate_content(content: &ReportContent) -> Result<(), CoreError> {
     // A section's `template_blocks` are validated block by block but excluded
     // here: they are never exported and never sent to a model, so they cost
     // neither Word XML nor prompt tokens, and the per-section block and
-    // paragraph ceilings already bound how large one copy can grow.
+    // paragraph ceilings already bound how large one copy can grow. Its
+    // `template_directives` are excluded for the second half of that reason:
+    // they never reach Word, and their own per-section count and length
+    // ceilings already bound what one section can add to a request.
     for section in &content.sections {
         validate_section(section)?;
         if !ids.insert(section.id) {
@@ -959,6 +991,18 @@ fn validate_section(section: &ReportSection) -> Result<(), CoreError> {
     }
     if let Some(template_blocks) = &section.template_blocks {
         validate_blocks(template_blocks)?;
+    }
+    if section.template_directives.len() > MAX_SECTION_TEMPLATE_DIRECTIVES {
+        return Err(invalid(format!(
+            "a section may carry at most {MAX_SECTION_TEMPLATE_DIRECTIVES} template directives"
+        )));
+    }
+    for directive in &section.template_directives {
+        validate_nonempty_text(
+            "template directive",
+            directive,
+            MAX_TEMPLATE_DIRECTIVE_CHARACTERS,
+        )?;
     }
     validate_blocks(&section.blocks)
 }

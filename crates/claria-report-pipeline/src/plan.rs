@@ -39,7 +39,7 @@ use claria_bedrock::{
         self, AnalysisInputBudget, PlanAction, PlanEvidence, ResumeDecision, SectionPlanRow,
         StructuredCallOutput, StructuredCallRequest,
     },
-    converse::StopSignal,
+    converse::{StopSignal, StreamBounds},
     error::BedrockError,
     retry::{MAX_ATTEMPTS, with_throttle_retry_observed},
 };
@@ -49,9 +49,9 @@ use claria_core::models::{
         ReportWorkspace,
     },
     report_run::{
-        DraftRun, DraftRunStatus, EvidenceRef, MAX_PLAN_EVIDENCE, MAX_PLAN_SCOPE_CHARACTERS,
-        MAX_PLAN_WARNINGS, PlanEntry, PlanEntryEdit, RunPlan, RunSection, RunSectionState,
-        SectionIntent,
+        DraftRun, DraftRunStatus, EvidenceRef, MAX_CURATED_RECORDS, MAX_PLAN_EVIDENCE,
+        MAX_PLAN_SCOPE_CHARACTERS, MAX_PLAN_WARNINGS, PlanEntry, PlanEntryEdit, RunPlan,
+        RunSection, RunSectionState, SectionIntent,
     },
     turn_usage::TurnUsage,
 };
@@ -178,6 +178,7 @@ pub struct DraftPlanRequest<'a> {
     pub instructions: &'a str,
     progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
     stop: Option<&'a StopSignal>,
+    stream_bounds: StreamBounds,
 }
 
 impl<'a> DraftPlanRequest<'a> {
@@ -186,7 +187,15 @@ impl<'a> DraftPlanRequest<'a> {
             instructions,
             progress: None,
             stop: None,
+            stream_bounds: StreamBounds::analysis(),
         }
+    }
+
+    /// How long each planning call may stay silent. Without this the pass
+    /// runs at the analysis family's compiled-in waits.
+    pub fn with_stream_bounds(mut self, stream_bounds: StreamBounds) -> Self {
+        self.stream_bounds = stream_bounds;
+        self
     }
 
     pub fn with_progress(
@@ -448,6 +457,20 @@ pub async fn update_draft_plan(
         if let Some(instruction) = &edit.instruction {
             entry.instruction = (!instruction.trim().is_empty()).then(|| instruction.clone());
         }
+        if let Some(curated) = &edit.curated_records {
+            // A synthetic 1:1 plan resumes on the serial executor, which
+            // sends every section the shared corpus. Accepting a restriction
+            // here would record a boundary no drafting call enforces — the
+            // one shape this feature must never produce.
+            if plan.synthetic && !curated.is_empty() {
+                return Err(ReportPipelineError::InvalidInput(
+                    "This run was not planned at the gate, so its sections cannot be restricted \
+                     to selected records."
+                        .to_string(),
+                ));
+            }
+            entry.curated_records = validate_curated_records(curated, &known_files)?;
+        }
     }
     plan.user_edited = true;
 
@@ -588,7 +611,8 @@ pub async fn resume_planned_draft_run(
             planner_model_id,
             writer_model_id: model_id,
         },
-        DraftPlanRequest::new(request.guidance),
+        DraftPlanRequest::new(request.guidance)
+            .with_stream_bounds(request.limits.runtime().analysis_stream_bounds()),
     )
     .await?;
     crate::run::resume_draft_run(
@@ -928,6 +952,7 @@ impl<'a> AnalysisPass<'a> {
                                 forced_tool,
                                 max_tokens: PLAN_OUTPUT_TOKEN_RESERVE,
                                 cache_plan: self.cache_plan.clone(),
+                                stream_bounds: self.request.stream_bounds,
                                 stop: self.stop,
                                 on_partial_tool_input: Some(count_row),
                                 operation: "report_plan",
@@ -1105,9 +1130,16 @@ async fn prepare_analysis_corpus(
         bucket,
         &[
             BudgetRole::planner(models.planner_model_id),
-            BudgetRole::writer(models.writer_model_id),
+            // The writer's own ceiling is a per-request setting the plan pass
+            // never sees; the default is what sizes this corpus, exactly as
+            // it did before that ceiling became configurable.
+            BudgetRole::writer(
+                models.writer_model_id,
+                claria_bedrock::report::DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE,
+            ),
         ],
         &inventory,
+        None,
     )
     .await?;
     request.emit_progress(ReportTurnProgress::RecordContextPrepared {
@@ -1125,11 +1157,14 @@ async fn prepare_analysis_corpus(
 /// data-not-instructions rule stated in the policy above it — the same
 /// posture the writer uses, in a different transport tier.
 ///
-/// The template block here carries structure without prose. Every analysis
-/// role — fresh plan, resume plan, review sweep — reads these same blocks and
-/// none of them reads a template body, so leaving the prose out is one
-/// smaller shared prefix rather than a saving one role takes at the others'
-/// expense. The writer's own block still carries it.
+/// The template block here carries structure and the host-extracted authoring
+/// directives, but no prose. Every analysis role — fresh plan, resume plan,
+/// review sweep — reads these same blocks and none of them reads a template
+/// body, so leaving the prose out is one smaller shared prefix rather than a
+/// saving one role takes at the others' expense. The writer's own block still
+/// carries it. One builder for all three is also what keeps the block
+/// byte-identical between them, which is the whole value of the cache point
+/// underneath it.
 pub(crate) fn analysis_system_blocks(
     workspace: &ReportWorkspace,
     corpus: &FullRecordContext,
@@ -1286,6 +1321,10 @@ fn validate_section_plan(
             scope: truncate_characters(row.scope.trim(), MAX_PLAN_SCOPE_CHARACTERS),
             evidence,
             instruction: None,
+            // The planner is never told a section was restricted and never
+            // sets one: it plans from the whole corpus, and the restriction
+            // is the clinician's decision, taken at the gate afterwards.
+            curated_records: None,
         });
     }
     Ok(entries)
@@ -1385,6 +1424,13 @@ fn validate_resume_plan(
             instruction: previous
                 .get(section_id)
                 .and_then(|entry| entry.instruction.clone()),
+            // Carried forward for the same reason the instruction is: the
+            // resume planner is not offered the field and cannot restate it,
+            // so re-deriving the plan would silently unrestrict a section the
+            // clinician restricted before the run was interrupted.
+            curated_records: previous
+                .get(section_id)
+                .and_then(|entry| entry.curated_records.clone()),
         });
     }
     Ok(entries)
@@ -1434,6 +1480,49 @@ pub(crate) fn index_rows<'a>(
         ));
     }
     Ok(by_id)
+}
+
+/// Check a section's record restriction against the records the client
+/// actually has, returning the restriction to store — `None` for an empty
+/// list, which is how the gate clears one.
+///
+/// Deliberately harsher than [`resolve_evidence`], against the same corpus
+/// list. Evidence is the planner's guess and a name it got wrong is a warning
+/// the clinician reads at the gate; a curated list is the clinician's own
+/// instruction about what a model may see, typed by someone looking at the
+/// record list, and quietly dropping a name from it would silently widen or
+/// narrow a boundary they set on purpose.
+fn validate_curated_records(
+    supplied: &[String],
+    known_files: &HashSet<&str>,
+) -> Result<Option<Vec<String>>, ReportPipelineError> {
+    if supplied.is_empty() {
+        return Ok(None);
+    }
+    if supplied.len() > MAX_CURATED_RECORDS {
+        return Err(ReportPipelineError::InvalidInput(format!(
+            "A section may be restricted to at most {MAX_CURATED_RECORDS} records."
+        )));
+    }
+    let mut seen = HashSet::with_capacity(supplied.len());
+    for filename in supplied {
+        if filename.trim().is_empty() {
+            return Err(ReportPipelineError::InvalidInput(
+                "A section's record restriction cannot name a blank filename.".to_string(),
+            ));
+        }
+        if !known_files.contains(filename.as_str()) {
+            return Err(ReportPipelineError::InvalidInput(format!(
+                "This client has no record named {filename}."
+            )));
+        }
+        if !seen.insert(filename.as_str()) {
+            return Err(ReportPipelineError::InvalidInput(format!(
+                "{filename} is named twice in this section's record restriction."
+            )));
+        }
+    }
+    Ok(Some(supplied.to_vec()))
 }
 
 /// Keep the evidence that names a file in the pinned corpus, and record a
@@ -1531,6 +1620,7 @@ fn deterministic_resume_entries(run: &DraftRun) -> Vec<PlanEntry> {
                     .map(|entry| entry.evidence.clone())
                     .unwrap_or_default(),
                 instruction: earlier.and_then(|entry| entry.instruction.clone()),
+                curated_records: earlier.and_then(|entry| entry.curated_records.clone()),
             }
         })
         .collect()

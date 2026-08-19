@@ -26,6 +26,14 @@
 //! branch at a cold cache would have each of them write the same prefix at the
 //! one-hour write rate.
 //!
+//! **One exception, and it pays for itself.** A plan row the clinician
+//! restricted to a subset of the records replaces block 0 with a snapshot of
+//! only those files. That branch writes its own prefix instead of reading the
+//! shared one, and takes its own token count instead of estimating from the
+//! warm branch's — the cost of one cold prefix, borne by the one section that
+//! asked for it, while every uncurated branch's request is byte-for-byte what
+//! it was before the feature existed.
+//!
 //! **Branches never touch the run.** A branch validates its section and hands
 //! the result back; the coordinator, which is single-threaded, is the only
 //! thing that mutates [`LoadedRun`], persists it, and emits progress. That is
@@ -36,7 +44,7 @@
 //! already says what "finished" means.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     sync::atomic::{AtomicU32, Ordering},
 };
 
@@ -72,11 +80,13 @@ use crate::{
     ReportPipelineError, ReportTurnLimits, ReportTurnOutcome, WRITER_LIMITS_SECTION,
     context::sha256_hex,
     full_draft_context::{
-        DraftTurnKind, cache_checkpoints, plan_context, section_kickoff_instruction,
-        template_context, title_kickoff_instruction,
+        DraftTurnKind, RECORD_CONTEXT_BLOCK, cache_checkpoints, plan_context,
+        section_kickoff_instruction, template_context, title_kickoff_instruction,
     },
     prompts::full_report_parallel_system_prompt,
-    record_context::FullRecordContext,
+    record_context::{
+        BudgetRole, FullRecordContext, RecordFilter, RecordInventoryEntry, load_full_record_context,
+    },
     run::{park_stopped_run, release_failed_run, stamp_run_authorship},
     tools::{
         MAX_SECTION_WRITE_ATTEMPTS, PreparedSectionContent, ToolRejection, apply_section_content,
@@ -127,14 +137,15 @@ pub(crate) async fn execute_parallel_draft_turn(
 ) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     let client_id = loaded.workspace.client_id;
     let report_id = loaded.workspace.report_id;
-    let record_context =
-        match prepare_full_draft_context(s3, bucket, client_id, model_id, request).await {
-            Ok(record_context) => record_context,
-            Err(error) => {
-                release_failed_run(s3, bucket, client_id, report_id, &mut run).await;
-                return Err(error);
-            }
-        };
+    let prepared = match prepare_full_draft_context(s3, bucket, client_id, model_id, request).await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            release_failed_run(s3, bucket, client_id, report_id, &mut run).await;
+            return Err(error);
+        }
+    };
+    let record_context = prepared.record_context;
 
     let started_at = jiff::Timestamp::now();
     let mut progress = AttemptProgress::new(&loaded.workspace, model_id, started_at);
@@ -145,6 +156,7 @@ pub(crate) async fn execute_parallel_draft_turn(
         bucket,
         request,
         &record_context,
+        &prepared.inventory,
         model_id,
         &mut loaded,
         &mut run,
@@ -225,6 +237,10 @@ struct BranchOutcome {
     /// The exact input count this branch took, if it took one. Only the warm
     /// branch does.
     verified: Option<(u32, u64)>,
+    /// This branch sent its own restricted record block instead of the shared
+    /// prefix, so its cache receipts say nothing about how well the shared one
+    /// was reused and are accounted for separately.
+    curated: bool,
 }
 
 /// Everything every branch reads, borrowed rather than cloned: the shared
@@ -234,8 +250,13 @@ struct DraftBranchContext<'a> {
     sdk_config: &'a aws_config::SdkConfig,
     model_id: &'a str,
     system_prompt: &'a str,
-    /// Blocks 0–2 of message 0, identical in every branch's request.
+    /// Blocks 0–2 of message 0, identical in every branch's request that is
+    /// not curated.
     prefix: &'a [ReportProtocolBlock],
+    /// Per-section replacements for block 0, for the sections the clinician
+    /// restricted. Empty on every run where nobody restricted anything, which
+    /// is the shape the shared prefix and its cache economics assume.
+    curated: &'a HashMap<Uuid, CuratedRecordContext>,
     /// The run as it stood when the fan-out started. Read-only: a branch
     /// validates against it and never learns what its siblings did.
     snapshot: &'a DraftRun,
@@ -287,7 +308,14 @@ struct MergeState {
     warm_cache_write_tokens: u64,
     branch_cache_write_tokens: u64,
     branch_cache_read_tokens: u64,
+    /// Branches that read the shared prefix — the only ones the scattering
+    /// heuristic can say anything about.
     branches: usize,
+    /// Branches that sent their own restricted record block. Counted apart
+    /// because each one legitimately writes a prefix of its own, and folding
+    /// them into `branches` would report a curated run as a scattered one.
+    curated_branches: usize,
+    curated_cache_write_tokens: u64,
     section_ids: Vec<Uuid>,
 }
 
@@ -300,6 +328,7 @@ async fn run_parallel_draft(
     bucket: &str,
     request: FullReportRequest<'_>,
     record_context: &FullRecordContext,
+    inventory: &[RecordInventoryEntry],
     model_id: &str,
     loaded: &mut LoadedWorkspace,
     run: &mut LoadedRun,
@@ -372,6 +401,16 @@ async fn run_parallel_draft(
 
     let assignments = pending_assignments(&run.run);
     let needs_title = run.run.title.is_none();
+    let curated = load_curated_contexts(
+        s3,
+        bucket,
+        model_id,
+        limits.writer_max_output_tokens(),
+        inventory,
+        &assignments,
+    )
+    .await
+    .map_err(|error| TurnRunFailure::new(ReportFailureCode::InvalidProtocol, error.to_string()))?;
     let snapshot = run.run.clone();
     let calls = AtomicU32::new(0);
     let context = DraftBranchContext {
@@ -379,6 +418,7 @@ async fn run_parallel_draft(
         model_id,
         system_prompt: &system_prompt,
         prefix: &prefix,
+        curated: &curated,
         snapshot: &snapshot,
         base: &base,
         citable_filenames: &record_context.citable_filenames,
@@ -398,33 +438,43 @@ async fn run_parallel_draft(
     // and estimates forward from its count. If the warm branch errors it seeds
     // nothing and the siblings run unseeded — one wasted cache write is a far
     // cheaper failure than refusing to draft the rest of the document.
+    //
+    // The warming branch is the first section that reads the SHARED prefix,
+    // which is the first section outright on every run nobody curated. A
+    // curated branch cannot warm anything: it sends a different block 0, so
+    // the prefix it writes is not the one its siblings read and the count it
+    // takes is not the count they would have taken.
     let mut seed = None;
     let mut queued: Vec<BranchKind> = Vec::new();
-    match assignments.split_first() {
-        Some((warm, rest)) => {
-            let outcome = run_branch(
-                &context,
-                BranchKind::Section {
-                    assignment: warm.clone(),
-                },
-                None,
-            )
-            .await;
-            seed = outcome.verified;
-            state.warm_cache_write_tokens = cache_write_tokens(&outcome);
-            commit_branch(s3, bucket, run, progress, &mut state, request, outcome).await?;
-            queued.extend(
-                rest.iter()
-                    .cloned()
-                    .map(|assignment| BranchKind::Section { assignment }),
-            );
-        }
-        None => {
-            // Nothing to draft: every row was kept, skipped, or already
-            // landed. The title branch, if the run still needs one, is the
-            // whole fan-out and pays for its own count.
-        }
+    let warm_index = assignments
+        .iter()
+        .position(|assignment| assignment.entry.curated_records.is_none());
+    if let Some(warm_index) = warm_index {
+        let outcome = run_branch(
+            &context,
+            BranchKind::Section {
+                assignment: assignments[warm_index].clone(),
+            },
+            None,
+        )
+        .await;
+        seed = outcome.verified;
+        state.warm_cache_write_tokens = cache_write_tokens(&outcome);
+        commit_branch(s3, bucket, run, progress, &mut state, request, outcome).await?;
     }
+    // Everything the warming branch did not take, in plan order. When every
+    // pending section is curated there is no warming branch at all, and the
+    // whole fan-out runs unseeded — correctly, because there is no shared
+    // count to seed it from.
+    queued.extend(
+        assignments
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != warm_index)
+            .map(|(_, assignment)| BranchKind::Section {
+                assignment: assignment.clone(),
+            }),
+    );
     if needs_title {
         queued.push(BranchKind::Title);
     }
@@ -440,13 +490,20 @@ async fn run_parallel_draft(
     )
     .buffer_unordered(BEDROCK_FAN_OUT_CONCURRENCY);
     while let Some(outcome) = fanned.next().await {
-        state.branches = state.branches.saturating_add(1);
-        state.branch_cache_write_tokens = state
-            .branch_cache_write_tokens
-            .saturating_add(cache_write_tokens(&outcome));
-        state.branch_cache_read_tokens = state
-            .branch_cache_read_tokens
-            .saturating_add(cache_read_tokens(&outcome));
+        if outcome.curated {
+            state.curated_branches = state.curated_branches.saturating_add(1);
+            state.curated_cache_write_tokens = state
+                .curated_cache_write_tokens
+                .saturating_add(cache_write_tokens(&outcome));
+        } else {
+            state.branches = state.branches.saturating_add(1);
+            state.branch_cache_write_tokens = state
+                .branch_cache_write_tokens
+                .saturating_add(cache_write_tokens(&outcome));
+            state.branch_cache_read_tokens = state
+                .branch_cache_read_tokens
+                .saturating_add(cache_read_tokens(&outcome));
+        }
         commit_branch(s3, bucket, run, progress, &mut state, request, outcome).await?;
     }
     drop(fanned);
@@ -579,6 +636,84 @@ fn counters(run: &DraftRun) -> (u32, u32) {
     (terminal_section_count(run), plan_total(run))
 }
 
+// ── Curated record contexts ─────────────────────────────────────────────────
+
+/// One restricted branch's own message-0 record block, and what it may cite.
+///
+/// Built by the same function that builds the shared corpus, over a subset of
+/// the same inventory, so the two cannot drift in ordering, escaping, or JSON
+/// shape — only in which files they contain.
+struct CuratedRecordContext {
+    prompt: String,
+    citable_filenames: Vec<String>,
+}
+
+/// Build one restricted snapshot per distinct curated record set in the plan.
+///
+/// Keyed by the set rather than by the section, because two sections
+/// restricted to the same four files are the same request for the same bytes:
+/// building it twice would pay S3 twice and, worse, give the two branches
+/// separate cache prefixes to write.
+///
+/// Returns an empty map on every run where no row is curated, which is the
+/// shape everything downstream assumes: the shared prefix stays the only
+/// prefix, and no S3 read happens that would not have happened before.
+async fn load_curated_contexts(
+    s3: &S3Client,
+    bucket: &str,
+    model_id: &str,
+    output_token_reserve: u32,
+    inventory: &[RecordInventoryEntry],
+    assignments: &[SectionAssignment],
+) -> Result<HashMap<Uuid, CuratedRecordContext>, ReportPipelineError> {
+    let mut by_filter: Vec<(RecordFilter, Vec<Uuid>)> = Vec::new();
+    for assignment in assignments {
+        let Some(curated) = &assignment.entry.curated_records else {
+            continue;
+        };
+        let filter = RecordFilter::new(curated);
+        match by_filter
+            .iter_mut()
+            .find(|(existing, _)| *existing == filter)
+        {
+            Some((_, sections)) => sections.push(assignment.entry.section_id),
+            None => by_filter.push((filter, vec![assignment.entry.section_id])),
+        }
+    }
+
+    let mut contexts = HashMap::new();
+    for (filter, sections) in by_filter {
+        let context = load_full_record_context(
+            s3,
+            bucket,
+            &[BudgetRole::writer(model_id, output_token_reserve)],
+            inventory,
+            Some(&filter),
+        )
+        .await?;
+        // Counts only. The filenames are the clinician's choice of which of
+        // this client's documents matter, which is exactly the kind of thing
+        // a console export must not carry.
+        tracing::info!(
+            sections = ?sections,
+            curated_record_count = filter.len(),
+            included_files = context.summary.included_files,
+            unavailable_files = context.summary.unavailable_files,
+            "drafting sections from a user-curated record snapshot"
+        );
+        for section_id in sections {
+            contexts.insert(
+                section_id,
+                CuratedRecordContext {
+                    prompt: context.prompt.clone(),
+                    citable_filenames: context.citable_filenames.clone(),
+                },
+            );
+        }
+    }
+    Ok(contexts)
+}
+
 async fn commit_run(
     s3: &S3Client,
     bucket: &str,
@@ -638,6 +773,7 @@ async fn commit_branch(
                 receipt.usage,
                 receipt.stop_reason,
                 receipt.latency_ms,
+                request.limits.writer_max_output_tokens(),
             ),
         )
         .await
@@ -977,6 +1113,10 @@ async fn run_branch(
         BranchKind::Section { assignment } => Some(assignment.entry.section_id),
         BranchKind::Title => None,
     };
+    // The restricted record block this branch sends instead of the shared one,
+    // if its plan row carries a restriction. The title branch never has one:
+    // it names the document, which is not a claim about any record.
+    let curated = kind_id.and_then(|section_id| context.curated.get(&section_id));
     let mut receipts = Vec::new();
     let mut tool_uses = 0_u32;
     let finished = |verdict, receipts, tool_uses, verified| BranchOutcome {
@@ -985,6 +1125,7 @@ async fn run_branch(
         receipts,
         tool_uses,
         verified,
+        curated: curated.is_some(),
     };
 
     // Checked before the first call, not only between rounds: a branch still
@@ -1001,11 +1142,19 @@ async fn run_branch(
                 index: assignment.position,
                 total: plan_total(context.snapshot),
             });
-            section_kickoff_instruction(context.guidance, &assignment.entry)
+            section_kickoff_instruction(context.guidance, &assignment.entry, context.base)
         }
         BranchKind::Title => title_kickoff_instruction(context.guidance, context.base),
     };
+    // Only block 0 moves: the template and the plan are the document's, not
+    // this section's, so a curated branch's checkpoints still sit where every
+    // other branch's do and its own second attempt reads what its first wrote.
     let mut content = context.prefix.to_vec();
+    if let Some(curated) = curated {
+        content[RECORD_CONTEXT_BLOCK] = ReportProtocolBlock::Text {
+            text: curated.prompt.clone(),
+        };
+    }
     content.push(ReportProtocolBlock::Text { text: kickoff });
     let mut messages = vec![ReportProtocolMessage {
         role: ReportProtocolRole::User,
@@ -1013,9 +1162,21 @@ async fn run_branch(
         created_at: jiff::Timestamp::now(),
     }];
 
+    // A seed is a count taken against the shared prefix. This branch does not
+    // send the shared prefix, so the seed describes a request it never made
+    // and estimating forward from it would under-count every call it bills.
+    let seed = if curated.is_some() { None } else { seed };
     let budget = tokio::sync::Mutex::new(match seed {
-        Some((tokens, chars)) => report::ReportInputBudget::seeded(context.model_id, tokens, chars),
-        None => report::ReportInputBudget::new(context.model_id),
+        Some((tokens, chars)) => report::ReportInputBudget::seeded(
+            context.model_id,
+            context.limits.writer_max_output_tokens(),
+            tokens,
+            chars,
+        ),
+        None => report::ReportInputBudget::new(
+            context.model_id,
+            context.limits.writer_max_output_tokens(),
+        ),
     });
     let mut strikes = 0_u32;
     let mut corrective_used = false;
@@ -1044,7 +1205,13 @@ async fn run_branch(
         // The reserved number, not the coordinator's: a branch cannot know
         // what commit order will call this, and the reader needs the retry
         // named while it is happening rather than after the merge.
+        // The retry wrapper knows how many attempts it made; the failure
+        // message has to say so, or a call that was re-sent three times
+        // reports itself as one and the reader reads a five-minute wait as a
+        // single slow request.
+        let attempts_made = std::sync::atomic::AtomicU32::new(1);
         let on_retry = |attempt, delay| {
+            attempts_made.store(attempt, std::sync::atomic::Ordering::Release);
             context.emit(ReportTurnProgress::retrying(
                 call_number,
                 attempt,
@@ -1065,6 +1232,7 @@ async fn run_branch(
                     &mut *budget.lock().await,
                     context.tuning,
                     context.cache_plan.clone(),
+                    context.limits.stream_bounds(),
                     context.stop,
                 )
                 .await
@@ -1090,8 +1258,10 @@ async fn run_branch(
                         number: call_number,
                         ceiling: context.limits.max_converse_calls(),
                         model_id: context.model_id,
+                        first_frame_secs: context.limits.writer_first_frame_timeout_secs(),
+                        idle_secs: context.limits.writer_idle_timeout_secs(),
                     },
-                    1,
+                    attempts_made.load(std::sync::atomic::Ordering::Acquire),
                     started.elapsed(),
                 );
                 return finished(
@@ -1329,10 +1499,20 @@ fn classify_write(
         Some(Ok(id)) if id == assigned => {}
         _ => return Err(wrong_section(assigned)),
     }
+    // A curated branch may cite only what it was shown. Checking it against
+    // the full corpus would accept a citation to a file that was deliberately
+    // withheld from it — which is either a hallucinated filename or a leak,
+    // and the restriction is worth nothing if either one passes.
+    let citable = context
+        .curated
+        .get(&assigned)
+        .map_or(context.citable_filenames, |curated| {
+            curated.citable_filenames.as_slice()
+        });
     validate_branch_section_write(
         context.snapshot,
         &context.base.title,
-        context.citable_filenames,
+        citable,
         assigned,
         request,
     )
@@ -1355,18 +1535,25 @@ fn wrong_section(assigned: Uuid) -> ToolRejection {
 /// scatters the branches across regional capacity — each lands somewhere that
 /// has never seen the prefix and writes its own copy — and the only signal of
 /// that is write tokens scaling with the branch count. Section UUIDs, counts,
-/// and the model ID only: headings ride the progress channel, never the log.
+/// and the model ID only: headings and record filenames ride the progress
+/// channel or nothing, never the log.
+///
+/// Curated branches are counted and totalled apart. Each of them writes a
+/// prefix of its own by design, so folding their write tokens into the shared
+/// total would make every curated run look like a scattered one.
 fn log_fan_out(model_id: &str, turn_kind: DraftTurnKind, state: &MergeState) {
     tracing::info!(
         target: "claria_bedrock::cache",
         model_id,
         resumed = turn_kind == DraftTurnKind::Resume,
         branches = state.branches,
+        curated_branches = state.curated_branches,
         sections = ?state.section_ids,
         converse_calls = state.call_number,
         warm_cache_write_tokens = state.warm_cache_write_tokens,
         branch_cache_write_tokens_total = state.branch_cache_write_tokens,
         branch_cache_read_tokens_total = state.branch_cache_read_tokens,
+        curated_cache_write_tokens_total = state.curated_cache_write_tokens,
         "parallel_draft_fan_out_complete"
     );
     let scattering_threshold = state.warm_cache_write_tokens as f64 * 0.5 * state.branches as f64;
