@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use claria_report_pipeline::ReportTurnProgress;
+use claria::ReportTurnProgress;
 
 /// One event and when it landed.
 #[derive(Debug, Clone)]

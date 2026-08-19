@@ -25,7 +25,7 @@ pub async fn load_draft_run(
 ) -> Result<Option<DraftRun>, String> {
     run("load_draft_run", async {
         let ctx = CommandContext::new(&state).await?;
-        Ok(claria_report_pipeline::load_resumable_draft_run(
+        Ok(claria::load_resumable_draft_run(
             &ctx.s3,
             &ctx.bucket,
             parse_uuid(&client_id)?,
@@ -50,7 +50,7 @@ pub async fn finalize_partial_draft(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let run_id = parse_uuid(&run_id)?;
-        let outcome = claria_report_pipeline::finalize_partial_draft(
+        let outcome = claria::finalize_partial_draft(
             &ctx.s3,
             &ctx.bucket,
             client_id,
@@ -93,7 +93,7 @@ pub async fn abandon_draft_run(
         let ctx = CommandContext::new(&state).await?;
         let client_id = parse_uuid(&client_id)?;
         let run_id = parse_uuid(&run_id)?;
-        let workspace = claria_report_pipeline::abandon_draft_run(
+        let workspace = claria::abandon_draft_run(
             &ctx.s3,
             &ctx.bucket,
             client_id,

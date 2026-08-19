@@ -3,6 +3,7 @@
 //! and the model discovery call.
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
+use claria::ReportTurnProgress;
 use claria_core::models::{
     report::{ReportBlock, ReportContent, ReportSection},
     report_run::{DraftRunStatus, SectionIntent},
@@ -13,7 +14,6 @@ use claria_eval::{
     progress::ProgressRecorder,
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
-use claria_report_pipeline::ReportTurnProgress;
 use uuid::Uuid;
 
 const BUCKET: &str = "claria-eval-smoke";

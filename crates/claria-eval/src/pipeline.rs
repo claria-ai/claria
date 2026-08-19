@@ -6,8 +6,8 @@
 //! Model IDs arrive already resolved so a test can drive the pipeline without
 //! reaching Bedrock's model-listing API.
 
+use claria::{CompletionReport, FullReportGenerationOutcome};
 use claria_core::models::{report::ReportWorkspace, report_run::DraftRun, turn_usage::TurnUsage};
-use claria_report_pipeline::{CompletionReport, FullReportGenerationOutcome};
 use eyre::{Context, Result, eyre};
 use uuid::Uuid;
 
@@ -192,18 +192,18 @@ pub async fn plan(
         let progress = progress.clone();
         move |event| progress.record(event)
     };
-    let outcome = claria_report_pipeline::generate_draft_plan(
+    let outcome = claria::generate_draft_plan(
         &context.sdk_config,
         &context.s3,
         &context.bucket,
         workspace.client_id,
         workspace.report_id,
         workspace.draft.revision,
-        claria_report_pipeline::PlanModels {
+        claria::PlanModels {
             planner_model_id,
             writer_model_id,
         },
-        claria_report_pipeline::DraftPlanRequest::new(instructions).with_progress(&sink),
+        claria::DraftPlanRequest::new(instructions).with_progress(&sink),
     )
     .await
     .wrap_err("the planning pass failed")?;
@@ -234,12 +234,12 @@ pub async fn draft(
         let progress = progress.clone();
         move |event| progress.record(event)
     };
-    let cache = claria_report_pipeline::ReportPromptCache::new();
+    let cache = claria::ReportPromptCache::new();
     let prompt_body = load_full_draft_prompt(context).await?;
-    let limits = claria_report_pipeline::ReportTurnLimits::default()
-        .scaled_for_plan(plan_report.run.sections.len());
+    let limits =
+        claria::ReportTurnLimits::default().scaled_for_plan(plan_report.run.sections.len());
 
-    let outcome = claria_report_pipeline::start_draft_run(
+    let outcome = claria::start_draft_run(
         &context.sdk_config,
         &context.s3,
         &context.bucket,
@@ -247,7 +247,7 @@ pub async fn draft(
         workspace.report_id,
         run_id,
         writer_model_id,
-        claria_report_pipeline::FullReportRequest::new("")
+        claria::FullReportRequest::new("")
             .with_limits(limits)
             .with_progress(&sink)
             .with_prompt_cache(&cache)
@@ -256,7 +256,7 @@ pub async fn draft(
     .await
     .wrap_err("the drafting run failed")?;
 
-    let completion = claria_report_pipeline::evaluate_report_completion(
+    let completion = claria::evaluate_report_completion(
         &context.s3,
         &context.bucket,
         workspace.client_id,
@@ -287,7 +287,7 @@ async fn load_full_draft_prompt(context: &EvalContext) -> Result<String> {
         Ok(output) => String::from_utf8(output.body)
             .wrap_err("the saved whole-report prompt is not valid UTF-8"),
         Err(claria_storage::error::StorageError::NotFound { .. }) => {
-            Ok(claria_report_pipeline::FULL_REPORT_SYSTEM_PROMPT_BODY.to_string())
+            Ok(claria::FULL_REPORT_SYSTEM_PROMPT_BODY.to_string())
         }
         Err(error) => Err(error).wrap_err("could not read the saved whole-report prompt"),
     }

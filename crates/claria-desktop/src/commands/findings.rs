@@ -44,10 +44,10 @@ pub async fn run_review_sweeps(
         let preferred = ctx.cfg.preferred_model_id.clone().unwrap_or_default();
         let reviewer_model_id =
             super::plan::role_model_id(&ctx, reviewer_override.as_deref(), &preferred).await?;
-        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
+        let progress = |event: claria::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
-        let outcome = claria_report_pipeline::run_review_sweeps(
+        let outcome = claria::run_review_sweeps(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
@@ -55,7 +55,7 @@ pub async fn run_review_sweeps(
             report_id,
             revision,
             &reviewer_model_id,
-            claria_report_pipeline::ReviewSweepRequest::new()
+            claria::ReviewSweepRequest::new()
                 .with_progress(&progress)
                 .with_stream_bounds(ctx.cfg.report_authoring.runtime().analysis_stream_bounds()),
         )

@@ -50,7 +50,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// The transport crates are silenced explicitly: an OTLP exporter that logged
 /// through `tracing` would feed its own export failures back into itself.
-const OTEL_TRACE_FILTER: &str = "claria_eval=trace,claria_report_pipeline=trace,\
+const OTEL_TRACE_FILTER: &str = "claria_eval=trace,claria=trace,\
 claria_report_store=trace,claria_bedrock=trace,claria_records=trace,claria_storage=trace,\
 hyper=off,h2=off,opentelemetry=off,tonic=off,tower=off,aws_smithy_runtime=off,\
 aws_config=off,aws_sdk_s3=off,aws_sdk_bedrockruntime=off";

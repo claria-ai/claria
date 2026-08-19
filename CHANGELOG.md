@@ -4,6 +4,7 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- The report-writing engine publishes as the `claria` crate instead of `claria-report-pipeline`, so the project owns its own name on crates.io
 - Every audit action the report writer and preferences screens record now carries a category, so the trail separates PHI reads from spend and from operational changes
 - Audit events record which kind of action they are — a read of records, a change, a model call, or an administrative action — so "who read this client's records" is one filter rather than a list of action names
 - Audit events carry the client they concern as a field of their own instead of inside the payload
