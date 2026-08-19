@@ -1490,6 +1490,9 @@ async fn run_turn(
                             .get("filename")
                             .and_then(serde_json::Value::as_str)
                             .map(ToString::to_string),
+                        claria_bedrock::report::READ_REPORT_SECTION_TOOL => {
+                            Some("Report section".to_string())
+                        }
                         claria_bedrock::report::SET_FULL_DRAFT_TITLE_TOOL => {
                             Some("Complete report title".to_string())
                         }

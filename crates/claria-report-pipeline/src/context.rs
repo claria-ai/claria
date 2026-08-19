@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use claria_bedrock::report;
 use claria_core::models::report::{
     ReportBlock, ReportProtocolBlock, ReportProtocolMessage, ReportToolResultStatus,
-    ReportWorkspace, prompt_content_view,
+    ReportWorkspace, prompt_section_view, section_text_characters,
 };
 use sha2::{Digest, Sha256};
 
@@ -20,6 +20,14 @@ pub(crate) fn flatten_protocol_history(workspace: &ReportWorkspace) -> Vec<Repor
         .collect()
 }
 
+/// Assemble the per-turn targeted-edit context.
+///
+/// The whole accepted report used to ride here every turn, which made the
+/// prompt grow with the user's work and re-paid for text the model was not
+/// editing. What travels instead is a heading-level outline of every section
+/// plus the full bodies of the sections the user actually focused; anything
+/// else the model needs it fetches with `read_report_section`, once, against
+/// the turn's read budget.
 pub(crate) fn build_untrusted_context(
     workspace: &ReportWorkspace,
     references: &[ReportBlockReference],
@@ -72,12 +80,51 @@ pub(crate) fn build_untrusted_context(
             }))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    // Full bodies for exactly the sections the focused blocks came out of, in
+    // document order and deduplicated: a user who focuses three blocks of one
+    // section is asking about that section, not paying for it three times.
+    let mut target_ids: Vec<uuid::Uuid> = Vec::new();
+    for reference in references {
+        if !target_ids.contains(&reference.section_id) {
+            target_ids.push(reference.section_id);
+        }
+    }
+    let target_sections: Vec<serde_json::Value> = workspace
+        .draft
+        .content
+        .sections
+        .iter()
+        .filter(|section| target_ids.contains(&section.id))
+        // Template copies and authorship stamps are host bookkeeping: the
+        // model must not read a section's template body as accepted content.
+        .map(prompt_section_view)
+        .collect();
+    let document_outline: Vec<serde_json::Value> = workspace
+        .draft
+        .content
+        .sections
+        .iter()
+        .map(|section| {
+            serde_json::json!({
+                "section_id": section.id.to_string(),
+                "heading": section.heading,
+                "skipped": section.skipped,
+                "block_count": section.blocks.len(),
+                "characters": section_text_characters(section)
+            })
+        })
+        .collect();
     let template_context = template_provenance(workspace);
     let value = serde_json::json!({
         "accepted_revision": workspace.draft.revision,
-        // Template copies and authorship stamps are host bookkeeping: the
-        // model must not read a section's template body as accepted content.
-        "accepted_report": prompt_content_view(&workspace.draft.content),
+        // The title is 200 characters at most and the model cannot propose
+        // set_title without seeing it, so it rides in full while section
+        // bodies do not.
+        "document_title": workspace.draft.content.title,
+        // Headings and sizes only. A body reaches the model through
+        // `target_sections` or a `read_report_section` call, never here.
+        "document_outline": document_outline,
+        "target_sections": target_sections,
         "template_import": template_context,
         "report_changed_since_last_assistant_turn": workspace
             .session
@@ -269,6 +316,16 @@ fn sanitize_tool_result(
             "total_characters": content.get("total_characters"),
             "next_offset": content.get("next_offset"),
             "sha256": content.get("sha256"),
+            "content_retained": false
+        }),
+        // Section text is re-fetchable from the live report and would
+        // otherwise be a second, stale copy of it in persisted history. The
+        // digest is enough for the model to tell whether a section it read
+        // earlier still holds what it read.
+        Some(report::READ_REPORT_SECTION_TOOL) => serde_json::json!({
+            "section_id": content.get("section_id"),
+            "characters": content.get("characters"),
+            "sha256": sha256_hex(&content.get("blocks").unwrap_or(&serde_json::Value::Null).to_string()),
             "content_retained": false
         }),
         Some(report::PROPOSE_REPORT_CHANGES_TOOL)

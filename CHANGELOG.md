@@ -135,6 +135,8 @@ All notable changes to Claria are documented here.
 - The harness exports traces to an OpenTelemetry collector when one is configured; the desktop app exports nothing
 - Document extraction logs a file's extension and byte size instead of its name
 - Storage errors reduce a record's location to its client folder, so an uploaded file's name no longer reaches the console, the exported logs, or an on-screen error
+- Targeted editing now sends a document outline instead of the whole report, reading sections on demand
+- Section reads share the writer's per-turn read budget with record reads, and leave only a digest in the conversation history
 
 ## [0.28.0] — 2026-08-15
 
