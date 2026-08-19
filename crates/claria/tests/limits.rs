@@ -43,16 +43,36 @@ fn writer_limits_enforce_structural_safety_ceilings() {
     assert!(ReportTurnLimits::try_new(1, 2, 1, MAX_CONFIGURABLE_RETAINED_TURNS + 1).is_err());
 }
 
+/// The four waits are not one number. A stream that has produced nothing is
+/// free to abandon, so the first-frame waits stay the shorter pair; a stream
+/// that has started has already billed output tokens, so the idle waits are
+/// the ones lengthened, and the analysis idle wait — the one a live review
+/// sweep lost calls to — is the longest of the four.
 #[test]
-fn bedrock_runtime_defaults_reproduce_the_compiled_in_behaviour() {
+fn bedrock_runtime_defaults_wait_longest_where_giving_up_costs_most() {
     let runtime = BedrockRuntimeLimits::default();
 
-    assert_eq!(runtime.writer_first_frame_timeout_secs, 90);
-    assert_eq!(runtime.writer_idle_timeout_secs, 60);
+    assert_eq!(runtime.writer_first_frame_timeout_secs, 180);
+    assert_eq!(runtime.writer_idle_timeout_secs, 300);
     assert_eq!(runtime.writer_max_output_tokens, 32_768);
-    assert_eq!(runtime.analysis_first_frame_timeout_secs, 120);
-    assert_eq!(runtime.analysis_idle_timeout_secs, 90);
+    assert_eq!(runtime.analysis_first_frame_timeout_secs, 300);
+    assert_eq!(runtime.analysis_idle_timeout_secs, 600);
     assert_eq!(ReportTurnLimits::default().runtime(), runtime);
+
+    // Every default stays under the ceiling with room above it, so the
+    // settings can still be raised and are not merely lowerable.
+    for wait in [
+        runtime.writer_first_frame_timeout_secs,
+        runtime.writer_idle_timeout_secs,
+        runtime.analysis_first_frame_timeout_secs,
+        runtime.analysis_idle_timeout_secs,
+    ] {
+        assert!(
+            wait < MAX_CONFIGURABLE_TIMEOUT_SECS,
+            "a default equal to the ceiling leaves the setting nowhere to go: \
+             {wait} vs {MAX_CONFIGURABLE_TIMEOUT_SECS}"
+        );
+    }
 }
 
 #[test]

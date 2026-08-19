@@ -129,7 +129,7 @@ fn a_v10_config_migrates_to_v11_with_the_plan_gate_on() {
 }
 
 #[test]
-fn a_v11_config_migrates_to_v12_at_the_waits_it_already_ran_at() {
+fn a_v11_config_migrates_forward_onto_todays_waits() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = write_config(
         &dir,
@@ -151,16 +151,16 @@ fn a_v11_config_migrates_to_v12_at_the_waits_it_already_ran_at() {
 
     let config = config::load_config_at(&path).expect("a v11 config migrates forward");
 
-    // The values that were compiled in until now, so an install that says
-    // nothing about them behaves exactly as it did before the upgrade.
-    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 90);
-    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 60);
+    // An install that never said anything about the waits lands on today's
+    // defaults, not on the ones that were compiled in when it was written.
+    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 180);
+    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 300);
     assert_eq!(config.report_authoring.writer_max_output_tokens, 32_768);
     assert_eq!(
         config.report_authoring.analysis_first_frame_timeout_secs,
-        120
+        300
     );
-    assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 90);
+    assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 600);
     // The guardrails the clinician had already chosen survive.
     assert_eq!(config.report_authoring.max_tool_rounds, 12);
     assert_eq!(config.report_authoring.max_retained_turns, 30);
@@ -226,7 +226,87 @@ fn a_wait_past_the_ceiling_is_refused_before_it_reaches_bedrock() {
     // reach the point where it would fail a clinician's draft instead.
     let error = config::load_config_at(&path).expect_err("6000 seconds is past the ceiling");
     let message = error.to_string();
-    assert!(message.contains("600"), "{message}");
+    assert!(
+        message.contains(&claria::MAX_CONFIGURABLE_TIMEOUT_SECS.to_string()),
+        "{message}"
+    );
+}
+
+/// The default change alone reaches nobody: v12 wrote the four waits into
+/// every existing config as literal numbers, so the migration is what
+/// actually delivers the longer waits to the installed base.
+#[test]
+fn a_v12_config_still_on_the_old_waits_is_lifted_onto_the_new_ones() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 12,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "report_authoring": {
+                "writer_first_frame_timeout_secs": 90,
+                "writer_idle_timeout_secs": 60,
+                "writer_max_output_tokens": 32768,
+                "analysis_first_frame_timeout_secs": 120,
+                "analysis_idle_timeout_secs": 90
+            }
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v12 config migrates forward");
+
+    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 180);
+    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 300);
+    assert_eq!(
+        config.report_authoring.analysis_first_frame_timeout_secs,
+        300
+    );
+    assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 600);
+    // Not a wait, and not swept up by a migration that only knows about
+    // waits.
+    assert_eq!(config.report_authoring.writer_max_output_tokens, 32_768);
+}
+
+/// A number a clinician typed is theirs, including one they raised to less
+/// than the new default. The migration lifts what was never chosen, not
+/// what was chosen and happens to be lower than we would pick now.
+#[test]
+fn a_wait_the_clinician_chose_survives_the_v14_migration() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 12,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "report_authoring": {
+                "writer_first_frame_timeout_secs": 90,
+                "writer_idle_timeout_secs": 45,
+                "analysis_first_frame_timeout_secs": 200,
+                "analysis_idle_timeout_secs": 150
+            }
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v12 config migrates forward");
+
+    // Untouched, so lifted.
+    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 180);
+    // Deliberately below the old default, deliberately below the new one,
+    // and left exactly where it was put.
+    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 45);
+    assert_eq!(
+        config.report_authoring.analysis_first_frame_timeout_secs,
+        200
+    );
+    assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 150);
 }
 
 /// Auto-lock arrives off. An existing install that gained a lock it never
