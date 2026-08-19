@@ -1,9 +1,15 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
+use aws_sdk_bedrockruntime::types::{
+    ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStart, ContentBlockStartEvent,
+    ConverseStreamOutput, MessageStopEvent, StopReason, ToolUseBlockDelta, ToolUseBlockStart,
+};
 use claria_bedrock::{
-    chat::{CacheStrategy, ChatMessage, ChatRole},
+    chat::{ChatMessage, ChatRole},
+    converse::{StopSignal, StreamBounds},
     error::BedrockError,
     report::{
-        PROPOSE_REPORT_CHANGES_TOOL, ReportInputBudget, ReportStopReason, ReportToolRequest,
+        DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE, PROPOSE_REPORT_CHANGES_TOOL, ReportInputBudget,
+        ReportStopReason, ReportStreamCollector, ReportToolRequest,
         converse_full_report_with_tool_limit, converse_report, converse_report_with_tool_limit,
         decode_tool_request,
     },
@@ -26,6 +32,14 @@ fn sdk_config(endpoint: &str) -> aws_config::SdkConfig {
         .endpoint_url(endpoint)
         .behavior_version(aws_config::BehaviorVersion::latest())
         .build()
+}
+
+/// The placement every writer turn uses today, so a test that is not about
+/// caching still sends the shape production sends.
+fn default_cache_plan() -> claria_bedrock::converse::CachePlan {
+    claria_bedrock::converse::CachePlan::report_default(
+        claria_core::model_id::ModelCapabilities::for_id(MODEL_ID),
+    )
 }
 
 fn user_message(text: &str) -> ReportProtocolMessage {
@@ -107,7 +121,7 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
     // Every billed call reserves its enforced output budget on the wire.
     assert_eq!(
         request["inferenceConfig"]["maxTokens"],
-        claria_bedrock::report::REPORT_OUTPUT_TOKEN_RESERVE
+        claria_bedrock::report::DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE
     );
 
     // GOLDEN wire shape: literal values so a silent constant change fails
@@ -148,8 +162,11 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
         "Full draft policy",
         &[user_message("Complete record snapshot")],
         12,
-        &mut ReportInputBudget::new(MODEL_ID),
+        &mut ReportInputBudget::new(MODEL_ID, DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE),
         claria_bedrock::converse::ModelTuning::default(),
+        default_cache_plan(),
+        StreamBounds::conversational(),
+        &StopSignal::new(),
     )
     .await
     .expect("full-draft converse");
@@ -168,6 +185,7 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
             "set_full_draft_title",
             "write_full_draft_section",
             "skip_full_draft_section",
+            "mark_section_failed",
             "finish_full_draft"
         ]
     );
@@ -176,8 +194,26 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
     let skip_description = tools[2]["toolSpec"]["description"]
         .as_str()
         .expect("skip description");
-    assert!(skip_description.contains("written or skipped"));
+    assert!(skip_description.contains("Skip only sections the plan marks skip"));
     assert!(skip_description.contains("never to shorten the job"));
+
+    // Failing a section is a declaration about the records, not a shortcut,
+    // and the description has to say so where the model reads it.
+    let failed = &tools[3]["toolSpec"]["inputSchema"]["json"];
+    assert_eq!(
+        failed["required"],
+        serde_json::json!(["section_id", "reason"])
+    );
+    assert_eq!(
+        failed["properties"]["reason"]["maxLength"],
+        claria_bedrock::report::MAX_SECTION_ERROR_CHARACTERS
+    );
+    let failed_description = tools[3]["toolSpec"]["description"]
+        .as_str()
+        .expect("mark_section_failed description");
+    assert!(failed_description.contains("after a genuine attempt"));
+    assert!(failed_description.contains("Never use this to shorten the job"));
+
     let section = &tools[1]["toolSpec"]["inputSchema"]["json"];
     assert_eq!(
         section["properties"]["blocks"]["maxItems"],
@@ -187,6 +223,32 @@ async fn full_draft_request_exposes_only_atomic_candidate_tools() {
     // multi-turn splitting of long clinical sections (v0.20–v0.23).
     assert_eq!(section["properties"]["blocks"]["maxItems"], 200);
     assert!(section["properties"]["section_id"].get("anyOf").is_some());
+    // Citations are optional, bounded, and must be verbatim spans long enough
+    // for the completion gate to resolve later.
+    let citations = &section["properties"]["citations"];
+    assert!(
+        !section["required"]
+            .as_array()
+            .expect("required")
+            .contains(&serde_json::json!("citations"))
+    );
+    assert_eq!(
+        citations["maxItems"],
+        claria_bedrock::report::MAX_SECTION_CITATIONS
+    );
+    assert_eq!(
+        citations["items"]["properties"]["quote"]["minLength"],
+        claria_bedrock::report::MIN_CITATION_QUOTE_CHARACTERS
+    );
+    assert_eq!(
+        citations["items"]["properties"]["quote"]["maxLength"],
+        claria_bedrock::report::MAX_CITATION_QUOTE_CHARACTERS
+    );
+    let write_description = tools[1]["toolSpec"]["description"]
+        .as_str()
+        .expect("write description");
+    assert!(write_description.contains("Work through plan_context"));
+    assert!(write_description.contains("ONE section per"));
 }
 
 #[tokio::test]
@@ -208,12 +270,15 @@ async fn model_tuning_shapes_the_wire_request() {
         "Policy",
         &[user_message("Hello")],
         8,
-        &mut ReportInputBudget::new(MODEL_ID),
+        &mut ReportInputBudget::new(MODEL_ID, DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE),
         claria_bedrock::converse::ModelTuning {
             adaptive_thinking: true,
             effort: Some(claria_bedrock::converse::EffortLevel::High),
             temperature: Some(0.3),
         },
+        default_cache_plan(),
+        StreamBounds::conversational(),
+        &StopSignal::new(),
     )
     .await
     .expect("tuned converse");
@@ -363,8 +428,14 @@ async fn configured_tool_limit_rejects_oversized_model_responses() {
         "System",
         &[user_message("Draft")],
         1,
-        &mut claria_bedrock::report::ReportInputBudget::new(MODEL_ID),
+        &mut claria_bedrock::report::ReportInputBudget::new(
+            MODEL_ID,
+            DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE,
+        ),
         claria_bedrock::converse::ModelTuning::default(),
+        default_cache_plan(),
+        StreamBounds::conversational(),
+        &StopSignal::new(),
     )
     .await
     .expect_err("configured tool limit");
@@ -815,8 +886,7 @@ async fn ordinary_chat_still_sends_no_tool_configuration() {
         MODEL_ID,
         "System",
         &messages,
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        claria_bedrock::chat::ChatStreamOptions::default(),
         |_| {},
     )
     .await
@@ -826,4 +896,171 @@ async fn ordinary_chat_still_sends_no_tool_configuration() {
     let state = server.state.read().await;
     assert!(state.bedrock_tool_requests.is_empty());
     assert!(state.bedrock_tool_model_ids.is_empty());
+}
+
+// ── The report/analysis stream collector ────────────────────────────────────
+
+fn tool_start_event(index: usize, tool_use_id: &str, name: &str) -> ConverseStreamOutput {
+    ConverseStreamOutput::ContentBlockStart(
+        ContentBlockStartEvent::builder()
+            .content_block_index(index as i32)
+            .start(ContentBlockStart::ToolUse(
+                ToolUseBlockStart::builder()
+                    .tool_use_id(tool_use_id)
+                    .name(name)
+                    .build()
+                    .expect("tool use start"),
+            ))
+            .build()
+            .expect("content block start"),
+    )
+}
+
+fn tool_input_event(index: usize, input: &str) -> ConverseStreamOutput {
+    ConverseStreamOutput::ContentBlockDelta(
+        ContentBlockDeltaEvent::builder()
+            .content_block_index(index as i32)
+            .delta(ContentBlockDelta::ToolUse(
+                ToolUseBlockDelta::builder()
+                    .input(input)
+                    .build()
+                    .expect("tool use delta"),
+            ))
+            .build()
+            .expect("content block delta"),
+    )
+}
+
+fn text_event(index: usize, text: &str) -> ConverseStreamOutput {
+    ConverseStreamOutput::ContentBlockDelta(
+        ContentBlockDeltaEvent::builder()
+            .content_block_index(index as i32)
+            .delta(ContentBlockDelta::Text(text.to_string()))
+            .build()
+            .expect("content block delta"),
+    )
+}
+
+/// Partial tool input is handed back fragment by fragment so a caller can
+/// report progress on a structured answer that takes minutes, while the
+/// joined document stays the only thing anyone parses.
+#[test]
+fn collector_hands_back_tool_input_as_it_grows() {
+    let mut collector = ReportStreamCollector::default();
+    assert!(collector.absorb(text_event(0, "Planning.")).is_none());
+    assert!(
+        collector
+            .absorb(tool_start_event(1, "plan-1", "submit_section_plan"))
+            .is_none()
+    );
+
+    let fragments = [
+        "{\"rows\":[{\"section",
+        "_id\":\"a\"},{\"section_id\"",
+        ":\"b\"}]}",
+    ];
+    let mut seen = String::new();
+    for fragment in fragments {
+        assert_eq!(
+            collector.absorb(tool_input_event(1, fragment)).as_deref(),
+            Some(fragment)
+        );
+        seen.push_str(fragment);
+    }
+    assert!(
+        collector
+            .absorb(ConverseStreamOutput::MessageStop(
+                MessageStopEvent::builder()
+                    .stop_reason(StopReason::ToolUse)
+                    .build()
+                    .expect("message stop"),
+            ))
+            .is_none()
+    );
+
+    let (content, stop_reason, _usage) = collector.finish().expect("complete stream");
+    assert_eq!(stop_reason, StopReason::ToolUse);
+    let tool = content
+        .iter()
+        .find_map(|block| match block {
+            aws_sdk_bedrockruntime::types::ContentBlock::ToolUse(tool) => Some(tool),
+            _ => None,
+        })
+        .expect("the forced tool call");
+    assert_eq!(tool.name(), "submit_section_plan");
+    assert_eq!(tool.tool_use_id(), "plan-1");
+    // The fragments the caller was shown are the answer, split: two rows are
+    // countable in them, and they are only JSON once joined — which is why a
+    // fragment is worth a progress line and nothing more.
+    assert_eq!(seen.matches("\"section_id\"").count(), 2);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&seen).expect("joined tool input JSON"),
+        serde_json::json!({"rows": [{"section_id": "a"}, {"section_id": "b"}]})
+    );
+    assert!(serde_json::from_str::<serde_json::Value>(fragments[0]).is_err());
+}
+
+#[tokio::test]
+async fn a_raised_output_ceiling_reaches_the_wire_and_the_input_budget() {
+    let server = MockServer::spawn().await;
+    script(
+        &server,
+        vec![serde_json::json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "Ready."}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 12, "outputTokens": 3}
+        })],
+    )
+    .await;
+
+    let raised = 64_000;
+    converse_full_report_with_tool_limit(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "Full draft policy",
+        &[user_message("Complete record snapshot")],
+        12,
+        &mut ReportInputBudget::new(MODEL_ID, raised),
+        claria_bedrock::converse::ModelTuning::default(),
+        default_cache_plan(),
+        StreamBounds::conversational(),
+        &StopSignal::new(),
+    )
+    .await
+    .expect("full-draft converse");
+
+    let state = server.state.read().await;
+    assert_eq!(
+        state.bedrock_tool_requests[0]["inferenceConfig"]["maxTokens"], raised,
+        "the configured ceiling is what the model is actually allowed"
+    );
+    // The reserve is enforced on both sides: what the wire allows is what
+    // the input allowance held back.
+    assert_eq!(
+        claria_bedrock::report::report_input_token_budget(MODEL_ID, raised),
+        claria_bedrock::report::report_model_context_tokens(MODEL_ID) - raised
+    );
+}
+
+#[test]
+fn an_output_ceiling_can_never_eat_the_whole_context_window() {
+    // Half the window is the cap. Past it there is nothing left to ask the
+    // question with, and a budget of nothing fails every call on the input
+    // side rather than doing what the setting was raised for.
+    let window = claria_bedrock::report::report_model_context_tokens(MODEL_ID);
+    let effective = claria_bedrock::report::effective_output_reserve(window, u32::MAX);
+
+    assert!(effective <= window / 2);
+    assert!(claria_bedrock::report::report_input_token_budget(MODEL_ID, u32::MAX) > 0);
+
+    // A tiny window is bound by the same rule, not by the floor.
+    assert_eq!(
+        claria_bedrock::report::effective_output_reserve(10_000, 32_768),
+        5_000
+    );
+    // A ceiling inside the range passes through untouched.
+    assert_eq!(
+        claria_bedrock::report::effective_output_reserve(200_000, 32_768),
+        32_768
+    );
 }

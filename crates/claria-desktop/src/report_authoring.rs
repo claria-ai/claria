@@ -1,6 +1,6 @@
 //! Tauri-facing report-authoring view models.
 //!
-//! Workflow policy and AWS orchestration live in `claria-report-authoring`.
+//! Workflow policy and AWS orchestration live in `claria-report-pipeline`.
 //! The report domain types (`ReportDraft`, `ReportContent`, blocks,
 //! operations, exports, resolutions) derive `specta::Type` in `claria-core`
 //! and cross the IPC boundary as-is; this module keeps only the views that
@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use claria_core::models::{
+    findings::ReportFindings,
     report::{
         ReportBlock, ReportContent, ReportDraft, ReportExport, ReportExportStatus, ReportOperation,
         ReportProposal, ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
@@ -107,7 +108,7 @@ pub struct WriterTemplateView {
 }
 
 pub fn writer_template_view(
-    template: claria_report_authoring::writer_templates::WriterTemplateSummary,
+    template: claria_report_store::template_library::WriterTemplateSummary,
 ) -> WriterTemplateView {
     WriterTemplateView {
         id: template.metadata.id.to_string(),
@@ -162,6 +163,15 @@ pub enum ReportTurnProgressView {
     ModelCallStarted {
         call_number: u32,
     },
+    /// The last announced call never landed and the identical request is
+    /// going out again. `attempt` is the one about to be made, so the first
+    /// retry reports 2 of `max_attempts`.
+    ModelCallRetrying {
+        call_number: u32,
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+    },
     ToolStarted {
         name: String,
         context: Option<String>,
@@ -171,12 +181,72 @@ pub enum ReportTurnProgressView {
         context: Option<String>,
         status: ReportToolActivityStatus,
     },
+    /// Another plan row has been counted off the answer the planner is still
+    /// streaming. Display only — the plan is validated whole when the call
+    /// returns — so the count may restart if the call is re-sent.
+    PlanRowPlanned {
+        planned: u32,
+        total: u32,
+    },
+    /// One batch of the plan is decided and will not be asked for again.
+    /// `first` and `last` are one-based and inclusive, against the document's
+    /// whole section count.
+    PlanBatchPlanned {
+        first: u32,
+        last: u32,
+        total: u32,
+    },
+    /// The drafting run's plan is settled, before the first model call: the
+    /// honest denominator for the progress that follows.
+    PlanReady {
+        section_count: u32,
+    },
+    SectionStarted {
+        section_id: String,
+        index: u32,
+        total: u32,
+    },
+    /// A section landed durably, carrying its content so the preview can
+    /// render it without a refetch. The section needs no redaction here: it is
+    /// the host-validated staged content the finish cut copies verbatim into
+    /// the workspace this same command returns.
+    SectionCompleted {
+        section_id: String,
+        section: ReportSection,
+        drafted: u32,
+        total: u32,
+    },
+    SectionSkipped {
+        section_id: String,
+        drafted: u32,
+        total: u32,
+    },
+    SectionFailed {
+        section_id: String,
+        message: String,
+        drafted: u32,
+        total: u32,
+    },
+    TitleSet {
+        title: String,
+    },
+    ReviewPassStarted {
+        property: String,
+        index: u32,
+        total: u32,
+    },
+    ReviewPassCompleted {
+        property: String,
+        findings: u32,
+        completed: u32,
+        total: u32,
+    },
 }
 
-impl From<claria_report_authoring::ReportTurnProgress> for ReportTurnProgressView {
-    fn from(value: claria_report_authoring::ReportTurnProgress) -> Self {
+impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView {
+    fn from(value: claria_report_pipeline::ReportTurnProgress) -> Self {
         match value {
-            claria_report_authoring::ReportTurnProgress::RecordContextPrepared {
+            claria_report_pipeline::ReportTurnProgress::RecordContextPrepared {
                 included_files,
                 unavailable_files,
                 total_characters,
@@ -185,13 +255,24 @@ impl From<claria_report_authoring::ReportTurnProgress> for ReportTurnProgressVie
                 unavailable_files,
                 total_characters,
             },
-            claria_report_authoring::ReportTurnProgress::ModelCallStarted { call_number } => {
+            claria_report_pipeline::ReportTurnProgress::ModelCallStarted { call_number } => {
                 Self::ModelCallStarted { call_number }
             }
-            claria_report_authoring::ReportTurnProgress::ToolStarted { name, context } => {
+            claria_report_pipeline::ReportTurnProgress::ModelCallRetrying {
+                call_number,
+                attempt,
+                max_attempts,
+                delay_ms,
+            } => Self::ModelCallRetrying {
+                call_number,
+                attempt,
+                max_attempts,
+                delay_ms,
+            },
+            claria_report_pipeline::ReportTurnProgress::ToolStarted { name, context } => {
                 Self::ToolStarted { name, context }
             }
-            claria_report_authoring::ReportTurnProgress::ToolFinished {
+            claria_report_pipeline::ReportTurnProgress::ToolFinished {
                 name,
                 context,
                 status,
@@ -202,6 +283,78 @@ impl From<claria_report_authoring::ReportTurnProgress> for ReportTurnProgressVie
                     ReportToolResultStatus::Success => ReportToolActivityStatus::Succeeded,
                     ReportToolResultStatus::Error => ReportToolActivityStatus::Failed,
                 },
+            },
+            claria_report_pipeline::ReportTurnProgress::PlanRowPlanned { planned, total } => {
+                Self::PlanRowPlanned { planned, total }
+            }
+            claria_report_pipeline::ReportTurnProgress::PlanBatchPlanned { first, last, total } => {
+                Self::PlanBatchPlanned { first, last, total }
+            }
+            claria_report_pipeline::ReportTurnProgress::PlanReady { section_count } => {
+                Self::PlanReady { section_count }
+            }
+            claria_report_pipeline::ReportTurnProgress::SectionStarted {
+                section_id,
+                index,
+                total,
+            } => Self::SectionStarted {
+                section_id,
+                index,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::SectionCompleted {
+                section_id,
+                section,
+                drafted,
+                total,
+            } => Self::SectionCompleted {
+                section_id,
+                section,
+                drafted,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::SectionSkipped {
+                section_id,
+                drafted,
+                total,
+            } => Self::SectionSkipped {
+                section_id,
+                drafted,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::SectionFailed {
+                section_id,
+                message,
+                drafted,
+                total,
+            } => Self::SectionFailed {
+                section_id,
+                message,
+                drafted,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::TitleSet { title } => {
+                Self::TitleSet { title }
+            }
+            claria_report_pipeline::ReportTurnProgress::ReviewPassStarted {
+                property,
+                index,
+                total,
+            } => Self::ReviewPassStarted {
+                property,
+                index,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::ReviewPassCompleted {
+                property,
+                findings,
+                completed,
+                total,
+            } => Self::ReviewPassCompleted {
+                property,
+                findings,
+                completed,
+                total,
             },
         }
     }
@@ -277,6 +430,14 @@ impl From<ReportProposalChoice> for CoreProposalDecision {
     }
 }
 
+/// Earns its life: resolving a finding changes both the report and the
+/// findings that describe it, and the caller needs the pair to stay in step.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportFindingResolution {
+    pub workspace: ReportWorkspaceView,
+    pub findings: ReportFindings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ReportDraftEdit {
     pub title: String,
@@ -290,8 +451,8 @@ pub struct ReportBlockReferenceInput {
 }
 
 impl ReportBlockReferenceInput {
-    pub fn into_domain(self) -> Result<claria_report_authoring::ReportBlockReference, String> {
-        Ok(claria_report_authoring::ReportBlockReference {
+    pub fn into_domain(self) -> Result<claria_report_pipeline::ReportBlockReference, String> {
+        Ok(claria_report_pipeline::ReportBlockReference {
             section_id: self
                 .section_id
                 .parse::<Uuid>()
@@ -385,11 +546,17 @@ pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String>
             // Hand-writing content into a deferred section un-defers it,
             // even if the frontend forgot to clear the flag.
             let skipped = section.skipped && section.blocks.is_empty();
+            // The editor never sees a section's template copy or authorship
+            // stamp, so an edit cannot carry them: the store re-attaches the
+            // template copy by section ID when it saves.
             Ok(ReportSection {
                 id,
                 heading: section.heading,
                 blocks: section.blocks,
                 skipped,
+                template_blocks: None,
+                template_directives: Vec::new(),
+                authorship: None,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -400,7 +567,7 @@ pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String>
 }
 
 pub fn turn_response_view(
-    outcome: claria_report_authoring::ReportTurnOutcome,
+    outcome: claria_report_pipeline::ReportTurnOutcome,
 ) -> ReportTurnResponse {
     ReportTurnResponse {
         workspace: workspace_view(&outcome.workspace),
@@ -416,7 +583,7 @@ pub fn turn_response_view(
 }
 
 pub fn full_report_response_view(
-    outcome: claria_report_authoring::FullReportGenerationOutcome,
+    outcome: claria_report_pipeline::FullReportGenerationOutcome,
 ) -> FullReportGenerationResponse {
     FullReportGenerationResponse {
         workspace: workspace_view(&outcome.workspace),
@@ -524,6 +691,9 @@ fn template_warning_code(code: ReportTemplateWarningCode) -> &'static str {
         ReportTemplateWarningCode::NumberedListsImportedAsBullets => {
             "numbered_lists_imported_as_bullets"
         }
+        ReportTemplateWarningCode::SectionsInferredFromFormatting => {
+            "sections_inferred_from_formatting"
+        }
         ReportTemplateWarningCode::TextBoxesOmitted => "text_boxes_omitted",
         ReportTemplateWarningCode::TrackedChangesResolved => "tracked_changes_resolved",
         ReportTemplateWarningCode::UnsupportedElementsOmitted => "unsupported_elements_omitted",
@@ -554,6 +724,9 @@ fn template_warning_message(code: ReportTemplateWarningCode) -> &'static str {
         ReportTemplateWarningCode::NestedTablesOmitted => "Nested tables were omitted.",
         ReportTemplateWarningCode::NumberedListsImportedAsBullets => {
             "Word list paragraphs were imported as bullet lists."
+        }
+        ReportTemplateWarningCode::SectionsInferredFromFormatting => {
+            "No Word heading styles were applied, so sections were split at the bold and capitalized lines that look like headings. Check the section list; applying Heading styles in Word makes the split exact."
         }
         ReportTemplateWarningCode::TextBoxesOmitted => "Text-box content was omitted.",
         ReportTemplateWarningCode::TrackedChangesResolved => {

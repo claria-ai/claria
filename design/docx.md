@@ -58,7 +58,8 @@ apply — the user's own edits win.
 
 **Whole-report (atomic).** Full-draft generation builds an isolated
 `FullDraftCandidate`; `write_full_draft_section` calls mutate only the
-candidate, and `skip_full_draft_section` records a user-directed deferral.
+candidate, `skip_full_draft_section` records a user-directed deferral, and
+`mark_section_failed` records a section the records could not support.
 Finalization validates the complete content — including that every section
 id present when generation started was written **or explicitly skipped** —
 merges each skipped section back in as an empty `skipped` placeholder at
@@ -96,15 +97,43 @@ headers, footers, media, page setup stay original bytes) and only
 1. **Exact** — visible content matches the template: source bytes returned.
 2. **Patched in place** — same structure, changed text: only text events
    rewritten; every run and paragraph property survives.
-3. **Reconstructed** — structure changed: each target block clones a
-   template paragraph/table of the same kind as its formatting *exemplar*
-   (chosen proportionally along the document), text lands in the exemplar's
-   dominant run, and direct bold/underline/italic is stripped when the new
-   text is unrelated to the exemplar's own words. Headings classify through
-   a style catalog (literal `Heading*`, outline levels, `basedOn` chains),
-   shared with the importer. Blank spacer paragraphs interleave at the
-   proportional boundaries. Bullets without a template exemplar bring their
-   numbering definition into the package.
+3. **Reconstructed** — structure changed, so the body is rebuilt
+   **section by section**. The renderer imports the template first and uses
+   *that* carve to classify its paragraphs, so export cannot hold a second
+   opinion about what a heading is. Draft sections descend from the same
+   import, so they align to template sections by heading text, and a run of
+   renamed headings takes the template sections between its matched
+   neighbours. Inside a section the heading patches its own template
+   heading paragraph — identical text short-circuits, and nothing is
+   stripped, so an appearance-carved template's bold headings survive being
+   rewritten — and blocks map in order by kind. A block that outgrows its
+   section clones an exemplar: nearest in the section, then the nearest of
+   that kind document-wide, then generated formatting. Only cloned
+   exemplars have direct bold/underline/italic stripped, and never for a
+   heading, whose bold may be the only thing making it a heading. Text
+   lands in the exemplar's dominant run; `'\n'` and `'\t'` in it become real
+   `<w:br/>` and `<w:tab/>` elements, and a paragraph whose tabs match the
+   target's is patched between the tabs so label runs keep their own words
+   and bolding. Blank spacer paragraphs ride with the template paragraph
+   they precede, so they stay in their own section. Bullets without a
+   template exemplar bring their numbering definition into the package.
+
+   Everything between spans is a **gap**, and a gap may carry only
+   non-content events — blank paragraphs, `sectPr`, bookmarks. A `w:tbl`
+   the walker could not recognise or a text-bearing paragraph is dropped:
+   the accepted draft is the only source of content. The importer's
+   invented `Imported content` heading is never written out, and a
+   template that reported `MissingTitle` gains no title paragraph.
+
+   **Merged tables.** `gridSpan` and `vMerge` are read as the rectangle
+   they describe (`table_grid.rs::expand_rows`, shared with the import so
+   the two halves cannot disagree about a table's shape): the spanning cell
+   owns the first position it covers, every covered position is the empty
+   string, and a `vMerge` continuation belongs to the `restart` above it. A
+   draft row is written back into the cell that owns each position, merges
+   untouched. A nonempty value in a covered position would be invisible in
+   Word, so it fails the patch and the table is regenerated flat — the
+   merge is expendable, the value is not.
 4. **Plain-body fallback** — a body the walker can't handle (content
    controls): generated body formatting inside the template package.
 
@@ -118,6 +147,55 @@ forbids markdown in paragraph text, but nothing strips it — `**bold**`
 would look bold in the preview and export as literal asterisks. This
 divergence is a known sharp edge and one argument for the inline-markup
 option below.
+
+## How a template becomes sections
+
+Carving is style-driven, and only falls back to appearance when the styles
+say nothing at all.
+
+**Tier 1 — applied heading styles.** A paragraph opens a section when its
+style resolves to a heading through `StyleCatalog`: the normalized styleId
+starts with `heading`, the style's display name starts with `heading`, or
+the style definition carries `<w:outlineLvl>` — each followed up the
+`basedOn` chain. A template that applied Word's heading styles gets exactly
+the carve it asks for, and nothing below can change that.
+
+**Tier 2 — appearance, only when tier 1 promoted nothing.** Most real
+clinical templates never apply a heading style: their headers are body text
+someone bolded, and the whole document used to import as one section
+holding everything. When no paragraph carried a heading style, a second
+pass promotes paragraphs that are **emphasized** (every text run bold, or
+no lowercase letters), **label-shaped** (≤80 characters and not ending in
+`. ? ! : ; ,`), and **lettered** (at least one letter, so a typed rule of
+underscores is not a heading). All three are load-bearing: length or the
+missing full stop alone each match ordinary sentences, and a field label
+ending in a colon is not a section.
+
+Two guards decide whether that result is adopted at all — at least
+`MIN_INFERRED_HEADINGS` (2), and at most `MAX_INFERRED_HEADING_DENSITY`
+(60%) of paragraphs. A template that strictly alternates heading and
+paragraph is already half headings and is a good structure, so the bar sits
+above one half; past it there is more heading than content, which is what a
+document set entirely in bold looks like. Failing either guard keeps the
+single invented section.
+
+An inferred carve always emits `SectionsInferredFromFormatting`, because it
+is a guess about someone's document rather than a reading of it, and the
+plan gate lets the clinician correct the section list before drafting
+spends anything.
+
+**Paragraph-level `<w:outlineLvl>` is deliberately not consulted.** It
+looks like the better signal — an authored claim rather than an appearance
+— but real templates set it indiscriminately. One field example carried it
+on 140 paragraphs including table cells and blank lines, marked each
+heading *and* the body paragraph after it, and still missed half the real
+headings. The export renderer used to consult it and disagreed with the
+carve on almost every paragraph, which is why it now classifies against the
+import's result instead of re-deriving anything.
+
+`claria-docx-cli` (`cargo run -p claria-docx-cli -- <file.docx>`) reports
+what both tiers did to a package, including which style rule fired and
+which paragraphs read as headings but carry no heading style.
 
 ## Feature inventory
 
@@ -137,7 +215,8 @@ never sees or controls these — the template package supplies them):
 fonts and run styles · paragraph spacing and indentation · heading
 typography (incl. underlined headers) · blank spacer paragraphs · page
 size/margins · headers and footers · embedded media · table borders and
-shading · numbering glyphs and indents.
+shading · merged table cells (`gridSpan`/`vMerge`) · numbering glyphs and
+indents.
 
 **Unsupported — would break the LLM abstraction** (each would force the
 model from semantic content into layout/typography decisions, and most
@@ -145,8 +224,9 @@ would break the exemplar-patching contract, which is paragraph-granular):
 
 inline character formatting (bold/italic/underline spans) · hyperlinks ·
 nested and ordered lists · multiple heading levels (import flattens >1 with
-a warning) · merged cells (`gridSpan`/`vMerge` — import rejects such
-tables) · nested tables (omitted with warning) · per-cell formatting ·
+a warning) · authoring merged cells (`gridSpan`/`vMerge` are preserved on a
+template's own tables but the model cannot create or reshape one) · nested
+tables (omitted with warning) · per-cell formatting ·
 text boxes · footnotes/endnotes · fields (page numbers, TOC, cross-refs) ·
 section breaks and multi-column layout · content controls (`w:sdt`) ·
 tracked changes and comments.

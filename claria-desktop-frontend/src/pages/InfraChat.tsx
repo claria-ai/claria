@@ -105,13 +105,20 @@ export default function InfraChat({
     async (
       modelId: string,
       messages: ChatMessage[],
-      onDelta: (text: string) => void
+      onDelta: (text: string) => void,
+      streamId: string
     ) => {
       let stopReason: string | null = null;
-      const response = await infraChat(modelId, messages, planEntries, (event) => {
-        if (event.kind === "delta") onDelta(event.text);
-        else if (event.kind === "done") stopReason = event.stop_reason;
-      });
+      const response = await infraChat(
+        modelId,
+        messages,
+        planEntries,
+        streamId,
+        (event) => {
+          if (event.kind === "delta") onDelta(event.text);
+          else if (event.kind === "done") stopReason = event.stop_reason;
+        }
+      );
       return { content: response.content, usage: response.usage, stopReason };
     },
     [planEntries]

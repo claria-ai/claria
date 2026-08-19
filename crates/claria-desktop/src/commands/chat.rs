@@ -4,13 +4,14 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use claria_bedrock::chat::ChatStreamOptions;
 use claria_core::models::chat_history::{ChatMessage, ChatRole};
 use claria_desktop::config::ClariaConfig;
 use claria_provisioner::PlanEntry;
 
 use super::{
     CommandContext, CommandError, next_ordinal_name, parse_uuid, prompts::load_prompt,
-    records::load_record_context, run, usage_audit_details,
+    records::load_record_context, run, streams::StopRegistration, usage_audit_details,
 };
 use crate::state::DesktopState;
 use claria_storage::audit::actions;
@@ -322,10 +323,12 @@ pub async fn chat_message(
     chat_id: Option<String>,
     chat_name: Option<String>,
     context_filenames: Vec<String>,
+    stream_id: String,
     on_event: tauri::ipc::Channel<ChatStreamEvent>,
 ) -> Result<ChatResponse, String> {
     run("chat_message", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
         let client_uuid = parse_uuid(&client_id)?;
         let now = jiff::Timestamp::now();
         let (chat_uuid, chat_name, created_at, expected_etag, stored_prefix) = match &chat_id {
@@ -397,17 +400,21 @@ pub async fn chat_message(
             );
         }
 
-        // Stream deltas to the frontend as they arrive; the complete text
-        // still comes back here so history persistence and audit are
-        // identical to the unary path. Delta content is PHI — never logged.
-        let tuning = super::model_tuning_for(&ctx.cfg, &model_id);
+        // Stream text to the frontend at the clinician's chosen cadence; the
+        // complete text still comes back here so history persistence and
+        // audit are identical to the unary path. Delta content is PHI —
+        // never logged.
         let outcome = claria_bedrock::chat::chat_converse_stream(
             &ctx.sdk_config,
             &model_id,
             &full_prompt,
             &messages,
-            cache_strategy,
-            tuning,
+            ChatStreamOptions {
+                cache_strategy,
+                tuning: super::model_tuning_for(&ctx.cfg, &model_id),
+                pacing: ctx.cfg.chat_streaming.to_pacing(),
+                stop: stop.signal.clone(),
+            },
             |delta| {
                 send_stream_event(
                     &on_event,
@@ -564,23 +571,26 @@ pub async fn infra_chat(
     model_id: String,
     messages: Vec<ChatMessage>,
     plan_entries: Vec<PlanEntry>,
+    stream_id: String,
     on_event: tauri::ipc::Channel<ChatStreamEvent>,
 ) -> Result<InfraChatResponse, String> {
     run("infra_chat", async {
         let ctx = CommandContext::new(&state).await?;
+        let stop = StopRegistration::open(&state, &stream_id)?;
 
         let system_prompt = build_infra_system_prompt(&plan_entries);
 
-        let cache_strategy = build_cache_strategy(&ctx.cfg, &model_id);
-
-        let tuning = super::model_tuning_for(&ctx.cfg, &model_id);
         let outcome = claria_bedrock::chat::chat_converse_stream(
             &ctx.sdk_config,
             &model_id,
             &system_prompt,
             &messages,
-            cache_strategy,
-            tuning,
+            ChatStreamOptions {
+                cache_strategy: build_cache_strategy(&ctx.cfg, &model_id),
+                tuning: super::model_tuning_for(&ctx.cfg, &model_id),
+                pacing: ctx.cfg.chat_streaming.to_pacing(),
+                stop: stop.signal.clone(),
+            },
             |delta| {
                 send_stream_event(
                     &on_event,
@@ -649,8 +659,9 @@ fn assemble_chat_prompt(
 }
 
 /// Derive a [`claria_bedrock::chat::CacheStrategy`] from config + the
-/// inference profile we're about to invoke. Model support comes from the
-/// central capability table in `claria-core`.
+/// inference profile we're about to invoke. Model support, the cache tier,
+/// and the minimum prefix worth marking all come from the central
+/// capability table in `claria-core`.
 ///
 /// Chat caches at the one-hour tier wherever the capability table allows
 /// it. Clinical sessions are interrupted by design — a message, a patient,
@@ -671,7 +682,7 @@ fn build_cache_strategy(cfg: &ClariaConfig, model_id: &str) -> claria_bedrock::c
     } else {
         claria_core::model_id::CacheTtlChoice::FiveMinutes
     };
-    claria_bedrock::chat::CacheStrategy::enabled_for_model(capabilities.prompt_caching, ttl)
+    claria_bedrock::chat::CacheStrategy::enabled_for_model(capabilities, ttl)
 }
 
 fn build_infra_system_prompt(plan_entries: &[PlanEntry]) -> String {

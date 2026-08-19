@@ -6,7 +6,9 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use aws_sdk_bedrockruntime::types::DocumentFormat;
 use claria_bedrock::{
-    chat::{CHAT_MAX_OUTPUT_TOKENS, CacheStrategy, ChatMessage, ChatRole, chat_converse_stream},
+    chat::{
+        CHAT_MAX_OUTPUT_TOKENS, ChatMessage, ChatRole, ChatStreamOptions, chat_converse_stream,
+    },
     error::BedrockError,
     extract::{DEFAULT_EXTRACTION_PROMPT, EXTRACT_MAX_OUTPUT_TOKENS, extract_document_text},
 };
@@ -58,8 +60,7 @@ async fn chat_sets_max_tokens_and_skips_counting_far_from_budget() {
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        ChatStreamOptions::default(),
         |_| {},
     )
     .await
@@ -100,8 +101,7 @@ async fn chat_context_overflow_maps_to_friendly_error() {
         MODEL_ID,
         "System prompt",
         &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        ChatStreamOptions::default(),
         |_| {},
     )
     .await
@@ -126,8 +126,7 @@ async fn chat_near_budget_verifies_and_rejects_before_spending() {
         MODEL_ID,
         &big_prompt,
         &user_messages("Hello"),
-        CacheStrategy::disabled(),
-        claria_bedrock::converse::ModelTuning::default(),
+        ChatStreamOptions::default(),
         |_| {},
     )
     .await

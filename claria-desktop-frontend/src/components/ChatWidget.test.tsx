@@ -9,12 +9,17 @@ import { ChatModelsContext, type ChatModelsState } from "../lib/chatModels";
 import type { ChatMessage, TurnUsage } from "../lib/tauri";
 import ChatWidget, { type SendResult } from "./ChatWidget";
 
+const stopStream = vi.fn<(streamId: string) => Promise<void>>(
+  async () => {}
+);
+
 vi.mock("../lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/tauri")>();
   return {
     ...actual,
     lookupModelPricing: vi.fn(async () => null),
     acceptModelAgreement: vi.fn(async () => undefined),
+    stopStream: (streamId: string) => stopStream(streamId),
   };
 });
 
@@ -31,7 +36,8 @@ function renderWidget(
   onSend: (
     modelId: string,
     messages: unknown,
-    onDelta: (text: string) => void
+    onDelta: (text: string) => void,
+    streamId: string
   ) => Promise<SendResult>,
   initial?: {
     messages: ChatMessage[];
@@ -107,6 +113,71 @@ describe("ChatWidget", () => {
     resolveTurn({ content: "Unary reply.", usage: null });
     await screen.findByText(/Unary reply\./);
     expect(screen.queryByText("Thinking...")).toBeNull();
+  });
+
+  it("arms the stop button only while a turn is in flight", async () => {
+    let resolveTurn!: (result: SendResult) => void;
+    let turnId = "";
+    const onSend = vi.fn(
+      (
+        _modelId: string,
+        _messages: unknown,
+        _onDelta: (text: string) => void,
+        streamId: string
+      ) => {
+        turnId = streamId;
+        return new Promise<SendResult>((resolve) => {
+          resolveTurn = resolve;
+        });
+      }
+    );
+
+    renderWidget(onSend);
+    const stop = screen.getByRole("button", { name: "Stop" });
+    expect((stop as HTMLButtonElement).disabled).toBe(true);
+
+    await sendMessage("Hello");
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement)
+          .disabled
+      ).toBe(false)
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /Stop/ }));
+    expect(stopStream).toHaveBeenCalledWith(turnId);
+    expect(turnId).not.toBe("");
+
+    // The backend still returns the partial reply, and the button goes quiet.
+    resolveTurn({
+      content: "Half an answer.",
+      usage: null,
+      stopReason: "stopped_by_user",
+    });
+    await screen.findByText(/Half an answer\./);
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement)
+          .disabled
+      ).toBe(true)
+    );
+  });
+
+  /// Stopping before the model says anything leaves nothing worth a bubble.
+  it("adds no assistant bubble when a stopped turn produced no text", async () => {
+    const onSend = vi.fn(async () => ({
+      content: "",
+      usage: null,
+      stopReason: "stopped_by_user",
+    }));
+
+    renderWidget(onSend);
+    await sendMessage("Hello");
+
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText("Thinking...")).toBeNull());
+    expect(screen.getByText("Hello")).toBeDefined();
+    expect(screen.queryByLabelText("Still writing")).toBeNull();
   });
 
   it("keeps cost and cache details in their tab until turn costs are enabled", async () => {

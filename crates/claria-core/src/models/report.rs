@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{error::CoreError, models::turn_usage::TurnUsage};
 
-pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 6;
+pub const REPORT_WORKSPACE_SCHEMA_VERSION: u32 = 7;
 pub const MAX_REPORT_SECTIONS: usize = 100;
 pub const MAX_SECTION_BLOCKS: usize = 200;
 pub const MAX_TABLE_ROWS: usize = 200;
@@ -26,9 +26,18 @@ pub const MAX_PROPOSAL_OPERATIONS: usize = 25;
 pub const MAX_REPORT_TURNS: usize = 200;
 pub const MAX_REPORT_PROTOCOL_BYTES: usize = 512 * 1024;
 pub const MAX_REPORT_SESSION_NAME_CHARACTERS: usize = 120;
+/// How many authoring directives one section may carry, and how long each may
+/// be. The extractor that fills [`ReportSection::template_directives`] enforces
+/// both, and this validator refuses a section that got past it: the directives
+/// ride in every analysis and drafting request, so an unbounded field would be
+/// an unbounded prompt.
+pub const MAX_SECTION_TEMPLATE_DIRECTIVES: usize = 8;
+pub const MAX_TEMPLATE_DIRECTIVE_CHARACTERS: usize = 500;
 
-const MAX_TITLE_CHARACTERS: usize = 200;
-const MAX_HEADING_CHARACTERS: usize = 200;
+// Crate-visible so the drafting-run model bounds its own titles and headings
+// with the ceilings the accepted report already enforces.
+pub(crate) const MAX_TITLE_CHARACTERS: usize = 200;
+pub(crate) const MAX_HEADING_CHARACTERS: usize = 200;
 // Public so the Bedrock tool schema derives its ceilings from these
 // validators instead of maintaining drifting copies.
 pub const MAX_PARAGRAPH_CHARACTERS: usize = 20_000;
@@ -50,6 +59,11 @@ pub struct ReportWorkspace {
     /// client workspace; managed template sources live under `writer_templates/`.
     #[serde(default)]
     pub template_import: Option<ReportTemplateImport>,
+    /// The drafting run that currently owns this workspace: either in progress
+    /// or stopped with durable partial state. Later work refuses mutating
+    /// operations while it is set; nothing enforces that yet.
+    #[serde(default)]
+    pub active_run_id: Option<Uuid>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -85,6 +99,56 @@ pub struct ReportSection {
     /// entirely until a later edit writes content into it.
     #[serde(default)]
     pub skipped: bool,
+    /// Immutable copy of the imported template body for this section, stamped
+    /// when the template is applied. It is never exported and never sent to a
+    /// model as accepted content; the preview renders it greyed-out while the
+    /// section is `skipped`, and it survives a fill so a later "rewrite from
+    /// the template" still has the original text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_blocks: Option<Vec<ReportBlock>>,
+    /// The authoring directives the template's author wrote into this section:
+    /// the bracketed instructions a clinical template carries — "[a one
+    /// sentence stating why the child was referred]", "[Delete the subsections
+    /// of the tests that were not uploaded]". Extracted verbatim at import and
+    /// bounded by [`MAX_SECTION_TEMPLATE_DIRECTIVES`] and
+    /// [`MAX_TEMPLATE_DIRECTIVE_CHARACTERS`].
+    ///
+    /// Unlike [`ReportSection::template_blocks`] these do reach a model, as
+    /// host-extracted guidance about the document's *form* — how long a
+    /// section runs, how it must open, which subsections to drop. They are
+    /// never a source of client facts.
+    // `#[serde(default)]` alone, deliberately: specta (rc.18) turns any
+    // `skip_serializing_if` other than `Option::is_none` into a *required*
+    // TypeScript field, overriding both `default` and an explicit
+    // `#[specta(optional)]`. An always-present empty array in stored JSON is
+    // cheaper than a generated type that disagrees with the wire.
+    #[serde(default)]
+    pub template_directives: Vec<String>,
+    /// Who last wrote this section, and at which revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorship: Option<SectionAuthorship>,
+}
+
+/// The latest authorship stamp for one section — not a log, and not per-block.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+pub struct SectionAuthorship {
+    pub kind: AuthorshipKind,
+    /// Draft revision this stamp describes. Never newer than the accepted
+    /// draft it rides on.
+    pub revision: u64,
+    pub model_id: Option<String>,
+    pub run_id: Option<Uuid>,
+    #[specta(type = String)]
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorshipKind {
+    Template,
+    ModelGenerated,
+    ModelRevised,
+    HumanEdited,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
@@ -147,6 +211,10 @@ pub enum ReportTemplateWarningCode {
     MissingTitle,
     NestedTablesOmitted,
     NumberedListsImportedAsBullets,
+    /// No paragraph carried a heading style, so sections were inferred from
+    /// how the headings are formatted. The reader has to be told: the carve
+    /// is a guess about their document, not a reading of it.
+    SectionsInferredFromFormatting,
     TextBoxesOmitted,
     TrackedChangesResolved,
     UnsupportedElementsOmitted,
@@ -346,6 +414,7 @@ impl ReportWorkspace {
             },
             session: ReportSession::default(),
             template_import: None,
+            active_run_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -376,6 +445,20 @@ impl ReportWorkspace {
             MAX_REPORT_SESSION_NAME_CHARACTERS,
         )?;
         self.draft.validate()?;
+        // Section authorship is checked here rather than in the section
+        // validator, which cannot see the revision the stamp must not outrun.
+        if self
+            .draft
+            .content
+            .sections
+            .iter()
+            .filter_map(|section| section.authorship.as_ref())
+            .any(|authorship| authorship.revision > self.draft.revision)
+        {
+            return Err(invalid(
+                "section authorship is newer than the accepted report",
+            ));
+        }
         self.session.validate(self)?;
         if let Some(template) = &self.template_import {
             validate_template_import(template, self)?;
@@ -487,7 +570,10 @@ impl ReportDraft {
                         .ok_or_else(|| invalid(format!("section {section_id} does not exist")))?;
                     section.heading.clone_from(heading);
                     section.blocks.clone_from(blocks);
-                    // Writing into a section is what un-defers it.
+                    // Writing into a section is what un-defers it. The
+                    // section is edited in place so its template copy
+                    // survives the fill and a later rewrite still has the
+                    // original body to work from.
                     section.skipped = false;
                 }
                 ReportOperation::RemoveSection { section_id } => {
@@ -508,9 +594,36 @@ impl ReportDraft {
         Ok(candidate)
     }
 
+    /// Apply a proposal without recording authorship. Sections keep whatever
+    /// stamp they already carried.
     pub fn accept(
         &self,
         proposal: &ReportProposal,
+        accepted_at: Timestamp,
+    ) -> Result<ReportDraft, CoreError> {
+        self.accept_stamped(proposal, None, accepted_at)
+    }
+
+    /// Apply a proposal and credit `model_id` for every section the proposal
+    /// wrote.
+    ///
+    /// Only [`ReportOperation::AddSection`] and
+    /// [`ReportOperation::ReplaceSection`] name a section whose text the model
+    /// authored. A title change touches no section body, and a removed section
+    /// has nothing left to stamp.
+    pub fn accept_with_authorship(
+        &self,
+        proposal: &ReportProposal,
+        model_id: &str,
+        accepted_at: Timestamp,
+    ) -> Result<ReportDraft, CoreError> {
+        self.accept_stamped(proposal, Some(model_id), accepted_at)
+    }
+
+    fn accept_stamped(
+        &self,
+        proposal: &ReportProposal,
+        model_id: Option<&str>,
         accepted_at: Timestamp,
     ) -> Result<ReportDraft, CoreError> {
         if proposal.base_revision != self.revision {
@@ -520,7 +633,7 @@ impl ReportDraft {
             )));
         }
         validate_proposal(proposal, None)?;
-        let recomputed = self.preview(&proposal.operations)?;
+        let mut recomputed = self.preview(&proposal.operations)?;
         if recomputed != proposal.proposed_content {
             return Err(invalid("proposal candidate does not match its operations"));
         }
@@ -528,6 +641,33 @@ impl ReportDraft {
             .revision
             .checked_add(1)
             .ok_or_else(|| invalid("report revision overflow"))?;
+        if let Some(model_id) = model_id {
+            let authorship = SectionAuthorship {
+                kind: AuthorshipKind::ModelRevised,
+                revision,
+                model_id: Some(model_id.to_string()),
+                run_id: None,
+                updated_at: accepted_at,
+            };
+            for operation in &proposal.operations {
+                let section_id = match operation {
+                    ReportOperation::AddSection { section, .. } => section.id,
+                    ReportOperation::ReplaceSection { section_id, .. } => *section_id,
+                    // A title change touches no body; a section removed later
+                    // in the same proposal is no longer there to stamp.
+                    ReportOperation::SetTitle { .. } | ReportOperation::RemoveSection { .. } => {
+                        continue;
+                    }
+                };
+                if let Some(section) = recomputed
+                    .sections
+                    .iter_mut()
+                    .find(|section| section.id == section_id)
+                {
+                    section.authorship = Some(authorship.clone());
+                }
+            }
+        }
         Ok(Self {
             revision,
             content: recomputed,
@@ -665,11 +805,12 @@ pub fn decode_report_workspace(bytes: &[u8]) -> Result<ReportWorkspace, CoreErro
             }
         }
     }
-    // Versions through 5 predate per-section skip status. The field is
-    // additive (`#[serde(default)]`), so only the version stamp is needed —
-    // the bump exists so older builds, which would silently drop skip flags
-    // and export deferred sections, refuse these workspaces instead.
-    if schema_version.is_some_and(|version| version <= 5) {
+    // Versions through 6 predate per-section template copies, authorship
+    // stamps, and the active drafting run. Every added field is additive
+    // (`#[serde(default)]`), so only the version stamp is needed — the bump
+    // exists so older builds, which would silently drop template copies and
+    // authorship on their next write, refuse these workspaces instead.
+    if schema_version.is_some_and(|version| version <= 6) {
         value["schema_version"] = serde_json::json!(REPORT_WORKSPACE_SCHEMA_VERSION);
     }
     let workspace: ReportWorkspace = serde_json::from_value(value)?;
@@ -685,6 +826,29 @@ pub fn validate_report_content(content: &ReportContent) -> Result<(), CoreError>
     validate_content(content)
 }
 
+/// Serialize report content for a model prompt.
+///
+/// Template copies and authorship stamps are host bookkeeping: the model must
+/// never read a section's template body as accepted content, and neither field
+/// belongs in a prompt it would only bloat. The section shape is written out
+/// field by field so a field added to [`ReportSection`] later has to be
+/// admitted here deliberately rather than leaking into every prompt.
+pub fn prompt_content_view(content: &ReportContent) -> serde_json::Value {
+    serde_json::json!({
+        "title": content.title,
+        "sections": content
+            .sections
+            .iter()
+            .map(|section| serde_json::json!({
+                "id": section.id,
+                "heading": section.heading,
+                "blocks": section.blocks,
+                "skipped": section.skipped
+            }))
+            .collect::<Vec<_>>()
+    })
+}
+
 pub fn validate_report_summary(summary: &str) -> Result<(), CoreError> {
     validate_nonempty_text("proposal summary", summary, MAX_PROPOSAL_SUMMARY_CHARACTERS)
 }
@@ -693,28 +857,52 @@ pub fn validate_report_summary(summary: &str) -> Result<(), CoreError> {
 /// report text. This is a review hint, not a claim that all carryover can be
 /// detected automatically.
 pub fn report_template_placeholder_count(content: &ReportContent) -> u32 {
-    let mut count = placeholder_count(&content.title);
-    for section in &content.sections {
-        count = count.saturating_add(placeholder_count(&section.heading));
-        for block in &section.blocks {
-            match block {
-                ReportBlock::Paragraph { text } => {
-                    count = count.saturating_add(placeholder_count(text));
+    content
+        .sections
+        .iter()
+        .map(report_section_placeholder_count)
+        .fold(
+            report_text_placeholder_count(&content.title),
+            u32::saturating_add,
+        )
+}
+
+/// Unresolved template markers in one section's heading and body.
+///
+/// The completion gate reports carryover per section, so the per-section and
+/// per-string counts are the primitives and the document-wide count above is
+/// their sum. Two independent scans would let the checklist and the import
+/// statistics disagree about what counts as a placeholder.
+pub fn report_section_placeholder_count(section: &ReportSection) -> u32 {
+    let mut count = report_text_placeholder_count(&section.heading);
+    for block in &section.blocks {
+        match block {
+            ReportBlock::Paragraph { text } => {
+                count = count.saturating_add(report_text_placeholder_count(text));
+            }
+            ReportBlock::BulletList { items } => {
+                for item in items {
+                    count = count.saturating_add(report_text_placeholder_count(item));
                 }
-                ReportBlock::BulletList { items } => {
-                    for item in items {
-                        count = count.saturating_add(placeholder_count(item));
-                    }
-                }
-                ReportBlock::Table { rows, .. } => {
-                    for cell in rows.iter().flatten() {
-                        count = count.saturating_add(placeholder_count(cell));
-                    }
+            }
+            ReportBlock::Table { rows, .. } => {
+                for cell in rows.iter().flatten() {
+                    count = count.saturating_add(report_text_placeholder_count(cell));
                 }
             }
         }
     }
     count
+}
+
+/// Unresolved template markers in one string — a title, a heading, a
+/// paragraph, a table cell.
+pub fn report_text_placeholder_count(text: &str) -> u32 {
+    let lowercase = text.to_lowercase();
+    ["{{", "<<", "[client", "[name", "[date", "_____"]
+        .iter()
+        .map(|marker| u32::try_from(lowercase.matches(marker).count()).unwrap_or(u32::MAX))
+        .fold(0_u32, u32::saturating_add)
 }
 
 /// Validate Bedrock message ordering and exact tool-use/result correlation.
@@ -747,6 +935,14 @@ fn validate_content(content: &ReportContent) -> Result<(), CoreError> {
     let mut ids = HashSet::with_capacity(content.sections.len());
     let mut total_characters = content.title.chars().count();
     let mut total_table_cells = 0_usize;
+    // Only authored bodies count toward the document-wide ceilings below.
+    // A section's `template_blocks` are validated block by block but excluded
+    // here: they are never exported and never sent to a model, so they cost
+    // neither Word XML nor prompt tokens, and the per-section block and
+    // paragraph ceilings already bound how large one copy can grow. Its
+    // `template_directives` are excluded for the second half of that reason:
+    // they never reach Word, and their own per-section count and length
+    // ceilings already bound what one section can add to a request.
     for section in &content.sections {
         validate_section(section)?;
         if !ids.insert(section.id) {
@@ -793,10 +989,25 @@ fn validate_section(section: &ReportSection) -> Result<(), CoreError> {
     if section.skipped && !section.blocks.is_empty() {
         return Err(invalid("a skipped section must have an empty body"));
     }
+    if let Some(template_blocks) = &section.template_blocks {
+        validate_blocks(template_blocks)?;
+    }
+    if section.template_directives.len() > MAX_SECTION_TEMPLATE_DIRECTIVES {
+        return Err(invalid(format!(
+            "a section may carry at most {MAX_SECTION_TEMPLATE_DIRECTIVES} template directives"
+        )));
+    }
+    for directive in &section.template_directives {
+        validate_nonempty_text(
+            "template directive",
+            directive,
+            MAX_TEMPLATE_DIRECTIVE_CHARACTERS,
+        )?;
+    }
     validate_blocks(&section.blocks)
 }
 
-fn validate_blocks(blocks: &[ReportBlock]) -> Result<(), CoreError> {
+pub(crate) fn validate_blocks(blocks: &[ReportBlock]) -> Result<(), CoreError> {
     if blocks.len() > MAX_SECTION_BLOCKS {
         return Err(invalid(format!(
             "a section may contain at most {MAX_SECTION_BLOCKS} blocks"
@@ -935,7 +1146,9 @@ fn validate_template_import(
     Ok(())
 }
 
-fn validate_nonempty_text(
+/// Shared by every model in this crate that persists user- or model-authored
+/// text into a Word-renderable document.
+pub(crate) fn validate_nonempty_text(
     label: &str,
     value: &str,
     max_characters: usize,
@@ -946,7 +1159,11 @@ fn validate_nonempty_text(
     validate_xml_text(label, value, max_characters)
 }
 
-fn validate_xml_text(label: &str, value: &str, max_characters: usize) -> Result<(), CoreError> {
+pub(crate) fn validate_xml_text(
+    label: &str,
+    value: &str,
+    max_characters: usize,
+) -> Result<(), CoreError> {
     let characters = value.chars().count();
     if characters > max_characters {
         return Err(invalid(format!(
@@ -964,14 +1181,6 @@ fn validate_xml_text(label: &str, value: &str, max_characters: usize) -> Result<
         )));
     }
     Ok(())
-}
-
-fn placeholder_count(text: &str) -> u32 {
-    let lowercase = text.to_lowercase();
-    ["{{", "<<", "[client", "[name", "[date", "_____"]
-        .iter()
-        .map(|marker| u32::try_from(lowercase.matches(marker).count()).unwrap_or(u32::MAX))
-        .fold(0_u32, u32::saturating_add)
 }
 
 fn validate_proposal(

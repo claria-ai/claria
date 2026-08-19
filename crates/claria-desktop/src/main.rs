@@ -19,6 +19,11 @@ mod state;
 fn main() -> Result<()> {
     color_eyre::install()?;
 
+    // Before anything can spawn: `tauri::async_runtime::set` panics once the
+    // global runtime has been initialized, and the first `spawn` or
+    // `block_on` anywhere initializes it.
+    claria_desktop::async_runtime::install()?;
+
     let console_buffer = console::ConsoleBuffer::new();
     let console_layer = console::ConsoleLayer::new(console_buffer.clone());
 
@@ -68,6 +73,11 @@ fn main() -> Result<()> {
         commands::delete_config,
         commands::save_preferences_patch,
         commands::fetch_cloud_preferences,
+        commands::export_preferences,
+        commands::import_preferences,
+        commands::list_preferences_versions,
+        commands::get_preferences_version,
+        commands::restore_preferences_version,
         commands::upload_record_file_with_options,
         commands::save_transcript_edits,
         commands::pick_audio_file,
@@ -107,8 +117,19 @@ fn main() -> Result<()> {
         report_template_commands::apply_report_template,
         report_template_commands::discard_report_template_preview,
         commands::generate_full_report,
+        commands::load_draft_run,
+        commands::finalize_partial_draft,
+        commands::abandon_draft_run,
+        commands::generate_draft_plan,
+        commands::update_draft_plan,
+        commands::start_draft_run,
+        commands::resume_draft_run,
         commands::send_report_message,
         commands::resolve_report_proposal,
+        commands::run_review_sweeps,
+        commands::list_report_findings,
+        commands::resolve_report_finding,
+        commands::evaluate_report_completion,
         commands::export_report_docx,
         commands::list_record_files,
         commands::search_record_contents,
@@ -163,6 +184,7 @@ fn main() -> Result<()> {
         commands::get_console_logs_text,
         commands::save_console_logs,
         commands::log_frontend_event,
+        commands::stop_stream,
     ]);
 
     #[cfg(debug_assertions)]

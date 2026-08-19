@@ -86,6 +86,62 @@ CLINICAL_DOCUMENT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </w:document>
 """
 
+# A blank clinical template of the kind that carries no applied heading
+# style at all: section headings are body paragraphs someone bolded, so the
+# importer's appearance fallback is what carves it. It also carries the
+# traps that come with that class of document — stray w:outlineLvl on
+# ordinary prose and bracketed instructions (copy-paste residue that says
+# nothing about structure), a tab-separated label/value header block above
+# the first heading, underlined test-name paragraphs, bracketed authoring
+# instructions, and the merged-cell score tables (gridSpan and vMerge) that
+# both halves of the pipeline read as rectangles.
+TEMPLATE_C_LIKE_DOCUMENT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p w:rsidR="00C10001"><w:pPr><w:tabs><w:tab w:val="left" w:pos="2880"/></w:tabs></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Name of Patient</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>[child's full name]</w:t></w:r></w:p>
+<w:p w:rsidR="00C10002"><w:pPr><w:tabs><w:tab w:val="left" w:pos="2880"/></w:tabs></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Date of Birth</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>[date of birth]</w:t></w:r></w:p>
+<w:p w:rsidR="00C10003"><w:pPr><w:tabs><w:tab w:val="left" w:pos="1440"/><w:tab w:val="left" w:pos="2880"/></w:tabs></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Age</w:t></w:r><w:r><w:tab/></w:r><w:r><w:tab/></w:r><w:r><w:t>[number years, number months]</w:t></w:r></w:p>
+<w:p w:rsidR="00C10004"/>
+<w:p w:rsidR="00C10005"><w:r><w:rPr><w:b/></w:rPr><w:t>Reason for Referral</w:t></w:r></w:p>
+<w:p w:rsidR="00C10006"><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:rPr><w:i/></w:rPr><w:t>[a one sentence statement of the referral question]</w:t></w:r></w:p>
+<w:p w:rsidR="00C10007"/>
+<w:p w:rsidR="00C10008"><w:r><w:rPr><w:b/></w:rPr><w:t>Background Information</w:t></w:r></w:p>
+<w:p w:rsidR="00C10009"><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Garamond" w:hAnsi="Garamond"/></w:rPr><w:t>Summarize the family, educational, and medical background reported by the guardian.</w:t></w:r></w:p>
+<w:p w:rsidR="00C1000A"><w:r><w:rPr><w:b/></w:rPr><w:t>Assessment Procedures</w:t></w:r></w:p>
+<w:p w:rsidR="00C1000B"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>Conners Continuous Performance Test third edition (Conners CPT3)</w:t></w:r></w:p>
+<w:p w:rsidR="00C1000C"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>Vineland Adaptive Behavior Scales Third Edition (Vineland-3)</w:t></w:r></w:p>
+<w:p w:rsidR="00C1000D"><w:r><w:rPr><w:b/></w:rPr><w:t>Results</w:t></w:r></w:p>
+<w:p w:rsidR="00C1000E"><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:r><w:rPr><w:i/></w:rPr><w:t>[delete the subsections of the tests that were not administered]</w:t></w:r></w:p>
+<w:tbl>
+<w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="4675"/><w:gridCol w:w="4675"/></w:tblGrid>
+<w:tr><w:tc><w:tcPr><w:shd w:val="clear" w:fill="D9D9D9"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Conners CPT3 Scale</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:shd w:val="clear" w:fill="D9D9D9"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>T-Score</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:p><w:r><w:rPr><w:rFonts w:ascii="Garamond" w:hAnsi="Garamond"/></w:rPr><w:t>Detectability</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>--</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>
+<w:p w:rsidR="00C1000F"/>
+<w:tbl>
+<w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="4675"/><w:gridCol w:w="4675"/></w:tblGrid>
+<w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>BASC-3 Parent Rating Scales</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:p><w:r><w:t>Externalizing Problems</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>--</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>
+<w:p w:rsidR="00C10010"/>
+<w:tbl>
+<w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="4675"/><w:gridCol w:w="4675"/></w:tblGrid>
+<w:tr><w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>BRIEF2 Composite Summary</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Behavior Regulation Index</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:tcPr><w:vMerge w:val="continue"/></w:tcPr><w:p/></w:tc><w:tc><w:p><w:r><w:t>Emotion Regulation Index</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>
+<w:p w:rsidR="00C10011"><w:r><w:rPr><w:b/></w:rPr><w:t>Summary and Clinical Interpretation</w:t></w:r></w:p>
+<w:p w:rsidR="00C10012"><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Garamond" w:hAnsi="Garamond"/></w:rPr><w:t>Integrate the findings above into a clinical formulation of the referral question.</w:t></w:r></w:p>
+<w:p w:rsidR="00C10013"/>
+<w:p w:rsidR="00C10014"><w:r><w:rPr><w:b/></w:rPr><w:t>Recommendations</w:t></w:r></w:p>
+<w:p w:rsidR="00C10015"><w:r><w:rPr><w:rFonts w:ascii="Garamond" w:hAnsi="Garamond"/></w:rPr><w:t>List the recommendations that follow from the results reported above.</w:t></w:r></w:p>
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>
+</w:body>
+</w:document>
+"""
+
 # A fill-in form built from a content control: every paragraph sits inside
 # <w:sdt><w:sdtContent>, so no flow span is a direct body child.
 CONTENT_CONTROLS_DOCUMENT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -117,4 +173,5 @@ def build(name: str, document_xml: str) -> None:
 if __name__ == "__main__":
     build("clinical-eval.docx", CLINICAL_DOCUMENT)
     build("content-controls.docx", CONTENT_CONTROLS_DOCUMENT)
-    print("wrote clinical-eval.docx, content-controls.docx")
+    build("template-c-like.docx", TEMPLATE_C_LIKE_DOCUMENT)
+    print("wrote clinical-eval.docx, content-controls.docx, template-c-like.docx")

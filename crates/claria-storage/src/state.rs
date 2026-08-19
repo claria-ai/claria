@@ -37,7 +37,7 @@ where
     };
     let value: T = serde_json::from_slice(&output.body).map_err(StorageError::from)?;
     validate(&value).map_err(|reason| StorageError::InvalidState {
-        key: key.to_string(),
+        key: key.into(),
         reason,
     })?;
     Ok((value, output.etag.unwrap_or_default()))

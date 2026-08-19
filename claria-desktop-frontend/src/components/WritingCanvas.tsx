@@ -1,4 +1,12 @@
-import { memo, useEffect, useRef, type ElementType } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ElementType,
+} from "react";
 import { InlineMarkdown, MarkdownBlock } from "./Markdown";
 import type {
   ReportBlock,
@@ -8,15 +16,54 @@ import type {
   ReportWorkspaceView,
 } from "../lib/tauri";
 import {
+  cloneBlock,
   moveItem,
   newReportSection,
   newReportTable,
 } from "../lib/writingWorkspace";
 import {
+  overlaySections,
+  type DraftRunUiState,
+  type SectionUiState,
+  type SectionUiStatus,
+} from "../lib/draftRun";
+import { mayAutoScroll } from "../lib/scroll";
+import {
   reportBlockReferencePreview,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
 import AgentThrobber from "./AgentThrobber";
+import Modal from "./Modal";
+import ProgressBar from "./ProgressBar";
+import StatusChip, { type StatusChipTone } from "./StatusChip";
+
+/** How long a landed section keeps its chip before it fades out. */
+const DRAFTED_CHIP_MS = 2000;
+
+/**
+ * The left edge that marks a section's place in a run. Complete Tailwind
+ * literals: a class name assembled from a status would compile to nothing.
+ */
+const SECTION_EDGE: Record<SectionUiStatus, string> = {
+  pending: "border-l-2 border-gray-200 pl-4",
+  drafting: "border-l-2 border-blue-400 pl-4",
+  drafted: "border-l-2 border-emerald-300 pl-4",
+  failed: "border-l-2 border-red-400 pl-4",
+  skipped: "border-l-2 border-gray-200 pl-4",
+  kept: "border-l-2 border-gray-200 pl-4",
+};
+
+const SECTION_CHIP: Record<
+  SectionUiStatus,
+  { tone: StatusChipTone; label: string; animated?: boolean }
+> = {
+  pending: { tone: "neutral", label: "Waiting" },
+  drafting: { tone: "progress", label: "Writing", animated: true },
+  drafted: { tone: "success", label: "Drafted" },
+  failed: { tone: "danger", label: "Failed" },
+  skipped: { tone: "muted", label: "Skipped" },
+  kept: { tone: "neutral", label: "Unchanged" },
+};
 
 /**
  * The accepted-report canvas. Memoized — the writer page re-renders on every
@@ -43,6 +90,18 @@ function WritingCanvas({
   status,
   validationErrors,
   agentActivity,
+  run,
+  runError,
+  canStopRun = false,
+  onStopRun,
+  onResumeRun,
+  onKeepPartialDraft,
+  onDiscardRun,
+  findingCounts,
+  onOpenFindings,
+  onReviewDraft,
+  canReviewDraft = false,
+  reviewing = false,
 }: {
   workspace: ReportWorkspaceView;
   edit: ReportDraftEdit;
@@ -63,8 +122,76 @@ function WritingCanvas({
   status: string | null;
   validationErrors: string[];
   agentActivity?: { label: string; detail?: string } | null;
+  /** Live or resumable drafting-run state. Referentially stable per run. */
+  run?: DraftRunUiState | null;
+  /** The error a failed run reported, shown above the outcome line. */
+  runError?: string | null;
+  canStopRun?: boolean;
+  onStopRun?: () => void;
+  /** Take the reader to the Draft run pane to decide how it picks back up. */
+  onResumeRun?: () => void;
+  onKeepPartialDraft?: () => void;
+  onDiscardRun?: () => void;
+  /**
+   * Open findings per section, from the findings themselves rather than from
+   * run state — a review can be long over by the time the reader looks.
+   */
+  findingCounts?: ReadonlyMap<string, number>;
+  /** Take the reader to that section's cards in the Draft run pane. */
+  onOpenFindings?: (sectionId: string) => void;
+  /** The compact entry point, passed only when no run pane is showing. */
+  onReviewDraft?: () => void;
+  canReviewDraft?: boolean;
+  reviewing?: boolean;
 }) {
   const pending = workspace.pending_proposal !== null;
+  const sectionStates = run?.sections;
+
+  // Sections land in the preview as they become durable. The workspace object
+  // stays replace-only: the overlay is derived, and the command's final
+  // workspace clears it.
+  const liveContent = useMemo(() => {
+    const base = workspace.draft.content;
+    if (!run) return base;
+    const overlaid = overlaySections(base, run.sections);
+    return run.title && run.title !== overlaid.title
+      ? { ...overlaid, title: run.title }
+      : overlaid;
+  }, [run, workspace.draft.content]);
+
+  /**
+   * The section the viewport follows: the first one still being written, in
+   * the order the run named them — which is the plan's order, because that is
+   * the order branches are handed out in.
+   *
+   * A fan-out has several sections writing at once, so this is a choice. The
+   * earliest unfinished one is the only target that moves monotonically down
+   * the document: it changes only when it lands, and then to the next one
+   * still open. Following the newest branch to start would throw the viewport
+   * backwards and forwards across the report several times per section.
+   */
+  const draftingSectionId = useMemo(() => {
+    if (!run) return null;
+    for (const [sectionId, state] of run.sections) {
+      if (state.status === "drafting") return sectionId;
+    }
+    return null;
+  }, [run]);
+
+  const scrollBoxRef = useRef<HTMLDivElement | null>(null);
+  const lastUserScrollRef = useRef<number | null>(null);
+  const noteUserScroll = useCallback(() => {
+    lastUserScrollRef.current = Date.now();
+  }, []);
+
+  useEffect(() => {
+    if (!draftingSectionId) return;
+    if (!mayAutoScroll(lastUserScrollRef.current, Date.now())) return;
+    const target = scrollBoxRef.current?.querySelector(
+      `[data-section-id="${draftingSectionId}"]`
+    );
+    target?.scrollIntoView?.({ block: "center" });
+  }, [draftingSectionId]);
 
   function updateSection(index: number, section: ReportSectionEdit) {
     const sections = [...edit.sections];
@@ -95,6 +222,30 @@ function WritingCanvas({
     ? `${exportStatusLabel(workspace.last_export.status)} revision ${workspace.last_export.revision} · ${formatTimestamp(workspace.last_export.attempted_at)}`
     : null;
 
+  // Skipped sections never reach the .docx, so the export line says how many
+  // the accepted revision holds back.
+  const skippedSectionCount = workspace.draft.content.sections.filter(
+    (section) => section.skipped
+  ).length;
+  const skippedExportNote =
+    skippedSectionCount === 0
+      ? ""
+      : skippedSectionCount === 1
+        ? " · 1 skipped section was left out"
+        : ` · ${skippedSectionCount} skipped sections were left out`;
+
+  // The edit buffer carries no template copy, so the editor reads each
+  // section's immutable copy off the accepted draft by section ID.
+  const templateBlocksBySection = useMemo(() => {
+    const copies = new Map<string, ReportBlock[]>();
+    for (const section of workspace.draft.content.sections) {
+      if (section.template_blocks && section.template_blocks.length > 0) {
+        copies.set(section.id, section.template_blocks);
+      }
+    }
+    return copies;
+  }, [workspace.draft.content.sections]);
+
   return (
     <section
       aria-label="Accepted report draft"
@@ -108,6 +259,16 @@ function WritingCanvas({
             {dirty ? " · Unsaved changes" : " · Saved"}
           </p>
         </div>
+        {onReviewDraft && (
+          <button
+            type="button"
+            onClick={onReviewDraft}
+            disabled={!canReviewDraft}
+            className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50"
+          >
+            {reviewing ? "Reviewing…" : "Review draft"}
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpenRevisions}
@@ -169,6 +330,65 @@ function WritingCanvas({
       </div>
 
       <div className="px-5 pt-3 space-y-2">
+        {run?.outcome ? (
+          <DraftRunBanner
+            run={run}
+            error={runError ?? null}
+            busy={busy}
+            onResume={onResumeRun}
+            onKeepPartial={onKeepPartialDraft}
+            onDiscard={onDiscardRun}
+          />
+        ) : (
+          run?.live && (
+            <div
+              className="flex items-end gap-3"
+              data-testid="draft-run-progress"
+            >
+              {/* No denominator, no bar: until the pass counting sections
+                  says how many there are, the throbber stands alone rather
+                  than a percentage nobody can stand behind. */}
+              {run.total !== null ? (
+                <ProgressBar
+                  className="flex-1"
+                  label="Report sections drafted"
+                  value={run.drafted}
+                  max={run.total}
+                  valueText={`${run.drafted} of ${run.total} drafted`}
+                />
+              ) : (
+                run.planTotal !== null && (
+                  <ProgressBar
+                    className="flex-1"
+                    label="Report sections planned"
+                    value={run.planned}
+                    max={run.planTotal}
+                    valueText={`${run.planned} of ${run.planTotal} planned`}
+                  />
+                )
+              )}
+              {/* The bar stops moving while a call is re-sent, so the strip
+                  says why rather than leaving the reader to guess. */}
+              {run.retrying && (
+                <StatusChip
+                  tone="warning"
+                  animated
+                  label={`Reconnecting — attempt ${run.retrying.attempt} of ${run.retrying.maxAttempts}`}
+                />
+              )}
+              {onStopRun && (
+                <button
+                  type="button"
+                  onClick={onStopRun}
+                  disabled={!canStopRun}
+                  className="ml-auto px-2.5 py-1 text-xs font-medium text-gray-600 rounded-md hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50"
+                >
+                  {run.stopping ? "Stopping…" : "Stop run"}
+                </button>
+              )}
+            </div>
+          )
+        )}
         {agentActivity && (
           <AgentThrobber
             label={agentActivity.label}
@@ -177,12 +397,18 @@ function WritingCanvas({
         )}
         {(status || persistedExportStatus) && (
           <p role="status" aria-live="polite" className="text-xs text-gray-600">
-            {status ?? persistedExportStatus}
+            {`${status ?? persistedExportStatus}${skippedExportNote}`}
           </p>
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div
+        ref={scrollBoxRef}
+        onWheel={noteUserScroll}
+        onTouchMove={noteUserScroll}
+        onKeyDown={noteUserScroll}
+        className="flex-1 overflow-y-auto p-6"
+      >
         <div className="max-w-3xl mx-auto bg-white min-h-full border border-gray-200 shadow-sm rounded-sm px-10 py-12 select-text">
           {editing ? (
             <>
@@ -209,12 +435,16 @@ function WritingCanvas({
                 updateBlock={updateBlock}
                 removeBlock={removeBlock}
                 onReference={onReference}
+                templateBlocksBySection={templateBlocksBySection}
               />
             </>
           ) : (
             <ReportDocument
-              content={workspace.draft.content}
+              content={liveContent}
               onReference={onReference}
+              sectionStates={sectionStates}
+              findingCounts={findingCounts}
+              onOpenFindings={onOpenFindings}
             />
           )}
         </div>
@@ -226,10 +456,18 @@ function WritingCanvas({
 export function ReportDocument({
   content,
   onReference,
+  sectionStates,
+  findingCounts,
+  onOpenFindings,
   testId = "accepted-report-canvas",
 }: {
   content: ReportContent;
   onReference?: (reference: WritingBlockReference) => void;
+  /** Per-section run state, when a drafting run owns this report. */
+  sectionStates?: ReadonlyMap<string, SectionUiState>;
+  /** Open findings per section, for the amber flag chips. */
+  findingCounts?: ReadonlyMap<string, number>;
+  onOpenFindings?: (sectionId: string) => void;
   testId?: string;
 }) {
   return (
@@ -246,85 +484,422 @@ export function ReportDocument({
         </div>
       ) : (
         <div className="space-y-8">
-          {content.sections.map((section) => (
-            <section key={section.id}>
-              {section.skipped ? (
-                <div data-testid="deferred-section">
-                  <h2 className="text-xl font-semibold text-gray-400 mb-1">
-                    <InlineMarkdown text={section.heading} />
-                  </h2>
-                  <p className="text-xs text-gray-400 italic">
-                    Deferred — not written yet. This section is left out of
-                    exports until content is written into it.
-                  </p>
-                </div>
-              ) : (
-              <>
-              <h2 className="text-xl font-semibold text-gray-900 mb-3">
-                <InlineMarkdown text={section.heading} />
-              </h2>
-              <div className="space-y-3 text-sm leading-6 text-gray-700">
-                {section.blocks.map((block, blockIndex) => {
-                  if (block.kind === "paragraph") {
-                    return (
-                      <ParagraphDisplay
-                        key={blockIndex}
-                        text={block.text}
-                        referenceLabel={`Reference ${section.heading}, paragraph ${blockIndex + 1} in Writing chat`}
-                        onReference={
-                          onReference
-                            ? () =>
-                                onReference({
-                                  kind: "paragraph",
-                                  sectionId: section.id,
-                                  blockIndex,
-                                  sectionHeading: section.heading,
-                                  preview: reportBlockReferencePreview(block),
-                                })
-                            : undefined
-                        }
-                      />
-                    );
+          {content.sections.map((section) => {
+            const runState = sectionStates?.get(section.id) ?? null;
+            const chip = runState ? SECTION_CHIP[runState.status] : null;
+            const findings = findingCounts?.get(section.id) ?? 0;
+            const flag =
+              findings > 0
+                ? {
+                    count: findings,
+                    onOpen: onOpenFindings
+                      ? () => onOpenFindings(section.id)
+                      : undefined,
                   }
-                  if (block.kind === "bullet_list") {
-                    return (
-                      <ul key={blockIndex} className="list-disc pl-6 space-y-1">
-                        {block.items.map((item, itemIndex) => (
-                          <li key={itemIndex}>
-                            <MarkdownBlock source={item} variant="document-compact" />
-                          </li>
-                        ))}
-                      </ul>
-                    );
-                  }
-                  return (
-                    <ReportTable
-                      key={blockIndex}
-                      table={block}
-                      referenceLabel={`Reference ${section.heading}, table ${blockIndex + 1} in Writing chat`}
-                      onReference={
-                        onReference
-                          ? () =>
-                              onReference({
-                                kind: "table",
-                                sectionId: section.id,
-                                blockIndex,
-                                sectionHeading: section.heading,
-                                preview: reportBlockReferencePreview(block),
-                              })
+                : null;
+            return (
+              <section
+                key={section.id}
+                data-section-id={section.id}
+                data-section-status={runState?.status}
+                className={runState ? SECTION_EDGE[runState.status] : undefined}
+              >
+                {section.skipped ? (
+                  <div data-testid="deferred-section">
+                    <SectionHeading
+                      heading={section.heading}
+                      muted
+                      chip={chip ?? { tone: "muted", label: "Skipped" }}
+                      flag={flag}
+                    />
+                    <p className="text-xs text-gray-400 italic">
+                      Skipped — kept from the template for reference. Not
+                      included in the exported document.
+                    </p>
+                    {section.template_blocks &&
+                      section.template_blocks.length > 0 && (
+                        <SkippedSectionBody
+                          blocks={section.template_blocks}
+                          sectionHeading={section.heading}
+                        />
+                      )}
+                  </div>
+                ) : (
+                  <>
+                    <SectionHeading
+                      heading={section.heading}
+                      chip={chip}
+                      flag={flag}
+                    />
+                    {runState?.status === "failed" && runState.error && (
+                      <p
+                        data-testid="section-failure"
+                        className="mb-2 text-xs text-red-700"
+                      >
+                        {runState.error}
+                      </p>
+                    )}
+                    <div
+                      className={
+                        runState?.status === "drafting"
+                          ? "opacity-60 transition-opacity"
                           : undefined
                       }
-                    />
-                  );
-                })}
-              </div>
-              </>
-              )}
-            </section>
-          ))}
+                    >
+                      <SectionBlocks
+                        blocks={section.blocks}
+                        sectionId={section.id}
+                        sectionHeading={section.heading}
+                        onReference={onReference}
+                      />
+                    </div>
+                  </>
+                )}
+              </section>
+            );
+          })}
         </div>
       )}
     </article>
+  );
+}
+
+/**
+ * A section heading with room for one run-state chip beside it. A landed
+ * section's chip fades out once it has been read; the edge tint stays, so the
+ * document still shows what the run touched after the chips have gone.
+ */
+function SectionHeading({
+  heading,
+  chip,
+  flag = null,
+  muted = false,
+}: {
+  heading: string;
+  chip: { tone: StatusChipTone; label: string; animated?: boolean } | null;
+  /** Open review findings against this section, and the way to them. */
+  flag?: { count: number; onOpen?: () => void } | null;
+  muted?: boolean;
+}) {
+  const flagLabel = flag
+    ? `${flag.count} finding${flag.count === 1 ? "" : "s"}`
+    : "";
+  return (
+    <div className="mb-3 flex items-baseline gap-2">
+      <h2
+        className={
+          muted
+            ? "text-xl font-semibold text-gray-400"
+            : "text-xl font-semibold text-gray-900"
+        }
+      >
+        <InlineMarkdown text={heading} />
+      </h2>
+      {chip &&
+        (chip.label === "Drafted" ? (
+          <FadingStatusChip tone={chip.tone} label={chip.label} />
+        ) : (
+          <StatusChip
+            tone={chip.tone}
+            label={chip.label}
+            animated={chip.animated}
+          />
+        ))}
+      {flag &&
+        (flag.onOpen ? (
+          <button
+            type="button"
+            data-testid="section-findings-flag"
+            aria-label={`Show ${flagLabel} for ${heading}`}
+            onClick={flag.onOpen}
+            className="rounded-full"
+          >
+            <StatusChip tone="warning" label={flagLabel} />
+          </button>
+        ) : (
+          <StatusChip tone="warning" label={flagLabel} />
+        ))}
+    </div>
+  );
+}
+
+function FadingStatusChip({
+  tone,
+  label,
+}: {
+  tone: StatusChipTone;
+  label: string;
+}) {
+  // Mount-scoped: a section leaving `drafted` swaps this component out, so a
+  // section written twice gets a fresh chip and a fresh timer.
+  const [faded, setFaded] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setFaded(true), DRAFTED_CHIP_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  return (
+    <StatusChip
+      tone={tone}
+      label={label}
+      className={
+        faded
+          ? "opacity-0 transition-opacity duration-700"
+          : "opacity-100 transition-opacity duration-700"
+      }
+    />
+  );
+}
+
+/**
+ * What an interrupted run left behind, and the three ways out of it. Every
+ * sentence here is about durable state: the sections it names are already
+ * saved, and the ones it does not are untouched.
+ */
+function DraftRunBanner({
+  run,
+  error,
+  busy,
+  onResume,
+  onKeepPartial,
+  onDiscard,
+}: {
+  run: DraftRunUiState;
+  error: string | null;
+  busy: boolean;
+  onResume?: () => void;
+  onKeepPartial?: () => void;
+  onDiscard?: () => void;
+}) {
+  const [confirming, setConfirming] = useState<"keep" | "discard" | null>(null);
+  const total = run.total ?? run.sections.size;
+
+  return (
+    <div
+      data-testid="draft-run-banner"
+      className="rounded-md border border-amber-200 bg-amber-50 p-3"
+    >
+      {run.outcome === "failed" && error && (
+        <p className="mb-1 text-xs font-semibold text-red-700">{error}</p>
+      )}
+      <p className="text-xs text-amber-900">
+        {`Stopped — ${run.drafted} of ${total} sections drafted and saved. Undone sections are unchanged.`}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {onResume && (
+          <button
+            type="button"
+            onClick={onResume}
+            disabled={busy}
+            className="rounded-md bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+          >
+            Start back up
+          </button>
+        )}
+        {onKeepPartial && (
+          <button
+            type="button"
+            onClick={() => setConfirming("keep")}
+            disabled={busy}
+            className="rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+          >
+            Keep partial draft
+          </button>
+        )}
+        {onDiscard && (
+          <button
+            type="button"
+            onClick={() => setConfirming("discard")}
+            disabled={busy}
+            className="px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 disabled:opacity-50"
+          >
+            Discard run
+          </button>
+        )}
+      </div>
+
+      {confirming === "keep" && (
+        <Modal
+          open
+          title="Keep the partial draft?"
+          onClose={() => setConfirming(null)}
+          className="max-w-lg p-6"
+        >
+          <p className="text-sm leading-6 text-gray-600">
+            Undone sections will be marked skipped and kept from the template
+            for reference. The sections the run wrote are saved as a new
+            revision, and the run itself is closed.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirming(null)}
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirming(null);
+                onKeepPartial?.();
+              }}
+              className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+            >
+              Keep partial draft
+            </button>
+          </div>
+        </Modal>
+      )}
+      {confirming === "discard" && (
+        <Modal
+          open
+          title="Discard this drafting run?"
+          onClose={() => setConfirming(null)}
+          className="max-w-lg p-6"
+        >
+          <p className="text-sm leading-6 text-gray-600">
+            The sections this run wrote are thrown away and cannot be picked
+            back up. The accepted report is left exactly as it is.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirming(null)}
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirming(null);
+                onDiscard?.();
+              }}
+              className="rounded-md bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-800"
+            >
+              Discard run
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A section body rendered with the document block renderers. Skipped sections
+ * reuse it for their greyed template copy, so the reference copy and real
+ * content can never drift apart.
+ */
+function SectionBlocks({
+  blocks,
+  sectionId,
+  sectionHeading,
+  onReference,
+  muted = false,
+}: {
+  blocks: ReportBlock[];
+  /** `null` for a section the editor has not saved yet. */
+  sectionId: string | null;
+  sectionHeading: string;
+  onReference?: (reference: WritingBlockReference) => void;
+  /** Drop the body text colour so the muted wrapper's grey shows through. */
+  muted?: boolean;
+}) {
+  // Content that will not be exported cannot be cited, so a muted copy — and
+  // any section without a saved ID — renders without the reference buttons.
+  const referencing =
+    onReference && sectionId && !muted ? { onReference, sectionId } : null;
+
+  return (
+    <div
+      className={
+        muted
+          ? "space-y-3 text-sm leading-6"
+          : "space-y-3 text-sm leading-6 text-gray-700"
+      }
+    >
+      {blocks.map((block, blockIndex) => {
+        if (block.kind === "paragraph") {
+          return (
+            <ParagraphDisplay
+              key={blockIndex}
+              text={block.text}
+              referenceLabel={`Reference ${sectionHeading}, paragraph ${blockIndex + 1} in Writing chat`}
+              onReference={
+                referencing
+                  ? () =>
+                      referencing.onReference({
+                        kind: "paragraph",
+                        sectionId: referencing.sectionId,
+                        blockIndex,
+                        sectionHeading,
+                        preview: reportBlockReferencePreview(block),
+                      })
+                  : undefined
+              }
+            />
+          );
+        }
+        if (block.kind === "bullet_list") {
+          return (
+            <ul key={blockIndex} className="list-disc pl-6 space-y-1">
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>
+                  <MarkdownBlock source={item} variant="document-compact" />
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <ReportTable
+            key={blockIndex}
+            table={block}
+            referenceLabel={`Reference ${sectionHeading}, table ${blockIndex + 1} in Writing chat`}
+            onReference={
+              referencing
+                ? () =>
+                    referencing.onReference({
+                      kind: "table",
+                      sectionId: referencing.sectionId,
+                      blockIndex,
+                      sectionHeading,
+                      preview: reportBlockReferencePreview(block),
+                    })
+                : undefined
+            }
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The template copy kept under a skipped heading. The muted tone lives on this
+ * wrapper rather than on the block renderers, so the memoized Markdown leaves
+ * stay shared with real content.
+ */
+function SkippedSectionBody({
+  blocks,
+  sectionHeading,
+}: {
+  blocks: ReportBlock[];
+  sectionHeading: string;
+}) {
+  return (
+    <div
+      data-testid="skipped-template-body"
+      className="mt-3 text-gray-400 opacity-70 select-text"
+    >
+      <SectionBlocks
+        blocks={blocks}
+        sectionId={null}
+        sectionHeading={sectionHeading}
+        muted
+      />
+    </div>
   );
 }
 
@@ -443,6 +1018,7 @@ function EditableReport({
   updateBlock,
   removeBlock,
   onReference,
+  templateBlocksBySection,
 }: {
   edit: ReportDraftEdit;
   disabled: boolean;
@@ -455,6 +1031,8 @@ function EditableReport({
   ) => void;
   removeBlock: (sectionIndex: number, blockIndex: number) => void;
   onReference: (reference: WritingBlockReference) => void;
+  /** Immutable template copies from the accepted draft, keyed by section ID. */
+  templateBlocksBySection: Map<string, ReportBlock[]>;
 }) {
   return (
     <div className="space-y-8" data-testid="inline-report-editor">
@@ -467,7 +1045,10 @@ function EditableReport({
         className="text-3xl font-semibold text-center text-gray-900 mb-10"
       />
 
-      {edit.sections.map((section, sectionIndex) => (
+      {edit.sections.map((section, sectionIndex) => {
+        const templateBlocks =
+          (section.id && templateBlocksBySection.get(section.id)) || [];
+        return (
         <section
           key={section.id ?? `new-${sectionIndex}`}
           className="group/section relative"
@@ -483,10 +1064,32 @@ function EditableReport({
             className="text-xl font-semibold text-gray-900 mb-3"
           />
           {section.skipped && (
-            <p className="text-xs text-gray-400 italic mb-3" data-testid="deferred-section-editing">
-              Deferred — adding content un-defers this section; until then it
-              is left out of exports.
-            </p>
+            <div data-testid="deferred-section-editing">
+              <p className="text-xs text-gray-400 italic">
+                Skipped — kept from the template for reference. Not included in
+                the exported document.
+              </p>
+              {templateBlocks.length > 0 && (
+                <SkippedSectionBody
+                  blocks={templateBlocks}
+                  sectionHeading={section.heading}
+                />
+              )}
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() =>
+                  updateSection(sectionIndex, {
+                    ...section,
+                    skipped: false,
+                    blocks: templateBlocks.map(cloneBlock),
+                  })
+                }
+                className="mt-3 px-2.5 py-1.5 text-xs font-medium border border-gray-300 bg-white rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                Include this section
+              </button>
+            </div>
           )}
 
           <div className="absolute -right-8 top-0 opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100 flex flex-col bg-white border border-gray-200 rounded shadow-sm">
@@ -521,6 +1124,8 @@ function EditableReport({
             </button>
           </div>
 
+          {!section.skipped && (
+          <>
           <div className="space-y-3 text-sm leading-6 text-gray-700">
             {section.blocks.map((block, blockIndex) => (
               <div
@@ -670,8 +1275,11 @@ function EditableReport({
               Add table
             </button>
           </div>
+          </>
+          )}
         </section>
-      ))}
+        );
+      })}
 
       <button
         type="button"

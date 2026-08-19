@@ -4,6 +4,7 @@
 //! can exercise them directly (e.g. the bootstrap flow) without going
 //! through the Tauri command layer.
 
+pub mod async_runtime;
 pub mod audit;
 pub mod aws;
 pub mod config;

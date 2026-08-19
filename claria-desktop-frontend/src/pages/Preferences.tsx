@@ -1,4 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import {
   getPrompt,
   getWriterTrustRules,
@@ -18,9 +28,14 @@ import {
   uploadWriterTemplate,
   renameWriterTemplate,
   deleteWriterTemplate,
+  exportPreferences,
+  importPreferences,
   saveWriterLibraryPrompt,
   deleteWriterLibraryPrompt,
+  type ChatStreamMode,
   type ConfigInfo,
+  type DraftPipelinePreferences,
+  type PlanGateMode,
   type EffortPreference,
   type ModelTuningPreferences,
   type LocalBackend,
@@ -40,17 +55,180 @@ import { logFrontendEvent } from "../lib/logBridge";
 import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
+import { useSaveOnLeave } from "../lib/useSaveOnLeave";
 import { useWriterPrompts } from "../lib/useWriterPrompts";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
 import { formatDateTime, formatFileSize } from "../lib/format";
-import { promptVersions } from "../lib/versions";
+import { preferencesVersions, promptVersions } from "../lib/versions";
+import {
+  categoryOf,
+  defaultOpenPanes,
+  paneSpec,
+  searchPreferencesNav,
+  PREFERENCES_NAV,
+  WRITER_FOCUS_PANES,
+  type CategoryId,
+  type CategorySpec,
+  type PaneId,
+  type PreferenceHit,
+} from "../lib/preferencesNav";
+import {
+  loadUserContent,
+  searchUserContent,
+  type ContentHit,
+} from "../lib/preferencesSearchContent";
 import EditableName from "../components/EditableName";
+import ModelSelect from "../components/ModelSelect";
 import PreferencesSection from "../components/PreferencesSection";
-import { BackButton, TrashIcon } from "../components/icons";
+import ProgressBar from "../components/ProgressBar";
+import {
+  BackButton,
+  ComposeIcon,
+  DollarIcon,
+  MicrophoneIcon,
+  PromptIcon,
+  SearchIcon,
+  SparkleIcon,
+  TrashIcon,
+} from "../components/icons";
 import Spinner from "../components/Spinner";
 import { ErrorBanner, LoadingCard } from "../components/StateCards";
 import VersionHistoryModal from "../components/VersionHistoryModal";
 import type { Page, PreferencesWriterSection } from "../App";
+
+// ---------------------------------------------------------------------------
+// Pane plumbing: category → pane components, open state, search reveal
+// ---------------------------------------------------------------------------
+
+const CATEGORY_ICONS: Record<
+  CategorySpec["icon"],
+  ComponentType<{ className?: string }>
+> = {
+  sparkle: SparkleIcon,
+  prompt: PromptIcon,
+  compose: ComposeIcon,
+  microphone: MicrophoneIcon,
+  dollar: DollarIcon,
+};
+
+/** Accordion open state, provided by the page so search can force-open. */
+const PaneControlContext = createContext<{
+  isOpen: (id: PaneId) => boolean;
+  setOpen: (id: PaneId, open: boolean) => void;
+}>({ isOpen: () => false, setOpen: () => {} });
+
+/**
+ * The page's single read of the synced preferences.
+ *
+ * Every section that edits a synced setting needs the same `ConfigInfo`, and
+ * they all mount together — inactive categories stay mounted. Reading it per
+ * section meant one `_state/preferences.json` GET per section on every visit,
+ * plus one local config rewrite each. The page reads it once and the sections
+ * consume the result. `data` is null while a read is in flight, so a section
+ * never seeds its draft from a superseded snapshot.
+ */
+type SyncedPreferencesState = {
+  data: ConfigInfo | null;
+  loading: boolean;
+  error: string | null;
+};
+
+const SyncedPreferencesContext = createContext<SyncedPreferencesState>({
+  data: null,
+  loading: true,
+  error: null,
+});
+
+function useSyncedPreferences(): SyncedPreferencesState {
+  return useContext(SyncedPreferencesContext);
+}
+
+/** Cloud first; the local config carries a machine that has no S3 read yet. */
+function readSyncedPreferences(): Promise<ConfigInfo> {
+  return fetchCloudPreferences().catch(() => loadConfig());
+}
+
+/**
+ * What a synced section shows before that read lands — the same spinner and
+ * banner each of them used to render from its own copy of the load.
+ */
+function PendingSyncedPane({
+  paneId,
+  loadingLabel,
+  errorMessage,
+  contentClassName,
+}: {
+  paneId: PaneId;
+  loadingLabel: string;
+  errorMessage: string;
+  contentClassName?: string;
+}) {
+  const { loading, error } = useSyncedPreferences();
+  return (
+    <NavPane paneId={paneId} contentClassName={contentClassName}>
+      {loading ? (
+        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+          <Spinner />
+          <span>{loadingLabel}</span>
+        </div>
+      ) : (
+        <ErrorBanner message={error ?? errorMessage} className="" />
+      )}
+    </NavPane>
+  );
+}
+
+/**
+ * One pane of a category: the accordion card, with its title and blurb pulled
+ * from `PREFERENCES_NAV` (the single source of truth search also reads), a
+ * "This Mac" badge for machine-local panes, and the `data-pane` container
+ * search hits scroll to.
+ */
+function NavPane({
+  paneId,
+  summary,
+  testId,
+  contentClassName,
+  children,
+}: {
+  paneId: PaneId;
+  /** Small annotation rendered beside the title (current value, status). */
+  summary?: ReactNode;
+  testId?: string;
+  contentClassName?: string;
+  children: ReactNode;
+}) {
+  const spec = paneSpec(paneId);
+  const { isOpen, setOpen } = useContext(PaneControlContext);
+  const badge = spec.machineLocal ? (
+    <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+      This Mac
+    </span>
+  ) : null;
+  return (
+    <div data-pane={paneId}>
+      <PreferencesSection
+        title={spec.title}
+        summary={
+          badge || summary ? (
+            <>
+              {badge}
+              {summary}
+            </>
+          ) : undefined
+        }
+        open={isOpen(paneId)}
+        onToggle={(next) => setOpen(paneId, next)}
+        testId={testId}
+        contentClassName={contentClassName}
+        className="border border-gray-200 rounded-lg bg-white"
+      >
+        {spec.blurb && <p className="text-xs text-gray-400 mb-3">{spec.blurb}</p>}
+        {children}
+      </PreferencesSection>
+    </div>
+  );
+}
 
 export default function Preferences({
   navigate,
@@ -61,6 +239,437 @@ export default function Preferences({
   focusSection?: PreferencesWriterSection | null;
   backPage?: Page;
 }) {
+  const focusPane = focusSection ? WRITER_FOCUS_PANES[focusSection] : null;
+
+  const [activeCategory, setActiveCategory] = useState<CategoryId>(
+    focusPane ? categoryOf(focusPane) : PREFERENCES_NAV[0].id
+  );
+  const [openPanes, setOpenPanes] = useState<ReadonlySet<PaneId>>(() => {
+    const open = new Set<PaneId>(defaultOpenPanes());
+    if (focusPane) open.add(focusPane);
+    return open;
+  });
+  const setPaneOpen = useCallback((id: PaneId, open: boolean) => {
+    setOpenPanes((prev) => {
+      if (prev.has(id) === open) return prev;
+      const next = new Set(prev);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+  const paneControl = useMemo(
+    () => ({ isOpen: (id: PaneId) => openPanes.has(id), setOpen: setPaneOpen }),
+    [openPanes, setPaneOpen]
+  );
+
+  // Bumped after a preferences import or version restore; re-reads the synced
+  // file and keys the category subtree so every mounted section re-seeds from
+  // the freshly changed values.
+  const [reloadNonce, setReloadNonce] = useState(0);
+
+  // One read for the whole page, shared with every section that edits a
+  // synced setting.
+  const preferencesLoad = useAsyncLoad(readSyncedPreferences, [reloadNonce]);
+  const syncedPreferences = useMemo<SyncedPreferencesState>(
+    () => ({
+      data: preferencesLoad.loading ? null : preferencesLoad.data,
+      loading: preferencesLoad.loading,
+      error: preferencesLoad.error,
+    }),
+    [preferencesLoad.data, preferencesLoad.loading, preferencesLoad.error]
+  );
+
+  // Search over the static index, plus (opt-in) the user's saved text.
+  const [query, setQuery] = useState("");
+  const [includeSaved, setIncludeSaved] = useState(false);
+  const savedContent = useAsyncLoad(includeSaved ? loadUserContent : null, [
+    includeSaved,
+  ]);
+  const searching = query.trim() !== "";
+  const staticHits = useMemo(() => searchPreferencesNav(query), [query]);
+  const contentHits = useMemo(
+    () =>
+      includeSaved && savedContent.data
+        ? searchUserContent(savedContent.data, query)
+        : [],
+    [includeSaved, savedContent.data, query]
+  );
+
+  // A search hit (or a Writing-tab jump) lands here: category selected, pane
+  // opened, then scroll to and flash the matched control once it has painted.
+  // A focus pane can only arrive at mount — Preferences unmounts on
+  // navigation — so it seeds the initial reveal rather than an effect.
+  const [pendingReveal, setPendingReveal] = useState<{
+    paneId: PaneId;
+    anchor: string | null;
+  } | null>(focusPane ? { paneId: focusPane, anchor: null } : null);
+
+  function openHit(hit: PreferenceHit) {
+    setQuery("");
+    setActiveCategory(hit.categoryId);
+    if (hit.paneId) {
+      setPaneOpen(hit.paneId, true);
+      setPendingReveal({ paneId: hit.paneId, anchor: hit.anchor });
+    }
+  }
+
+  useEffect(() => {
+    if (!pendingReveal) return;
+    let inner = 0;
+    // Double rAF: the pane must be laid out before we can scroll to it.
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        const pane = document.querySelector(
+          `[data-pane="${pendingReveal.paneId}"]`
+        );
+        const target =
+          (pendingReveal.anchor
+            ? pane?.querySelector(
+                `[data-pref-anchor="${pendingReveal.anchor}"]`
+              )
+            : pane) ?? pane;
+        if (target instanceof HTMLElement) {
+          target.scrollIntoView?.({ behavior: "smooth", block: "center" });
+          target.classList.remove("pref-flash");
+          void target.offsetWidth;
+          target.classList.add("pref-flash");
+        }
+        setPendingReveal(null);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [pendingReveal]);
+
+  return (
+    <div className="flex h-screen">
+      {/* Sidebar: search + category list */}
+      <aside className="flex w-64 shrink-0 flex-col border-r border-gray-200 bg-gray-100/80">
+        <div className="flex items-center gap-3 p-4 pb-2">
+          <BackButton onClick={() => navigate(backPage)} />
+          <h2 className="text-lg font-bold">Preferences</h2>
+        </div>
+
+        <div className="px-3 pb-2">
+          <div className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5">
+            <SearchIcon className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setQuery("");
+              }}
+              placeholder="Search settings"
+              aria-label="Search settings"
+              className="w-full bg-transparent text-sm focus:outline-none"
+            />
+          </div>
+          <label className="mt-1.5 flex items-start gap-1.5 px-1 text-xs text-gray-500">
+            <input
+              type="checkbox"
+              checked={includeSaved}
+              onChange={(e) => setIncludeSaved(e.target.checked)}
+              className="mt-0.5"
+            />
+            Also search your prompts &amp; saved text
+          </label>
+        </div>
+
+        <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-1">
+          {PREFERENCES_NAV.map((category) => {
+            const Icon = CATEGORY_ICONS[category.icon];
+            const active = !searching && category.id === activeCategory;
+            return (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => {
+                  setQuery("");
+                  setActiveCategory(category.id);
+                }}
+                className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors ${
+                  active
+                    ? "bg-blue-600 text-white"
+                    : "text-gray-800 hover:bg-gray-200"
+                }`}
+              >
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-white ${category.tint}`}
+                >
+                  <Icon className="h-4 w-4" />
+                </span>
+                {category.title}
+              </button>
+            );
+          })}
+        </nav>
+
+        <PreferencesFileTools
+          onChanged={() => setReloadNonce((nonce) => nonce + 1)}
+        />
+
+        {/* Replaces the old cross-machine sync banner. */}
+        <p className="border-t border-gray-200 p-3 text-xs text-gray-400">
+          Settings are stored in your S3 bucket and follow you across
+          computers. Panes marked &ldquo;This Mac&rdquo; stay on this computer.
+        </p>
+      </aside>
+
+      {/* Content: search results, or the active category. Inactive categories
+          stay mounted (hidden) so each section fetches once per visit and
+          in-progress edits survive switching categories. */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-2xl p-8">
+          {searching && (
+            <SearchResults
+              query={query}
+              hits={staticHits}
+              contentHits={contentHits}
+              savedEnabled={includeSaved}
+              savedLoading={savedContent.loading}
+              savedError={savedContent.error}
+              onPick={openHit}
+            />
+          )}
+          <SyncedPreferencesContext.Provider value={syncedPreferences}>
+            <PaneControlContext.Provider value={paneControl} key={reloadNonce}>
+              {PREFERENCES_NAV.map((category) => (
+                <div
+                  key={category.id}
+                  hidden={searching || category.id !== activeCategory}
+                >
+                  <header className="mb-4">
+                    <h3 className="text-xl font-semibold text-gray-900">
+                      {category.title}
+                    </h3>
+                    <p className="text-sm text-gray-500">{category.blurb}</p>
+                  </header>
+                  <div className="space-y-4">
+                    <CategoryPanes category={category} />
+                  </div>
+                </div>
+              ))}
+            </PaneControlContext.Provider>
+          </SyncedPreferencesContext.Provider>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+/**
+ * Renders a category's panes. Consecutive panes served by one component
+ * (e.g. the three on-device transcription panes sharing engine state) mount
+ * that component once.
+ */
+function CategoryPanes({ category }: { category: CategorySpec }) {
+  const rendered = new Set<ComponentType>();
+  return (
+    <>
+      {category.panes.map((pane) => {
+        const Section = PANE_COMPONENTS[pane.id];
+        if (rendered.has(Section)) return null;
+        rendered.add(Section);
+        return <Section key={pane.id} />;
+      })}
+    </>
+  );
+}
+
+function SearchResults({
+  query,
+  hits,
+  contentHits,
+  savedEnabled,
+  savedLoading,
+  savedError,
+  onPick,
+}: {
+  query: string;
+  hits: PreferenceHit[];
+  contentHits: ContentHit[];
+  savedEnabled: boolean;
+  savedLoading: boolean;
+  savedError: string | null;
+  onPick: (hit: PreferenceHit) => void;
+}) {
+  const all: (PreferenceHit | ContentHit)[] = [...hits, ...contentHits];
+  return (
+    <div>
+      <header className="mb-4">
+        <h3 className="text-xl font-semibold text-gray-900">Search</h3>
+        <p className="text-sm text-gray-500">
+          Results for &ldquo;{query.trim()}&rdquo;
+        </p>
+      </header>
+      {all.length === 0 && !savedLoading ? (
+        <p className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-500">
+          No settings match &ldquo;{query.trim()}&rdquo;.
+        </p>
+      ) : (
+        <div
+          className="divide-y divide-gray-100 rounded-lg border border-gray-200 bg-white"
+          data-testid="pref-search-results"
+        >
+          {all.map((hit, index) => (
+            <button
+              key={`${hit.paneId ?? hit.categoryId}:${hit.anchor ?? ""}:${index}`}
+              type="button"
+              onClick={() => onPick(hit)}
+              className="flex w-full flex-col items-start gap-0.5 px-4 py-3 text-left hover:bg-blue-50"
+            >
+              <span className="text-sm font-medium text-gray-900">
+                {hit.title}
+              </span>
+              <span className="text-xs text-gray-400">{hit.context}</span>
+              {"snippet" in hit && (
+                <span className="text-xs text-gray-500">{hit.snippet}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+      {savedEnabled && savedLoading && (
+        <p className="mt-3 flex items-center gap-1.5 text-xs text-gray-400">
+          <Spinner /> Searching your saved text…
+        </p>
+      )}
+      {savedEnabled && savedError && (
+        <ErrorBanner
+          message={`Could not search saved text: ${savedError}`}
+          className="mt-3"
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Preferences file tools: export, import, and version history with diff for
+// _state/preferences.json — a support artifact and a one-file backup.
+// ---------------------------------------------------------------------------
+
+function PreferencesFileTools({ onChanged }: { onChanged: () => void }) {
+  const { setPreferredModelId } = useChatModels();
+  const [busy, setBusy] = useState<"export" | "import" | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showVersions, setShowVersions] = useState(false);
+
+  async function handleExport() {
+    setBusy("export");
+    setStatus(null);
+    setError(null);
+    try {
+      const saved = await exportPreferences();
+      if (saved) setStatus("Preferences exported.");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleImport() {
+    if (
+      !window.confirm(
+        "Replace your synced preferences with a file? The current values stay in version history."
+      )
+    ) {
+      return;
+    }
+    setBusy("import");
+    setStatus(null);
+    setError(null);
+    try {
+      const imported = await importPreferences();
+      if (imported) {
+        // The preferred model lives in app-wide context, not section state,
+        // so a remount alone would keep showing the pre-import pick.
+        setPreferredModelId(imported.preferred_model_id ?? null);
+        setStatus("Preferences imported.");
+        onChanged();
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRestored() {
+    try {
+      const info = await loadConfig();
+      setPreferredModelId(info.preferred_model_id ?? null);
+    } catch (e) {
+      logFrontendEvent("warn", `config reload after preferences restore failed: ${e}`);
+    }
+    setStatus("Previous version restored.");
+    onChanged();
+  }
+
+  const buttonClass =
+    "px-2 py-1 text-xs text-gray-600 border border-gray-300 rounded-md bg-white hover:bg-gray-50 disabled:opacity-50";
+
+  return (
+    <div className="border-t border-gray-200 p-3 space-y-2">
+      <p className="text-xs font-medium text-gray-500">Preferences file</p>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => void handleExport()}
+          disabled={busy !== null}
+          className={buttonClass}
+        >
+          {busy === "export" ? "Exporting…" : "Export…"}
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleImport()}
+          disabled={busy !== null}
+          className={buttonClass}
+        >
+          {busy === "import" ? "Importing…" : "Import…"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setStatus(null);
+            setError(null);
+            setShowVersions(true);
+          }}
+          disabled={busy !== null}
+          className={buttonClass}
+        >
+          History
+        </button>
+      </div>
+      {status && <p className="text-xs text-green-600">{status}</p>}
+      {error && <p className="text-xs text-red-600 break-words">{error}</p>}
+
+      {showVersions && (
+        <VersionHistoryModal
+          title="Preferences File Versions"
+          source={preferencesVersions()}
+          enableCompare
+          onClose={() => setShowVersions(false)}
+          onRestored={handleRestored}
+          onError={setError}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Preferred model
+// ---------------------------------------------------------------------------
+
+function PreferredModelSection() {
   const {
     models: chatModels,
     loading: chatModelsLoading,
@@ -69,11 +678,6 @@ export default function Preferences({
     setPreferredModelId,
   } = useChatModels();
 
-  // Fixed writer trust rules, displayed read-only under the writer prompt
-  // editors so nothing about how the writer runs is hidden.
-  const { data: trustRules } = useAsyncLoad(() => getWriterTrustRules(), []);
-
-  // Model preference state
   const [modelSaving, setModelSaving] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
 
@@ -92,123 +696,209 @@ export default function Preferences({
   }
 
   return (
-    <div className="max-w-2xl mx-auto p-8">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <BackButton onClick={() => navigate(backPage)} />
-        <h2 className="text-2xl font-bold">Preferences</h2>
-      </div>
+    <NavPane
+      paneId="claude.preferred-model"
+      summary={
+        preferredModelId && chatModels.length > 0 ? (
+          <span className="text-xs text-gray-400">
+            {chatModels.find((m) => m.model_id === preferredModelId)?.name ??
+              preferredModelId}
+          </span>
+        ) : undefined
+      }
+    >
+      {chatModelsLoading ? (
+        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+          <Spinner />
+          <span>Loading models...</span>
+        </div>
+      ) : chatModelsError ? (
+        <ErrorBanner message={chatModelsError} className="" />
+      ) : (
+        <>
+          <div data-pref-anchor="preferred_model">
+            <select
+              value={preferredModelId ?? ""}
+              onChange={(e) => handleModelChange(e.target.value)}
+              disabled={modelSaving}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
+            >
+              <option value="">Use first available model</option>
+              {chatModels.map((m) => (
+                <option key={m.model_id} value={m.model_id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          {modelError && <ErrorBanner message={modelError} className="mt-3" />}
+        </>
+      )}
+    </NavPane>
+  );
+}
 
-      {/* Cross-machine sync notice — these settings live in S3 and follow the
-         clinician across computers. Other running copies of Claria won't see
-         changes until restart. */}
-      <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
-        <p className="text-sm text-blue-900">
-          Shared defaults are stored in your S3 bucket so they sync across
-          computers. Local memo models, decoder controls, and hardware choices
-          are machine-local.
-        </p>
-      </div>
+/**
+ * Save-state footer for a section that saves when the user leaves it
+ * (`useSaveOnLeave`), so edits read as intentional drafts, not lost clicks.
+ */
+function SectionSaveStatus({
+  syncing,
+  dirty,
+  syncedOnce,
+}: {
+  syncing: boolean;
+  dirty: boolean;
+  syncedOnce: boolean;
+}) {
+  if (!syncing && !dirty && !syncedOnce) return null;
+  return (
+    <p className="text-xs text-gray-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
+      {syncing ? (
+        <>
+          <Spinner /> Saving...
+        </>
+      ) : dirty ? (
+        "Unsaved changes — saved when you leave this section."
+      ) : (
+        "Saved. Other computers pick this up on restart."
+      )}
+    </p>
+  );
+}
 
-      <div className="space-y-4">
-        {/* Transcription preferences section */}
-        <TranscriptionSection />
+// ---------------------------------------------------------------------------
+// Chat streaming — how much of a reply appears at a time
+// ---------------------------------------------------------------------------
 
-        {/* Managed, redacted templates used by the document writer */}
-        <WriterTemplatesSection defaultOpen={focusSection === "writer-templates"} />
+const CHAT_STREAM_OPTIONS: {
+  value: ChatStreamMode;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "paragraph",
+    label: "A paragraph at a time",
+    description:
+      "The reply appears in finished blocks. Formatting, lists, and tables are never caught half-written.",
+  },
+  {
+    value: "token",
+    label: "Word by word",
+    description:
+      "The reply appears as fast as the model produces it. Nothing arrives sooner overall — it just arrives in smaller pieces.",
+  },
+  {
+    value: "off",
+    label: "All at once",
+    description:
+      "Nothing appears until the reply is finished. Longest wait, no movement on screen.",
+  },
+];
 
-        {/* Saved steering prompts that prefill writer instructions */}
-        <WriterPromptsSection defaultOpen={focusSection === "writer-prompts"} />
+function ChatStreamingSection() {
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <ChatStreamingBody initial={data.chat_streaming} />
+  ) : (
+    <PendingSyncedPane
+      paneId="claude.chat-streaming"
+      loadingLabel="Loading chat streaming..."
+      errorMessage="Could not load the chat streaming setting."
+      contentClassName="border-t border-gray-100 p-4 space-y-3"
+    />
+  );
+}
 
-        {/* Agentic document-writer guardrails */}
-        <ReportAuthoringSection />
+function ChatStreamingBody({ initial }: { initial: ChatStreamMode }) {
+  const [snapshot, setSnapshot] = useState(initial);
+  const [draft, setDraft] = useState(initial);
+  const [syncing, setSyncing] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [syncedOnce, setSyncedOnce] = useState(false);
 
-        {/* System Prompt section */}
-        <PromptEditor
-          promptName="system-prompt"
-          label="System Prompt"
-          description="Instructions given to the AI assistant at the start of every chat session."
-          defaultOpen
-        />
+  const dirty = snapshot !== draft;
 
-        {/* PDF Extraction Prompt section */}
-        <PromptEditor
-          promptName="pdf-extraction"
-          label="PDF Extraction Prompt"
-          description="Instructions used when converting uploaded PDF and DOCX files to structured Markdown."
-        />
+  const sync = useCallback(async (next: ChatStreamMode) => {
+    setSyncing(true);
+    setSaveError(null);
+    try {
+      const updated = await savePreferencesPatch({ chat_streaming: next });
+      setSnapshot(updated.chat_streaming);
+      setSyncedOnce(true);
+    } catch (e) {
+      // Also logged through the bridge: a flush finishing after unmount has
+      // no UI left to show the banner in.
+      logFrontendEvent("error", `chat streaming save failed: ${e}`);
+      setSaveError(String(e));
+    } finally {
+      setSyncing(false);
+    }
+  }, []);
 
-        {/* Writer prompt sections — the editable bodies of the document
-            writer's system prompts. Claria always appends fixed trust rules,
-            shown read-only so nothing about how the writer runs is hidden. */}
-        <PromptEditor
-          promptName="report-system"
-          label="Writer Prompt"
-          description="Instructions given to the document writer for targeted edits and proposals."
-          fixedRules={trustRules?.targeted}
-        />
-        <PromptEditor
-          promptName="report-full-draft"
-          label="Whole-Report Prompt"
-          description="Instructions used when filling the complete report in one action."
-          fixedRules={trustRules?.full_draft}
-        />
+  // The draft that still needs saving; null when clean or already flushed.
+  const pendingRef = useRef<ChatStreamMode | null>(null);
+  useEffect(() => {
+    pendingRef.current = dirty ? draft : null;
+  }, [dirty, draft]);
+  const flush = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    pendingRef.current = null;
+    void sync(pending);
+  }, [sync]);
+  const { containerRef, onContainerBlur } = useSaveOnLeave(flush);
 
-        {/* Machine-local transcribe.cpp models and inference controls */}
-        <LocalTranscriptionSection />
+  const active = CHAT_STREAM_OPTIONS.find((option) => option.value === draft);
 
-        {/* Cost Explorer section */}
-        <CostExplorerSection />
-
-        {/* Preferred Model section */}
-        <PreferencesSection
-          title="Preferred Model"
-          summary={
-            preferredModelId && chatModels.length > 0 ? (
-              <span className="text-xs text-gray-400">
-                {chatModels.find((m) => m.model_id === preferredModelId)
-                  ?.name ?? preferredModelId}
+  return (
+    <NavPane
+      paneId="claude.chat-streaming"
+      summary={
+        active ? (
+          <span className="text-xs text-gray-400">{active.label}</span>
+        ) : undefined
+      }
+      contentClassName="border-t border-gray-100 p-4 space-y-3"
+    >
+      <div ref={containerRef} onBlur={onContainerBlur} className="space-y-3">
+        <div className="space-y-3" data-pref-anchor="chat_streaming">
+          {CHAT_STREAM_OPTIONS.map((option) => (
+            <label key={option.value} className="flex items-start gap-2">
+              <input
+                type="radio"
+                name="chat-streaming"
+                value={option.value}
+                checked={draft === option.value}
+                onChange={() => setDraft(option.value)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm text-gray-700 block">
+                  {option.label}
+                </span>
+                <span className="text-xs text-gray-500 block">
+                  {option.description}
+                </span>
               </span>
-            ) : undefined
-          }
-        >
-            {chatModelsLoading ? (
-              <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-                <Spinner />
-                <span>Loading models...</span>
-              </div>
-            ) : chatModelsError ? (
-              <ErrorBanner message={chatModelsError} className="" />
-            ) : (
-              <>
-                <select
-                  value={preferredModelId ?? ""}
-                  onChange={(e) => handleModelChange(e.target.value)}
-                  disabled={modelSaving}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
-                >
-                  <option value="">Use first available model</option>
-                  {chatModels.map((m) => (
-                    <option key={m.model_id} value={m.model_id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-                {modelError && (
-                  <ErrorBanner message={modelError} className="mt-3" />
-                )}
-                <p className="text-xs text-gray-400 mt-2">
-                  Applies to new chat sessions. Existing chats keep the model
-                  they were started with.
-                </p>
-              </>
-            )}
-        </PreferencesSection>
-
-        {/* Opt-in model tuning knobs (adaptive reasoning, effort, temperature) */}
-        <ModelTuningSection />
+            </label>
+          ))}
+        </div>
+        {saveError ? (
+          <ErrorBanner
+            message={`Could not save chat streaming: ${saveError}`}
+            onRetry={() => void sync(draft)}
+            className=""
+          />
+        ) : (
+          <SectionSaveStatus
+            syncing={syncing}
+            dirty={dirty}
+            syncedOnce={syncedOnce}
+          />
+        )}
       </div>
-    </div>
+    </NavPane>
   );
 }
 
@@ -225,48 +915,36 @@ const EFFORT_OPTIONS: { value: "" | EffortPreference; label: string }[] = [
 ];
 
 function ModelTuningSection() {
-  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
-  const [draft, setDraft] = useState<ModelTuningPreferences | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <ModelTuningBody initial={data} />
+  ) : (
+    <PendingSyncedPane
+      paneId="claude.model-tuning"
+      loadingLabel="Loading model tuning..."
+      errorMessage="Could not load model tuning preferences."
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    />
+  );
+}
+
+function ModelTuningBody({ initial }: { initial: ConfigInfo }) {
+  const [snapshot, setSnapshot] = useState<ConfigInfo>(initial);
+  const [draft, setDraft] = useState<ModelTuningPreferences>(
+    initial.model_tuning
+  );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const info = await fetchCloudPreferences();
-      setSnapshot(info);
-      setDraft(info.model_tuning);
-    } catch (e) {
-      try {
-        const info = await loadConfig();
-        setSnapshot(info);
-        setDraft(info.model_tuning);
-      } catch (fallbackError) {
-        setLoadError(String(fallbackError ?? e));
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
   const dirty =
-    snapshot != null &&
-    draft != null &&
     JSON.stringify(snapshot.model_tuning) !== JSON.stringify(draft);
   const temperatureInvalid =
-    draft?.temperature != null &&
+    draft.temperature != null &&
     (draft.temperature < 0 || draft.temperature > 1);
 
   async function save() {
-    if (!snapshot || !draft || temperatureInvalid) return;
+    if (temperatureInvalid) return;
     setSaving(true);
     setSaveError(null);
     setSaved(false);
@@ -284,8 +962,8 @@ function ModelTuningSection() {
   }
 
   return (
-    <PreferencesSection
-      title="Model Tuning"
+    <NavPane
+      paneId="claude.model-tuning"
       summary={
         draft && (draft.reasoning_enabled || draft.effort || draft.temperature != null) ? (
           <span className="text-xs text-gray-400">
@@ -301,124 +979,106 @@ function ModelTuningSection() {
       }
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
-      {loading ? (
-        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-          <Spinner />
-          <span>Loading model tuning...</span>
-        </div>
-      ) : !draft ? (
+      <label
+        className="flex items-start gap-2"
+        data-pref-anchor="reasoning_enabled"
+      >
+        <input
+          type="checkbox"
+          checked={draft.reasoning_enabled}
+          onChange={(e) => {
+            setSaved(false);
+            setDraft({ ...draft, reasoning_enabled: e.target.checked });
+          }}
+          className="mt-0.5"
+        />
+        <span>
+          <span className="text-sm text-gray-700 block">
+            Adaptive reasoning
+          </span>
+          <span className="text-xs text-gray-500 block">
+            Lets supported models (Claude 4.6 and newer) think before
+            answering, which can improve report quality. Reasoning tokens
+            bill as output and count against the response budget, so
+            turns cost more and take longer.
+          </span>
+        </span>
+      </label>
+
+      <div data-pref-anchor="effort">
+        <label className="text-sm text-gray-700 block mb-1">Effort</label>
+        <select
+          value={draft.effort ?? ""}
+          onChange={(e) => {
+            setSaved(false);
+            setDraft({
+              ...draft,
+              effort: (e.target.value || null) as EffortPreference | null,
+            });
+          }}
+          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        >
+          {EFFORT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-500 mt-1">
+          How much reasoning supported models put into each response.
+          Sent to Opus 4.5 and every model from Claude 4.6 on.
+        </p>
+      </div>
+
+      <div data-pref-anchor="temperature">
+        <label className="text-sm text-gray-700 block mb-1">
+          Temperature
+        </label>
+        <input
+          type="number"
+          min={0}
+          max={1}
+          step={0.1}
+          placeholder="Model default"
+          value={draft.temperature ?? ""}
+          onChange={(e) => {
+            setSaved(false);
+            setDraft({
+              ...draft,
+              temperature:
+                e.target.value === "" ? null : Number(e.target.value),
+            });
+          }}
+          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          0.0 to 1.0; leave blank for the model default. Only sent to
+          model generations that accept it (through Claude 4.6) — newer
+          models always use their own default.
+        </p>
+      </div>
+
+      {temperatureInvalid && (
         <ErrorBanner
-          message={loadError ?? "Could not load model tuning preferences."}
+          message="Temperature must be between 0.0 and 1.0."
           className=""
         />
-      ) : (
-        <>
-          <p className="text-xs text-gray-500">
-            Optional controls applied to chat and writer requests. Each
-            setting is sent only to models that support it — unsupported
-            knobs are skipped automatically, so nothing here can break a
-            model that does not accept them.
-          </p>
-
-          <label className="flex items-start gap-2">
-            <input
-              type="checkbox"
-              checked={draft.reasoning_enabled}
-              onChange={(e) => {
-                setSaved(false);
-                setDraft({ ...draft, reasoning_enabled: e.target.checked });
-              }}
-              className="mt-0.5"
-            />
-            <span>
-              <span className="text-sm text-gray-700 block">
-                Adaptive reasoning
-              </span>
-              <span className="text-xs text-gray-500 block">
-                Lets supported models (Claude 4.6 and newer) think before
-                answering, which can improve report quality. Reasoning tokens
-                bill as output and count against the response budget, so
-                turns cost more and take longer.
-              </span>
-            </span>
-          </label>
-
-          <div>
-            <label className="text-sm text-gray-700 block mb-1">Effort</label>
-            <select
-              value={draft.effort ?? ""}
-              onChange={(e) => {
-                setSaved(false);
-                setDraft({
-                  ...draft,
-                  effort: (e.target.value || null) as EffortPreference | null,
-                });
-              }}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {EFFORT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-500 mt-1">
-              How much reasoning supported models put into each response.
-              Sent to Opus 4.5 and every model from Claude 4.6 on.
-            </p>
-          </div>
-
-          <div>
-            <label className="text-sm text-gray-700 block mb-1">
-              Temperature
-            </label>
-            <input
-              type="number"
-              min={0}
-              max={1}
-              step={0.1}
-              placeholder="Model default"
-              value={draft.temperature ?? ""}
-              onChange={(e) => {
-                setSaved(false);
-                setDraft({
-                  ...draft,
-                  temperature:
-                    e.target.value === "" ? null : Number(e.target.value),
-                });
-              }}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              0.0 to 1.0; leave blank for the model default. Only sent to
-              model generations that accept it (through Claude 4.6) — newer
-              models always use their own default.
-            </p>
-          </div>
-
-          {temperatureInvalid && (
-            <ErrorBanner
-              message="Temperature must be between 0.0 and 1.0."
-              className=""
-            />
-          )}
-          {saveError && <ErrorBanner message={saveError} className="" />}
-
-          <div className="flex items-center justify-end gap-3">
-            {saved && !dirty && (
-              <span className="text-xs text-green-600">Saved</span>
-            )}
-            <button
-              onClick={save}
-              disabled={!dirty || saving || temperatureInvalid}
-              className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-            >
-              {saving ? "Saving..." : "Save"}
-            </button>
-          </div>
-        </>
       )}
-    </PreferencesSection>
+      {saveError && <ErrorBanner message={saveError} className="" />}
+
+      <div className="flex items-center justify-end gap-3">
+        {saved && !dirty && (
+          <span className="text-xs text-green-600">Saved</span>
+        )}
+        <button
+          onClick={save}
+          disabled={!dirty || saving || temperatureInvalid}
+          className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+        >
+          {saving ? "Saving..." : "Save"}
+        </button>
+      </div>
+    </NavPane>
   );
 }
 
@@ -427,19 +1087,16 @@ function ModelTuningSection() {
 // ---------------------------------------------------------------------------
 
 function PromptEditor({
+  paneId,
   promptName,
-  label,
-  description,
-  defaultOpen,
   fixedRules,
 }: {
+  paneId: PaneId;
   promptName: string;
-  label: string;
-  description: string;
-  defaultOpen?: boolean;
   /** Read-only rules Claria always appends after the editable body. */
   fixedRules?: string;
 }) {
+  const spec = paneSpec(paneId);
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -493,74 +1150,71 @@ function PromptEditor({
 
   return (
     <>
-      <PreferencesSection title={label} defaultOpen={defaultOpen}>
-          {description && (
-            <p className="text-xs text-gray-400 mb-3">{description}</p>
-          )}
-          {loading ? (
-            <LoadingCard>Loading prompt...</LoadingCard>
-          ) : (
-            <>
-              <textarea
-                value={content}
-                onChange={(e) => {
-                  setContent(e.target.value);
-                  setDirty(true);
-                }}
-                disabled={saving}
-                className="w-full min-h-[216px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
-              />
+      <NavPane paneId={paneId}>
+        {loading ? (
+          <LoadingCard>Loading prompt...</LoadingCard>
+        ) : (
+          <>
+            <textarea
+              value={content}
+              onChange={(e) => {
+                setContent(e.target.value);
+                setDirty(true);
+              }}
+              disabled={saving}
+              className="w-full min-h-[216px] px-3 py-2 text-sm font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y disabled:bg-gray-50"
+            />
 
-              {fixedRules && (
-                <div className="mt-3">
-                  <p className="text-xs text-gray-400 mb-1">
-                    Claria always appends these trust rules after your prompt.
-                    They are not editable and cannot be removed:
-                  </p>
-                  {/* 184px = 8px top padding + 11 exact 16px text-xs line
-                      boxes, so the scroll fold never slices a line. */}
-                  <pre className="w-full max-h-[184px] overflow-auto px-3 py-2 text-xs font-mono text-gray-500 bg-gray-50 border border-gray-200 rounded-lg whitespace-pre-wrap">
-                    {fixedRules}
-                  </pre>
-                </div>
-              )}
+            {fixedRules && (
+              <div className="mt-3">
+                <p className="text-xs text-gray-400 mb-1">
+                  Claria always appends these trust rules after your prompt.
+                  They are not editable and cannot be removed:
+                </p>
+                {/* 184px = 8px top padding + 11 exact 16px text-xs line
+                    boxes, so the scroll fold never slices a line. */}
+                <pre className="w-full max-h-[184px] overflow-auto px-3 py-2 text-xs font-mono text-gray-500 bg-gray-50 border border-gray-200 rounded-lg whitespace-pre-wrap">
+                  {fixedRules}
+                </pre>
+              </div>
+            )}
 
-              {error && (
-                <ErrorBanner message={error} className="mt-3" />
-              )}
+            {error && (
+              <ErrorBanner message={error} className="mt-3" />
+            )}
 
-              <div className="flex justify-between mt-3">
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleReset}
-                    disabled={loading || saving}
-                    className="px-3 py-1.5 text-sm text-amber-600 border border-amber-300 rounded-lg hover:bg-amber-50 transition-colors disabled:opacity-50"
-                  >
-                    {saving ? "Resetting..." : "Reset to Default"}
-                  </button>
-                  <button
-                    onClick={() => setShowVersions(true)}
-                    disabled={saving}
-                    className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
-                  >
-                    Version History
-                  </button>
-                </div>
+            <div className="flex justify-between mt-3">
+              <div className="flex gap-2">
                 <button
-                  onClick={handleSave}
-                  disabled={loading || saving || !dirty}
-                  className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                  onClick={handleReset}
+                  disabled={loading || saving}
+                  className="px-3 py-1.5 text-sm text-amber-600 border border-amber-300 rounded-lg hover:bg-amber-50 transition-colors disabled:opacity-50"
                 >
-                  {saving ? "Saving..." : "Save"}
+                  {saving ? "Resetting..." : "Reset to Default"}
+                </button>
+                <button
+                  onClick={() => setShowVersions(true)}
+                  disabled={saving}
+                  className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+                >
+                  Version History
                 </button>
               </div>
-            </>
-          )}
-      </PreferencesSection>
+              <button
+                onClick={handleSave}
+                disabled={loading || saving || !dirty}
+                className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </>
+        )}
+      </NavPane>
 
       {showVersions && (
         <VersionHistoryModal
-          title={`${label} Versions`}
+          title={`${spec.title} Versions`}
           source={promptVersions(promptName)}
           onClose={() => setShowVersions(false)}
           onRestored={reload}
@@ -571,11 +1225,49 @@ function PromptEditor({
   );
 }
 
+function ChatSystemPromptSection() {
+  return <PromptEditor paneId="prompts.chat-system" promptName="system-prompt" />;
+}
+
+function PdfExtractionPromptSection() {
+  return (
+    <PromptEditor paneId="prompts.pdf-extraction" promptName="pdf-extraction" />
+  );
+}
+
+/**
+ * The two writer prompt editors, sharing one fetch of the fixed trust rules
+ * that are displayed read-only under each so nothing about how the writer
+ * runs is hidden.
+ */
+function WriterPromptEditors() {
+  const { data: trustRules } = useAsyncLoad(() => getWriterTrustRules(), []);
+  return (
+    <>
+      <PromptEditor
+        paneId="writer.prompt"
+        promptName="report-system"
+        fixedRules={trustRules?.targeted}
+      />
+      <PromptEditor
+        paneId="writer.whole-report"
+        promptName="report-full-draft"
+        fixedRules={trustRules?.full_draft}
+      />
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // transcribe.cpp model management and machine-local inference settings
 // ---------------------------------------------------------------------------
 
-function LocalTranscriptionSection() {
+/**
+ * The three on-device transcription panes (models, compute, decoding) share
+ * one engine status fetch and one settings draft, so they render from a
+ * single component mounted once per category.
+ */
+function LocalTranscriptionPanes() {
   const [status, setStatus] = useState<LocalTranscriptionStatus | null>(null);
   const [draft, setDraft] = useState<LocalTranscriptionSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -686,24 +1378,37 @@ function LocalTranscriptionSection() {
     ...(status?.devices.map((device) => device.index ?? 0) ?? []),
   );
 
-  return (
-    <PreferencesSection
-      title="On-device Memo Transcription"
-      summary={ready ? <span className="text-xs text-green-600">Ready</span> : undefined}
-      defaultOpen
-      contentClassName="border-t border-gray-100 p-4 space-y-5"
-    >
-        <p className="text-xs text-gray-500">
-          Record Memo uses transcribe.cpp and local GGUF models, so microphone
-          audio stays on this computer. Imported audio recordings continue to
-          use Amazon Transcribe. These model and hardware settings are
-          machine-local.
-        </p>
+  const loadingRow = (
+    <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+      <Spinner /> <span>Checking local runtime and models...</span>
+    </div>
+  );
 
+  // The engine settings draft spans the compute and decoding panes, so both
+  // carry the same save button acting on the shared draft.
+  const saveButton = (
+    <div className="flex justify-end">
+      <button
+        onClick={() => draft && void persist(draft)}
+        disabled={!dirty || saving || busyModel !== null}
+        className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+      >
+        {saving ? "Saving..." : "Save local engine settings"}
+      </button>
+    </div>
+  );
+
+  return (
+    <>
+      <NavPane
+        paneId="transcription.local-models"
+        summary={
+          ready ? <span className="text-xs text-green-600">Ready</span> : undefined
+        }
+        contentClassName="border-t border-gray-100 p-4 space-y-5"
+      >
         {loading ? (
-          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-            <Spinner /> <span>Checking local runtime and models...</span>
-          </div>
+          loadingRow
         ) : status && draft ? (
           <>
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 space-y-1">
@@ -720,207 +1425,25 @@ function LocalTranscriptionSection() {
               )}
             </div>
 
-            <ModelGroup
-              title="Memo speech model"
-              description="Used only for on-device Record Memo transcription."
-              models={status.models}
-              busyModel={busyModel}
-              progress={progress}
-              disabled={saving || removingLegacy || dirty}
-              onActivate={activate}
-              onDownload={handleDownload}
-              onDelete={handleDelete}
-            />
-
-            <div className="pt-1 border-t border-gray-100 space-y-3">
-              <h4 className="text-sm font-medium text-gray-700">Compute</h4>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="text-xs text-gray-600">
-                  Backend
-                  <select
-                    value={draft.backend}
-                    onChange={(event) =>
-                      setDraft({ ...draft, backend: event.target.value as LocalBackend })
-                    }
-                    className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg bg-white"
-                  >
-                    {status.backends.map((backend) => (
-                      <option
-                        key={backend.backend}
-                        value={backend.backend}
-                        disabled={!backend.available}
-                      >
-                        {backend.label}{backend.available ? "" : " (unavailable)"}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="text-xs text-gray-600">
-                  Compute device index (0 = automatic)
-                  <input
-                    type="number"
-                    min={0}
-                    max={maxDeviceIndex}
-                    value={draft.gpu_device}
-                    onChange={(event) =>
-                      setDraft({ ...draft, gpu_device: Number(event.target.value) })
-                    }
-                    className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
-                  />
-                </label>
-                <label className="text-xs text-gray-600">
-                  CPU threads (0 = automatic)
-                  <input
-                    type="number"
-                    min={0}
-                    max={256}
-                    value={draft.cpu_threads}
-                    onChange={(event) =>
-                      setDraft({ ...draft, cpu_threads: Number(event.target.value) })
-                    }
-                    className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
-                  />
-                </label>
-                <label className="text-xs text-gray-600">
-                  K/V cache precision
-                  <select
-                    value={draft.kv_precision}
-                    onChange={(event) =>
-                      setDraft({
-                        ...draft,
-                        kv_precision: event.target.value as LocalKvPrecision,
-                      })
-                    }
-                    className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg bg-white"
-                  >
-                    <option value="auto">Automatic</option>
-                    <option value="f16">F16 (lower memory)</option>
-                    <option value="f32">F32 (higher precision)</option>
-                  </select>
-                </label>
-                {status.devices.length > 0 && (
-                  <p className="col-span-2 text-xs text-gray-400">
-                    Runtime devices: {status.devices.map((device) =>
-                      `${device.index ?? "?"}: ${device.description || device.name}`,
-                    ).join(" · ")}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <details className="border border-gray-200 rounded-lg">
-              <summary className="p-3 cursor-pointer text-sm font-medium text-gray-700">
-                Advanced Whisper decoding
-              </summary>
-              <div className="border-t border-gray-100 p-3 space-y-3">
-                <label className="block text-xs text-gray-600">
-                  Initial prompt / vocabulary hint
-                  <textarea
-                    value={draft.initial_prompt}
-                    onChange={(event) =>
-                      setDraft({ ...draft, initial_prompt: event.target.value })
-                    }
-                    placeholder="Optional clinical terms, names, or context"
-                    className="mt-1 w-full min-h-20 px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
-                  />
-                </label>
-                <label className="flex items-start gap-2 text-sm text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={draft.condition_on_previous_text}
-                    onChange={(event) =>
-                      setDraft({
-                        ...draft,
-                        condition_on_previous_text: event.target.checked,
-                      })
-                    }
-                    className="mt-0.5"
-                  />
-                  Carry accepted text into each following 30-second window
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <NumberSetting
-                    label="Previous-context tokens"
-                    value={draft.max_previous_context_tokens}
-                    min={0}
-                    max={448}
-                    step={1}
-                    onChange={(value) =>
-                      setDraft({ ...draft, max_previous_context_tokens: value })
-                    }
-                  />
-                  <NumberSetting
-                    label="Temperature"
-                    value={draft.temperature}
-                    min={0}
-                    max={1}
-                    step={0.1}
-                    onChange={(value) => setDraft({ ...draft, temperature: value })}
-                  />
-                  <NumberSetting
-                    label="Temperature increment"
-                    value={draft.temperature_increment}
-                    min={0}
-                    max={1}
-                    step={0.1}
-                    onChange={(value) =>
-                      setDraft({ ...draft, temperature_increment: value })
-                    }
-                  />
-                  <NumberSetting
-                    label="Compression-ratio threshold"
-                    value={draft.compression_ratio_threshold}
-                    min={0.1}
-                    max={100}
-                    step={0.1}
-                    onChange={(value) =>
-                      setDraft({ ...draft, compression_ratio_threshold: value })
-                    }
-                  />
-                  <NumberSetting
-                    label="Log-probability threshold"
-                    value={draft.log_probability_threshold}
-                    min={-100}
-                    max={0}
-                    step={0.1}
-                    onChange={(value) =>
-                      setDraft({ ...draft, log_probability_threshold: value })
-                    }
-                  />
-                  <NumberSetting
-                    label="No-speech threshold"
-                    value={draft.no_speech_threshold}
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    onChange={(value) =>
-                      setDraft({ ...draft, no_speech_threshold: value })
-                    }
-                  />
-                  <NumberSetting
-                    label="Sampling seed (0 = random)"
-                    value={draft.seed}
-                    min={0}
-                    max={4294967295}
-                    step={1}
-                    onChange={(value) => setDraft({ ...draft, seed: value })}
-                  />
-                </div>
-              </div>
-            </details>
-
-            <div className="flex justify-end">
-              <button
-                onClick={() => void persist(draft)}
-                disabled={!dirty || saving || busyModel !== null}
-                className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-              >
-                {saving ? "Saving..." : "Save local engine settings"}
-              </button>
+            <div data-pref-anchor="speech_model">
+              <ModelGroup
+                title="Memo speech model"
+                description="Used only for on-device Record Memo transcription."
+                models={status.models}
+                busyModel={busyModel}
+                progress={progress}
+                disabled={saving || removingLegacy || dirty}
+                onActivate={activate}
+                onDownload={handleDownload}
+                onDelete={handleDelete}
+              />
             </div>
 
             {status.legacy_model_bytes > 0 && (
-              <div className="border border-amber-200 bg-amber-50 rounded-lg p-3 flex items-start justify-between gap-3">
+              <div
+                className="border border-amber-200 bg-amber-50 rounded-lg p-3 flex items-start justify-between gap-3"
+                data-pref-anchor="legacy_models"
+              >
                 <div>
                   <p className="text-sm text-amber-900">Legacy Candle model files</p>
                   <p className="text-xs text-amber-700 mt-0.5">
@@ -947,7 +1470,212 @@ function LocalTranscriptionSection() {
             className=""
           />
         )}
-    </PreferencesSection>
+      </NavPane>
+
+      <NavPane
+        paneId="transcription.local-compute"
+        contentClassName="border-t border-gray-100 p-4 space-y-3"
+      >
+        {loading ? (
+          loadingRow
+        ) : status && draft ? (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs text-gray-600" data-pref-anchor="backend">
+                Backend
+                <select
+                  value={draft.backend}
+                  onChange={(event) =>
+                    setDraft({ ...draft, backend: event.target.value as LocalBackend })
+                  }
+                  className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg bg-white"
+                >
+                  {status.backends.map((backend) => (
+                    <option
+                      key={backend.backend}
+                      value={backend.backend}
+                      disabled={!backend.available}
+                    >
+                      {backend.label}{backend.available ? "" : " (unavailable)"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-gray-600" data-pref-anchor="gpu_device">
+                Compute device index (0 = automatic)
+                <input
+                  type="number"
+                  min={0}
+                  max={maxDeviceIndex}
+                  value={draft.gpu_device}
+                  onChange={(event) =>
+                    setDraft({ ...draft, gpu_device: Number(event.target.value) })
+                  }
+                  className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
+                />
+              </label>
+              <label className="text-xs text-gray-600" data-pref-anchor="cpu_threads">
+                CPU threads (0 = automatic)
+                <input
+                  type="number"
+                  min={0}
+                  max={256}
+                  value={draft.cpu_threads}
+                  onChange={(event) =>
+                    setDraft({ ...draft, cpu_threads: Number(event.target.value) })
+                  }
+                  className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
+                />
+              </label>
+              <label className="text-xs text-gray-600" data-pref-anchor="kv_precision">
+                K/V cache precision
+                <select
+                  value={draft.kv_precision}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      kv_precision: event.target.value as LocalKvPrecision,
+                    })
+                  }
+                  className="mt-1 w-full px-2.5 py-2 text-sm border border-gray-300 rounded-lg bg-white"
+                >
+                  <option value="auto">Automatic</option>
+                  <option value="f16">F16 (lower memory)</option>
+                  <option value="f32">F32 (higher precision)</option>
+                </select>
+              </label>
+              {status.devices.length > 0 && (
+                <p className="col-span-2 text-xs text-gray-400">
+                  Runtime devices: {status.devices.map((device) =>
+                    `${device.index ?? "?"}: ${device.description || device.name}`,
+                  ).join(" · ")}
+                </p>
+              )}
+            </div>
+            {saveButton}
+          </>
+        ) : null}
+      </NavPane>
+
+      <NavPane
+        paneId="transcription.local-decoding"
+        contentClassName="border-t border-gray-100 p-4 space-y-3"
+      >
+        {loading ? (
+          loadingRow
+        ) : status && draft ? (
+          <>
+            <label
+              className="block text-xs text-gray-600"
+              data-pref-anchor="initial_prompt"
+            >
+              Initial prompt / vocabulary hint
+              <textarea
+                value={draft.initial_prompt}
+                onChange={(event) =>
+                  setDraft({ ...draft, initial_prompt: event.target.value })
+                }
+                placeholder="Optional clinical terms, names, or context"
+                className="mt-1 w-full min-h-20 px-2.5 py-2 text-sm border border-gray-300 rounded-lg"
+              />
+            </label>
+            <label
+              className="flex items-start gap-2 text-sm text-gray-700"
+              data-pref-anchor="condition_on_previous_text"
+            >
+              <input
+                type="checkbox"
+                checked={draft.condition_on_previous_text}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    condition_on_previous_text: event.target.checked,
+                  })
+                }
+                className="mt-0.5"
+              />
+              Carry accepted text into each following 30-second window
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <NumberSetting
+                label="Previous-context tokens"
+                anchor="max_previous_context_tokens"
+                value={draft.max_previous_context_tokens}
+                min={0}
+                max={448}
+                step={1}
+                onChange={(value) =>
+                  setDraft({ ...draft, max_previous_context_tokens: value })
+                }
+              />
+              <NumberSetting
+                label="Temperature"
+                anchor="temperature"
+                value={draft.temperature}
+                min={0}
+                max={1}
+                step={0.1}
+                onChange={(value) => setDraft({ ...draft, temperature: value })}
+              />
+              <NumberSetting
+                label="Temperature increment"
+                anchor="temperature_increment"
+                value={draft.temperature_increment}
+                min={0}
+                max={1}
+                step={0.1}
+                onChange={(value) =>
+                  setDraft({ ...draft, temperature_increment: value })
+                }
+              />
+              <NumberSetting
+                label="Compression-ratio threshold"
+                anchor="compression_ratio_threshold"
+                value={draft.compression_ratio_threshold}
+                min={0.1}
+                max={100}
+                step={0.1}
+                onChange={(value) =>
+                  setDraft({ ...draft, compression_ratio_threshold: value })
+                }
+              />
+              <NumberSetting
+                label="Log-probability threshold"
+                anchor="log_probability_threshold"
+                value={draft.log_probability_threshold}
+                min={-100}
+                max={0}
+                step={0.1}
+                onChange={(value) =>
+                  setDraft({ ...draft, log_probability_threshold: value })
+                }
+              />
+              <NumberSetting
+                label="No-speech threshold"
+                anchor="no_speech_threshold"
+                value={draft.no_speech_threshold}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={(value) =>
+                  setDraft({ ...draft, no_speech_threshold: value })
+                }
+              />
+              <NumberSetting
+                label="Sampling seed (0 = random)"
+                anchor="seed"
+                value={draft.seed}
+                min={0}
+                max={4294967295}
+                step={1}
+                onChange={(value) => setDraft({ ...draft, seed: value })}
+              />
+            </div>
+            {saveButton}
+          </>
+        ) : null}
+      </NavPane>
+    </>
   );
 }
 
@@ -1044,12 +1772,14 @@ function ModelGroup({
                 </div>
               </div>
               {modelProgress && (
-                <div className="mt-2 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-600 transition-[width]"
-                    style={{ width: `${percent}%` }}
-                  />
-                </div>
+                <ProgressBar
+                  className="mt-2"
+                  value={modelProgress.downloaded_bytes}
+                  max={modelProgress.total_bytes}
+                  label={`Downloading ${model.label}`}
+                  valueText={`${percent}%`}
+                  showValueText={false}
+                />
               )}
             </div>
           );
@@ -1061,6 +1791,7 @@ function ModelGroup({
 
 function NumberSetting({
   label,
+  anchor,
   value,
   min,
   max,
@@ -1068,6 +1799,8 @@ function NumberSetting({
   onChange,
 }: {
   label: string;
+  /** `data-pref-anchor` for search reveal. */
+  anchor?: string;
   value: number;
   min: number;
   max: number;
@@ -1075,7 +1808,7 @@ function NumberSetting({
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="text-xs text-gray-600">
+    <label className="text-xs text-gray-600" data-pref-anchor={anchor}>
       {label}
       <input
         type="number"
@@ -1095,17 +1828,22 @@ function NumberSetting({
 // ---------------------------------------------------------------------------
 
 function CostExplorerSection() {
-  const [hourlyEnabled, setHourlyEnabled] = useState<boolean | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <CostExplorerBody initial={data.hourly_cost_data} />
+  ) : (
+    <PendingSyncedPane
+      paneId="billing.cost-explorer"
+      loadingLabel="Loading..."
+      errorMessage="Could not load the Cost Explorer setting."
+    />
+  );
+}
+
+function CostExplorerBody({ initial }: { initial: boolean }) {
+  const [hourlyEnabled, setHourlyEnabled] = useState(initial);
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    loadConfig()
-      .then((info) => setHourlyEnabled(info.hourly_cost_data))
-      .catch(() => setHourlyEnabled(false))
-      .finally(() => setLoading(false));
-  }, []);
 
   async function handleToggle() {
     if (hourlyEnabled) {
@@ -1153,55 +1891,42 @@ function CostExplorerSection() {
   }
 
   return (
-    <PreferencesSection
-      title="Cost Explorer"
+    <NavPane
+      paneId="billing.cost-explorer"
       summary={
         hourlyEnabled ? (
           <span className="text-xs text-gray-400">Hourly enabled</span>
         ) : undefined
       }
     >
-        <p className="text-xs text-gray-400 mb-3">
-          AWS Cost Explorer charges $0.01 per API request. Hourly-resolution data
-          requires separate enablement in the AWS Console and incurs additional
-          storage costs on your AWS bill.
-        </p>
-
-        {loading ? (
-          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-            <Spinner />
-            <span>Loading...</span>
-          </div>
-        ) : (
-          <label className="flex items-start gap-3">
-            <input
-              type="checkbox"
-              checked={hourlyEnabled ?? false}
-              onChange={handleToggle}
-              disabled={verifying}
-              className="mt-0.5 rounded border-gray-300"
-            />
-            <div className="flex-1">
-              <span className="text-sm text-gray-900">
-                Hourly data resolution
-                {verifying && (
-                  <span className="ml-2 text-xs text-gray-400 inline-flex items-center gap-1">
-                    <Spinner /> Verifying...
-                  </span>
-                )}
+      <label className="flex items-start gap-3" data-pref-anchor="hourly_cost_data">
+        <input
+          type="checkbox"
+          checked={hourlyEnabled}
+          onChange={handleToggle}
+          disabled={verifying}
+          className="mt-0.5 rounded border-gray-300"
+        />
+        <div className="flex-1">
+          <span className="text-sm text-gray-900">
+            Hourly data resolution
+            {verifying && (
+              <span className="ml-2 text-xs text-gray-400 inline-flex items-center gap-1">
+                <Spinner /> Verifying...
               </span>
-              <p className="text-xs text-gray-400 mt-0.5">
-                Shows hourly cost breakdowns for the last 14 days. Must be enabled in
-                AWS Console under Billing &rarr; Cost Explorer &rarr; Settings first.
-              </p>
-            </div>
-          </label>
-        )}
+            )}
+          </span>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Shows hourly cost breakdowns for the last 14 days. Must be enabled in
+            AWS Console under Billing &rarr; Cost Explorer &rarr; Settings first.
+          </p>
+        </div>
+      </label>
 
-        {error && (
-          <ErrorBanner message={error} className="mt-3" />
-        )}
-    </PreferencesSection>
+      {error && (
+        <ErrorBanner message={error} className="mt-3" />
+      )}
+    </NavPane>
   );
 }
 
@@ -1209,8 +1934,7 @@ function CostExplorerSection() {
 // Writer templates: managed redacted DOCX presets stored in S3
 // ---------------------------------------------------------------------------
 
-function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
-  const [open, setOpen] = useState(defaultOpen);
+function WriterTemplatesSection() {
   const {
     templates,
     setTemplates,
@@ -1221,10 +1945,6 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const error = loadError ?? actionError;
-
-  useEffect(() => {
-    if (defaultOpen) setOpen(true);
-  }, [defaultOpen]);
 
   async function upload() {
     setBusy("upload");
@@ -1267,27 +1987,19 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
   }
 
   return (
-    <PreferencesSection
-      title="Writer Templates"
+    <NavPane
+      paneId="writer.templates"
       summary={
         <span className="text-xs text-gray-400">{templates.length} saved</span>
       }
-      open={open}
-      onToggle={setOpen}
       testId="writer-template-manager"
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm text-gray-700">
-              Keep a small shelf of reusable Word templates in Claria&apos;s managed
-              S3 storage. Writing sessions can preview and apply these presets.
-            </p>
-            <p className="text-xs text-amber-700 mt-1">
-              Upload only redacted templates. Remove names, dates, diagnoses,
-              scores, and other client-specific facts before saving a preset.
-            </p>
-          </div>
+          <p className="text-xs text-amber-700">
+            Upload only redacted templates. Remove names, dates, diagnoses,
+            scores, and other client-specific facts before saving a preset.
+          </p>
           <button
             type="button"
             onClick={() => void upload()}
@@ -1352,12 +2064,11 @@ function WriterTemplatesSection({ defaultOpen }: { defaultOpen: boolean }) {
             className=""
           />
         )}
-    </PreferencesSection>
+    </NavPane>
   );
 }
 
-function WriterPromptsSection({ defaultOpen }: { defaultOpen: boolean }) {
-  const [open, setOpen] = useState(defaultOpen);
+function WriterPromptsSection() {
   const { prompts, setPrompts, loading, error: loadError, reload } = useWriterPrompts();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -1415,27 +2126,18 @@ function WriterPromptsSection({ defaultOpen }: { defaultOpen: boolean }) {
   }
 
   return (
-    <PreferencesSection
-      title="Prompt Library"
+    <NavPane
+      paneId="writer.prompt-library"
       summary={<span className="text-xs text-gray-400">{prompts.length} saved</span>}
-      open={open}
-      onToggle={setOpen}
       testId="writer-prompt-manager"
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm text-gray-700">
-            Save the writer instructions you reuse — one for each phase of a
-            report. Picking one in a Writing session fills the instruction
-            box, where you can still edit it before sending.
-          </p>
-          <p className="text-xs text-amber-700 mt-1">
-            Saved prompts are shared across all clients. Write placeholders
-            like $DIAGNOSIS instead of client names or other identifying
-            details.
-          </p>
-        </div>
+        <p className="text-xs text-amber-700">
+          Saved prompts are shared across all clients. Write placeholders
+          like $DIAGNOSIS instead of client names or other identifying
+          details.
+        </p>
         <button
           type="button"
           onClick={() => openEditor(null)}
@@ -1543,7 +2245,7 @@ function WriterPromptsSection({ defaultOpen }: { defaultOpen: boolean }) {
           className=""
         />
       )}
-    </PreferencesSection>
+    </NavPane>
   );
 }
 
@@ -1559,11 +2261,16 @@ const WRITER_LIMIT_DEFAULTS: WriterLimits = {
   max_converse_calls: 50,
   max_tool_uses_per_response: 80,
   max_retained_turns: 200,
+  writer_first_frame_timeout_secs: 90,
+  writer_idle_timeout_secs: 60,
+  writer_max_output_tokens: 32768,
+  analysis_first_frame_timeout_secs: 120,
+  analysis_idle_timeout_secs: 90,
 };
 
 // The `label` values below are quoted verbatim in the writer's
 // guardrail-exhausted error, which tells the clinician which field to raise.
-// Renaming one here means renaming it in `claria-report-authoring`'s
+// Renaming one here means renaming it in `claria-report-pipeline`'s
 // `TOOL_ROUNDS_FIELD_LABEL` / `CONVERSE_CALLS_FIELD_LABEL`.
 const WRITER_LIMIT_FIELDS: Array<{
   key: WriterLimitField;
@@ -1606,6 +2313,60 @@ const WRITER_LIMIT_FIELDS: Array<{
   },
 ];
 
+// The dials below bound one Bedrock call rather than how many a request may
+// make. They exist so a run that is merely slow, or a section longer than one
+// response can hold, can be fixed from here instead of by shipping a build.
+// `label` values are quoted in the writer's timeout failure; renaming one here
+// means renaming it in `claria-report-pipeline`'s field-label constants.
+const BEDROCK_RUNTIME_FIELDS: Array<{
+  key: WriterLimitField;
+  label: string;
+  description: string;
+  min: number;
+  max: number;
+}> = [
+  {
+    key: "writer_first_frame_timeout_secs",
+    label: "Wait for the writer to start responding",
+    description:
+      "Seconds a writing call may take to produce its first output before Claria abandons it and re-sends. Raise this for long templates: a cold prompt cache re-reads the whole request before answering.",
+    min: 1,
+    max: 600,
+  },
+  {
+    key: "writer_idle_timeout_secs",
+    label: "Wait between writer response chunks",
+    description:
+      "Seconds a writing call may go silent mid-response before Claria treats the connection as lost.",
+    min: 1,
+    max: 600,
+  },
+  {
+    key: "writer_max_output_tokens",
+    label: "Writer response length ceiling",
+    description:
+      "Largest single writer response, in tokens. Raise it when a section is cut short; it is also held back from the model's context window, so raising it leaves less room for records.",
+    min: 4096,
+    max: 65536,
+  },
+  {
+    key: "analysis_first_frame_timeout_secs",
+    label: "Wait for the planner and reviewer to start responding",
+    description:
+      "Seconds a planning or review call may take to produce its first output. These send the whole record corpus and answer only after reading all of it.",
+    min: 1,
+    max: 600,
+  },
+  {
+    key: "analysis_idle_timeout_secs",
+    label: "Wait between planner and reviewer response chunks",
+    description:
+      "Seconds a planning or review call may go silent mid-response before Claria treats the connection as lost.",
+    min: 1,
+    max: 600,
+  },
+];
+
 function normalizeWriterPreferences(
   value: ReportAuthoringPreferences | null | undefined
 ): WriterLimits {
@@ -1619,11 +2380,26 @@ function normalizeWriterPreferences(
       WRITER_LIMIT_DEFAULTS.max_tool_uses_per_response,
     max_retained_turns:
       value?.max_retained_turns ?? WRITER_LIMIT_DEFAULTS.max_retained_turns,
+    writer_first_frame_timeout_secs:
+      value?.writer_first_frame_timeout_secs ??
+      WRITER_LIMIT_DEFAULTS.writer_first_frame_timeout_secs,
+    writer_idle_timeout_secs:
+      value?.writer_idle_timeout_secs ??
+      WRITER_LIMIT_DEFAULTS.writer_idle_timeout_secs,
+    writer_max_output_tokens:
+      value?.writer_max_output_tokens ??
+      WRITER_LIMIT_DEFAULTS.writer_max_output_tokens,
+    analysis_first_frame_timeout_secs:
+      value?.analysis_first_frame_timeout_secs ??
+      WRITER_LIMIT_DEFAULTS.analysis_first_frame_timeout_secs,
+    analysis_idle_timeout_secs:
+      value?.analysis_idle_timeout_secs ??
+      WRITER_LIMIT_DEFAULTS.analysis_idle_timeout_secs,
   };
 }
 
 function writerLimitsError(value: WriterLimits): string | null {
-  for (const field of WRITER_LIMIT_FIELDS) {
+  for (const field of [...WRITER_LIMIT_FIELDS, ...BEDROCK_RUNTIME_FIELDS]) {
     const input = value[field.key];
     if (!Number.isInteger(input) || input < field.min || input > field.max) {
       return `${field.label} must be a whole number from ${field.min} to ${field.max}.`;
@@ -1633,61 +2409,44 @@ function writerLimitsError(value: WriterLimits): string | null {
 }
 
 function ReportAuthoringSection() {
-  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
-  const [draft, setDraft] = useState<WriterLimits | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <ReportAuthoringBody initial={data} />
+  ) : (
+    <PendingSyncedPane
+      paneId="writer.limits"
+      loadingLabel="Loading document writer limits..."
+      errorMessage="Could not load document writer limits."
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    />
+  );
+}
+
+function ReportAuthoringBody({ initial }: { initial: ConfigInfo }) {
+  const [snapshot, setSnapshot] = useState<ConfigInfo>(initial);
+  const [draft, setDraft] = useState<WriterLimits>(() =>
+    normalizeWriterPreferences(initial.report_authoring)
+  );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const info = await fetchCloudPreferences();
-      setSnapshot(info);
-      setDraft(normalizeWriterPreferences(info.report_authoring));
-    } catch (e) {
-      try {
-        const info = await loadConfig();
-        setSnapshot(info);
-        setDraft(normalizeWriterPreferences(info.report_authoring));
-      } catch (fallbackError) {
-        setLoadError(String(fallbackError ?? e));
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const original = snapshot
-    ? normalizeWriterPreferences(snapshot.report_authoring)
-    : null;
-  const dirty =
-    original != null &&
-    draft != null &&
-    JSON.stringify(original) !== JSON.stringify(draft);
-  const validationError = draft ? writerLimitsError(draft) : null;
-  const effectiveToolRounds = draft
-    ? Math.min(
-        draft.max_tool_rounds,
-        Math.max(0, draft.max_converse_calls - 1)
-      )
-    : 0;
-  const effectiveModelCalls = draft
-    ? Math.min(draft.max_converse_calls, draft.max_tool_rounds + 1)
-    : 0;
-  const theoreticalToolCalls = draft
-    ? effectiveToolRounds * draft.max_tool_uses_per_response
-    : 0;
+  const original = normalizeWriterPreferences(snapshot.report_authoring);
+  const dirty = JSON.stringify(original) !== JSON.stringify(draft);
+  const validationError = writerLimitsError(draft);
+  const effectiveToolRounds = Math.min(
+    draft.max_tool_rounds,
+    Math.max(0, draft.max_converse_calls - 1)
+  );
+  const effectiveModelCalls = Math.min(
+    draft.max_converse_calls,
+    draft.max_tool_rounds + 1
+  );
+  const theoreticalToolCalls =
+    effectiveToolRounds * draft.max_tool_uses_per_response;
 
   async function save() {
-    if (!snapshot || !draft || validationError) return;
+    if (validationError) return;
     setSaving(true);
     setSaveError(null);
     setSaved(false);
@@ -1705,9 +2464,34 @@ function ReportAuthoringSection() {
     }
   }
 
+  const renderField = (field: (typeof WRITER_LIMIT_FIELDS)[number]) => (
+    <label key={field.key} className="block" data-pref-anchor={field.key}>
+      <span className="text-sm font-medium text-gray-700">{field.label}</span>
+      <input
+        type="number"
+        min={field.min}
+        max={field.max}
+        step={1}
+        value={draft[field.key]}
+        onChange={(event) => {
+          const next = event.currentTarget.valueAsNumber;
+          setDraft({
+            ...draft,
+            [field.key]: Number.isFinite(next) ? next : 0,
+          });
+          setSaved(false);
+        }}
+        className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+      />
+      <span className="block text-xs text-gray-500 mt-1">
+        {field.description}
+      </span>
+    </label>
+  );
+
   return (
-    <PreferencesSection
-      title="Document Writer Limits"
+    <NavPane
+      paneId="writer.limits"
       summary={
         draft ? (
           <span className="text-xs text-gray-400">
@@ -1717,104 +2501,82 @@ function ReportAuthoringSection() {
       }
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
-        {loading ? (
-          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-            <Spinner />
-            <span>Loading document writer limits...</span>
-          </div>
-        ) : !draft ? (
-          <ErrorBanner
-            message={loadError ?? "Could not load document writer limits."}
-            className=""
-          />
-        ) : (
-          <>
-            <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-1.5">
-              <p className="text-sm font-medium text-amber-950">
-                Higher limits increase cost and runaway-loop exposure
-              </p>
-              <p className="text-xs text-amber-900">
-                These are spend and runtime guardrails, not targets. With this
-                combination, one request may make up to {effectiveModelCalls} billed
-                Bedrock calls and theoretically issue{" "}
-                {theoreticalToolCalls.toLocaleString()} tool calls. It can run much
-                longer, repeatedly read client records, and cost substantially more.
-              </p>
-              <p className="text-xs text-amber-900">
-                Opus is generally reliable, but no model is guaranteed not to
-                repeat tools or fail to finish. Writer changes still remain
-                proposals until you explicitly accept them.
-              </p>
-            </div>
+      <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-1.5">
+        <p className="text-sm font-medium text-amber-950">
+          Higher limits increase cost and runaway-loop exposure
+        </p>
+        <p className="text-xs text-amber-900">
+          These are spend and runtime guardrails, not targets. With this
+          combination, one request may make up to {effectiveModelCalls} billed
+          Bedrock calls and theoretically issue{" "}
+          {theoreticalToolCalls.toLocaleString()} tool calls. It can run much
+          longer, repeatedly read client records, and cost substantially more.
+        </p>
+        <p className="text-xs text-amber-900">
+          Opus is generally reliable, but no model is guaranteed not to
+          repeat tools or fail to finish. Writer changes still remain
+          proposals until you explicitly accept them.
+        </p>
+      </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {WRITER_LIMIT_FIELDS.map((field) => (
-                <label key={field.key} className="block">
-                  <span className="text-sm font-medium text-gray-700">
-                    {field.label}
-                  </span>
-                  <input
-                    type="number"
-                    min={field.min}
-                    max={field.max}
-                    step={1}
-                    value={draft[field.key]}
-                    onChange={(event) => {
-                      const next = event.currentTarget.valueAsNumber;
-                      setDraft({
-                        ...draft,
-                        [field.key]: Number.isFinite(next) ? next : 0,
-                      });
-                      setSaved(false);
-                    }}
-                    className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                  <span className="block text-xs text-gray-500 mt-1">
-                    {field.description}
-                  </span>
-                </label>
-              ))}
-            </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {WRITER_LIMIT_FIELDS.map(renderField)}
+      </div>
 
-            {validationError && (
-              <ErrorBanner message={validationError} className="" />
-            )}
-            {saveError && (
-              <ErrorBanner
-                message={`Could not save document writer limits: ${saveError}`}
-                className=""
-              />
-            )}
+      <div className="pt-2 border-t border-gray-100 space-y-3">
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-gray-700">
+            Bedrock call limits
+          </p>
+          <p className="text-xs text-gray-500">
+            How long one call may take and how much it may write. Raise these
+            when a draft fails on time or comes back cut short rather than on
+            the guardrails above. Waiting longer costs nothing extra; a larger
+            response ceiling is billed for what it uses.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {BEDROCK_RUNTIME_FIELDS.map(renderField)}
+        </div>
+      </div>
 
-            <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setDraft(WRITER_LIMIT_DEFAULTS);
-                  setSaved(false);
-                }}
-                disabled={saving}
-                className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
-              >
-                Restore recommended defaults
-              </button>
-              <div className="flex items-center gap-2">
-                {saved && !dirty && (
-                  <span className="text-xs text-green-700">Saved</span>
-                )}
-                <button
-                  type="button"
-                  onClick={save}
-                  disabled={saving || !dirty || validationError != null}
-                  className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-                >
-                  {saving ? "Saving..." : "Save limits"}
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-    </PreferencesSection>
+      {validationError && (
+        <ErrorBanner message={validationError} className="" />
+      )}
+      {saveError && (
+        <ErrorBanner
+          message={`Could not save document writer limits: ${saveError}`}
+          className=""
+        />
+      )}
+
+      <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(WRITER_LIMIT_DEFAULTS);
+            setSaved(false);
+          }}
+          disabled={saving}
+          className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+        >
+          Restore recommended defaults
+        </button>
+        <div className="flex items-center gap-2">
+          {saved && !dirty && (
+            <span className="text-xs text-green-700">Saved</span>
+          )}
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || !dirty || validationError != null}
+            className="px-3 py-1.5 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            {saving ? "Saving..." : "Save limits"}
+          </button>
+        </div>
+      </div>
+    </NavPane>
   );
 }
 
@@ -1822,31 +2584,40 @@ function ReportAuthoringSection() {
 // Transcription section: language / speaker count / engine / translation
 // ---------------------------------------------------------------------------
 
-/** How long editing settles before a change is pushed to S3. */
-const TRANSCRIPTION_SYNC_DEBOUNCE_MS = 600;
-
 /**
  * Transcription defaults applied to drag-and-drop audio uploads. The wizard
  * uses these as starting values too, but lets the user override per file.
  *
- * Cross-machine sync: on mount we call `fetchCloudPreferences` to pull the
- * latest values from S3 (so the editing machine sees its own recent changes
- * without an app restart). Edits accumulate in a draft and are patch-saved to
- * local config and S3 via `savePreferencesPatch` shortly after the user stops
- * changing things — only this section's fields travel, so sibling sections
- * are never clobbered.
+ * Cross-machine sync: the page's synced-preferences read pulls the latest
+ * values from S3, so the editing machine sees its own recent changes without
+ * an app restart. Edits accumulate in a draft and are patch-saved once when
+ * the user leaves the section or the screen goes away (`useSaveOnLeave`) —
+ * one preferences-file version per editing burst, not one per click. Only
+ * this section's fields travel, so sibling sections are never clobbered.
  */
 function TranscriptionSection() {
-  // The full set of synced fields, fetched on mount.
-  const [snapshot, setSnapshot] = useState<ConfigInfo | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <TranscriptionBody initial={data} />
+  ) : (
+    <PendingSyncedPane
+      paneId="transcription.imported-audio"
+      loadingLabel="Loading transcription preferences..."
+      errorMessage="Could not load preferences."
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    />
+  );
+}
+
+function TranscriptionBody({ initial }: { initial: ConfigInfo }) {
+  // The full set of synced fields, as the page read them.
+  const [snapshot, setSnapshot] = useState<ConfigInfo>(initial);
 
   // Editable copy of the transcription section only.
-  const [draft, setDraft] = useState<TranscriptionPreferences | null>(null);
+  const [draft, setDraft] = useState<TranscriptionPreferences>(
+    initial.transcription
+  );
   const dirty =
-    snapshot != null &&
-    draft != null &&
     JSON.stringify(snapshot.transcription) !== JSON.stringify(draft);
 
   // Sync status, shown under the controls.
@@ -1862,246 +2633,178 @@ function TranscriptionSection() {
       // dropdown and Cost Explorer sections can never be rolled back by a
       // stale snapshot here.
       const updated = await savePreferencesPatch({ transcription: next });
-      // Advancing the snapshot clears `dirty` and stops the debounce.
+      // Advancing the snapshot clears `dirty`.
       setSnapshot(updated);
       setSyncedOnce(true);
     } catch (e) {
+      // Also logged through the bridge: a flush finishing after unmount has
+      // no UI left to show the banner in.
+      logFrontendEvent("error", `transcription preferences save failed: ${e}`);
       setSyncError(String(e));
     } finally {
       setSyncing(false);
     }
   }, []);
 
-  // Debounced save-on-change. Saving while the screen is still mounted is what
-  // makes the edit survive a quit or a window close — an unmount cleanup never
-  // runs in either case, so edits used to be lost silently.
+  // The draft that still needs saving; null when clean or already flushed.
   const pendingRef = useRef<TranscriptionPreferences | null>(null);
   useEffect(() => {
-    if (!dirty || !snapshot || !draft) {
-      pendingRef.current = null;
-      return;
-    }
-    pendingRef.current = draft;
-    const id = setTimeout(() => {
-      pendingRef.current = null;
-      void sync(draft);
-    }, TRANSCRIPTION_SYNC_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [dirty, snapshot, draft, sync]);
-
-  // Backstop for the one case the debounce cannot cover: navigating away
-  // within the debounce window cancels the timer above. Fire-and-forget,
-  // because there is no longer any UI to report a failure into — but the
-  // window is a few hundred milliseconds, not the whole session.
-  useEffect(() => {
-    return () => {
-      const pending = pendingRef.current;
-      if (!pending) return;
-      savePreferencesPatch({ transcription: pending }).catch((e) =>
-        logFrontendEvent("error", `preferences sync on leave failed: ${e}`)
-      );
-    };
-  }, []);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const info = await fetchCloudPreferences();
-      setSnapshot(info);
-      setDraft(info.transcription);
-    } catch (e) {
-      // Fall back to whatever's in local config — fetchCloudPreferences
-      // requires a configured SDK; without one we still want to render.
-      try {
-        const info = await loadConfig();
-        setSnapshot(info);
-        setDraft(info.transcription);
-      } catch (e2) {
-        setError(String(e2 ?? e));
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+    pendingRef.current = dirty ? draft : null;
+  }, [dirty, draft]);
+  const flush = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    pendingRef.current = null;
+    void sync(pending);
+  }, [sync]);
+  const { containerRef, onContainerBlur } = useSaveOnLeave(flush);
 
   function handleLanguageChange(value: TranscriptionLanguage) {
-    if (!draft) return;
     setDraft({ ...draft, default_language: value });
   }
 
   function handleSpeakerCountChange(value: number) {
-    if (!draft) return;
     setDraft({ ...draft, default_speaker_count: value });
   }
 
   function handleMedicalToggle(value: boolean) {
-    if (!draft) return;
     setDraft({ ...draft, use_medical_for_english: value });
   }
 
   function handleTranslateToggle(value: boolean) {
-    if (!draft) return;
     setDraft({ ...draft, translate_to_english: value });
   }
 
   return (
-    <PreferencesSection
-      title="Imported Audio Transcription"
+    <NavPane
+      paneId="transcription.imported-audio"
       summary={
-        draft ? (
-          <span className="text-xs text-gray-400">
-            {labelForLanguage(draft.default_language ?? "english")} ·{" "}
-            {draft.default_speaker_count ?? 2}{" "}
-            {(draft.default_speaker_count ?? 2) === 1 ? "speaker" : "speakers"}
-            {draft.use_medical_for_english ? " · Medical" : ""}
-            {draft.translate_to_english ? " · translate" : ""}
-          </span>
-        ) : undefined
+        <span className="text-xs text-gray-400">
+          {labelForLanguage(draft.default_language ?? "english")} ·{" "}
+          {draft.default_speaker_count ?? 2}{" "}
+          {(draft.default_speaker_count ?? 2) === 1 ? "speaker" : "speakers"}
+          {draft.use_medical_for_english ? " · Medical" : ""}
+          {draft.translate_to_english ? " · translate" : ""}
+        </span>
       }
-      defaultOpen
       contentClassName="border-t border-gray-100 p-4 space-y-4"
     >
-        {loading ? (
-          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
-            <Spinner />
-            <span>Loading transcription preferences...</span>
+      <div ref={containerRef} onBlur={onContainerBlur} className="space-y-4">
+        {/* Language */}
+        <fieldset data-pref-anchor="default_language">
+          <legend className="text-sm font-medium text-gray-700 mb-2">
+            Default language
+          </legend>
+          <div className="space-y-1.5">
+            {(["english", "spanish", "mixed"] as TranscriptionLanguage[]).map(
+              (lang) => (
+                <label
+                  key={lang}
+                  className="flex items-start gap-2.5 cursor-pointer"
+                >
+                  <input
+                    type="radio"
+                    name="default-language"
+                    checked={draft.default_language === lang}
+                    onChange={() => handleLanguageChange(lang)}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <span className="text-sm text-gray-900">
+                      {labelForLanguage(lang)}
+                    </span>
+                    <p className="text-xs text-gray-500">
+                      {descriptionForLanguage(lang)}
+                    </p>
+                  </div>
+                </label>
+              )
+            )}
           </div>
-        ) : !draft ? (
+        </fieldset>
+
+        {/* Speakers */}
+        <div data-pref-anchor="default_speaker_count">
+          <label className="text-sm font-medium text-gray-700 block mb-1.5">
+            Default speakers
+          </label>
+          <select
+            value={draft.default_speaker_count}
+            onChange={(e) => handleSpeakerCountChange(Number(e.target.value))}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            <option value={1}>1 — single speaker (no diarization)</option>
+            <option value={2}>2 — typical clinician + patient</option>
+            <option value={3}>3 — small group</option>
+            <option value={4}>4 — family or panel</option>
+          </select>
+          <p className="text-xs text-gray-500 mt-1">
+            Picking "1" turns diarization off and produces a single text
+            block (cheaper, faster).
+          </p>
+        </div>
+
+        {/* Medical toggle */}
+        <label
+          className="flex items-start gap-2.5 cursor-pointer"
+          data-pref-anchor="use_medical_for_english"
+        >
+          <input
+            type="checkbox"
+            checked={draft.use_medical_for_english}
+            onChange={(e) => handleMedicalToggle(e.target.checked)}
+            className="mt-0.5"
+          />
+          <div>
+            <span className="text-sm text-gray-900">
+              Use Transcribe Medical for English sessions
+            </span>
+            <p className="text-xs text-gray-500">
+              $0.075/min vs Standard $0.024/min — better recognition of
+              clinical vocabulary, drug names, and PHI tagging. Spanish and
+              Mixed sessions always use Standard.
+            </p>
+          </div>
+        </label>
+
+        {/* Translation toggle */}
+        <label
+          className="flex items-start gap-2.5 cursor-pointer"
+          data-pref-anchor="translate_to_english"
+        >
+          <input
+            type="checkbox"
+            checked={draft.translate_to_english}
+            onChange={(e) => handleTranslateToggle(e.target.checked)}
+            className="mt-0.5"
+          />
+          <div>
+            <span className="text-sm text-gray-900">
+              Translate non-English segments to English
+            </span>
+            <p className="text-xs text-gray-500">
+              When a segment's detected language isn't English, render an
+              English translation alongside the original using your
+              preferred chat model. Adds a few cents per session.
+            </p>
+          </div>
+        </label>
+
+        {syncError ? (
           <ErrorBanner
-            message={error ?? "Could not load preferences."}
+            message={`Could not save transcription preferences: ${syncError}`}
+            onRetry={() => void sync(draft)}
             className=""
           />
         ) : (
-          <>
-            <p className="text-xs text-gray-500">
-              Applied to audio files dropped onto a client record. The "Upload
-              audio file…" wizard uses these as starting values and lets you
-              override per file.
-            </p>
-
-            {/* Language */}
-            <fieldset>
-              <legend className="text-sm font-medium text-gray-700 mb-2">
-                Default language
-              </legend>
-              <div className="space-y-1.5">
-                {(["english", "spanish", "mixed"] as TranscriptionLanguage[]).map(
-                  (lang) => (
-                    <label
-                      key={lang}
-                      className="flex items-start gap-2.5 cursor-pointer"
-                    >
-                      <input
-                        type="radio"
-                        name="default-language"
-                        checked={draft.default_language === lang}
-                        onChange={() => handleLanguageChange(lang)}
-                        className="mt-0.5"
-                      />
-                      <div>
-                        <span className="text-sm text-gray-900">
-                          {labelForLanguage(lang)}
-                        </span>
-                        <p className="text-xs text-gray-500">
-                          {descriptionForLanguage(lang)}
-                        </p>
-                      </div>
-                    </label>
-                  )
-                )}
-              </div>
-            </fieldset>
-
-            {/* Speakers */}
-            <div>
-              <label className="text-sm font-medium text-gray-700 block mb-1.5">
-                Default speakers
-              </label>
-              <select
-                value={draft.default_speaker_count}
-                onChange={(e) => handleSpeakerCountChange(Number(e.target.value))}
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                <option value={1}>1 — single speaker (no diarization)</option>
-                <option value={2}>2 — typical clinician + patient</option>
-                <option value={3}>3 — small group</option>
-                <option value={4}>4 — family or panel</option>
-              </select>
-              <p className="text-xs text-gray-500 mt-1">
-                Picking "1" turns diarization off and produces a single text
-                block (cheaper, faster).
-              </p>
-            </div>
-
-            {/* Medical toggle */}
-            <label className="flex items-start gap-2.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={draft.use_medical_for_english}
-                onChange={(e) => handleMedicalToggle(e.target.checked)}
-                className="mt-0.5"
-              />
-              <div>
-                <span className="text-sm text-gray-900">
-                  Use Transcribe Medical for English sessions
-                </span>
-                <p className="text-xs text-gray-500">
-                  $0.075/min vs Standard $0.024/min — better recognition of
-                  clinical vocabulary, drug names, and PHI tagging. Spanish and
-                  Mixed sessions always use Standard.
-                </p>
-              </div>
-            </label>
-
-            {/* Translation toggle */}
-            <label className="flex items-start gap-2.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={draft.translate_to_english}
-                onChange={(e) => handleTranslateToggle(e.target.checked)}
-                className="mt-0.5"
-              />
-              <div>
-                <span className="text-sm text-gray-900">
-                  Translate non-English segments to English
-                </span>
-                <p className="text-xs text-gray-500">
-                  When a segment's detected language isn't English, render an
-                  English translation alongside the original using your
-                  preferred chat model. Adds a few cents per session.
-                </p>
-              </div>
-            </label>
-
-            {syncError ? (
-              <ErrorBanner
-                message={`Could not save transcription preferences: ${syncError}`}
-                onRetry={() => {
-                  if (draft) void sync(draft);
-                }}
-                className=""
-              />
-            ) : syncing ? (
-              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
-                <Spinner /> Saving...
-              </p>
-            ) : dirty ? (
-              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">
-                Unsaved changes...
-              </p>
-            ) : syncedOnce ? (
-              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">
-                Saved. Other computers pick this up on restart.
-              </p>
-            ) : null}
-          </>
+          <SectionSaveStatus
+            syncing={syncing}
+            dirty={dirty}
+            syncedOnce={syncedOnce}
+          />
         )}
-    </PreferencesSection>
+      </div>
+    </NavPane>
   );
 }
 
@@ -2126,3 +2829,229 @@ function descriptionForLanguage(lang: TranscriptionLanguage): string {
       return "English and Spanish interleaved. Standard engine, no PHI tagging.";
   }
 }
+
+
+// ---------------------------------------------------------------------------
+// Draft runs — the plan gate and the two supporting model roles
+// ---------------------------------------------------------------------------
+
+const PLAN_GATE_OPTIONS: {
+  value: PlanGateMode;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "gated",
+    label: "Show the section plan for review before drafting (recommended)",
+    description:
+      "The plan lands in the Draft run pane, where scope, evidence, and skipped sections can be changed before a single word is written.",
+  },
+  {
+    value: "auto_start",
+    label: "Start drafting as soon as the plan is ready",
+    description:
+      "No stop between planning and writing. The plan is still shown beside the progress, and the run can still be stopped.",
+  },
+];
+
+/**
+ * Everything about how a whole-report draft is planned.
+ *
+ * The two model pickers name the supporting roles only — the writer keeps its
+ * own picker beside the draft — and leaving either on the default lets Claria
+ * resolve it at call time, so an account that gains a better model gets it
+ * without anyone editing a setting.
+ */
+function DraftRunsSection() {
+  const { data } = useSyncedPreferences();
+  return data ? (
+    <DraftRunsBody initial={data.draft_pipeline} />
+  ) : (
+    <PendingSyncedPane
+      paneId="writer.draft-runs"
+      loadingLabel="Loading draft run settings..."
+      errorMessage="Could not load the draft run settings."
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    />
+  );
+}
+
+function DraftRunsBody({ initial }: { initial: DraftPipelinePreferences }) {
+  const {
+    models: chatModels,
+    loading: modelsLoading,
+    error: modelsError,
+  } = useChatModels();
+  const [snapshot, setSnapshot] = useState<DraftPipelinePreferences>(initial);
+  const [draft, setDraft] = useState<DraftPipelinePreferences>(initial);
+  const [syncing, setSyncing] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [syncedOnce, setSyncedOnce] = useState(false);
+
+  const dirty = JSON.stringify(snapshot) !== JSON.stringify(draft);
+
+  const sync = useCallback(async (next: DraftPipelinePreferences) => {
+    setSyncing(true);
+    setSaveError(null);
+    try {
+      // Patch-save: only the drafting-pipeline fields travel, so this section
+      // cannot roll back a model, cost, or writer-limits edit.
+      const updated = await savePreferencesPatch({ draft_pipeline: next });
+      setSnapshot(updated.draft_pipeline);
+      setSyncedOnce(true);
+    } catch (e) {
+      logFrontendEvent("error", `draft run preferences save failed: ${e}`);
+      setSaveError(String(e));
+    } finally {
+      setSyncing(false);
+    }
+  }, []);
+
+  const pendingRef = useRef<DraftPipelinePreferences | null>(null);
+  useEffect(() => {
+    pendingRef.current = dirty ? draft : null;
+  }, [dirty, draft]);
+  const flush = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    pendingRef.current = null;
+    void sync(pending);
+  }, [sync]);
+  const { containerRef, onContainerBlur } = useSaveOnLeave(flush);
+
+  const gate = draft.plan_gate;
+  const active = PLAN_GATE_OPTIONS.find((option) => option.value === gate);
+
+  return (
+    <NavPane
+      paneId="writer.draft-runs"
+      summary={
+        active ? (
+          <span className="text-xs text-gray-400">
+            {gate === "gated" ? "Plan reviewed first" : "Drafts immediately"}
+          </span>
+        ) : undefined
+      }
+      contentClassName="border-t border-gray-100 p-4 space-y-4"
+    >
+      <div ref={containerRef} onBlur={onContainerBlur} className="space-y-4">
+        <fieldset className="space-y-3" data-pref-anchor="plan_gate">
+          <legend className="text-xs font-medium text-gray-700">
+            Before drafting starts
+          </legend>
+          {PLAN_GATE_OPTIONS.map((option) => (
+            <label key={option.value} className="flex items-start gap-2">
+              <input
+                type="radio"
+                name="plan-gate"
+                value={option.value}
+                checked={gate === option.value}
+                onChange={() =>
+                  setDraft({ ...draft, plan_gate: option.value })
+                }
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm text-gray-700 block">
+                  {option.label}
+                </span>
+                <span className="text-xs text-gray-500 block">
+                  {option.description}
+                </span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+
+        <div className="space-y-3">
+          <div data-pref-anchor="planner_model_id">
+            <label className="text-xs text-gray-600" htmlFor="planner-model">
+              Planning model
+            </label>
+            <p className="text-xs text-gray-500">
+              Reads the records and decides what each section should cover.
+            </p>
+            <ModelSelect
+              models={chatModels}
+              loading={modelsLoading}
+              error={modelsError}
+              value={draft.planner_model_id ?? ""}
+              onChange={(modelId) =>
+                setDraft({
+                  ...draft,
+                  planner_model_id: modelId === "" ? null : modelId,
+                })
+              }
+              ariaLabel="Planning model"
+              className="mt-1 w-full"
+              defaultOption
+            />
+          </div>
+          <div data-pref-anchor="reviewer_model_id">
+            <label className="text-xs text-gray-600" htmlFor="reviewer-model">
+              Review model
+            </label>
+            <p className="text-xs text-gray-500">
+              Reads the finished draft back and raises findings against it.
+            </p>
+            <ModelSelect
+              models={chatModels}
+              loading={modelsLoading}
+              error={modelsError}
+              value={draft.reviewer_model_id ?? ""}
+              onChange={(modelId) =>
+                setDraft({
+                  ...draft,
+                  reviewer_model_id: modelId === "" ? null : modelId,
+                })
+              }
+              ariaLabel="Review model"
+              className="mt-1 w-full"
+              defaultOption
+            />
+          </div>
+        </div>
+
+        {saveError ? (
+          <ErrorBanner
+            message={`Could not save draft run settings: ${saveError}`}
+            onRetry={() => void sync(draft)}
+            className=""
+          />
+        ) : (
+          <SectionSaveStatus
+            syncing={syncing}
+            dirty={dirty}
+            syncedOnce={syncedOnce}
+          />
+        )}
+      </div>
+    </NavPane>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pane registry — every PaneId maps to the component that renders it. A
+// component serving several panes (shared state) appears once per pane and
+// is mounted once by CategoryPanes. The page test asserts every pane in
+// PREFERENCES_NAV actually mounts.
+// ---------------------------------------------------------------------------
+
+const PANE_COMPONENTS: Record<PaneId, ComponentType> = {
+  "claude.preferred-model": PreferredModelSection,
+  "claude.chat-streaming": ChatStreamingSection,
+  "claude.model-tuning": ModelTuningSection,
+  "prompts.chat-system": ChatSystemPromptSection,
+  "prompts.pdf-extraction": PdfExtractionPromptSection,
+  "writer.prompt": WriterPromptEditors,
+  "writer.whole-report": WriterPromptEditors,
+  "writer.prompt-library": WriterPromptsSection,
+  "writer.templates": WriterTemplatesSection,
+  "writer.draft-runs": DraftRunsSection,
+  "writer.limits": ReportAuthoringSection,
+  "transcription.imported-audio": TranscriptionSection,
+  "transcription.local-models": LocalTranscriptionPanes,
+  "transcription.local-compute": LocalTranscriptionPanes,
+  "transcription.local-decoding": LocalTranscriptionPanes,
+  "billing.cost-explorer": CostExplorerSection,
+};

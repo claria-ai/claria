@@ -15,6 +15,8 @@ import type {
   ChatHistorySummary,
   ChatMessage,
   ChatStreamEvent,
+  CompletionReport,
+  ConfigInfo,
   ConsoleDelta,
   CostAndUsageResult,
   CostGranularity,
@@ -23,8 +25,10 @@ import type {
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  DraftRun,
   EditorHistoryEntry,
   FileVersion,
+  FindingAction,
   FullReportGenerationResponse,
   InfraChatResponse,
   LocalModelId,
@@ -33,6 +37,7 @@ import type {
   ModelDownloadProgress,
   ModelPricing,
   PlanEntry,
+  PlanEntryEdit,
   PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
@@ -43,6 +48,8 @@ import type {
   ReportDraftEdit,
   ReportDraft,
   ReportExportResult,
+  ReportFindings,
+  ReportFindingResolution,
   ReportProposalChoice,
   ReportRevisionView,
   ReportTemplatePreview,
@@ -76,23 +83,37 @@ export type {
   ChatResponse,
   ChatRole,
   ChatStreamEvent,
+  ChatStreamMode,
   ClientNameHistoryEntry,
   ClientNameUpdate,
   ClientRecordDetails,
   ClientSummary,
   CacheTtlChoice,
+  CompletionCheck,
+  CompletionCheckKind,
+  CompletionReport,
   ConfigInfo,
   ConsoleDelta,
   ConsoleEntry,
+  ConflictingRef,
   CredentialAssessment,
   CredentialClass,
   CredentialInput,
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  DraftPipelinePreferences,
+  DraftPlanEntry,
+  DraftRun,
+  DraftRunStatus,
   EditorHistoryEntry,
+  EvidenceRef,
   FieldDrift,
   FileVersion,
+  Finding,
+  FindingAction,
+  FindingAnchor,
+  FindingStatus,
   FullReportGenerationResponse,
   InfraChatResponse,
   Lifecycle,
@@ -108,10 +129,13 @@ export type {
   ModelPricing,
   NewCredentialsInfo,
   PlanEntry,
+  PlanEntryEdit,
+  PlanGateMode,
   PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
   ProvisionerProgress,
+  RecordCitation,
   RecordContext,
   RecordFile,
   ReportAuthoringPreferences,
@@ -126,6 +150,8 @@ export type {
   ReportExportResult,
   ReportExportStatus,
   ReportExport,
+  ReportFindings,
+  ReportFindingResolution,
   ReportOperation,
   ReportProposalChoice,
   ReportProposalDecision,
@@ -145,6 +171,15 @@ export type {
   ReportTurnResponse,
   ReportWorkspaceView,
   ResourceSpec,
+  ReviewCoverage,
+  ReviewPass,
+  RunInstruction,
+  RunPlan,
+  RunSection,
+  RunSectionState,
+  SectionIntent,
+  StyleProposal,
+  TextSpan,
   Severity,
   SpeakerMode,
   StepStatus,
@@ -552,12 +587,18 @@ export async function discardReportTemplatePreview(
   unwrap(await commands.discardReportTemplatePreview(importId));
 }
 
+/**
+ * Fill the whole report from every readable record. `streamId` is minted by
+ * the caller before invoking, so the run can be stopped mid-generation with
+ * {@link stopStream}; a stopped run keeps every section it had already saved.
+ */
 export async function generateFullReport(
   clientId: string,
   reportId: string,
   expectedRevision: number,
   modelId: string,
   guidance: string,
+  streamId: string,
   onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<FullReportGenerationResponse> {
   const channel = new Channel<ReportTurnProgressView>();
@@ -569,18 +610,157 @@ export async function generateFullReport(
       expectedRevision,
       modelId,
       guidance,
+      streamId,
       channel
     )
   );
 }
 
+/**
+ * The drafting run the writer should reattach to, or `null` when this report
+ * has nothing resumable: no run owns the session, and no interrupted run still
+ * matches the current revision.
+ */
+export async function loadDraftRun(
+  clientId: string,
+  reportId: string
+): Promise<DraftRun | null> {
+  return unwrap(await commands.loadDraftRun(clientId, reportId));
+}
+
+/**
+ * Keep what an interrupted run wrote as a new revision. Sections it never
+ * finished are saved as skipped placeholders.
+ */
+export async function finalizePartialDraft(
+  clientId: string,
+  reportId: string,
+  runId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.finalizePartialDraft(clientId, reportId, runId));
+}
+
+/** Discard a drafting run. The report itself is left exactly as it is. */
+export async function abandonDraftRun(
+  clientId: string,
+  reportId: string,
+  runId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.abandonDraftRun(clientId, reportId, runId));
+}
+
+/**
+ * Plan a whole-report draft and leave it at the gate. The report is held by
+ * the returned run until the plan is started or the run is abandoned.
+ *
+ * `streamId` is minted by the caller before invoking, so the plan pass can be
+ * stopped with {@link stopStream}.
+ */
+export async function generateDraftPlan(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number,
+  instructions: string,
+  streamId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<DraftRun> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.generateDraftPlan(
+      clientId,
+      reportId,
+      expectedRevision,
+      instructions,
+      streamId,
+      channel
+    )
+  );
+}
+
+/** Apply the clinician's gate edits to a plan waiting for approval. */
+export async function updateDraftPlan(
+  clientId: string,
+  reportId: string,
+  runId: string,
+  edits: PlanEntryEdit[]
+): Promise<DraftRun> {
+  return unwrap(
+    await commands.updateDraftPlan(clientId, reportId, runId, edits)
+  );
+}
+
+/**
+ * Approve the plan and draft the report it describes. `streamId` is minted by
+ * the caller before invoking, so the run can be stopped with
+ * {@link stopStream}; a stopped run keeps every section it had already saved.
+ */
+export async function startDraftRun(
+  clientId: string,
+  reportId: string,
+  runId: string,
+  modelId: string,
+  streamId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<FullReportGenerationResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.startDraftRun(
+      clientId,
+      reportId,
+      runId,
+      modelId,
+      streamId,
+      channel
+    )
+  );
+}
+
+/**
+ * Pick an interrupted drafting run back up. Passing instructions re-plans the
+ * run through the planning model first; passing none decides it in code.
+ *
+ * `streamId` is minted by the caller before invoking, so a resumed run can be
+ * stopped with {@link stopStream} exactly like the first attempt.
+ */
+export async function resumeDraftRun(
+  clientId: string,
+  reportId: string,
+  runId: string,
+  updatedInstructions: string | null,
+  modelId: string,
+  streamId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<FullReportGenerationResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.resumeDraftRun(
+      clientId,
+      reportId,
+      runId,
+      updatedInstructions,
+      modelId,
+      streamId,
+      channel
+    )
+  );
+}
+
+/**
+ * One targeted writer turn. `streamId` is minted by the caller before
+ * invoking, so the turn can be stopped with {@link stopStream}; a stopped
+ * turn changes nothing.
+ */
 export async function sendReportMessage(
   clientId: string,
   reportId: string,
   expectedRevision: number,
   modelId: string,
   instruction: string,
-  references: ReportBlockReferenceInput[] = [],
+  references: ReportBlockReferenceInput[],
+  streamId: string,
   onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<ReportTurnResponse> {
   const channel = new Channel<ReportTurnProgressView>();
@@ -593,6 +773,7 @@ export async function sendReportMessage(
       modelId,
       instruction,
       references,
+      streamId,
       channel
     )
   );
@@ -607,6 +788,52 @@ export async function resolveReportProposal(
   return unwrap(
     await commands.resolveReportProposal(clientId, reportId, proposalId, decision)
   );
+}
+
+/**
+ * Review one accepted revision for every property at once. The seven passes
+ * run in parallel, so this resolves when the slowest of them does.
+ */
+export async function runReviewSweeps(
+  clientId: string,
+  reportId: string,
+  revision: number,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<ReportFindings> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.runReviewSweeps(clientId, reportId, revision, channel)
+  );
+}
+
+export async function listReportFindings(
+  clientId: string,
+  reportId: string
+): Promise<ReportFindings> {
+  return unwrap(await commands.listReportFindings(clientId, reportId));
+}
+
+export async function resolveReportFinding(
+  clientId: string,
+  reportId: string,
+  findingId: string,
+  action: FindingAction
+): Promise<ReportFindingResolution> {
+  return unwrap(
+    await commands.resolveReportFinding(clientId, reportId, findingId, action)
+  );
+}
+
+/**
+ * Answer the completion checklist for one report. Read-only, and decided
+ * entirely by code — no model is asked whether the report is finished.
+ */
+export async function evaluateReportCompletion(
+  clientId: string,
+  reportId: string
+): Promise<CompletionReport> {
+  return unwrap(await commands.evaluateReportCompletion(clientId, reportId));
 }
 
 export async function exportReportDocx(
@@ -686,6 +913,7 @@ export async function chatMessage(
   clientId: string,
   modelId: string,
   messages: ChatMessage[],
+  streamId: string,
   chatId?: string | null,
   contextFilenames?: string[],
   chatName?: string | null,
@@ -699,6 +927,7 @@ export async function chatMessage(
       chatId ?? null,
       chatName ?? null,
       contextFilenames ?? [],
+      streamId,
       chatStreamChannel(onEvent)
     )
   );
@@ -708,6 +937,7 @@ export async function infraChat(
   modelId: string,
   messages: ChatMessage[],
   planEntries: PlanEntry[],
+  streamId: string,
   onEvent?: (event: ChatStreamEvent) => void
 ): Promise<InfraChatResponse> {
   return unwrap(
@@ -715,9 +945,24 @@ export async function infraChat(
       modelId,
       messages,
       planEntries,
+      streamId,
       chatStreamChannel(onEvent)
     )
   );
+}
+
+/**
+ * End the in-flight stream identified by `streamId`: a chat reply, a writer
+ * turn, or a whole-report drafting run.
+ *
+ * What stopping keeps depends on what was running. A chat turn keeps whatever
+ * text arrived and returns normally with a `stopped_by_user` stop reason; a
+ * drafting run keeps every section it had already saved and comes back as a
+ * stopped run to pick back up. Safe to call for work that has already
+ * finished.
+ */
+export async function stopStream(streamId: string): Promise<void> {
+  unwrap(await commands.stopStream(streamId));
 }
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {
@@ -748,6 +993,33 @@ export async function renameChatHistory(
 
 export async function setPreferredModel(modelId: string | null): Promise<void> {
   unwrap(await commands.setPreferredModel(modelId));
+}
+
+// ---------------------------------------------------------------------------
+// Preferences file wrappers — export, import, and version history for
+// _state/preferences.json
+// ---------------------------------------------------------------------------
+
+/** Save the synced preferences file locally. Resolves false on cancel. */
+export async function exportPreferences(): Promise<boolean> {
+  return unwrap(await commands.exportPreferences());
+}
+
+/** Replace the synced preferences from a local export. Null on cancel. */
+export async function importPreferences(): Promise<ConfigInfo | null> {
+  return unwrap(await commands.importPreferences());
+}
+
+export async function listPreferencesVersions(): Promise<FileVersion[]> {
+  return unwrap(await commands.listPreferencesVersions());
+}
+
+export async function getPreferencesVersion(versionId: string): Promise<string> {
+  return unwrap(await commands.getPreferencesVersion(versionId));
+}
+
+export async function restorePreferencesVersion(versionId: string): Promise<void> {
+  unwrap(await commands.restorePreferencesVersion(versionId));
 }
 
 // ---------------------------------------------------------------------------

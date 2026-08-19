@@ -81,9 +81,7 @@ async fn get_object_with_limit(
         .await
         .map_err(|e| {
             if matches!(e.as_service_error(), Some(err) if err.is_no_such_key()) {
-                StorageError::NotFound {
-                    key: key.to_string(),
-                }
+                StorageError::NotFound { key: key.into() }
             } else {
                 StorageError::GetObject(sdk_error_message(&e))
             }
@@ -93,7 +91,7 @@ async fn get_object_with_limit(
         let actual_bytes = u64::try_from(content_length).unwrap_or(u64::MAX);
         if actual_bytes > max_bytes {
             return Err(StorageError::ObjectTooLarge {
-                key: key.to_string(),
+                key: key.into(),
                 actual_bytes,
                 max_bytes,
             });
@@ -114,7 +112,7 @@ async fn get_object_with_limit(
         && body.len() as u64 > max_bytes
     {
         return Err(StorageError::ObjectTooLarge {
-            key: key.to_string(),
+            key: key.into(),
             actual_bytes: body.len() as u64,
             max_bytes,
         });
@@ -243,9 +241,7 @@ async fn put_object_conditional(
                     .and_then(|err| err.meta().code())
                     .map(ToString::to_string);
                 if status == Some(412) || code.as_deref() == Some("PreconditionFailed") {
-                    return Err(StorageError::PreconditionFailed {
-                        key: key.to_string(),
-                    });
+                    return Err(StorageError::PreconditionFailed { key: key.into() });
                 }
                 if status == Some(409) || code.as_deref() == Some("ConditionalRequestConflict") {
                     if attempt < MAX_CONFLICT_RETRIES {
@@ -253,18 +249,14 @@ async fn put_object_conditional(
                             .await;
                         continue;
                     }
-                    return Err(StorageError::ConditionalRequestConflict {
-                        key: key.to_string(),
-                    });
+                    return Err(StorageError::ConditionalRequestConflict { key: key.into() });
                 }
                 return Err(StorageError::PutObject(sdk_error_message(&error)));
             }
         }
     }
 
-    Err(StorageError::ConditionalRequestConflict {
-        key: key.to_string(),
-    })
+    Err(StorageError::ConditionalRequestConflict { key: key.into() })
 }
 
 /// Put an object to S3 only when the key has no current object.
@@ -415,7 +407,7 @@ pub async fn delete_objects(
                 .map(|e| {
                     format!(
                         "{} ({}: {})",
-                        e.key().unwrap_or("<unknown key>"),
+                        log_safe_key(e.key().unwrap_or("<unknown key>")),
                         e.code().unwrap_or("<no code>"),
                         e.message().unwrap_or("<no message>"),
                     )
@@ -709,9 +701,7 @@ pub async fn restore_deleted_object_if_absent(
     let version = versions
         .iter()
         .find(|version| !version.is_delete_marker)
-        .ok_or_else(|| StorageError::NotFound {
-            key: key.to_string(),
-        })?;
+        .ok_or_else(|| StorageError::NotFound { key: key.into() })?;
     let output = get_object_version(client, bucket, key, &version.version_id).await?;
     match put_object_if_none_match(
         client,
@@ -770,7 +760,7 @@ pub async fn restore_deleted_objects_by_prefix(
         let mut details: Vec<String> = failures
             .iter()
             .take(MAX_REPORTED_OBJECT_ERRORS)
-            .map(|(key, error)| format!("{key} ({error})"))
+            .map(|(key, error)| format!("{} ({error})", log_safe_key(key)))
             .collect();
         if failed > MAX_REPORTED_OBJECT_ERRORS {
             details.push(format!("and {} more", failed - MAX_REPORTED_OBJECT_ERRORS));
@@ -846,9 +836,7 @@ pub async fn get_object_version(
         .await
         .map_err(|e| {
             if matches!(e.as_service_error(), Some(err) if err.is_no_such_key()) {
-                StorageError::NotFound {
-                    key: key.to_string(),
-                }
+                StorageError::NotFound { key: key.into() }
             } else {
                 StorageError::GetObject(sdk_error_message(&e))
             }

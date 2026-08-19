@@ -23,16 +23,18 @@ same package.
 
 Applying a template to a session sets the working draft to that imported
 content — headings **and** boilerplate body text. From then on the template
-is *data*, delivered to the model inside `<untrusted_report_context>` with
-`template_import` provenance (import revision, warnings, and whether
-carryover has been reviewed for the current revision).
+is *data*, delivered to the model inside `<untrusted_report_context>` in
+targeted editing and `<untrusted_template_context>` in whole-report
+drafting, both carrying `template_import` provenance (import revision,
+warnings, and whether carryover has been reviewed for the current revision).
 
 **Hydration is judgment, not substitution.** The whole-report prompt tells
-the model to decide every supplied section — copying each `section_id`
-exactly and either rewriting it or, when the user's guidance defers it to a
-later pass, explicitly skipping it, so no template section survives by
-omission — while preserving useful headings, table structure, and row
-meaning, and leaving unknown cells blank rather than inventing values. A
+the model to decide every planned section — copying each `section_id`
+exactly and either rewriting it, explicitly skipping it when the plan or the
+user's guidance defers it to a later pass, or marking it failed when the
+records cannot support it, so no template section survives by omission —
+while preserving useful headings, table structure, and row meaning, and
+leaving unknown cells blank rather than inventing values. A
 skipped section keeps its heading as an empty deferred placeholder; its
 boilerplate body is dropped rather than carried, and export omits the
 section until content is written into it. In practice the model carries
@@ -56,12 +58,29 @@ media, page setup all remain the original bytes — and rewrites only
 
 - Unchanged content returns the source bytes exactly.
 - Same-structure edits patch text in place, keeping every run property.
-- Structural changes rebuild the body by cloning template paragraphs as
-  formatting **exemplars**, chosen proportionally by kind (title, heading,
-  body, list, table). Text unrelated to an exemplar's own words lands in
-  its dominant run with direct bold/underline/italic stripped, so a field
-  label or signature blank can't stamp its decoration onto generated prose;
-  fonts, sizes, and paragraph spacing carry over.
+- Structural changes rebuild the body **section by section**. The export
+  imports the template and classifies its paragraphs against that carve, so
+  it can never disagree with the import about what a heading is. Draft
+  sections align to template sections by heading text, renamed headings
+  included; a section's blocks map in order by kind onto the paragraphs the
+  author wrote for it, so a rewritten heading keeps the author's own bold
+  paragraph. Blocks that outgrow a section clone a formatting **exemplar**
+  from within it, then from the nearest same-kind paragraph document-wide.
+  Text unrelated to a cloned exemplar's own words lands in its dominant run
+  with direct bold/underline/italic stripped — except on headings, where
+  that decoration is what makes the paragraph a heading — so a field label
+  or signature blank can't stamp its decoration onto generated prose; fonts,
+  sizes, and paragraph spacing carry over.
+- Content the accepted draft does not hold is never re-emitted. Template
+  material between recognised paragraphs survives only when it carries no
+  content (blank spacers, `sectPr`, bookmarks); a table the walker cannot
+  represent is dropped rather than scattered through the export.
+- Merged cells (`gridSpan`/`vMerge`) are read as the rectangle they
+  describe, by one rule both the import and the export call, so the score
+  tables clinical templates are built from reach the model — which can then
+  fill them or delete them, and could do neither while they were dropped. A
+  filled table is written back into the template's own merged cells; the
+  merges survive.
 
 Every export reports a fidelity level (`Exact`, `PatchedInPlace`,
 `Reconstructed`, `PlainBodyFallback`) and the UI says so when formatting
@@ -77,7 +96,8 @@ boundary is enforced in three stacked ways:
 
 1. **Instructions first, data after, in named delimiters.** The system
    prompt names the exact tags (`<untrusted_report_context>`,
-   `<untrusted_record_context>`, chat's `<record_context>`) and states that
+   `<untrusted_template_context>`, `<untrusted_record_context>`,
+   `<plan_context>`, chat's `<record_context>`) and states that
    everything inside them is data, never instructions. Content is escaped
    only where it could forge those delimiters — a document containing
    `</untrusted_report_context>` cannot close the region, while ordinary

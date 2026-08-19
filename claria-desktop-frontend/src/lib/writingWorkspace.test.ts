@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   cloneReportEdit,
+  countReportEdits,
   draftToEdit,
   moveItem,
   newReportSection,
@@ -69,6 +70,45 @@ describe("report edit helpers", () => {
     expect(
       validateReportEdit({ title: "Report", sections: [section] })
     ).toEqual([]);
+  });
+
+  it("rejects content under a section that is still skipped", () => {
+    const skipped = {
+      id: "section-1",
+      heading: "Summary",
+      blocks: [],
+      skipped: true,
+    };
+    expect(
+      validateReportEdit({ title: "Report", sections: [skipped] })
+    ).toEqual([]);
+
+    expect(
+      validateReportEdit({
+        title: "Report",
+        sections: [
+          { ...skipped, blocks: [{ kind: "paragraph", text: "Written" }] },
+        ],
+      })
+    ).toEqual([
+      "Section 1 is skipped — choose Include this section before writing into it.",
+    ]);
+  });
+
+  it("counts including a skipped section as an edit", () => {
+    const baseline = {
+      title: "Report",
+      sections: [
+        { id: "section-1", heading: "Summary", blocks: [], skipped: true },
+      ],
+    };
+    const included = {
+      title: "Report",
+      sections: [
+        { id: "section-1", heading: "Summary", blocks: [], skipped: false },
+      ],
+    };
+    expect(countReportEdits(baseline, included)).toBe(1);
   });
 
   it("creates a rectangular editable table", () => {

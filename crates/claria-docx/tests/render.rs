@@ -21,6 +21,9 @@ fn draft() -> ReportDraft {
             sections: vec![
                 ReportSection {
                     skipped: false,
+                    template_blocks: None,
+                    template_directives: Vec::new(),
+                    authorship: None,
                     id: "11111111-1111-4111-8111-111111111111".parse().unwrap(),
                     heading: "History — 東京".to_string(),
                     blocks: vec![ReportBlock::Paragraph {
@@ -29,6 +32,9 @@ fn draft() -> ReportDraft {
                 },
                 ReportSection {
                     skipped: false,
+                    template_blocks: None,
+                    template_directives: Vec::new(),
+                    authorship: None,
                     id: "22222222-2222-4222-8222-222222222222".parse().unwrap(),
                     heading: "Recommendations".to_string(),
                     blocks: vec![ReportBlock::BulletList {
@@ -230,6 +236,9 @@ fn deferred_sections_are_left_out_of_both_exports() {
             heading: "Summary and Clinical Interpretation".to_string(),
             blocks: Vec::new(),
             skipped: true,
+            template_blocks: None,
+            template_directives: Vec::new(),
+            authorship: None,
         },
     );
     let bytes = render_report(&report).expect("render with deferred section");
@@ -486,6 +495,9 @@ fn template_render_reuses_source_styles_for_new_sections() {
     report.content = imported.content;
     report.content.sections.push(ReportSection {
         skipped: false,
+        template_blocks: None,
+        template_directives: Vec::new(),
+        authorship: None,
         id: "33333333-3333-4333-8333-333333333333".parse().unwrap(),
         heading: "Added section".to_string(),
         blocks: vec![ReportBlock::Paragraph {

@@ -169,7 +169,7 @@ pub async fn restore_client(
     // restored. Only the separate, opt-in report workspace follows the
     // restored client.
     let report_restored =
-        claria_report_authoring::restore_report_workspace_for_client(s3, bucket, client_id)
+        claria_report_store::restore_report_workspace_for_client(s3, bucket, client_id)
             .await
             .map_err(|source| RecordsError::ReportRestore { source })?;
     delete_if_exists(

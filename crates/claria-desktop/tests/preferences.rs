@@ -1,8 +1,8 @@
 //! Tests for synced workflow preferences and their backward-compatible defaults.
 
 use claria_desktop::config::{
-    ClariaConfig, CredentialSource, ReportAuthoringPreferences, SyncedPreferences,
-    TranscriptionLanguage, TranscriptionPreferences,
+    ChatStreamMode, ClariaConfig, CredentialSource, DraftPipelinePreferences, PlanGateMode,
+    ReportAuthoringPreferences, SyncedPreferences, TranscriptionLanguage, TranscriptionPreferences,
 };
 
 fn sample_config() -> ClariaConfig {
@@ -25,6 +25,8 @@ fn sample_config() -> ClariaConfig {
         },
         report_authoring: ReportAuthoringPreferences::default(),
         model_tuning: Default::default(),
+        chat_streaming: ChatStreamMode::Token,
+        draft_pipeline: DraftPipelinePreferences::default(),
     }
 }
 
@@ -67,8 +69,15 @@ fn apply_to_config_leaves_machine_local_fields_alone() {
             max_converse_calls: 13,
             max_tool_uses_per_response: 16,
             max_retained_turns: 30,
+            ..ReportAuthoringPreferences::default()
         },
         model_tuning: Default::default(),
+        chat_streaming: ChatStreamMode::Off,
+        draft_pipeline: DraftPipelinePreferences {
+            plan_gate: PlanGateMode::AutoStart,
+            planner_model_id: Some("us.anthropic.claude-haiku-4-5-20251001-v1:0".into()),
+            reviewer_model_id: None,
+        },
     };
 
     synced.apply_to_config(&mut cfg);
@@ -92,6 +101,12 @@ fn apply_to_config_leaves_machine_local_fields_alone() {
     );
     assert_eq!(cfg.report_authoring.max_tool_rounds, 12);
     assert_eq!(cfg.report_authoring.max_converse_calls, 13);
+    assert_eq!(cfg.chat_streaming, ChatStreamMode::Off);
+    assert_eq!(cfg.draft_pipeline.plan_gate, PlanGateMode::AutoStart);
+    assert_eq!(
+        cfg.draft_pipeline.planner_model_id.as_deref(),
+        Some("us.anthropic.claude-haiku-4-5-20251001-v1:0")
+    );
 }
 
 #[test]
@@ -102,7 +117,9 @@ fn synced_preferences_serialize_snake_case() {
     assert!(json.contains("\"default_language\":\"mixed\""));
     assert!(json.contains("\"use_medical_for_english\":true"));
     assert!(json.contains("\"max_tool_rounds\":40"));
-    assert!(json.contains("\"preferences_version\":3"));
+    assert!(json.contains("\"preferences_version\":5"));
+    assert!(json.contains("\"plan_gate\":\"gated\""));
+    assert!(json.contains("\"chat_streaming\":\"token\""));
 }
 
 #[test]
@@ -134,6 +151,8 @@ fn legacy_v5_config_migrates_to_v6_with_default_transcription() {
     assert_eq!(cfg.report_authoring.max_converse_calls, 50);
     assert_eq!(cfg.report_authoring.max_tool_uses_per_response, 80);
     assert_eq!(cfg.report_authoring.max_retained_turns, 200);
+    // A config written before the setting existed reads as the new default.
+    assert_eq!(cfg.chat_streaming, ChatStreamMode::Paragraph);
 }
 
 #[test]

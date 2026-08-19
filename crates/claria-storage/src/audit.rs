@@ -67,7 +67,14 @@
 //!
 //! Purge `_audit/` of pre-v2 objects when deploying this. The actions that
 //! were renamed: `chat_message`, `infra_chat`, `extract_document_text`,
-//! `translate_transcript`, `save_transcript_edits`.
+//! `translate_transcript`, `save_transcript_edits`, and every action the
+//! report-authoring and preferences surfaces wrote as a bare string —
+//! `draft_plan_generated`, `draft_plan_edited`, `draft_run_started`,
+//! `draft_run_resumed`, `draft_run_stopped`, `draft_run_abandoned`,
+//! `draft_run_finalized_partial`, `review_sweep_completed`,
+//! `finding_applied`, `finding_undone`, `finding_dismissed`,
+//! `preferences_imported`, `preferences_version_restored` — which now carry
+//! the `{noun}.{verb}` spelling and a category like everything else.
 //!
 //! # When per-operator identity arrives
 //!
@@ -243,6 +250,25 @@ pub mod actions {
     pub const REPORT_PROPOSAL_ACCEPT: Action = mutation("report.proposal_accept");
     /// A writer proposal was rejected.
     pub const REPORT_PROPOSAL_REJECT: Action = mutation("report.proposal_reject");
+    /// The section plan for a whole-report draft was edited by hand before
+    /// the run was let off the gate.
+    pub const REPORT_DRAFT_PLAN_EDIT: Action = mutation("report.draft_plan_edit");
+    /// A gated draft run was released and began drafting.
+    pub const REPORT_DRAFT_RUN_START: Action = mutation("report.draft_run_start");
+    /// A parked draft run picked up the sections it had not reached.
+    pub const REPORT_DRAFT_RUN_RESUME: Action = mutation("report.draft_run_resume");
+    /// A partial draft run was cut into a revision as-is, leaving its
+    /// unreached sections undrafted.
+    pub const REPORT_DRAFT_RUN_FINALIZE_PARTIAL: Action =
+        mutation("report.draft_run_finalize_partial");
+    /// A draft run was thrown away without being finalized.
+    pub const REPORT_DRAFT_RUN_ABANDON: Action = mutation("report.draft_run_abandon");
+    /// A review finding was applied to the report.
+    pub const REPORT_FINDING_APPLY: Action = mutation("report.finding_apply");
+    /// An applied review finding was undone.
+    pub const REPORT_FINDING_UNDO: Action = mutation("report.finding_undo");
+    /// A review finding was dismissed without being applied.
+    pub const REPORT_FINDING_DISMISS: Action = mutation("report.finding_dismiss");
 
     // -- ai: a model or Transcribe invocation, carries cost --------------
     /// One chat turn against a client's records.
@@ -265,6 +291,15 @@ pub mod actions {
     pub const REPORT_TOOL_TURN: Action = ai("report.tool_turn");
     /// A writer tool-use round that failed, with the spend it still incurred.
     pub const REPORT_TOOL_TURN_FAILED: Action = ai("report.tool_turn_failed");
+    /// A whole-report draft the user stopped. It changed nothing, but it
+    /// spent tokens before it was cut, so the receipt keeps that traceable.
+    pub const REPORT_DRAFT_RUN_STOPPED: Action = ai("report.draft_run_stopped");
+    /// A writer tool-use round the user stopped, with the spend it incurred.
+    pub const REPORT_TOOL_TURN_STOPPED: Action = ai("report.tool_turn_stopped");
+    /// A section plan was generated for a whole-report draft.
+    pub const REPORT_DRAFT_PLAN_GENERATE: Action = ai("report.draft_plan_generate");
+    /// A review sweep ran every property against an accepted revision.
+    pub const REPORT_REVIEW_SWEEP: Action = ai("report.review_sweep");
 
     // -- admin: non-PHI operational --------------------------------------
     /// A custom prompt was saved.
@@ -273,6 +308,11 @@ pub mod actions {
     pub const PROMPT_DELETE: Action = admin("prompt.delete");
     /// A custom prompt was reset to the built-in default.
     pub const PROMPT_RESTORE: Action = admin("prompt.restore");
+    /// A preferences bundle was imported over the current settings. The
+    /// bundle is machine configuration, not client data.
+    pub const PREFERENCES_IMPORT: Action = admin("preferences.import");
+    /// Preferences were rolled back to an earlier stored version.
+    pub const PREFERENCES_VERSION_RESTORE: Action = admin("preferences.version_restore");
     /// A saved writer steering prompt was created. These are shared across
     /// clients and are meant to carry placeholders rather than client
     /// details, which is why they are administrative and not a record

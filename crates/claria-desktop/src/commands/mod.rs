@@ -10,10 +10,14 @@ pub mod chat;
 pub mod clients;
 pub mod config;
 pub mod console;
+pub mod findings;
+pub mod plan;
 pub mod prompts;
 pub mod provision;
 pub mod records;
 pub mod report;
+pub mod runs;
+pub mod streams;
 pub mod system;
 pub mod transcribe;
 pub mod versions;
@@ -23,10 +27,14 @@ pub use chat::*;
 pub use clients::*;
 pub use config::*;
 pub use console::*;
+pub use findings::*;
+pub use plan::*;
 pub use prompts::*;
 pub use provision::*;
 pub use records::*;
 pub use report::*;
+pub use runs::*;
+pub use streams::*;
 pub use system::*;
 pub use transcribe::*;
 pub use versions::*;
@@ -55,7 +63,9 @@ pub enum CommandError {
     #[error(transparent)]
     Provisioner(#[from] claria_provisioner::ProvisionerError),
     #[error(transparent)]
-    ReportAuthoring(#[from] claria_report_authoring::ReportAuthoringError),
+    ReportPipeline(#[from] claria_report_pipeline::ReportPipelineError),
+    #[error(transparent)]
+    ReportStore(#[from] claria_report_store::ReportStoreError),
     #[error(transparent)]
     Transcribe(#[from] claria_transcribe::TranscribeError),
     #[error(transparent)]
@@ -291,6 +301,16 @@ pub(crate) fn model_tuning_for(
         temperature: preferences
             .temperature
             .filter(|_| capabilities.sampling_params),
+    }
+}
+
+/// Overlay `extra`'s fields onto a shared audit-details object, so a command
+/// adds what only it knows without restating the usage fields.
+pub(crate) fn merge_details(base: &mut serde_json::Value, extra: serde_json::Value) {
+    if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
+        for (key, value) in extra {
+            base.insert(key.clone(), value.clone());
+        }
     }
 }
 
