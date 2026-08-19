@@ -1,9 +1,11 @@
 # Writer tools
 
-The writer exposes two disjoint tool sets over Bedrock Converse tool use.
+The writer exposes three disjoint tool sets over Bedrock Converse tool use.
 Targeted editing gets record access, on-demand section reads, and proposal
 staging; whole-report generation gets run-building tools and **no** reader
-tools (its record snapshot and template bodies are injected up front). Tool descriptions are contracts: ID-copying
+tools (its record snapshot and template bodies are injected up front);
+analysis gets the structured-submission tools the planner answers through.
+Tool descriptions are contracts: ID-copying
 rules, 0-based positions, character units, per-turn limits, and the
 truncation-salvage behavior are all stated in the description or the
 per-property schema the model sees. Schema ceilings are derived from the
@@ -16,6 +18,14 @@ cheap.
 |---|---|
 | Targeted edit | `list_record_files`, `read_record_file`, `read_report_section`, `propose_report_changes` |
 | Whole report | `set_full_draft_title`, `write_full_draft_section`, `skip_full_draft_section`, `mark_section_failed`, `finish_full_draft` |
+| Analysis | `submit_section_plan`, `submit_resume_plan`, `submit_review_rows` |
+
+The analysis set is different in kind: it is sent with `tool_choice` forcing
+exactly one of its tools, so the answer is structure by construction rather
+than structure parsed out of prose. The whole set is declared on every
+analysis request even though only one tool can be called, because a differing
+tool list would move the tools tier of the prompt cache and cost each role
+the record corpus the others paid to cache.
 
 Every tool result is JSON with a success/error status. Persisted history is
 sanitized: results carrying record or title text are reduced to digests and
@@ -340,6 +350,77 @@ it as **one atomic versioned revision**
 with the run that wrote it, releases the session, and marks the run
 completed. The loop's terminal guard also nudges the model once if it tries
 to end the turn in prose before this tool succeeded.
+
+---
+
+## `submit_section_plan`
+
+Forced. Exactly one row per section in `<untrusted_template_context>`, in
+template order.
+
+| Field | Constraint |
+|---|---|
+| `section_id` | a 36-char UUID copied from the supplied structure |
+| `action` | `draft` or `skip` |
+| `scope` | 1–600 chars — what the section must assert, or why it is skipped |
+| `evidence` | ≤8 × `{filename, relevance?}` — filenames, never record text |
+
+**Internal mapping.** Coverage and identity are hard: a missing row, a
+duplicate, or an invented ID returns the offending IDs as an error
+`tool_result` and forces the tool again, once. Evidence is soft: each filename
+is checked against the pinned record corpus, and one the client does not have
+is dropped with an `unknown_evidence_file:{filename}` warning on the plan
+rather than failing it. A `draft` row left with no resolved evidence adds
+`no_resolved_evidence:{section_id}`. The plan lands on the run
+`awaiting_approval`, unapproved, for the clinician to edit.
+
+---
+
+## `submit_resume_plan`
+
+Forced. Runs only when a resume carries new instructions; a resume without
+them is decided in code (drafted → keep, skipped → skip, everything else →
+draft) and never calls a model.
+
+| Field | Constraint |
+|---|---|
+| `section_id` | a 36-char UUID copied from the supplied state table |
+| `decision` | `keep`, `rewrite`, `draft`, or `skip` |
+| `reason` | 1–300 chars, read by the host and not stored |
+| `scope` | required for `rewrite` and `draft` |
+| `evidence` | required for `rewrite` |
+
+**Internal mapping.** `keep` is rejected for any section whose durable state
+is not `drafted`. A `rewrite` or `draft` decision clears that section back to
+pending — including one that already landed — so the writer really replaces
+it instead of the finisher treating it as already decided.
+
+---
+
+## `submit_review_rows`
+
+Forced, once per review branch. One union tool for all seven properties, with
+an identical `tool_choice` on every branch: a per-property tool would move the
+tools tier of the prompt cache and cost each branch the corpus prefix its
+sibling paid to write. Which fields are legal for which property is stated in
+the description and enforced by the host, not by the shape.
+
+| Field | Constraint |
+|---|---|
+| `property` | one of the seven; must equal the property the instruction named |
+| `rows` | exactly one row per drafted section, in the order the drafted-section block lists them |
+| `rows[].status` | `no_issues` or `findings` — an omitted section is a validation failure, not silence |
+| `rows[].findings[].span` | `{quote, block_index?}` — the index is a hint the host searches first, not an address it trusts |
+| `rows[].findings[].replacement` | required on the four style properties, rejected on the three consistency ones |
+
+**Internal mapping.** Every quote is resolved to a `(block_index, char range)`
+against the section's own text by whitespace-normalized search; one that does
+not resolve discards the finding rather than anchoring it somewhere plausible,
+and one that resolves twice anchors the first occurrence and appends a
+`duplicate_anchor` note. The anchor revision and the model ID are stamped from
+the request the host sent, never read from the answer. A branch that fails
+validation twice fails alone: the other six keep their findings, and the
+property it covered contributes no coverage row.
 
 ---
 

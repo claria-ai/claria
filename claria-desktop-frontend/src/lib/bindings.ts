@@ -640,6 +640,64 @@ async abandonDraftRun(clientId: string, reportId: string, runId: string) : Promi
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Plan a whole-report draft and leave it at the gate.
+ * 
+ * Guarded exactly like a writer turn — no pending proposal, the revision the
+ * caller expects, no run already in flight — and the run it creates holds the
+ * report for the whole gate window, so nothing can edit the report out from
+ * under a plan being reviewed. A plan pass that fails releases that hold.
+ */
+async generateDraftPlan(clientId: string, reportId: string, expectedRevision: number, instructions: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<DraftRun, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("generate_draft_plan", { clientId, reportId, expectedRevision, instructions, streamId, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply the clinician's edits to a plan waiting at the gate.
+ */
+async updateDraftPlan(clientId: string, reportId: string, runId: string, edits: PlanEntryEdit[]) : Promise<Result<DraftRun, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_draft_plan", { clientId, reportId, runId, edits }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Approve the plan and draft the report it describes.
+ */
+async startDraftRun(clientId: string, reportId: string, runId: string, modelId: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_draft_run", { clientId, reportId, runId, modelId, streamId, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Pick an interrupted drafting run back up.
+ * 
+ * New instructions get a planning call over the run's durable state — they
+ * may change what an already-drafted section should say — and no new
+ * instructions is decided in code: keep what landed, draft the rest.
+ * 
+ * This resumes directly whatever the plan-gate preference says. The gate is
+ * a frontend decision: the pane edits the run's plan through
+ * `update_draft_plan` before calling this, and there is no second command
+ * for "resume without re-planning".
+ */
+async resumeDraftRun(clientId: string, reportId: string, runId: string, updatedInstructions: string | null, modelId: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resume_draft_run", { clientId, reportId, runId, updatedInstructions, modelId, streamId, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async sendReportMessage(clientId: string, reportId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, reportId, expectedRevision, modelId, instruction, references, streamId, onProgress }) };
@@ -651,6 +709,53 @@ async sendReportMessage(clientId: string, reportId: string, expectedRevision: nu
 async resolveReportProposal(clientId: string, reportId: string, proposalId: string, decision: ReportProposalChoice) : Promise<Result<ReportWorkspaceView, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resolve_report_proposal", { clientId, reportId, proposalId, decision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Review one accepted revision for every property and save what comes back.
+ * 
+ * One request per property runs in parallel against the reviewing model, so
+ * the command holds its future for the length of the slowest branch. A
+ * property whose branch fails leaves no coverage row: the returned findings
+ * say which properties were actually read, and the audit event names the
+ * ones that were not.
+ */
+async runReviewSweeps(clientId: string, reportId: string, revision: number, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportFindings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("run_review_sweeps", { clientId, reportId, revision, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listReportFindings(clientId: string, reportId: string) : Promise<Result<ReportFindings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_report_findings", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resolveReportFinding(clientId: string, reportId: string, findingId: string, action: FindingAction) : Promise<Result<ReportFindingResolution, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_report_finding", { clientId, reportId, findingId, action }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Answer the completion checklist for one report.
+ * 
+ * Read-only and model-free: it loads durable state, checks it, and returns
+ * what failed. Nothing is mutated, so there is no audit event to record.
+ */
+async evaluateReportCompletion(clientId: string, reportId: string) : Promise<Result<CompletionReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("evaluate_report_completion", { clientId, reportId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1479,9 +1584,74 @@ export type ClientNameUpdate = { id: string; name: string; updated_at: string }
 export type ClientRecordDetails = { id: string; name: string; created_at: string; updated_at: string; file_count: number; storage_bytes: number; storage_bytes_with_history: number; name_history: ClientNameHistoryEntry[] }
 export type ClientSummary = { id: string; name: string; created_at: string }
 /**
+ * One reason the report is not complete.
+ */
+export type CompletionCheck = { kind: CompletionCheckKind; 
+/**
+ * The section at fault, or `None` for a document-wide failure such as a
+ * placeholder left in the title.
+ */
+section_id: string | null; 
+/**
+ * PHI-free: state names, counts, and record filenames. Never section
+ * text, and never the quote that failed to resolve.
+ */
+detail: string }
+export type CompletionCheckKind = 
+/**
+ * The drafting run never reached a decision about this section.
+ */
+"section_not_terminal" | 
+/**
+ * The plan marked this section required and the saved draft has no body
+ * for it.
+ */
+"required_section_empty" | 
+/**
+ * A quote the writer attributed to a record is not in that record.
+ */
+"unresolved_citation" | 
+/**
+ * A required section was drafted without citing anything.
+ */
+"missing_citation" | 
+/**
+ * Unresolved template markers survive in the saved draft.
+ */
+"placeholder_text" | 
+/**
+ * A review finding is still open against a section nobody has rewritten.
+ */
+"unresolved_finding"
+/**
+ * Everything the completion checklist knows about one report at one moment.
+ * 
+ * `checks` holds failures only, so an empty list and `complete` say the same
+ * thing twice on purpose: the frontend renders the list, and the backend
+ * answers the question.
+ */
+export type CompletionReport = { complete: boolean; 
+/**
+ * Failures only — an empty list means the report is complete.
+ */
+checks: CompletionCheck[]; 
+/**
+ * The accepted draft revision these checks describe. A later edit makes
+ * the whole report stale, which is why the revision travels with it.
+ */
+evaluated_revision: number; evaluated_at: string }
+/**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences; chat_streaming: ChatStreamMode }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences; chat_streaming: ChatStreamMode; draft_pipeline: DraftPipelinePreferences }
+/**
+ * The passage a finding conflicts with.
+ */
+export type ConflictingRef = { 
+/**
+ * `None` means the conflicting passage is in the anchored section itself.
+ */
+section_id: string | null; quote: string; span: TextSpan | null }
 /**
  * One poll's worth of new console entries, addressed by a monotonic
  * sequence cursor so the 500ms UI poll ships only new lines.
@@ -1567,12 +1737,22 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
 /**
+ * Per-clinician settings for the sectioned drafting pipeline.
+ * 
+ * The two model IDs name the supporting roles only — the writer keeps its
+ * own picker beside the draft. `None` means "let Claria choose", which
+ * resolves through the capability table at call time rather than being
+ * frozen into the config, so an account that gains a better model gets it
+ * without anyone editing a setting.
+ */
+export type DraftPipelinePreferences = { plan_gate?: PlanGateMode; planner_model_id?: string | null; reviewer_model_id?: string | null }
+/**
  * What the plan decided for exactly one section. There is one entry per
  * [`RunSection`] and no entry without one.
  * 
- * Renamed on the way to TypeScript: the provisioner already exports a
- * `PlanEntry`, and two types of that name in one bindings file is an export
- * failure, not a merge.
+ * Renamed across the IPC boundary: the provisioner exports its own
+ * `PlanEntry`, and two types of the same name are a bindings-export panic at
+ * startup rather than a compile error.
  */
 export type DraftPlanEntry = { section_id: string; heading: string; intent: SectionIntent; 
 /**
@@ -1587,7 +1767,23 @@ scope: string; evidence: EvidenceRef[];
 /**
  * Per-section steering that overrides the run-wide instructions.
  */
-instruction: string | null }
+instruction: string | null; 
+/**
+ * The records this section's writer may read, when the clinician has
+ * restricted it to a subset. `None` — the default, and what the planner
+ * always produces — means the shared corpus every other section sees.
+ * 
+ * The planner never sets this: it is a user decision taken at the plan
+ * gate, which is why the plan tool schema has no field for it. The run
+ * object embeds the plan, so the durable record of what one section's
+ * model call could see survives resume, audit, and export for free.
+ * 
+ * `Some` is always a non-empty list of filenames as the record corpus
+ * lists them. An empty restriction would be a section drafted from
+ * nothing, which is a plan mistake rather than a request, so the
+ * validator refuses it.
+ */
+curated_records?: string[] | null }
 /**
  * One resumable whole-report drafting run.
  * 
@@ -1652,6 +1848,67 @@ actual: JsonValue }
  * A single version of a file in a client's record.
  */
 export type FileVersion = { version_id: string; size: number; last_modified: string | null; is_latest: boolean }
+/**
+ * One thing a review pass noticed about one section.
+ */
+export type Finding = { id: string; pass: ReviewPass; 
+/**
+ * The review property that raised this, e.g. `tense_drift`.
+ */
+property: string; 
+/**
+ * The reviewing model, carried so applying a style proposal can credit
+ * the model that wrote the replacement.
+ */
+model_id: string; anchor: FindingAnchor; description: string; 
+/**
+ * Where in the anchored section the finding points, resolved host-side
+ * from the model's quote.
+ */
+span: TextSpan | null; 
+/**
+ * The passage this one contradicts. Consistency findings only in
+ * practice; nothing structural forbids a style finding from carrying one.
+ */
+conflicting: ConflictingRef | null; record_citation: RecordCitation | null; 
+/**
+ * The anchored replacement a style finding offers. Never present on a
+ * consistency finding — see [`ReviewPass::Consistency`].
+ */
+proposal: StyleProposal | null; status: FindingStatus; 
+/**
+ * The draft revision the applied replacement produced. Set only while
+ * the finding is [`FindingStatus::Applied`], so an undo can say which
+ * revision it is unwinding.
+ */
+applied_revision: number | null; resolved_at: string | null; created_at: string }
+/**
+ * What the user chose to do with one finding.
+ * 
+ * This is the request shape, distinct from [`FindingStatus`], which records
+ * where a finding ended up: undoing a finding puts it back to
+ * [`FindingStatus::Open`], so the two do not correspond one to one.
+ */
+export type FindingAction = "apply_style" | "undo_style" | "dismiss"
+/**
+ * The section and revision a finding describes.
+ */
+export type FindingAnchor = { section_id: string; 
+/**
+ * The section's authorship revision when the review read it.
+ */
+revision: number }
+export type FindingStatus = "open" | 
+/**
+ * A style replacement the user applied. Reversible until the surrounding
+ * text changes.
+ */
+"applied" | "dismissed" | 
+/**
+ * The anchored section moved on. Written lazily by the list path; the
+ * authoritative answer is always [`finding_is_stale`].
+ */
+"invalidated"
 /**
  * Severity levels the frontend logging bridge may report.
  */
@@ -1728,6 +1985,41 @@ export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drif
  */
 actual: JsonValue | null }
 /**
+ * One section's worth of gate edits. Absent fields are left exactly as the
+ * planner wrote them, so the pane can save the one control the user touched
+ * without restating the rest of the row.
+ */
+export type PlanEntryEdit = { section_id: string; intent?: SectionIntent | null; scope?: string | null; evidence?: EvidenceRef[] | null; 
+/**
+ * Per-section steering. An all-whitespace value clears the instruction
+ * rather than storing a blank one.
+ */
+instruction?: string | null; 
+/**
+ * The record restriction for this section, as filenames the corpus lists.
+ * 
+ * Absent leaves the row's restriction alone; an empty list clears it and
+ * puts the section back on the shared corpus, exactly as an all-whitespace
+ * `instruction` clears the instruction. A non-empty list is validated
+ * against the client's records before it is stored.
+ */
+curated_records?: string[] | null }
+/**
+ * Whether a whole-report draft stops for the clinician between planning and
+ * writing.
+ */
+export type PlanGateMode = 
+/**
+ * The plan lands in the draft-run pane and waits to be read, edited, and
+ * approved. The default: a plan is cheap to fix and expensive to draft
+ * against once it is wrong.
+ */
+"gated" | 
+/**
+ * Drafting begins as soon as the plan lands.
+ */
+"auto_start"
+/**
  * Named-field patch for the synced preferences. Absent fields are left
  * untouched, so a UI section (or a single-setting command) saves only what
  * it owns and can never roll back a sibling section's edit.
@@ -1738,7 +2030,7 @@ export type PreferencesPatch = {
  * (only expressible in-process — over IPC use `set_preferred_model`),
  * `None` leaves it unchanged.
  */
-preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null }
+preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null; draft_pipeline?: DraftPipelinePreferences | null }
 /**
  * What `provision_apply` did.
  * 
@@ -1792,7 +2084,7 @@ export type RecordFile = { filename: string; size: number; uploaded_at: string |
  * across machines. The report-pipeline crate validates the
  * relationship between the limits before they are saved or used.
  */
-export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number }
+export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number; writer_first_frame_timeout_secs?: number; writer_idle_timeout_secs?: number; writer_max_output_tokens?: number; analysis_first_frame_timeout_secs?: number; analysis_idle_timeout_secs?: number }
 export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; 
 /**
  * Records preloaded outside the model's record-reading tools. Only the
@@ -1825,6 +2117,16 @@ template_applied?: boolean;
  */
 template_warning?: TemplateExportWarning | null }
 export type ReportExportStatus = "exported" | "canceled" | "failed"
+/**
+ * Earns its life: resolving a finding changes both the report and the
+ * findings that describe it, and the caller needs the pair to stay in step.
+ */
+export type ReportFindingResolution = { workspace: ReportWorkspaceView; findings: ReportFindings }
+/**
+ * Every review finding recorded against one report, plus the coverage
+ * receipts of the sweeps that produced them.
+ */
+export type ReportFindings = { schema_version: number; report_id: string; client_id: string; findings: Finding[]; coverage: ReviewCoverage[]; updated_at: string }
 export type ReportOperation = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSection } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlock[] } | { kind: "remove_section"; section_id: string }
 /**
  * Earns its life next to `ReportProposalDecision`: this is the imperative
@@ -1856,6 +2158,20 @@ skipped?: boolean;
  */
 template_blocks?: ReportBlock[] | null; 
 /**
+ * The authoring directives the template's author wrote into this section:
+ * the bracketed instructions a clinical template carries — "[a one
+ * sentence stating why the child was referred]", "[Delete the subsections
+ * of the tests that were not uploaded]". Extracted verbatim at import and
+ * bounded by [`MAX_SECTION_TEMPLATE_DIRECTIVES`] and
+ * [`MAX_TEMPLATE_DIRECTIVE_CHARACTERS`].
+ * 
+ * Unlike [`ReportSection::template_blocks`] these do reach a model, as
+ * host-extracted guidance about the document's *form* — how long a
+ * section runs, how it must open, which subsections to drop. They are
+ * never a source of client facts.
+ */
+template_directives?: string[]; 
+/**
  * Who last wrote this section, and at which revision.
  */
 authorship?: SectionAuthorship | null }
@@ -1867,7 +2183,25 @@ export type ReportTemplateWarningView = { code: string; message: string; count: 
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
-export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus } | 
+export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | 
+/**
+ * The last announced call never landed and the identical request is
+ * going out again. `attempt` is the one about to be made, so the first
+ * retry reports 2 of `max_attempts`.
+ */
+{ kind: "model_call_retrying"; call_number: number; attempt: number; max_attempts: number; delay_ms: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus } | 
+/**
+ * Another plan row has been counted off the answer the planner is still
+ * streaming. Display only — the plan is validated whole when the call
+ * returns — so the count may restart if the call is re-sent.
+ */
+{ kind: "plan_row_planned"; planned: number; total: number } | 
+/**
+ * One batch of the plan is decided and will not be asked for again.
+ * `first` and `last` are one-based and inclusive, against the document's
+ * whole section count.
+ */
+{ kind: "plan_batch_planned"; first: number; last: number; total: number } | 
 /**
  * The drafting run's plan is settled, before the first model call: the
  * honest denominator for the progress that follows.
@@ -1879,7 +2213,7 @@ export type ReportTurnProgressView = { kind: "record_context_prepared"; included
  * the host-validated staged content the finish cut copies verbatim into
  * the workspace this same command returns.
  */
-{ kind: "section_completed"; section_id: string; section: ReportSection; drafted: number; total: number } | { kind: "section_skipped"; section_id: string; drafted: number; total: number } | { kind: "section_failed"; section_id: string; message: string; drafted: number; total: number } | { kind: "title_set"; title: string }
+{ kind: "section_completed"; section_id: string; section: ReportSection; drafted: number; total: number } | { kind: "section_skipped"; section_id: string; drafted: number; total: number } | { kind: "section_failed"; section_id: string; message: string; drafted: number; total: number } | { kind: "title_set"; title: string } | { kind: "review_pass_started"; property: string; index: number; total: number } | { kind: "review_pass_completed"; property: string; findings: number; completed: number; total: number }
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
 /**
  * Earns its life over `ReportWorkspace`: flattens the session container and
@@ -1932,6 +2266,26 @@ severity: Severity;
  */
 iam_actions: string[] }
 /**
+ * Proof that one review property actually ran over one revision, including
+ * the case where it found nothing.
+ */
+export type ReviewCoverage = { pass: ReviewPass; property: string; model_id: string; 
+/**
+ * The draft revision the pass read.
+ */
+revision: number; sections_reviewed: number; findings: number; completed_at: string }
+export type ReviewPass = 
+/**
+ * Anchored, applicable replacements: tense, terminology, transitions,
+ * redundancy.
+ */
+"style" | 
+/**
+ * Read-only: contradictions, unsupported claims, cross-section conflicts.
+ * The pass has no write access, and the validator enforces it.
+ */
+"consistency"
+/**
  * User guidance for the run: the instruction it started from, plus anything
  * added when a stopped run was picked back up.
  */
@@ -1950,9 +2304,28 @@ model_id: string; entries: DraftPlanEntry[];
  */
 user_edited: boolean; 
 /**
+ * Nobody decided this plan: it was manufactured from the sections the
+ * report already had, one `Draft` row each, on a path with no planning
+ * pass in front of it. A synthetic plan has never been through evidence
+ * assignment, so the completion gate cannot hold a section against it for
+ * citing nothing. Inherited when a plan is rebuilt from an earlier one,
+ * because a derived plan is no more decided than its source.
+ */
+synthetic?: boolean; 
+/**
  * Unset while the plan is still waiting at the gate.
  */
-approved_at: string | null; created_at: string }
+approved_at: string | null; 
+/**
+ * What the host could not confirm about the plan the model produced,
+ * as `code:detail` strings — evidence naming a file the client does not
+ * have, a draft row with nothing left backing it. Codes and filenames
+ * only, never record text, so the gate can show them and the console can
+ * log them.
+ * 
+ * A warning never blocks the plan: the user fixes it at the gate.
+ */
+plan_warnings?: string[]; created_at: string }
 /**
  * The durable state machine for one section of the report.
  */
@@ -2029,6 +2402,19 @@ export type SpeakerMode = "none" | "diarize" | "channels"
  * Status of an individual bootstrap step.
  */
 export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
+/**
+ * A style pass's anchored replacement: swap `original_text` for
+ * `replacement_text` inside one paragraph of the anchored section.
+ * 
+ * The match is by text, not offset, and must be unique in the block — a
+ * replacement that no longer matches, or matches twice, is refused rather
+ * than guessed at.
+ */
+export type StyleProposal = { 
+/**
+ * Zero-based index into the anchored section's blocks.
+ */
+block_index: number; original_text: string; replacement_text: string }
 export type TAURI_CHANNEL<TSend> = null
 export type TemplateExportWarning = 
 /**
@@ -2042,6 +2428,15 @@ export type TemplateExportWarning =
  * export used generated body formatting inside the template package.
  */
 "template_body_fallback"
+/**
+ * A character range inside one block of the anchored section. Offsets are
+ * `char` indices, not bytes.
+ */
+export type TextSpan = { 
+/**
+ * Zero-based index into the section's blocks.
+ */
+block_index: number; start_char: number; end_char: number }
 export type TranscribeMemoResult = { text: string; language: string | null; model_id: LocalModelId; backend: string }
 /**
  * Per-file overrides for the wizard flow. Each field is optional so the

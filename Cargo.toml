@@ -11,7 +11,9 @@ members = [
     "crates/claria-report-pipeline",
     "crates/claria-report-store",
     "crates/claria-docx",
+    "crates/claria-docx-cli",
     "crates/claria-desktop",
+    "crates/claria-eval",
     "crates/claria-mock-aws",
 ]
 
@@ -25,6 +27,7 @@ claria-bedrock = { path = "crates/claria-bedrock" }
 claria-billing = { path = "crates/claria-billing" }
 claria-core = { path = "crates/claria-core" }
 claria-docx = { path = "crates/claria-docx" }
+claria-eval = { path = "crates/claria-eval" }
 claria-mock-aws = { path = "crates/claria-mock-aws" }
 claria-provisioner = { path = "crates/claria-provisioner" }
 claria-records = { path = "crates/claria-records" }
@@ -59,6 +62,14 @@ eyre = "=0.6.12"
 futures = "=0.3.32"
 jiff = { version = "=0.2.31", features = ["serde"] }
 lru = "=0.18.0"
+# OpenTelemetry, declared here for the pin only. `claria-eval` is the sole
+# consumer: the desktop app exports no traces and must gain no otel
+# dependency (`cargo tree -p claria-desktop | grep opentelemetry` is empty).
+# The four versions are a matched set — opentelemetry 0.32 pairs with
+# tracing-opentelemetry 0.33 and no other combination compiles.
+opentelemetry = { version = "=0.32.0", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "=0.32.0", default-features = false, features = ["grpc-tonic", "trace"] }
+opentelemetry_sdk = { version = "=0.32.0", default-features = false, features = ["trace"] }
 percent-encoding = "=2.3.2"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
@@ -67,8 +78,12 @@ specta = { version = "=2.0.0-rc.22", features = ["derive", "uuid"] }
 tempfile = "=3.27.0"
 thiserror = "=2.0.18"
 tokio = "=1.52.3"
+# Plaintext h2c to the OTLP receiver: the endpoint is an authority, and TLS
+# would pull a second crypto stack in beside aws-lc.
+tonic = { version = "=0.14.6", default-features = false }
 tracing = "=0.1.44"
 tracing-appender = "=0.2.3"
+tracing-opentelemetry = { version = "=0.33.0", default-features = false }
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 uuid = "=1.23.4"
 

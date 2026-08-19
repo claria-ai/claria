@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use claria_core::models::{
+    findings::ReportFindings,
     report::{
         ReportBlock, ReportContent, ReportDraft, ReportExport, ReportExportStatus, ReportOperation,
         ReportProposal, ReportProposalDecision as CoreProposalDecision, ReportProposalResolution,
@@ -162,6 +163,15 @@ pub enum ReportTurnProgressView {
     ModelCallStarted {
         call_number: u32,
     },
+    /// The last announced call never landed and the identical request is
+    /// going out again. `attempt` is the one about to be made, so the first
+    /// retry reports 2 of `max_attempts`.
+    ModelCallRetrying {
+        call_number: u32,
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+    },
     ToolStarted {
         name: String,
         context: Option<String>,
@@ -170,6 +180,21 @@ pub enum ReportTurnProgressView {
         name: String,
         context: Option<String>,
         status: ReportToolActivityStatus,
+    },
+    /// Another plan row has been counted off the answer the planner is still
+    /// streaming. Display only — the plan is validated whole when the call
+    /// returns — so the count may restart if the call is re-sent.
+    PlanRowPlanned {
+        planned: u32,
+        total: u32,
+    },
+    /// One batch of the plan is decided and will not be asked for again.
+    /// `first` and `last` are one-based and inclusive, against the document's
+    /// whole section count.
+    PlanBatchPlanned {
+        first: u32,
+        last: u32,
+        total: u32,
     },
     /// The drafting run's plan is settled, before the first model call: the
     /// honest denominator for the progress that follows.
@@ -205,6 +230,17 @@ pub enum ReportTurnProgressView {
     TitleSet {
         title: String,
     },
+    ReviewPassStarted {
+        property: String,
+        index: u32,
+        total: u32,
+    },
+    ReviewPassCompleted {
+        property: String,
+        findings: u32,
+        completed: u32,
+        total: u32,
+    },
 }
 
 impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView {
@@ -222,6 +258,17 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
             claria_report_pipeline::ReportTurnProgress::ModelCallStarted { call_number } => {
                 Self::ModelCallStarted { call_number }
             }
+            claria_report_pipeline::ReportTurnProgress::ModelCallRetrying {
+                call_number,
+                attempt,
+                max_attempts,
+                delay_ms,
+            } => Self::ModelCallRetrying {
+                call_number,
+                attempt,
+                max_attempts,
+                delay_ms,
+            },
             claria_report_pipeline::ReportTurnProgress::ToolStarted { name, context } => {
                 Self::ToolStarted { name, context }
             }
@@ -237,6 +284,12 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                     ReportToolResultStatus::Error => ReportToolActivityStatus::Failed,
                 },
             },
+            claria_report_pipeline::ReportTurnProgress::PlanRowPlanned { planned, total } => {
+                Self::PlanRowPlanned { planned, total }
+            }
+            claria_report_pipeline::ReportTurnProgress::PlanBatchPlanned { first, last, total } => {
+                Self::PlanBatchPlanned { first, last, total }
+            }
             claria_report_pipeline::ReportTurnProgress::PlanReady { section_count } => {
                 Self::PlanReady { section_count }
             }
@@ -283,6 +336,26 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
             claria_report_pipeline::ReportTurnProgress::TitleSet { title } => {
                 Self::TitleSet { title }
             }
+            claria_report_pipeline::ReportTurnProgress::ReviewPassStarted {
+                property,
+                index,
+                total,
+            } => Self::ReviewPassStarted {
+                property,
+                index,
+                total,
+            },
+            claria_report_pipeline::ReportTurnProgress::ReviewPassCompleted {
+                property,
+                findings,
+                completed,
+                total,
+            } => Self::ReviewPassCompleted {
+                property,
+                findings,
+                completed,
+                total,
+            },
         }
     }
 }
@@ -355,6 +428,14 @@ impl From<ReportProposalChoice> for CoreProposalDecision {
             ReportProposalChoice::Reject => Self::Rejected,
         }
     }
+}
+
+/// Earns its life: resolving a finding changes both the report and the
+/// findings that describe it, and the caller needs the pair to stay in step.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ReportFindingResolution {
+    pub workspace: ReportWorkspaceView,
+    pub findings: ReportFindings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -474,6 +555,7 @@ pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String>
                 blocks: section.blocks,
                 skipped,
                 template_blocks: None,
+                template_directives: Vec::new(),
                 authorship: None,
             })
         })
@@ -609,6 +691,9 @@ fn template_warning_code(code: ReportTemplateWarningCode) -> &'static str {
         ReportTemplateWarningCode::NumberedListsImportedAsBullets => {
             "numbered_lists_imported_as_bullets"
         }
+        ReportTemplateWarningCode::SectionsInferredFromFormatting => {
+            "sections_inferred_from_formatting"
+        }
         ReportTemplateWarningCode::TextBoxesOmitted => "text_boxes_omitted",
         ReportTemplateWarningCode::TrackedChangesResolved => "tracked_changes_resolved",
         ReportTemplateWarningCode::UnsupportedElementsOmitted => "unsupported_elements_omitted",
@@ -639,6 +724,9 @@ fn template_warning_message(code: ReportTemplateWarningCode) -> &'static str {
         ReportTemplateWarningCode::NestedTablesOmitted => "Nested tables were omitted.",
         ReportTemplateWarningCode::NumberedListsImportedAsBullets => {
             "Word list paragraphs were imported as bullet lists."
+        }
+        ReportTemplateWarningCode::SectionsInferredFromFormatting => {
+            "No Word heading styles were applied, so sections were split at the bold and capitalized lines that look like headings. Check the section list; applying Heading styles in Word makes the split exact."
         }
         ReportTemplateWarningCode::TextBoxesOmitted => "Text-box content was omitted.",
         ReportTemplateWarningCode::TrackedChangesResolved => {

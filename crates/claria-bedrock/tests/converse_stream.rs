@@ -7,17 +7,24 @@ use aws_sdk_bedrockruntime::types::{
     MessageStopEvent, StopReason, TokenUsage,
 };
 use claria_bedrock::{
+    analysis::{
+        AnalysisInputBudget, SUBMIT_SECTION_PLAN_TOOL, StructuredCallRequest,
+        analysis_tool_configuration, converse_structured,
+    },
     chat::{
         CHAT_TRUNCATED_NOTICE, CacheStrategy, ChatMessage, ChatRole, ChatStreamOptions,
         chat_converse_stream,
     },
-    converse::{STOPPED_BY_USER, StopSignal, StreamCollector},
-    error::BedrockError,
+    converse::{CachePlan, STOPPED_BY_USER, StopSignal, StreamBounds, StreamCollector},
+    error::{BedrockError, StreamInterruption},
     pacing::StreamPacing,
 };
 use claria_core::{
     model_id::{CacheTtlChoice, ModelCapabilities},
-    models::chat_history::MAX_RETAINED_CHAT_MESSAGES,
+    models::{
+        chat_history::MAX_RETAINED_CHAT_MESSAGES,
+        report::{ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole},
+    },
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 
@@ -419,18 +426,51 @@ async fn a_long_conversation_is_bounded_before_it_reaches_bedrock() {
     );
 }
 
+/// Let a real exchange land, then pause the clock so the silence bound
+/// under test elapses in virtual time.
+///
+/// A clock paused from the first instant is no good here: it auto-advances
+/// whenever the runtime has nothing to run, which fires the bound while the
+/// request is still crossing the socket. Pausing once the exchange is under
+/// way keeps both halves honest — the round trip happens in real time, the
+/// waiting does not.
+fn pause_the_clock_in(delay: std::time::Duration) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        tokio::time::pause();
+    });
+}
+
+fn pause_the_clock_once_the_exchange_lands() {
+    pause_the_clock_in(std::time::Duration::from_millis(250));
+}
+
+/// Assert a bound elapsed in virtual time, reading the paused clock rather
+/// than the wall so the test costs milliseconds instead of minutes. The
+/// window is one-sided and tight: anything under `bound` means a different
+/// family's timeout fired.
+fn assert_waited(elapsed: std::time::Duration, bound: std::time::Duration, what: &str) {
+    assert!(
+        elapsed >= bound,
+        "{what} gave up after {elapsed:?}, before its {bound:?} bound"
+    );
+    assert!(
+        elapsed < bound + std::time::Duration::from_secs(15),
+        "{what} waited {elapsed:?}, well past its {bound:?} bound"
+    );
+}
+
 /// A stream that opens and then dies has to fail, not hang. Nothing in the
 /// AWS SDK bounds this: the generated `ConverseStream` operation registers
 /// no stalled-stream protection interceptor, and the read timeout covers
 /// only the wait for response headers, which have already arrived by then.
-///
-/// Runs on a paused clock, so the idle bound elapses in virtual time rather
-/// than making the suite wait it out.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
     let server = MockServer::spawn().await;
     server.state.write().await.bedrock_stream_stalls = 1;
+    pause_the_clock_once_the_exchange_lands();
 
+    let started = tokio::time::Instant::now();
     let mut streamed = String::new();
     let error = chat_converse_stream(
         &sdk_config(&server.endpoint),
@@ -444,21 +484,89 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
     .expect_err("a stalled stream must not hang forever");
 
     match error {
-        BedrockError::StreamInterrupted { operation, message } => {
-            assert_eq!(operation, "chat ConverseStream");
+        BedrockError::StreamInterrupted {
+            operation,
+            kind,
+            message,
+        } => {
+            assert_eq!(operation, "chat");
+            assert_eq!(kind, StreamInterruption::WentSilent);
             assert!(
-                message.contains("chat ConverseStream"),
-                "the failure does not name the call: {message}"
-            );
-            assert!(
-                message.contains("stopped sending data"),
-                "the failure does not say the connection went silent: {message}"
+                message.contains("chat stopped sending data"),
+                "the failure does not name the operation that went silent: {message}"
             );
         }
         other => panic!("expected a stream-interrupted error, got {other:?}"),
     }
+    // Chat holds the conversational idle bound: a minute of silence
+    // mid-reply, not the ninety seconds the analysis family gets.
+    assert_waited(
+        started.elapsed(),
+        std::time::Duration::from_secs(60),
+        "the chat idle bound",
+    );
     // Whatever did arrive before the stall reached the reader.
     assert!(streamed.starts_with("Beginning of a reply"));
+}
+
+/// A request the service accepts and never begins has to fail too, and the
+/// SDK bounds it nowhere: the read timeout is satisfied by the response
+/// headers, and `send` itself is what waits for the first frame. Left alone
+/// it hangs for as long as the socket stays open.
+///
+/// The failure also has to say what happened — nothing was generated, so
+/// nothing was lost mid-response. That is the difference between a caller
+/// that re-sends the request and one that reports a broken connection.
+#[tokio::test]
+async fn a_stream_that_never_starts_says_it_never_started() {
+    let server = MockServer::spawn().await;
+    server.state.write().await.bedrock_stream_silences = 1;
+    pause_the_clock_once_the_exchange_lands();
+
+    let started = tokio::time::Instant::now();
+    let mut streamed = String::new();
+    let error = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        token_paced(CacheStrategy::disabled()),
+        |delta| streamed.push_str(delta),
+    )
+    .await
+    .expect_err("a stream that never starts must not hang forever");
+
+    match error {
+        BedrockError::StreamInterrupted {
+            operation,
+            kind,
+            message,
+        } => {
+            assert_eq!(operation, "chat");
+            assert_eq!(kind, StreamInterruption::NeverStarted);
+            assert!(
+                message.contains("chat never started responding"),
+                "the failure does not name the operation that never began: {message}"
+            );
+            assert!(
+                !message.contains("mid-response"),
+                "a call that produced nothing was not lost mid-response: {message}"
+            );
+        }
+        other => panic!("expected a stream-interrupted error, got {other:?}"),
+    }
+    assert_waited(
+        started.elapsed(),
+        std::time::Duration::from_secs(90),
+        "the chat first-frame bound",
+    );
+    assert!(
+        streamed.is_empty(),
+        "no frame arrived, so nothing should have been forwarded: {streamed}"
+    );
+    // The request really reached the service and was answered with silence,
+    // rather than the bound firing before anything went out.
+    assert_eq!(server.state.read().await.bedrock_stream_silences, 0);
 }
 
 /// Paragraph pacing is what a clinician sees by default: the reply lands in
@@ -542,7 +650,8 @@ async fn pacing_off_forwards_nothing_but_still_returns_the_reply() {
 /// where Stop has to interrupt a parked read rather than slot between two
 /// frames. The first delta hands the reader's cue to a separate task, so the
 /// stop lands while the stream loop is waiting, not while it is running.
-/// Without that interrupt this test hangs for five minutes and then fails.
+/// Without that interrupt this test waits out the whole idle bound and then
+/// fails.
 #[tokio::test]
 async fn a_stopped_stream_keeps_what_arrived_and_returns_at_once() {
     let server = MockServer::spawn().await;
@@ -646,6 +755,124 @@ async fn stopping_a_paced_reply_flushes_what_was_held() {
     assert_eq!(streamed, outcome.text);
 }
 
+// ── The analysis family: its own label, its own bounds ──────────────────────
+
+/// The label the planner really passes, as distinct from the module the
+/// stream helpers live in. A watchdog failure that says "analysis" cannot be
+/// attributed plan-versus-review, and the reader sees the same string.
+const PLANNER_OPERATION: &str = "report_plan";
+
+const PLAN_OUTPUT_TOKENS: u32 = 16_384;
+
+/// One planner-shaped forced-tool call: the production request shape, so the
+/// bounds and the label under test are the ones a real plan pass runs with.
+async fn planner_call(endpoint: &str) -> BedrockError {
+    let tools = analysis_tool_configuration().expect("analysis tools");
+    let stop = StopSignal::new();
+    let mut budget = AnalysisInputBudget::new(MODEL_ID, PLANNER_OPERATION, PLAN_OUTPUT_TOKENS);
+    let system = ["Planner policy.".to_string()];
+    let messages = [ReportProtocolMessage {
+        role: ReportProtocolRole::User,
+        content: vec![ReportProtocolBlock::Text {
+            text: "Plan the report.".to_string(),
+        }],
+        created_at: "2026-08-01T12:00:00Z".parse().expect("timestamp"),
+    }];
+    converse_structured(
+        &sdk_config(endpoint),
+        StructuredCallRequest {
+            model_id: MODEL_ID,
+            system: &system,
+            messages: &messages,
+            tools: &tools,
+            forced_tool: SUBMIT_SECTION_PLAN_TOOL,
+            max_tokens: PLAN_OUTPUT_TOKENS,
+            cache_plan: CachePlan::analysis(ModelCapabilities::for_id(MODEL_ID)),
+            stream_bounds: StreamBounds::analysis(),
+            stop: &stop,
+            on_partial_tool_input: None,
+            operation: PLANNER_OPERATION,
+        },
+        &mut budget,
+    )
+    .await
+    .expect_err("the stream was scripted to fail")
+}
+
+/// The planner's request is the biggest one Claria sends, and the model
+/// reads all of it before the first frame. Ninety seconds is the chat
+/// family's patience, not this one's — and the failure has to name the
+/// request family, because "analysis" cannot tell a plan pass from a review
+/// sweep in a console export or in the sentence the reader is shown.
+#[tokio::test]
+async fn an_analysis_stream_that_never_starts_waits_the_analysis_first_frame_bound() {
+    let server = MockServer::spawn().await;
+    server.state.write().await.bedrock_stream_silences = 1;
+    pause_the_clock_in(std::time::Duration::from_millis(750));
+
+    let started = tokio::time::Instant::now();
+    let error = planner_call(&server.endpoint).await;
+
+    match error {
+        BedrockError::StreamInterrupted {
+            operation,
+            kind,
+            message,
+        } => {
+            assert_eq!(operation, PLANNER_OPERATION);
+            assert_eq!(kind, StreamInterruption::NeverStarted);
+            assert!(
+                message.contains("report_plan never started responding"),
+                "the failure does not name the request family: {message}"
+            );
+            assert!(
+                !message.contains("analysis ConverseStream"),
+                "the module label leaked into the reader's error: {message}"
+            );
+        }
+        other => panic!("expected a stream-interrupted error, got {other:?}"),
+    }
+    assert_waited(
+        started.elapsed(),
+        std::time::Duration::from_secs(120),
+        "the analysis first-frame bound",
+    );
+}
+
+/// One forced tool call emits a single large structured document and the
+/// model deliberates inside it, so the analysis family tolerates ninety
+/// seconds of mid-stream silence where chat tolerates sixty.
+#[tokio::test]
+async fn an_analysis_stream_that_goes_silent_waits_the_analysis_idle_bound() {
+    let server = MockServer::spawn().await;
+    server.state.write().await.bedrock_stream_stalls = 1;
+    pause_the_clock_in(std::time::Duration::from_millis(750));
+
+    let started = tokio::time::Instant::now();
+    let error = planner_call(&server.endpoint).await;
+
+    match error {
+        BedrockError::StreamInterrupted {
+            operation,
+            kind,
+            message,
+        } => {
+            assert_eq!(operation, PLANNER_OPERATION);
+            assert_eq!(kind, StreamInterruption::WentSilent);
+            assert!(
+                message.contains("report_plan stopped sending data"),
+                "the failure does not name the request family: {message}"
+            );
+        }
+        other => panic!("expected a stream-interrupted error, got {other:?}"),
+    }
+    assert_waited(
+        started.elapsed(),
+        std::time::Duration::from_secs(90),
+        "the analysis idle bound",
+    );
+}
+
 #[tokio::test]
 async fn streamed_service_errors_keep_their_classification() {
     let server = MockServer::spawn().await;
@@ -676,7 +903,7 @@ async fn streamed_service_errors_keep_their_classification() {
         BedrockError::Service {
             operation, status, ..
         } => {
-            assert_eq!(operation, "chat ConverseStream");
+            assert_eq!(operation, "chat");
             assert_eq!(status, Some(400));
         }
         other => panic!("expected service error, got {other:?}"),

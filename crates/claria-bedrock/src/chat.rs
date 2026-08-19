@@ -274,6 +274,11 @@ async fn fetch_us_inference_profiles(
 /// window minus this reserve — is what the writer has run on since.
 pub const CHAT_MAX_OUTPUT_TOKENS: u32 = 32_768;
 
+/// The request-family label chat's budget, usage, and stream failures carry.
+/// A fixed operation name, never derived from user input, and the same
+/// string in the logs and in the error a reader is shown.
+pub(crate) const CHAT_OPERATION: &str = "chat";
+
 /// Appended to a chat reply that hit [`CHAT_MAX_OUTPUT_TOKENS`] before
 /// finishing. The partial answer is kept — it already streamed to the
 /// reader — and this says why it stops where it does.
@@ -457,23 +462,26 @@ where
     .await?;
 
     let started = std::time::Instant::now();
-    let response = client
-        .converse_stream()
-        .model_id(model_id)
-        .set_system(Some(system_blocks))
-        .set_messages(Some(converse_messages))
-        .inference_config(
-            InferenceConfiguration::builder()
-                .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
-                .set_temperature(options.tuning.temperature)
-                .build(),
-        )
-        .set_additional_model_request_fields(crate::converse::additional_request_fields(
-            options.tuning,
-        )?)
-        .send()
-        .await
-        .map_err(|error| crate::converse::classify_error("chat ConverseStream", error))?;
+    let response = crate::converse::start_converse_stream(
+        CHAT_OPERATION,
+        crate::converse::StreamBounds::conversational(),
+        client
+            .converse_stream()
+            .model_id(model_id)
+            .set_system(Some(system_blocks))
+            .set_messages(Some(converse_messages))
+            .inference_config(
+                InferenceConfiguration::builder()
+                    .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
+                    .set_temperature(options.tuning.temperature)
+                    .build(),
+            )
+            .set_additional_model_request_fields(crate::converse::additional_request_fields(
+                options.tuning,
+            )?)
+            .send(),
+    )
+    .await?;
 
     let mut stream = response.stream;
     let mut collector = StreamCollector::new();
@@ -482,7 +490,11 @@ where
         let event = tokio::select! {
             biased;
             () = options.stop.stopped() => break true,
-            event = crate::converse::recv_stream_event("chat ConverseStream", &mut stream) => event?,
+            event = crate::converse::recv_stream_event(
+                CHAT_OPERATION,
+                crate::converse::StreamBounds::conversational(),
+                &mut stream,
+            ) => event?,
         };
         let Some(event) = event else { break false };
         if let Some(delta) = collector.absorb(event)
@@ -516,7 +528,7 @@ where
     }
     outcome.latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
     crate::converse::log_turn_usage(
-        "chat",
+        CHAT_OPERATION,
         model_id,
         outcome.usage.as_ref(),
         Some(&outcome.stop_reason),
@@ -588,7 +600,7 @@ async fn prepare_chat_request(
             .sum::<u64>();
     let input_budget_tokens = chat_input_token_budget(model_id);
     crate::converse::log_model_budget(
-        "chat",
+        CHAT_OPERATION,
         model_id,
         input_budget_tokens,
         CHAT_MAX_OUTPUT_TOKENS,

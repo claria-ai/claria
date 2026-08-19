@@ -19,6 +19,11 @@ const configInfo = {
     max_retained_turns: 200,
   },
   model_tuning: { reasoning_enabled: false, effort: null, temperature: null },
+  draft_pipeline: {
+    plan_gate: "gated",
+    planner_model_id: null,
+    reviewer_model_id: null,
+  },
 };
 
 const localStatus = {
@@ -117,8 +122,42 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import Preferences from "./Preferences";
-import { savePreferencesPatch } from "../lib/tauri";
+import {
+  fetchCloudPreferences,
+  loadConfig,
+  savePreferencesPatch,
+} from "../lib/tauri";
 import { PREFERENCES_NAV } from "../lib/preferencesNav";
+import { ChatModelsContext, type ChatModelsState } from "../lib/chatModels";
+
+const modelsState: ChatModelsState = {
+  models: [
+    { model_id: "us.sonnet", name: "Claude Sonnet" },
+    { model_id: "us.haiku", name: "Claude Haiku" },
+  ],
+  loading: false,
+  error: null,
+  preferredModelId: null,
+  retry: () => {},
+  setPreferredModelId: () => {},
+};
+
+function renderWithModels() {
+  return render(
+    <ChatModelsContext.Provider value={modelsState}>
+      <Preferences navigate={vi.fn()} />
+    </ChatModelsContext.Provider>
+  );
+}
+
+/** What each section that edits a synced setting shows before values land. */
+const SYNCED_SECTION_LOADING_LABELS = [
+  "Loading chat streaming...",
+  "Loading model tuning...",
+  "Loading document writer limits...",
+  "Loading draft run settings...",
+  "Loading transcription preferences...",
+];
 
 function categoryVisible(paneOrHeading: Element): boolean {
   return paneOrHeading.closest("div[hidden]") === null;
@@ -131,6 +170,42 @@ function paneElement(paneId: string): Element {
 }
 
 describe("Preferences", () => {
+  it("reads the synced preferences once for every section that needs them", async () => {
+    const fetchMock = vi.mocked(fetchCloudPreferences);
+    const configMock = vi.mocked(loadConfig);
+    fetchMock.mockClear();
+    configMock.mockClear();
+
+    renderWithModels();
+    await screen.findByLabelText(/Word by word/);
+
+    // Sections spread across four categories are all mounted at once, and
+    // every one of them has its values — no section is still waiting on a
+    // read of its own.
+    for (const label of SYNCED_SECTION_LOADING_LABELS) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // The local config is the fallback for that one read, not a second source.
+    expect(configMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the local config when the cloud read fails", async () => {
+    const fetchMock = vi.mocked(fetchCloudPreferences);
+    const configMock = vi.mocked(loadConfig);
+    fetchMock.mockClear();
+    configMock.mockClear();
+    // One-shot, so the shared mock is back to its normal answer afterwards.
+    fetchMock.mockRejectedValueOnce(new Error("no bucket"));
+
+    renderWithModels();
+    await screen.findByLabelText(/Word by word/);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(configMock).toHaveBeenCalledTimes(1);
+  });
+
   it("mounts a pane for every entry in the nav map", async () => {
     render(<Preferences navigate={vi.fn()} />);
     await screen.findByText("Preferred Model");
@@ -286,6 +361,64 @@ describe("Preferences", () => {
     await user.click(screen.getByRole("button", { name: "Prompts" }));
     expect(saveMock).toHaveBeenCalledTimes(1);
     expect(saveMock).toHaveBeenCalledWith({ chat_streaming: "token" });
+  });
+
+  it("saves the plan gate and the two role models as one draft_pipeline patch", async () => {
+    const user = userEvent.setup();
+    renderWithModels();
+    await user.click(screen.getByRole("button", { name: "Document Writer" }));
+    const saveMock = vi.mocked(savePreferencesPatch);
+    saveMock.mockClear();
+
+    await user.click(
+      await screen.findByLabelText(/Start drafting as soon as the plan is ready/)
+    );
+    await user.selectOptions(
+      screen.getByLabelText("Planning model"),
+      "us.haiku"
+    );
+    expect(saveMock).not.toHaveBeenCalled();
+
+    // Leaving the section flushes one patch, carrying nothing but the fields
+    // this section owns.
+    await user.click(screen.getByRole("button", { name: "Claude" }));
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).toHaveBeenCalledWith({
+      draft_pipeline: {
+        plan_gate: "auto_start",
+        planner_model_id: "us.haiku",
+        reviewer_model_id: null,
+      },
+    });
+  });
+
+  it("offers each role model an automatic default", async () => {
+    const user = userEvent.setup();
+    renderWithModels();
+    await user.click(screen.getByRole("button", { name: "Document Writer" }));
+
+    const reviewer = (await screen.findByLabelText(
+      "Review model"
+    )) as HTMLSelectElement;
+    expect(reviewer.value).toBe("");
+    expect(
+      within(reviewer).getByRole("option", {
+        name: "Default — chosen automatically",
+      })
+    ).toBeDefined();
+  });
+
+  it("finds the draft run pane through the search index", async () => {
+    const user = userEvent.setup();
+    renderWithModels();
+    await user.type(screen.getByLabelText("Search settings"), "planner");
+    const results = await screen.findByTestId("pref-search-results");
+    await user.click(
+      within(results).getByText("Planning model").closest("button")!
+    );
+    const pane = paneElement("writer.draft-runs");
+    expect(categoryVisible(pane)).toBe(true);
+    expect(pane.querySelector("details")?.open).toBe(true);
   });
 
   it("opens the preferences file version history", async () => {

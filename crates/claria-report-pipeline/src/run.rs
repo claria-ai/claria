@@ -23,21 +23,25 @@ use uuid::Uuid;
 use crate::{
     FullReportGenerationOutcome, ReportPipelineError,
     full_draft_context::DraftTurnKind,
+    parallel_draft::{execute_parallel_draft_turn, is_gated_plan},
     tools::{merge_undrafted_sections, written_sections},
     turn::{FullReportRequest, execute_full_draft_turn, validate_model_choice},
 };
 
-/// Stand-in for the planner pass that lands in a later change: one `Draft`
-/// entry per section the report already has, in document order.
+/// The plan the un-gated whole-report command runs on: one `Draft` entry per
+/// section the report already has, in document order, auto-approved.
 ///
-/// It exists so the run's plan is the single authority on which sections the
-/// finisher demands a decision about, well before a model produces one.
-fn synthetic_plan(
+/// It is nobody's decision — no model produced it and no clinician saw it —
+/// which is exactly what the tool loop checks before defending a plan row
+/// against the writer. It exists so the run's plan is the single authority on
+/// which sections the finisher demands a decision about, on the path that has
+/// no planning pass in front of it.
+pub(crate) fn synthetic_plan(
     workspace: &ReportWorkspace,
     model_id: &str,
     now: jiff::Timestamp,
-) -> Option<RunPlan> {
-    Some(RunPlan {
+) -> RunPlan {
+    RunPlan {
         model_id: model_id.to_string(),
         entries: workspace
             .draft
@@ -52,12 +56,15 @@ fn synthetic_plan(
                 scope: String::new(),
                 evidence: Vec::new(),
                 instruction: None,
+                curated_records: None,
             })
             .collect(),
         user_edited: false,
+        synthetic: true,
         approved_at: Some(now),
+        plan_warnings: Vec::new(),
         created_at: now,
-    })
+    }
 }
 
 fn new_draft_run(
@@ -65,6 +72,8 @@ fn new_draft_run(
     model_id: &str,
     guidance: &str,
     now: jiff::Timestamp,
+    plan: Option<RunPlan>,
+    status: DraftRunStatus,
 ) -> DraftRun {
     DraftRun {
         schema_version: DRAFT_RUN_SCHEMA_VERSION,
@@ -72,8 +81,8 @@ fn new_draft_run(
         report_id: workspace.report_id,
         client_id: workspace.client_id,
         base_revision: workspace.draft.revision,
-        status: DraftRunStatus::Drafting,
-        plan: synthetic_plan(workspace, model_id, now),
+        status,
+        plan,
         title: None,
         sections: workspace
             .draft
@@ -109,21 +118,27 @@ fn new_draft_run(
     }
 }
 
-/// Create the run this whole-report turn writes into and hand the workspace to
-/// it. The pointer is saved before the first model call, so a second window
-/// that opens mid-run is refused rather than cutting a revision underneath it.
-pub(crate) async fn start_draft_run(
+/// Create a run and hand the workspace to it. The pointer is saved before the
+/// first model call, so a second window that opens mid-run is refused rather
+/// than cutting a revision underneath it.
+///
+/// `plan` and `status` are what separate the two ways a run begins: the
+/// un-gated command opens one already `Drafting` on a synthetic plan, while
+/// the planning pass opens one `Planning` with no plan at all and fills it in.
+pub(crate) async fn create_run_for_workspace(
     s3: &S3Client,
     bucket: &str,
     loaded: &mut LoadedWorkspace,
     model_id: &str,
     guidance: &str,
+    plan: Option<RunPlan>,
+    status: DraftRunStatus,
 ) -> Result<LoadedRun, ReportPipelineError> {
     let now = jiff::Timestamp::now();
     let run = create_draft_run(
         s3,
         bucket,
-        new_draft_run(&loaded.workspace, model_id, guidance, now),
+        new_draft_run(&loaded.workspace, model_id, guidance, now, plan, status),
     )
     .await?;
     loaded.workspace.active_run_id = Some(run.run.run_id);
@@ -344,17 +359,35 @@ pub async fn resume_draft_run(
     loaded.workspace.updated_at = now;
     save_loaded(s3, bucket, &mut loaded).await?;
 
-    execute_full_draft_turn(
-        sdk_config,
-        s3,
-        bucket,
-        loaded,
-        model_id,
-        request,
-        run,
-        DraftTurnKind::Resume,
-    )
-    .await
+    // Which executor picks the run back up follows the run's own plan, not a
+    // setting: a run that was planned and approved resumes in parallel over
+    // whatever is still pending, and one built on a synthetic 1:1 plan resumes
+    // the serial conversation it started as.
+    if is_gated_plan(&run.run) {
+        execute_parallel_draft_turn(
+            sdk_config,
+            s3,
+            bucket,
+            loaded,
+            model_id,
+            request,
+            run,
+            DraftTurnKind::Resume,
+        )
+        .await
+    } else {
+        execute_full_draft_turn(
+            sdk_config,
+            s3,
+            bucket,
+            loaded,
+            model_id,
+            request,
+            run,
+            DraftTurnKind::Resume,
+        )
+        .await
+    }
 }
 
 /// The drafting run a Writing session should hydrate from, if any.

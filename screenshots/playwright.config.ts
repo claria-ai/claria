@@ -1,5 +1,11 @@
 import { defineConfig } from "@playwright/test";
 
+// One knob for both halves of the run: the spec navigates here, and the dev
+// server below is started on this URL's port. Overriding it is how a capture
+// runs beside a `cargo tauri dev` session, which owns :1420 while it lives.
+const BASE_URL = process.env.CLARIA_TEST_URL ?? "http://localhost:1420";
+const PORT = new URL(BASE_URL).port || "1420";
+
 export default defineConfig({
   testDir: ".",
   testMatch: "capture.spec.ts",
@@ -21,14 +27,14 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: "npm run dev",
+    command: `npm run dev -- --port ${PORT} --strictPort`,
     cwd: "../claria-desktop-frontend",
     // Probe the entry module, not `/`. Vite answers `/` the moment it binds the
     // port, while the transform pipeline is still warming; `/src/main.tsx`
     // only answers once the module graph can actually be served.
-    url: "http://localhost:1420/src/main.tsx",
-    // Reusing whatever already holds :1420 is a local convenience — `cargo
-    // tauri dev` serves the frontend on the same port. In CI it would mask a
+    url: `${BASE_URL}/src/main.tsx`,
+    // Reusing whatever already holds the port is a local convenience — `cargo
+    // tauri dev` serves the frontend on :1420 too. In CI it would mask a
     // stale or foreign server, so CI always starts its own.
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

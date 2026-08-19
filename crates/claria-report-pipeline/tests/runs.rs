@@ -81,6 +81,7 @@ fn template_section(id: &str, heading: &str) -> ReportSection {
         blocks: boilerplate(),
         skipped: false,
         template_blocks: Some(boilerplate()),
+        template_directives: Vec::new(),
         authorship: None,
     }
 }
@@ -279,6 +280,7 @@ fn plan_entry(id: &str, heading: &str, intent: SectionIntent) -> PlanEntry {
         scope: String::new(),
         evidence: Vec::new(),
         instruction: None,
+        curated_records: None,
     }
 }
 
@@ -538,7 +540,11 @@ async fn a_section_marked_failed_is_durable_and_still_lets_the_run_finish() {
     assert_eq!(assembled.id.to_string(), SUMMARY_ID);
     assert!(!assembled.skipped);
     assert_eq!(assembled.blocks, boilerplate());
-    assert!(assembled.authorship.is_none());
+    // Whatever stamp the section already carried survives; what must not
+    // happen is the run taking credit for text it could not write.
+    assert!(assembled.authorship.as_ref().is_none_or(|authorship| {
+        authorship.kind != AuthorshipKind::ModelGenerated && authorship.run_id.is_none()
+    }));
 
     let results = tool_results(&server).await;
     assert!(
@@ -684,8 +690,13 @@ async fn a_skip_is_challenged_only_when_a_human_approved_the_plan() {
     );
     server.state.write().await.bedrock_tool_requests.clear();
 
-    // A plan a human approved is a different matter: contradicting it costs
-    // one corrective round, and then the writer's judgement stands.
+    // A plan a human edited is a different matter: contradicting it costs one
+    // corrective round, and then the writer's judgement stands. The plan is
+    // synthetic-but-edited on purpose — a clinician can edit the plan of an
+    // un-gated run at the resume gate, and that run keeps the serial
+    // conversation this rule lives in. A plan from an actual planning pass
+    // drafts in parallel, where the host carries out its skips itself and the
+    // writer never gets the chance to argue with one.
     let client_id = Uuid::new_v4();
     let report_id = seed_templated_report(&s3, client_id).await;
     let now = jiff::Timestamp::now();
@@ -705,7 +716,9 @@ async fn a_skip_is_challenged_only_when_a_human_approved_the_plan() {
                 ),
             ],
             user_edited: true,
+            synthetic: true,
             approved_at: Some(now),
+            plan_warnings: Vec::new(),
             created_at: now,
         },
         vec![
@@ -799,6 +812,9 @@ async fn a_skip_is_challenged_only_when_a_human_approved_the_plan() {
     assert!(summary.error.is_none());
 }
 
+/// The serial resume's kick-off block. A run whose plan came from a planning
+/// pass resumes in parallel and gets a per-section kick-off instead, so this
+/// pins itself to the serial path with a synthetic plan the clinician edited.
 #[tokio::test]
 async fn a_resume_kicks_off_with_durable_state_and_the_rewrite_source() {
     let (server, sdk, s3) = setup().await;
@@ -836,7 +852,9 @@ async fn a_resume_kicks_off_with_durable_state_and_the_rewrite_source() {
                 ),
             ],
             user_edited: true,
+            synthetic: true,
             approved_at: Some(now),
+            plan_warnings: Vec::new(),
             created_at: now,
         },
         vec![
@@ -1361,8 +1379,11 @@ async fn a_skip_through_the_run_keeps_the_template_copy() {
     assert!(deferred.skipped);
     assert!(deferred.blocks.is_empty());
     assert_eq!(deferred.template_blocks.as_ref(), Some(&boilerplate()));
-    // The run did not author it, so it is not credited to the run.
-    assert!(deferred.authorship.is_none());
+    // The run did not author it, so it is not credited to the run — whatever
+    // stamp the section carried before the run travels with it untouched.
+    assert!(deferred.authorship.as_ref().is_none_or(|authorship| {
+        authorship.kind != AuthorshipKind::ModelGenerated && authorship.run_id.is_none()
+    }));
 
     let run = only_run(&s3, client_id, report_id).await;
     assert_eq!(run.status, DraftRunStatus::Completed);
@@ -1861,7 +1882,9 @@ fn three_section_plan() -> RunPlan {
                 SectionIntent::Draft,
             ),
         ],
+        plan_warnings: Vec::new(),
         user_edited: false,
+        synthetic: false,
         approved_at: Some(now),
         created_at: now,
     }
@@ -2002,10 +2025,15 @@ async fn finalizing_a_partial_draft_keeps_what_landed_and_defers_the_rest() {
             .map(|authorship| authorship.kind),
         Some(AuthorshipKind::ModelGenerated)
     );
+    // Whatever stamp a deferred section carried before the run travels with
+    // it untouched; it just must not be credited to the run.
     assert!(
         outcome.workspace.draft.content.sections[1]
             .authorship
-            .is_none()
+            .as_ref()
+            .is_none_or(|authorship| {
+                authorship.kind != AuthorshipKind::ModelGenerated && authorship.run_id.is_none()
+            })
     );
 
     let run = only_run(&s3, client_id, report_id).await;

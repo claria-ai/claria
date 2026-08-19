@@ -161,6 +161,16 @@ pub fn report_draft_run(client_id: Uuid, report_id: Uuid, run_id: Uuid) -> Strin
     )
 }
 
+/// Every review finding recorded against one Writing session, in one object.
+/// It sits under the client prefix so the client delete/restore lifecycle
+/// sweeps it along with the workspace it describes.
+pub fn report_findings(client_id: Uuid, report_id: Uuid) -> String {
+    format!(
+        "{}findings/{report_id}.json",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
 pub fn report_attempt(client_id: Uuid, attempt_id: Uuid) -> String {
     format!(
         "{}attempts/{attempt_id}.json",

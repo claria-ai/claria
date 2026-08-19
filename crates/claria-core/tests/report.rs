@@ -1,6 +1,7 @@
 use claria_core::models::{
     report::{
         AuthorshipKind, MAX_PARAGRAPH_CHARACTERS, MAX_REPORT_TEXT_CHARACTERS, MAX_REPORT_TURNS,
+        MAX_SECTION_TEMPLATE_DIRECTIVES, MAX_TEMPLATE_DIRECTIVE_CHARACTERS,
         REPORT_WORKSPACE_SCHEMA_VERSION, ReportAuthoringTurn, ReportBlock, ReportContent,
         ReportOperation, ReportProposal, ReportProtocolBlock, ReportProtocolMessage,
         ReportProtocolRole, ReportSection, ReportTemplateImport, ReportTemplateWarning,
@@ -31,6 +32,7 @@ fn section(id: Uuid, heading: &str, text: &str) -> ReportSection {
     ReportSection {
         skipped: false,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship: None,
         id,
         heading: heading.to_string(),
@@ -179,6 +181,7 @@ fn skipped_sections_must_be_empty_and_pass_with_bare_headings() {
         blocks: Vec::new(),
         skipped: true,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship: None,
     };
     let content = ReportContent {
@@ -208,6 +211,7 @@ fn replacing_a_deferred_section_un_defers_it() {
         blocks: Vec::new(),
         skipped: true,
         template_blocks: None,
+        template_directives: Vec::new(),
         authorship: None,
     }];
 
@@ -250,6 +254,68 @@ fn version_six_workspaces_migrate_and_sections_default_to_no_template_copy() {
     assert_eq!(decoded.draft.content.sections[0].authorship, None);
 }
 
+/// Every workspace already in S3 was written before authoring directives
+/// existed, and none of them may fail to load because of it.
+#[test]
+fn sections_without_a_directive_field_decode_and_round_trip_with_one() {
+    let mut workspace = workspace();
+    workspace.draft.content.sections = vec![section(Uuid::new_v4(), "History", "Documented.")];
+    let mut value = serde_json::to_value(&workspace).expect("workspace JSON");
+    value["draft"]["content"]["sections"][0]
+        .as_object_mut()
+        .expect("section")
+        .remove("template_directives");
+
+    let decoded = decode_report_workspace(&serde_json::to_vec(&value).unwrap())
+        .expect("decode a workspace written before directives existed");
+    assert!(
+        decoded.draft.content.sections[0]
+            .template_directives
+            .is_empty()
+    );
+
+    workspace.draft.content.sections[0].template_directives = vec![
+        "a one sentence stating why the child was referred".to_string(),
+        "Delete the subsections of the tests that were not uploaded".to_string(),
+    ];
+    let encoded = serde_json::to_vec(&workspace).expect("workspace JSON");
+    let decoded = decode_report_workspace(&encoded).expect("decode a workspace with directives");
+    assert_eq!(
+        decoded.draft.content.sections[0].template_directives,
+        workspace.draft.content.sections[0].template_directives
+    );
+    validate_report_content(&decoded.draft.content).expect("directives are valid content");
+}
+
+/// The ceilings are the reason the field is safe to put in every request.
+#[test]
+fn template_directives_are_bounded_in_count_and_length() {
+    let mut content = ReportContent {
+        title: "Assessment".to_string(),
+        sections: vec![section(Uuid::new_v4(), "Results", "Documented.")],
+    };
+
+    content.sections[0].template_directives = (0..MAX_SECTION_TEMPLATE_DIRECTIVES)
+        .map(|index| format!("directive {index}"))
+        .collect();
+    validate_report_content(&content).expect("the ceiling itself is allowed");
+
+    content.sections[0]
+        .template_directives
+        .push("one too many".to_string());
+    let error = validate_report_content(&content).unwrap_err();
+    assert!(error.to_string().contains("template directives"));
+
+    content.sections[0].template_directives =
+        vec!["x".repeat(MAX_TEMPLATE_DIRECTIVE_CHARACTERS + 1)];
+    let error = validate_report_content(&content).unwrap_err();
+    assert!(error.to_string().contains("template directive"));
+
+    content.sections[0].template_directives = vec!["   ".to_string()];
+    let error = validate_report_content(&content).unwrap_err();
+    assert!(error.to_string().contains("template directive"));
+}
+
 #[test]
 fn skipped_sections_keep_a_template_copy_but_no_written_body() {
     let deferred = ReportSection {
@@ -258,6 +324,7 @@ fn skipped_sections_keep_a_template_copy_but_no_written_body() {
         blocks: Vec::new(),
         skipped: true,
         template_blocks: Some(vec![paragraph("Summarize the findings here.")]),
+        template_directives: Vec::new(),
         authorship: None,
     };
     let content = ReportContent {
@@ -297,6 +364,7 @@ fn template_copies_are_excluded_from_the_document_text_ceiling() {
             blocks: vec![paragraph(&body)],
             skipped: false,
             template_blocks: Some(vec![paragraph(&body)]),
+            template_directives: Vec::new(),
             authorship: None,
         })
         .collect();
@@ -372,6 +440,7 @@ fn prompt_content_view_hides_template_copies_and_authorship() {
         title: "Assessment".to_string(),
         sections: vec![ReportSection {
             template_blocks: Some(vec![paragraph("Template body.")]),
+            template_directives: Vec::new(),
             authorship: Some(SectionAuthorship {
                 kind: AuthorshipKind::ModelGenerated,
                 revision: 0,
@@ -394,15 +463,21 @@ fn prompt_content_view_hides_template_copies_and_authorship() {
     assert!(viewed.get("template_blocks").is_none());
     assert!(viewed.get("authorship").is_none());
 
-    // A section with neither field serializes exactly as it always did.
+    // The view hides exactly three things — template copies, authoring
+    // directives, and authorship — and adds nothing: stripping those keys
+    // from the plain serialization reproduces it.
     let plain = ReportContent {
         title: "Assessment".to_string(),
         sections: vec![section(Uuid::new_v4(), "History", "Documented.")],
     };
-    assert_eq!(
-        prompt_content_view(&plain),
-        serde_json::to_value(&plain).expect("serialize content")
-    );
+    let mut expected = serde_json::to_value(&plain).expect("serialize content");
+    for viewed in expected["sections"].as_array_mut().expect("sections array") {
+        let section = viewed.as_object_mut().expect("section object");
+        section.remove("template_directives");
+        section.remove("template_blocks");
+        section.remove("authorship");
+    }
+    assert_eq!(prompt_content_view(&plain), expected);
 }
 
 #[test]
@@ -448,6 +523,7 @@ fn filling_a_deferred_section_keeps_its_template_copy() {
         blocks: Vec::new(),
         skipped: true,
         template_blocks: Some(template_blocks.clone()),
+        template_directives: Vec::new(),
         authorship: None,
     }];
 
@@ -616,6 +692,90 @@ fn acceptance_recomputes_candidate_and_increments_once() {
 }
 
 #[test]
+fn acceptance_credits_the_model_for_every_section_the_proposal_wrote() {
+    let mut workspace = workspace();
+    let kept = Uuid::new_v4();
+    let replaced = Uuid::new_v4();
+    let removed = Uuid::new_v4();
+    workspace.draft.content.sections = vec![
+        section(kept, "Untouched", "Left alone."),
+        section(replaced, "History", "Old text."),
+        section(removed, "Obsolete", "Delete me."),
+    ];
+
+    let added = Uuid::new_v4();
+    let operations = vec![
+        ReportOperation::SetTitle {
+            title: "Reviewed assessment".to_string(),
+        },
+        ReportOperation::ReplaceSection {
+            section_id: replaced,
+            heading: "History".to_string(),
+            blocks: vec![paragraph("New text.")],
+        },
+        ReportOperation::AddSection {
+            position: 3,
+            section: section(added, "Summary", "Fresh text."),
+        },
+        ReportOperation::RemoveSection {
+            section_id: removed,
+        },
+    ];
+    let proposal = proposal(&workspace, operations);
+    let accepted = workspace
+        .draft
+        .accept_with_authorship(
+            &proposal,
+            &proposal.model_id,
+            timestamp("2026-08-01T12:02:00Z"),
+        )
+        .expect("accept with authorship");
+
+    let stamp = |id: Uuid| {
+        accepted
+            .content
+            .sections
+            .iter()
+            .find(|section| section.id == id)
+            .expect("section")
+            .authorship
+            .clone()
+    };
+    for id in [replaced, added] {
+        let authorship = stamp(id).expect("written sections are stamped");
+        assert_eq!(authorship.kind, AuthorshipKind::ModelRevised);
+        assert_eq!(authorship.revision, accepted.revision);
+        assert_eq!(
+            authorship.model_id.as_deref(),
+            Some(proposal.model_id.as_str())
+        );
+        assert_eq!(authorship.run_id, None);
+    }
+    // A retitle touches no body, and a removed section has nothing to stamp.
+    assert_eq!(stamp(kept), None);
+    assert!(
+        !accepted
+            .content
+            .sections
+            .iter()
+            .any(|section| section.id == removed)
+    );
+
+    // The unstamped `accept` contract is unchanged for any other caller.
+    let plain = workspace
+        .draft
+        .accept(&proposal, timestamp("2026-08-01T12:02:00Z"))
+        .expect("accept");
+    assert!(
+        plain
+            .content
+            .sections
+            .iter()
+            .all(|section| section.authorship.is_none())
+    );
+}
+
+#[test]
 fn acceptance_never_trusts_tampered_candidate() {
     let workspace = workspace();
     let operations = vec![ReportOperation::SetTitle {
@@ -670,6 +830,7 @@ fn limits_and_empty_text_are_rejected() {
         section: ReportSection {
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
             id: Uuid::new_v4(),
             heading: "Findings".to_string(),
@@ -693,6 +854,7 @@ fn structured_tables_validate_shape_widths_and_empty_cells() {
         sections: vec![ReportSection {
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
             id: Uuid::new_v4(),
             heading: "Scores".to_string(),
@@ -744,6 +906,7 @@ fn structured_tables_validate_shape_widths_and_empty_cells() {
         sections: vec![ReportSection {
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
             id: Uuid::new_v4(),
             heading: "Large tables".to_string(),
@@ -813,6 +976,7 @@ fn unresolved_template_markers_are_counted_across_tables() {
         sections: vec![ReportSection {
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
             id: Uuid::new_v4(),
             heading: "[DATE]".to_string(),

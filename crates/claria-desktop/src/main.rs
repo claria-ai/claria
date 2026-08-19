@@ -19,6 +19,11 @@ mod state;
 fn main() -> Result<()> {
     color_eyre::install()?;
 
+    // Before anything can spawn: `tauri::async_runtime::set` panics once the
+    // global runtime has been initialized, and the first `spawn` or
+    // `block_on` anywhere initializes it.
+    claria_desktop::async_runtime::install()?;
+
     let console_buffer = console::ConsoleBuffer::new();
     let console_layer = console::ConsoleLayer::new(console_buffer.clone());
 
@@ -115,8 +120,16 @@ fn main() -> Result<()> {
         commands::load_draft_run,
         commands::finalize_partial_draft,
         commands::abandon_draft_run,
+        commands::generate_draft_plan,
+        commands::update_draft_plan,
+        commands::start_draft_run,
+        commands::resume_draft_run,
         commands::send_report_message,
         commands::resolve_report_proposal,
+        commands::run_review_sweeps,
+        commands::list_report_findings,
+        commands::resolve_report_finding,
+        commands::evaluate_report_completion,
         commands::export_report_docx,
         commands::list_record_files,
         commands::search_record_contents,

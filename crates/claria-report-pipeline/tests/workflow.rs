@@ -327,6 +327,7 @@ async fn full_draft_defers_skipped_sections_as_placed_empty_placeholders() {
         blocks: boilerplate(),
         skipped: false,
         template_blocks: Some(boilerplate()),
+        template_directives: Vec::new(),
         authorship: None,
     };
     store::save_report_draft(
@@ -468,6 +469,7 @@ async fn full_draft_context_carries_the_template_not_the_accepted_draft() {
                 blocks: vec![paragraph("ACCEPTED DRAFT PROSE FROM AN EARLIER PASS")],
                 skipped: false,
                 template_blocks: Some(vec![paragraph("TEMPLATE BOILERPLATE PROSE")]),
+                template_directives: Vec::new(),
                 authorship: None,
             }],
         },
@@ -571,6 +573,7 @@ async fn full_draft_finisher_requires_a_decision_for_every_supplied_section() {
                     }],
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                 },
                 ReportSection {
@@ -581,6 +584,7 @@ async fn full_draft_finisher_requires_a_decision_for_every_supplied_section() {
                     }],
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                 },
             ],
@@ -1082,7 +1086,33 @@ async fn real_tool_loop_stages_then_accepts_one_reviewed_proposal() {
     .await
     .expect("accept");
     assert_eq!(accepted.draft.revision, 1);
-    assert_eq!(accepted.draft.content, pending.proposed_content);
+    assert_eq!(accepted.draft.content.title, pending.proposed_content.title);
+    // Accepting credits the proposing model for every section it wrote, so
+    // the accepted sections differ from the proposal by exactly that stamp.
+    assert_eq!(
+        accepted
+            .draft
+            .content
+            .sections
+            .iter()
+            .cloned()
+            .map(|section| claria_core::models::report::ReportSection {
+                authorship: None,
+                ..section
+            })
+            .collect::<Vec<_>>(),
+        pending.proposed_content.sections
+    );
+    let stamp = accepted.draft.content.sections[0]
+        .authorship
+        .as_ref()
+        .expect("accepted sections are stamped");
+    assert_eq!(
+        stamp.kind,
+        claria_core::models::report::AuthorshipKind::ModelRevised
+    );
+    assert_eq!(stamp.revision, 1);
+    assert_eq!(stamp.model_id.as_deref(), Some(pending.model_id.as_str()));
     assert!(accepted.session.pending_proposal.is_none());
     assert_eq!(accepted.session.last_agent_revision, Some(1));
 
@@ -2246,6 +2276,7 @@ async fn focused_sections_and_tables_stay_in_untrusted_context() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: section_id,
                     heading: "Findings".to_string(),
@@ -2264,6 +2295,7 @@ async fn focused_sections_and_tables_stay_in_untrusted_context() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: unfocused_id,
                     heading: "Background".to_string(),
@@ -2398,6 +2430,7 @@ async fn save_sections(
         .map(|index| ReportSection {
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
             id: Uuid::new_v4(),
             heading: format!("Section {index}"),
@@ -2655,6 +2688,7 @@ async fn section_reads_share_the_turn_read_budget_with_record_reads() {
             sections: vec![ReportSection {
                 skipped: false,
                 template_blocks: None,
+                template_directives: Vec::new(),
                 authorship: None,
                 id: big_id,
                 heading: "Background".to_string(),
@@ -2828,6 +2862,7 @@ async fn a_large_report_does_not_ride_into_a_targeted_turn() {
         .map(|index| ReportSection {
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
             id: Uuid::new_v4(),
             heading: format!("Section {index}"),

@@ -1,6 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 import { buildInitScript } from "./tauri-mock.js";
-import { driftedPlan, freshWritingWorkspace } from "./fixtures.js";
+import {
+  driftedPlan,
+  freshWritingWorkspace,
+  plannedWritingWorkspace,
+} from "./fixtures.js";
 
 const BASE_URL = process.env.CLARIA_TEST_URL ?? "http://localhost:1420";
 const SCREENSHOT_TIME = new Date("2026-03-03T20:00:00Z");
@@ -141,6 +145,15 @@ test("client record settings", async ({ page }) => {
 });
 
 test("client writing", async ({ page }) => {
+  // A whole-report draft that has been planned and stopped at the gate: the
+  // planner has decided what every section covers and which records back it,
+  // and nothing is written until the reader approves it.
+  await page.addInitScript({
+    content: buildInitScript({
+      load_report_workspace: plannedWritingWorkspace,
+      start_report_workspace: plannedWritingWorkspace,
+    }),
+  });
   await page.goto(BASE_URL);
   await page.waitForSelector("[data-page=clients]");
   await page.click("[data-page=clients]");
@@ -148,8 +161,22 @@ test("client writing", async ({ page }) => {
   await page.click("[data-client]:first-child");
   await page.waitForSelector("[data-tab=writing]");
   await page.click("[data-tab=writing]");
-  await page.getByRole("tab", { name: "Write with Claude" }).click();
-  await page.waitForSelector("[data-testid=report-proposal]");
+  // The tab only exists because the report carries a run; the pane it opens
+  // is the plan gate.
+  await page.getByRole("tab", { name: "Draft run" }).click();
+  await page.waitForSelector("text=Plan ready — review before drafting");
+  // Cards are collapsed by default. Open the first so the shot shows what the
+  // planner actually decided about a section: the scope it wrote, the records
+  // it expects that section to draw on, and the directive the reader can flip.
+  await page.locator("[data-testid=draft-plan-card] > summary").first().click();
+  // Opening a card scrolls it into view, which leaves the list starting
+  // mid-card. Show the plan from its first section.
+  const planList = page
+    .locator("[data-testid=draft-run-pane] .overflow-y-auto")
+    .first();
+  await planList.evaluate((element) => {
+    element.scrollTop = 0;
+  });
   await page.waitForTimeout(300);
   await capture(page, "client-writing.png", true);
 });
@@ -157,11 +184,13 @@ test("client writing", async ({ page }) => {
 test("client writing prompt library", async ({ page }) => {
   // A session before its first turn, so the setup pane offers whole-report
   // generation; the saved-prompt picker prefills the guidance box with the
-  // first phase of a phased report workflow.
+  // first phase of a phased report workflow. Nothing has been planned yet,
+  // so this session carries no drafting run.
   await page.addInitScript({
     content: buildInitScript({
       load_report_workspace: freshWritingWorkspace,
       start_report_workspace: freshWritingWorkspace,
+      load_draft_run: null,
     }),
   });
   await page.goto(BASE_URL);

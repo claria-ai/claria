@@ -108,6 +108,66 @@ where
         .max_by_key(|id| release_date_stamp(id.as_ref()))
 }
 
+/// Pick the model for one supporting role — the section planner, the review
+/// passes — from what this account actually has.
+///
+/// The roles behind the writer are analysis jobs: structured, forced-tool,
+/// read-heavy, and run many times per document. A mid-tier model does them
+/// well at a fraction of the writer's price, so the derived default is the
+/// newest discovered Sonnet that can run report tools and write a prompt
+/// cache, then the newest discovered Haiku that can run report tools.
+///
+/// `override_id` is the clinician's explicit pick and is honoured only when
+/// `discovered` still lists it — an account that lost access to a model must
+/// fall back to a working default rather than fail every plan with a Bedrock
+/// error. The fallback of last resort is the writer's own model: an account
+/// entitled to Opus alone still plans, at Opus prices.
+///
+/// `discovered` holds the inference-profile IDs the model list returned.
+pub fn resolve_role_model<'a>(
+    override_id: Option<&'a str>,
+    discovered: &'a [String],
+    writer_model_id: &'a str,
+) -> &'a str {
+    if let Some(override_id) = override_id.map(str::trim).filter(|id| !id.is_empty()) {
+        if discovered.iter().any(|id| id == override_id) {
+            return override_id;
+        }
+        // Model IDs only: this says which model went missing, never who was
+        // using it or what they were writing.
+        tracing::warn!(
+            override_id,
+            writer_model_id,
+            discovered = discovered.len(),
+            "the configured role model is not available to this account; using the derived default"
+        );
+    }
+    newest_family_model(discovered, "sonnet", |capabilities| {
+        capabilities.report_tools && capabilities.prompt_caching
+    })
+    .or_else(|| {
+        newest_family_model(discovered, "haiku", |capabilities| {
+            capabilities.report_tools
+        })
+    })
+    .unwrap_or(writer_model_id)
+}
+
+/// The newest discovered model whose family stem ends with `tier` and whose
+/// capabilities satisfy `accepts`, by release-date stamp.
+fn newest_family_model<'a>(
+    discovered: &'a [String],
+    tier: &str,
+    accepts: impl Fn(ModelCapabilities) -> bool,
+) -> Option<&'a str> {
+    discovered
+        .iter()
+        .map(String::as_str)
+        .filter(|id| known_claude_family(id).is_some_and(|family| family.ends_with(tier)))
+        .filter(|id| accepts(ModelCapabilities::for_id(id)))
+        .max_by_key(|id| release_date_stamp(id))
+}
+
 /// The Claude family stem a model ID belongs to, or `None` for IDs outside
 /// the families this table knows.
 ///

@@ -30,6 +30,14 @@ shape, tool schemas, and stop-reason handling; `claria-docx` owns template
 import and export; `claria-desktop` wires commands, preferences, and audit
 events.
 
+**`drafting-runs.md` is the companion to this document.** This file covers the
+two writing modes and the loop they share; that one covers the durable
+machinery under whole-report generation — the run object and its per-section
+state machine, the plan pass and its gate, the cached conversation layout, the
+review fan-out, the findings lifecycle, and the deterministic completion gate.
+Read it for anything about how a whole-report draft survives being interrupted,
+or about what "complete" means.
+
 ## Scenario: from empty account to a hydrated report
 
 1. **Upload a template to the account.** Preferences → Document Writer → Writer Templates
@@ -48,13 +56,21 @@ events.
    and the imported structured content — headings **and** boilerplate body
    text — becomes the working draft. The template's paragraphs are now data
    the model will see, not instructions (see `templates.md`).
-5. **Hydrate as the first turn.** "Fill the whole report" snapshots every
+5. **Plan the draft.** A planning model reads the same record snapshot and
+   template structure and returns one row per section — what it must assert
+   and which records support it — through a forced `submit_section_plan`
+   call. The host checks coverage itself and checks every filename against the
+   records; the plan lands on the run unapproved, for the clinician to edit
+   and start. Which model does this is a per-role setting, defaulting to the
+   newest capable Sonnet the account has.
+6. **Hydrate as the first turn.** Starting the approved plan snapshots every
    readable record into `<untrusted_record_context>`, injects the base
    revision's structure and per-section template bodies as
    `<untrusted_template_context>`, injects the run's section plan as
    `<plan_context>`, and runs the full-draft tool protocol until
-   `finish_full_draft` lands revision 1.
-6. From there the session continues as targeted editing: instructions,
+   `finish_full_draft` lands revision 1. Sections the plan marks skip are
+   already skipped on the run, so the writer is never asked about them.
+7. From there the session continues as targeted editing: instructions,
    record reads on demand, reviewable proposals, and eventually a DOCX
    export rendered back through the stored template package.
 
@@ -138,7 +154,10 @@ What survives a stop is what was already durable:
   discards it. The stop is checked twice between rounds — after a tool
   batch is executed and again before the next call is issued — so a stop
   pressed while a section is being written to S3 keeps that section and
-  does not open one more billed conversation.
+  does not open one more billed conversation. Past the cut the stop is a
+  no-op on both paths: once the serial writer has called
+  `finish_full_draft`, or once every parallel branch has handed back its
+  verdict, the revision is cut and stands.
 - **A targeted turn** keeps nothing, which is the whole of its state: it
   saves only at the end, so a stopped turn is a clean abort.
 
@@ -179,9 +198,9 @@ one call for the document:
   template is ten decisions minimum.
 
 So a typical templated report is N+2 calls at minimum, spread across several
-Converse rounds: each response is capped at the 32k output reserve, and a
-response cut off mid-call is salvaged (completed calls execute, the model
-continues in the next round). The activity feed shows every call, which is
+Converse rounds: each response is capped at the output reserve (32k by
+default, raisable in Preferences), and a response cut off mid-call is
+salvaged (completed calls execute, the model continues in the next round). The activity feed shows every call, which is
 why a fresh ten-section report reads as 12+ tool calls even when nothing is
 wrong.
 
@@ -191,9 +210,19 @@ call is only executable once complete — but at a 32k output reserve a unary
 request would sit idle long enough to risk an HTTP timeout while the model
 generates, so the connection carries frames throughout instead.
 
-A round whose request never completes — the stream goes silent past the
-idle bound or drops mid-response, or the request never gets a response at
-all — is **retried up to twice** with the identical request. Nothing from a
+Two waits bound one round's silence: how long Bedrock may take to produce
+the first frame (90s by default) and how long it may then go quiet (60s).
+Both are Preferences settings, as is the output reserve. They exist for the
+case the defaults were sized against and then outgrown — a template long
+enough that a cold prompt cache spends minutes re-reading the request before
+the first token, which the default wait reads as a request that never
+landed. The planner and reviewer carry their own pair (120s/90s), set from
+the same section.
+
+A round whose request never completes — the stream never starts, goes
+silent past the idle bound, or drops mid-response, or the request never
+gets a response at all — is **retried up to twice** with the identical
+request. Nothing from a
 failed attempt is committed, so the re-send is safe, and a quick retry
 re-reads the prompt cache the previous completed round wrote. When all
 three attempts go unanswered, the turn fails with the attempt count and how
@@ -268,7 +297,10 @@ Note the coupling: raising the output reserve (8k → 32k in the quality-
 regression fix) shrank both the input budget and the whole-report snapshot
 ceiling (~575 KiB → ~490 KiB). Reserve, input budget, and snapshot preflight
 are all derived from each other by design — see the Bedrock rules in
-CLAUDE.md.
+CLAUDE.md. The reserve being a setting does not loosen that: a raised
+ceiling shrinks the input budget and the snapshot allowance by the same
+amount on the same call, and is itself capped at half the model's window so
+there is always room left to ask the question.
 
 ## What travels on each turn
 

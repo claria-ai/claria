@@ -77,105 +77,213 @@ export const driftedPlan = planEntries.map((e) => {
   return e;
 });
 
+const REPORT_ID = "99999999-9999-4999-8999-999999999999";
+const WRITER_MODEL_ID = "us.anthropic.claude-opus-4-6-20260301-v1:0";
+
+/**
+ * One section of a whole-report draft run: the durable row the run tracks and
+ * the planner's decision about it, which always travel together.
+ */
+function plannedSection(
+  position: number,
+  section_id: string,
+  heading: string,
+  intent: "draft" | "skip",
+  scope: string,
+  evidence: { filename: string; note: string }[],
+  instruction: string | null = null,
+  required = true,
+) {
+  return {
+    section: {
+      section_id,
+      heading,
+      position,
+      state: "pending",
+      blocks: [],
+      citations: [],
+      attempts: 0,
+      error: null,
+      updated_at: "2026-03-15T15:12:04Z",
+    },
+    entry: { section_id, heading, intent, required, scope, evidence, instruction },
+  };
+}
+
+const plannedSections = [
+  plannedSection(
+    0,
+    "a1000000-0000-4000-8000-000000000001",
+    "Reason for Referral",
+    "draft",
+    "Who referred Jane, when, and the questions this evaluation is being asked to answer.",
+    [{ filename: "intake-parent-interview.txt", note: "Referral source and presenting concerns" }],
+  ),
+  plannedSection(
+    1,
+    "a1000000-0000-4000-8000-000000000002",
+    "Background & Developmental History",
+    "draft",
+    "Developmental milestones, medical history, and family context, as the parent interview reports them.",
+    [{ filename: "intake-parent-interview.txt", note: "Milestones, medical history, home routines" }],
+  ),
+  plannedSection(
+    2,
+    "a1000000-0000-4000-8000-000000000003",
+    "School History & Teacher Report",
+    "draft",
+    "Classroom performance, work habits, and the supports already in place.",
+    [{ filename: "teacher-observation.txt", note: "Ms. Alvarado's checklist and narrative" }],
+  ),
+  plannedSection(
+    3,
+    "a1000000-0000-4000-8000-000000000004",
+    "Behavioral Observations",
+    "draft",
+    "What was observed in session and in class, in behavioral terms and without interpretation.",
+    [
+      { filename: "session-2026-03-15.m4a", note: "Session recording transcript" },
+      { filename: "teacher-observation.txt", note: "Classroom observations" },
+    ],
+  ),
+  plannedSection(
+    4,
+    "a1000000-0000-4000-8000-000000000005",
+    "Assessment Results",
+    "draft",
+    "WISC-V index scores, BASC-3 parent and teacher forms, and the Conners 4 ratings, each reported with its range.",
+    [{ filename: "wisc-v-basc-3-results.pdf", note: "Score report" }],
+    "Report the scores in tables. Interpretation belongs in the next section.",
+  ),
+  plannedSection(
+    5,
+    "a1000000-0000-4000-8000-000000000006",
+    "Clinical Interpretation",
+    "draft",
+    "Integrate history, observations, and scores into one explanation of the referral questions.",
+    [
+      { filename: "wisc-v-basc-3-results.pdf", note: "Converging score patterns" },
+      { filename: "teacher-observation.txt", note: "Cross-setting corroboration" },
+    ],
+  ),
+  plannedSection(
+    6,
+    "a1000000-0000-4000-8000-000000000007",
+    "Diagnostic Impressions",
+    "draft",
+    "The impressions this evidence supports, each tied to the criteria it rests on.",
+    [],
+  ),
+  plannedSection(
+    7,
+    "a1000000-0000-4000-8000-000000000008",
+    "Recommendations",
+    "draft",
+    "Classroom accommodations, home strategies, and follow-up the findings justify.",
+    [{ filename: "teacher-observation.txt", note: "Supports that already work" }],
+  ),
+  plannedSection(
+    8,
+    "a1000000-0000-4000-8000-000000000009",
+    "Appendix: Score Tables",
+    "skip",
+    "Raw and scaled score tables, attached by hand once the report is signed.",
+    [],
+    null,
+    false,
+  ),
+];
+
+/**
+ * A whole-report draft that has been planned and is waiting at the gate:
+ * every section decided, nothing written, and the reader holding the
+ * approval. `status: "awaiting_approval"` is what puts the Draft run pane
+ * into `plan-gate` mode.
+ */
+export const plannedDraftRun = {
+  schema_version: 1,
+  run_id: "b2000000-0000-4000-8000-000000000001",
+  report_id: REPORT_ID,
+  client_id: CLIENT_ID,
+  base_revision: 3,
+  status: "awaiting_approval",
+  plan: {
+    model_id: WRITER_MODEL_ID,
+    entries: plannedSections.map((planned) => planned.entry),
+    user_edited: false,
+    approved_at: null,
+    plan_warnings: [],
+    created_at: "2026-03-15T15:12:04Z",
+  },
+  title: "Psychological Evaluation",
+  sections: plannedSections.map((planned) => planned.section),
+  instructions: [
+    {
+      text: "Plain clinical style the family can read. Keep every claim tied to a record.",
+      added_at: "2026-03-15T15:11:40Z",
+    },
+  ],
+  writer_model_id: WRITER_MODEL_ID,
+  finalized_revision: null,
+  partial: false,
+  created_at: "2026-03-15T15:11:40Z",
+  updated_at: "2026-03-15T15:12:04Z",
+};
+
+/**
+ * One `ConfigInfo`, shared by every command that returns one. A missing field
+ * here is a blank page, not a blank pane: the writer reads
+ * `draft_pipeline.plan_gate` unguarded, so three drifting copies of this
+ * object is three chances to lose a screenshot to a `TypeError`.
+ */
+const configInfo = {
+  region: "us-east-1",
+  system_name: "claria",
+  account_id: "185735714230",
+  created_at: "2026-03-01T17:30:02.048518Z",
+  credential_type: "inline",
+  profile_name: null,
+  access_key_hint: "AKIA...GJEV",
+  preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
+  cost_explorer_enabled: true,
+  hourly_cost_data: false,
+  prompt_caching_enabled: true,
+  transcription: {
+    default_language: "english",
+    default_speaker_count: 2,
+    use_medical_for_english: false,
+    translate_to_english: false,
+  },
+  report_authoring: {
+    max_tool_rounds: 40,
+    max_converse_calls: 50,
+    max_tool_uses_per_response: 80,
+    max_retained_turns: 200,
+  },
+  model_tuning: {
+    reasoning_enabled: true,
+    effort: null,
+    temperature: null,
+  },
+  chat_streaming: "paragraph",
+  draft_pipeline: {
+    plan_gate: "gated",
+    planner_model_id: null,
+    reviewer_model_id: null,
+  },
+};
+
 export const fixtures: Record<string, unknown> = {
   has_config: true,
 
-  load_config: {
-    region: "us-east-1",
-    system_name: "claria",
-    account_id: "185735714230",
-    created_at: "2026-03-01T17:30:02.048518Z",
-    credential_type: "inline",
-    profile_name: null,
-    access_key_hint: "AKIA...GJEV",
-    preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
-    cost_explorer_enabled: true,
-    hourly_cost_data: false,
-    prompt_caching_enabled: true,
-    transcription: {
-      default_language: "english",
-      default_speaker_count: 2,
-      use_medical_for_english: false,
-      translate_to_english: false,
-    },
-    report_authoring: {
-      max_tool_rounds: 40,
-      max_converse_calls: 50,
-      max_tool_uses_per_response: 80,
-      max_retained_turns: 200,
-    },
-    model_tuning: {
-      reasoning_enabled: true,
-      effort: null,
-      temperature: null,
-    },
-  },
+  load_config: configInfo,
 
   // `fetch_cloud_preferences` returns the same shape as `load_config` —
   // the in-S3 synced preferences mirror the synced subset of the local config.
-  fetch_cloud_preferences: {
-    region: "us-east-1",
-    system_name: "claria",
-    account_id: "185735714230",
-    created_at: "2026-03-01T17:30:02.048518Z",
-    credential_type: "inline",
-    profile_name: null,
-    access_key_hint: "AKIA...GJEV",
-    preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
-    cost_explorer_enabled: true,
-    hourly_cost_data: false,
-    prompt_caching_enabled: true,
-    transcription: {
-      default_language: "english",
-      default_speaker_count: 2,
-      use_medical_for_english: false,
-      translate_to_english: false,
-    },
-    report_authoring: {
-      max_tool_rounds: 40,
-      max_converse_calls: 50,
-      max_tool_uses_per_response: 80,
-      max_retained_turns: 200,
-    },
-    model_tuning: {
-      reasoning_enabled: true,
-      effort: null,
-      temperature: null,
-    },
-  },
+  fetch_cloud_preferences: configInfo,
 
-  // `save_preferences_patch` echoes the resulting merged ConfigInfo; reuse
-  // the `load_config` shape.
-  save_preferences_patch: {
-    region: "us-east-1",
-    system_name: "claria",
-    account_id: "185735714230",
-    created_at: "2026-03-01T17:30:02.048518Z",
-    credential_type: "inline",
-    profile_name: null,
-    access_key_hint: "AKIA...GJEV",
-    preferred_model_id: "us.anthropic.claude-opus-4-6-20260301-v1:0",
-    cost_explorer_enabled: true,
-    hourly_cost_data: false,
-    prompt_caching_enabled: true,
-    transcription: {
-      default_language: "english",
-      default_speaker_count: 2,
-      use_medical_for_english: false,
-      translate_to_english: false,
-    },
-    report_authoring: {
-      max_tool_rounds: 40,
-      max_converse_calls: 50,
-      max_tool_uses_per_response: 80,
-      max_retained_turns: 200,
-    },
-    model_tuning: {
-      reasoning_enabled: true,
-      effort: null,
-      temperature: null,
-    },
-  },
+  // `save_preferences_patch` echoes the resulting merged ConfigInfo.
+  save_preferences_patch: configInfo,
   save_transcript_edits: null,
   upload_record_file_with_options: {
     filename: "session-2026-03-15.m4a",
@@ -565,6 +673,21 @@ export const fixtures: Record<string, unknown> = {
     created_at: "2026-03-01T17:30:02Z",
     updated_at: "2026-03-15T15:08:05Z",
   },
+  // The Writing tab adopts whatever durable run the report carries, so every
+  // writer capture answers this. The plan waiting at the gate is the one the
+  // `client writing` shot is about.
+  load_draft_run: plannedDraftRun,
+
+  // A report nobody has asked for a review of yet.
+  list_report_findings: {
+    schema_version: 1,
+    report_id: REPORT_ID,
+    client_id: CLIENT_ID,
+    findings: [],
+    coverage: [],
+    updated_at: "2026-03-15T15:08:05Z",
+  },
+
   list_editor_history: [
     {
       report_id: "99999999-9999-4999-8999-999999999999",
@@ -936,6 +1059,21 @@ export const freshWritingWorkspace = {
   pending_proposal: null,
   resolutions: [],
   last_export: null,
+};
+
+// The same session with its last proposal already accepted, so the plan
+// waiting in the Draft run pane is the only decision on the reader's desk.
+export const plannedWritingWorkspace = {
+  ...(fixtures.load_report_workspace as Record<string, unknown>),
+  pending_proposal: null,
+  resolutions: [
+    {
+      proposal_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      decision: "accepted",
+      resulting_revision: 3,
+      resolved_at: "2026-03-15T15:09:10Z",
+    },
+  ],
 };
 
 /** Generate 30 days of realistic cost data totaling ~$8. */

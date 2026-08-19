@@ -230,25 +230,53 @@ async fn save_report_draft_loaded(
             "Accept or reject the pending proposal before editing the report.".to_string(),
         ));
     }
-    // A hand edit arrives without template copies, because the editor never
-    // shows them. Re-attach each surviving section's copy so editing one
-    // section does not throw away the template body of the whole document.
-    // The authorship stamp is deliberately not carried across: a stale stamp
-    // would credit the previous author for the user's text.
+    let now = jiff::Timestamp::now();
+    let saved_revision = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| ReportStoreError::InvalidInput("Report revision overflow.".to_string()))?;
+    // A hand edit arrives without template copies, authoring directives, or
+    // authorship, because the editor shows none of them. Diff each section
+    // against the prior content by ID: re-attach the template copy and the
+    // directives so editing one section does not throw away what the template
+    // said about the whole document, and stamp the user only on the sections
+    // they actually changed. Carrying the prior stamp on an untouched section
+    // is the point — saving the editor re-sends every section, so stamping
+    // them all would erase the model's provenance for the whole report on one
+    // typo fix.
     for section in &mut content.sections {
+        let prior = loaded
+            .workspace
+            .draft
+            .content
+            .sections
+            .iter()
+            .find(|existing| existing.id == section.id);
         if section.template_blocks.is_none() {
-            section.template_blocks = loaded
-                .workspace
-                .draft
-                .content
-                .sections
-                .iter()
-                .find(|existing| existing.id == section.id)
-                .and_then(|existing| existing.template_blocks.clone());
+            section.template_blocks = prior.and_then(|existing| existing.template_blocks.clone());
         }
+        if section.template_directives.is_empty() {
+            section.template_directives = prior
+                .map(|existing| existing.template_directives.clone())
+                .unwrap_or_default();
+        }
+        section.authorship = match prior {
+            Some(prior)
+                if prior.heading == section.heading
+                    && prior.blocks == section.blocks
+                    && prior.skipped == section.skipped =>
+            {
+                prior.authorship.clone()
+            }
+            _ => Some(SectionAuthorship {
+                kind: AuthorshipKind::HumanEdited,
+                revision: saved_revision,
+                model_id: None,
+                run_id: None,
+                updated_at: now,
+            }),
+        };
     }
 
-    let now = jiff::Timestamp::now();
     loaded.workspace.draft = loaded
         .workspace
         .draft
@@ -358,7 +386,9 @@ async fn apply_report_template_loaded(
     // Keep an immutable copy of what the template supplied for each section.
     // Skipping a section drops its authored body, and rewriting one replaces
     // it; either way the original stays available for the greyed-out preview
-    // and for a later rewrite from the template.
+    // and for a later rewrite from the template. The section's authoring
+    // directives are already on the imported content and ride through
+    // untouched — the importer extracted them from these same blocks.
     let template_revision = loaded.workspace.draft.revision;
     for section in &mut loaded.workspace.draft.content.sections {
         section.template_blocks = Some(section.blocks.clone());
@@ -439,7 +469,7 @@ async fn resolve_report_proposal_loaded(
         loaded.workspace.draft = loaded
             .workspace
             .draft
-            .accept(&proposal, now)
+            .accept_with_authorship(&proposal, &proposal.model_id, now)
             .map_err(|error| ReportStoreError::InvalidWorkspace(error.to_string()))?;
         // The assistant authored this exact proposal, so accepting it does not
         // create a user-edit queue for the next turn.

@@ -7,7 +7,9 @@
 
 use std::io::{Cursor, Read, Write};
 
-use claria_core::models::report::{ReportBlock, ReportDraft, validate_report_content};
+use claria_core::models::report::{
+    ReportBlock, ReportDraft, ReportTemplateWarningCode, validate_report_content,
+};
 use quick_xml::{
     Reader, Writer,
     events::{BytesText, Event},
@@ -15,10 +17,12 @@ use quick_xml::{
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    DocxError, import_template,
+    DocxError, ImportedTemplate,
+    import::{SYNTHETIC_SECTION_HEADING, import_template},
     render::BULLET_NUMBERING_ID,
     render_report,
     style_catalog::{StyleCatalog, normalize_style},
+    table_grid::{CellGeometry, TableGeometry, expand_rows},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +32,20 @@ enum FlowKind {
     Body,
     List,
     Table,
+}
+
+impl FlowKind {
+    const COUNT: usize = 5;
+
+    fn index(self) -> usize {
+        match self {
+            Self::Title => 0,
+            Self::Heading => 1,
+            Self::Body => 2,
+            Self::List => 3,
+            Self::Table => 4,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +60,27 @@ struct TargetFlow {
     content: FlowContent,
 }
 
+/// One section of the accepted draft, as blocks to place. `heading` is
+/// `None` for the section the importer invented to hold content preceding
+/// the template's first heading: it names no paragraph of the document and
+/// must not become one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TargetSection {
+    heading: Option<String>,
+    blocks: Vec<TargetFlow>,
+}
+
+/// The accepted draft as the template renderer needs it: sectioned, and
+/// carrying whether this template has a title paragraph at all.
+#[derive(Debug, Clone)]
+struct TargetDocument {
+    title: String,
+    /// False when the template import reported [`ReportTemplateWarningCode::MissingTitle`]
+    /// — a template with no title paragraph must not gain one on export.
+    emit_title: bool,
+    sections: Vec<TargetSection>,
+}
+
 #[derive(Debug, Clone)]
 struct FlowSpan {
     start: usize,
@@ -51,14 +90,40 @@ struct FlowSpan {
     content: FlowContent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotKind {
+    /// A `w:t` element: its characters are ours to rewrite.
+    Text,
+    /// A real `<w:tab/>` element. The import flattens it to `'\t'`, so it
+    /// has to take part in text alignment — but it is an element, not
+    /// characters, and can only ever hold the tab it already is.
+    Tab,
+}
+
 #[derive(Debug, Clone)]
 struct TextSlot {
     event_index: usize,
     text: String,
+    kind: SlotKind,
 }
 
 type ParagraphRange = (usize, usize);
-type TableCells = Vec<Vec<Vec<ParagraphRange>>>;
+
+/// One position of a table's rectangular grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GridCell {
+    /// The cell that owns this position: its paragraphs hold the text.
+    Owner(Vec<ParagraphRange>),
+    /// A position a merge covers — the tail of a `gridSpan` run, or a
+    /// `vMerge` continuation Word paints the restart cell across. It holds
+    /// no text of its own, which is exactly the empty string the import put
+    /// in the draft for it.
+    Covered,
+}
+
+/// A template table as the same rectangle the import produced, with each
+/// position pointing at the events that can hold its text.
+type TableGrid = Vec<Vec<GridCell>>;
 
 /// How faithfully a template export could reuse the source package's
 /// formatting. Anything but [`TemplateRenderFidelity::PlainBodyFallback`]
@@ -94,7 +159,8 @@ pub fn render_report_with_template(
     // Reuse the bounded package preflight and parser before retaining any part
     // of an uploaded package in an exported report.
     let imported = import_template(template)?;
-    let targets = target_flow(draft);
+    let carve = TemplateCarve::of(&imported);
+    let targets = TargetDocument::new(draft, &carve);
     if visible_content_matches(&imported.content, draft) {
         return Ok((template.to_vec(), TemplateRenderFidelity::Exact));
     }
@@ -102,16 +168,17 @@ pub fn render_report_with_template(
     let document_xml = zip_entry(template, "word/document.xml")?;
     let events = parse_events(&document_xml)?;
     let catalog = StyleCatalog::from_package(template);
-    let spans = discover_flow(&events, &catalog)?;
+    let spans = discover_flow(&events, &catalog, &mut FlowClassifier::carve(&carve))?;
 
-    let (rewritten_events, fidelity) = if spans.len() == targets.len()
+    let flat = targets.flatten();
+    let (rewritten_events, fidelity) = if spans.len() == flat.len()
         && spans
             .iter()
-            .zip(&targets)
+            .zip(&flat)
             .all(|(source, target)| source.kind == target.kind)
     {
         let mut candidate = events.clone();
-        if patch_in_place(&mut candidate, &spans, &targets)? {
+        if patch_in_place(&mut candidate, &spans, &flat)? {
             (candidate, TemplateRenderFidelity::PatchedInPlace)
         } else {
             reconstruct_flow(&events, &spans, &targets)?
@@ -257,36 +324,204 @@ fn visible_content_matches(
             .all(|(left, right)| left.heading == right.heading && left.blocks == right.blocks)
 }
 
-fn target_flow(draft: &ReportDraft) -> Vec<TargetFlow> {
-    let mut output = vec![TargetFlow {
-        kind: FlowKind::Title,
-        content: FlowContent::Paragraph(draft.content.title.clone()),
-    }];
-    for section in &draft.content.sections {
-        output.push(TargetFlow {
-            kind: FlowKind::Heading,
-            content: FlowContent::Paragraph(section.heading.clone()),
-        });
-        for block in &section.blocks {
-            match block {
-                ReportBlock::Paragraph { text } => output.push(TargetFlow {
-                    kind: FlowKind::Body,
-                    content: FlowContent::Paragraph(text.clone()),
-                }),
-                ReportBlock::BulletList { items } => {
-                    output.extend(items.iter().cloned().map(|item| TargetFlow {
-                        kind: FlowKind::List,
-                        content: FlowContent::Paragraph(item),
-                    }));
+/// The import's own reading of this package: which paragraph it took as the
+/// title, and which paragraphs opened a section.
+///
+/// Export classifies template paragraphs against this carve instead of
+/// re-deriving heading-ness from styles and outline levels. Templates whose
+/// sections were carved by appearance (bold pseudo-headings, no heading
+/// styles) routinely also carry stray `w:outlineLvl` on ordinary prose, so a
+/// second opinion at export time is not a second opinion — it is a different
+/// document. One classifier, one owner.
+#[derive(Debug, Clone)]
+struct TemplateCarve {
+    /// The title paragraph's text; `None` when the import found no title
+    /// paragraph at all.
+    title: Option<String>,
+    /// Section headings in document order, excluding the invented lead.
+    headings: Vec<String>,
+    /// The import invented a section to hold content before the first
+    /// heading.
+    synthetic_lead: bool,
+}
+
+impl TemplateCarve {
+    fn of(imported: &ImportedTemplate) -> Self {
+        let synthetic_lead = imported
+            .content
+            .sections
+            .first()
+            .is_some_and(|section| section.heading == SYNTHETIC_SECTION_HEADING);
+        let missing_title = imported
+            .warnings
+            .iter()
+            .any(|warning| warning.code == ReportTemplateWarningCode::MissingTitle);
+        Self {
+            title: (!missing_title).then(|| normalize_flow_text(&imported.content.title)),
+            headings: imported
+                .content
+                .sections
+                .iter()
+                .skip(usize::from(synthetic_lead))
+                .map(|section| normalize_flow_text(&section.heading))
+                .collect(),
+            synthetic_lead,
+        }
+    }
+}
+
+/// Whitespace-insensitive form of a paragraph's text, for matching template
+/// paragraphs against the carve. The import flattens `w:tab` and `w:br` into
+/// characters; the walker here reads elements, so the two spell the same
+/// heading with different whitespace.
+fn normalize_flow_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// How the flow walker decides what a paragraph is.
+enum FlowClassifier<'a> {
+    /// Reuse the import's carve of this very package.
+    Carve {
+        carve: &'a TemplateCarve,
+        heading_cursor: usize,
+        title_seen: bool,
+    },
+    /// A package this crate just generated, whose styles are our own.
+    Styles { title_seen: bool },
+}
+
+impl<'a> FlowClassifier<'a> {
+    fn carve(carve: &'a TemplateCarve) -> Self {
+        Self::Carve {
+            carve,
+            heading_cursor: 0,
+            title_seen: false,
+        }
+    }
+
+    fn styles() -> Self {
+        Self::Styles { title_seen: false }
+    }
+
+    fn classify(
+        &mut self,
+        text: &str,
+        style: &str,
+        numbered: bool,
+        catalog: &StyleCatalog,
+    ) -> FlowKind {
+        match self {
+            Self::Carve {
+                carve,
+                heading_cursor,
+                title_seen,
+            } => {
+                let normalized = normalize_flow_text(text);
+                if !*title_seen
+                    && *heading_cursor == 0
+                    && carve.title.as_deref() == Some(normalized.as_str())
+                {
+                    *title_seen = true;
+                    return FlowKind::Title;
                 }
-                ReportBlock::Table { rows, .. } => output.push(TargetFlow {
-                    kind: FlowKind::Table,
-                    content: FlowContent::Table(rows.clone()),
-                }),
+                if carve
+                    .headings
+                    .get(*heading_cursor)
+                    .is_some_and(|heading| *heading == normalized)
+                {
+                    *heading_cursor += 1;
+                    return FlowKind::Heading;
+                }
+                if numbered {
+                    FlowKind::List
+                } else {
+                    FlowKind::Body
+                }
+            }
+            Self::Styles { title_seen } => {
+                if catalog.is_title(style) && !*title_seen {
+                    *title_seen = true;
+                    FlowKind::Title
+                } else if catalog.is_heading(style) {
+                    FlowKind::Heading
+                } else if numbered {
+                    FlowKind::List
+                } else {
+                    FlowKind::Body
+                }
             }
         }
     }
-    output
+}
+
+impl TargetDocument {
+    fn new(draft: &ReportDraft, carve: &TemplateCarve) -> Self {
+        let sections = draft
+            .content
+            .sections
+            .iter()
+            .enumerate()
+            .map(|(index, section)| {
+                let synthetic = index == 0
+                    && carve.synthetic_lead
+                    && section.heading == SYNTHETIC_SECTION_HEADING;
+                let mut blocks = Vec::new();
+                for block in &section.blocks {
+                    match block {
+                        ReportBlock::Paragraph { text } => blocks.push(TargetFlow {
+                            kind: FlowKind::Body,
+                            content: FlowContent::Paragraph(text.clone()),
+                        }),
+                        ReportBlock::BulletList { items } => {
+                            blocks.extend(items.iter().cloned().map(|item| TargetFlow {
+                                kind: FlowKind::List,
+                                content: FlowContent::Paragraph(item),
+                            }));
+                        }
+                        ReportBlock::Table { rows, .. } => blocks.push(TargetFlow {
+                            kind: FlowKind::Table,
+                            content: FlowContent::Table(rows.clone()),
+                        }),
+                    }
+                }
+                TargetSection {
+                    heading: (!synthetic).then(|| section.heading.clone()),
+                    blocks,
+                }
+            })
+            .collect();
+        Self {
+            title: draft.content.title.clone(),
+            emit_title: carve.title.is_some(),
+            sections,
+        }
+    }
+
+    fn title_target(&self) -> TargetFlow {
+        TargetFlow {
+            kind: FlowKind::Title,
+            content: FlowContent::Paragraph(self.title.clone()),
+        }
+    }
+
+    /// Every block to place, in document order — what the same-structure
+    /// comparison against the template's flow spans needs.
+    fn flatten(&self) -> Vec<TargetFlow> {
+        let mut output = Vec::new();
+        if self.emit_title {
+            output.push(self.title_target());
+        }
+        for section in &self.sections {
+            if let Some(heading) = &section.heading {
+                output.push(TargetFlow {
+                    kind: FlowKind::Heading,
+                    content: FlowContent::Paragraph(heading.clone()),
+                });
+            }
+            output.extend(section.blocks.iter().cloned());
+        }
+        output
+    }
 }
 
 fn parse_events(xml: &[u8]) -> Result<Vec<Event<'static>>, DocxError> {
@@ -321,6 +556,7 @@ fn write_events(events: &[Event<'static>]) -> Result<Vec<u8>, DocxError> {
 fn discover_flow(
     events: &[Event<'static>],
     catalog: &StyleCatalog,
+    classifier: &mut FlowClassifier<'_>,
 ) -> Result<Vec<FlowSpan>, DocxError> {
     let mut spans = Vec::new();
     let mut paragraph_start = None;
@@ -328,7 +564,6 @@ fn discover_flow(
     let mut table_depth = 0_usize;
     let mut depth = 0_usize;
     let mut body_child_depth = None;
-    let mut title_seen = false;
 
     for (index, event) in events.iter().enumerate() {
         match event {
@@ -355,9 +590,8 @@ fn discover_flow(
                 if local_name(name.as_ref()) == b"p" && table_depth == 0 {
                     if let Some((start, start_depth)) = paragraph_start.take()
                         && let Some((kind, text)) =
-                            paragraph_flow(&events[start..=index], title_seen, catalog)?
+                            paragraph_flow(&events[start..=index], catalog, classifier)?
                     {
-                        title_seen |= kind == FlowKind::Title;
                         spans.push(FlowSpan {
                             start,
                             end: index,
@@ -391,8 +625,8 @@ fn discover_flow(
 
 fn paragraph_flow(
     events: &[Event<'static>],
-    title_seen: bool,
     catalog: &StyleCatalog,
+    classifier: &mut FlowClassifier<'_>,
 ) -> Result<Option<(FlowKind, String)>, DocxError> {
     let text = visible_paragraph_text(events)?;
     let text = text.trim().to_string();
@@ -401,7 +635,6 @@ fn paragraph_flow(
     }
     let mut style = String::new();
     let mut numbered = false;
-    let mut outline = false;
     for event in events {
         match event {
             Event::Start(start) | Event::Empty(start) => {
@@ -411,28 +644,21 @@ fn paragraph_flow(
                     style = attribute_value(start, b"val").unwrap_or_default();
                 } else if local == b"numPr" {
                     numbered = true;
-                } else if local == b"outlineLvl" {
-                    outline = true;
                 }
             }
             _ => {}
         }
     }
     let style = normalize_style(&style);
-    // Heading-ness usually lives in the style definition (custom names like
-    // "Section Heading" with an outline level), not in a literal HeadingN
-    // styleId — resolve through the package's style catalog, plus any
-    // paragraph-direct outline level.
-    let kind = if catalog.is_title(&style) && !title_seen {
-        FlowKind::Title
-    } else if catalog.is_heading(&style) || outline {
-        FlowKind::Heading
-    } else if numbered {
-        FlowKind::List
-    } else {
-        FlowKind::Body
-    };
+    let kind = classifier.classify(&text, &style, numbered, catalog);
     Ok(Some((kind, text)))
+}
+
+fn span_text(span: &FlowSpan) -> Option<&str> {
+    match &span.content {
+        FlowContent::Paragraph(text) => Some(text),
+        FlowContent::Table(_) => None,
+    }
 }
 
 fn visible_paragraph_text(events: &[Event<'static>]) -> Result<String, DocxError> {
@@ -442,11 +668,17 @@ fn visible_paragraph_text(events: &[Event<'static>]) -> Result<String, DocxError
         .collect::<String>())
 }
 
+/// Every place in a paragraph that holds visible characters, in order:
+/// `w:t` elements, plus each real `<w:tab/>` as a fixed one-character slot.
+/// The import flattens tabs into the text it hands the model, so a tab the
+/// allocator cannot see is a character the two halves disagree about — which
+/// is what merged the label and value runs of tabbed header blocks.
 fn text_slots(events: &[Event<'static>]) -> Result<Vec<TextSlot>, DocxError> {
     let mut slots = Vec::new();
     let mut in_text = false;
     let mut excluded_depth = 0_usize;
     let mut run_depth = 0_usize;
+    let mut property_depth = 0_usize;
     let mut run_hidden = false;
     let mut paragraph_hidden = false;
     for (index, event) in events.iter().enumerate() {
@@ -460,6 +692,7 @@ fn text_slots(events: &[Event<'static>]) -> Result<Vec<TextSlot>, DocxError> {
                         run_depth += 1;
                         run_hidden = paragraph_hidden;
                     }
+                    b"pPr" | b"rPr" => property_depth += 1,
                     b"t" if excluded_depth == 0 && !run_hidden => in_text = true,
                     b"vanish" | b"specVanish" => {
                         if run_depth > 0 {
@@ -480,6 +713,19 @@ fn text_slots(events: &[Event<'static>]) -> Result<Vec<TextSlot>, DocxError> {
                     } else {
                         paragraph_hidden = true;
                     }
+                } else if local == b"tab"
+                    // A `w:tab` inside properties is a tab *stop* on the
+                    // paragraph, not a tab in the text.
+                    && run_depth > 0
+                    && property_depth == 0
+                    && excluded_depth == 0
+                    && !run_hidden
+                {
+                    slots.push(TextSlot {
+                        event_index: index,
+                        text: "\t".to_string(),
+                        kind: SlotKind::Tab,
+                    });
                 }
             }
             Event::End(end) => {
@@ -491,6 +737,7 @@ fn text_slots(events: &[Event<'static>]) -> Result<Vec<TextSlot>, DocxError> {
                         run_depth = run_depth.saturating_sub(1);
                         run_hidden = paragraph_hidden;
                     }
+                    b"pPr" | b"rPr" => property_depth = property_depth.saturating_sub(1),
                     b"t" => in_text = false,
                     _ => {}
                 }
@@ -505,6 +752,7 @@ fn text_slots(events: &[Event<'static>]) -> Result<Vec<TextSlot>, DocxError> {
                 slots.push(TextSlot {
                     event_index: index,
                     text: unescaped.into_owned(),
+                    kind: SlotKind::Text,
                 });
             }
             _ => {}
@@ -518,81 +766,164 @@ fn text_slots(events: &[Event<'static>]) -> Result<Vec<TextSlot>, DocxError> {
 }
 
 fn table_flow(events: &[Event<'static>]) -> Result<Option<Vec<Vec<String>>>, DocxError> {
-    let cells = table_cells(events)?;
-    if cells.is_empty() || cells.iter().any(Vec::is_empty) {
+    let Some(grid) = table_grid(events) else {
         return Ok(None);
-    }
-    let columns = cells[0].len();
-    if cells.iter().any(|row| row.len() != columns) {
-        return Ok(None);
-    }
-    let mut rows = Vec::with_capacity(cells.len());
-    for row in cells {
+    };
+    let mut rows = Vec::with_capacity(grid.len());
+    for row in &grid {
         let mut values = Vec::with_capacity(row.len());
         for cell in row {
-            let mut paragraphs = Vec::new();
-            for (start, end) in cell {
-                paragraphs.push(visible_paragraph_text(&events[start..=end])?);
-            }
-            values.push(paragraphs.join("\n").trim().to_string());
+            values.push(match cell {
+                GridCell::Covered => String::new(),
+                GridCell::Owner(ranges) => {
+                    let mut paragraphs = Vec::with_capacity(ranges.len());
+                    for (start, end) in ranges.iter().copied() {
+                        paragraphs.push(visible_paragraph_text(&events[start..=end])?);
+                    }
+                    paragraphs.join("\n").trim().to_string()
+                }
+            });
         }
         rows.push(values);
     }
-    if rows.iter().flatten().all(|cell| cell.is_empty()) {
+    if rows.iter().flatten().all(String::is_empty) {
         Ok(None)
     } else {
         Ok(Some(rows))
     }
 }
 
-/// Rows → cells → paragraph event ranges, all relative to `events`.
-fn table_cells(events: &[Event<'static>]) -> Result<TableCells, DocxError> {
-    let mut rows = Vec::new();
-    let mut current_row: Option<Vec<Vec<(usize, usize)>>> = None;
-    let mut current_cell: Option<Vec<(usize, usize)>> = None;
+/// Elements holding the *previous* revision of a table's properties. Their
+/// `w:tcPr` carries the merges the document used to have, and docx-rs skips
+/// them, so the walker must too or export and import read different tables.
+const REVISION_PROPERTIES: [&[u8]; 4] = [
+    b"tblPrChange",
+    b"tblGridChange",
+    b"trPrChange",
+    b"tcPrChange",
+];
+
+/// The table's rectangular grid, or `None` when its geometry is not a
+/// rectangle the model can hold — the same refusal
+/// [`crate::import`] makes, through the same
+/// [`expand_rows`] rule.
+fn table_grid(events: &[Event<'static>]) -> Option<TableGrid> {
+    let mut row_geometry: Vec<Vec<CellGeometry>> = Vec::new();
+    let mut row_cells: Vec<Vec<Vec<ParagraphRange>>> = Vec::new();
+    let mut row: Option<(Vec<CellGeometry>, Vec<Vec<ParagraphRange>>)> = None;
+    let mut cell: Option<(CellGeometry, Vec<ParagraphRange>)> = None;
     let mut paragraph_start = None;
-    let mut nested_table_depth = 0_usize;
+    let mut declared_columns = 0_usize;
+    let mut table_depth = 0_usize;
+    let mut revision_depth = 0_usize;
+
     for (index, event) in events.iter().enumerate() {
         match event {
-            Event::Start(start) => match local_name(start.name().as_ref()) {
-                b"tbl" => nested_table_depth += 1,
-                b"tr" if nested_table_depth == 1 => current_row = Some(Vec::new()),
-                b"tc" if nested_table_depth == 1 => current_cell = Some(Vec::new()),
-                b"p" if nested_table_depth == 1 => paragraph_start = Some(index),
-                b"gridSpan" | b"vMerge" if nested_table_depth == 1 => return Ok(Vec::new()),
-                _ => {}
-            },
-            Event::Empty(empty)
-                if nested_table_depth == 1
-                    && matches!(local_name(empty.name().as_ref()), b"gridSpan" | b"vMerge") =>
-            {
-                return Ok(Vec::new());
+            Event::Start(start) | Event::Empty(start) => {
+                let opening = matches!(event, Event::Start(_));
+                let name = start.name();
+                let local = local_name(name.as_ref());
+                if REVISION_PROPERTIES.contains(&local) {
+                    if opening {
+                        revision_depth += 1;
+                    }
+                    continue;
+                }
+                if revision_depth > 0 {
+                    continue;
+                }
+                match local {
+                    b"tbl" if opening => table_depth += 1,
+                    _ if table_depth != 1 => {}
+                    b"gridCol" => declared_columns += 1,
+                    b"tr" if opening => row = Some((Vec::new(), Vec::new())),
+                    b"tc" if opening => cell = Some((CellGeometry::PLAIN, Vec::new())),
+                    b"gridSpan" => {
+                        let span = attribute_value(start, b"val")?.parse::<usize>().ok()?;
+                        if let Some((geometry, _)) = &mut cell {
+                            geometry.span = span;
+                        }
+                    }
+                    b"vMerge" => {
+                        // A bare `<w:vMerge/>` is a continuation; only
+                        // `restart` opens one.
+                        let continues = match attribute_value(start, b"val").as_deref() {
+                            None | Some("continue") => true,
+                            Some("restart") => false,
+                            Some(_) => return None,
+                        };
+                        if let Some((geometry, _)) = &mut cell {
+                            geometry.continues_merge = continues;
+                        }
+                    }
+                    b"p" if opening => paragraph_start = Some(index),
+                    _ => {}
+                }
             }
-            Event::End(end) => match local_name(end.name().as_ref()) {
-                b"p" if nested_table_depth == 1 => {
-                    if let Some(start) = paragraph_start.take()
-                        && let Some(cell) = &mut current_cell
-                    {
-                        cell.push((start, index));
-                    }
+            Event::End(end) => {
+                let name = end.name();
+                let local = local_name(name.as_ref());
+                if REVISION_PROPERTIES.contains(&local) {
+                    revision_depth = revision_depth.saturating_sub(1);
+                    continue;
                 }
-                b"tc" if nested_table_depth == 1 => {
-                    if let (Some(row), Some(cell)) = (&mut current_row, current_cell.take()) {
-                        row.push(cell);
-                    }
+                if revision_depth > 0 {
+                    continue;
                 }
-                b"tr" if nested_table_depth == 1 => {
-                    if let Some(row) = current_row.take() {
-                        rows.push(row);
-                    }
+                if local == b"tbl" {
+                    table_depth = table_depth.saturating_sub(1);
+                    continue;
                 }
-                b"tbl" => nested_table_depth = nested_table_depth.saturating_sub(1),
-                _ => {}
-            },
+                if table_depth != 1 {
+                    continue;
+                }
+                match local {
+                    b"p" => {
+                        if let Some(start) = paragraph_start.take()
+                            && let Some((_, paragraphs)) = &mut cell
+                        {
+                            paragraphs.push((start, index));
+                        }
+                    }
+                    b"tc" => {
+                        if let (Some((geometry, paragraphs)), Some((geometries, cells))) =
+                            (cell.take(), &mut row)
+                        {
+                            geometries.push(geometry);
+                            cells.push(paragraphs);
+                        }
+                    }
+                    b"tr" => {
+                        if let Some((geometries, cells)) = row.take() {
+                            row_geometry.push(geometries);
+                            row_cells.push(cells);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
-    Ok(rows)
+
+    let TableGeometry::Rectangular(grid) = expand_rows(
+        &row_geometry,
+        (declared_columns > 0).then_some(declared_columns),
+    ) else {
+        return None;
+    };
+    let mut output = Vec::with_capacity(grid.len());
+    for (positions, cells) in grid.into_iter().zip(row_cells) {
+        let mut row = Vec::with_capacity(positions.len());
+        for owner in positions {
+            row.push(match owner {
+                Some(index) => GridCell::Owner(cells.get(index)?.clone()),
+                None => GridCell::Covered,
+            });
+        }
+        output.push(row);
+    }
+    Some(output)
 }
 
 fn patch_in_place(
@@ -636,7 +967,7 @@ fn patch_paragraph(
     exemplar: bool,
 ) -> Result<bool, DocxError> {
     let slots = text_slots(events)?;
-    if slots.is_empty() {
+    if !slots.iter().any(|slot| slot.kind == SlotKind::Text) {
         return Ok(target.trim().is_empty());
     }
     let source = slots
@@ -646,7 +977,73 @@ fn patch_paragraph(
     if source.trim() == target {
         return Ok(true);
     }
-    let allocation = allocate_text(&slots, target);
+    if let Some(segments) = tab_segments(&slots, target) {
+        // Same tab shape: each stretch between tabs is patched on its own,
+        // so a bold label keeps its own words and bolding while the value
+        // after the tab is replaced.
+        for (range, text) in segments {
+            apply_allocation(events, &slots[range], text, exemplar);
+        }
+        return Ok(true);
+    }
+    // Different tab shape: the paragraph's tabs belong to words that are
+    // gone, so they go with them, and the target's own tabs are written as
+    // real elements below.
+    for slot in slots.iter().filter(|slot| slot.kind == SlotKind::Tab) {
+        events[slot.event_index] = Event::Text(BytesText::new("").into_owned());
+    }
+    let writable = slots
+        .into_iter()
+        .filter(|slot| slot.kind == SlotKind::Text)
+        .collect::<Vec<_>>();
+    apply_allocation(events, &writable, target, exemplar);
+    Ok(true)
+}
+
+/// Slot ranges between the paragraph's tabs, paired with the target text
+/// that belongs in each — or `None` when the paragraph and the target do not
+/// have the same tab shape, or a stretch with text to place has no `w:t` to
+/// place it in.
+fn tab_segments<'a>(
+    slots: &[TextSlot],
+    target: &'a str,
+) -> Option<Vec<(std::ops::Range<usize>, &'a str)>> {
+    if !slots.iter().any(|slot| slot.kind == SlotKind::Tab) {
+        return None;
+    }
+    let mut ranges = Vec::new();
+    let mut start = 0_usize;
+    for (index, slot) in slots.iter().enumerate() {
+        if slot.kind == SlotKind::Tab {
+            ranges.push(start..index);
+            start = index + 1;
+        }
+    }
+    ranges.push(start..slots.len());
+    let pieces = target.split('\t').collect::<Vec<_>>();
+    if pieces.len() != ranges.len() {
+        return None;
+    }
+    if ranges
+        .iter()
+        .zip(&pieces)
+        .any(|(range, piece)| range.is_empty() && !piece.trim().is_empty())
+    {
+        return None;
+    }
+    Some(ranges.into_iter().zip(pieces).collect())
+}
+
+fn apply_allocation(
+    events: &mut [Event<'static>],
+    slots: &[TextSlot],
+    target: &str,
+    exemplar: bool,
+) {
+    if slots.is_empty() {
+        return;
+    }
+    let allocation = allocate_text(slots, target);
     if exemplar && allocation.full_replacement {
         // The inserted text bears no relation to the exemplar's own words,
         // so text-bound decoration (a bold "Assessment: " label, an
@@ -655,21 +1052,20 @@ fn patch_paragraph(
         strip_direct_decoration(events, slots[allocation.owner].event_index);
     }
     for (slot, replacement) in slots.iter().zip(&allocation.replacements) {
-        events[slot.event_index] = if replacement.contains('\n') {
-            multi_line_text_event(events, slot.event_index, replacement)
+        events[slot.event_index] = if replacement.contains(['\n', '\t']) {
+            structured_text_event(events, slot.event_index, replacement)
         } else {
             Event::Text(BytesText::new(replacement).into_owned())
         };
     }
-    Ok(true)
 }
 
-/// Build a replacement for a text slot whose new content spans lines. A
-/// literal newline inside `<w:t>` renders as nothing in Word, so each break
-/// closes the text element, emits a `<w:br/>`, and reopens the text element
-/// (space-preserving), using the same namespace prefix as the enclosing
-/// element.
-fn multi_line_text_event(
+/// Build a replacement for a text slot whose new content carries line breaks
+/// or tabs. A literal newline inside `<w:t>` renders as nothing in Word and a
+/// literal tab renders as a space, so each one closes the text element, emits
+/// the real OOXML element, and reopens the text element (space-preserving),
+/// using the same namespace prefix as the enclosing element.
+fn structured_text_event(
     events: &[Event<'static>],
     text_index: usize,
     replacement: &str,
@@ -688,13 +1084,25 @@ fn multi_line_text_event(
         .rsplit_once(':')
         .map(|(prefix, _)| format!("{prefix}:"))
         .unwrap_or_default();
-    let separator = format!("</{text_name}><{prefix}br/><{text_name} xml:space=\"preserve\">");
-    let joined = replacement
-        .split('\n')
-        .map(|line| quick_xml::escape::escape(line).into_owned())
-        .collect::<Vec<_>>()
-        .join(&separator);
-    Event::Text(BytesText::from_escaped(joined).into_owned())
+    let mut output = String::with_capacity(replacement.len());
+    let mut pending = String::new();
+    for character in replacement.chars() {
+        let element = match character {
+            '\n' => "br",
+            '\t' => "tab",
+            _ => {
+                pending.push(character);
+                continue;
+            }
+        };
+        output.push_str(&quick_xml::escape::escape(&pending));
+        pending.clear();
+        output.push_str(&format!(
+            "</{text_name}><{prefix}{element}/><{text_name} xml:space=\"preserve\">"
+        ));
+    }
+    output.push_str(&quick_xml::escape::escape(&pending));
+    Event::Text(BytesText::from_escaped(output).into_owned())
 }
 
 struct TextAllocation {
@@ -830,22 +1238,43 @@ fn strip_direct_decoration(events: &mut [Event<'static>], text_event_index: usiz
     }
 }
 
+/// Write a draft table's rows back into the template's own table, merges and
+/// all.
+///
+/// The draft's rows are the rectangle the import produced, so each value maps
+/// to the grid position of the same coordinates: text goes to the cell that
+/// owns the position — the spanning cell, or the `vMerge` restart — and a
+/// covered position takes only the empty string it was given. A nonempty
+/// draft value in a covered position means the model wrote into a merged-away
+/// cell; that fails the patch, and the caller renders an unmerged table
+/// instead of dropping the value.
 fn patch_table(
     events: &mut [Event<'static>],
     target_rows: &[Vec<String>],
     exemplar: bool,
 ) -> Result<bool, DocxError> {
-    let cells = table_cells(events)?;
-    if cells.len() != target_rows.len()
-        || cells
+    let Some(grid) = table_grid(events) else {
+        return Ok(false);
+    };
+    if grid.len() != target_rows.len()
+        || grid
             .iter()
             .zip(target_rows)
             .any(|(source, target)| source.len() != target.len())
     {
         return Ok(false);
     }
-    for (source_row, target_row) in cells.into_iter().zip(target_rows) {
-        for (paragraphs, target) in source_row.into_iter().zip(target_row) {
+    for (source_row, target_row) in grid.into_iter().zip(target_rows) {
+        for (cell, target) in source_row.into_iter().zip(target_row) {
+            let paragraphs = match cell {
+                GridCell::Covered => {
+                    if target.trim().is_empty() {
+                        continue;
+                    }
+                    return Ok(false);
+                }
+                GridCell::Owner(paragraphs) => paragraphs,
+            };
             if paragraphs.is_empty() {
                 // A cell with no writable paragraph cannot hold a nonempty
                 // target; report failure so the caller regenerates the
@@ -872,10 +1301,234 @@ fn patch_table(
     Ok(true)
 }
 
+/// One section of the template's flow: the span holding its heading, and the
+/// span range holding its body. `heading` is `None` for the leading range
+/// before the document's first heading.
+#[derive(Debug, Clone, Copy)]
+struct TemplateSection {
+    heading: Option<usize>,
+    start: usize,
+    end: usize,
+}
+
+impl TemplateSection {
+    /// Where in the template's index space this section sits, for choosing a
+    /// document-wide exemplar when the section itself has none.
+    fn anchor(&self) -> usize {
+        self.heading.unwrap_or(self.start)
+    }
+}
+
+/// The template's flow spans segmented into sections.
+#[derive(Debug, Clone)]
+struct TemplateLayout {
+    title: Option<usize>,
+    /// Always nonempty: element 0 is the leading range, which carries no
+    /// heading of its own.
+    sections: Vec<TemplateSection>,
+}
+
+impl TemplateLayout {
+    fn of(spans: &[FlowSpan]) -> Self {
+        let mut title = None;
+        let mut sections = Vec::new();
+        let mut current = TemplateSection {
+            heading: None,
+            start: 0,
+            end: 0,
+        };
+        for (index, span) in spans.iter().enumerate() {
+            match span.kind {
+                FlowKind::Title if title.is_none() && current.start == index => {
+                    title = Some(index);
+                    current.start = index + 1;
+                }
+                FlowKind::Heading => {
+                    current.end = index;
+                    sections.push(current);
+                    current = TemplateSection {
+                        heading: Some(index),
+                        start: index + 1,
+                        end: index + 1,
+                    };
+                }
+                _ => {}
+            }
+        }
+        current.end = spans.len();
+        sections.push(current);
+        Self { title, sections }
+    }
+}
+
+/// Which template section each draft section belongs to.
+///
+/// Draft sections descend from an import of this same package, so a heading
+/// that still reads the same is the same section. A run of draft sections
+/// whose headings were rewritten takes the template sections lying between
+/// its matched neighbours, in order — a renamed section still owns the
+/// paragraphs the author wrote for it, which is what keeps a rewritten
+/// heading on its own bold template paragraph. Anything left over is a
+/// section the report added, and anything unclaimed is a section it dropped.
+fn align_sections(
+    targets: &TargetDocument,
+    layout: &TemplateLayout,
+    spans: &[FlowSpan],
+) -> Vec<Option<usize>> {
+    let mut alignment = vec![None; targets.sections.len()];
+    let mut cursor = 0_usize;
+    for (position, section) in targets.sections.iter().enumerate() {
+        let Some(heading) = &section.heading else {
+            // The import's invented lead section maps to the template's
+            // content before its first heading, and to nothing else.
+            if cursor == 0
+                && layout
+                    .sections
+                    .first()
+                    .is_some_and(|section| section.heading.is_none())
+            {
+                alignment[position] = Some(0);
+                cursor = 1;
+            }
+            continue;
+        };
+        let normalized = normalize_flow_text(heading);
+        if let Some(index) = (cursor..layout.sections.len()).find(|index| {
+            layout.sections[*index].heading.is_some_and(|span| {
+                span_text(&spans[span]).is_some_and(|text| normalize_flow_text(text) == normalized)
+            })
+        }) {
+            alignment[position] = Some(index);
+            cursor = index + 1;
+        }
+    }
+
+    let mut position = 0_usize;
+    while position < targets.sections.len() {
+        if alignment[position].is_some() || targets.sections[position].heading.is_none() {
+            position += 1;
+            continue;
+        }
+        let start = position;
+        let mut end = position;
+        while end < targets.sections.len()
+            && alignment[end].is_none()
+            && targets.sections[end].heading.is_some()
+        {
+            end += 1;
+        }
+        let lower = (0..start)
+            .rev()
+            .find_map(|index| alignment[index])
+            .map_or(0, |index| index + 1);
+        let upper = (end..targets.sections.len())
+            .find_map(|index| alignment[index])
+            .unwrap_or(layout.sections.len());
+        let mut available =
+            (lower..upper).filter(|index| layout.sections[*index].heading.is_some());
+        for slot in alignment.iter_mut().take(end).skip(start) {
+            match available.next() {
+                Some(index) => *slot = Some(index),
+                None => break,
+            }
+        }
+        position = end;
+    }
+    alignment
+}
+
+/// Assembles the rewritten body, span by span.
+struct FlowWriter<'a> {
+    events: &'a [Event<'static>],
+    spans: &'a [FlowSpan],
+    output: Vec<Event<'static>>,
+    /// Whether the gap preceding each span has already been emitted, so a
+    /// span reused as an exemplar cannot duplicate a spacer.
+    gap_emitted: Vec<bool>,
+}
+
+impl<'a> FlowWriter<'a> {
+    fn new(
+        events: &'a [Event<'static>],
+        spans: &'a [FlowSpan],
+        output: Vec<Event<'static>>,
+    ) -> Self {
+        Self {
+            events,
+            spans,
+            output,
+            gap_emitted: vec![false; spans.len()],
+        }
+    }
+
+    /// Emit the template's own paragraph for this slot. Its formatting is
+    /// not borrowed, so nothing is stripped: identical text short-circuits
+    /// in [`patch_paragraph`] and the author's bold heading survives.
+    fn aligned(&mut self, span_index: usize, target: &TargetFlow) -> Result<(), DocxError> {
+        self.gap_before(span_index)?;
+        self.span(span_index, target, false)
+    }
+
+    /// Clone a paragraph from elsewhere purely for its formatting.
+    fn exemplar(&mut self, span_index: usize, target: &TargetFlow) -> Result<(), DocxError> {
+        self.span(span_index, target, true)
+    }
+
+    fn generated(&mut self, target: &TargetFlow) -> Result<(), DocxError> {
+        self.output.extend(generated_span(target)?);
+        Ok(())
+    }
+
+    fn span(
+        &mut self,
+        span_index: usize,
+        target: &TargetFlow,
+        exemplar: bool,
+    ) -> Result<(), DocxError> {
+        // A heading exemplar's direct decoration is not decoration: in a
+        // template whose sections were carved by appearance, bold is the
+        // only thing that makes the paragraph a heading. Stripping it would
+        // demote the heading to body text on the way back in.
+        let exemplar = exemplar && !matches!(target.kind, FlowKind::Heading | FlowKind::Title);
+        let source = &self.spans[span_index];
+        let mut replacement = source.clone_events(self.events);
+        let synthetic_span = FlowSpan {
+            start: 0,
+            end: replacement.len().saturating_sub(1),
+            direct_body_child: true,
+            kind: source.kind,
+            content: source.content.clone(),
+        };
+        if !patch_span(&mut replacement, &synthetic_span, target, exemplar)? {
+            replacement = generated_span(target)?;
+        }
+        self.output.extend(replacement);
+        Ok(())
+    }
+
+    /// Emit the template's own material between the previous span and this
+    /// one — blank spacer paragraphs above all. Gaps ride with the span they
+    /// precede, so a section's spacers stay inside that section instead of
+    /// landing wherever a proportional walk crossed a boundary.
+    fn gap_before(&mut self, span_index: usize) -> Result<(), DocxError> {
+        if span_index == 0 || self.gap_emitted[span_index] {
+            return Ok(());
+        }
+        self.gap_emitted[span_index] = true;
+        let start = self.spans[span_index - 1].end + 1;
+        let end = self.spans[span_index].start;
+        if start < end {
+            let gap = gap_events(&self.events[start..end])?;
+            self.output.extend(gap);
+        }
+        Ok(())
+    }
+}
+
 fn reconstruct_flow(
     events: &[Event<'static>],
     spans: &[FlowSpan],
-    targets: &[TargetFlow],
+    targets: &TargetDocument,
 ) -> Result<(Vec<Event<'static>>, TemplateRenderFidelity), DocxError> {
     if spans.is_empty() || spans.iter().any(|span| !span.direct_body_child) {
         return Ok((
@@ -883,61 +1536,127 @@ fn reconstruct_flow(
             TemplateRenderFidelity::PlainBodyFallback,
         ));
     }
+    let layout = TemplateLayout::of(spans);
+    let alignment = align_sections(targets, &layout, spans);
     let first = spans.first().expect("checked nonempty");
     let last = spans.last().expect("checked nonempty");
-    let mut output = events[..first.start].to_vec();
+    let mut writer = FlowWriter::new(events, spans, gap_events(&events[..first.start])?);
 
-    for (target_index, target) in targets.iter().enumerate() {
-        let source_index = nearest_span(spans, targets.len(), target_index, target.kind);
-        let mut replacement = if let Some(source_index) = source_index {
-            spans[source_index].clone_events(events)
-        } else {
-            generated_span(target)?
-        };
-        let replacement_len = replacement.len();
-        let synthetic_span = FlowSpan {
-            start: 0,
-            end: replacement_len.saturating_sub(1),
-            direct_body_child: true,
-            kind: target.kind,
-            content: target.content.clone(),
-        };
-        if !patch_span(&mut replacement, &synthetic_span, target, true)? {
-            replacement = generated_span(target)?;
-        }
-        output.extend(replacement);
-
-        // Preserve intentional blank paragraphs and other non-flow body
-        // nodes: emit each inter-span gap exactly once, at the point where
-        // the proportional walk crosses from one source span to the next.
-        // Indexing the gaps with the target cursor piled every spacer after
-        // the first spans.len() targets of a report that outgrew its
-        // template — the v0.22 "line spacing is wrong in some sections" bug.
-        let here = scaled_source_position(spans.len(), targets.len(), target_index);
-        let next = if target_index + 1 < targets.len() {
-            scaled_source_position(spans.len(), targets.len(), target_index + 1)
-        } else {
-            spans.len().saturating_sub(1)
-        };
-        for boundary in here..next {
-            let gap_start = spans[boundary].end + 1;
-            let gap_end = spans[boundary + 1].start;
-            output.extend_from_slice(&events[gap_start..gap_end]);
+    if targets.emit_title {
+        let target = targets.title_target();
+        match layout.title {
+            Some(index) => writer.aligned(index, &target)?,
+            None => match nearest_of_kind(spans, 0, FlowKind::Title) {
+                Some(index) => writer.exemplar(index, &target)?,
+                None => writer.generated(&target)?,
+            },
         }
     }
-    output.extend_from_slice(&events[last.end + 1..]);
+
+    let mut anchor = layout.sections[0].anchor();
+    for (section, aligned) in targets.sections.iter().zip(&alignment) {
+        let template = aligned.map(|index| layout.sections[index]);
+        if let Some(template) = template {
+            anchor = template.anchor();
+        }
+        if let Some(heading) = &section.heading {
+            let target = TargetFlow {
+                kind: FlowKind::Heading,
+                content: FlowContent::Paragraph(heading.clone()),
+            };
+            match template.and_then(|template| template.heading) {
+                Some(index) => writer.aligned(index, &target)?,
+                None => match nearest_of_kind(spans, anchor, FlowKind::Heading) {
+                    Some(index) => writer.exemplar(index, &target)?,
+                    None => writer.generated(&target)?,
+                },
+            }
+        }
+        let mut placed = [0_usize; FlowKind::COUNT];
+        for block in &section.blocks {
+            let candidates = template
+                .map(|template| {
+                    (template.start..template.end)
+                        .filter(|index| spans[*index].kind == block.kind)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let ordinal = placed[block.kind.index()];
+            placed[block.kind.index()] += 1;
+            if let Some(index) = candidates.get(ordinal) {
+                writer.aligned(*index, block)?;
+            } else if let Some(index) = candidates.last() {
+                writer.exemplar(*index, block)?;
+            } else if let Some(index) = nearest_of_kind(spans, anchor, block.kind) {
+                writer.exemplar(index, block)?;
+            } else {
+                writer.generated(block)?;
+            }
+        }
+        if let Some(template) = template {
+            anchor = template.end;
+        }
+    }
+
+    let mut output = writer.output;
+    output.extend(gap_events(&events[last.end + 1..])?);
     Ok((output, TemplateRenderFidelity::Reconstructed))
 }
 
-/// Map a generated-report position onto the template's span list, so a
-/// report that outgrew its template walks the whole source proportionally
-/// instead of pinning everything past the template's length to its final
-/// span.
-fn scaled_source_position(spans_len: usize, targets_len: usize, target_index: usize) -> usize {
-    if targets_len == 0 || spans_len == 0 {
-        return 0;
+/// The events between two flow spans, stripped of anything carrying content.
+///
+/// Blank spacer paragraphs, `sectPr`, and bookmarks are the template's own
+/// layout and must survive. A `w:tbl` or a text-bearing paragraph that failed
+/// span recognition is content the accepted draft does not contain — a
+/// merged-cell table the model never saw, most often — and re-emitting it
+/// smuggles template text into a clinical report.
+fn gap_events(events: &[Event<'static>]) -> Result<Vec<Event<'static>>, DocxError> {
+    let mut output = Vec::new();
+    let mut index = 0_usize;
+    while index < events.len() {
+        match &events[index] {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"tbl" => {
+                index = element_end(events, index) + 1;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"p" => {
+                let end = element_end(events, index);
+                if visible_paragraph_text(&events[index..=end])?
+                    .trim()
+                    .is_empty()
+                {
+                    output.extend_from_slice(&events[index..=end]);
+                }
+                index = end + 1;
+            }
+            event => {
+                output.push(event.clone());
+                index += 1;
+            }
+        }
     }
-    (target_index * spans_len / targets_len).min(spans_len - 1)
+    Ok(output)
+}
+
+/// Index of the event closing the element that opens at `start`.
+fn element_end(events: &[Event<'static>], start: usize) -> usize {
+    let Event::Start(element) = &events[start] else {
+        return start;
+    };
+    let name = local_name(element.name().as_ref()).to_vec();
+    let mut depth = 0_usize;
+    for (index, event) in events.iter().enumerate().skip(start) {
+        match event {
+            Event::Start(open) if local_name(open.name().as_ref()) == name => depth += 1,
+            Event::End(close) if local_name(close.name().as_ref()) == name => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return index;
+                }
+            }
+            _ => {}
+        }
+    }
+    events.len().saturating_sub(1)
 }
 
 impl FlowSpan {
@@ -946,18 +1665,9 @@ impl FlowSpan {
     }
 }
 
-fn nearest_span(
-    spans: &[FlowSpan],
-    targets_len: usize,
-    target_index: usize,
-    kind: FlowKind,
-) -> Option<usize> {
-    // Anchor the search in the template's own index space. Comparing raw
-    // report indices against template indices meant every paragraph past
-    // the template's length "nearest-matched" the final same-kind span —
-    // in clinical templates, an underlined signature line whose formatting
-    // then bled over most of the generated report.
-    let anchor = scaled_source_position(spans.len(), targets_len, target_index);
+/// The span of this kind nearest to `anchor` in the template's own index
+/// space — the last resort before generating formatting from nothing.
+fn nearest_of_kind(spans: &[FlowSpan], anchor: usize, kind: FlowKind) -> Option<usize> {
     spans
         .iter()
         .enumerate()
@@ -976,7 +1686,11 @@ fn generated_span(target: &TargetFlow) -> Result<Vec<Event<'static>>, DocxError>
     let bytes = render_report(&draft)?;
     let xml = zip_entry(&bytes, "word/document.xml")?;
     let events = parse_events(&xml)?;
-    let spans = discover_flow(&events, &StyleCatalog::from_package(&bytes))?;
+    let spans = discover_flow(
+        &events,
+        &StyleCatalog::from_package(&bytes),
+        &mut FlowClassifier::styles(),
+    )?;
     spans
         .iter()
         .find(|span| span.kind == target.kind)
@@ -994,6 +1708,7 @@ fn single_target_draft(target: &TargetFlow) -> Result<ReportDraft, DocxError> {
             blocks,
             skipped: false,
             template_blocks: None,
+            template_directives: Vec::new(),
             authorship: None,
         };
     let (title, sections) = match (&target.kind, &target.content) {
@@ -1046,83 +1761,73 @@ fn single_target_draft(target: &TargetFlow) -> Result<ReportDraft, DocxError> {
     })
 }
 
-fn generated_document_events(targets: &[TargetFlow]) -> Result<Vec<Event<'static>>, DocxError> {
-    let draft = draft_from_targets(targets)?;
+fn generated_document_events(targets: &TargetDocument) -> Result<Vec<Event<'static>>, DocxError> {
+    let draft = targets.to_draft()?;
     let bytes = render_report(&draft)?;
     let xml = zip_entry(&bytes, "word/document.xml")?;
     parse_events(&xml)
 }
 
-fn draft_from_targets(targets: &[TargetFlow]) -> Result<ReportDraft, DocxError> {
-    // This path is used only when an uploaded document has an unsupported body
-    // wrapper. Reusing the already validated draft representation would require
-    // carrying it through every helper, so reconstruct a minimal equivalent.
-    let title = targets
-        .first()
-        .and_then(|target| match &target.content {
-            FlowContent::Paragraph(text) => Some(text.clone()),
-            FlowContent::Table(_) => None,
+impl TargetDocument {
+    /// This path is used only when an uploaded document has an unsupported
+    /// body wrapper. Reusing the already validated draft representation would
+    /// require carrying it through every helper, so reconstruct a minimal
+    /// equivalent. Generated formatting cannot express a document without a
+    /// title or a section without a heading, so both are named here.
+    fn to_draft(&self) -> Result<ReportDraft, DocxError> {
+        let sections = self
+            .sections
+            .iter()
+            .map(|section| claria_core::models::report::ReportSection {
+                id: uuid::Uuid::new_v4(),
+                heading: section
+                    .heading
+                    .clone()
+                    .unwrap_or_else(|| SYNTHETIC_SECTION_HEADING.to_string()),
+                blocks: blocks_from_targets(&section.blocks),
+                skipped: false,
+                template_blocks: None,
+                template_directives: Vec::new(),
+                authorship: None,
+            })
+            .collect();
+        let timestamp = "1970-01-01T00:00:00Z"
+            .parse()
+            .map_err(|error| DocxError::Render(format!("invalid fallback timestamp: {error}")))?;
+        Ok(ReportDraft {
+            revision: 0,
+            content: claria_core::models::report::ReportContent {
+                title: self.title.clone(),
+                sections,
+            },
+            created_at: timestamp,
+            updated_at: timestamp,
+            last_applied_proposal_id: None,
         })
-        .ok_or_else(|| DocxError::Render("the report has no title".to_string()))?;
-    let mut sections = Vec::new();
-    let mut current: Option<claria_core::models::report::ReportSection> = None;
-    for target in targets.iter().skip(1) {
+    }
+}
+
+fn blocks_from_targets(targets: &[TargetFlow]) -> Vec<ReportBlock> {
+    let mut blocks: Vec<ReportBlock> = Vec::new();
+    for target in targets {
         match (&target.kind, &target.content) {
-            (FlowKind::Heading, FlowContent::Paragraph(heading)) => {
-                if let Some(section) = current.take() {
-                    sections.push(section);
-                }
-                current = Some(claria_core::models::report::ReportSection {
-                    id: uuid::Uuid::new_v4(),
-                    heading: heading.clone(),
-                    blocks: Vec::new(),
-                    skipped: false,
-                    template_blocks: None,
-                    authorship: None,
-                });
+            (FlowKind::List, FlowContent::Paragraph(text)) => match blocks.last_mut() {
+                Some(ReportBlock::BulletList { items }) => items.push(text.clone()),
+                _ => blocks.push(ReportBlock::BulletList {
+                    items: vec![text.clone()],
+                }),
+            },
+            (_, FlowContent::Paragraph(text)) => {
+                blocks.push(ReportBlock::Paragraph { text: text.clone() });
             }
-            (FlowKind::Body, FlowContent::Paragraph(text)) => {
-                if let Some(section) = &mut current {
-                    section
-                        .blocks
-                        .push(ReportBlock::Paragraph { text: text.clone() });
-                }
-            }
-            (FlowKind::List, FlowContent::Paragraph(text)) => {
-                if let Some(section) = &mut current {
-                    match section.blocks.last_mut() {
-                        Some(ReportBlock::BulletList { items }) => items.push(text.clone()),
-                        _ => section.blocks.push(ReportBlock::BulletList {
-                            items: vec![text.clone()],
-                        }),
-                    }
-                }
-            }
-            (FlowKind::Table, FlowContent::Table(rows)) => {
-                if let Some(section) = &mut current {
-                    section.blocks.push(ReportBlock::Table {
-                        rows: rows.clone(),
-                        has_header: false,
-                        column_widths: None,
-                    });
-                }
-            }
-            _ => {}
+            (_, FlowContent::Table(rows)) => blocks.push(ReportBlock::Table {
+                rows: rows.clone(),
+                has_header: false,
+                column_widths: None,
+            }),
         }
     }
-    if let Some(section) = current {
-        sections.push(section);
-    }
-    let timestamp = "1970-01-01T00:00:00Z"
-        .parse()
-        .map_err(|error| DocxError::Render(format!("invalid fallback timestamp: {error}")))?;
-    Ok(ReportDraft {
-        revision: 0,
-        content: claria_core::models::report::ReportContent { title, sections },
-        created_at: timestamp,
-        updated_at: timestamp,
-        last_applied_proposal_id: None,
-    })
+    blocks
 }
 
 fn local_name(name: &[u8]) -> &[u8] {

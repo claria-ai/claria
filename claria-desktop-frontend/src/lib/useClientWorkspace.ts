@@ -13,7 +13,18 @@ const cleanWritingState: WritingLeaveState = {
   hasUnsavedWork: false,
   hasUnsavedReportEdits: false,
   busy: false,
+  draftRunLive: false,
 };
+
+/**
+ * A drafting run has a safe way out that the other writer actions do not, so
+ * it is worth naming instead of asking the reader to wait it out.
+ */
+function busyLeaveMessage(state: WritingLeaveState): string {
+  return state.draftRunLive
+    ? "A draft run is in progress. Press Stop in Writing to end it safely; sections already saved will be kept."
+    : "Wait for the current Writing action to finish before leaving.";
+}
 
 /**
  * Cross-view navigation for a client workspace.
@@ -59,7 +70,7 @@ export function useClientWorkspace(
   function mayLeaveWriting(): boolean {
     if (activeView !== "writing") return true;
     if (writingLeaveState.busy) {
-      window.alert("Wait for the current Writing action to finish before leaving.");
+      window.alert(busyLeaveMessage(writingLeaveState));
       return false;
     }
     // Composer text and report-block references stay in process memory while

@@ -1,5 +1,29 @@
 use thiserror::Error;
 
+/// Which of a streamed call's two waits ended it.
+///
+/// The two are different failures with different remedies, and a reader told
+/// to raise the wrong one is worse off than one told nothing: the response
+/// that never started is a cold prefill, and the response that stopped
+/// mid-flight is a model composing something too large to emit inside one
+/// silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamInterruption {
+    /// The service never sent a first frame inside the first-frame wait.
+    NeverStarted,
+    /// A stream already under way went quiet past the idle wait.
+    WentSilent,
+    /// The stream failed outright mid-response — not a timeout.
+    Dropped,
+}
+
+impl StreamInterruption {
+    /// Whether a longer wait is the thing that would have saved this call.
+    pub fn is_timeout(self) -> bool {
+        matches!(self, Self::NeverStarted | Self::WentSilent)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum BedrockError {
     #[error("model invocation failed: {0}")]
@@ -11,6 +35,7 @@ pub enum BedrockError {
     #[error("{message}")]
     StreamInterrupted {
         operation: &'static str,
+        kind: StreamInterruption,
         message: String,
     },
 
@@ -63,7 +88,10 @@ pub enum BedrockError {
     Agreement(String),
 
     /// The reader pressed Stop while the request was in flight. Not a
-    /// failure — the caller decides what its partial work is worth.
+    /// failure — the caller decides what its partial work is worth: a stopped
+    /// chat turn keeps the partial text as the answer, while a stopped
+    /// structured call produced nothing and keeps nothing. Callers that cannot
+    /// be stopped never construct it.
     #[error("the request was stopped by the user")]
     Stopped,
 }
@@ -75,6 +103,15 @@ impl BedrockError {
     /// failures, which [`classify_error`](crate::converse) labels
     /// `DispatchFailure`). Nothing from such a call is committed, so
     /// re-sending the identical request is safe.
+    /// Which wait ran out, when one did. `None` for interruptions that are
+    /// not a timeout at all.
+    pub fn stream_interruption(&self) -> Option<StreamInterruption> {
+        match self {
+            Self::StreamInterrupted { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+
     pub fn is_interrupted_before_completion(&self) -> bool {
         match self {
             Self::StreamInterrupted { .. } => true,

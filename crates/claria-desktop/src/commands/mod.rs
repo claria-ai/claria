@@ -10,6 +10,8 @@ pub mod chat;
 pub mod clients;
 pub mod config;
 pub mod console;
+pub mod findings;
+pub mod plan;
 pub mod prompts;
 pub mod provision;
 pub mod records;
@@ -25,6 +27,8 @@ pub use chat::*;
 pub use clients::*;
 pub use config::*;
 pub use console::*;
+pub use findings::*;
+pub use plan::*;
 pub use prompts::*;
 pub use provision::*;
 pub use records::*;
@@ -278,6 +282,16 @@ pub(crate) fn model_tuning_for(
         temperature: preferences
             .temperature
             .filter(|_| capabilities.sampling_params),
+    }
+}
+
+/// Overlay `extra`'s fields onto a shared audit-details object, so a command
+/// adds what only it knows without restating the usage fields.
+pub(crate) fn merge_details(base: &mut serde_json::Value, extra: serde_json::Value) {
+    if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
+        for (key, value) in extra {
+            base.insert(key.clone(), value.clone());
+        }
     }
 }
 

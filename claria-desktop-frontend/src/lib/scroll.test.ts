@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { PIN_SLACK_PX, isPinnedToBottom } from "./scroll";
+import {
+  PIN_SLACK_PX,
+  USER_SCROLL_GRACE_MS,
+  isPinnedToBottom,
+  mayAutoScroll,
+} from "./scroll";
 
 describe("isPinnedToBottom", () => {
   it("follows a container sitting exactly at its bottom", () => {
@@ -31,5 +36,19 @@ describe("isPinnedToBottom", () => {
     expect(
       isPinnedToBottom({ scrollHeight: 300, scrollTop: 0, clientHeight: 400 })
     ).toBe(true);
+  });
+});
+
+describe("mayAutoScroll", () => {
+  it("scrolls freely for a reader who has not touched the document", () => {
+    expect(mayAutoScroll(null, 10_000)).toBe(true);
+  });
+
+  it("holds off while a deliberate scroll is still recent", () => {
+    expect(mayAutoScroll(10_000, 10_000 + USER_SCROLL_GRACE_MS - 1)).toBe(false);
+  });
+
+  it("takes over again once the grace period has passed", () => {
+    expect(mayAutoScroll(10_000, 10_000 + USER_SCROLL_GRACE_MS)).toBe(true);
   });
 });

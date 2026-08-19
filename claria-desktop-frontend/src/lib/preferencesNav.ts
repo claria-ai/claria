@@ -29,6 +29,7 @@ export type PaneId =
   | "writer.whole-report"
   | "writer.prompt-library"
   | "writer.templates"
+  | "writer.draft-runs"
   | "writer.limits"
   | "transcription.imported-audio"
   | "transcription.local-models"
@@ -203,6 +204,37 @@ export const PREFERENCES_NAV: CategorySpec[] = [
         fields: [],
       },
       {
+        id: "writer.draft-runs",
+        title: "Draft runs",
+        blurb:
+          "How a whole-report draft is planned before it is written, and which models do the supporting work.",
+        terms: [
+          "plan",
+          "gate",
+          "planner",
+          "reviewer",
+          "draft run",
+          "sections",
+        ],
+        fields: [
+          {
+            anchor: "plan_gate",
+            label: "Before drafting starts",
+            terms: ["plan", "gate", "review", "auto start", "sections"],
+          },
+          {
+            anchor: "planner_model_id",
+            label: "Planning model",
+            terms: ["planner", "plan", "sections"],
+          },
+          {
+            anchor: "reviewer_model_id",
+            label: "Review model",
+            terms: ["reviewer", "review", "findings"],
+          },
+        ],
+      },
+      {
         id: "writer.limits",
         title: "Writer Limits",
         blurb:
@@ -226,6 +258,31 @@ export const PREFERENCES_NAV: CategorySpec[] = [
             anchor: "max_retained_turns",
             label: "Conversation turns retained",
             terms: ["context", "history"],
+          },
+          {
+            anchor: "writer_first_frame_timeout_secs",
+            label: "Wait for the writer to start responding",
+            terms: ["timeout", "slow", "hang", "disconnect", "seconds"],
+          },
+          {
+            anchor: "writer_idle_timeout_secs",
+            label: "Wait between writer response chunks",
+            terms: ["timeout", "stall", "disconnect", "seconds"],
+          },
+          {
+            anchor: "writer_max_output_tokens",
+            label: "Writer response length ceiling",
+            terms: ["truncated", "cut short", "max tokens", "length"],
+          },
+          {
+            anchor: "analysis_first_frame_timeout_secs",
+            label: "Wait for the planner and reviewer to start responding",
+            terms: ["timeout", "planner", "reviewer", "slow", "seconds"],
+          },
+          {
+            anchor: "analysis_idle_timeout_secs",
+            label: "Wait between planner and reviewer response chunks",
+            terms: ["timeout", "planner", "reviewer", "stall", "seconds"],
           },
         ],
       },

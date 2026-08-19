@@ -147,7 +147,9 @@ async fn destroy_surfaces_an_object_that_would_not_delete() {
 
     match err {
         ProvisionerError::DeleteFailed(msg) => {
-            assert!(msg.contains("records/one/scan.pdf"), "got: {msg}");
+            // The filename is redacted (it is PHI); the client folder that
+            // failed still names the object well enough to act on.
+            assert!(msg.contains("records/one/<file>"), "got: {msg}");
         }
         other => panic!("expected DeleteFailed, got {other:?}"),
     }

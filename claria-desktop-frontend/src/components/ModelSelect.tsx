@@ -15,6 +15,7 @@ export default function ModelSelect({
   disabled = false,
   ariaLabel = "Chat model",
   className = "",
+  defaultOption = false,
 }: {
   models: ChatModel[];
   loading: boolean;
@@ -24,6 +25,12 @@ export default function ModelSelect({
   disabled?: boolean;
   ariaLabel?: string;
   className?: string;
+  /**
+   * Offer an empty-valued row for "no explicit choice". Roles that resolve
+   * their own model at call time use it; a picker whose value must be a real
+   * model ID leaves it off.
+   */
+  defaultOption?: boolean;
 }) {
   if (loading) {
     return (
@@ -44,7 +51,10 @@ export default function ModelSelect({
       disabled={disabled}
       className={`text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 ${className}`}
     >
-      {models.length === 0 && <option value="">No models available</option>}
+      {defaultOption && <option value="">Default — chosen automatically</option>}
+      {models.length === 0 && !defaultOption && (
+        <option value="">No models available</option>
+      )}
       {models.map((model) => (
         <option key={model.model_id} value={model.model_id}>
           {model.name}

@@ -4,7 +4,7 @@
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::{
     converse::StopSignal,
-    error::BedrockError,
+    error::{BedrockError, StreamInterruption},
     report::{self, ReportStopReason},
 };
 use claria_core::models::{
@@ -25,10 +25,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    CONVERSE_CALLS_FIELD_LABEL, FullReportGenerationOutcome, MAX_CONFIGURABLE_CONVERSE_CALLS,
-    MAX_CONFIGURABLE_TOOL_ROUNDS, MAX_REPORT_REFERENCES, REPORT_TRUNCATED_NOTICE,
-    ReportBlockReference, ReportPipelineError, ReportPromptCache, ReportTurnLimits,
-    ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL, WRITER_LIMITS_SECTION,
+    CONVERSE_CALLS_FIELD_LABEL, FIRST_FRAME_TIMEOUT_FIELD_LABEL, FullReportGenerationOutcome,
+    IDLE_TIMEOUT_FIELD_LABEL, MAX_CONFIGURABLE_CONVERSE_CALLS, MAX_CONFIGURABLE_TOOL_ROUNDS,
+    MAX_REPORT_REFERENCES, REPORT_TRUNCATED_NOTICE, ReportBlockReference, ReportPipelineError,
+    ReportPromptCache, ReportTurnLimits, ReportTurnOutcome, TOOL_ROUNDS_FIELD_LABEL,
+    WRITER_LIMITS_SECTION,
     context::{
         build_untrusted_context, flatten_protocol_history, sanitize_turn_messages, sha256_hex,
     },
@@ -36,8 +37,14 @@ use crate::{
         DraftTurnKind, cache_checkpoints, kickoff_instruction, plan_context, template_context,
     },
     prompts::{full_report_system_prompt, report_system_prompt},
-    record_context::{FullRecordContext, load_full_record_context, load_record_inventory},
-    run::{park_stopped_run, release_failed_run, stamp_run_authorship, start_draft_run},
+    record_context::{
+        BudgetRole, FullRecordContext, RecordInventoryEntry, load_full_record_context,
+        load_record_inventory,
+    },
+    run::{
+        create_run_for_workspace, park_stopped_run, release_failed_run, stamp_run_authorship,
+        synthetic_plan,
+    },
     tools::ToolExecutionContext,
 };
 
@@ -58,6 +65,22 @@ pub enum ReportTurnProgress {
     ModelCallStarted {
         call_number: u32,
     },
+    /// The call named by the last `ModelCallStarted` never landed, and the
+    /// identical request is about to go out again after `delay_ms`.
+    ///
+    /// A retried call is otherwise invisible: it is re-sent inside the same
+    /// call number, so from the outside a reader watching a stalled stream
+    /// and a reader watching a retry see the same frozen line. `attempt` is
+    /// the attempt about to be made — 2 for the first retry — counted
+    /// against `max_attempts`, which differs between the throttle wrapper
+    /// and the stream-interruption loop and so rides on the event rather
+    /// than being a constant the reader has to know.
+    ModelCallRetrying {
+        call_number: u32,
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+    },
     ToolStarted {
         name: String,
         context: Option<String>,
@@ -66,6 +89,35 @@ pub enum ReportTurnProgress {
         name: String,
         context: Option<String>,
         status: ReportToolResultStatus,
+    },
+    /// The planner has finished another row of the plan it is streaming.
+    ///
+    /// Counted off the partial tool-input JSON while the call is still open,
+    /// so a pass that takes minutes says how far it has got instead of
+    /// spinning. Display only: `planned` is a count of rows seen, not of rows
+    /// the host has accepted, and the plan is still validated whole when the
+    /// call returns. `total` is the document's section count, known before
+    /// the call.
+    PlanRowPlanned {
+        planned: u32,
+        total: u32,
+    },
+    /// One batch of the plan came back and passed host validation.
+    ///
+    /// The planning pass is a sequence of calls, each responsible for a
+    /// contiguous run of sections, so this is the pass's checkpoint: the rows
+    /// it names are decided and will not be asked for again. `first` and
+    /// `last` are one-based and inclusive, against `total` — the document's
+    /// whole section count — so "9–16 of 38" reads without the listener
+    /// knowing the batch size.
+    ///
+    /// Unlike `PlanRowPlanned`, which counts rows off a partial answer and
+    /// restarts when a call is re-sent, this only fires for rows the host has
+    /// accepted.
+    PlanBatchPlanned {
+        first: u32,
+        last: u32,
+        total: u32,
     },
     /// The drafting run's plan is in place, before the first model call. Its
     /// row count is the honest denominator for everything that follows: the
@@ -115,6 +167,46 @@ pub enum ReportTurnProgress {
     TitleSet {
         title: String,
     },
+    /// One branch of the review fan-out went out. `index` is one-based and
+    /// `total` is the property count, so the bar is honest without the
+    /// listener having to know how many properties there are.
+    ReviewPassStarted {
+        property: String,
+        index: u32,
+        total: u32,
+    },
+    /// One branch came back. `completed` and `total` ride on the event rather
+    /// than being counted by the listener, so a dropped event cannot desync
+    /// the bar — and because branches finish out of order, `completed` is the
+    /// branch's own position, not a running total.
+    ReviewPassCompleted {
+        property: String,
+        findings: u32,
+        completed: u32,
+        total: u32,
+    },
+}
+
+impl ReportTurnProgress {
+    /// The retry event for a call about to be re-sent, built from what a
+    /// retry observer is handed.
+    ///
+    /// One constructor for every retry site so the "attempt about to be
+    /// made" convention and the millisecond conversion are stated once
+    /// rather than re-derived per flow.
+    pub(crate) fn retrying(
+        call_number: u32,
+        attempt: u32,
+        max_attempts: u32,
+        delay: std::time::Duration,
+    ) -> Self {
+        Self::ModelCallRetrying {
+            call_number,
+            attempt,
+            max_attempts,
+            delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
 }
 
 /// The signal a request with no Stop button behind it watches.
@@ -123,7 +215,7 @@ pub enum ReportTurnProgress {
 /// function is behind a shared reference — so it pends forever and a caller
 /// that never calls `with_stop` behaves exactly as it did before stopping
 /// existed.
-fn never_stopped() -> &'static StopSignal {
+pub(crate) fn never_stopped() -> &'static StopSignal {
     static NEVER: std::sync::OnceLock<StopSignal> = std::sync::OnceLock::new();
     NEVER.get_or_init(StopSignal::new)
 }
@@ -209,11 +301,13 @@ pub struct FullReportRequest<'a> {
     /// the complete document from the readable-record snapshot.
     pub guidance: &'a str,
     pub limits: ReportTurnLimits,
-    progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
-    prompt_cache: Option<&'a ReportPromptCache>,
-    system_prompt_body: Option<&'a str>,
-    model_tuning: claria_bedrock::converse::ModelTuning,
-    stop: &'a StopSignal,
+    // Crate-visible because the parallel drafting coordinator is a second
+    // executor for the same request type, not a second request type.
+    pub(crate) progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
+    pub(crate) prompt_cache: Option<&'a ReportPromptCache>,
+    pub(crate) system_prompt_body: Option<&'a str>,
+    pub(crate) model_tuning: claria_bedrock::converse::ModelTuning,
+    pub(crate) stop: &'a StopSignal,
 }
 
 impl<'a> FullReportRequest<'a> {
@@ -446,7 +540,18 @@ async fn generate_full_report_loaded(
     request: FullReportRequest<'_>,
 ) -> Result<FullReportGenerationOutcome, ReportPipelineError> {
     ensure_ready_for_turn(&loaded.workspace, expected_revision)?;
-    let run = start_draft_run(s3, bucket, &mut loaded, model_id, request.guidance.trim()).await?;
+    let now = jiff::Timestamp::now();
+    let plan = synthetic_plan(&loaded.workspace, model_id, now);
+    let run = create_run_for_workspace(
+        s3,
+        bucket,
+        &mut loaded,
+        model_id,
+        request.guidance.trim(),
+        Some(plan),
+        claria_core::models::report_run::DraftRunStatus::Drafting,
+    )
+    .await?;
     execute_full_draft_turn(
         sdk_config,
         s3,
@@ -488,7 +593,7 @@ pub(crate) async fn execute_full_draft_turn(
     let report_id = loaded.workspace.report_id;
     let prepared = prepare_full_draft_context(s3, bucket, client_id, model_id, request).await;
     let record_context = match prepared {
-        Ok(record_context) => record_context,
+        Ok(prepared) => prepared.record_context,
         Err(error) => {
             release_failed_run(s3, bucket, client_id, report_id, &mut run).await;
             return Err(error);
@@ -525,23 +630,46 @@ pub(crate) async fn execute_full_draft_turn(
     }
 }
 
-async fn prepare_full_draft_context(
+/// The shared corpus a whole-report turn was prepared with, and the inventory
+/// it was built from.
+///
+/// The inventory rides along because the parallel fan-out needs it again: a
+/// section the clinician restricted builds its own snapshot from a subset of
+/// exactly these entries, and re-listing the prefix to learn what it already
+/// knows would be a second `ListObjectsV2` for the same answer.
+pub(crate) struct PreparedDraftContext {
+    pub(crate) record_context: FullRecordContext,
+    pub(crate) inventory: Vec<RecordInventoryEntry>,
+}
+
+pub(crate) async fn prepare_full_draft_context(
     s3: &S3Client,
     bucket: &str,
     client_id: Uuid,
     model_id: &str,
     request: FullReportRequest<'_>,
-) -> Result<FullRecordContext, ReportPipelineError> {
+) -> Result<PreparedDraftContext, ReportPipelineError> {
+    let output_token_reserve = request.limits.writer_max_output_tokens();
     let inventory = load_record_inventory(s3, bucket, client_id)
         .await
         .map_err(|source| ReportPipelineError::storage("listing full-draft records", source))?;
-    let record_context = load_full_record_context(s3, bucket, model_id, &inventory).await?;
+    let record_context = load_full_record_context(
+        s3,
+        bucket,
+        &[BudgetRole::writer(model_id, output_token_reserve)],
+        &inventory,
+        None,
+    )
+    .await?;
     request.emit_progress(ReportTurnProgress::RecordContextPrepared {
         included_files: record_context.summary.included_files,
         unavailable_files: record_context.summary.unavailable_files,
         total_characters: record_context.summary.total_characters,
     });
-    Ok(record_context)
+    Ok(PreparedDraftContext {
+        record_context,
+        inventory,
+    })
 }
 
 fn validate_instruction(instruction: &str) -> Result<(), ReportPipelineError> {
@@ -568,7 +696,7 @@ pub(crate) fn validate_model_choice(model_id: &str) -> Result<(), ReportPipeline
     }
 }
 
-fn ensure_ready_for_turn(
+pub(crate) fn ensure_ready_for_turn(
     workspace: &ReportWorkspace,
     expected_revision: u64,
 ) -> Result<(), ReportPipelineError> {
@@ -598,7 +726,23 @@ async fn execute_turn(
     // the error the caller gets back, and the loop takes the run by value.
     let run_id = run.as_deref().map(|run| run.run.run_id);
     let result = run_turn(sdk_config, s3, bucket, request, loaded, run, &mut progress).await;
+    settle_attempt(s3, bucket, &mut progress, run_id, result).await
+}
 
+/// Write the attempt's closing receipt and turn however the work ended into
+/// what the caller gets back.
+///
+/// Shared by the serial turn loop and the parallel drafting coordinator: they
+/// disagree about almost everything else, but an attempt's receipt is the
+/// billing record for a request, and two paths writing it two ways is how a
+/// stopped run ends up filed as a failure.
+pub(crate) async fn settle_attempt(
+    s3: &S3Client,
+    bucket: &str,
+    progress: &mut AttemptProgress,
+    run_id: Option<Uuid>,
+    result: Result<ReportTurnOutcome, TurnInterruption>,
+) -> Result<ReportTurnOutcome, ReportPipelineError> {
     match result {
         Ok(mut outcome) => {
             let metadata = progress.metadata(ReportAttemptStatus::Completed, None);
@@ -755,7 +899,11 @@ pub(crate) struct AttemptProgress {
 }
 
 impl AttemptProgress {
-    fn new(workspace: &ReportWorkspace, model_id: &str, started_at: jiff::Timestamp) -> Self {
+    pub(crate) fn new(
+        workspace: &ReportWorkspace,
+        model_id: &str,
+        started_at: jiff::Timestamp,
+    ) -> Self {
         Self {
             attempt_id: Uuid::new_v4(),
             report_id: workspace.report_id,
@@ -770,7 +918,7 @@ impl AttemptProgress {
         }
     }
 
-    fn metadata(
+    pub(crate) fn metadata(
         &self,
         status: ReportAttemptStatus,
         failure_code: Option<ReportFailureCode>,
@@ -798,12 +946,13 @@ impl AttemptProgress {
 /// The store persists these but does not know Bedrock, so the wire stop
 /// reason, the enforced output ceiling, and the app version are stamped here,
 /// where the call was actually made.
-fn call_usage_record(
+pub(crate) fn call_usage_record(
     progress: &AttemptProgress,
     call_number: u32,
     usage: Option<TurnUsage>,
     stop_reason: ReportStopReason,
     latency_ms: Option<u64>,
+    max_output_tokens: u32,
 ) -> ReportCallUsageRecord {
     ReportCallUsageRecord {
         schema_version: ATTEMPT_SCHEMA_VERSION,
@@ -817,7 +966,7 @@ fn call_usage_record(
         recorded_at: jiff::Timestamp::now(),
         stop_reason: Some(stop_reason.as_str().to_string()),
         latency_ms,
-        max_output_tokens: report::REPORT_OUTPUT_TOKEN_RESERVE,
+        max_output_tokens,
         system_prompt_sha256: progress.system_prompt_sha256.clone(),
         // Workspace crates version in lockstep with the desktop binary.
         app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -846,6 +995,15 @@ pub(crate) struct TurnRunFailure {
     message: String,
     usage_may_be_incomplete: bool,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+impl TurnRunFailure {
+    /// The PHI-free, user-facing sentence this failure carries. A drafting
+    /// branch records it on the section it could not write, which is why it
+    /// has to be readable without consuming the failure.
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl TurnRunFailure {
@@ -954,6 +1112,14 @@ async fn run_turn(
                     "Claria could not start a durable drafting run for this whole-report request.",
                 )
             })?;
+            // The run is the authority on its own guidance: a gated draft was
+            // planned against instructions typed at the plan step, and the
+            // Start button that follows carries none of its own.
+            let guidance = run
+                .run
+                .instructions
+                .first()
+                .map_or(guidance, |instruction| instruction.text.as_str());
             let base = &loaded.workspace.draft.content;
             let template = template_context(&loaded.workspace, base).map_err(|message| {
                 TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message)
@@ -1030,7 +1196,8 @@ async fn run_turn(
     progress.system_prompt_sha256 = sha256_hex(&system_prompt);
     // One exact CountTokens per turn; later calls estimate appended messages
     // and re-verify only near the budget.
-    let mut input_budget = report::ReportInputBudget::new(&progress.model_id);
+    let mut input_budget =
+        report::ReportInputBudget::new(&progress.model_id, limits.writer_max_output_tokens());
     let citable_filenames = match request.kind {
         TurnRunKind::FullDraft { record_context, .. } => {
             record_context.citable_filenames.as_slice()
@@ -1069,6 +1236,9 @@ async fn run_turn(
     } else {
         claria_bedrock::converse::CachePlan::report_default(capabilities)
     };
+    // Fixed for the attempt for the same reason as the cache plan: the two
+    // waits are the clinician's setting, not something a call may narrow.
+    let stream_bounds = limits.stream_bounds();
 
     loop {
         // Past the cut, Stop is deliberately a no-op: `finish_full_draft` has
@@ -1098,7 +1268,6 @@ async fn run_turn(
             .into());
         }
         let call_number = progress.converse_calls.saturating_add(1);
-        request.emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
         // One Bedrock call, with bounded retries when its response stream
         // stalls or drops. A failed attempt commits nothing — `protocol`
         // still holds only completed messages — so re-sending the identical
@@ -1107,6 +1276,10 @@ async fn run_turn(
         let call_started = tokio::time::Instant::now();
         let mut interruptions = 0_u32;
         let output = loop {
+            // Announced per attempt, not per call: a re-sent request is a
+            // new stream, and saying so is what retires the retry line the
+            // interruption arm below put on screen.
+            request.emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
             let attempt = if request.is_full_draft() {
                 report::converse_full_report_with_tool_limit(
                     sdk_config,
@@ -1117,6 +1290,7 @@ async fn run_turn(
                     &mut input_budget,
                     request.model_tuning,
                     cache_plan.clone(),
+                    stream_bounds,
                     stop,
                 )
                 .await
@@ -1130,6 +1304,7 @@ async fn run_turn(
                     &mut input_budget,
                     request.model_tuning,
                     cache_plan.clone(),
+                    stream_bounds,
                     stop,
                 )
                 .await
@@ -1151,6 +1326,12 @@ async fn run_turn(
                         error = %error,
                         "Bedrock stream interrupted; retrying the call"
                     );
+                    request.emit_progress(ReportTurnProgress::retrying(
+                        call_number,
+                        interruptions.saturating_add(1),
+                        STREAM_INTERRUPTION_RETRIES.saturating_add(1),
+                        STREAM_INTERRUPTION_RETRY_DELAY,
+                    ));
                     tokio::time::sleep(STREAM_INTERRUPTION_RETRY_DELAY).await;
                 }
                 Err(error) => {
@@ -1160,6 +1341,8 @@ async fn run_turn(
                             number: call_number,
                             ceiling: limits.max_converse_calls,
                             model_id: &model_id,
+                            first_frame_secs: limits.writer_first_frame_timeout_secs(),
+                            idle_secs: limits.writer_idle_timeout_secs(),
                         },
                         interruptions.saturating_add(1),
                         call_started.elapsed(),
@@ -1183,6 +1366,7 @@ async fn run_turn(
                 output.usage.clone(),
                 output.stop_reason,
                 output.latency_ms,
+                limits.writer_max_output_tokens(),
             ),
         )
         .await
@@ -1584,7 +1768,7 @@ async fn run_turn(
 /// tool round spends a Converse call, so the call ceiling binds first unless
 /// it stays at least one above the round ceiling.
 #[derive(Debug, Clone, Copy)]
-enum ExhaustedWriterLimit {
+pub(crate) enum ExhaustedWriterLimit {
     ToolRounds,
     ConverseCalls,
 }
@@ -1595,7 +1779,7 @@ enum ExhaustedWriterLimit {
 /// The counts matter more than the verdict: 39 of 40 rounds spent listing
 /// files is a different problem from 40 of 40 spent writing sections, and a
 /// screenshot of this message should be enough to tell them apart.
-fn limit_exhausted_failure(
+pub(crate) fn limit_exhausted_failure(
     exhausted: ExhaustedWriterLimit,
     rounds: u32,
     calls: u32,
@@ -1651,10 +1835,16 @@ fn limit_exhausted_failure(
 /// whole-report run, so it belongs in the message a clinician screenshots
 /// rather than only in the log they will not open.
 #[derive(Debug, Clone, Copy)]
-struct FailedReportCall<'a> {
-    number: u32,
-    ceiling: u32,
-    model_id: &'a str,
+pub(crate) struct FailedReportCall<'a> {
+    pub(crate) number: u32,
+    pub(crate) ceiling: u32,
+    pub(crate) model_id: &'a str,
+    /// The first-response wait these attempts each spent, so a call that
+    /// never got answered can name the setting that governs it.
+    pub(crate) first_frame_secs: u32,
+    /// The inter-chunk wait, named instead when the response started and
+    /// then stopped — a different failure with a different remedy.
+    pub(crate) idle_secs: u32,
 }
 
 /// Retries granted to one Bedrock call whose request never completed —
@@ -1686,7 +1876,32 @@ fn elapsed_phrase(elapsed: std::time::Duration) -> String {
     }
 }
 
-fn map_bedrock_failure(
+/// What to tell a reader whose call kept being interrupted, chosen by which
+/// wait ran out.
+///
+/// Naming the wrong setting is worse than naming none: a response that never
+/// started and a response that stopped mid-flight are different problems, and
+/// only one of the two settings governs each. Public because which sentence
+/// a reader gets is behaviour worth pinning directly — reproducing it
+/// through a live stream means racing two real timeouts against the SDK's
+/// own dispatch retries.
+pub fn interruption_advice(
+    interruption: Option<StreamInterruption>,
+    first_frame_secs: u32,
+    idle_secs: u32,
+) -> String {
+    match interruption {
+        Some(StreamInterruption::NeverStarted) => format!(
+            " Every attempt gave up after {first_frame_secs} seconds of waiting for Bedrock to start, which a long template on a cold prompt cache can exceed. Raise \"{FIRST_FRAME_TIMEOUT_FIELD_LABEL}\" in {WRITER_LIMITS_SECTION}, or try again later."
+        ),
+        Some(StreamInterruption::WentSilent) => format!(
+            " Every attempt started and then went quiet for {idle_secs} seconds, which is what a single very large section looks like while the model composes it. Raise \"{IDLE_TIMEOUT_FIELD_LABEL}\" in {WRITER_LIMITS_SECTION}, or plan the report into more, smaller sections."
+        ),
+        _ => " Try again later.".to_string(),
+    }
+}
+
+pub(crate) fn map_bedrock_failure(
     error: BedrockError,
     call: FailedReportCall<'_>,
     attempts: u32,
@@ -1704,6 +1919,8 @@ fn map_bedrock_failure(
         number,
         ceiling,
         model_id,
+        first_frame_secs,
+        idle_secs,
     } = call;
     let failure = match &error {
         BedrockError::ContextBudgetExceeded { .. } => TurnRunFailure::new(
@@ -1728,8 +1945,9 @@ fn map_bedrock_failure(
         _ if error.is_interrupted_before_completion() => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
             format!(
-                "Bedrock appears to be having a hard time: {attempts} attempts at call {number} of {ceiling} got no response over the last {}. Try again later. Usage for the calls that completed was retained.",
-                elapsed_phrase(elapsed)
+                "Bedrock appears to be having a hard time: {attempts} attempts at call {number} of {ceiling} got no complete response over the last {}.{} Usage for the calls that completed was retained.",
+                elapsed_phrase(elapsed),
+                interruption_advice(error.stream_interruption(), first_frame_secs, idle_secs),
             ),
         )
         .uncertain_usage(),
@@ -1791,7 +2009,7 @@ fn map_bedrock_failure(
     failure.with_internal(error)
 }
 
-fn terminal_stop_failure(reason: ReportStopReason) -> TurnRunFailure {
+pub(crate) fn terminal_stop_failure(reason: ReportStopReason) -> TurnRunFailure {
     let message = match reason {
         ReportStopReason::ContentFiltered => {
             "The report assistant response was blocked by content filtering."
@@ -1830,7 +2048,7 @@ impl TurnRunFailure {
     }
 }
 
-fn empty_usage(model_id: &str) -> TurnUsage {
+pub(crate) fn empty_usage(model_id: &str) -> TurnUsage {
     TurnUsage {
         model_id: model_id.to_string(),
         input_tokens: 0,
@@ -1843,7 +2061,7 @@ fn empty_usage(model_id: &str) -> TurnUsage {
     }
 }
 
-fn merge_usage(total: &mut TurnUsage, call: &TurnUsage, first: bool) {
+pub(crate) fn merge_usage(total: &mut TurnUsage, call: &TurnUsage, first: bool) {
     total.input_tokens = total.input_tokens.saturating_add(call.input_tokens);
     total.output_tokens = total.output_tokens.saturating_add(call.output_tokens);
     total.cache_read_input_tokens = total

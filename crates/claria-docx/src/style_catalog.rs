@@ -19,10 +19,14 @@ pub(crate) struct StyleCatalog {
 }
 
 #[derive(Debug, Default)]
-struct StyleRecord {
-    name: String,
-    based_on: Option<String>,
-    outline: bool,
+pub(crate) struct StyleRecord {
+    /// The display name exactly as the package spells it, kept for the
+    /// diagnostic report — a clinician looking for "Section Heading" in
+    /// Word's styles pane will not recognize `sectionheading`.
+    pub(crate) raw_name: String,
+    pub(crate) name: String,
+    pub(crate) based_on: Option<String>,
+    pub(crate) outline: bool,
 }
 
 impl StyleCatalog {
@@ -30,15 +34,16 @@ impl StyleCatalog {
     /// `word/styles.xml` yields an empty catalog; the literal styleId rules
     /// in [`is_title`]/[`is_heading`] still apply.
     pub(crate) fn from_package(bytes: &[u8]) -> Self {
-        let Some(styles_xml) = styles_entry(bytes) else {
-            return Self::default();
-        };
-        let Ok(records) = parse_styles(&styles_xml) else {
-            return Self::default();
-        };
+        Self::from_records(&package_records(bytes))
+    }
+
+    /// The catalog a set of already-parsed records implies. Split out so the
+    /// diagnostic can report the records and the verdicts they produce
+    /// without parsing the package twice or reimplementing the rules.
+    pub(crate) fn from_records(records: &HashMap<String, StyleRecord>) -> Self {
         let mut catalog = Self::default();
         for style_id in records.keys() {
-            match resolve(style_id, &records) {
+            match resolve(style_id, records).map(|(resolved, _)| resolved) {
                 Some(Resolved::Title) => {
                     catalog.titles.insert(style_id.clone());
                 }
@@ -62,25 +67,74 @@ impl StyleCatalog {
     }
 }
 
-enum Resolved {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resolved {
     Title,
     Heading,
 }
 
-/// Classify one style through its `basedOn` chain (bounded, cycle-safe).
-fn resolve(style_id: &str, records: &HashMap<String, StyleRecord>) -> Option<Resolved> {
+/// Which of the rules in [`resolve`] fired, and on which style. `style_id` is
+/// the record the rule matched on, which is the original style only when the
+/// `basedOn` chain was not walked to get there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedBecause {
+    pub(crate) rule: ResolvedRule,
+    pub(crate) style_id: String,
+    /// How many `basedOn` hops away the matching style was; 0 is the style
+    /// itself.
+    pub(crate) hops: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResolvedRule {
+    /// The styleId itself is `title`, or starts with `heading`.
+    StyleId,
+    /// The style's display name is `title`, or starts with `heading`.
+    Name,
+    /// The style definition carries `<w:outlineLvl>`.
+    OutlineLevel,
+}
+
+/// Classify one style through its `basedOn` chain (bounded, cycle-safe),
+/// reporting which rule decided it.
+pub(crate) fn resolve(
+    style_id: &str,
+    records: &HashMap<String, StyleRecord>,
+) -> Option<(Resolved, ResolvedBecause)> {
     let mut current = style_id;
-    for _ in 0..records.len().max(1) {
+    for hops in 0..records.len().max(1) {
         let record = records.get(current)?;
-        if current == "title" || record.name == "title" {
-            return Some(Resolved::Title);
+        let because = |rule| ResolvedBecause {
+            rule,
+            style_id: current.to_string(),
+            hops,
+        };
+        if current == "title" {
+            return Some((Resolved::Title, because(ResolvedRule::StyleId)));
         }
-        if current.starts_with("heading") || record.name.starts_with("heading") || record.outline {
-            return Some(Resolved::Heading);
+        if record.name == "title" {
+            return Some((Resolved::Title, because(ResolvedRule::Name)));
+        }
+        if current.starts_with("heading") {
+            return Some((Resolved::Heading, because(ResolvedRule::StyleId)));
+        }
+        if record.name.starts_with("heading") {
+            return Some((Resolved::Heading, because(ResolvedRule::Name)));
+        }
+        if record.outline {
+            return Some((Resolved::Heading, because(ResolvedRule::OutlineLevel)));
         }
         current = record.based_on.as_deref()?;
     }
     None
+}
+
+/// Every paragraph-style record in a package, or an empty map when
+/// `word/styles.xml` is missing or unreadable.
+pub(crate) fn package_records(bytes: &[u8]) -> HashMap<String, StyleRecord> {
+    styles_entry(bytes)
+        .and_then(|xml| parse_styles(&xml).ok())
+        .unwrap_or_default()
 }
 
 /// Reduce a styleId or style name to its comparable form: alphanumerics,
@@ -132,6 +186,7 @@ fn parse_styles(xml: &[u8]) -> Result<HashMap<String, StyleRecord>, quick_xml::E
                             (&mut current, attribute(start, b"val"))
                         {
                             record.name = normalize_style(&value);
+                            record.raw_name = value;
                         }
                     }
                     b"basedOn" => {

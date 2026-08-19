@@ -7,8 +7,9 @@ use std::collections::HashSet;
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria_core::models::report::{
-    AuthorshipKind, ReportBlock, ReportContent, ReportSection, ReportTemplateWarning,
-    ReportTemplateWarningCode,
+    AuthorshipKind, ReportBlock, ReportContent, ReportOperation, ReportProposal,
+    ReportProposalDecision, ReportSection, ReportTemplateWarning, ReportTemplateWarningCode,
+    ReportWorkspace, SectionAuthorship,
 };
 use claria_mock_aws::testing::MockServer;
 use claria_report_store::{self as store, REPORT_CONFLICT_MESSAGE};
@@ -199,6 +200,7 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: Uuid::new_v4(),
                     heading: "First".to_string(),
@@ -207,6 +209,7 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: Uuid::new_v4(),
                     heading: "Second".to_string(),
@@ -259,6 +262,7 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: second_id,
                     heading: "Second".to_string(),
@@ -267,6 +271,7 @@ async fn lazy_workspace_and_manual_edits_are_versioned_and_conflict_safe() {
                 ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     id: first_id,
                     heading: "First".to_string(),
@@ -471,6 +476,9 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
                 sections: vec![ReportSection {
                     skipped: false,
                     template_blocks: None,
+                    template_directives: vec![
+                        "Delete the rows for tests that were not administered".to_string(),
+                    ],
                     authorship: None,
                     id: Uuid::new_v4(),
                     heading: "Scores".to_string(),
@@ -501,6 +509,12 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
         imported_section.template_blocks.as_ref(),
         Some(&imported_section.blocks)
     );
+    // The importer extracted these; stamping the template copy must not lose
+    // them.
+    assert_eq!(
+        imported_section.template_directives,
+        vec!["Delete the rows for tests that were not administered".to_string()]
+    );
     let authorship = imported_section
         .authorship
         .as_ref()
@@ -526,8 +540,8 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
     assert_eq!(snapshot.draft.revision, 1);
     assert_eq!(snapshot.template_source, Some(template_source.clone()));
 
-    // The editor never sees template copies, so a hand edit arrives without
-    // them and the store has to put them back.
+    // The editor never sees template copies or authoring directives, so a hand
+    // edit arrives without them and the store has to put them back.
     let edited = store::save_report_draft(
         &s3,
         BUCKET,
@@ -543,6 +557,7 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
                 .cloned()
                 .map(|section| ReportSection {
                     template_blocks: None,
+                    template_directives: Vec::new(),
                     authorship: None,
                     ..section
                 })
@@ -555,6 +570,10 @@ async fn template_import_exports_without_confirmation_and_keeps_its_source_packa
     assert_eq!(
         edited.draft.content.sections[0].template_blocks.as_ref(),
         imported_section.template_blocks.as_ref()
+    );
+    assert_eq!(
+        edited.draft.content.sections[0].template_directives,
+        imported_section.template_directives
     );
     assert_eq!(
         edited
@@ -822,6 +841,217 @@ async fn workspace_creation_requires_a_current_client_and_export_is_revision_bou
         .await
         .expect_err("stale export revision");
     assert_eq!(error.to_string(), REPORT_CONFLICT_MESSAGE);
+}
+
+/// Every mutation path that exists today has to say who last wrote each
+/// section, and a path that did not touch a section must leave its stamp
+/// alone.
+#[tokio::test]
+async fn every_mutation_path_stamps_only_the_sections_it_wrote() {
+    let (_server, s3) = setup().await;
+    s3.put_bucket_versioning()
+        .bucket(BUCKET)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+    let client_id = Uuid::new_v4();
+    put_client(&s3, client_id).await;
+    let started = store::start_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("start session");
+    let report_id = started.report_id;
+    let first_id = Uuid::new_v4();
+    let second_id = Uuid::new_v4();
+
+    // A hand save of brand-new sections credits the user for both.
+    let saved = store::save_report_draft_for_report(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        0,
+        ReportContent {
+            title: "Assessment".to_string(),
+            sections: vec![
+                section(first_id, "History", "Handwritten history."),
+                section(second_id, "Summary", "Handwritten summary."),
+            ],
+        },
+    )
+    .await
+    .expect("hand save");
+    assert_eq!(saved.draft.revision, 1);
+    for section in &saved.draft.content.sections {
+        let stamp = section.authorship.as_ref().expect("hand-edit stamp");
+        assert_eq!(stamp.kind, AuthorshipKind::HumanEdited);
+        assert_eq!(stamp.revision, 1);
+        assert_eq!(stamp.model_id, None);
+    }
+
+    // Accepting a proposal credits the proposing model for the sections it
+    // named, and leaves every other section's stamp untouched.
+    let model_id = "us.anthropic.claude-opus-test";
+    let operations = vec![
+        ReportOperation::SetTitle {
+            title: "Revised assessment".to_string(),
+        },
+        ReportOperation::ReplaceSection {
+            section_id: first_id,
+            heading: "History".to_string(),
+            blocks: vec![paragraph("Model-revised history.")],
+        },
+    ];
+    stage_pending_proposal(&s3, client_id, report_id, model_id, operations).await;
+    let accepted = store::resolve_report_proposal_for_report(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        pending_proposal_id(&s3, client_id, report_id).await,
+        ReportProposalDecision::Accepted,
+    )
+    .await
+    .expect("accept proposal");
+    assert_eq!(accepted.draft.revision, 2);
+    let revised = authorship(&accepted, first_id);
+    assert_eq!(revised.kind, AuthorshipKind::ModelRevised);
+    assert_eq!(revised.revision, 2);
+    assert_eq!(revised.model_id.as_deref(), Some(model_id));
+    assert_eq!(revised.run_id, None);
+    assert_eq!(authorship(&accepted, second_id).revision, 1);
+
+    // A hand save that resends every section stamps only the one that changed.
+    let edited = store::save_report_draft_for_report(
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        2,
+        ReportContent {
+            title: accepted.draft.content.title.clone(),
+            sections: accepted
+                .draft
+                .content
+                .sections
+                .iter()
+                .cloned()
+                .map(|mut section| {
+                    if section.id == second_id {
+                        section.blocks = vec![paragraph("Rewritten by hand.")];
+                    }
+                    // The editor never sends either field back.
+                    section.template_blocks = None;
+                    section.authorship = None;
+                    section
+                })
+                .collect(),
+        },
+    )
+    .await
+    .expect("hand edit one section");
+    assert_eq!(edited.draft.revision, 3);
+    let untouched = authorship(&edited, first_id);
+    assert_eq!(untouched.kind, AuthorshipKind::ModelRevised);
+    assert_eq!(untouched.revision, 2);
+    assert_eq!(untouched.model_id.as_deref(), Some(model_id));
+    let rewritten = authorship(&edited, second_id);
+    assert_eq!(rewritten.kind, AuthorshipKind::HumanEdited);
+    assert_eq!(rewritten.revision, 3);
+
+    // Restoring an earlier revision restores its stamps with its content —
+    // no separate provenance bookkeeping is involved.
+    let cache = store::RevisionCache::new();
+    let reverted = store::revert_report_revision(&s3, BUCKET, client_id, report_id, 3, 2, &cache)
+        .await
+        .expect("revert");
+    assert_eq!(reverted.draft.revision, 4);
+    assert_eq!(authorship(&reverted, first_id).revision, 2);
+    assert_eq!(
+        authorship(&reverted, first_id).model_id.as_deref(),
+        Some(model_id)
+    );
+    assert_eq!(authorship(&reverted, second_id).revision, 1);
+    assert_eq!(
+        authorship(&reverted, second_id).kind,
+        AuthorshipKind::HumanEdited
+    );
+}
+
+fn section(id: Uuid, heading: &str, text: &str) -> ReportSection {
+    ReportSection {
+        id,
+        heading: heading.to_string(),
+        blocks: vec![paragraph(text)],
+        skipped: false,
+        template_blocks: None,
+        template_directives: Vec::new(),
+        authorship: None,
+    }
+}
+
+fn authorship(workspace: &ReportWorkspace, section_id: Uuid) -> SectionAuthorship {
+    workspace
+        .draft
+        .content
+        .sections
+        .iter()
+        .find(|section| section.id == section_id)
+        .expect("section")
+        .authorship
+        .clone()
+        .expect("authorship stamp")
+}
+
+/// Write a pending proposal straight into the stored workspace. Staging one
+/// is the turn loop's job, and that lives in another crate.
+async fn stage_pending_proposal(
+    s3: &aws_sdk_s3::Client,
+    client_id: Uuid,
+    report_id: Uuid,
+    model_id: &str,
+    operations: Vec<ReportOperation>,
+) {
+    let key = claria_core::s3_keys::report_session_workspace(client_id, report_id);
+    let (mut workspace, etag): (ReportWorkspace, String) =
+        claria_storage::state::load_state(s3, BUCKET, &key)
+            .await
+            .expect("load workspace");
+    let proposed_content = workspace
+        .draft
+        .preview(&operations)
+        .expect("valid operations");
+    workspace.session.pending_proposal = Some(ReportProposal {
+        id: Uuid::new_v4(),
+        report_id,
+        base_revision: workspace.draft.revision,
+        model_id: model_id.to_string(),
+        summary: "Revise the history section".to_string(),
+        operations,
+        proposed_content,
+        tool_use_id: "tool-1".to_string(),
+        created_at: workspace.updated_at,
+    });
+    claria_storage::state::save_state_if_match(s3, BUCKET, &key, &workspace, &etag)
+        .await
+        .expect("stage proposal");
+}
+
+async fn pending_proposal_id(s3: &aws_sdk_s3::Client, client_id: Uuid, report_id: Uuid) -> Uuid {
+    let key = claria_core::s3_keys::report_session_workspace(client_id, report_id);
+    let (workspace, _): (ReportWorkspace, String) =
+        claria_storage::state::load_state(s3, BUCKET, &key)
+            .await
+            .expect("load workspace");
+    workspace
+        .session
+        .pending_proposal
+        .expect("staged proposal")
+        .id
 }
 
 #[test]

@@ -3,8 +3,8 @@
 use tauri::State;
 
 use claria_desktop::config::{
-    self, ClariaConfig, ConfigInfo, CredentialSource, ReportAuthoringPreferences,
-    SyncedPreferences, TranscriptionPreferences,
+    self, ClariaConfig, ConfigInfo, CredentialSource, DraftPipelinePreferences,
+    ReportAuthoringPreferences, SyncedPreferences, TranscriptionPreferences,
 };
 
 use super::{
@@ -149,6 +149,9 @@ pub struct PreferencesPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub chat_streaming: Option<claria_desktop::config::ChatStreamMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub draft_pipeline: Option<DraftPipelinePreferences>,
 }
 
 impl PreferencesPatch {
@@ -176,6 +179,9 @@ impl PreferencesPatch {
         }
         if let Some(chat_streaming) = self.chat_streaming {
             synced.chat_streaming = chat_streaming;
+        }
+        if let Some(draft_pipeline) = &self.draft_pipeline {
+            synced.draft_pipeline = draft_pipeline.clone();
         }
     }
 }
@@ -341,6 +347,7 @@ pub async fn save_config(
             report_authoring: Default::default(),
             model_tuning: Default::default(),
             chat_streaming: Default::default(),
+            draft_pipeline: Default::default(),
         };
 
         config::save_config(&cfg)?;
@@ -435,6 +442,7 @@ fn full_preferences_patch(synced: &SyncedPreferences) -> PreferencesPatch {
         report_authoring: Some(synced.report_authoring.clone()),
         model_tuning: Some(synced.model_tuning),
         chat_streaming: Some(synced.chat_streaming),
+        draft_pipeline: Some(synced.draft_pipeline.clone()),
     }
 }
 
