@@ -1,22 +1,26 @@
 [package]
 name = "claria-storage"
-version = "0.19.0"
+version = "0.32.0"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-aws-config = "=1.8.18"
-aws-sdk-s3 = "=1.137.0"
-aws-smithy-types = "=1.5.0"
-claria-core = { path = "../claria-core" }
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.150"
-thiserror = "=2.0.18"
-tokio = { version = "=1.52.3", features = ["full"] }
-tracing = "=0.1.44"
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+aws-smithy-types.workspace = true
+claria-core.workspace = true
+futures.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "time"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
-aws-credential-types = "=1.2.14"
-bytes = "=1.12.0"
-claria-mock-aws = { path = "../claria-mock-aws" }
-uuid = { version = "=1.23.4", features = ["v4"] }
+aws-credential-types.workspace = true
+tokio = { workspace = true, features = ["full"] }
+bytes.workspace = true
+claria-mock-aws.workspace = true
+tracing-subscriber.workspace = true

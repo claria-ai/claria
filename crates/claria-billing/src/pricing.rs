@@ -15,7 +15,7 @@
 //! 4/4.1, Haiku 3.x) are special-cased ahead of the tier match. A model
 //! that matches no tier returns `None` and the UI omits cost entirely.
 
-use claria_core::models::cost::ModelPricing;
+use claria_core::{model_id::strip_scope_prefix, models::cost::ModelPricing};
 
 /// Bumped on every edit to the pricing table. Stamped onto
 /// `TurnUsage.pricing_version` at capture time so historical totals do not
@@ -25,7 +25,8 @@ use claria_core::models::cost::ModelPricing;
 /// Phase 2 (prompt caching active) → version 2 with non-zero cache prices.
 /// Phase 3 (Claude 4.5+ generation added) → version 3.
 /// Phase 4 (tier-level matching; Fable/Mythos and Claude 5 generation) → version 4.
-pub const PRICING_VERSION: u32 = 4;
+/// Phase 5 (extended 1-hour cache TTL write tier) → version 5.
+pub const PRICING_VERSION: u32 = 5;
 
 /// Resolve pricing for a Bedrock model_id.
 ///
@@ -68,13 +69,14 @@ pub fn lookup(model_id: &str) -> Option<ModelPricing> {
 }
 
 /// Cache pricing follows Anthropic's standard multipliers: reads at 0.1×
-/// the input rate, writes at 1.25× (5-minute TTL).
+/// the input rate, writes at 1.25× (5-minute TTL) or 2× (1-hour TTL).
 fn tier(input_per_million: f64, output_per_million: f64) -> ModelPricing {
     ModelPricing {
         input_per_million,
         output_per_million,
         cache_read_per_million: input_per_million * 0.10,
         cache_write_per_million: input_per_million * 1.25,
+        cache_write_1h_per_million: input_per_million * 2.0,
     }
 }
 
@@ -96,14 +98,4 @@ fn family_matches(stem: &str, family: &str) -> bool {
         return leading_digits >= 4;
     }
     false
-}
-
-fn strip_scope_prefix(model_id: &str) -> &str {
-    if let Some((prefix, rest)) = model_id.split_once('.') {
-        let is_scope = prefix.len() <= 6 && prefix.chars().all(|c| c.is_ascii_lowercase());
-        if is_scope && rest.contains('.') {
-            return rest;
-        }
-    }
-    model_id
 }

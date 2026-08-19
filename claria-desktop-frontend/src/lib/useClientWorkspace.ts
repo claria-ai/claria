@@ -4,6 +4,7 @@ import {
   type ClientWorkspaceTab,
   type ClientWorkspaceView,
 } from "../components/ClientWorkspaceTabs";
+import { type PreferencesWriterSection } from "../App";
 import { type ResumeChat } from "../pages/ClientChat";
 import { type WritingLeaveState } from "../pages/Writing";
 import { type ChatHistoryDetail } from "./tauri";
@@ -12,7 +13,18 @@ const cleanWritingState: WritingLeaveState = {
   hasUnsavedWork: false,
   hasUnsavedReportEdits: false,
   busy: false,
+  draftRunLive: false,
 };
+
+/**
+ * A drafting run has a safe way out that the other writer actions do not, so
+ * it is worth naming instead of asking the reader to wait it out.
+ */
+function busyLeaveMessage(state: WritingLeaveState): string {
+  return state.draftRunLive
+    ? "A draft run is in progress. Press Stop in Writing to end it safely; sections already saved will be kept."
+    : "Wait for the current Writing action to finish before leaving.";
+}
 
 /**
  * Cross-view navigation for a client workspace.
@@ -21,7 +33,10 @@ const cleanWritingState: WritingLeaveState = {
  * only the state needed to cross those boundaries: persisted sessions being
  * resumed, the Writing instance identity, and guards against losing work.
  */
-export function useClientWorkspace(onBack: () => void) {
+export function useClientWorkspace(
+  onBack: () => void,
+  onManageWriterSection: (section: PreferencesWriterSection) => void
+) {
   const [activeView, setActiveView] =
     useState<ClientWorkspaceView>("record");
   const [pendingChat, setPendingChat] = useState<ResumeChat | null>(null);
@@ -33,13 +48,15 @@ export function useClientWorkspace(onBack: () => void) {
   function openChat(detail: ChatHistoryDetail) {
     setPendingChat({
       chatId: detail.chat_id,
+      name: detail.name,
       modelId: detail.model_id,
       messages: detail.messages.map((message) => ({
         role: message.role,
         content: message.content,
       })),
       usageByIndex: detail.messages.map((message) => message.usage),
-      lastActivityIso: detail.created_at,
+      timestampsByIndex: detail.messages.map((message) => message.timestamp),
+      lastActivityIso: detail.updated_at,
     });
     setActiveView("chat");
   }
@@ -53,7 +70,7 @@ export function useClientWorkspace(onBack: () => void) {
   function mayLeaveWriting(): boolean {
     if (activeView !== "writing") return true;
     if (writingLeaveState.busy) {
-      window.alert("Wait for the current Writing action to finish before leaving.");
+      window.alert(busyLeaveMessage(writingLeaveState));
       return false;
     }
     // Composer text and report-block references stay in process memory while
@@ -73,6 +90,11 @@ export function useClientWorkspace(onBack: () => void) {
       setExpectedReportId(null);
       setWritingInstance((value) => value + 1);
     }
+    if (next === "chat") {
+      // Selecting the tab directly starts a fresh chat; resumed sessions
+      // enter through openChat, which sets the pending chat first.
+      setPendingChat(null);
+    }
     setActiveView(next);
     return true;
   }
@@ -86,6 +108,10 @@ export function useClientWorkspace(onBack: () => void) {
 
   function back() {
     if (mayLeaveWriting()) onBack();
+  }
+
+  function manageWriterSection(section: PreferencesWriterSection) {
+    if (mayLeaveWriting()) onManageWriterSection(section);
   }
 
   useEffect(() => {
@@ -139,7 +165,7 @@ export function useClientWorkspace(onBack: () => void) {
     openSettings,
     selectTab,
     back,
-    clearPendingChat: () => setPendingChat(null),
+    manageWriterSection,
     updateWritingLeaveState: setWritingLeaveState,
   };
 }

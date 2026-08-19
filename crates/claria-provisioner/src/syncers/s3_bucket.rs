@@ -2,9 +2,11 @@ use aws_sdk_s3::Client;
 use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
-use crate::error::ProvisionerError;
-use crate::manifest::ResourceSpec;
-use crate::syncer::{BoxFuture, ResourceSyncer};
+use crate::{
+    error::ProvisionerError,
+    manifest::ResourceSpec,
+    syncer::{BoxFuture, ResourceSyncer},
+};
 
 pub struct S3BucketSyncer {
     spec: ResourceSpec,

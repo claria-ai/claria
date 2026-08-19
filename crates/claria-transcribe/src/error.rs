@@ -28,4 +28,16 @@ pub enum TranscribeError {
         "transcription job {job_name} did not finish within {minutes} minutes; it may still be running in AWS Transcribe"
     )]
     Timeout { job_name: String, minutes: u64 },
+
+    #[error("audio contains no samples")]
+    EmptyAudio,
+
+    #[error("invalid local transcription option: {0}")]
+    InvalidOption(String),
+
+    #[error("failed to load local transcription model: {0}")]
+    ModelLoad(String),
+
+    #[error("local transcription failed: {0}")]
+    Inference(String),
 }

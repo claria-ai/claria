@@ -17,27 +17,46 @@ async fn start_and_get_transcription_job() {
     // Need a bucket for output
     helpers::request(&app, Method::PUT, "/output-bucket", "").await;
 
-    let r = transcribe_request(&app, "StartTranscriptionJob", r#"{
+    let r = transcribe_request(
+        &app,
+        "StartTranscriptionJob",
+        r#"{
         "TranscriptionJobName": "test-job",
         "Media": {"MediaFileUri": "s3://input-bucket/audio.mp3"},
         "LanguageCode": "en-US",
         "OutputBucketName": "output-bucket",
         "OutputKey": "transcripts/test-job.json"
-    }"#).await;
+    }"#,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
     assert_eq!(body["TranscriptionJob"]["TranscriptionJobName"], "test-job");
 
     // GetTranscriptionJob should show COMPLETED
-    let r = transcribe_request(&app, "GetTranscriptionJob", r#"{
+    let r = transcribe_request(
+        &app,
+        "GetTranscriptionJob",
+        r#"{
         "TranscriptionJobName": "test-job"
-    }"#).await;
+    }"#,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-    assert_eq!(body["TranscriptionJob"]["TranscriptionJobStatus"], "COMPLETED");
+    assert_eq!(
+        body["TranscriptionJob"]["TranscriptionJobStatus"],
+        "COMPLETED"
+    );
 
     // The transcript should have been written to S3
-    let r = helpers::request(&app, Method::GET, "/output-bucket/transcripts/test-job.json", "").await;
+    let r = helpers::request(
+        &app,
+        Method::GET,
+        "/output-bucket/transcripts/test-job.json",
+        "",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("transcript"));
 }
@@ -45,9 +64,14 @@ async fn start_and_get_transcription_job() {
 #[tokio::test]
 async fn get_nonexistent_job_returns_404() {
     let app = app();
-    let r = transcribe_request(&app, "GetTranscriptionJob", r#"{
+    let r = transcribe_request(
+        &app,
+        "GetTranscriptionJob",
+        r#"{
         "TranscriptionJobName": "nope"
-    }"#).await;
+    }"#,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
 }
 
@@ -56,21 +80,36 @@ async fn delete_transcription_job() {
     let app = app();
     helpers::request(&app, Method::PUT, "/del-bucket", "").await;
 
-    transcribe_request(&app, "StartTranscriptionJob", r#"{
+    transcribe_request(
+        &app,
+        "StartTranscriptionJob",
+        r#"{
         "TranscriptionJobName": "del-job",
         "Media": {"MediaFileUri": "s3://x/y"},
         "LanguageCode": "en-US",
         "OutputBucketName": "del-bucket",
         "OutputKey": "out.json"
-    }"#).await;
+    }"#,
+    )
+    .await;
 
-    let r = transcribe_request(&app, "DeleteTranscriptionJob", r#"{
+    let r = transcribe_request(
+        &app,
+        "DeleteTranscriptionJob",
+        r#"{
         "TranscriptionJobName": "del-job"
-    }"#).await;
+    }"#,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
 
-    let r = transcribe_request(&app, "GetTranscriptionJob", r#"{
+    let r = transcribe_request(
+        &app,
+        "GetTranscriptionJob",
+        r#"{
         "TranscriptionJobName": "del-job"
-    }"#).await;
+    }"#,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
 }

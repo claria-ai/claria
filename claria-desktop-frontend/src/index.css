@@ -1,6 +1,19 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Pulse a settings row after a Preferences search hit scrolls to it. */
+@keyframes pref-flash-pulse {
+  0%,
+  100% {
+    background-color: transparent;
+  }
+  35% {
+    background-color: var(--color-blue-100);
+  }
+}
+.pref-flash {
+  border-radius: 0.5rem;
+  animation: pref-flash-pulse 0.9s ease-in-out 2;
 /* ---------------------------------------------------------------------------
  * Distraction mode: sock drop + Lucia
  *

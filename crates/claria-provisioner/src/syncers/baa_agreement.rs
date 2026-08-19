@@ -1,9 +1,11 @@
 use aws_sdk_artifact::types::CustomerAgreementState;
 use serde_json::json;
 
-use crate::error::ProvisionerError;
-use crate::manifest::ResourceSpec;
-use crate::syncer::{BoxFuture, ResourceSyncer};
+use crate::{
+    error::ProvisionerError,
+    manifest::ResourceSpec,
+    syncer::{BoxFuture, ResourceSyncer},
+};
 
 pub struct BaaAgreementSyncer {
     spec: ResourceSpec,
@@ -32,9 +34,7 @@ impl ResourceSyncer for BaaAgreementSyncer {
                 .send()
                 .await
                 .map_err(|e| {
-                    ProvisionerError::Aws(format!(
-                        "artifact:ListCustomerAgreements failed: {e}"
-                    ))
+                    ProvisionerError::Aws(format!("artifact:ListCustomerAgreements failed: {e}"))
                 })?;
 
             for agreement in resp.customer_agreements() {
@@ -64,10 +64,7 @@ impl ResourceSyncer for BaaAgreementSyncer {
 
     fn current_state(&self, actual: &serde_json::Value) -> serde_json::Value {
         // read() returns {state, agreement_name, effective_start} — only compare state
-        let state = actual
-            .get("state")
-            .cloned()
-            .unwrap_or(json!("unknown"));
+        let state = actual.get("state").cloned().unwrap_or(json!("unknown"));
         json!({"state": state})
     }
 

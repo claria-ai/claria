@@ -87,15 +87,19 @@ use aws_sdk_bedrock::types::{
     FoundationModelLifecycleStatus, InferenceProfileStatus, InferenceProfileType,
 };
 use aws_sdk_bedrockruntime::types::{
-    CachePointBlock, CachePointType, ContentBlock, ConversationRole, ConverseTokensRequest,
-    Message, SystemContentBlock,
+    ContentBlock, ConversationRole, ConverseTokensRequest, InferenceConfiguration, Message,
+    StopReason, SystemContentBlock,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use claria_core::models::turn_usage::TurnUsage;
+use claria_core::model_id::CacheTtlChoice;
 
-use crate::{error::BedrockError, tokens};
+use crate::{
+    converse::{StopSignal, StreamCollector, StreamOutcome},
+    error::BedrockError,
+    pacing::{DeltaPacer, StreamPacing},
+};
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -108,20 +112,9 @@ pub struct ChatModel {
     pub name: String,
 }
 
-/// A single message in a conversation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: ChatRole,
-    pub content: String,
-}
-
-/// Role of a chat message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatRole {
-    User,
-    Assistant,
-}
+// The conversation-turn types are claria-core domain types; re-exported here
+// so Bedrock callers keep their `chat::ChatMessage` paths.
+pub use claria_core::models::chat_history::{ChatMessage, ChatRole};
 
 // ── Model discovery ──────────────────────────────────────────────────────────
 
@@ -216,16 +209,12 @@ async fn fetch_active_foundation_models(
                 .unwrap_or(false);
             // Skip context-window variants like `:48k`, `:200k`.
             let is_variant = id.rsplit_once(':').is_some_and(|(_, suffix)| {
-                suffix.chars().next().is_some_and(|c| c.is_ascii_digit())
-                    && suffix != "0"
+                suffix.chars().next().is_some_and(|c| c.is_ascii_digit()) && suffix != "0"
             });
             is_claude && is_active && !is_variant
         })
         .map(|m| {
-            let name = m
-                .model_name()
-                .unwrap_or(m.model_id())
-                .to_string();
+            let name = m.model_name().unwrap_or(m.model_id()).to_string();
             (m.model_id().to_string(), name)
         })
         .collect();
@@ -272,55 +261,91 @@ async fn fetch_us_inference_profiles(
     Ok(map)
 }
 
-/// Strip a scope prefix (e.g. `us.`, `global.`, `eu.`) from an inference
-/// profile ID to get the bare foundation model ID. If the ID is already a bare
-/// foundation model ID (starts with a provider like `anthropic.`), returns it
-/// unchanged.
-fn strip_scope_prefix(id: &str) -> &str {
-    if let Some((prefix, rest)) = id.split_once('.') {
-        // Scope prefixes are short region tags; provider names contain letters
-        // and are longer. A simple heuristic: scope prefixes are ≤6 chars and
-        // all-lowercase-alpha (e.g. "us", "eu", "global").
-        let is_scope = prefix.len() <= 6 && prefix.chars().all(|c| c.is_ascii_lowercase());
-        if is_scope && rest.contains('.') {
-            return rest;
-        }
-    }
-    id
-}
-
 // ── Chat conversation ────────────────────────────────────────────────────────
 
-/// Strategy for placing a Bedrock prompt-cache `cachePoint` block on the
-/// system prefix.
+/// Output-token ceiling for every chat Converse call. The input budget below
+/// is derived from this reserve — the two must move together.
 ///
-/// Phase 2 places a single `CachePoint` after the system block when the
-/// estimated prefix is large enough and the model family supports caching.
-/// The 5-min TTL is the only TTL Sonnet 4 / Opus 4 support per AWS docs;
-/// the 1h TTL is gated to the 4.5 generation (out of scope here).
+/// Matched to the writer's reserve deliberately: clinicians draft
+/// report-length sections here to carry into Word, and a long clinical
+/// section runs to roughly 25k tokens. The 8k this used to sit at is the
+/// same ceiling that measurably degraded the writer before v0.24, and it
+/// truncated for the same reason. The input budget it leaves — the model's
+/// window minus this reserve — is what the writer has run on since.
+pub const CHAT_MAX_OUTPUT_TOKENS: u32 = 32_768;
+
+/// The request-family label chat's budget, usage, and stream failures carry.
+/// A fixed operation name, never derived from user input, and the same
+/// string in the logs and in the error a reader is shown.
+pub(crate) const CHAT_OPERATION: &str = "chat";
+
+/// Appended to a chat reply that hit [`CHAT_MAX_OUTPUT_TOKENS`] before
+/// finishing. The partial answer is kept — it already streamed to the
+/// reader — and this says why it stops where it does.
+pub const CHAT_TRUNCATED_NOTICE: &str = "Claria note: the assistant reached its \
+response-length limit, so this reply was cut short. Ask it to continue if you need the rest.";
+
+/// Input-token budget for a chat request against `model_id`: the model's
+/// context window minus the [`CHAT_MAX_OUTPUT_TOKENS`] output reserve.
+pub fn chat_input_token_budget(model_id: &str) -> u32 {
+    claria_core::model_id::ModelCapabilities::for_id(model_id)
+        .context_window_tokens
+        .saturating_sub(CHAT_MAX_OUTPUT_TOKENS)
+}
+
+/// Strategy for placing Bedrock prompt-cache `cachePoint` blocks on a chat
+/// request: one after the system prefix and one at the conversation tail,
+/// so the next turn re-reads the whole history from cache.
+///
+/// `ttl` selects the cache tier for every cache point in the request —
+/// Bedrock rejects mixed TTLs, so one choice covers both markers. The
+/// 1-hour TTL is gated on the central capability table
+/// (`supports_extended_cache_ttl`); callers on unsupported families fall
+/// back to `FiveMinutes` silently.
 #[derive(Debug, Clone, Copy)]
 pub struct CacheStrategy {
     /// Whether prompt caching is enabled at all (config-flag controlled).
     pub enabled: bool,
-    /// Minimum estimated prefix tokens before we emit a `cachePoint`.
-    /// Default `1200` — Bedrock's 1,024-token floor plus 18% slack for
-    /// tokenizer estimate error.
-    pub min_prefix_tokens: u32,
-    /// Whether the model family is known to support prompt caching.
-    /// `claria-bedrock` does not maintain this catalogue itself; the
-    /// caller (claria-desktop) decides based on the configured model.
+    /// Whether the model family is known to support prompt caching, read
+    /// from the capability table the strategy was built against.
     pub model_supports_caching: bool,
+    /// TTL applied to every cache point this strategy emits. `FiveMinutes`
+    /// is the server default and stays off the wire.
+    pub ttl: CacheTtlChoice,
+    /// Estimated-token floor a prefix must clear before a `cachePoint` is
+    /// worth emitting: this model's real
+    /// [`min_cache_prefix_tokens`](claria_core::model_id::ModelCapabilities::min_cache_prefix_tokens)
+    /// with [`CacheStrategy::PREFIX_ESTIMATE_SLACK_PERCENT`] applied.
+    pub min_prefix_tokens: u32,
 }
 
 impl CacheStrategy {
-    /// Default — caching ON with a 1,200-token floor. The caller still
-    /// has to set `model_supports_caching` to `true` for the model to
-    /// actually receive a cache point.
-    pub fn enabled() -> Self {
+    /// Slack applied to the model's real cacheable-prefix floor before it is
+    /// compared against the ~4-chars-per-token estimate, as a percentage.
+    ///
+    /// The estimate can undercount, and a `cachePoint` under the real floor
+    /// caches nothing while still looking placed, so the gate asks for 18%
+    /// more than the floor before emitting one. That is the same margin the
+    /// old fixed 1,200-token gate carried over the 1,024-token minimum it
+    /// assumed for every model.
+    pub const PREFIX_ESTIMATE_SLACK_PERCENT: u32 = 118;
+
+    /// Caching ON for a model the capability table describes, with `ttl` on
+    /// every cache point. Both the caching-support gate and the per-model
+    /// prefix floor come from `capabilities`, so the two cannot disagree
+    /// about which model the strategy is for.
+    pub fn enabled_for_model(
+        capabilities: claria_core::model_id::ModelCapabilities,
+        ttl: CacheTtlChoice,
+    ) -> Self {
         Self {
             enabled: true,
-            min_prefix_tokens: 1200,
-            model_supports_caching: false,
+            model_supports_caching: capabilities.prompt_caching,
+            ttl,
+            min_prefix_tokens: capabilities
+                .min_cache_prefix_tokens
+                .saturating_mul(Self::PREFIX_ESTIMATE_SLACK_PERCENT)
+                / 100,
         }
     }
 
@@ -328,17 +353,20 @@ impl CacheStrategy {
     pub fn disabled() -> Self {
         Self {
             enabled: false,
-            min_prefix_tokens: 1200,
             model_supports_caching: false,
+            ttl: CacheTtlChoice::FiveMinutes,
+            // A floor nothing clears, so the gate stays closed even if the
+            // flags above were flipped without rebuilding the strategy.
+            min_prefix_tokens: u32::MAX,
         }
     }
 
     /// Whether to emit a `cachePoint` after the system prefix.
     ///
     /// Uses a cheap char-based estimate of `len/4 ≈ tokens` (English/code/
-    /// XML averages). If the estimate falls below `min_prefix_tokens` we
-    /// skip the marker — Bedrock would silently no-op anyway and the log
-    /// line is confusing.
+    /// XML averages). If the estimate falls below
+    /// [`Self::min_prefix_tokens`] we skip the marker — Bedrock would
+    /// silently no-op anyway and the log line is confusing.
     pub fn cache_system_prefix(&self, system_prompt: &str) -> bool {
         if !self.enabled || !self.model_supports_caching {
             return false;
@@ -346,30 +374,203 @@ impl CacheStrategy {
         let est_tokens = (system_prompt.len() / 4) as u32;
         est_tokens >= self.min_prefix_tokens
     }
+
+    /// Whether to emit a `cachePoint` at the conversation tail so the next
+    /// turn reads the full history from cache.
+    ///
+    /// Same estimate and floor as [`Self::cache_system_prefix`], but over
+    /// everything ahead of the tail marker — system prefix plus every
+    /// message — since that whole span is what Bedrock would cache.
+    pub fn cache_conversation_tail(&self, system_prompt: &str, messages: &[ChatMessage]) -> bool {
+        if !self.enabled || !self.model_supports_caching {
+            return false;
+        }
+        let chars = system_prompt.len()
+            + messages
+                .iter()
+                .map(|message| message.content.len())
+                .sum::<usize>();
+        (chars / 4) as u32 >= self.min_prefix_tokens
+    }
 }
 
-/// Send a multi-turn conversation to Bedrock and return the assistant's
-/// reply along with per-turn token usage.
+/// Caching off unless a caller opts in, so a default-constructed
+/// [`ChatStreamOptions`] cannot silently start writing cache entries.
+impl Default for CacheStrategy {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+/// How a streamed chat turn runs, as distinct from what it says.
 ///
-/// The caller provides the full message history, a system prompt, and a
-/// [`CacheStrategy`] controlling placement of the Bedrock `cachePoint`
-/// block. This is the shared implementation used by the desktop chat
-/// command.
+/// Groups the provider-side knobs with the two reader-facing controls —
+/// how often text is released, and how the reader ends the turn early — so
+/// adding either does not lengthen the call's argument list.
+#[derive(Debug, Clone, Default)]
+pub struct ChatStreamOptions {
+    /// Placement of Bedrock `cachePoint` blocks on the request.
+    pub cache_strategy: CacheStrategy,
+    /// Opt-in per-request model tuning, already gated by the caller.
+    pub tuning: crate::converse::ModelTuning,
+    /// Cadence at which accumulated text reaches `on_delta`.
+    pub pacing: StreamPacing,
+    /// Fired by the reader's Stop button; a default signal never fires.
+    pub stop: StopSignal,
+}
+
+/// Send a multi-turn conversation to Bedrock via `ConverseStream`, forwarding
+/// assistant text to `on_delta` at the cadence
+/// [`ChatStreamOptions::pacing`] asks for.
 ///
-/// Returns a `(String, TurnUsage)` tuple. If the Bedrock response carries
-/// no `usage` block (shouldn't happen on Converse, but the SDK type is
-/// `Option`), the returned `TurnUsage` has zero token counts and zero cost.
-// Timing span logs model id and turn count — never prompt or message text,
-// which may hold PHI.
+/// The caller provides the full message history, a system prompt, and the
+/// stream options. The complete accumulated text, wire stop reason, and usage
+/// (from the trailing `metadata` event, `None` preserved when the service
+/// omitted it) come back in the returned [`StreamOutcome`]. Truncation and
+/// context overflow are typed errors, exactly as on the unary flows.
+///
+/// Stopping is not an error: the stream is dropped where it stands, the text
+/// that arrived is returned, and the stop reason is
+/// [`crate::converse::STOPPED_BY_USER`].
+///
+/// This is chat's only Bedrock path — chat is the one surface that renders
+/// incrementally. Extraction, translation, and the report writer keep their
+/// unary Converse calls.
+// Timing span logs model id and turn count — never prompt, message, or
+// delta text, which may hold PHI.
 #[tracing::instrument(level = "trace", skip_all, fields(model_id = %model_id, turns = messages.len()))]
-pub async fn chat_converse(
+pub async fn chat_converse_stream<F>(
     config: &aws_config::SdkConfig,
     model_id: &str,
     system_prompt: &str,
     messages: &[ChatMessage],
+    options: ChatStreamOptions,
+    mut on_delta: F,
+) -> Result<StreamOutcome, BedrockError>
+where
+    F: FnMut(&str),
+{
+    let client = crate::converse::runtime_client(config);
+    let (converse_messages, system_blocks, cache_ttl) = prepare_chat_request(
+        config,
+        &client,
+        model_id,
+        system_prompt,
+        messages,
+        options.cache_strategy,
+    )
+    .await?;
+
+    let started = std::time::Instant::now();
+    let response = crate::converse::start_converse_stream(
+        CHAT_OPERATION,
+        crate::converse::StreamBounds::conversational(),
+        client
+            .converse_stream()
+            .model_id(model_id)
+            .set_system(Some(system_blocks))
+            .set_messages(Some(converse_messages))
+            .inference_config(
+                InferenceConfiguration::builder()
+                    .max_tokens(CHAT_MAX_OUTPUT_TOKENS as i32)
+                    .set_temperature(options.tuning.temperature)
+                    .build(),
+            )
+            .set_additional_model_request_fields(crate::converse::additional_request_fields(
+                options.tuning,
+            )?)
+            .send(),
+    )
+    .await?;
+
+    let mut stream = response.stream;
+    let mut collector = StreamCollector::new();
+    let mut pacer = DeltaPacer::new(options.pacing);
+    let stopped = loop {
+        let event = tokio::select! {
+            biased;
+            () = options.stop.stopped() => break true,
+            event = crate::converse::recv_stream_event(
+                CHAT_OPERATION,
+                crate::converse::StreamBounds::conversational(),
+                &mut stream,
+            ) => event?,
+        };
+        let Some(event) = event else { break false };
+        if let Some(delta) = collector.absorb(event)
+            && let Some(chunk) = pacer.push(&delta)
+        {
+            on_delta(&chunk);
+        }
+    };
+
+    let mut outcome = if stopped {
+        // Dropping the stream closes the connection, so the model stops
+        // generating tokens the reader has already said they don't want.
+        drop(stream);
+        tracing::info!(model_id, "chat stream stopped by the reader");
+        collector.finish_stopped(model_id, cache_ttl)
+    } else {
+        collector.finish(model_id, CHAT_MAX_OUTPUT_TOKENS, cache_ttl)?
+    };
+    // The reader has already watched the partial answer arrive, so the notice
+    // rides the same delta channel as the rest of it — the live view and the
+    // persisted history end up with identical text.
+    if outcome.stop_reason == StopReason::MaxTokens.as_str() {
+        let notice = format!("\n\n{CHAT_TRUNCATED_NOTICE}");
+        if let Some(chunk) = pacer.push(&notice) {
+            on_delta(&chunk);
+        }
+        outcome.text.push_str(&notice);
+    }
+    if let Some(remainder) = pacer.flush() {
+        on_delta(&remainder);
+    }
+    outcome.latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    crate::converse::log_turn_usage(
+        CHAT_OPERATION,
+        model_id,
+        outcome.usage.as_ref(),
+        Some(&outcome.stop_reason),
+        outcome.latency_ms,
+        CHAT_MAX_OUTPUT_TOKENS,
+    );
+    Ok(outcome)
+}
+
+/// Bound the conversation, build the Converse message list and system
+/// blocks, and enforce the input budget. The returned [`CacheTtlChoice`] is
+/// the TTL carried by the request's cache points (`None` when the request
+/// went out uncached), for usage capture.
+async fn prepare_chat_request(
+    config: &aws_config::SdkConfig,
+    client: &aws_sdk_bedrockruntime::Client,
+    model_id: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
     cache_strategy: CacheStrategy,
-) -> Result<(String, TurnUsage), BedrockError> {
-    let client = aws_sdk_bedrockruntime::Client::new(config);
+) -> Result<
+    (
+        Vec<Message>,
+        Vec<SystemContentBlock>,
+        Option<CacheTtlChoice>,
+    ),
+    BedrockError,
+> {
+    // Bound the replayed conversation before anything else reads it, so the
+    // token estimate, the CountTokens call, the cache gates, and the wire
+    // request all describe the same history. Applied here rather than at
+    // each call site: this is the only path to Bedrock that chat has, and a
+    // caller that forgot would silently re-upload an unbounded history.
+    let submitted_messages = messages.len();
+    let messages = claria_core::models::chat_history::bounded_chat_history(messages);
+    if messages.len() < submitted_messages {
+        info!(
+            submitted_messages,
+            retained_messages = messages.len(),
+            "chat history bounded before the Bedrock request"
+        );
+    }
 
     let mut converse_messages: Vec<Message> = Vec::new();
 
@@ -386,79 +587,65 @@ pub async fn chat_converse(
         converse_messages.push(message);
     }
 
-    // Build the system block — single Text today, Text + CachePoint when
-    // caching is active and the prefix is large enough.
-    let system_blocks: Vec<SystemContentBlock> =
-        if cache_strategy.cache_system_prefix(system_prompt) {
-            let cache_block = CachePointBlock::builder()
-                .r#type(CachePointType::Default)
-                .build()
-                .map_err(|e| BedrockError::Invocation(e.to_string()))?;
-            vec![
-                SystemContentBlock::Text(system_prompt.to_string()),
-                SystemContentBlock::CachePoint(cache_block),
-            ]
-        } else {
-            vec![SystemContentBlock::Text(system_prompt.to_string())]
-        };
-
-    let response = client
-        .converse()
-        .model_id(model_id)
-        .set_system(Some(system_blocks))
-        .set_messages(Some(converse_messages))
-        .send()
-        .await
-        .map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(model_id, error = %msg, "Bedrock Converse call failed");
-            BedrockError::Invocation(msg)
-        })?;
-
-    let output_message = response
-        .output()
-        .and_then(|o| o.as_message().ok())
-        .ok_or_else(|| BedrockError::ResponseParse("no message in response".to_string()))?;
-
-    let response_text = output_message
-        .content()
-        .iter()
-        .filter_map(|block| {
-            if let ContentBlock::Text(text) = block {
-                Some(text.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
-    let usage = match response.usage() {
-        Some(u) => tokens::extract_turn_usage(u, model_id),
-        None => tokens::empty_turn_usage(model_id),
-    };
-
-    // Emit a structured tracing event for cache observability. `hit_rate`
-    // is the fraction of input tokens served from cache this turn.
-    let total_input =
-        usage.input_tokens + usage.cache_read_input_tokens + usage.cache_write_input_tokens;
-    let hit_rate = if total_input > 0 {
-        usage.cache_read_input_tokens as f64 / total_input as f64
-    } else {
-        0.0
-    };
-    tracing::info!(
-        target: "claria_bedrock::cache",
+    // Input budget: the same estimate-then-verify logic as the report path.
+    // The conversation is estimated at ~4 chars/token; a real CountTokens
+    // call runs only once the estimate comes within ~10% of the budget, and
+    // overflow surfaces as the friendly context-window error instead of a
+    // raw AWS string. Runs before cache points are attached — they do not
+    // change the token count and stay out of the CountTokens request.
+    let current_chars = system_prompt.len() as u64
+        + messages
+            .iter()
+            .map(|message| message.content.len() as u64)
+            .sum::<u64>();
+    let input_budget_tokens = chat_input_token_budget(model_id);
+    crate::converse::log_model_budget(
+        CHAT_OPERATION,
         model_id,
-        input_tokens = usage.input_tokens,
-        cache_read = usage.cache_read_input_tokens,
-        cache_write = usage.cache_write_input_tokens,
-        hit_rate,
-        cost_usd = usage.cost_usd,
-        "chat turn complete"
+        input_budget_tokens,
+        CHAT_MAX_OUTPUT_TOKENS,
     );
+    let mut budget = crate::converse::InputTokenBudget::estimated(input_budget_tokens);
+    budget
+        .ensure_within(
+            current_chars,
+            || async {
+                let bare_model_id = counting_model(config).await?;
+                let request = ConverseTokensRequest::builder()
+                    .set_messages(Some(converse_messages.clone()))
+                    .system(SystemContentBlock::Text(system_prompt.to_string()))
+                    .build();
+                crate::converse::count_input_tokens(client, bare_model_id, request).await
+            },
+            |_, _| BedrockError::ContextWindowExceeded,
+        )
+        .await?;
 
-    Ok((response_text, usage))
+    // Cache placement: one point after the system prefix, one at the
+    // conversation tail so the next turn reads the whole history from
+    // cache. Both carry the strategy's TTL — Bedrock rejects mixed TTLs in
+    // one request — and the two markers stay well under Bedrock's cache
+    // point limit.
+    let cache_system = cache_strategy.cache_system_prefix(system_prompt);
+    let cache_tail = cache_strategy.cache_conversation_tail(system_prompt, messages);
+    let ttl = crate::converse::sdk_cache_ttl(cache_strategy.ttl);
+
+    let system_blocks: Vec<SystemContentBlock> = if cache_system {
+        vec![
+            SystemContentBlock::Text(system_prompt.to_string()),
+            SystemContentBlock::CachePoint(crate::converse::cache_point(ttl.clone())?),
+        ]
+    } else {
+        vec![SystemContentBlock::Text(system_prompt.to_string())]
+    };
+    let converse_messages = if cache_tail {
+        crate::converse::with_tail_cache_point(converse_messages, ttl)?
+    } else {
+        converse_messages
+    };
+
+    let applied_ttl = (cache_system || cache_tail).then_some(cache_strategy.ttl);
+    Ok((converse_messages, system_blocks, applied_ttl))
 }
 
 // ── Token counting ───────────────────────────────────────────────────────────
@@ -466,14 +653,13 @@ pub async fn chat_converse(
 /// Model ID used for the `CountTokens` API, resolved once per process.
 static COUNTING_MODEL: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
 
-/// Resolve the model to count tokens against: the newest available Haiku.
+/// Resolve the model to count tokens against: the newest available Haiku,
+/// chosen by `claria_core::model_id::preferred_counting_model` (release-date
+/// stamp ordering across both naming shapes).
 ///
 /// Not every model supports `CountTokens` (e.g. Fable rejects it with a
 /// ValidationException), so counting never uses the chat model. Haiku has
-/// reliably supported the API across generations; "newest" is decided by
-/// the release date stamp embedded in the model ID, which orders correctly
-/// across both naming shapes (`claude-3-5-haiku-20241022`,
-/// `claude-haiku-4-5-20251001`).
+/// reliably supported the API across generations.
 pub(crate) async fn counting_model(
     config: &aws_config::SdkConfig,
 ) -> Result<&'static str, BedrockError> {
@@ -481,39 +667,15 @@ pub(crate) async fn counting_model(
         .get_or_try_init(|| async {
             let client = aws_sdk_bedrock::Client::new(config);
             let models = fetch_active_foundation_models(&client).await?;
-            models
-                .into_iter()
-                .map(|(model_id, _)| model_id)
-                .filter(|id| id.contains("haiku"))
-                .max_by_key(|id| release_date_stamp(id))
-                .ok_or_else(|| {
-                    BedrockError::Invocation(
-                        "no Haiku model available for token counting".to_string(),
-                    )
-                })
+            claria_core::model_id::preferred_counting_model(
+                models.into_iter().map(|(model_id, _)| model_id),
+            )
+            .ok_or_else(|| {
+                BedrockError::Invocation("no Haiku model available for token counting".to_string())
+            })
         })
         .await
         .map(String::as_str)
-}
-
-/// The 8-digit release date stamp embedded in a foundation model ID
-/// (`anthropic.claude-haiku-4-5-20251001-v1:0` → 20251001), or 0 if absent.
-fn release_date_stamp(model_id: &str) -> u32 {
-    let bytes = model_id.as_bytes();
-    let mut run = 0;
-    // Iterate one past the end so a trailing digit run is still checked.
-    for i in 0..=bytes.len() {
-        if i < bytes.len() && bytes[i].is_ascii_digit() {
-            run += 1;
-        } else {
-            // Exactly 8 digits is a date stamp; shorter runs are version numbers.
-            if run == 8 {
-                return model_id[i - 8..i].parse().unwrap_or(0);
-            }
-            run = 0;
-        }
-    }
-    0
 }
 
 /// Count the input tokens for a context (system prompt) before the user sends
@@ -530,7 +692,7 @@ pub async fn count_context_tokens(
     config: &aws_config::SdkConfig,
     system_prompt: &str,
 ) -> Result<u32, BedrockError> {
-    let client = aws_sdk_bedrockruntime::Client::new(config);
+    let client = crate::converse::runtime_client(config);
 
     // CountTokens requires a bare foundation model ID, not an inference
     // profile ID; `counting_model` returns bare IDs from the foundation
@@ -549,21 +711,8 @@ pub async fn count_context_tokens(
         .system(SystemContentBlock::Text(system_prompt.to_string()))
         .build();
 
-    let response = client
-        .count_tokens()
-        .model_id(bare_model_id)
-        .input(
-            aws_sdk_bedrockruntime::types::CountTokensInput::Converse(converse_input),
-        )
-        .send()
-        .await
-        .map_err(|e| {
-            let err = e.into_service_error().to_string();
-            tracing::warn!(bare_model_id, error = %err, "CountTokens failed");
-            BedrockError::Invocation(err)
-        })?;
-
-    let tokens = response.input_tokens() as u32;
+    let tokens =
+        crate::converse::count_input_tokens(&client, bare_model_id, converse_input).await?;
     info!(bare_model_id, tokens, "context token count complete");
     Ok(tokens)
 }
@@ -655,7 +804,7 @@ pub async fn accept_all_model_agreements(
     let mut seen_bare_ids = std::collections::HashSet::new();
 
     for model in &models {
-        let bare_id = strip_scope_prefix(&model.model_id);
+        let bare_id = claria_core::model_id::strip_scope_prefix(&model.model_id);
 
         if !seen_bare_ids.insert(bare_id.to_string()) {
             continue;

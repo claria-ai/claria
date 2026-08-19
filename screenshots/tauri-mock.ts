@@ -25,6 +25,7 @@ export function buildInitScript(overrides: Record<string, unknown> = {}): string
       },
       invoke: async function(cmd, args) {
         const fixtures = ${fixturesJson};
+        if (cmd === "log_frontend_event") return null;
         if (cmd === "plugin:app|version") {
           return "0.11.0";
         }
@@ -50,6 +51,10 @@ export function buildInitScript(overrides: Record<string, unknown> = {}): string
           if (key in fixtures) return fixtures[key];
         }
         if (cmd === "get_file_version_text" && args?.versionId) {
+          const key = cmd + ":" + args.versionId;
+          if (key in fixtures) return fixtures[key];
+        }
+        if (cmd === "get_preferences_version" && args?.versionId) {
           const key = cmd + ":" + args.versionId;
           if (key in fixtures) return fixtures[key];
         }

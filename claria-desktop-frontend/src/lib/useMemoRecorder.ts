@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createTextRecordFile,
-  getWhisperModels,
+  getLocalTranscriptionStatus,
   transcribeMemo,
-  type WhisperModelInfo,
 } from "./tauri";
 import { float32ToBase64, mergePcmChunks, resampleTo16kHz } from "./audio";
+import { logFrontendEvent } from "./logBridge";
 
 export type MemoState =
   | "idle"
@@ -25,7 +25,7 @@ export type MemoState =
  * see them.
  *
  * The transcript is deliberately re-derived from the *whole* buffer on every
- * pass rather than appended to. Whisper's output for a longer window can
+ * pass rather than appended to. Local model output for a longer window can
  * revise earlier words, so a running concatenation would freeze mistakes in
  * place; re-running the full buffer costs more but reads correctly, and the
  * user only ever sees the latest full pass.
@@ -45,7 +45,7 @@ export function useMemoRecorder({
   /** Called after a memo is written, so the caller can refresh its file list. */
   onSaved: () => Promise<void> | void;
 }) {
-  // Whether a Whisper model is installed, plus what it can do. Read once.
+  // Whether the selected local speech model is installed, plus what it can do.
   const [ready, setReady] = useState(false);
   const [multilingual, setMultilingual] = useState(false);
   const [gpu, setGpu] = useState(false);
@@ -122,20 +122,27 @@ export function useMemoRecorder({
     onSavedRef.current = onSaved;
   });
 
-  // Check if a Whisper model is active. `cancelled` keeps a slow round-trip
+  // Check the transcribe.cpp runtime once. `cancelled` keeps a slow round-trip
   // from writing into a recorder that has already gone away.
   useEffect(() => {
     let cancelled = false;
-    getWhisperModels()
-      .then((models: WhisperModelInfo[]) => {
+    getLocalTranscriptionStatus()
+      .then((status) => {
         if (cancelled) return;
-        const active = models.find((m) => m.active);
+        const active = status.models.find(
+          (model) => model.active && model.downloaded,
+        );
         setReady(!!active);
-        setMultilingual(active ? active.tier !== "base_en" : false);
-        setGpu(active ? active.gpu_accelerated : false);
-        setModelLabel(active ? active.dir_name : "");
+        setMultilingual(active?.languages.includes("multilingual") ?? false);
+        setGpu(status.accelerated);
+        setModelLabel(active?.label ?? "");
       })
-      .catch(() => {
+      .catch((reason) => {
+        // Recording stays hidden, but the reason is reported.
+        logFrontendEvent(
+          "warn",
+          `Local transcription status unavailable: ${reason}`
+        );
         if (!cancelled) setReady(false);
       });
     return () => {
@@ -161,6 +168,7 @@ export function useMemoRecorder({
       const result = await transcribeMemo(base64);
       if (!mountedRef.current) return;
       setTranscript(result.text);
+      setGpu(isGpuBackend(result.backend));
       if (result.language) {
         setDetectedLanguage(result.language);
       }
@@ -339,6 +347,14 @@ export function useMemoRecorder({
     cancel,
     save,
   };
+}
+
+/** Classify the resolved transcribe.cpp backend/device label. */
+export function isGpuBackend(backend: string): boolean {
+  const normalized = backend.toLowerCase();
+  return ["metal", "mtl", "vulkan", "cuda", "rocm", "hip"].some((kind) =>
+    normalized.includes(kind),
+  );
 }
 
 /** `YYYYMMDD-HHMM` stamp used to seed the review modal's filename. */

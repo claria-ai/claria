@@ -3,6 +3,7 @@
 //! Pure string functions — no AWS SDK dependency. These define the canonical
 //! layout of objects in the Claria S3 bucket.
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// The one bucket Claria stores everything in, for a given AWS account and
@@ -42,6 +43,64 @@ pub fn is_hidden_sidecar(key: &str, keys: &std::collections::HashSet<&str>) -> b
         .is_some_and(|base| keys.contains(base))
 }
 
+/// A user-visible record file resolved against the sidecar rules, produced by
+/// [`visible_record_files`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisibleRecordFile {
+    /// Path relative to the `records/{uuid}/` prefix.
+    pub filename: String,
+    /// Index into the input `keys` slice of the file itself.
+    pub base_index: usize,
+    /// Index into the input `keys` slice of the object holding the file's
+    /// readable text: its `.text` sidecar when one exists, otherwise the file
+    /// itself.
+    pub source_index: usize,
+}
+
+/// The one implementation of the record visibility rules, applied to a
+/// complete `records/{uuid}/` listing:
+///
+/// - Chat history under `chat-history/` is not a record file.
+/// - A `.text` sidecar is hidden while its base file exists (and is a visible
+///   file of its own when the base is gone) — see [`is_hidden_sidecar`].
+/// - Each visible file's readable text comes from its `.text` sidecar when
+///   one exists, otherwise from the file itself.
+///
+/// `keys` must be the full listing under `prefix`; callers with S3 access
+/// should go through `claria_records::record_inventory`, which walks the
+/// bucket and applies this rule.
+pub fn visible_record_files(prefix: &str, keys: &[&str]) -> Vec<VisibleRecordFile> {
+    let index_by_key: std::collections::HashMap<&str, usize> = keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| (*key, index))
+        .collect();
+    let key_set: std::collections::HashSet<&str> = keys.iter().copied().collect();
+
+    keys.iter()
+        .enumerate()
+        .filter_map(|(base_index, key)| {
+            let filename = key.strip_prefix(prefix)?;
+            if filename.is_empty() || filename.starts_with("chat-history/") {
+                return None;
+            }
+            if is_hidden_sidecar(key, &key_set) {
+                return None;
+            }
+            let sidecar_key = format!("{key}.text");
+            let source_index = index_by_key
+                .get(sidecar_key.as_str())
+                .copied()
+                .unwrap_or(base_index);
+            Some(VisibleRecordFile {
+                filename: filename.to_string(),
+                base_index,
+                source_index,
+            })
+        })
+        .collect()
+}
+
 pub fn client_record_file(id: Uuid, filename: &str) -> String {
     format!("records/{id}/{filename}")
 }
@@ -63,9 +122,51 @@ pub fn report_authoring_client_prefix(client_id: Uuid) -> String {
     format!("{REPORT_AUTHORING_PREFIX}{client_id}/")
 }
 
+/// Legacy singleton writer workspace key. Existing installations may still
+/// have one session here; new sessions use [`report_session_workspace`].
 pub fn report_workspace(client_id: Uuid) -> String {
     format!(
         "{}workspace.json",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
+pub fn report_sessions_prefix(client_id: Uuid) -> String {
+    format!("{}sessions/", report_authoring_client_prefix(client_id))
+}
+
+/// One independently resumable Writing session, analogous to a saved chat.
+pub fn report_session_workspace(client_id: Uuid, report_id: Uuid) -> String {
+    format!("{}{report_id}.json", report_sessions_prefix(client_id))
+}
+
+/// Every drafting run recorded for one Writing session.
+///
+/// Runs nest under [`report_authoring_client_prefix`], the prefix the client
+/// delete/restore lifecycle already sweeps, so they follow their client
+/// without any separate lifecycle wiring.
+pub fn report_draft_runs_prefix(client_id: Uuid, report_id: Uuid) -> String {
+    format!(
+        "{}runs/{report_id}/",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
+/// One resumable drafting run. The object is rewritten after every section the
+/// writer lands, so its version history is long and is never listed by the UI.
+pub fn report_draft_run(client_id: Uuid, report_id: Uuid, run_id: Uuid) -> String {
+    format!(
+        "{}{run_id}.json",
+        report_draft_runs_prefix(client_id, report_id)
+    )
+}
+
+/// Every review finding recorded against one Writing session, in one object.
+/// It sits under the client prefix so the client delete/restore lifecycle
+/// sweeps it along with the workspace it describes.
+pub fn report_findings(client_id: Uuid, report_id: Uuid) -> String {
+    format!(
+        "{}findings/{report_id}.json",
         report_authoring_client_prefix(client_id)
     )
 }
@@ -84,6 +185,27 @@ pub fn report_call_usage(client_id: Uuid, attempt_id: Uuid, call_number: u32) ->
     )
 }
 
+pub fn report_template_source(client_id: Uuid, source_sha256: &str) -> String {
+    format!(
+        "{}templates/{source_sha256}.docx",
+        report_authoring_client_prefix(client_id)
+    )
+}
+
+pub const WRITER_TEMPLATES_PREFIX: &str = "writer_templates/";
+
+pub fn writer_template_docx(template_id: Uuid) -> String {
+    format!("{WRITER_TEMPLATES_PREFIX}{template_id}.docx")
+}
+
+pub fn writer_template_metadata(template_id: Uuid) -> String {
+    format!("{WRITER_TEMPLATES_PREFIX}{template_id}.json")
+}
+
+pub fn writer_template_usage(template_id: Uuid) -> String {
+    format!("{WRITER_TEMPLATES_PREFIX}{template_id}.usage.json")
+}
+
 pub fn client_lifecycle(client_id: Uuid) -> String {
     format!("_state/client-lifecycle/{client_id}.json")
 }
@@ -94,9 +216,23 @@ pub const SYSTEM_PROMPT: &str = "claria-prompts/system-prompt.md";
 
 pub const EXTRACTION_PROMPT: &str = "claria-prompts/pdf-extraction.md";
 
+/// Customized body of the writer's targeted-edit system prompt.
+pub const REPORT_SYSTEM_PROMPT: &str = "claria-prompts/report-system-prompt.md";
+
+/// Customized body of the writer's whole-document system prompt.
+pub const FULL_REPORT_SYSTEM_PROMPT: &str = "claria-prompts/full-report-system-prompt.md";
+
 /// Legacy key for the system prompt before the `claria-prompts/` migration.
 /// Used as a read fallback so existing buckets keep working.
 pub const LEGACY_SYSTEM_PROMPT: &str = "system-prompt.md";
+
+/// Reusable writer steering prompts the user picks to prefill an
+/// instruction, one JSON object per prompt.
+pub const WRITER_PROMPT_LIBRARY_PREFIX: &str = "claria-prompts/writer-library/";
+
+pub fn writer_library_prompt(prompt_id: Uuid) -> String {
+    format!("{WRITER_PROMPT_LIBRARY_PREFIX}{prompt_id}.json")
+}
 
 pub const PROVISIONER_STATE: &str = "_state/provisioner.json";
 
@@ -107,6 +243,29 @@ pub fn transcribe_output(job_name: &str) -> String {
 }
 
 pub const PREFERENCES: &str = "_state/preferences.json";
+
+/// A PHI-safe rendering of an S3 key (or listing prefix) for log fields.
+///
+/// Client-chosen record filenames can identify a person, so anything after
+/// `records/{uuid}/` collapses to `<file>` (keeping a `.text` sidecar suffix
+/// for debuggability) — except the `chat-history/` folder, whose entries are
+/// UUID-named and therefore safe. Every other layout in the bucket is
+/// app-generated (UUIDs, hashes, fixed names) and passes through unchanged.
+pub fn log_safe_key(key: &str) -> String {
+    let mut parts = key.splitn(3, '/');
+    if parts.next() == Some("records")
+        && let Some(client_segment) = parts.next()
+        && let Some(rest) = parts.next()
+        && !rest.is_empty()
+        && !rest.starts_with("chat-history/")
+    {
+        if rest.ends_with(".text") {
+            return format!("records/{client_segment}/<file>.text");
+        }
+        return format!("records/{client_segment}/<file>");
+    }
+    key.to_string()
+}
 
 // ── Application audit trail ─────────────────────────────────────────────────
 

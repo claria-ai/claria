@@ -1,10 +1,31 @@
 import type { ReactNode } from "react";
 import Spinner from "./Spinner";
 
-export function ErrorBanner({ message }: { message: string }) {
+export function ErrorBanner({
+  message,
+  onRetry,
+  retryLabel = "Try again",
+  className = "mb-6",
+}: {
+  message: string;
+  /** Renders a retry button under the message. */
+  onRetry?: () => void;
+  retryLabel?: string;
+  /** Margin/positioning classes appended to the card. */
+  className?: string;
+}) {
   return (
-    <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+    <div className={`bg-red-50 border border-red-200 rounded-lg p-4 ${className}`}>
       <p className="text-red-800 text-sm">{message}</p>
+      {onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-2 px-3 py-1.5 text-sm text-red-700 border border-red-300 rounded-lg hover:bg-red-100 transition-colors"
+        >
+          {retryLabel}
+        </button>
+      )}
     </div>
   );
 }

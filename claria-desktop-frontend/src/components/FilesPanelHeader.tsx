@@ -29,7 +29,7 @@ export default function FilesPanelHeader({
   onCloseSearch: () => void;
   moreMode: boolean;
   onToggleMoreMode: () => void;
-  /** A Whisper model is installed and no recording is in progress. */
+  /** A local speech model is installed and no recording is in progress. */
   showRecordMemo: boolean;
   onRecordMemo: () => void;
   onUploadAudio: () => void;

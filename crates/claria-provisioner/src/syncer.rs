@@ -1,11 +1,11 @@
-use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
+use std::{collections::HashSet, future::Future, pin::Pin};
 
 use serde_json::Value;
 
-use crate::error::ProvisionerError;
-use crate::manifest::{FieldDrift, ResourceSpec};
+use crate::{
+    error::ProvisionerError,
+    manifest::{FieldDrift, ResourceSpec},
+};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 

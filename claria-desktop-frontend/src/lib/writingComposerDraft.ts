@@ -1,4 +1,4 @@
-import type { ReportBlockView } from "./tauri";
+import type { ReportBlock } from "./tauri";
 
 export type WritingBlockReference = {
   kind: "paragraph" | "table";
@@ -14,26 +14,33 @@ export type WritingComposerDraft = {
 };
 
 // Composer drafts can contain PHI, so keep them in process memory rather than
-// localStorage. They survive tab/page navigation but disappear when Claria
-// closes.
+// localStorage. They are scoped to one Writing session, survive navigation,
+// and disappear when Claria closes.
 const drafts = new Map<string, WritingComposerDraft>();
 
+function draftKey(clientId: string, reportId: string): string {
+  return `${clientId}:${reportId}`;
+}
+
 export function readWritingComposerDraft(
-  clientId: string
+  clientId: string,
+  reportId: string
 ): WritingComposerDraft | null {
-  const draft = drafts.get(clientId);
+  const draft = drafts.get(draftKey(clientId, reportId));
   return draft ? cloneDraft(draft) : null;
 }
 
 export function writeWritingComposerDraft(
   clientId: string,
+  reportId: string,
   draft: WritingComposerDraft
 ): void {
+  const key = draftKey(clientId, reportId);
   if (draft.instruction === "" && draft.references.length === 0) {
-    drafts.delete(clientId);
+    drafts.delete(key);
     return;
   }
-  drafts.set(clientId, cloneDraft(draft));
+  drafts.set(key, cloneDraft(draft));
 }
 
 export function clearWritingComposerDrafts(): void {
@@ -41,8 +48,8 @@ export function clearWritingComposerDrafts(): void {
 }
 
 type ReferenceableReportBlock =
-  | Extract<ReportBlockView, { kind: "paragraph" }>
-  | Extract<ReportBlockView, { kind: "table" }>;
+  | Extract<ReportBlock, { kind: "paragraph" }>
+  | Extract<ReportBlock, { kind: "table" }>;
 
 export function reportBlockReferencePreview(
   block: ReferenceableReportBlock

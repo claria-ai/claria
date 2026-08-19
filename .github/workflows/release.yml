@@ -40,7 +40,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: claria-desktop-frontend
-        run: npm ci
+        run: npm ci --no-fund
 
       - name: Build frontend
         working-directory: claria-desktop-frontend
@@ -56,12 +56,12 @@ jobs:
       # Must produce the same cargo fingerprints as tauri-action's `tauri build` below, or tag
       # builds recompile instead of hitting this cache: `tauri build` always enables
       # tauri/custom-protocol and, on macOS, exports MACOSX_DEPLOYMENT_TARGET from
-      # bundle.macOS.minimumSystemVersion (default 10.13) — cc-rs build scripts track that env
-      # var, so a mismatch rebuilds every native dep and its dependents (~60 crates, ~4 min).
+      # bundle.macOS.minimumSystemVersion — cc-rs build scripts track that env var, so a mismatch
+      # rebuilds every native dep and its dependents (~60 crates, ~4 min).
       - name: Build (warm cache)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         env:
-          MACOSX_DEPLOYMENT_TARGET: "10.13" # inert on Windows
+          MACOSX_DEPLOYMENT_TARGET: "11.0" # matches tauri.conf.json; inert on Windows
         run: cargo build --release -p claria-desktop --features tauri/custom-protocol ${{ matrix.args }}
 
       # --- Build & Release (tags only) ---
@@ -75,20 +75,107 @@ jobs:
             /^## \[/ { if (found) exit; if (index($0, "## [" ver "]") == 1) { found=1; next } }
             found
           ' CHANGELOG.md)
-          echo "body<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$BODY" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
+      # tauri-action is pinned by commit SHA, not by the floating `@v0` tag, so an
+      # upstream release can't change how a tagged build is produced. This SHA is
+      # what `@v0` already resolved to, so the pin is behaviourally a no-op today.
+      #
+      # `tauriScript` pins the Tauri CLI. Left to itself the action falls through to
+      # `npm install -g @tauri-apps/cli@v2` — a floating major against a Rust side
+      # pinned to `tauri = "=2.11.5"`. It has no input for the CLI version, and it
+      # only looks for a local `@tauri-apps/cli` in `<projectPath>/package.json`,
+      # which for a Rust crate directory does not exist; a devDependency in
+      # claria-desktop-frontend is never consulted. Overriding the runner command is
+      # the only lever it offers. `npx` rather than `npm exec` because the action
+      # injects a literal `--` into the arguments when the runner binary is `npm`.
+      #
+      # 2.11.4 is the newest published CLI: the CLI and the `tauri` crate are not
+      # released in lockstep, and there is no 2.11.5 on npm.
       - name: Build and release
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/claria-desktop
+          tauriScript: npx --yes @tauri-apps/cli@2.11.4
           tagName: ${{ github.ref_name }}
           releaseName: "Claria ${{ github.ref_name }}"
           releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+  update_release_site:
+    name: Update release site
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    needs: build
+    runs-on: macos-latest
+    concurrency:
+      group: claria-release-site
+      cancel-in-progress: false
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: screenshots/.nvmrc
+          cache: npm
+          cache-dependency-path: |
+            claria-desktop-frontend/package-lock.json
+            screenshots/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: claria-desktop-frontend
+        run: npm ci --no-fund
+
+      - name: Install screenshot dependencies
+        working-directory: screenshots
+        run: npm ci --no-fund
+
+      - name: Install Chromium
+        working-directory: screenshots
+        run: npx playwright install chromium
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install site generator dependencies
+        run: python -m pip install --disable-pip-version-check "jinja2==3.1.6" "pyyaml==6.0.2"
+
+      - name: Checkout release site
+        uses: actions/checkout@v4
+        with:
+          repository: claria-ai/claria-ai.github.io
+          token: ${{ secrets.CLARIA_SITE_TOKEN }}
+          ref: main
+          path: release-site
+
+      - name: Regenerate release site
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./screenshots/update_release_site.py "$GITHUB_REF_NAME" --site "$GITHUB_WORKSPACE/release-site"
+
+      - name: Commit and push release site
+        working-directory: release-site
+        run: |
+          git config user.name "claria-release[bot]"
+          git config user.email "claria-release@users.noreply.github.com"
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "release site is already current"
+            exit 0
+          fi
+          git add -A
+          git commit -m "chore: point downloads at Claria $GITHUB_REF_NAME"
+          git push origin HEAD:main

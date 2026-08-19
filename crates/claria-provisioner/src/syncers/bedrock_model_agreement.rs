@@ -1,11 +1,15 @@
-use aws_sdk_bedrock::Client;
-use aws_sdk_bedrock::types::{AgreementAvailability, EntitlementAvailability};
+use aws_sdk_bedrock::{
+    Client,
+    types::{AgreementAvailability, EntitlementAvailability},
+};
 use aws_smithy_types::error::display::DisplayErrorContext;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::error::ProvisionerError;
-use crate::manifest::ResourceSpec;
-use crate::syncer::{BoxFuture, ResourceSyncer};
+use crate::{
+    error::ProvisionerError,
+    manifest::ResourceSpec,
+    syncer::{BoxFuture, ResourceSyncer},
+};
 
 /// Check whether a model ID is a context-window variant (e.g. `:48k`, `:200k`).
 fn is_context_window_variant(model_id: &str) -> bool {
@@ -68,8 +72,10 @@ impl BedrockModelAgreementSyncer {
                 .await
             {
                 Ok(resp) => {
-                    if matches!(resp.entitlement_availability(), EntitlementAvailability::Available)
-                    {
+                    if matches!(
+                        resp.entitlement_availability(),
+                        EntitlementAvailability::Available
+                    ) {
                         invokable.push(model_id);
                     } else {
                         let reason = describe_block(
@@ -202,9 +208,7 @@ fn describe_block(
     agreement: Option<&AgreementAvailability>,
     entitlement: &EntitlementAvailability,
 ) -> String {
-    let agreement_status = agreement
-        .map(|a| a.status().as_str())
-        .unwrap_or("absent");
+    let agreement_status = agreement.map(|a| a.status().as_str()).unwrap_or("absent");
     match agreement_status {
         "AVAILABLE" => {
             "marketplace agreement available — click Apply to accept automatically".into()

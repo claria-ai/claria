@@ -19,10 +19,7 @@
 //! deletes the S3 artifacts and the Transcribe job record. Pass `--keep` to
 //! leave them in S3.
 
-use std::collections::BTreeMap;
-use std::error::Error;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{collections::BTreeMap, error::Error, path::PathBuf, time::Duration};
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::primitives::ByteStream;
@@ -71,7 +68,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let s3 = aws_sdk_s3::Client::new(&config);
     let transcribe = aws_sdk_transcribe::Client::new(&config);
 
-    eprintln!("→ uploading {} to s3://{bucket}/{audio_key}", audio_path.display());
+    eprintln!(
+        "→ uploading {} to s3://{bucket}/{audio_key}",
+        audio_path.display()
+    );
     let bytes = std::fs::read(&audio_path)?;
     s3.put_object()
         .bucket(&bucket)
@@ -184,9 +184,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Parsed segments via the production parser
-    let result = claria_transcribe::parse_transcribe_json(&json_str)
-        .map_err(|e| format!("parse: {e}"))?;
-    println!("\n=== Parsed segments ({} speakers, {} segments) ===",
+    let result =
+        claria_transcribe::parse_transcribe_json(&json_str).map_err(|e| format!("parse: {e}"))?;
+    println!(
+        "\n=== Parsed segments ({} speakers, {} segments) ===",
         result.speakers.len(),
         result.segments.len()
     );
@@ -208,8 +209,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if !keep {
         eprintln!("\n→ cleaning up S3 artifacts (pass --keep to retain)");
-        let _ = s3.delete_object().bucket(&bucket).key(&audio_key).send().await;
-        let _ = s3.delete_object().bucket(&bucket).key(&output_key).send().await;
+        let _ = s3
+            .delete_object()
+            .bucket(&bucket)
+            .key(&audio_key)
+            .send()
+            .await;
+        let _ = s3
+            .delete_object()
+            .bucket(&bucket)
+            .key(&output_key)
+            .send()
+            .await;
         let _ = transcribe
             .delete_transcription_job()
             .transcription_job_name(&job_name)

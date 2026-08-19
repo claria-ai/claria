@@ -8,7 +8,7 @@ Claria is a desktop app that connects directly to your own AWS cloud storage. Th
 
 - **Client records** — create and manage client files with drag-and-drop uploads (PDFs, documents, audio)
 - **AI assistant** — chat with Claude about a client's records to help draft reports, summarize notes, or ask clinical questions
-- **Audio transcription** — drop in a session recording and get an automatic text transcript
+- **Audio transcription** — import session recordings through Amazon Transcribe, while Record Memo runs privately on-device with transcribe.cpp
 - **Version history** — every change to every file is preserved; compare versions side-by-side and restore previous versions or accidentally deleted files
 - **Full-text search** — search across all your records instantly
 - **Guided setup** — Claria walks you through creating your AWS account, setting up security, and getting started
@@ -45,9 +45,10 @@ nvm install --lts        # any OS — nvm
 ```sh
 # macOS
 xcode-select --install   # Xcode Command Line Tools (if not already installed)
+brew install cmake       # builds the bundled transcribe.cpp runtime
 
 # Ubuntu / Debian
-sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+sudo apt install cmake libwebkit2gtk-4.1-dev build-essential libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 
 ### Running locally

@@ -2,8 +2,10 @@ use std::path::PathBuf;
 
 use aws_sdk_s3::Client as S3Client;
 
-use crate::error::ProvisionerError;
-use crate::state::{migrate_state_v1_to_v2, ProvisionerState};
+use crate::{
+    error::ProvisionerError,
+    state::{ProvisionerState, migrate_state_v1_to_v2},
+};
 
 /// Dual-write state persistence: local disk (safety net) + S3 (authoritative).
 pub struct StatePersistence {
@@ -30,8 +32,7 @@ impl StatePersistence {
         tracing::debug!(path = %self.local_path.display(), "state flushed to local disk");
 
         // 2. Upload to S3
-        match claria_storage::state::save_state(&self.s3, &self.bucket, &self.s3_key, state).await
-        {
+        match claria_storage::state::save_state(&self.s3, &self.bucket, &self.s3_key, state).await {
             Ok(_) => {
                 tracing::debug!(
                     bucket = %self.bucket,
@@ -124,19 +125,14 @@ impl StatePersistence {
 
     /// Try loading state from S3 with migration fallback.
     async fn load_from_s3(&self) -> Result<ProvisionerState, LoadError> {
-        let output = match claria_storage::objects::get_object(
-            &self.s3,
-            &self.bucket,
-            &self.s3_key,
-        )
-        .await
-        {
-            Ok(o) => o,
-            Err(claria_storage::error::StorageError::NotFound { .. }) => {
-                return Err(LoadError::NotFound);
-            }
-            Err(e) => return Err(LoadError::Other(e.to_string())),
-        };
+        let output =
+            match claria_storage::objects::get_object(&self.s3, &self.bucket, &self.s3_key).await {
+                Ok(o) => o,
+                Err(claria_storage::error::StorageError::NotFound { .. }) => {
+                    return Err(LoadError::NotFound);
+                }
+                Err(e) => return Err(LoadError::Other(e.to_string())),
+            };
 
         let bytes = &output.body;
 
@@ -156,11 +152,11 @@ impl StatePersistence {
         }
 
         // Slow path: parse as raw JSON, migrate, retry.
-        let raw: serde_json::Value = serde_json::from_slice(bytes)
-            .map_err(|e| LoadError::Incompatible(e.to_string()))?;
+        let raw: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|e| LoadError::Incompatible(e.to_string()))?;
         let migrated = migrate_state_v1_to_v2(raw);
-        let state: ProvisionerState = serde_json::from_value(migrated)
-            .map_err(|e| LoadError::Incompatible(e.to_string()))?;
+        let state: ProvisionerState =
+            serde_json::from_value(migrated).map_err(|e| LoadError::Incompatible(e.to_string()))?;
 
         tracing::info!("migrated S3 state from v1 to v2, flushing back");
         if let Err(e) = self.flush(&state).await {
@@ -192,11 +188,11 @@ impl StatePersistence {
         }
 
         // Slow path: parse as raw JSON, migrate, retry.
-        let raw: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|e| LoadError::Incompatible(e.to_string()))?;
+        let raw: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| LoadError::Incompatible(e.to_string()))?;
         let migrated = migrate_state_v1_to_v2(raw);
-        let state: ProvisionerState = serde_json::from_value(migrated)
-            .map_err(|e| LoadError::Incompatible(e.to_string()))?;
+        let state: ProvisionerState =
+            serde_json::from_value(migrated).map_err(|e| LoadError::Incompatible(e.to_string()))?;
 
         tracing::info!(path = %self.local_path.display(), "migrated local state from v1 to v2");
         // Note: we don't flush here — load_from_s3 handles the authoritative write.

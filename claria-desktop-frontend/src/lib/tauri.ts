@@ -12,19 +12,33 @@ import { Channel } from "@tauri-apps/api/core";
 import { commands } from "./bindings";
 import type {
   ChatHistoryDetail,
+  ChatHistorySummary,
   ChatMessage,
-  ConsoleEntry,
+  ChatStreamEvent,
+  CompletionReport,
+  ConfigInfo,
+  ConsoleDelta,
   CostAndUsageResult,
   CostGranularity,
   CredentialClass,
+  CredentialInput,
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  DraftRun,
   EditorHistoryEntry,
   FileVersion,
+  FindingAction,
+  FullReportGenerationResponse,
   InfraChatResponse,
+  LocalModelId,
+  LocalTranscriptionSettings,
+  LocalTranscriptionStatus,
+  ModelDownloadProgress,
   ModelPricing,
   PlanEntry,
+  PlanEntryEdit,
+  PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
   ProvisionerProgress,
@@ -32,17 +46,22 @@ import type {
   RecordFile,
   ReportBlockReferenceInput,
   ReportDraftEdit,
+  ReportDraft,
   ReportExportResult,
-  ReportProposalDecision,
+  ReportFindings,
+  ReportFindingResolution,
+  ReportProposalChoice,
+  ReportRevisionView,
   ReportTemplatePreview,
+  ReportTurnProgressView,
   ReportTurnResponse,
   ReportWorkspaceView,
   TranscribeMemoResult,
   TranscribeOptionsOverrides,
-  TranscriptionPreferences,
   UpdateCheck,
-  WhisperModelInfo,
-  WhisperModelTier,
+  WriterPrompt,
+  WriterTemplateView,
+  WriterTrustRules,
 } from "./bindings";
 
 export { commands };
@@ -50,76 +69,128 @@ export type {
   AccessKeyInfo,
   AccessKeyLimitReached,
   Action,
-  AssumeRoleResult,
-  BootstrapResult,
+  AssumedRoleSession,
+  BootstrapOutcome,
   BootstrapStep,
   CallerIdentity,
   Cause,
   CredentialScope,
   ChatHistoryDetail,
   ChatHistoryDetailMessage,
+  ChatHistorySummary,
   ChatMessage,
   ChatModel,
   ChatResponse,
   ChatRole,
+  ChatStreamEvent,
+  ChatStreamMode,
   ClientNameHistoryEntry,
   ClientNameUpdate,
   ClientRecordDetails,
   ClientSummary,
+  CacheTtlChoice,
+  CompletionCheck,
+  CompletionCheckKind,
+  CompletionReport,
   ConfigInfo,
+  ConsoleDelta,
   ConsoleEntry,
+  ConflictingRef,
   CredentialAssessment,
   CredentialClass,
+  CredentialInput,
   CredentialSource,
   DeletedClient,
   DeletedFile,
+  DraftPipelinePreferences,
+  DraftPlanEntry,
+  DraftRun,
+  DraftRunStatus,
   EditorHistoryEntry,
+  EvidenceRef,
   FieldDrift,
   FileVersion,
+  Finding,
+  FindingAction,
+  FindingAnchor,
+  FindingStatus,
+  FullReportGenerationResponse,
   InfraChatResponse,
   Lifecycle,
+  LocalBackend,
+  LocalBackendInfo,
+  LocalComputeDevice,
+  LocalKvPrecision,
+  LocalModelId,
+  LocalModelInfo,
+  LocalTranscriptionSettings,
+  LocalTranscriptionStatus,
+  ModelDownloadProgress,
   ModelPricing,
-  NewCredentials,
+  NewCredentialsInfo,
   PlanEntry,
+  PlanEntryEdit,
+  PlanGateMode,
+  PreferencesPatch,
   ProvisionApplyOutcome,
   ProvisionScanResult,
   ProvisionerProgress,
+  RecordCitation,
   RecordContext,
   RecordFile,
+  ReportAuthoringPreferences,
   ReportAuthoringTurnView,
   ReportBlockReferenceInput,
-  ReportBlockView,
-  ReportContentView,
+  ReportBlock,
+  ReportContent,
+  ReportContextFileView,
   ReportContextReadView,
   ReportDraftEdit,
-  ReportDraftView,
+  ReportDraft,
   ReportExportResult,
-  ReportExportStatusView,
-  ReportExportView,
-  ReportOperationView,
+  ReportExportStatus,
+  ReportExport,
+  ReportFindings,
+  ReportFindingResolution,
+  ReportOperation,
+  ReportProposalChoice,
   ReportProposalDecision,
-  ReportProposalResolutionDecision,
-  ReportProposalResolutionView,
+  ReportProposalResolution,
   ReportProposalView,
+  ReportRevisionView,
   ReportSectionEdit,
   ReportTemplateImportView,
   ReportTemplatePreview,
   ReportTemplateStatsView,
   ReportTemplateWarningView,
-  ReportSectionView,
+  ReportSection,
   ReportTimelineItemView,
   ReportTimelineRole,
   ReportToolActivityStatus,
+  ReportTurnProgressView,
   ReportTurnResponse,
   ReportWorkspaceView,
   ResourceSpec,
+  ReviewCoverage,
+  ReviewPass,
+  RunInstruction,
+  RunPlan,
+  RunSection,
+  RunSectionState,
+  SectionIntent,
+  StyleProposal,
+  TextSpan,
   Severity,
   SpeakerMode,
   StepStatus,
+  EffortPreference,
+  ModelTuningPreferences,
   TranscribeOptionsOverrides,
   TranscriptionLanguage,
   TranscriptionPreferences,
   TurnUsage,
+  WriterTemplateView,
+  WriterTrustRules,
 } from "./bindings";
 export type { Result } from "./bindings";
 
@@ -154,27 +225,13 @@ export async function loadConfig() {
 }
 
 /**
- * Save the synced subset of preferences to both the local config file and
- * `_state/preferences.json` in S3. Throws on S3 write failure with the
- * "saved locally but cloud sync failed" prefix so callers can show a
- * partial-save state.
+ * Save one preferences section's fields. Absent patch fields are left
+ * untouched locally and in `_state/preferences.json`, so sections can't
+ * clobber each other. Throws on S3 write failure with the "saved locally
+ * but cloud sync failed" prefix so callers can show a partial-save state.
  */
-export async function savePreferences(
-  preferredModelId: string | null,
-  costExplorerEnabled: boolean,
-  hourlyCostData: boolean,
-  promptCachingEnabled: boolean,
-  transcription: TranscriptionPreferences
-) {
-  return unwrap(
-    await commands.savePreferences(
-      preferredModelId,
-      costExplorerEnabled,
-      hourlyCostData,
-      promptCachingEnabled,
-      transcription
-    )
-  );
+export async function savePreferencesPatch(patch: PreferencesPatch) {
+  return unwrap(await commands.savePreferencesPatch(patch));
 }
 
 /**
@@ -234,7 +291,7 @@ export async function deleteConfig(): Promise<void> {
 
 export async function assessCredentials(
   region: string,
-  credentials: CredentialSource
+  credentials: CredentialInput
 ) {
   return unwrap(await commands.assessCredentials(region, credentials));
 }
@@ -242,13 +299,14 @@ export async function assessCredentials(
 /**
  * Assume a role in an AWS sub-account using parent-account credentials.
  *
- * Returns temporary credentials (with session token) that can be fed into
- * `assessCredentials` and `bootstrapIamUser` to set up a dedicated IAM user
- * in the sub-account.
+ * Returns an `AssumedRoleSession`: the session's metadata plus an opaque
+ * handle that later provisioning calls pass as
+ * `{ type: "assumed_role", handle }` — the temporary secrets stay in the
+ * Rust backend and never reach the frontend.
  */
 export async function assumeRole(
   region: string,
-  credentials: CredentialSource,
+  credentials: CredentialInput,
   accountId: string,
   roleName: string
 ) {
@@ -283,7 +341,7 @@ export async function listAwsProfiles(): Promise<string[]> {
 
 export async function listUserAccessKeys(
   region: string,
-  credentials: CredentialSource
+  credentials: CredentialInput
 ) {
   return unwrap(
     await commands.listUserAccessKeys(region, credentials)
@@ -292,7 +350,7 @@ export async function listUserAccessKeys(
 
 export async function deleteUserAccessKey(
   region: string,
-  credentials: CredentialSource,
+  credentials: CredentialInput,
   accessKeyId: string
 ): Promise<void> {
   unwrap(
@@ -322,7 +380,7 @@ function progressChannel(
 export async function provisionScan(
   region: string,
   systemName: string,
-  credentials: CredentialSource,
+  credentials: CredentialInput,
   onProgress?: (p: ProvisionerProgress) => void
 ): Promise<ProvisionScanResult> {
   return unwrap(
@@ -338,8 +396,8 @@ export async function provisionScan(
 export async function provisionApply(
   region: string,
   systemName: string,
-  credentials: CredentialSource,
-  elevatedCredentials: CredentialSource | null,
+  credentials: CredentialInput,
+  elevatedCredentials: CredentialInput | null,
   onProgress?: (p: ProvisionerProgress) => void
 ): Promise<ProvisionApplyOutcome> {
   return unwrap(
@@ -368,8 +426,10 @@ export async function apply(
   return unwrap(await commands.apply(progressChannel(onProgress)));
 }
 
-export async function destroy(): Promise<void> {
-  unwrap(await commands.destroy());
+export async function destroy(
+  elevatedCredentials: CredentialInput
+): Promise<void> {
+  unwrap(await commands.destroy(elevatedCredentials));
 }
 
 export async function resetProvisionerState(): Promise<void> {
@@ -404,10 +464,18 @@ export async function deleteClient(clientId: string): Promise<void> {
 // Writing workspace wrappers
 // ---------------------------------------------------------------------------
 
-export async function loadReportWorkspace(
-  clientId: string
+export async function startReportWorkspace(
+  clientId: string,
+  reportId: string
 ): Promise<ReportWorkspaceView> {
-  return unwrap(await commands.loadReportWorkspace(clientId));
+  return unwrap(await commands.startReportWorkspace(clientId, reportId));
+}
+
+export async function loadReportWorkspace(
+  clientId: string,
+  reportId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.loadReportWorkspace(clientId, reportId));
 }
 
 export async function listEditorHistory(
@@ -416,29 +484,100 @@ export async function listEditorHistory(
   return unwrap(await commands.listEditorHistory(clientId));
 }
 
+export async function renameReportSession(
+  clientId: string,
+  reportId: string,
+  name: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.renameReportSession(clientId, reportId, name));
+}
+
+export async function listReportRevisions(
+  clientId: string,
+  reportId: string
+): Promise<ReportRevisionView[]> {
+  return unwrap(await commands.listReportRevisions(clientId, reportId));
+}
+
+export async function loadReportRevision(
+  clientId: string,
+  reportId: string,
+  revision: number
+): Promise<ReportDraft> {
+  return unwrap(await commands.loadReportRevision(clientId, reportId, revision));
+}
+
+export async function revertReportRevision(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number,
+  revision: number
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.revertReportRevision(
+      clientId,
+      reportId,
+      expectedRevision,
+      revision
+    )
+  );
+}
+
 export async function saveReportDraft(
   clientId: string,
+  reportId: string,
   expectedRevision: number,
   draft: ReportDraftEdit
 ): Promise<ReportWorkspaceView> {
   return unwrap(
-    await commands.saveReportDraft(clientId, expectedRevision, draft)
+    await commands.saveReportDraft(clientId, reportId, expectedRevision, draft)
   );
 }
 
-export async function pickReportTemplateDocx(
-  clientId: string
-): Promise<ReportTemplatePreview | null> {
-  return unwrap(await commands.pickReportTemplateDocx(clientId));
+export async function discardQueuedReportEdits(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number
+): Promise<ReportWorkspaceView> {
+  return unwrap(
+    await commands.discardQueuedReportEdits(clientId, reportId, expectedRevision)
+  );
+}
+
+export async function listWriterTemplates(): Promise<WriterTemplateView[]> {
+  return unwrap(await commands.listWriterTemplates());
+}
+
+export async function uploadWriterTemplate(): Promise<WriterTemplateView | null> {
+  return unwrap(await commands.uploadWriterTemplate());
+}
+
+export async function renameWriterTemplate(
+  templateId: string,
+  name: string
+): Promise<WriterTemplateView> {
+  return unwrap(await commands.renameWriterTemplate(templateId, name));
+}
+
+export async function deleteWriterTemplate(templateId: string): Promise<void> {
+  unwrap(await commands.deleteWriterTemplate(templateId));
+}
+
+export async function previewWriterTemplate(
+  clientId: string,
+  templateId: string
+): Promise<ReportTemplatePreview> {
+  return unwrap(await commands.previewWriterTemplate(clientId, templateId));
 }
 
 export async function applyReportTemplate(
   clientId: string,
+  reportId: string,
   expectedRevision: number,
   importId: string
 ): Promise<ReportWorkspaceView> {
   return unwrap(
-    await commands.applyReportTemplate(clientId, expectedRevision, importId)
+    await commands.applyReportTemplate(clientId, reportId, expectedRevision, importId)
   );
 }
 
@@ -448,46 +587,253 @@ export async function discardReportTemplatePreview(
   unwrap(await commands.discardReportTemplatePreview(importId));
 }
 
-export async function acknowledgeReportTemplateReview(
+/**
+ * Fill the whole report from every readable record. `streamId` is minted by
+ * the caller before invoking, so the run can be stopped mid-generation with
+ * {@link stopStream}; a stopped run keeps every section it had already saved.
+ */
+export async function generateFullReport(
   clientId: string,
   reportId: string,
-  expectedRevision: number
-): Promise<ReportWorkspaceView> {
+  expectedRevision: number,
+  modelId: string,
+  guidance: string,
+  streamId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<FullReportGenerationResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
   return unwrap(
-    await commands.acknowledgeReportTemplateReview(
+    await commands.generateFullReport(
       clientId,
       reportId,
-      expectedRevision
+      expectedRevision,
+      modelId,
+      guidance,
+      streamId,
+      channel
     )
   );
 }
 
+/**
+ * The drafting run the writer should reattach to, or `null` when this report
+ * has nothing resumable: no run owns the session, and no interrupted run still
+ * matches the current revision.
+ */
+export async function loadDraftRun(
+  clientId: string,
+  reportId: string
+): Promise<DraftRun | null> {
+  return unwrap(await commands.loadDraftRun(clientId, reportId));
+}
+
+/**
+ * Keep what an interrupted run wrote as a new revision. Sections it never
+ * finished are saved as skipped placeholders.
+ */
+export async function finalizePartialDraft(
+  clientId: string,
+  reportId: string,
+  runId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.finalizePartialDraft(clientId, reportId, runId));
+}
+
+/** Discard a drafting run. The report itself is left exactly as it is. */
+export async function abandonDraftRun(
+  clientId: string,
+  reportId: string,
+  runId: string
+): Promise<ReportWorkspaceView> {
+  return unwrap(await commands.abandonDraftRun(clientId, reportId, runId));
+}
+
+/**
+ * Plan a whole-report draft and leave it at the gate. The report is held by
+ * the returned run until the plan is started or the run is abandoned.
+ *
+ * `streamId` is minted by the caller before invoking, so the plan pass can be
+ * stopped with {@link stopStream}.
+ */
+export async function generateDraftPlan(
+  clientId: string,
+  reportId: string,
+  expectedRevision: number,
+  instructions: string,
+  streamId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<DraftRun> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.generateDraftPlan(
+      clientId,
+      reportId,
+      expectedRevision,
+      instructions,
+      streamId,
+      channel
+    )
+  );
+}
+
+/** Apply the clinician's gate edits to a plan waiting for approval. */
+export async function updateDraftPlan(
+  clientId: string,
+  reportId: string,
+  runId: string,
+  edits: PlanEntryEdit[]
+): Promise<DraftRun> {
+  return unwrap(
+    await commands.updateDraftPlan(clientId, reportId, runId, edits)
+  );
+}
+
+/**
+ * Approve the plan and draft the report it describes. `streamId` is minted by
+ * the caller before invoking, so the run can be stopped with
+ * {@link stopStream}; a stopped run keeps every section it had already saved.
+ */
+export async function startDraftRun(
+  clientId: string,
+  reportId: string,
+  runId: string,
+  modelId: string,
+  streamId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<FullReportGenerationResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.startDraftRun(
+      clientId,
+      reportId,
+      runId,
+      modelId,
+      streamId,
+      channel
+    )
+  );
+}
+
+/**
+ * Pick an interrupted drafting run back up. Passing instructions re-plans the
+ * run through the planning model first; passing none decides it in code.
+ *
+ * `streamId` is minted by the caller before invoking, so a resumed run can be
+ * stopped with {@link stopStream} exactly like the first attempt.
+ */
+export async function resumeDraftRun(
+  clientId: string,
+  reportId: string,
+  runId: string,
+  updatedInstructions: string | null,
+  modelId: string,
+  streamId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<FullReportGenerationResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.resumeDraftRun(
+      clientId,
+      reportId,
+      runId,
+      updatedInstructions,
+      modelId,
+      streamId,
+      channel
+    )
+  );
+}
+
+/**
+ * One targeted writer turn. `streamId` is minted by the caller before
+ * invoking, so the turn can be stopped with {@link stopStream}; a stopped
+ * turn changes nothing.
+ */
 export async function sendReportMessage(
   clientId: string,
+  reportId: string,
   expectedRevision: number,
   modelId: string,
   instruction: string,
-  references: ReportBlockReferenceInput[] = []
+  references: ReportBlockReferenceInput[],
+  streamId: string,
+  onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<ReportTurnResponse> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
   return unwrap(
     await commands.sendReportMessage(
       clientId,
+      reportId,
       expectedRevision,
       modelId,
       instruction,
-      references
+      references,
+      streamId,
+      channel
     )
   );
 }
 
 export async function resolveReportProposal(
   clientId: string,
+  reportId: string,
   proposalId: string,
-  decision: ReportProposalDecision
+  decision: ReportProposalChoice
 ): Promise<ReportWorkspaceView> {
   return unwrap(
-    await commands.resolveReportProposal(clientId, proposalId, decision)
+    await commands.resolveReportProposal(clientId, reportId, proposalId, decision)
   );
+}
+
+/**
+ * Review one accepted revision for every property at once. The seven passes
+ * run in parallel, so this resolves when the slowest of them does.
+ */
+export async function runReviewSweeps(
+  clientId: string,
+  reportId: string,
+  revision: number,
+  onProgress?: (progress: ReportTurnProgressView) => void
+): Promise<ReportFindings> {
+  const channel = new Channel<ReportTurnProgressView>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(
+    await commands.runReviewSweeps(clientId, reportId, revision, channel)
+  );
+}
+
+export async function listReportFindings(
+  clientId: string,
+  reportId: string
+): Promise<ReportFindings> {
+  return unwrap(await commands.listReportFindings(clientId, reportId));
+}
+
+export async function resolveReportFinding(
+  clientId: string,
+  reportId: string,
+  findingId: string,
+  action: FindingAction
+): Promise<ReportFindingResolution> {
+  return unwrap(
+    await commands.resolveReportFinding(clientId, reportId, findingId, action)
+  );
+}
+
+/**
+ * Answer the completion checklist for one report. Read-only, and decided
+ * entirely by code — no model is asked whether the report is finished.
+ */
+export async function evaluateReportCompletion(
+  clientId: string,
+  reportId: string
+): Promise<CompletionReport> {
+  return unwrap(await commands.evaluateReportCompletion(clientId, reportId));
 }
 
 export async function exportReportDocx(
@@ -548,24 +894,97 @@ export async function listChatModels() {
   return unwrap(await commands.listChatModels());
 }
 
-export async function chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId?: string | null, contextFilenames?: string[]) {
-  return unwrap(await commands.chatMessage(clientId, modelId, messages, chatId ?? null, contextFilenames ?? []));
+/**
+ * Streamed-response channel shared by the chat commands. Wire `onEvent` to
+ * receive incremental deltas; callers that omit it (tests, scripts) still
+ * get the complete response from the command's return value.
+ */
+function chatStreamChannel(
+  onEvent?: (event: ChatStreamEvent) => void
+): Channel<ChatStreamEvent> {
+  const channel = new Channel<ChatStreamEvent>();
+  if (onEvent) {
+    channel.onmessage = onEvent;
+  }
+  return channel;
+}
+
+export async function chatMessage(
+  clientId: string,
+  modelId: string,
+  messages: ChatMessage[],
+  streamId: string,
+  chatId?: string | null,
+  contextFilenames?: string[],
+  chatName?: string | null,
+  onEvent?: (event: ChatStreamEvent) => void
+) {
+  return unwrap(
+    await commands.chatMessage(
+      clientId,
+      modelId,
+      messages,
+      chatId ?? null,
+      chatName ?? null,
+      contextFilenames ?? [],
+      streamId,
+      chatStreamChannel(onEvent)
+    )
+  );
 }
 
 export async function infraChat(
   modelId: string,
   messages: ChatMessage[],
-  planEntries: PlanEntry[]
+  planEntries: PlanEntry[],
+  streamId: string,
+  onEvent?: (event: ChatStreamEvent) => void
 ): Promise<InfraChatResponse> {
-  return unwrap(await commands.infraChat(modelId, messages, planEntries));
+  return unwrap(
+    await commands.infraChat(
+      modelId,
+      messages,
+      planEntries,
+      streamId,
+      chatStreamChannel(onEvent)
+    )
+  );
+}
+
+/**
+ * End the in-flight stream identified by `streamId`: a chat reply, a writer
+ * turn, or a whole-report drafting run.
+ *
+ * What stopping keeps depends on what was running. A chat turn keeps whatever
+ * text arrived and returns normally with a `stopped_by_user` stop reason; a
+ * drafting run keeps every section it had already saved and comes back as a
+ * stopped run to pick back up. Safe to call for work that has already
+ * finished.
+ */
+export async function stopStream(streamId: string): Promise<void> {
+  unwrap(await commands.stopStream(streamId));
 }
 
 export async function acceptModelAgreement(modelId: string): Promise<void> {
   unwrap(await commands.acceptModelAgreement(modelId));
 }
 
+export async function listChatHistories(
+  clientId: string
+): Promise<ChatHistorySummary[]> {
+  return unwrap(await commands.listChatHistories(clientId));
+}
+
 export async function loadChatHistory(clientId: string, chatId: string): Promise<ChatHistoryDetail> {
   return unwrap(await commands.loadChatHistory(clientId, chatId));
+}
+
+export async function renameChatHistory(
+  clientId: string,
+  chatId: string,
+  name: string
+): Promise<ChatHistoryDetail> {
+  return unwrap(await commands.renameChatHistory(clientId, chatId, name));
 }
 
 // ---------------------------------------------------------------------------
@@ -577,11 +996,42 @@ export async function setPreferredModel(modelId: string | null): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Preferences file wrappers — export, import, and version history for
+// _state/preferences.json
+// ---------------------------------------------------------------------------
+
+/** Save the synced preferences file locally. Resolves false on cancel. */
+export async function exportPreferences(): Promise<boolean> {
+  return unwrap(await commands.exportPreferences());
+}
+
+/** Replace the synced preferences from a local export. Null on cancel. */
+export async function importPreferences(): Promise<ConfigInfo | null> {
+  return unwrap(await commands.importPreferences());
+}
+
+export async function listPreferencesVersions(): Promise<FileVersion[]> {
+  return unwrap(await commands.listPreferencesVersions());
+}
+
+export async function getPreferencesVersion(versionId: string): Promise<string> {
+  return unwrap(await commands.getPreferencesVersion(versionId));
+}
+
+export async function restorePreferencesVersion(versionId: string): Promise<void> {
+  unwrap(await commands.restorePreferencesVersion(versionId));
+}
+
+// ---------------------------------------------------------------------------
 // Prompt wrappers — generic CRUD for named prompts under claria-prompts/
 // ---------------------------------------------------------------------------
 
 export async function getPrompt(promptName: string): Promise<string> {
   return unwrap(await commands.getPrompt(promptName));
+}
+
+export async function getWriterTrustRules(): Promise<WriterTrustRules> {
+  return unwrap(await commands.getWriterTrustRules());
 }
 
 export async function savePrompt(promptName: string, content: string): Promise<void> {
@@ -605,6 +1055,29 @@ export async function restorePromptVersion(promptName: string, versionId: string
 }
 
 // ---------------------------------------------------------------------------
+// Writer prompt library wrappers — reusable steering prompts the user picks
+// to prefill a writer instruction
+// ---------------------------------------------------------------------------
+
+export type { WriterPrompt } from "./bindings";
+
+export async function listWriterLibraryPrompts(): Promise<WriterPrompt[]> {
+  return unwrap(await commands.listWriterLibraryPrompts());
+}
+
+export async function saveWriterLibraryPrompt(
+  promptId: string | null,
+  name: string,
+  body: string
+): Promise<WriterPrompt> {
+  return unwrap(await commands.saveWriterLibraryPrompt(promptId, name, body));
+}
+
+export async function deleteWriterLibraryPrompt(promptId: string): Promise<void> {
+  unwrap(await commands.deleteWriterLibraryPrompt(promptId));
+}
+
+// ---------------------------------------------------------------------------
 // Version history wrappers
 // ---------------------------------------------------------------------------
 
@@ -624,42 +1097,51 @@ export async function listDeletedFiles(clientId: string): Promise<DeletedFile[]>
   return unwrap(await commands.listDeletedFiles(clientId));
 }
 
-export async function restoreDeletedFile(clientId: string, filename: string, versionId: string): Promise<void> {
-  unwrap(await commands.restoreDeletedFile(clientId, filename, versionId));
+export async function restoreDeletedFile(clientId: string, filename: string): Promise<void> {
+  unwrap(await commands.restoreDeletedFile(clientId, filename));
 }
 
 export async function listDeletedClients(): Promise<DeletedClient[]> {
   return unwrap(await commands.listDeletedClients());
 }
 
-export async function restoreClient(clientId: string, versionId: string): Promise<void> {
-  unwrap(await commands.restoreClient(clientId, versionId));
+export async function restoreClient(clientId: string): Promise<void> {
+  unwrap(await commands.restoreClient(clientId));
 }
 
 // ---------------------------------------------------------------------------
-// Whisper model management + local transcription
+// transcribe.cpp model management + local transcription
 // ---------------------------------------------------------------------------
 
-export type { WhisperModelInfo, WhisperModelTier, TranscribeMemoResult, UpdateCheck } from "./bindings";
+export type { TranscribeMemoResult, UpdateCheck } from "./bindings";
 
-export async function getWhisperModels(): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.getWhisperModels());
+export async function getLocalTranscriptionStatus(): Promise<LocalTranscriptionStatus> {
+  return unwrap(await commands.getLocalTranscriptionStatus());
 }
 
-export async function downloadWhisperModel(tier: WhisperModelTier): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.downloadWhisperModel(tier));
+export async function saveLocalTranscriptionSettings(
+  settings: LocalTranscriptionSettings
+): Promise<LocalTranscriptionStatus> {
+  return unwrap(await commands.saveLocalTranscriptionSettings(settings));
 }
 
-export async function deleteWhisperModel(tier: WhisperModelTier): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.deleteWhisperModel(tier));
+export async function downloadLocalModel(
+  modelId: LocalModelId,
+  onProgress?: (progress: ModelDownloadProgress) => void
+): Promise<LocalTranscriptionStatus> {
+  const channel = new Channel<ModelDownloadProgress>();
+  if (onProgress) channel.onmessage = onProgress;
+  return unwrap(await commands.downloadLocalModel(modelId, channel));
 }
 
-export async function deleteWhisperModelDir(dirName: string): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.deleteWhisperModelDir(dirName));
+export async function deleteLocalModel(
+  modelId: LocalModelId
+): Promise<LocalTranscriptionStatus> {
+  return unwrap(await commands.deleteLocalModel(modelId));
 }
 
-export async function setActiveWhisperModel(tier: WhisperModelTier): Promise<WhisperModelInfo[]> {
-  return unwrap(await commands.setActiveWhisperModel(tier));
+export async function deleteLegacyTranscriptionModels(): Promise<LocalTranscriptionStatus> {
+  return unwrap(await commands.deleteLegacyTranscriptionModels());
 }
 
 export async function transcribeMemo(audioPcmBase64: string): Promise<TranscribeMemoResult> {
@@ -743,8 +1225,8 @@ export async function countInfraContextTokens(planEntries: PlanEntry[]): Promise
 // The console commands are infallible on the Rust side, so the bindings return
 // the value directly rather than a `Result` — nothing to unwrap.
 
-export async function getConsoleLogs(): Promise<ConsoleEntry[]> {
-  return await commands.getConsoleLogs();
+export async function getConsoleLogsSince(seq: number): Promise<ConsoleDelta> {
+  return await commands.getConsoleLogsSince(seq);
 }
 
 export async function getConsoleLogsText(): Promise<string> {
@@ -753,4 +1235,8 @@ export async function getConsoleLogsText(): Promise<string> {
 
 export async function saveConsoleLogs(): Promise<boolean> {
   return unwrap(await commands.saveConsoleLogs());
+}
+
+export async function revealLogFolder(): Promise<void> {
+  unwrap(await commands.revealLogFolder());
 }

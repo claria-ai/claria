@@ -1,9 +1,32 @@
-use aws_sdk_s3::{Client, presigning::PresigningConfig};
+use aws_sdk_s3::{
+    Client,
+    error::{DisplayErrorContext, SdkError},
+};
 use aws_smithy_types::byte_stream::ByteStream;
+use claria_core::s3_keys::log_safe_key;
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::error::StorageError;
+
+/// Max concurrent per-object S3 requests when fanning out over a listing.
+pub const S3_FETCH_CONCURRENCY: usize = 16;
+
+/// Flatten an S3 SDK failure into the message a `StorageError` variant
+/// carries. Service errors keep the service's own rendering; dispatch,
+/// timeout, and response-parse failures keep their full
+/// [`DisplayErrorContext`] chain instead of collapsing to "unhandled error".
+fn sdk_error_message<E, R>(error: &SdkError<E, R>) -> String
+where
+    E: std::error::Error + Send + Sync + 'static,
+    R: std::fmt::Debug,
+{
+    match error.as_service_error() {
+        Some(service_error) => service_error.to_string(),
+        None => DisplayErrorContext(error).to_string(),
+    }
+}
 
 /// Result of a GET operation, including the body and ETag.
 #[derive(Debug)]
@@ -13,14 +36,14 @@ pub struct GetObjectOutput {
     pub content_type: Option<String>,
 }
 
-// Timing spans below log S3 keys/prefixes (already visible in-app) plus byte
-// counts and elapsed_ms — never object contents, which may hold PHI.
+// Timing spans below log scrubbed key classes (see `log_safe_key` — client
+// filenames are PHI) plus byte counts and elapsed_ms — never object contents.
 
 /// Get an object from S3.
 #[tracing::instrument(
     level = "trace",
     skip_all,
-    fields(bucket = %bucket, key = %key, bytes = tracing::field::Empty)
+    fields(bucket = %bucket, key = %log_safe_key(key), bytes = tracing::field::Empty)
 )]
 pub async fn get_object(
     client: &Client,
@@ -57,15 +80,10 @@ async fn get_object_with_limit(
         .send()
         .await
         .map_err(|e| {
-            let err = e.into_service_error();
-            if err.is_no_such_key() {
-                StorageError::NotFound {
-                    key: key.to_string(),
-                }
+            if matches!(e.as_service_error(), Some(err) if err.is_no_such_key()) {
+                StorageError::NotFound { key: key.into() }
             } else {
-                let msg = err.to_string();
-                tracing::error!(bucket, key, error = %msg, "S3 GetObject failed");
-                StorageError::GetObject(msg)
+                StorageError::GetObject(sdk_error_message(&e))
             }
         })?;
 
@@ -73,7 +91,7 @@ async fn get_object_with_limit(
         let actual_bytes = u64::try_from(content_length).unwrap_or(u64::MAX);
         if actual_bytes > max_bytes {
             return Err(StorageError::ObjectTooLarge {
-                key: key.to_string(),
+                key: key.into(),
                 actual_bytes,
                 max_bytes,
             });
@@ -86,10 +104,7 @@ async fn get_object_with_limit(
         .body
         .collect()
         .await
-        .map_err(|e| {
-            tracing::error!(bucket, key, error = %e, "S3 GetObject body stream failed");
-            StorageError::GetObject(e.to_string())
-        })?
+        .map_err(|e| StorageError::GetObject(e.to_string()))?
         .into_bytes()
         .to_vec();
 
@@ -97,7 +112,7 @@ async fn get_object_with_limit(
         && body.len() as u64 > max_bytes
     {
         return Err(StorageError::ObjectTooLarge {
-            key: key.to_string(),
+            key: key.into(),
             actual_bytes: body.len() as u64,
             max_bytes,
         });
@@ -113,7 +128,7 @@ async fn get_object_with_limit(
 }
 
 /// Put an object to S3. Returns the new ETag.
-#[tracing::instrument(level = "trace", skip_all, fields(bucket = %bucket, key = %key, bytes = body.len()))]
+#[tracing::instrument(level = "trace", skip_all, fields(bucket = %bucket, key = %log_safe_key(key), bytes = body.len()))]
 pub async fn put_object(
     client: &Client,
     bucket: &str,
@@ -131,13 +146,117 @@ pub async fn put_object(
         req = req.content_type(ct);
     }
 
-    let resp = req.send().await.map_err(|e| {
-        let msg = e.into_service_error().to_string();
-        tracing::error!(bucket, key, error = %msg, "S3 PutObject failed");
-        StorageError::PutObject(msg)
-    })?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| StorageError::PutObject(sdk_error_message(&e)))?;
 
     Ok(resp.e_tag().unwrap_or_default().to_string())
+}
+
+/// Put an object streaming its body from a local file, so a user-sized
+/// upload is never buffered whole in memory. Returns the new ETag.
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(bucket = %bucket, key = %log_safe_key(key), bytes = tracing::field::Empty)
+)]
+pub async fn put_object_from_path(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    path: &std::path::Path,
+    content_type: Option<&str>,
+) -> Result<String, StorageError> {
+    let body = ByteStream::from_path(path)
+        .await
+        .map_err(|e| StorageError::PutObject(format!("failed to open the file to upload: {e}")))?;
+    if let Ok(metadata) = tokio::fs::metadata(path).await {
+        tracing::Span::current().record("bytes", metadata.len());
+    }
+
+    let mut req = client.put_object().bucket(bucket).key(key).body(body);
+
+    if let Some(ct) = content_type {
+        req = req.content_type(ct);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| StorageError::PutObject(sdk_error_message(&e)))?;
+
+    Ok(resp.e_tag().unwrap_or_default().to_string())
+}
+
+/// The precondition attached to a conditional PUT.
+enum PutCondition<'a> {
+    /// `If-None-Match: *` — succeed only when the key has no current object.
+    IfNoneMatch,
+    /// `If-Match: <etag>` — succeed only when the current object carries this
+    /// ETag (optimistic locking).
+    IfMatch(&'a str),
+}
+
+/// Put an object with a precondition, retrying transient conditional-request
+/// conflicts. Returns the new ETag.
+///
+/// S3 answers a failed precondition with 412, mapped to
+/// [`StorageError::PreconditionFailed`]. A 409 is a transient race between
+/// conditional evaluation and the write and is safe to retry with the same
+/// condition; a retry budget exhausted maps to
+/// [`StorageError::ConditionalRequestConflict`].
+async fn put_object_conditional(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    body: Vec<u8>,
+    content_type: Option<&str>,
+    condition: PutCondition<'_>,
+) -> Result<String, StorageError> {
+    const MAX_CONFLICT_RETRIES: u32 = 3;
+
+    for attempt in 0..=MAX_CONFLICT_RETRIES {
+        let mut req = client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from(body.clone()));
+        req = match condition {
+            PutCondition::IfNoneMatch => req.if_none_match("*"),
+            PutCondition::IfMatch(etag) => req.if_match(etag),
+        };
+        if let Some(ct) = content_type {
+            req = req.content_type(ct);
+        }
+
+        match req.send().await {
+            Ok(resp) => return Ok(resp.e_tag().unwrap_or_default().to_string()),
+            Err(error) => {
+                let status = error
+                    .raw_response()
+                    .map(|response| response.status().as_u16());
+                let code = error
+                    .as_service_error()
+                    .and_then(|err| err.meta().code())
+                    .map(ToString::to_string);
+                if status == Some(412) || code.as_deref() == Some("PreconditionFailed") {
+                    return Err(StorageError::PreconditionFailed { key: key.into() });
+                }
+                if status == Some(409) || code.as_deref() == Some("ConditionalRequestConflict") {
+                    if attempt < MAX_CONFLICT_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(10 * u64::from(attempt + 1)))
+                            .await;
+                        continue;
+                    }
+                    return Err(StorageError::ConditionalRequestConflict { key: key.into() });
+                }
+                return Err(StorageError::PutObject(sdk_error_message(&error)));
+            }
+        }
+    }
+
+    Err(StorageError::ConditionalRequestConflict { key: key.into() })
 }
 
 /// Put an object to S3 only when the key has no current object.
@@ -152,52 +271,15 @@ pub async fn put_object_if_none_match(
     body: Vec<u8>,
     content_type: Option<&str>,
 ) -> Result<String, StorageError> {
-    const MAX_CONFLICT_RETRIES: u32 = 3;
-
-    for attempt in 0..=MAX_CONFLICT_RETRIES {
-        let mut req = client
-            .put_object()
-            .bucket(bucket)
-            .key(key)
-            .body(ByteStream::from(body.clone()))
-            .if_none_match("*");
-        if let Some(ct) = content_type {
-            req = req.content_type(ct);
-        }
-
-        match req.send().await {
-            Ok(resp) => return Ok(resp.e_tag().unwrap_or_default().to_string()),
-            Err(error) => {
-                let status = error
-                    .raw_response()
-                    .map(|response| response.status().as_u16());
-                let err = error.into_service_error();
-                let code = err.meta().code();
-                if status == Some(412) || code == Some("PreconditionFailed") {
-                    return Err(StorageError::PreconditionFailed {
-                        key: key.to_string(),
-                    });
-                }
-                if status == Some(409) || code == Some("ConditionalRequestConflict") {
-                    if attempt < MAX_CONFLICT_RETRIES {
-                        tokio::time::sleep(Duration::from_millis(10 * u64::from(attempt + 1)))
-                            .await;
-                        continue;
-                    }
-                    return Err(StorageError::ConditionalRequestConflict {
-                        key: key.to_string(),
-                    });
-                }
-                let msg = err.to_string();
-                tracing::error!(bucket, key, error = %msg, "S3 PutObject (if-none-match) failed");
-                return Err(StorageError::PutObject(msg));
-            }
-        }
-    }
-
-    Err(StorageError::ConditionalRequestConflict {
-        key: key.to_string(),
-    })
+    put_object_conditional(
+        client,
+        bucket,
+        key,
+        body,
+        content_type,
+        PutCondition::IfNoneMatch,
+    )
+    .await
 }
 
 /// Put an object to S3 with an If-Match precondition (ETag optimistic locking).
@@ -211,55 +293,15 @@ pub async fn put_object_if_match(
     content_type: Option<&str>,
     expected_etag: &str,
 ) -> Result<String, StorageError> {
-    const MAX_CONFLICT_RETRIES: u32 = 3;
-
-    for attempt in 0..=MAX_CONFLICT_RETRIES {
-        let mut req = client
-            .put_object()
-            .bucket(bucket)
-            .key(key)
-            .body(ByteStream::from(body.clone()))
-            .if_match(expected_etag);
-        if let Some(ct) = content_type {
-            req = req.content_type(ct);
-        }
-
-        match req.send().await {
-            Ok(resp) => return Ok(resp.e_tag().unwrap_or_default().to_string()),
-            Err(error) => {
-                // S3 answers an If-Match miss with 412. A 409 is a transient
-                // race between conditional evaluation and the write and is
-                // safe to retry with the same condition.
-                let status = error
-                    .raw_response()
-                    .map(|response| response.status().as_u16());
-                let err = error.into_service_error();
-                let code = err.meta().code();
-                if status == Some(412) || code == Some("PreconditionFailed") {
-                    return Err(StorageError::PreconditionFailed {
-                        key: key.to_string(),
-                    });
-                }
-                if status == Some(409) || code == Some("ConditionalRequestConflict") {
-                    if attempt < MAX_CONFLICT_RETRIES {
-                        tokio::time::sleep(Duration::from_millis(10 * u64::from(attempt + 1)))
-                            .await;
-                        continue;
-                    }
-                    return Err(StorageError::ConditionalRequestConflict {
-                        key: key.to_string(),
-                    });
-                }
-                let msg = err.to_string();
-                tracing::error!(bucket, key, error = %msg, "S3 PutObject (if-match) failed");
-                return Err(StorageError::PutObject(msg));
-            }
-        }
-    }
-
-    Err(StorageError::ConditionalRequestConflict {
-        key: key.to_string(),
-    })
+    put_object_conditional(
+        client,
+        bucket,
+        key,
+        body,
+        content_type,
+        PutCondition::IfMatch(expected_etag),
+    )
+    .await
 }
 
 /// Delete an object from S3.
@@ -270,11 +312,7 @@ pub async fn delete_object(client: &Client, bucket: &str, key: &str) -> Result<(
         .key(key)
         .send()
         .await
-        .map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(bucket, key, error = %msg, "S3 DeleteObject failed");
-            StorageError::DeleteObject(msg)
-        })?;
+        .map_err(|e| StorageError::DeleteObject(sdk_error_message(&e)))?;
 
     Ok(())
 }
@@ -285,7 +323,7 @@ const DELETE_BATCH_SIZE: usize = 1000;
 /// How many per-object failures to name before summarising the rest. The
 /// message reaches the UI, and a thousand-line error is no more useful than
 /// a handful of examples.
-const MAX_REPORTED_DELETE_ERRORS: usize = 5;
+const MAX_REPORTED_OBJECT_ERRORS: usize = 5;
 
 /// An object to delete: a key, optionally pinned to one version.
 ///
@@ -359,41 +397,29 @@ pub async fn delete_objects(
             .delete(delete)
             .send()
             .await
-            .map_err(|e| {
-                let msg = e.into_service_error().to_string();
-                tracing::error!(bucket, error = %msg, "S3 DeleteObjects failed");
-                StorageError::DeleteObject(msg)
-            })?;
+            .map_err(|e| StorageError::DeleteObject(sdk_error_message(&e)))?;
 
         let errors = resp.errors();
         if !errors.is_empty() {
             let mut details: Vec<String> = errors
                 .iter()
-                .take(MAX_REPORTED_DELETE_ERRORS)
+                .take(MAX_REPORTED_OBJECT_ERRORS)
                 .map(|e| {
                     format!(
                         "{} ({}: {})",
-                        e.key().unwrap_or("<unknown key>"),
+                        log_safe_key(e.key().unwrap_or("<unknown key>")),
                         e.code().unwrap_or("<no code>"),
                         e.message().unwrap_or("<no message>"),
                     )
                 })
                 .collect();
-            if errors.len() > MAX_REPORTED_DELETE_ERRORS {
+            if errors.len() > MAX_REPORTED_OBJECT_ERRORS {
                 details.push(format!(
                     "and {} more",
-                    errors.len() - MAX_REPORTED_DELETE_ERRORS
+                    errors.len() - MAX_REPORTED_OBJECT_ERRORS
                 ));
             }
             let details = details.join("; ");
-
-            tracing::error!(
-                bucket,
-                failed = errors.len(),
-                attempted = chunk.len(),
-                details = %details,
-                "S3 DeleteObjects reported per-object failures"
-            );
 
             return Err(StorageError::DeleteObjects {
                 attempted: chunk.len(),
@@ -441,7 +467,7 @@ pub struct ObjectMeta {
 #[tracing::instrument(
     level = "trace",
     skip_all,
-    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
+    fields(bucket = %bucket, prefix = %log_safe_key(prefix), count = tracing::field::Empty)
 )]
 pub async fn list_objects_with_metadata(
     client: &Client,
@@ -457,11 +483,7 @@ pub async fn list_objects_with_metadata(
         .send();
 
     while let Some(page) = pages.next().await {
-        let page = page.map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
-            StorageError::ListObjects(msg)
-        })?;
+        let page = page.map_err(|e| StorageError::ListObjects(sdk_error_message(&e)))?;
 
         for obj in page.contents() {
             if let Some(key) = obj.key() {
@@ -481,84 +503,34 @@ pub async fn list_objects_with_metadata(
 }
 
 /// List objects under a prefix. Returns keys.
-#[tracing::instrument(
-    level = "trace",
-    skip_all,
-    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
-)]
 pub async fn list_objects(
     client: &Client,
     bucket: &str,
     prefix: &str,
 ) -> Result<Vec<String>, StorageError> {
-    let mut keys = Vec::new();
-    let mut pages = client
-        .list_objects_v2()
-        .bucket(bucket)
-        .prefix(prefix)
-        .into_paginator()
-        .send();
-
-    while let Some(page) = pages.next().await {
-        let page = page.map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
-            StorageError::ListObjects(msg)
-        })?;
-
-        for obj in page.contents() {
-            if let Some(key) = obj.key() {
-                keys.push(key.to_string());
-            }
-        }
-    }
-
-    tracing::Span::current().record("count", keys.len() as u64);
-
-    Ok(keys)
+    Ok(list_objects_with_metadata(client, bucket, prefix)
+        .await?
+        .into_iter()
+        .map(|object| object.key)
+        .collect())
 }
 
 /// List objects under a prefix, returning `(key, etag)` pairs in listing order.
 ///
 /// The ETag is the freshness probe for the record cache: it comes back on the
 /// `ListObjectsV2` response the listing already makes, so a cached body can be
-/// revalidated without a GET. When `e_tag()` is absent the etag is
+/// revalidated without a GET. When the listing carries no ETag the etag is
 /// `String::new()`, which never matches a cache entry — a safe miss.
-#[tracing::instrument(
-    level = "trace",
-    skip_all,
-    fields(bucket = %bucket, prefix = %prefix, count = tracing::field::Empty)
-)]
 pub async fn list_object_etags(
     client: &Client,
     bucket: &str,
     prefix: &str,
 ) -> Result<Vec<(String, String)>, StorageError> {
-    let mut pairs = Vec::new();
-    let mut pages = client
-        .list_objects_v2()
-        .bucket(bucket)
-        .prefix(prefix)
-        .into_paginator()
-        .send();
-
-    while let Some(page) = pages.next().await {
-        let page = page.map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectsV2 failed");
-            StorageError::ListObjects(msg)
-        })?;
-
-        for obj in page.contents() {
-            if let Some(key) = obj.key() {
-                pairs.push((key.to_string(), obj.e_tag().unwrap_or_default().to_string()));
-            }
-        }
-    }
-
-    tracing::Span::current().record("count", pairs.len() as u64);
-
-    Ok(pairs)
+    Ok(list_objects_with_metadata(client, bucket, prefix)
+        .await?
+        .into_iter()
+        .map(|object| (object.key, object.etag.unwrap_or_default()))
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -608,11 +580,10 @@ where
             req = req.version_id_marker(vm);
         }
 
-        let resp = req.send().await.map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(bucket, prefix, error = %msg, "S3 ListObjectVersions failed");
-            StorageError::ListObjectVersions(msg)
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| StorageError::ListObjectVersions(sdk_error_message(&e)))?;
 
         on_page(&resp);
 
@@ -730,9 +701,7 @@ pub async fn restore_deleted_object_if_absent(
     let version = versions
         .iter()
         .find(|version| !version.is_delete_marker)
-        .ok_or_else(|| StorageError::NotFound {
-            key: key.to_string(),
-        })?;
+        .ok_or_else(|| StorageError::NotFound { key: key.into() })?;
     let output = get_object_version(client, bucket, key, &version.version_id).await?;
     match put_object_if_none_match(
         client,
@@ -752,18 +721,59 @@ pub async fn restore_deleted_object_if_absent(
 /// Restore every currently deleted key under `prefix` using conditional
 /// creates. Safe to retry after partial failure and safe alongside a
 /// concurrent writer, whose current object is never overwritten.
+///
+/// Each key's 3-round-trip restore stays sequential internally, but keys fan
+/// out with bounded concurrency. Every key is attempted even when some fail;
+/// failures are aggregated into one error so the caller knows exactly how much
+/// of the prefix is restored — re-running picks up whatever is left.
+///
+/// Returns the number of objects this call restored.
 pub async fn restore_deleted_objects_by_prefix(
     client: &Client,
     bucket: &str,
     prefix: &str,
 ) -> Result<usize, StorageError> {
     let deleted = list_deleted_objects(client, bucket, prefix).await?;
+    let attempted = deleted.len();
+
+    let restores = deleted.into_iter().map(|object| async move {
+        let outcome = restore_deleted_object_if_absent(client, bucket, &object.key).await;
+        (object.key, outcome)
+    });
+    let outcomes: Vec<(String, Result<bool, StorageError>)> = futures::stream::iter(restores)
+        .buffered(S3_FETCH_CONCURRENCY)
+        .collect()
+        .await;
+
     let mut restored = 0usize;
-    for object in deleted {
-        if restore_deleted_object_if_absent(client, bucket, &object.key).await? {
-            restored = restored.saturating_add(1);
+    let mut failures: Vec<(String, StorageError)> = Vec::new();
+    for (key, outcome) in outcomes {
+        match outcome {
+            Ok(true) => restored = restored.saturating_add(1),
+            Ok(false) => {}
+            Err(error) => failures.push((key, error)),
         }
     }
+
+    if !failures.is_empty() {
+        let failed = failures.len();
+        let mut details: Vec<String> = failures
+            .iter()
+            .take(MAX_REPORTED_OBJECT_ERRORS)
+            .map(|(key, error)| format!("{} ({error})", log_safe_key(key)))
+            .collect();
+        if failed > MAX_REPORTED_OBJECT_ERRORS {
+            details.push(format!("and {} more", failed - MAX_REPORTED_OBJECT_ERRORS));
+        }
+        let details = details.join("; ");
+
+        return Err(StorageError::RestoreObjects {
+            attempted,
+            failed,
+            details,
+        });
+    }
+
     Ok(restored)
 }
 
@@ -802,32 +812,12 @@ pub async fn delete_all_object_versions(
 
     tracing::info!(
         bucket,
-        prefix,
+        prefix = %log_safe_key(prefix),
         versions = targets.len(),
         "purging every object version"
     );
 
     delete_objects(client, bucket, &targets).await
-}
-
-/// Get the first (oldest, non-delete-marker) version of an object.
-///
-/// Useful when the caller wants the "original" of a versioned object — e.g.
-/// restoring a Transcribe-generated transcript after a user has edited it.
-pub async fn get_first_version(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-) -> Result<GetObjectOutput, StorageError> {
-    let mut versions = list_object_versions(client, bucket, key).await?;
-    versions.retain(|v| !v.is_delete_marker);
-    versions.sort_by(|a, b| a.last_modified.cmp(&b.last_modified));
-
-    let first = versions.first().ok_or_else(|| StorageError::NotFound {
-        key: key.to_string(),
-    })?;
-
-    get_object_version(client, bucket, key, &first.version_id).await
 }
 
 /// Get a specific version of an object.
@@ -845,15 +835,10 @@ pub async fn get_object_version(
         .send()
         .await
         .map_err(|e| {
-            let err = e.into_service_error();
-            if err.is_no_such_key() {
-                StorageError::NotFound {
-                    key: key.to_string(),
-                }
+            if matches!(e.as_service_error(), Some(err) if err.is_no_such_key()) {
+                StorageError::NotFound { key: key.into() }
             } else {
-                let msg = err.to_string();
-                tracing::error!(bucket, key, version_id, error = %msg, "S3 GetObject (versioned) failed");
-                StorageError::GetObject(msg)
+                StorageError::GetObject(sdk_error_message(&e))
             }
         })?;
 
@@ -863,10 +848,7 @@ pub async fn get_object_version(
         .body
         .collect()
         .await
-        .map_err(|e| {
-            tracing::error!(bucket, key, version_id, error = %e, "S3 GetObject (versioned) body stream failed");
-            StorageError::GetObject(e.to_string())
-        })?
+        .map_err(|e| StorageError::GetObject(e.to_string()))?
         .into_bytes()
         .to_vec();
 
@@ -875,61 +857,4 @@ pub async fn get_object_version(
         etag,
         content_type,
     })
-}
-
-// ---------------------------------------------------------------------------
-// Presigning
-// ---------------------------------------------------------------------------
-
-/// Generate a presigned GET URL for an object.
-pub async fn presign_get(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    expires_in: Duration,
-) -> Result<String, StorageError> {
-    let presign_config = PresigningConfig::builder()
-        .expires_in(expires_in)
-        .build()
-        .map_err(|e| StorageError::Presign(e.to_string()))?;
-
-    let presigned = client
-        .get_object()
-        .bucket(bucket)
-        .key(key)
-        .presigned(presign_config)
-        .await
-        .map_err(|e| {
-            tracing::warn!(bucket, key, error = %e, "S3 presign GET failed");
-            StorageError::Presign(e.to_string())
-        })?;
-
-    Ok(presigned.uri().to_string())
-}
-
-/// Generate a presigned PUT URL for uploading an object.
-pub async fn presign_put(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    content_type: Option<&str>,
-    expires_in: Duration,
-) -> Result<String, StorageError> {
-    let presign_config = PresigningConfig::builder()
-        .expires_in(expires_in)
-        .build()
-        .map_err(|e| StorageError::Presign(e.to_string()))?;
-
-    let mut req = client.put_object().bucket(bucket).key(key);
-
-    if let Some(ct) = content_type {
-        req = req.content_type(ct);
-    }
-
-    let presigned = req.presigned(presign_config).await.map_err(|e| {
-        tracing::warn!(bucket, key, error = %e, "S3 presign PUT failed");
-        StorageError::Presign(e.to_string())
-    })?;
-
-    Ok(presigned.uri().to_string())
 }

@@ -1,7 +1,7 @@
 // Pure audio-buffer plumbing for the memo recorder.
 //
 // The recorder captures mono float PCM at whatever rate the machine's
-// AudioContext runs at (typically 44.1 or 48 kHz); Whisper wants 16 kHz, and
+// AudioContext runs at (typically 44.1 or 48 kHz); transcribe.cpp wants 16 kHz, and
 // the Tauri command wants base64. Everything in this module is a plain
 // transform over buffers — the stateful capture engine lives in
 // `useMemoRecorder`.
@@ -19,7 +19,7 @@ export function mergePcmChunks(chunks: Float32Array[]): Float32Array {
 }
 
 /**
- * Resample mono float PCM to the 16 kHz Whisper expects.
+ * Resample mono float PCM to the 16 kHz transcribe.cpp expects.
  *
  * Rendering through an `OfflineAudioContext` hands the sample-rate conversion
  * to the browser's own resampler rather than hand-rolling interpolation. A

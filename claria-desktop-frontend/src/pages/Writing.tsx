@@ -1,43 +1,48 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import {
-  acknowledgeReportTemplateReview,
-  applyReportTemplate,
-  discardReportTemplatePreview,
-  exportReportDocx,
-  loadReportWorkspace,
-  pickReportTemplateDocx,
-  resolveReportProposal,
-  saveReportDraft,
-  sendReportMessage,
-  type ChatModel,
-  type ReportContextReadView,
-  type ReportDraftEdit,
-  type ReportTemplatePreview,
-  type ReportTimelineItemView,
-  type ReportWorkspaceView,
-} from "../lib/tauri";
-import {
-  countReportEdits,
-  draftToEdit,
-  reportEditsEqual,
-  validateReportEdit,
-} from "../lib/writingWorkspace";
+import { useChatModels } from "../lib/chatModels";
+import ChatComposer from "../components/ChatComposer";
+import ChatEmptyState from "../components/ChatEmptyState";
+import ContextPills from "../components/ContextPills";
+import DraftPlanPanel from "../components/DraftPlanPanel";
+import FindingsPanel from "../components/FindingsPanel";
+import type { FindingReference } from "../components/FindingCard";
+import { openFindingCounts } from "../lib/findings";
+import { buildContextPills } from "../lib/contextPills";
+import EditableName from "../components/EditableName";
+import ModelSelect from "../components/ModelSelect";
+import Modal from "../components/Modal";
+import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
+import ReportRevisionModal from "../components/ReportRevisionModal";
+import SessionTabs, { UsageTabIcon } from "../components/SessionTabs";
+import SessionUsagePanel from "../components/SessionUsagePanel";
+import TimelineItem from "../components/TimelineItem";
+import TurnCostBadge from "../components/TurnCostBadge";
 import WritingCanvas from "../components/WritingCanvas";
 import WritingProposalCard from "../components/WritingProposalCard";
-import WritingTemplateImportModal from "../components/WritingTemplateImportModal";
 import Spinner from "../components/Spinner";
-import { CloseIcon } from "../components/icons";
-import { dismissNotice, isNoticeDismissed } from "../lib/localPreference";
+import {
+  EMPTY_SESSION_USAGE,
+  accumulateUsage,
+  type SessionUsage,
+} from "../lib/cost";
+import { buildCostLedger } from "../lib/costLedger";
+import { buildWriterSessionDiagram } from "../lib/sessionDiagram";
+import { usePreferredModel } from "../lib/usePreferredModel";
+import { usePricingMap } from "../lib/usePricingMap";
+import { useReportWorkspace } from "../lib/useReportWorkspace";
+import { useWriterPrompts } from "../lib/useWriterPrompts";
+import { useWriterTemplates } from "../lib/useWriterTemplates";
+import WriterPromptPicker from "../components/WriterPromptPicker";
 import {
   readWritingComposerDraft,
   reportBlockReferencePreview,
   writeWritingComposerDraft,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
+import type { PlanEntryEdit, ReportWorkspaceView } from "../lib/tauri";
 
-const INTRO_NOTICE_KEY = "claria.writing.hide_intro_notice";
+/** One shared empty map, so a report with no findings keeps canvas identity. */
+const NO_FINDING_COUNTS: ReadonlyMap<string, number> = new Map();
 
 export type WritingLeaveState = {
   /** Any work that would be lost when the desktop app closes. */
@@ -45,159 +50,224 @@ export type WritingLeaveState = {
   /** Inline report changes that cannot be restored after leaving this page. */
   hasUnsavedReportEdits: boolean;
   busy: boolean;
+  /** A drafting run is generating right now, and can be stopped safely. */
+  draftRunLive: boolean;
 };
 
 export default function Writing({
   clientId,
   expectedReportId,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
   onLeaveStateChange,
-  onRetryModels,
+  onManageTemplates,
+  onManagePrompts,
 }: {
   clientId: string;
   expectedReportId?: string | null;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
   onLeaveStateChange?: (state: WritingLeaveState) => void;
-  onRetryModels?: () => void;
+  onManageTemplates: () => void;
+  onManagePrompts: () => void;
 }) {
-  const generationRef = useRef(0);
+  const {
+    models: chatModels,
+    loading: chatModelsLoading,
+    error: chatModelsError,
+    preferredModelId,
+    retry: onRetryModels,
+  } = useChatModels();
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const initialComposerDraft = useRef(readWritingComposerDraft(clientId)).current;
-  const [workspace, setWorkspace] = useState<ReportWorkspaceView | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<
-    | null
-    | "saving"
-    | "sending"
-    | "resolving"
-    | "exporting"
-    | "picking_template"
-    | "applying_template"
-    | "reviewing_template"
-  >(null);
-  const [selectedModelId, setSelectedModelId] = useState("");
-  const [instruction, setInstruction] = useState(
-    initialComposerDraft?.instruction ?? ""
+  const [selectedModelId, setSelectedModelId] = usePreferredModel(
+    chatModels,
+    preferredModelId
   );
-  const [editing, setEditing] = useState(false);
-  const [edit, setEdit] = useState<ReportDraftEdit>({
-    title: "Untitled report",
-    sections: [],
-  });
-  const [references, setReferences] = useState<WritingBlockReference[]>(
-    initialComposerDraft?.references ?? []
+  // The composer draft survives navigation in process memory; read it once
+  // as lazy initial state.
+  const [instruction, setInstruction] = useState(() =>
+    expectedReportId
+      ? (readWritingComposerDraft(clientId, expectedReportId)?.instruction ?? "")
+      : ""
   );
-  const [saveStatus, setSaveStatus] = useState<string | null>(null);
-  const [exportStatus, setExportStatus] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const [queuedReferences, setQueuedReferences] = useState<
+    WritingBlockReference[]
+  >(() =>
+    expectedReportId
+      ? (readWritingComposerDraft(clientId, expectedReportId)?.references ?? [])
+      : []
+  );
   const [contextOpen, setContextOpen] = useState(false);
-  const [templatePreview, setTemplatePreview] =
-    useState<ReportTemplatePreview | null>(null);
-  const templatePreviewRef = useRef<ReportTemplatePreview | null>(null);
-  const [showIntroNotice, setShowIntroNotice] = useState(
-    () => !isNoticeDismissed(INTRO_NOTICE_KEY)
-  );
+  const [previewFilename, setPreviewFilename] = useState<string | null>(null);
+  const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [fullDraftConfirmationOpen, setFullDraftConfirmationOpen] =
+    useState(false);
+  const [chosenTemplateId, setChosenTemplateId] = useState("");
+  const [chosenPane, setActivePane] = useState<
+    "setup" | "write" | "usage" | "draft"
+  >(expectedReportId ? "write" : "setup");
+  const [showTurnCosts, setShowTurnCosts] = useState(false);
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const proposalStartRef = useRef<HTMLDivElement | null>(null);
 
-  const load = useCallback(async () => {
-    const generation = ++generationRef.current;
-    setLoading(true);
-    setLoadError(null);
-    setActionError(null);
-    setConflict(false);
-    try {
-      const result = await loadReportWorkspace(clientId);
-      if (generation !== generationRef.current) return;
-      if (expectedReportId && result.report_id !== expectedReportId) {
-        throw new Error("That Editor History session is no longer available.");
-      }
-      setWorkspace(result);
-      setEdit(draftToEdit(result.draft));
-      setReferences((current) => reconcileReferences(current, result));
-      setEditing(false);
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      setLoadError(String(error));
-    } finally {
-      if (generation === generationRef.current) setLoading(false);
-    }
-  }, [clientId, expectedReportId]);
+  const {
+    workspace,
+    loading,
+    loadError,
+    actionError,
+    conflict,
+    busy,
+    editing,
+    edit,
+    setEdit,
+    dirty,
+    editCount,
+    validationErrors,
+    savedEditsQueued,
+    saveStatus,
+    setSaveStatus,
+    exportStatus,
+    agentActivity,
+    liveContext,
+    run,
+    draftPane,
+    findings,
+    completion,
+    resolvingFindingId,
+    canReviewDraft,
+    canStopRun,
+    load,
+    beginEdit,
+    cancelEdit,
+    save,
+    discardQueuedEdits,
+    send,
+    planRun,
+    startPlannedRun,
+    openResumeGate,
+    stopRun,
+    resumeRun,
+    keepPartialDraft,
+    discardRun,
+    resolveProposal,
+    reviewDraft,
+    applyFinding,
+    undoFinding,
+    dismissFinding,
+    applyTemplate,
+    exportDocx,
+    renameSession,
+    applyReverted,
+  } = useReportWorkspace({ clientId, expectedReportId });
 
-  useEffect(() => {
-    void load();
-    return () => {
-      generationRef.current += 1;
-    };
-  }, [clientId, expectedReportId, load]);
+  // The pane outlives the run: findings stay readable after the draft that
+  // produced them is long finished, and a review can be asked for without a
+  // run ever having existed.
+  const findingRows = useMemo(() => findings?.findings ?? [], [findings]);
+  const hasDraftPane =
+    draftPane !== null || findingRows.length > 0 || busy === "reviewing";
+  const activePane =
+    chosenPane === "draft" && !hasDraftPane ? "write" : chosenPane;
 
-  useEffect(() => {
-    writeWritingComposerDraft(clientId, { instruction, references });
-  }, [clientId, instruction, references]);
-
-  templatePreviewRef.current = templatePreview;
-  useEffect(
-    () => () => {
-      const importId = templatePreviewRef.current?.import_id;
-      if (importId) void discardReportTemplatePreview(importId).catch(() => undefined);
-    },
-    [clientId]
+  const findingCounts = useMemo(
+    () =>
+      workspace
+        ? openFindingCounts(findingRows, workspace.draft.content)
+        : NO_FINDING_COUNTS,
+    [findingRows, workspace]
   );
 
-  useEffect(() => {
-    if (
-      selectedModelId &&
-      chatModels.some((model) => model.model_id === selectedModelId)
-    ) {
+  // The flag chips scroll-link into the pane, which is only mounted once the
+  // reader is on it — so the click chooses the pane and the scroll waits for
+  // the group to register.
+  const findingSectionRefs = useRef(new Map<string, HTMLElement>());
+  const pendingFindingFocusRef = useRef<string | null>(null);
+  const registerFindingSection = useCallback(
+    (sectionId: string, element: HTMLElement | null) => {
+      if (element) findingSectionRefs.current.set(sectionId, element);
+      else findingSectionRefs.current.delete(sectionId);
+    },
+    []
+  );
+  const openFindings = useCallback((sectionId: string) => {
+    // A registered group means the pane is already mounted, so the scroll is
+    // this click's own work; otherwise it waits for the pane to arrive.
+    const group = findingSectionRefs.current.get(sectionId);
+    if (group) {
+      group.scrollIntoView?.({ block: "start" });
       return;
     }
-    const preferred = chatModels.find(
-      (model) => model.model_id === preferredModelId
-    );
-    setSelectedModelId(preferred?.model_id ?? chatModels[0]?.model_id ?? "");
-  }, [chatModels, preferredModelId, selectedModelId]);
+    pendingFindingFocusRef.current = sectionId;
+    setActivePane("draft");
+  }, []);
+  useEffect(() => {
+    if (activePane !== "draft") return;
+    const sectionId = pendingFindingFocusRef.current;
+    if (!sectionId) return;
+    pendingFindingFocusRef.current = null;
+    findingSectionRefs.current
+      .get(sectionId)
+      ?.scrollIntoView?.({ block: "start" });
+  }, [activePane]);
 
-  const baseline = useMemo(
-    () => (workspace ? draftToEdit(workspace.draft) : null),
-    [workspace]
+  const {
+    templates: writerTemplates,
+    error: templatesError,
+    reload: reloadTemplates,
+  } = useWriterTemplates();
+
+  const { prompts: writerPrompts } = useWriterPrompts();
+
+  // Picking a saved prompt is a prefill, not a send: the body lands in the
+  // instruction box for editing (e.g. replacing a $DIAGNOSIS placeholder).
+  function insertSavedPrompt(body: string) {
+    setInstruction(body);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  // The user's explicit template choice, falling back to the first template
+  // while the choice is unset or no longer exists.
+  const selectedTemplateId = writerTemplates.some(
+    (template) => template.id === chosenTemplateId
+  )
+    ? chosenTemplateId
+    : (writerTemplates[0]?.id ?? "");
+
+  // Queued block references reconciled against the loaded draft: a reference
+  // to a block that no longer exists (or changed kind) is dropped, and
+  // headings/previews follow the current content.
+  const references = useMemo(
+    () =>
+      workspace
+        ? reconcileReferences(queuedReferences, workspace)
+        : queuedReferences,
+    [queuedReferences, workspace]
   );
-  const dirty = Boolean(
-    editing && baseline && !reportEditsEqual(edit, baseline)
-  );
-  const editCount = useMemo(
-    () => (baseline && dirty ? countReportEdits(baseline, edit) : 0),
-    [baseline, dirty, edit]
-  );
-  const validationErrors = useMemo(() => validateReportEdit(edit), [edit]);
-  const savedEditsQueued = Boolean(
-    workspace &&
-      workspace.draft.revision > (workspace.last_agent_revision ?? 0)
-  );
+
+  useEffect(() => {
+    if (!workspace) return;
+    writeWritingComposerDraft(clientId, workspace.report_id, {
+      instruction,
+      references,
+    });
+  }, [clientId, instruction, references, workspace]);
+
   const editsQueued = dirty || savedEditsQueued;
   const hasUnsavedWork =
     dirty || instruction.trim() !== "" || references.length > 0;
 
+  const draftRunLive = run.live;
   useEffect(() => {
     onLeaveStateChange?.({
       hasUnsavedWork,
       hasUnsavedReportEdits: dirty,
       busy: busy !== null,
+      draftRunLive,
     });
     return () =>
       onLeaveStateChange?.({
         hasUnsavedWork: false,
         hasUnsavedReportEdits: false,
         busy: false,
+        draftRunLive: false,
       });
-  }, [busy, dirty, hasUnsavedWork, onLeaveStateChange]);
+  }, [busy, dirty, draftRunLive, hasUnsavedWork, onLeaveStateChange]);
 
   const pendingProposalId = workspace?.pending_proposal?.id;
   useEffect(() => {
@@ -207,6 +277,73 @@ export default function Writing({
       timelineEndRef.current?.scrollIntoView?.({ block: "nearest" });
     }
   }, [workspace?.turns.length, pendingProposalId]);
+
+  // Lifetime writer-session spend, matching the chat surfaces' banner.
+  const session: SessionUsage = useMemo(
+    () =>
+      (workspace?.turns ?? []).reduce(
+        (acc, turn) => accumulateUsage(acc, turn.usage),
+        EMPTY_SESSION_USAGE
+      ),
+    [workspace?.turns]
+  );
+
+  // Cache-aware ledger over the same turn stream, for the savings line and
+  // the expandable cost-explanation panel.
+  const turnUsages = useMemo(
+    () => (workspace?.turns ?? []).map((turn) => turn.usage),
+    [workspace?.turns]
+  );
+  const turnTimestamps = useMemo(
+    () => (workspace?.turns ?? []).map((turn) => turn.completed_at),
+    [workspace?.turns]
+  );
+  const turnModelIds = useMemo(
+    () => turnUsages.flatMap((usage) => (usage ? [usage.model_id] : [])),
+    [turnUsages]
+  );
+  const pricingByModel = usePricingMap(
+    activePane === "usage" ? turnModelIds : []
+  );
+  const ledger = useMemo(
+    () => buildCostLedger(turnUsages, pricingByModel, turnTimestamps),
+    [turnTimestamps, turnUsages, pricingByModel]
+  );
+
+  // Three-lane session flow model for the usage panel's diagram.
+  const diagram = useMemo(
+    () =>
+      buildWriterSessionDiagram(
+        workspace?.turns ?? [],
+        workspace?.resolutions ?? []
+      ),
+    [workspace?.turns, workspace?.resolutions]
+  );
+
+  const addReference = useCallback(
+    (reference: WritingBlockReference) => {
+      setQueuedReferences((current) => {
+        if (
+          current.some(
+            (item) =>
+              item.sectionId === reference.sectionId &&
+              item.blockIndex === reference.blockIndex
+          )
+        ) {
+          return current;
+        }
+        return [...current, reference].slice(-10);
+      });
+      setSaveStatus(
+        `${reference.kind === "paragraph" ? "Paragraph" : "Table"} attached to your next Writing message.`
+      );
+      setActivePane("write");
+      requestAnimationFrame(() => composerRef.current?.focus());
+    },
+    [setSaveStatus]
+  );
+
+  const openRevisions = useCallback(() => setRevisionsOpen(true), []);
 
   if (loading) {
     return (
@@ -250,12 +387,6 @@ export default function Writing({
     chatModelsLoading ||
     (dirty && validationErrors.length > 0);
 
-  function showActionError(error: unknown) {
-    const message = String(error);
-    setActionError(message);
-    setConflict(isReportConflict(message));
-  }
-
   async function handleReload() {
     if (controlsBusy) return;
     if (
@@ -269,392 +400,145 @@ export default function Writing({
     await load();
   }
 
-  async function persistCurrentEdit(): Promise<ReportWorkspaceView> {
-    if (!workspace) throw new Error("The writing session is not loaded.");
-    if (!dirty) return workspace;
-    if (validationErrors.length > 0) {
-      throw new Error("Fix the highlighted report fields before continuing.");
-    }
-    const result = await saveReportDraft(
-      clientId,
-      workspace.draft.revision,
-      edit
-    );
-    setWorkspace(result);
-    setEdit(draftToEdit(result.draft));
-    setConflict(false);
-    return result;
-  }
-
-  async function handleSave() {
-    if (!dirty || controlsBusy || validationErrors.length > 0) return;
-    const generation = generationRef.current;
-    setBusy("saving");
-    setActionError(null);
-    setSaveStatus("Saving report edits…");
-    try {
-      const result = await persistCurrentEdit();
-      if (generation !== generationRef.current) return;
-      setSaveStatus(
-        `Saved revision ${result.draft.revision}. These edits are queued for Claude's next message.`
-      );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
-    }
-  }
-
   async function handleSend() {
     const value = instruction.trim();
     if (!workspace || !value || composerDisabled) return;
-    const generation = generationRef.current;
-    setBusy("sending");
-    setActionError(null);
-    setSaveStatus(
-      dirty
-        ? "Saving your report edits before Claude reads the next message…"
-        : "Claude is using the approved tools…"
+    const sent = await send(
+      selectedModelId,
+      value,
+      references.map((reference) => ({
+        section_id: reference.sectionId,
+        block_index: reference.blockIndex,
+      }))
     );
-    try {
-      const current = await persistCurrentEdit();
-      if (generation !== generationRef.current) return;
-      const result = await sendReportMessage(
-        clientId,
-        current.draft.revision,
-        selectedModelId,
-        value,
-        references.map((reference) => ({
-          section_id: reference.sectionId,
-          block_index: reference.blockIndex,
-        }))
-      );
-      if (generation !== generationRef.current) return;
-      setWorkspace(result.workspace);
-      setEdit(draftToEdit(result.workspace.draft));
+    if (sent) {
       setInstruction("");
-      setReferences([]);
-      setConflict(false);
-      setSaveStatus(
-        result.workspace.pending_proposal
-          ? "Proposal ready for your review. The accepted draft is unchanged."
-          : "Writing assistant turn complete."
-      );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      // Keep the instruction, references, and local edit for an exact retry.
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
+      setQueuedReferences([]);
     }
   }
 
-  async function handleDecision(decision: "accept" | "reject") {
-    if (!workspace?.pending_proposal || controlsBusy) return;
-    const generation = generationRef.current;
-    const proposalId = workspace.pending_proposal.id;
-    setBusy("resolving");
-    setActionError(null);
-    setSaveStatus(
-      decision === "accept" ? "Accepting and saving proposal…" : "Rejecting proposal…"
+  async function handleGenerateFullDraft(replacementConfirmed = false) {
+    if (!workspace || composerDisabled || !selectedModelId) return;
+    const hasExistingDraft =
+      workspace.draft.content.sections.length > 0 ||
+      workspace.draft.content.title !== "Untitled report";
+    if (hasExistingDraft && !replacementConfirmed) {
+      setFullDraftConfirmationOpen(true);
+      return;
+    }
+    setFullDraftConfirmationOpen(false);
+    // The plan lands in its own pane whichever way the preference points:
+    // gated it waits there, auto-start it draws the progress.
+    setActivePane("draft");
+    const planned = await planRun(selectedModelId, instruction.trim());
+    if (planned) {
+      setInstruction("");
+      setQueuedReferences([]);
+      return;
+    }
+    // Nothing was planned, so there is no pane to stand on: the failure
+    // belongs back beside the action that asked for it.
+    setActivePane("setup");
+  }
+
+  /** Approve the plan the Draft run pane is showing. */
+  async function handleStartPlan(edits: PlanEntryEdit[], instructions: string) {
+    const planned = draftPane?.run;
+    if (!planned || !selectedModelId) return;
+    if (draftPane.mode === "resume-gate") {
+      await resumeRun(edits, instructions);
+      return;
+    }
+    await startPlannedRun(selectedModelId, planned, edits);
+  }
+
+  /**
+   * Put the block a consistency finding points at onto the composer, so the
+   * reader can ask about it in their own words. The card never fixes anything
+   * itself — the consistency pass has no write access, and neither does this.
+   */
+  function handleReferenceFinding(reference: FindingReference) {
+    const section = workspace?.draft.content.sections.find(
+      (candidate) => candidate.id === reference.sectionId
     );
-    try {
-      const result = await resolveReportProposal(
-        clientId,
-        proposalId,
-        decision
-      );
-      if (generation !== generationRef.current) return;
-      setWorkspace(result);
-      setEdit(draftToEdit(result.draft));
-      setEditing(false);
-      setConflict(false);
+    if (!section) return;
+    // A finding that never resolved to a block still points at a section, so
+    // fall back to the first block the composer can carry.
+    const index =
+      reference.blockIndex ??
+      section.blocks.findIndex((block) => block.kind !== "bullet_list");
+    const block = index >= 0 ? section.blocks[index] : undefined;
+    if (!block || block.kind === "bullet_list") {
+      setActivePane("write");
       setSaveStatus(
-        decision === "accept"
-          ? `Accepted and saved as revision ${result.draft.revision}.`
-          : "Proposal rejected. The accepted draft was not changed."
+        `“${section.heading}” has no paragraph or table to attach. Quote it in your message instead.`
       );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
+      return;
     }
-  }
-
-  async function handlePickTemplate() {
-    if (controlsBusy || dirty || editing || workspace?.pending_proposal) return;
-    const generation = generationRef.current;
-    setBusy("picking_template");
-    setActionError(null);
-    setSaveStatus("Choose a .docx template to inspect locally…");
-    try {
-      const preview = await pickReportTemplateDocx(clientId);
-      if (generation !== generationRef.current) {
-        if (preview) await discardReportTemplatePreview(preview.import_id);
-        return;
-      }
-      setTemplatePreview(preview);
-      setSaveStatus(
-        preview
-          ? "Template parsed locally. Review the structured import before applying it."
-          : "Template import canceled."
-      );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
-    }
-  }
-
-  async function handleDiscardTemplatePreview() {
-    const preview = templatePreviewRef.current;
-    setTemplatePreview(null);
-    if (!preview) return;
-    try {
-      await discardReportTemplatePreview(preview.import_id);
-    } catch (error) {
-      showActionError(error);
-    }
+    addReference({
+      kind: block.kind,
+      sectionId: section.id,
+      blockIndex: index,
+      sectionHeading: section.heading,
+      preview: reportBlockReferencePreview(block),
+    });
   }
 
   async function handleApplyTemplate() {
-    if (!workspace || !templatePreview || controlsBusy) return;
-    const generation = generationRef.current;
-    setBusy("applying_template");
-    setActionError(null);
-    setSaveStatus("Importing the reviewed template as a new accepted revision…");
-    try {
-      const result = await applyReportTemplate(
-        clientId,
-        workspace.draft.revision,
-        templatePreview.import_id
-      );
-      if (generation !== generationRef.current) return;
-      setWorkspace(result);
-      setEdit(draftToEdit(result.draft));
-      setEditing(false);
-      setTemplatePreview(null);
-      setConflict(false);
-      setSaveStatus(
-        `Imported DOCX content as revision ${result.draft.revision}. Review all carryover before export.`
-      );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
-    }
+    if (editing) return;
+    const applied = await applyTemplate(selectedTemplateId);
+    if (applied) void reloadTemplates();
   }
 
-  async function handleReviewTemplate() {
-    if (!workspace?.template_import?.review_required || controlsBusy) return;
-    if (
-      !window.confirm(
-        "Confirm that you reviewed this revision for carried-over names, dates, pronouns, diagnoses, scores, placeholders, and other client-specific facts."
-      )
-    ) {
-      return;
-    }
-    const generation = generationRef.current;
-    setBusy("reviewing_template");
-    setActionError(null);
-    setSaveStatus("Recording template carryover review…");
-    try {
-      const result = await acknowledgeReportTemplateReview(
-        clientId,
-        workspace.report_id,
-        workspace.draft.revision
-      );
-      if (generation !== generationRef.current) return;
-      setWorkspace(result);
-      setEdit(draftToEdit(result.draft));
-      setConflict(false);
-      setSaveStatus(`Template carryover reviewed for revision ${result.draft.revision}.`);
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setSaveStatus(null);
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
-    }
-  }
-
-  async function handleExport() {
-    if (
-      dirty ||
-      controlsBusy ||
-      !workspace ||
-      workspace.template_import?.review_required
-    ) {
-      return;
-    }
-    const generation = generationRef.current;
-    const visibleReportId = workspace.report_id;
-    const visibleRevision = workspace.draft.revision;
-    setBusy("exporting");
-    setActionError(null);
-    setSaveStatus(null);
-    setExportStatus("Choose where to save the Word document…");
-    try {
-      const result = await exportReportDocx(
-        clientId,
-        visibleReportId,
-        visibleRevision
-      );
-      if (generation !== generationRef.current) return;
-      if (
-        result.report_id !== visibleReportId ||
-        result.revision !== visibleRevision
-      ) {
-        throw new Error("The exported report revision did not match the visible report.");
-      }
-      setWorkspace((current) =>
-        current
-          ? {
-              ...current,
-              last_export: {
-                revision: result.revision,
-                status: result.status,
-                attempted_at: result.attempted_at,
-              },
-            }
-          : current
-      );
-      setConflict(false);
-      const persistenceSuffix = result.status_persisted
-        ? ""
-        : " Export status could not be synced to Editor History."
-      setExportStatus(
-        result.exported
-          ? `Word document exported from revision ${result.revision}.${persistenceSuffix}`
-          : `Export canceled. You can try again.${persistenceSuffix}`
-      );
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      showActionError(error);
-      setExportStatus("Export failed. Choose Export .docx to try again.");
-      // A failed local write is persisted even though the export command
-      // returns an error. Refresh so that status is visible immediately.
-      try {
-        const latest = await loadReportWorkspace(clientId);
-        if (
-          generation === generationRef.current &&
-          latest.report_id === visibleReportId
-        ) {
-          setWorkspace(latest);
-          setEdit(draftToEdit(latest.draft));
-        }
-      } catch {
-        // Keep the actionable export error when status refresh is unavailable.
-      }
-    } finally {
-      if (generation === generationRef.current) setBusy(null);
-    }
-  }
-
-  function addReference(reference: WritingBlockReference) {
-    setReferences((current) => {
-      if (
-        current.some(
-          (item) =>
-            item.sectionId === reference.sectionId &&
-            item.blockIndex === reference.blockIndex
-        )
-      ) {
-        return current;
-      }
-      return [...current, reference].slice(-10);
-    });
-    setSaveStatus(
-      `${reference.kind === "paragraph" ? "Paragraph" : "Table"} attached to your next Writing message.`
-    );
-    requestAnimationFrame(() => composerRef.current?.focus());
-  }
-
-  function dismissIntroNotice() {
-    dismissNotice(INTRO_NOTICE_KEY);
-    setShowIntroNotice(false);
-  }
-
-  const contextReads = workspace.turns.flatMap((turn) => turn.context_reads);
+  const contextPills = buildContextPills(workspace, references, liveContext);
 
   return (
     <>
       <div className="flex-1 min-h-0 grid grid-cols-1 min-[800px]:grid-cols-[minmax(340px,42%)_minmax(0,58%)] overflow-y-auto min-[800px]:overflow-hidden">
       <section className="min-h-[32rem] min-[800px]:min-h-0 flex flex-col bg-white">
-        <div className="px-5 py-4 border-b border-gray-200 space-y-3">
-          {showIntroNotice && (
-            <div className="relative rounded-md border border-blue-200 bg-blue-50 p-3 pr-9">
-              <p className="text-xs font-semibold text-blue-900">
-                Writing assistant
-              </p>
-              <p className="text-xs leading-5 text-blue-800 mt-1">
-                Claude can list and read bounded text from this client&apos;s record.
-                It cannot change the report directly: every AI write is a proposal
-                you must accept. Your own report edits are included automatically
-                with your next message.
-              </p>
-              <button
-                type="button"
-                aria-label="Hide Writing assistant notice"
-                title="Hide this notice"
-                onClick={dismissIntroNotice}
-                className="absolute right-2 top-2 text-blue-500 hover:text-blue-900"
-              >
-                <CloseIcon className="w-3.5 h-3.5" />
-              </button>
+        <div className="space-y-2 px-5 py-3">
+          <div className="grid grid-cols-[minmax(4rem,1fr)_minmax(6rem,0.9fr)_auto] items-center gap-2">
+            <div className="min-w-0">
+              <EditableName
+                value={workspace.session_name}
+                label="writer session"
+                onSave={renameSession}
+                disabled={controlsBusy}
+                compactActions
+                className="w-full text-sm"
+              />
             </div>
-          )}
-
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-end">
-            <label className="block">
-              <span className="text-xs font-medium text-gray-600">Model</span>
-              <select
-                aria-label="Writing model"
-                value={selectedModelId}
-                onChange={(event) => setSelectedModelId(event.target.value)}
-                disabled={controlsBusy || pending !== null || chatModelsLoading}
-                className="mt-1 w-full px-3 py-2 text-sm border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
-              >
-                {chatModelsLoading ? (
-                  <option value="">Loading models…</option>
-                ) : chatModels.length === 0 ? (
-                  <option value="">No models available</option>
-                ) : null}
-                {chatModels.map((model) => (
-                  <option key={model.model_id} value={model.model_id}>
-                    {model.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <ModelSelect
+              models={chatModels}
+              loading={chatModelsLoading}
+              error={chatModelsError}
+              value={selectedModelId}
+              onChange={setSelectedModelId}
+              disabled={controlsBusy || pending !== null}
+              ariaLabel="Writing model"
+              className="min-w-0 w-full"
+            />
             <button
               type="button"
               aria-expanded={contextOpen}
               aria-controls="writing-context-control"
               onClick={() => setContextOpen((open) => !open)}
-              className="mb-px px-3 py-2 text-xs font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
             >
-              Context · {contextReads.length + 1}
+              Context · {contextPills.length}
             </button>
           </div>
 
           {contextOpen && (
-            <ContextControl
-              revision={workspace.draft.revision}
-              turns={workspace.turns.length}
-              reads={contextReads}
-              references={references}
-              templateImported={workspace.template_import !== null}
-            />
+            <div
+              id="writing-context-control"
+              className="rounded-md border border-gray-200 bg-gray-50 p-2.5"
+            >
+              <ContextPills
+                pills={contextPills}
+                onPreviewFile={setPreviewFilename}
+              />
+            </div>
           )}
 
           {chatModelsError && (
@@ -675,30 +559,325 @@ export default function Writing({
           )}
         </div>
 
+        <SessionTabs
+          idPrefix="writer-session"
+          label="Writing session"
+          active={activePane}
+          onSelect={setActivePane}
+          tabs={[
+            { id: "setup", label: "Get started" },
+            { id: "write", label: "Write with Claude" },
+            // A run — live, waiting at the gate, or interrupted — or the
+            // findings a review left behind.
+            ...(hasDraftPane
+              ? [{ id: "draft" as const, label: "Draft run" }]
+              : []),
+            {
+              id: "usage",
+              label: "Costs and cache",
+              compact: true,
+              icon: <UsageTabIcon />,
+            },
+          ]}
+        />
+
+        {activePane === "setup" && (
+          <div
+            id="writer-session-panel-setup"
+            role="tabpanel"
+            aria-labelledby="writer-session-tab-setup"
+            className="flex-1 overflow-y-auto bg-gray-50 px-5 py-5"
+            data-testid="writer-setup"
+          >
+            <div className="mx-auto max-w-xl space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Start this report
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-gray-500">
+                  Choose a template, ask Claude to fill the whole report, or skip both and start with tools. Every step is optional.
+                </p>
+              </div>
+
+              <section className="rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-start gap-3">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[10px] font-semibold text-gray-600">
+                    1
+                  </span>
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-800">
+                      Choose a Word template <span className="font-normal text-gray-400">· optional</span>
+                    </h4>
+                    <p className="mt-0.5 text-[11px] text-gray-500">
+                      Start with saved headings, tables, and export formatting.
+                    </p>
+                  </div>
+                </div>
+
+                {workspace.template_import ? (
+                  <div
+                    title="Start a new Writing session to use another template"
+                    className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800"
+                  >
+                    <span aria-hidden="true">✓</span>
+                    <span className="min-w-0 truncate">
+                      Template <strong>{workspace.template_import.writer_template_name ?? "Word template"}</strong> applied
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    <label className="block min-w-0">
+                      <span className="sr-only">Writer template</span>
+                      <select
+                        aria-label="Writer template"
+                        value={selectedTemplateId}
+                        onChange={(event) => setChosenTemplateId(event.target.value)}
+                        disabled={controlsBusy || pending !== null || writerTemplates.length === 0}
+                        className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                      >
+                        {writerTemplates.length === 0 && (
+                          <option value="">No saved templates</option>
+                        )}
+                        {writerTemplates.map((template) => (
+                          <option key={template.id} value={template.id}>
+                            {template.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={onManageTemplates}
+                        disabled={controlsBusy}
+                        className="text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
+                      >
+                        Manage templates
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleApplyTemplate()}
+                        disabled={
+                          controlsBusy ||
+                          pending !== null ||
+                          dirty ||
+                          editing ||
+                          selectedTemplateId === ""
+                        }
+                        className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {busy === "applying_template" ? "Applying…" : "Apply template"}
+                      </button>
+                    </div>
+                    {templatesError && (
+                      <p role="alert" className="mt-2 text-xs text-red-600">
+                        Could not load writer templates: {templatesError}
+                      </p>
+                    )}
+                  </>
+                )}
+              </section>
+
+              {workspace.turns.length === 0 && (
+                <section className="rounded-lg border border-blue-200 bg-white p-4">
+                  <div className="mb-3 flex items-start gap-3">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-[10px] font-semibold text-blue-700">
+                      2
+                    </span>
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-800">
+                        Fill the whole report <span className="font-normal text-gray-400">· optional</span>
+                      </h4>
+                      <p className="mt-0.5 text-[11px] leading-4 text-gray-500">
+                        Claude reads every available record and saves one complete, versioned draft.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-medium text-gray-600">
+                      Guidance <span className="font-normal text-gray-400">· optional</span>
+                    </span>
+                    <WriterPromptPicker
+                      prompts={writerPrompts}
+                      currentValue={instruction}
+                      disabled={composerDisabled}
+                      onPick={insertSavedPrompt}
+                      onManage={onManagePrompts}
+                    />
+                  </div>
+                  <label className="block">
+                    <span className="sr-only">Full report guidance</span>
+                    <textarea
+                      ref={composerRef}
+                      aria-label="Full report guidance"
+                      value={instruction}
+                      onChange={(event) => setInstruction(event.currentTarget.value)}
+                      disabled={composerDisabled}
+                      rows={3}
+                      placeholder="For example: Use a concise clinical style…"
+                      className="mt-1 w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                    />
+                  </label>
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void handleGenerateFullDraft()}
+                      disabled={composerDisabled}
+                      className="rounded-md bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+                    >
+                      {busy === "planning"
+                        ? "Planning…"
+                        : busy === "generating"
+                          ? "Filling…"
+                          : "Fill whole report"}
+                    </button>
+                  </div>
+                  {actionError && (
+                    <div
+                      role="alert"
+                      className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700"
+                    >
+                      <p className="font-semibold">Could not complete the Writer action</p>
+                      <p className="mt-1 break-words">{actionError}</p>
+                      {conflict && (
+                        <button
+                          type="button"
+                          onClick={() => void handleReload()}
+                          className="mt-2 font-semibold text-blue-700 hover:text-blue-900"
+                        >
+                          Reload writing session
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 pt-4">
+                <p className="text-[11px] text-gray-500">
+                  Prefer to build it section by section with approved tools?
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActivePane("write")}
+                  className="text-xs font-semibold text-blue-700 hover:text-blue-900"
+                >
+                  Write with Claude →
+                </button>
+              </div>
+
+              {saveStatus && (
+                <p role="status" aria-live="polite" className="text-xs text-gray-600">
+                  {saveStatus}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activePane === "draft" && hasDraftPane && (
+          <div
+            id="writer-session-panel-draft"
+            role="tabpanel"
+            aria-labelledby="writer-session-tab-draft"
+            className="flex min-h-0 flex-1 flex-col"
+            data-testid="draft-run-pane"
+          >
+            {draftPane && (
+              <DraftPlanPanel
+                // The pane owns unsaved plan edits, so a new run or a new
+                // question gets a new pane rather than a reconciled one.
+                key={`${draftPane.run?.run_id ?? "planning"}:${draftPane.mode}`}
+                clientId={clientId}
+                run={draftPane.run}
+                runState={run}
+                mode={draftPane.mode}
+                busy={controlsBusy}
+                error={actionError}
+                canStop={canStopRun}
+                onStop={stopRun}
+                onStart={(edits, instructions) =>
+                  void handleStartPlan(edits, instructions)
+                }
+                onCancelPlan={() => void discardRun()}
+              />
+            )}
+            <div
+              className={
+                draftPane
+                  ? "flex max-h-80 min-h-0 shrink-0 flex-col"
+                  : "flex min-h-0 flex-1 flex-col"
+              }
+            >
+              <FindingsPanel
+                findings={findingRows}
+                content={workspace.draft.content}
+                draftRevision={workspace.draft.revision}
+                completion={completion}
+                busy={controlsBusy}
+                reviewing={busy === "reviewing"}
+                reviewCompleted={run.reviewCompleted}
+                reviewTotal={run.reviewTotal}
+                canReview={canReviewDraft}
+                resolvingId={resolvingFindingId}
+                onReview={() => void reviewDraft()}
+                onApply={(id) => void applyFinding(id)}
+                onUndo={(id) => void undoFinding(id)}
+                onDismiss={(id) => void dismissFinding(id)}
+                onReference={handleReferenceFinding}
+                onPreviewRecord={setPreviewFilename}
+                registerSection={registerFindingSection}
+              />
+            </div>
+          </div>
+        )}
+
+        {activePane === "usage" && (
+          <div
+            id="writer-session-panel-usage"
+            role="tabpanel"
+            aria-labelledby="writer-session-tab-usage"
+            className="min-h-0 flex-1"
+          >
+            <SessionUsagePanel
+              session={session}
+              ledger={ledger}
+              showTurnCosts={showTurnCosts}
+              onShowTurnCostsChange={setShowTurnCosts}
+              turnCostsLabel="Writing timeline"
+              diagram={diagram}
+            />
+          </div>
+        )}
+
+        {activePane === "write" && (
+          <div
+            id="writer-session-panel-write"
+            role="tabpanel"
+            aria-labelledby="writer-session-tab-write"
+            className="flex min-h-0 flex-1 flex-col"
+          >
         <div
           aria-label="Writing timeline"
           className="flex-1 overflow-y-auto px-5 py-4 space-y-4 select-text"
         >
           {workspace.turns.length === 0 && !pending && (
-            <div className="py-8 text-center">
-              <p className="text-sm font-medium text-gray-700">
-                Build the report interactively.
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                Ask Claude to inspect records, answer a question, or propose
-                specific sections, or import a DOCX content template.
-              </p>
-            </div>
+            <ChatEmptyState
+              title="Build the report interactively."
+              subtitle="Ask Claude to inspect records with approved tools, answer a question, or propose specific sections."
+            />
           )}
           {workspace.turns.map((turn) => (
             <div key={turn.id} className="space-y-2">
               {turn.timeline.map((item, index) => (
                 <TimelineItem key={`${turn.id}-${index}`} item={item} />
               ))}
-              <p className="text-[10px] text-gray-400 text-right">
-                {turn.tool_uses} tool use{turn.tool_uses === 1 ? "" : "s"} ·{" "}
-                {turn.usage.input_tokens + turn.usage.output_tokens} tokens
-              </p>
+              <div className="flex items-center justify-end gap-2 text-[10px] text-gray-400">
+                <span>
+                  {turn.tool_uses} tool use{turn.tool_uses === 1 ? "" : "s"}
+                </span>
+                {showTurnCosts && <TurnCostBadge usage={turn.usage} />}
+              </div>
             </div>
           ))}
 
@@ -708,8 +887,8 @@ export default function Writing({
                 proposal={pending}
                 accepted={workspace.draft.content}
                 busy={busy === "resolving"}
-                onAccept={() => void handleDecision("accept")}
-                onReject={() => void handleDecision("reject")}
+                onAccept={() => void resolveProposal("accept")}
+                onReject={() => void resolveProposal("reject")}
               />
             </div>
           )}
@@ -745,11 +924,24 @@ export default function Writing({
 
         <div className="border-t border-gray-200 p-4">
           {editsQueued && (
-            <p className="text-xs text-amber-700 mb-2" data-testid="queued-report-edits">
-              {dirty
-                ? `${editCount} report edit${editCount === 1 ? "" : "s"} queued. Claria will save and include them with your next message.`
-                : "Saved report edits are queued and will be included with your next message."}
-            </p>
+            <div
+              className="mb-2 flex items-center gap-2 text-xs text-amber-700"
+              data-testid="queued-report-edits"
+            >
+              <p className="min-w-0 flex-1">
+                {dirty
+                  ? `${editCount} report edit${editCount === 1 ? "" : "s"} queued. Claria will save and include them with your next message.`
+                  : `Accepted report r${workspace.draft.revision} has saved changes since Claude saw r${workspace.last_agent_revision ?? 0}; they are queued for your next message.`}
+              </p>
+              <button
+                type="button"
+                onClick={() => void discardQueuedEdits()}
+                disabled={controlsBusy}
+                className="shrink-0 font-semibold text-amber-800 hover:text-amber-950 disabled:opacity-50"
+              >
+                {busy === "discarding" ? "Discarding…" : "Discard"}
+              </button>
+            </div>
           )}
           {pending && (
             <p className="text-xs text-violet-700 mb-2">
@@ -777,7 +969,7 @@ export default function Writing({
                     type="button"
                     aria-label={`Remove reference to ${reference.sectionHeading}, ${reference.kind} ${reference.blockIndex + 1}`}
                     onClick={() =>
-                      setReferences((current) =>
+                      setQueuedReferences((current) =>
                         current.filter(
                           (item) =>
                             item.sectionId !== reference.sectionId ||
@@ -793,38 +985,33 @@ export default function Writing({
               ))}
             </div>
           )}
-          <textarea
-            ref={composerRef}
-            aria-label="Writing instruction"
-            value={instruction}
-            onChange={(event) => setInstruction(event.target.value)}
-            onKeyDown={(event) => {
-              if (
-                event.key === "Enter" &&
-                (event.ctrlKey || event.metaKey) &&
-                !composerDisabled
-              ) {
-                event.preventDefault();
-                void handleSend();
-              }
-            }}
-            disabled={composerDisabled}
-            rows={4}
-            placeholder="Ask a question or describe the report change you want…"
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
-          />
-          <div className="mt-2 flex items-center justify-between">
-            <span className="text-[11px] text-gray-400">Ctrl/Cmd + Enter to send</span>
-            <button
-              type="button"
-              onClick={() => void handleSend()}
-              disabled={composerDisabled || instruction.trim() === ""}
-              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
-            >
-              {busy === "sending" ? "Using tools…" : "Send"}
-            </button>
+          <div className="mb-2 flex justify-end">
+            <WriterPromptPicker
+              prompts={writerPrompts}
+              currentValue={instruction}
+              disabled={composerDisabled}
+              onPick={insertSavedPrompt}
+              onManage={onManagePrompts}
+            />
           </div>
+          <ChatComposer
+            composerRef={composerRef}
+            ariaLabel="Writing instruction"
+            value={instruction}
+            onChange={setInstruction}
+            onSend={() => void handleSend()}
+            disabled={composerDisabled}
+            canSend={!composerDisabled && instruction.trim() !== ""}
+            placeholder="Ask a question or describe the report change you want…"
+            sendLabel={busy === "sending" ? "Using tools…" : "Send"}
+            onStop={stopRun}
+            canStop={canStopRun}
+            stopLabel="Stop"
+            rows={4}
+          />
         </div>
+          </div>
+        )}
       </section>
 
       <WritingCanvas
@@ -833,106 +1020,101 @@ export default function Writing({
         editing={editing}
         dirty={dirty}
         busy={controlsBusy}
-        onBeginEdit={() => {
-          setEdit(draftToEdit(workspace.draft));
-          setEditing(true);
-          setActionError(null);
-          setSaveStatus(null);
-        }}
-        onCancelEdit={() => {
-          setEdit(draftToEdit(workspace.draft));
-          setEditing(false);
-          setActionError(null);
-        }}
+        onBeginEdit={beginEdit}
+        onCancelEdit={cancelEdit}
+        hasQueuedEdits={editsQueued}
+        onDiscardQueued={() => void discardQueuedEdits()}
         onChange={setEdit}
-        onSave={() => void handleSave()}
-        onExport={() => void handleExport()}
-        onImportTemplate={() => void handlePickTemplate()}
-        onReviewTemplate={() => void handleReviewTemplate()}
+        onSave={save}
+        onExport={exportDocx}
+        onOpenRevisions={openRevisions}
         onReference={addReference}
-        saveStatus={null}
-        exportStatus={exportStatus}
+        status={exportStatus}
         validationErrors={validationErrors}
+        agentActivity={agentActivity}
+        run={run}
+        runError={actionError}
+        canStopRun={canStopRun}
+        onStopRun={stopRun}
+        onResumeRun={() => {
+          openResumeGate();
+          setActivePane("draft");
+        }}
+        onKeepPartialDraft={keepPartialDraft}
+        onDiscardRun={discardRun}
+        findingCounts={findingCounts}
+        onOpenFindings={openFindings}
+        // The canvas carries the review entry point only while nothing else
+        // is offering one; with a pane up, the pane's button is the one. The
+        // pass writes its progress and its findings into that pane, so asking
+        // for one from here goes there.
+        onReviewDraft={
+          hasDraftPane
+            ? undefined
+            : () => {
+                setActivePane("draft");
+                void reviewDraft();
+              }
+        }
+        canReviewDraft={canReviewDraft}
+        reviewing={busy === "reviewing"}
       />
       </div>
-      {templatePreview && (
-        <WritingTemplateImportModal
-          key={templatePreview.import_id}
-          preview={templatePreview}
-          currentRevision={workspace.draft.revision}
-          busy={busy === "applying_template"}
-          error={actionError}
-          onCancel={() => void handleDiscardTemplatePreview()}
-          onApply={() => void handleApplyTemplate()}
+
+      {fullDraftConfirmationOpen && (
+        <Modal
+          open
+          title="Replace the working draft?"
+          onClose={() => setFullDraftConfirmationOpen(false)}
+          className="max-w-lg p-6"
+        >
+          <p className="text-sm leading-6 text-gray-600">
+            Claude will fill the whole report from every readable client record
+            and replace revision {workspace.draft.revision} with one new saved
+            revision. The current revision will remain available under
+            Revisions.
+          </p>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setFullDraftConfirmationOpen(false)}
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleGenerateFullDraft(true)}
+              className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+            >
+              Fill whole report
+            </button>
+          </div>
+        </Modal>
+      )}
+      {previewFilename && (
+        <RecordFilePreviewModal
+          clientId={clientId}
+          filename={previewFilename}
+          readOnly
+          onClose={() => setPreviewFilename(null)}
+        />
+      )}
+      {revisionsOpen && (
+        <ReportRevisionModal
+          clientId={clientId}
+          workspace={workspace}
+          canRevert={
+            !controlsBusy && !dirty && !editing && pending === null
+          }
+          onClose={() => setRevisionsOpen(false)}
+          onReverted={(updated) => {
+            applyReverted(updated);
+            setQueuedReferences([]);
+          }}
         />
       )}
     </>
-  );
-}
-
-function ContextControl({
-  revision,
-  turns,
-  reads,
-  references,
-  templateImported,
-}: {
-  revision: number;
-  turns: number;
-  reads: ReportContextReadView[];
-  references: WritingBlockReference[];
-  templateImported: boolean;
-}) {
-  const uniqueReads = Array.from(
-    new Map(
-      reads.map((read) => [
-        `${read.filename}:${read.offset}:${read.returned_characters}`,
-        read,
-      ])
-    ).values()
-  );
-  return (
-    <div
-      id="writing-context-control"
-      className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 space-y-2"
-    >
-      <div>
-        <p className="font-semibold text-gray-800">Included on the next message</p>
-        <ul className="mt-1 list-disc pl-4 space-y-0.5">
-          <li>Complete accepted report · revision {revision}</li>
-          <li>{turns} retained Writing turn{turns === 1 ? "" : "s"}</li>
-          {templateImported && <li>DOCX template provenance and import notes</li>}
-          {references.length > 0 && (
-            <li>
-              {references.length} focused report block
-              {references.length === 1 ? "" : "s"}
-            </li>
-          )}
-        </ul>
-      </div>
-      <div>
-        <p className="font-semibold text-gray-800">
-          Record excerpts read this session · {uniqueReads.length}
-        </p>
-        {uniqueReads.length === 0 ? (
-          <p className="mt-1 text-gray-500">No record files have been read yet.</p>
-        ) : (
-          <ul className="mt-1 space-y-1 max-h-28 overflow-y-auto">
-            {uniqueReads.map((read) => (
-              <li key={`${read.filename}:${read.offset}:${read.returned_characters}`}>
-                <span className="font-medium">{read.filename}</span>{" "}
-                <span className="text-gray-500">
-                  chars {read.offset}–{read.offset + read.returned_characters}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="mt-1 text-[10px] leading-4 text-gray-400">
-          Excerpt text is not stored in history. Claude re-reads source text on demand.
-        </p>
-      </div>
-    </div>
   );
 }
 
@@ -956,77 +1138,4 @@ function reconcileReferences(
       },
     ];
   });
-}
-
-function isReportConflict(message: string): boolean {
-  return message.toLowerCase().includes("changed on another computer");
-}
-
-function TimelineItem({ item }: { item: ReportTimelineItemView }) {
-  if (item.kind === "tool_activity") {
-    const color =
-      item.status === "failed"
-        ? "border-red-200 bg-red-50 text-red-700"
-        : item.status === "succeeded"
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-          : "border-gray-200 bg-gray-50 text-gray-600";
-    return (
-      <details className={`group border rounded-md text-xs ${color}`}>
-        <summary className="list-none cursor-pointer px-3 py-2 flex items-center gap-2 [&::-webkit-details-marker]:hidden">
-          <span
-            aria-hidden="true"
-            className="inline-block transition-transform group-open:rotate-90"
-          >
-            ▸
-          </span>
-          <span className="flex-1">{item.summary}</span>
-          <code className="hidden sm:inline text-[10px] opacity-70">
-            {item.name}
-          </code>
-          <span className="capitalize">{item.status}</span>
-        </summary>
-        <div className="border-t border-current/15 bg-gray-950 text-gray-100 px-3 py-3 space-y-3 select-text">
-          <div>
-            <p className="mb-1 text-[10px] uppercase tracking-wide text-gray-400">
-              Raw LLM invocation
-            </p>
-            <pre className="max-h-72 overflow-auto whitespace-pre text-[11px] leading-4 font-mono">
-              {item.invocation_json}
-            </pre>
-          </div>
-          {item.result_json && (
-            <div>
-              <p className="mb-1 text-[10px] uppercase tracking-wide text-gray-400">
-                Correlated tool result
-              </p>
-              <pre className="max-h-72 overflow-auto whitespace-pre text-[11px] leading-4 font-mono">
-                {item.result_json}
-              </pre>
-            </div>
-          )}
-        </div>
-      </details>
-    );
-  }
-
-  const user = item.role === "user";
-  return (
-    <div className={`flex ${user ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[90%] rounded-lg px-3 py-2 text-sm select-text ${
-          user
-            ? "bg-blue-600 text-white whitespace-pre-wrap"
-            : "bg-gray-100 text-gray-800 border border-gray-200"
-        }`}
-      >
-        {user ? (
-          item.text
-        ) : (
-          <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
-            <Markdown remarkPlugins={[remarkGfm]}>{item.text}</Markdown>
-          </div>
-        )}
-      </div>
-    </div>
-  );
 }

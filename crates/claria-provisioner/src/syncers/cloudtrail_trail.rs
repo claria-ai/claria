@@ -2,9 +2,11 @@ use aws_sdk_cloudtrail::Client;
 use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
-use crate::error::ProvisionerError;
-use crate::manifest::ResourceSpec;
-use crate::syncer::{BoxFuture, ResourceSyncer};
+use crate::{
+    error::ProvisionerError,
+    manifest::ResourceSpec,
+    syncer::{BoxFuture, ResourceSyncer},
+};
 
 pub struct CloudTrailTrailSyncer {
     spec: ResourceSpec,
@@ -28,13 +30,7 @@ impl ResourceSyncer for CloudTrailTrailSyncer {
 
     fn read(&self) -> BoxFuture<'_, Result<Option<serde_json::Value>, ProvisionerError>> {
         Box::pin(async {
-            let resp = match self
-                .client
-                .get_trail()
-                .name(self.trail_name())
-                .send()
-                .await
-            {
+            let resp = match self.client.get_trail().name(self.trail_name()).send().await {
                 Ok(resp) => resp,
                 // TODO: differentiate NotFound (legitimately absent) from
                 // AccessDenied/Throttling (masked failure). For now log
@@ -50,12 +46,8 @@ impl ResourceSyncer for CloudTrailTrailSyncer {
             };
 
             let trail = resp.trail();
-            let s3_bucket = trail
-                .and_then(|t| t.s3_bucket_name())
-                .unwrap_or_default();
-            let s3_key_prefix = trail
-                .and_then(|t| t.s3_key_prefix())
-                .unwrap_or_default();
+            let s3_bucket = trail.and_then(|t| t.s3_bucket_name()).unwrap_or_default();
+            let s3_key_prefix = trail.and_then(|t| t.s3_key_prefix()).unwrap_or_default();
             let is_multi_region = trail
                 .and_then(|t| t.is_multi_region_trail())
                 .unwrap_or(false);

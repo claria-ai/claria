@@ -126,9 +126,11 @@ export function buildInitScript(config: ScenarioConfig): string {
               success: true,
               steps,
               account_id: "185735714230",
+              // NewCredentialsInfo is the non-secret half: the minted secret
+              // access key stays Rust-side and never crosses the IPC boundary.
               new_credentials: {
                 access_key_id: "AKIAMOCKKEY00000001",
-                secret_access_key: "mock-secret-key-00000001",
+                iam_user_arn: "arn:aws:iam::185735714230:user/claria-admin",
               },
               error: null,
             };
@@ -174,6 +176,8 @@ export function buildInitScript(config: ScenarioConfig): string {
           }
 
           if (cmd === "list_editor_history") return [];
+          if (cmd === "list_chat_histories") return [];
+          if (cmd === "list_writer_templates") return [];
 
           if (cmd === "create_text_record_file") {
             const filename = args.filename.endsWith(".txt") ? args.filename : args.filename + ".txt";
@@ -200,7 +204,9 @@ export function buildInitScript(config: ScenarioConfig): string {
           if (cmd === "chat_message") {
             return {
               chat_id: "demo-chat-" + Date.now(),
+              chat_name: "Chat (1)",
               content: ${chatResponseJson},
+              usage: null,
             };
           }
 
@@ -229,7 +235,33 @@ export function buildInitScript(config: ScenarioConfig): string {
 
           // ── Misc stubs ─────────────────────────────────────────────
           if (cmd === "reset_provisioner_state") return null;
-          if (cmd === "get_whisper_models") return [];
+          if (cmd === "get_local_transcription_status") {
+            return {
+              runtime_version: "0.2.0",
+              accelerated: false,
+              legacy_model_bytes: 0,
+              settings: {
+                settings_version: 1,
+                speech_model: "whisper_small_q8",
+                backend: "auto",
+                gpu_device: 0,
+                cpu_threads: 0,
+                kv_precision: "auto",
+                initial_prompt: "",
+                condition_on_previous_text: true,
+                max_previous_context_tokens: 223,
+                temperature: 0,
+                temperature_increment: 0.2,
+                compression_ratio_threshold: 2.4,
+                log_probability_threshold: -1,
+                no_speech_threshold: 0.6,
+                seed: 0,
+              },
+              models: [],
+              backends: [{ backend: "auto", label: "Automatic", available: true }],
+              devices: [],
+            };
+          }
           if (cmd === "list_deleted_clients") return [];
           if (cmd === "list_deleted_files") return [];
           if (cmd === "list_file_versions") return [];

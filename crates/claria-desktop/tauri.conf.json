@@ -1,14 +1,17 @@
 {
   "identifier": "com.claria.desktop",
   "productName": "Claria",
-  "version": "0.19.0",
+  "version": "0.32.0",
   "build": {
-    "beforeBuildCommand": "npm --prefix ../claria-desktop-frontend install && npm --prefix ../claria-desktop-frontend run build",
-    "beforeDevCommand": "npm --prefix ../claria-desktop-frontend install && npm --prefix ../claria-desktop-frontend run dev",
+    "beforeBuildCommand": "npm --prefix ../claria-desktop-frontend install --no-fund && npm --prefix ../claria-desktop-frontend run build",
+    "beforeDevCommand": "npm --prefix ../claria-desktop-frontend install --no-fund && npm --prefix ../claria-desktop-frontend run dev",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../../claria-desktop-frontend/dist"
   },
   "app": {
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:"
+    },
     "windows": [
       {
         "title": "Claria",
@@ -23,6 +26,9 @@
     "active": true,
     "licenseFile": "../../LICENSE",
     "targets": ["dmg", "nsis", "msi"],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

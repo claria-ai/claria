@@ -39,13 +39,14 @@ async deleteConfig() : Promise<Result<null, string>> {
 }
 },
 /**
- * Save the clinician's preferences (synced subset) to both the local config
- * file and `_state/preferences.json` in S3. Bubbles S3-write failures so the
+ * Save one UI section's preference fields. Absent patch fields are left
+ * untouched locally and in `_state/preferences.json`, so concurrent
+ * sections can't clobber each other. Bubbles S3-write failures so the
  * frontend can show a partial-save warning.
  */
-async savePreferences(preferredModelId: string | null, costExplorerEnabled: boolean, hourlyCostData: boolean, promptCachingEnabled: boolean, transcription: TranscriptionPreferences) : Promise<Result<ConfigInfo, string>> {
+async savePreferencesPatch(patch: PreferencesPatch) : Promise<Result<ConfigInfo, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_preferences", { preferredModelId, costExplorerEnabled, hourlyCostData, promptCachingEnabled, transcription }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_preferences_patch", { patch }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -65,11 +66,74 @@ async fetchCloudPreferences() : Promise<Result<ConfigInfo, string>> {
 }
 },
 /**
+ * Save the S3-stored preferences file to a user-selected local path, verbatim
+ * so a support reader sees exactly what the app reads. Falls back to a
+ * canonical serialization of the local values when the cloud copy doesn't
+ * exist yet. Returns `false` when the dialog is cancelled.
+ */
+async exportPreferences() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_preferences") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Replace the synced preferences with a user-selected export. The previous
+ * values stay one entry back in the file's S3 version history. Returns
+ * `None` when the dialog is cancelled.
+ */
+async importPreferences() : Promise<Result<ConfigInfo | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("import_preferences") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List all versions of the synced preferences file.
+ */
+async listPreferencesVersions() : Promise<Result<FileVersion[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_preferences_versions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the text of one version of the synced preferences file.
+ */
+async getPreferencesVersion(versionId: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_preferences_version", { versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Restore a previous version of the synced preferences file. The version's
+ * content is parsed and validated first, then written through the normal
+ * patch path so the local config follows and the overwritten values remain
+ * in version history.
+ */
+async restorePreferencesVersion(versionId: string) : Promise<Result<ConfigInfo, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restore_preferences_version", { versionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Upload an audio file and transcribe with the wizard's per-file options.
  * 
- * Mirrors `upload_record_file` but skips the legacy single-language path —
- * always goes through the new structured transcribe + optional Bedrock
- * translation. The `.text` sidecar contains the rendered headered body.
+ * Same skeleton as [`upload_record_file`], but restricted to audio and with
+ * a fatal sidecar: the wizard exists to produce a transcript, so a failed
+ * transcription fails the command instead of degrading to a warning.
  */
 async uploadRecordFileWithOptions(clientId: string, filePath: string, overrides: TranscribeOptionsOverrides | null) : Promise<Result<RecordFile, string>> {
     try {
@@ -137,7 +201,7 @@ async setPreferredModel(modelId: string | null) : Promise<Result<null, string>> 
  * The desktop app uses the returned `CredentialAssessment` to decide
  * which UI flow to present (bootstrap vs. straight to provisioning).
  */
-async assessCredentials(region: string, credentials: CredentialSource) : Promise<Result<CredentialAssessment, string>> {
+async assessCredentials(region: string, credentials: CredentialInput) : Promise<Result<CredentialAssessment, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("assess_credentials", { region, credentials }) };
 } catch (e) {
@@ -149,13 +213,12 @@ async assessCredentials(region: string, credentials: CredentialSource) : Promise
  * Assume a role in an AWS sub-account using parent-account credentials.
  * 
  * The operator provides their parent-account credentials and the sub-account
- * details. We call STS AssumeRole and return temporary credentials that can
- * be used with `assess_credentials` and `bootstrap_iam_user` to set up a
- * dedicated IAM user in the sub-account.
- * 
- * The temporary credentials are never persisted to disk.
+ * details. We call STS AssumeRole, hold the temporary credentials in memory,
+ * and return an [`AssumedRoleSession`] whose handle later provisioning
+ * commands exchange for them. Neither the secret access key nor the session
+ * token ever reaches the frontend, and nothing is persisted to disk.
  */
-async assumeRole(region: string, credentials: CredentialSource, accountId: string, roleName: string) : Promise<Result<AssumeRoleResult, string>> {
+async assumeRole(region: string, credentials: CredentialInput, accountId: string, roleName: string) : Promise<Result<AssumedRoleSession, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("assume_role", { region, credentials, accountId, roleName }) };
 } catch (e) {
@@ -178,7 +241,7 @@ async listAwsProfiles() : Promise<Result<string[], string>> {
  * Called when bootstrap fails due to the 2-key limit so the operator can
  * pick which key to delete.
  */
-async listUserAccessKeys(region: string, credentials: CredentialSource) : Promise<Result<AccessKeyInfo[], string>> {
+async listUserAccessKeys(region: string, credentials: CredentialInput) : Promise<Result<AccessKeyInfo[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_user_access_keys", { region, credentials }) };
 } catch (e) {
@@ -192,7 +255,7 @@ async listUserAccessKeys(region: string, credentials: CredentialSource) : Promis
  * Called after the operator picks a key to remove to make room for a
  * fresh one during bootstrap.
  */
-async deleteUserAccessKey(region: string, credentials: CredentialSource, accessKeyId: string) : Promise<Result<null, string>> {
+async deleteUserAccessKey(region: string, credentials: CredentialInput, accessKeyId: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_user_access_key", { region, credentials, accessKeyId }) };
 } catch (e) {
@@ -208,7 +271,7 @@ async deleteUserAccessKey(region: string, credentials: CredentialSource, accessK
  * The provisioner does all the IAM work and returns the new credentials.
  * We handle only the config write and in-memory state update.
  */
-async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: string, rootSecretAccessKey: string, sessionToken: string | null, credentialClass: CredentialClass) : Promise<Result<BootstrapResult, string>> {
+async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: string, rootSecretAccessKey: string, sessionToken: string | null, credentialClass: CredentialClass) : Promise<Result<BootstrapOutcome, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("bootstrap_iam_user", { region, systemName, rootAccessKeyId, rootSecretAccessKey, sessionToken, credentialClass }) };
 } catch (e) {
@@ -242,7 +305,7 @@ async escalateIamPolicy(accessKeyId: string, secretAccessKey: string, onProgress
  * Returns a `ProvisionScanResult` that tells the frontend whether elevated
  * credentials are needed before applying.
  */
-async provisionScan(region: string, systemName: string, credentials: CredentialSource, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionScanResult, string>> {
+async provisionScan(region: string, systemName: string, credentials: CredentialInput, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionScanResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("provision_scan", { region, systemName, credentials, onProgress }) };
 } catch (e) {
@@ -266,7 +329,7 @@ async provisionScan(region: string, systemName: string, credentials: CredentialS
  * [`ProvisionApplyOutcome::access_key_limit`] so the caller can offer key
  * deletion and retry.
  */
-async provisionApply(region: string, systemName: string, credentials: CredentialSource, elevatedCredentials: CredentialSource | null, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionApplyOutcome, string>> {
+async provisionApply(region: string, systemName: string, credentials: CredentialInput, elevatedCredentials: CredentialInput | null, onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<ProvisionApplyOutcome, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("provision_apply", { region, systemName, credentials, elevatedCredentials, onProgress }) };
 } catch (e) {
@@ -304,11 +367,15 @@ async apply(onProgress: TAURI_CHANNEL<ProvisionerProgress>) : Promise<Result<Pla
 }
 },
 /**
- * Destroy all managed resources. Returns nothing on success.
+ * Destroy all managed resources with temporary elevated credentials.
+ * 
+ * The saved scoped credentials deliberately cannot erase S3 version history.
+ * The supplied root or IAM administrator credentials are validated against
+ * the configured account, used only for this teardown, and never persisted.
  */
-async destroy() : Promise<Result<null, string>> {
+async destroy(elevatedCredentials: CredentialInput) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("destroy") };
+    return { status: "ok", data: await TAURI_INVOKE("destroy", { elevatedCredentials }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -387,17 +454,25 @@ async deleteClient(clientId: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async loadReportWorkspace(clientId: string) : Promise<Result<ReportWorkspaceView, string>> {
+async startReportWorkspace(clientId: string, reportId: string) : Promise<Result<ReportWorkspaceView, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("load_report_workspace", { clientId }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_report_workspace", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadReportWorkspace(clientId: string, reportId: string) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_report_workspace", { clientId, reportId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Return the current persisted writing session for the Record screen's
- * Editor History folder without creating a new workspace.
+ * Return every persisted Writing session for the Record screen's Editor
+ * History folder without creating a new workspace.
  */
 async listEditorHistory(clientId: string) : Promise<Result<EditorHistoryEntry[], string>> {
     try {
@@ -407,33 +482,107 @@ async listEditorHistory(clientId: string) : Promise<Result<EditorHistoryEntry[],
     else return { status: "error", error: e  as any };
 }
 },
-async saveReportDraft(clientId: string, expectedRevision: number, draft: ReportDraftEdit) : Promise<Result<ReportWorkspaceView, string>> {
+async renameReportSession(clientId: string, reportId: string, name: string) : Promise<Result<ReportWorkspaceView, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_report_draft", { clientId, expectedRevision, draft }) };
+    return { status: "ok", data: await TAURI_INVOKE("rename_report_session", { clientId, reportId, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listReportRevisions(clientId: string, reportId: string) : Promise<Result<ReportRevisionView[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_report_revisions", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadReportRevision(clientId: string, reportId: string, revision: number) : Promise<Result<ReportDraft, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_report_revision", { clientId, reportId, revision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async revertReportRevision(clientId: string, reportId: string, expectedRevision: number, revision: number) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("revert_report_revision", { clientId, reportId, expectedRevision, revision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async saveReportDraft(clientId: string, reportId: string, expectedRevision: number, draft: ReportDraftEdit) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_report_draft", { clientId, reportId, expectedRevision, draft }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async discardQueuedReportEdits(clientId: string, reportId: string, expectedRevision: number) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("discard_queued_report_edits", { clientId, reportId, expectedRevision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listWriterTemplates() : Promise<Result<WriterTemplateView[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_writer_templates") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Open a bounded native DOCX picker and return a structured content preview.
- * The parsed candidate remains only in process memory until explicitly
- * applied or discarded.
+ * Pick, validate, and upload a redacted DOCX into the managed template shelf.
+ * The local filename and path are never persisted.
  */
-async pickReportTemplateDocx(clientId: string) : Promise<Result<ReportTemplatePreview | null, string>> {
+async uploadWriterTemplate() : Promise<Result<WriterTemplateView | null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("pick_report_template_docx", { clientId }) };
+    return { status: "ok", data: await TAURI_INVOKE("upload_writer_template") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async renameWriterTemplate(templateId: string, name: string) : Promise<Result<WriterTemplateView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_writer_template", { templateId, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async deleteWriterTemplate(templateId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_writer_template", { templateId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Apply an already previewed DOCX candidate as a new accepted revision.
+ * Parse a managed template into an in-memory candidate for direct application.
  */
-async applyReportTemplate(clientId: string, expectedRevision: number, importId: string) : Promise<Result<ReportWorkspaceView, string>> {
+async previewWriterTemplate(clientId: string, templateId: string) : Promise<Result<ReportTemplatePreview, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("apply_report_template", { clientId, expectedRevision, importId }) };
+    return { status: "ok", data: await TAURI_INVOKE("preview_writer_template", { clientId, templateId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply a parsed managed DOCX candidate as a new accepted revision.
+ */
+async applyReportTemplate(clientId: string, reportId: string, expectedRevision: number, importId: string) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("apply_report_template", { clientId, reportId, expectedRevision, importId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -447,25 +596,166 @@ async discardReportTemplatePreview(importId: string) : Promise<Result<null, stri
     else return { status: "error", error: e  as any };
 }
 },
-async acknowledgeReportTemplateReview(clientId: string, reportId: string, expectedRevision: number) : Promise<Result<ReportWorkspaceView, string>> {
+async generateFullReport(clientId: string, reportId: string, expectedRevision: number, modelId: string, guidance: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("acknowledge_report_template_review", { clientId, reportId, expectedRevision }) };
+    return { status: "ok", data: await TAURI_INVOKE("generate_full_report", { clientId, reportId, expectedRevision, modelId, guidance, streamId, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async sendReportMessage(clientId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[]) : Promise<Result<ReportTurnResponse, string>> {
+/**
+ * The drafting run the Writing surface should reattach to, or `null` when
+ * there is nothing resumable for this report.
+ */
+async loadDraftRun(clientId: string, reportId: string) : Promise<Result<DraftRun | null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, expectedRevision, modelId, instruction, references }) };
+    return { status: "ok", data: await TAURI_INVOKE("load_draft_run", { clientId, reportId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async resolveReportProposal(clientId: string, proposalId: string, decision: ReportProposalDecision) : Promise<Result<ReportWorkspaceView, string>> {
+/**
+ * Keep what an interrupted run wrote: undone sections become skipped
+ * placeholders and the result is saved as a new revision.
+ */
+async finalizePartialDraft(clientId: string, reportId: string, runId: string) : Promise<Result<ReportWorkspaceView, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("resolve_report_proposal", { clientId, proposalId, decision }) };
+    return { status: "ok", data: await TAURI_INVOKE("finalize_partial_draft", { clientId, reportId, runId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Discard a drafting run. The report is untouched; the sections the run
+ * landed stay in the run object as history.
+ */
+async abandonDraftRun(clientId: string, reportId: string, runId: string) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("abandon_draft_run", { clientId, reportId, runId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Plan a whole-report draft and leave it at the gate.
+ * 
+ * Guarded exactly like a writer turn — no pending proposal, the revision the
+ * caller expects, no run already in flight — and the run it creates holds the
+ * report for the whole gate window, so nothing can edit the report out from
+ * under a plan being reviewed. A plan pass that fails releases that hold.
+ */
+async generateDraftPlan(clientId: string, reportId: string, expectedRevision: number, instructions: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<DraftRun, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("generate_draft_plan", { clientId, reportId, expectedRevision, instructions, streamId, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Apply the clinician's edits to a plan waiting at the gate.
+ */
+async updateDraftPlan(clientId: string, reportId: string, runId: string, edits: PlanEntryEdit[]) : Promise<Result<DraftRun, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_draft_plan", { clientId, reportId, runId, edits }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Approve the plan and draft the report it describes.
+ */
+async startDraftRun(clientId: string, reportId: string, runId: string, modelId: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_draft_run", { clientId, reportId, runId, modelId, streamId, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Pick an interrupted drafting run back up.
+ * 
+ * New instructions get a planning call over the run's durable state — they
+ * may change what an already-drafted section should say — and no new
+ * instructions is decided in code: keep what landed, draft the rest.
+ * 
+ * This resumes directly whatever the plan-gate preference says. The gate is
+ * a frontend decision: the pane edits the run's plan through
+ * `update_draft_plan` before calling this, and there is no second command
+ * for "resume without re-planning".
+ */
+async resumeDraftRun(clientId: string, reportId: string, runId: string, updatedInstructions: string | null, modelId: string, streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<FullReportGenerationResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resume_draft_run", { clientId, reportId, runId, updatedInstructions, modelId, streamId, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async sendReportMessage(clientId: string, reportId: string, expectedRevision: number, modelId: string, instruction: string, references: ReportBlockReferenceInput[], streamId: string, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportTurnResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("send_report_message", { clientId, reportId, expectedRevision, modelId, instruction, references, streamId, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resolveReportProposal(clientId: string, reportId: string, proposalId: string, decision: ReportProposalChoice) : Promise<Result<ReportWorkspaceView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_report_proposal", { clientId, reportId, proposalId, decision }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Review one accepted revision for every property and save what comes back.
+ * 
+ * One request per property runs in parallel against the reviewing model, so
+ * the command holds its future for the length of the slowest branch. A
+ * property whose branch fails leaves no coverage row: the returned findings
+ * say which properties were actually read, and the audit event names the
+ * ones that were not.
+ */
+async runReviewSweeps(clientId: string, reportId: string, revision: number, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportFindings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("run_review_sweeps", { clientId, reportId, revision, onProgress }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listReportFindings(clientId: string, reportId: string) : Promise<Result<ReportFindings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_report_findings", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resolveReportFinding(clientId: string, reportId: string, findingId: string, action: FindingAction) : Promise<Result<ReportFindingResolution, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_report_finding", { clientId, reportId, findingId, action }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Answer the completion checklist for one report.
+ * 
+ * Read-only and model-free: it loads durable state, checks it, and returns
+ * what failed. Nothing is mutated, so there is no audit event to record.
+ */
+async evaluateReportCompletion(clientId: string, reportId: string) : Promise<Result<CompletionReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("evaluate_report_completion", { clientId, reportId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -508,8 +798,10 @@ async searchRecordContents(clientId: string, query: string) : Promise<Result<str
 /**
  * Upload a file to a client's record from a local file path.
  * 
- * If the file is a PDF or DOCX, a sidecar `.text` file is generated
- * via Bedrock document text extraction and uploaded alongside.
+ * Printable UTF-8 files remain directly readable under their original names.
+ * PDF and DOCX files receive a structured-Markdown `.text` sidecar via
+ * Bedrock; audio files receive a transcript sidecar. Sidecar generation
+ * failure degrades to a warning — the original upload has already succeeded.
  */
 async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<RecordFile, string>> {
     try {
@@ -520,7 +812,8 @@ async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<Reco
 }
 },
 /**
- * Delete a file from a client's record, including its sidecar if present.
+ * Delete a file from a client's record, including its generated sidecar
+ * when present.
  */
 async deleteRecordFile(clientId: string, filename: string) : Promise<Result<null, string>> {
     try {
@@ -531,10 +824,11 @@ async deleteRecordFile(clientId: string, filename: string) : Promise<Result<null
 }
 },
 /**
- * Get the text content for a record file.
+ * Get the readable text for a record file.
  * 
- * For plain text files (`.txt`), returns the file content directly.
- * For other files, returns the `.text` sidecar content if available.
+ * Generated document/transcript sidecars take precedence. Otherwise any
+ * printable UTF-8 original—including JSON, Markdown, CSV, and extensionless
+ * text—is returned unchanged.
  */
 async getRecordFileText(clientId: string, filename: string) : Promise<Result<string, string>> {
     try {
@@ -572,9 +866,9 @@ async updateTextRecordFile(clientId: string, filename: string, content: string) 
 /**
  * Load text content for all record files belonging to a client.
  * 
- * For `.txt` files, returns the file content directly. For PDF/DOCX,
- * returns the `.text` sidecar content if available. Files with no
- * readable text are omitted.
+ * Printable UTF-8 originals are returned unchanged, regardless of extension.
+ * PDF, DOCX, and audio files use their generated `.text` sidecars. Files with
+ * no safe readable representation are omitted.
  */
 async listRecordContext(clientId: string) : Promise<Result<RecordContext[], string>> {
     try {
@@ -585,11 +879,10 @@ async listRecordContext(clientId: string) : Promise<Result<RecordContext[], stri
 }
 },
 /**
- * Re-run text extraction for a single record file.
+ * Resolve readable text for a single record file.
  * 
- * Downloads the original file from S3, runs Bedrock document extraction
- * (or audio transcription for audio files), uploads the `.text` sidecar,
- * and returns the updated `RecordContext` with the extracted text.
+ * PDF and DOCX files are re-extracted through Bedrock, audio is
+ * retranscribed, and printable UTF-8 originals are returned unchanged.
  */
 async extractRecordFile(clientId: string, filename: string) : Promise<Result<RecordContext, string>> {
     try {
@@ -627,9 +920,9 @@ async listChatModels() : Promise<Result<ChatModel[], string>> {
  * The `chat_id` is generated on the first message and returned so the
  * frontend can pass it back on subsequent calls.
  */
-async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null, contextFilenames: string[]) : Promise<Result<ChatResponse, string>> {
+async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], chatId: string | null, chatName: string | null, contextFilenames: string[], streamId: string, onEvent: TAURI_CHANNEL<ChatStreamEvent>) : Promise<Result<ChatResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId, contextFilenames }) };
+    return { status: "ok", data: await TAURI_INVOKE("chat_message", { clientId, modelId, messages, chatId, chatName, contextFilenames, streamId, onEvent }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -642,9 +935,9 @@ async chatMessage(clientId: string, modelId: string, messages: ChatMessage[], ch
  * on every message. We build a rich system prompt explaining Claria's
  * operating model and the current infrastructure state, then call Bedrock.
  */
-async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry[]) : Promise<Result<InfraChatResponse, string>> {
+async infraChat(modelId: string, messages: ChatMessage[], planEntries: PlanEntry[], streamId: string, onEvent: TAURI_CHANNEL<ChatStreamEvent>) : Promise<Result<InfraChatResponse, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("infra_chat", { modelId, messages, planEntries }) };
+    return { status: "ok", data: await TAURI_INVOKE("infra_chat", { modelId, messages, planEntries, streamId, onEvent }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -666,6 +959,17 @@ async acceptModelAgreement(modelId: string) : Promise<Result<null, string>> {
 }
 },
 /**
+ * List named chat sessions for the Record screen history folder.
+ */
+async listChatHistories(clientId: string) : Promise<Result<ChatHistorySummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_chat_histories", { clientId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Load a chat history session from S3.
  * 
  * Returns the full conversation with model ID so the frontend can
@@ -680,6 +984,17 @@ async loadChatHistory(clientId: string, chatId: string) : Promise<Result<ChatHis
 }
 },
 /**
+ * Rename a persisted chat session without changing its stable UUID key.
+ */
+async renameChatHistory(clientId: string, chatId: string, name: string) : Promise<Result<ChatHistoryDetail, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_chat_history", { clientId, chatId, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Get the current content of a named prompt.
  * 
  * Returns the custom prompt from S3 if one exists, otherwise returns the
@@ -688,6 +1003,14 @@ async loadChatHistory(clientId: string, chatId: string) : Promise<Result<ChatHis
 async getPrompt(promptName: string) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_prompt", { promptName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getWriterTrustRules() : Promise<Result<WriterTrustRules, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_writer_trust_rules") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -752,6 +1075,40 @@ async restorePromptVersion(promptName: string, versionId: string) : Promise<Resu
 }
 },
 /**
+ * List the saved writer prompts, alphabetically by name.
+ */
+async listWriterLibraryPrompts() : Promise<Result<WriterPrompt[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_writer_library_prompts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Create (no `prompt_id`) or update (with `prompt_id`) one saved writer
+ * prompt.
+ */
+async saveWriterLibraryPrompt(promptId: string | null, name: string, body: string) : Promise<Result<WriterPrompt, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_writer_library_prompt", { promptId, name, body }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete one saved writer prompt.
+ */
+async deleteWriterLibraryPrompt(promptId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_writer_library_prompt", { promptId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List all versions of a specific file in a client's record.
  */
 async listFileVersions(clientId: string, filename: string) : Promise<Result<FileVersion[], string>> {
@@ -800,10 +1157,12 @@ async listDeletedFiles(clientId: string) : Promise<Result<DeletedFile[], string>
  * 
  * This preserves the full version history (including the delete marker) for
  * HIPAA audit-trail compliance, instead of removing the delete marker.
+ * Delegates to the storage crate's conditional restore, so a concurrent
+ * re-upload of the same filename is never overwritten.
  */
-async restoreDeletedFile(clientId: string, filename: string, versionId: string) : Promise<Result<null, string>> {
+async restoreDeletedFile(clientId: string, filename: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("restore_deleted_file", { clientId, filename, versionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("restore_deleted_file", { clientId, filename }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -826,77 +1185,54 @@ async listDeletedClients() : Promise<Result<DeletedClient[], string>> {
  * This preserves the full version history (including the delete marker) for
  * HIPAA audit-trail compliance, instead of removing the delete marker.
  */
-async restoreClient(clientId: string, versionId: string) : Promise<Result<null, string>> {
+async restoreClient(clientId: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("restore_client", { clientId, versionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("restore_client", { clientId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * List all Whisper model tiers with their download/active status.
- */
-async getWhisperModels() : Promise<Result<WhisperModelInfo[], string>> {
+async getLocalTranscriptionStatus() : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_whisper_models") };
+    return { status: "ok", data: await TAURI_INVOKE("get_local_transcription_status") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Download a specific Whisper model tier from Hugging Face.
- */
-async downloadWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
+async saveLocalTranscriptionSettings(settings: LocalTranscriptionSettings) : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("download_whisper_model", { tier }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_local_transcription_settings", { settings }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Delete a specific Whisper model tier and clear the in-memory cache if needed.
- */
-async deleteWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
+async downloadLocalModel(modelId: LocalModelId, onProgress: TAURI_CHANNEL<ModelDownloadProgress>) : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_whisper_model", { tier }) };
+    return { status: "ok", data: await TAURI_INVOKE("download_local_model", { modelId, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Delete a model directory by name. Used for orphan directories that don't
- * match any known tier. Also works for known tiers as a fallback.
- */
-async deleteWhisperModelDir(dirName: string) : Promise<Result<WhisperModelInfo[], string>> {
+async deleteLocalModel(modelId: LocalModelId) : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_whisper_model_dir", { dirName }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_local_model", { modelId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Set the active Whisper model tier. The tier must be downloaded.
- */
-async setActiveWhisperModel(tier: WhisperModelTier) : Promise<Result<WhisperModelInfo[], string>> {
+async deleteLegacyTranscriptionModels() : Promise<Result<LocalTranscriptionStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_active_whisper_model", { tier }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_legacy_transcription_models") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Transcribe PCM audio using the active Whisper model.
- * 
- * Accepts base64-encoded f32 PCM samples at 16 kHz mono. Returns the
- * transcript text and detected language. The model is loaded on first call
- * and cached in memory for subsequent calls.
- */
 async transcribeMemo(audioPcmBase64: string) : Promise<Result<TranscribeMemoResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("transcribe_memo", { audioPcmBase64 }) };
@@ -973,6 +1309,18 @@ async openUrl(url: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Open the application's log folder in the OS file manager, creating it if
+ * file logging has not produced anything yet.
+ */
+async revealLogFolder() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reveal_log_folder") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async countClientContextTokens(clientId: string, contextFilenames: string[]) : Promise<Result<number, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("count_client_context_tokens", { clientId, contextFilenames }) };
@@ -989,8 +1337,12 @@ async countInfraContextTokens(planEntries: PlanEntry[]) : Promise<Result<number,
     else return { status: "error", error: e  as any };
 }
 },
-async getConsoleLogs() : Promise<ConsoleEntry[]> {
-    return await TAURI_INVOKE("get_console_logs");
+/**
+ * Console entries at or after the sequence cursor `seq`. Pass the previous
+ * response's `next_seq`; start (or force a full refetch) with `0`.
+ */
+async getConsoleLogsSince(seq: number) : Promise<ConsoleDelta> {
+    return await TAURI_INVOKE("get_console_logs_since", { seq });
 },
 async getConsoleLogsText() : Promise<string> {
     return await TAURI_INVOKE("get_console_logs_text");
@@ -998,6 +1350,38 @@ async getConsoleLogsText() : Promise<string> {
 async saveConsoleLogs() : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_console_logs") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Record a frontend-reported event into the shared tracing stack.
+ * 
+ * The `claria_desktop::frontend` target is admitted by the console and file
+ * layers via the shared crate-list filter, so webview failures land in the
+ * ring buffer and the rolling on-disk logs. Messages are length-capped and
+ * stripped of control characters so one event cannot flood the buffer or
+ * forge multi-line log records. Callers report operation names and error
+ * strings — never document content or client names.
+ */
+async logFrontendEvent(level: FrontendLogLevel, message: string) : Promise<void> {
+    await TAURI_INVOKE("log_frontend_event", { level, message });
+},
+/**
+ * End an in-flight streamed turn early: a chat reply, a writer turn, or a
+ * whole-report drafting run.
+ * 
+ * What stopping costs is the caller's business, not this command's — chat
+ * keeps the text that arrived, and a drafting run keeps every section it had
+ * already saved.
+ * 
+ * A `stream_id` with no live stream behind it is not an error: the work may
+ * have completed between the click and this call.
+ */
+async stopStream(streamId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_stream", { streamId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1065,50 +1449,56 @@ limit: number;
 message: string }
 export type Action = "ok" | "create" | "modify" | "delete" | "precondition_failed"
 /**
- * Temporary credentials obtained by assuming a role in a sub-account.
- * 
- * These are short-lived (typically 1 hour) and include a session token.
- * They should **never** be persisted to disk — they exist only to bootstrap
- * a dedicated IAM user in the sub-account.
+ * What `assume_role` returns to the frontend: everything about the assumed
+ * session except its secrets, plus the opaque handle later provisioning
+ * commands exchange for them.
  */
-export type AssumeRoleResult = { 
+export type AssumedRoleSession = { 
 /**
- * Temporary access key ID for the assumed role.
+ * Opaque reference to the credentials held in memory.
+ */
+handle: string; 
+/**
+ * Temporary access key ID (not secret; shown for operator recognition).
  */
 access_key_id: string; 
 /**
- * Temporary secret access key for the assumed role.
- */
-secret_access_key: string; 
-/**
- * Session token — required for all API calls made with these credentials.
- */
-session_token: string; 
-/**
- * When these temporary credentials expire (ISO 8601).
+ * When the temporary credentials expire (ISO 8601).
  */
 expiration: string | null; 
 /**
- * The ARN of the assumed role (e.g.
- * `arn:aws:sts::690641653532:assumed-role/OrganizationAccountAccessRole/claria-setup`).
+ * The ARN of the assumed role.
  */
 assumed_role_arn: string; 
 /**
  * The account ID of the sub-account we assumed into.
  */
 account_id: string }
+export type AuthorshipKind = "template" | "model_generated" | "model_revised" | "human_edited"
 /**
- * The result of a full bootstrap attempt.
+ * Redacted [`BootstrapResult`] for the frontend: the minted secret access
+ * key is persisted to the local config Rust-side and never returned.
  */
-export type BootstrapResult = { success: boolean; steps: BootstrapStep[]; account_id: string | null; 
+export type BootstrapOutcome = { success: boolean; steps: BootstrapStep[]; account_id: string | null; 
 /**
- * The new, scoped credentials. `None` on failure.
+ * Present when bootstrap minted scoped credentials.
  */
-new_credentials: NewCredentials | null; error: string | null }
+new_credentials: NewCredentialsInfo | null; error: string | null }
 /**
  * A single step in the bootstrap sequence, reported for UI rendering.
  */
 export type BootstrapStep = { name: string; status: StepStatus; detail: string | null }
+/**
+ * Time-to-live for a Bedrock prompt-cache entry.
+ * 
+ * Lives next to the capability table because which TTLs a model accepts is
+ * model knowledge: `FiveMinutes` is the server default every caching model
+ * supports, while `OneHour` requires
+ * [`ModelCapabilities::supports_extended_cache_ttl`]. Persisted on
+ * `TurnUsage` so historical costs price cache writes at the rate that was
+ * actually in effect.
+ */
+export type CacheTtlChoice = "five_minutes" | "one_hour"
 /**
  * Identity information returned by STS `GetCallerIdentity`.
  */
@@ -1117,18 +1507,26 @@ export type Cause = "in_sync" | "missing" | "drift" | "orphaned"
 /**
  * Detail of a persisted chat session, returned when resuming a conversation.
  */
-export type ChatHistoryDetail = { chat_id: string; model_id: string; messages: ChatHistoryDetailMessage[]; created_at: string }
+export type ChatHistoryDetail = { chat_id: string; name: string; model_id: string; messages: ChatHistoryDetailMessage[]; created_at: string; updated_at: string }
 /**
  * A single message in persisted chat history, including optional token
  * usage on assistant turns.
  */
-export type ChatHistoryDetailMessage = { role: ChatRole; content: string; 
+export type ChatHistoryDetailMessage = { role: ChatRole; content: string; timestamp: string; 
 /**
  * `Some` on assistant turns whose Converse response carried a usage
  * block. `None` on user turns and on assistant turns from history
  * written before per-turn usage tracking landed.
  */
 usage: TurnUsage | null }
+/**
+ * Lightweight persisted-chat row for the Record screen history folder.
+ */
+export type ChatHistorySummary = { chat_id: string; filename: string; name: string; size: number; updated_at: string }
+/**
+ * One conversation turn — role plus text content. Shared by the Bedrock
+ * chat call and the desktop IPC surface so the two cannot drift.
+ */
 export type ChatMessage = { role: ChatRole; content: string }
 /**
  * Specta type mirroring `claria_bedrock::chat::ChatModel`.
@@ -1136,18 +1534,139 @@ export type ChatMessage = { role: ChatRole; content: string }
 export type ChatModel = { model_id: string; name: string }
 /**
  * Response from a chat message, including the persisted chat session ID
- * and per-turn token usage.
+ * and per-turn token usage. Usage is `None` when Bedrock omitted the usage
+ * block — the UI renders absence instead of a fabricated zero.
  */
-export type ChatResponse = { chat_id: string; content: string; usage: TurnUsage }
+export type ChatResponse = { chat_id: string; chat_name: string; content: string; usage: TurnUsage | null }
+/**
+ * Role of a chat message — the one role enum shared by persisted history,
+ * the Bedrock chat calls, and the desktop IPC surface.
+ */
 export type ChatRole = "user" | "assistant"
+/**
+ * One increment of a streaming chat response, sent over the command's
+ * channel while the model responds. The command still returns the complete
+ * response, so a caller that ignores the channel (tests, mocks) loses
+ * nothing but the incremental render.
+ */
+export type ChatStreamEvent = 
+/**
+ * Incremental assistant text.
+ */
+{ kind: "delta"; text: string } | 
+/**
+ * Terminal event: the model finished; usage and stop reason are final.
+ */
+{ kind: "done"; stop_reason: string; usage: TurnUsage | null }
+/**
+ * How much of a chat reply appears at a time.
+ * 
+ * Bedrock streams a few characters per frame. Passing every one of those to
+ * the UI is what makes a reply twitch while it is being read, so the
+ * default releases whole paragraphs; the other two settings are the
+ * extremes on either side of it.
+ */
+export type ChatStreamMode = 
+/**
+ * Every delta, as fast as the service produces it.
+ */
+"token" | 
+/**
+ * A paragraph at a time.
+ */
+"paragraph" | 
+/**
+ * Nothing until the reply is complete.
+ */
+"off"
 export type ClientNameHistoryEntry = { name: string; changed_at: string }
 export type ClientNameUpdate = { id: string; name: string; updated_at: string }
 export type ClientRecordDetails = { id: string; name: string; created_at: string; updated_at: string; file_count: number; storage_bytes: number; storage_bytes_with_history: number; name_history: ClientNameHistoryEntry[] }
 export type ClientSummary = { id: string; name: string; created_at: string }
 /**
+ * One reason the report is not complete.
+ */
+export type CompletionCheck = { kind: CompletionCheckKind; 
+/**
+ * The section at fault, or `None` for a document-wide failure such as a
+ * placeholder left in the title.
+ */
+section_id: string | null; 
+/**
+ * PHI-free: state names, counts, and record filenames. Never section
+ * text, and never the quote that failed to resolve.
+ */
+detail: string }
+export type CompletionCheckKind = 
+/**
+ * The drafting run never reached a decision about this section.
+ */
+"section_not_terminal" | 
+/**
+ * The plan marked this section required and the saved draft has no body
+ * for it.
+ */
+"required_section_empty" | 
+/**
+ * A quote the writer attributed to a record is not in that record.
+ */
+"unresolved_citation" | 
+/**
+ * A required section was drafted without citing anything.
+ */
+"missing_citation" | 
+/**
+ * Unresolved template markers survive in the saved draft.
+ */
+"placeholder_text" | 
+/**
+ * A review finding is still open against a section nobody has rewritten.
+ */
+"unresolved_finding"
+/**
+ * Everything the completion checklist knows about one report at one moment.
+ * 
+ * `checks` holds failures only, so an empty list and `complete` say the same
+ * thing twice on purpose: the frontend renders the list, and the backend
+ * answers the question.
+ */
+export type CompletionReport = { complete: boolean; 
+/**
+ * Failures only — an empty list means the report is complete.
+ */
+checks: CompletionCheck[]; 
+/**
+ * The accepted draft revision these checks describe. A later edit makes
+ * the whole report stale, which is why the revision travels with it.
+ */
+evaluated_revision: number; evaluated_at: string }
+/**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences; chat_streaming: ChatStreamMode; draft_pipeline: DraftPipelinePreferences }
+/**
+ * The passage a finding conflicts with.
+ */
+export type ConflictingRef = { 
+/**
+ * `None` means the conflicting passage is in the anchored section itself.
+ */
+section_id: string | null; quote: string; span: TextSpan | null }
+/**
+ * One poll's worth of new console entries, addressed by a monotonic
+ * sequence cursor so the 500ms UI poll ships only new lines.
+ */
+export type ConsoleDelta = { entries: ConsoleEntry[]; 
+/**
+ * Cursor to pass on the next poll.
+ */
+next_seq: number; 
+/**
+ * True when `entries` is the full buffer and must replace, not append —
+ * the requested cursor predates the buffer (lines rotated out unseen)
+ * or came from a previous app run.
+ */
+reset: boolean }
 /**
  * A single log entry captured by the console ring buffer.
  */
@@ -1189,6 +1708,15 @@ export type CredentialClass =
  * IAM permissions required to self-bootstrap.
  */
 "insufficient"
+/**
+ * Credentials as the frontend supplies them to provisioning commands.
+ * 
+ * Mirrors [`CredentialSource`] for the user-typed variants and adds
+ * `AssumedRole`, an opaque handle to temporary STS credentials held in
+ * [`DesktopState`] — the secret access key and session token from an
+ * `assume_role` call never cross the IPC boundary.
+ */
+export type CredentialInput = { type: "inline"; access_key_id: string; secret_access_key: string; session_token?: string | null } | { type: "profile"; profile_name: string } | { type: "default_chain" } | { type: "assumed_role"; handle: string }
 export type CredentialScope = 
 /**
  * Requires elevated credentials (root/admin) to create or modify.
@@ -1208,7 +1736,91 @@ export type DeletedClient = { id: string; name: string; deleted_at: string | nul
  * A file that has been deleted (has a delete marker as the latest version).
  */
 export type DeletedFile = { filename: string; deleted_at: string | null; version_id: string }
-export type EditorHistoryEntry = { report_id: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExportView | null }
+/**
+ * Per-clinician settings for the sectioned drafting pipeline.
+ * 
+ * The two model IDs name the supporting roles only — the writer keeps its
+ * own picker beside the draft. `None` means "let Claria choose", which
+ * resolves through the capability table at call time rather than being
+ * frozen into the config, so an account that gains a better model gets it
+ * without anyone editing a setting.
+ */
+export type DraftPipelinePreferences = { plan_gate?: PlanGateMode; planner_model_id?: string | null; reviewer_model_id?: string | null }
+/**
+ * What the plan decided for exactly one section. There is one entry per
+ * [`RunSection`] and no entry without one.
+ * 
+ * Renamed across the IPC boundary: the provisioner exports its own
+ * `PlanEntry`, and two types of the same name are a bindings-export panic at
+ * startup rather than a compile error.
+ */
+export type DraftPlanEntry = { section_id: string; heading: string; intent: SectionIntent; 
+/**
+ * The report cannot be considered complete while this section is empty.
+ */
+required: boolean; 
+/**
+ * What the section should cover, in the planner's words. May be empty for
+ * a section the plan does not intend to write.
+ */
+scope: string; evidence: EvidenceRef[]; 
+/**
+ * Per-section steering that overrides the run-wide instructions.
+ */
+instruction: string | null; 
+/**
+ * The records this section's writer may read, when the clinician has
+ * restricted it to a subset. `None` — the default, and what the planner
+ * always produces — means the shared corpus every other section sees.
+ * 
+ * The planner never sets this: it is a user decision taken at the plan
+ * gate, which is why the plan tool schema has no field for it. The run
+ * object embeds the plan, so the durable record of what one section's
+ * model call could see survives resume, audit, and export for free.
+ * 
+ * `Some` is always a non-empty list of filenames as the record corpus
+ * lists them. An empty restriction would be a section drafted from
+ * nothing, which is a plan mistake rather than a request, so the
+ * validator refuses it.
+ */
+curated_records?: string[] | null }
+/**
+ * One resumable whole-report drafting run.
+ * 
+ * The object is rewritten (conditionally, on its ETag) after every section
+ * the writer lands, so an interrupted run resumes from durable state instead
+ * of restarting.
+ */
+export type DraftRun = { schema_version: number; run_id: string; report_id: string; client_id: string; 
+/**
+ * Accepted revision the run builds on. The finish cut uses it as the
+ * expected revision, so concurrent edits to the report conflict rather
+ * than being overwritten by assembled sections.
+ */
+base_revision: number; status: DraftRunStatus; plan: RunPlan | null; title: string | null; 
+/**
+ * Every section of the report, in no particular order — read
+ * [`RunSection::position`] for document order.
+ */
+sections: RunSection[]; instructions: RunInstruction[]; writer_model_id: string; 
+/**
+ * Revision produced by the finish cut. Present only once the run is
+ * [`DraftRunStatus::Completed`].
+ */
+finalized_revision: number | null; 
+/**
+ * The run was finalized from a stopped state: sections that never landed
+ * were skipped rather than drafted.
+ */
+partial: boolean; created_at: string; updated_at: string }
+export type DraftRunStatus = "planning" | "awaiting_approval" | "drafting" | "stopped" | "failed" | "completed" | "abandoned"
+export type EditorHistoryEntry = { report_id: string; name: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExport | null }
+export type EffortPreference = "low" | "medium" | "high" | "max"
+/**
+ * A record the planner expects a section to draw on. Records are referenced
+ * by filename; the note is the planner's own reason, never record text.
+ */
+export type EvidenceRef = { filename: string; note: string | null }
 /**
  * Structured before/after for a single field that doesn't match desired state.
  * 
@@ -1237,12 +1849,88 @@ actual: JsonValue }
  */
 export type FileVersion = { version_id: string; size: number; last_modified: string | null; is_latest: boolean }
 /**
+ * One thing a review pass noticed about one section.
+ */
+export type Finding = { id: string; pass: ReviewPass; 
+/**
+ * The review property that raised this, e.g. `tense_drift`.
+ */
+property: string; 
+/**
+ * The reviewing model, carried so applying a style proposal can credit
+ * the model that wrote the replacement.
+ */
+model_id: string; anchor: FindingAnchor; description: string; 
+/**
+ * Where in the anchored section the finding points, resolved host-side
+ * from the model's quote.
+ */
+span: TextSpan | null; 
+/**
+ * The passage this one contradicts. Consistency findings only in
+ * practice; nothing structural forbids a style finding from carrying one.
+ */
+conflicting: ConflictingRef | null; record_citation: RecordCitation | null; 
+/**
+ * The anchored replacement a style finding offers. Never present on a
+ * consistency finding — see [`ReviewPass::Consistency`].
+ */
+proposal: StyleProposal | null; status: FindingStatus; 
+/**
+ * The draft revision the applied replacement produced. Set only while
+ * the finding is [`FindingStatus::Applied`], so an undo can say which
+ * revision it is unwinding.
+ */
+applied_revision: number | null; resolved_at: string | null; created_at: string }
+/**
+ * What the user chose to do with one finding.
+ * 
+ * This is the request shape, distinct from [`FindingStatus`], which records
+ * where a finding ended up: undoing a finding puts it back to
+ * [`FindingStatus::Open`], so the two do not correspond one to one.
+ */
+export type FindingAction = "apply_style" | "undo_style" | "dismiss"
+/**
+ * The section and revision a finding describes.
+ */
+export type FindingAnchor = { section_id: string; 
+/**
+ * The section's authorship revision when the review read it.
+ */
+revision: number }
+export type FindingStatus = "open" | 
+/**
+ * A style replacement the user applied. Reversible until the surrounding
+ * text changes.
+ */
+"applied" | "dismissed" | 
+/**
+ * The anchored section moved on. Written lazily by the list path; the
+ * authoritative answer is always [`finding_is_stale`].
+ */
+"invalidated"
+/**
+ * Severity levels the frontend logging bridge may report.
+ */
+export type FrontendLogLevel = "error" | "warn" | "info"
+export type FullReportGenerationResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; included_record_files: number; unavailable_record_files: number; record_characters: number }
+/**
  * Response from an infrastructure chat turn. Infra chat does not persist
  * history, but we still return token usage so the UI can display cost.
+ * Usage is `None` when Bedrock omitted the usage block.
  */
-export type InfraChatResponse = { content: string; usage: TurnUsage }
+export type InfraChatResponse = { content: string; usage: TurnUsage | null }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type Lifecycle = "data" | "managed"
+export type LocalBackend = "auto" | "cpu" | "cpu_accel" | "metal" | "vulkan" | "cuda" | "rocm"
+export type LocalBackendInfo = { backend: LocalBackend; label: string; available: boolean }
+export type LocalComputeDevice = { name: string; description: string; kind: string; device_type: string; device_id: string | null; memory_total: number; memory_free: number; index: number | null }
+export type LocalKvPrecision = "auto" | "f32" | "f16"
+export type LocalModelId = "whisper_base_en_q8" | "whisper_small_q8" | "whisper_turbo_q8"
+export type LocalModelInfo = { id: LocalModelId; label: string; description: string; filename: string; quantization: string; languages: string[]; download_size_bytes: number; downloaded: boolean; model_size_bytes: number | null; model_path: string | null; active: boolean }
+export type LocalTranscriptionSettings = { settings_version: number; speech_model: LocalModelId; backend: LocalBackend; gpu_device: number; cpu_threads: number; kv_precision: LocalKvPrecision; initial_prompt: string; condition_on_previous_text: boolean; max_previous_context_tokens: number; temperature: number; temperature_increment: number; compression_ratio_threshold: number; log_probability_threshold: number; no_speech_threshold: number; seed: number }
+export type LocalTranscriptionStatus = { runtime_version: string; settings: LocalTranscriptionSettings; models: LocalModelInfo[]; backends: LocalBackendInfo[]; devices: LocalComputeDevice[]; legacy_model_bytes: number; accelerated: boolean }
+export type ModelDownloadProgress = { model_id: LocalModelId; downloaded_bytes: number; total_bytes: number }
 /**
  * Pricing per million tokens for a Bedrock model.
  * 
@@ -1250,12 +1938,39 @@ export type Lifecycle = "data" | "managed"
  * - `cache_read_per_million` — typically ~10% of `input_per_million`.
  * - `cache_write_per_million` — typically ~125% of `input_per_million`
  * for the 5-minute TTL tier.
+ * - `cache_write_1h_per_million` — typically ~200% of `input_per_million`
+ * for the extended 1-hour TTL tier.
  */
-export type ModelPricing = { input_per_million: number; output_per_million: number; cache_read_per_million: number; cache_write_per_million: number }
+export type ModelPricing = { input_per_million: number; output_per_million: number; cache_read_per_million: number; cache_write_per_million: number; 
 /**
- * Fresh credentials created during the bootstrap flow.
+ * `#[serde(default)]` so pricing serialized before the 1-hour tier
+ * existed still deserializes; an absent (0.0) rate falls back to the
+ * 5-minute write rate rather than pricing 1-hour writes at zero.
  */
-export type NewCredentials = { access_key_id: string; secret_access_key: string; iam_user_arn: string }
+cache_write_1h_per_million?: number }
+/**
+ * Opt-in model-tuning knobs. Every knob defaults to "send nothing", and
+ * each is applied only on models whose capability-table entry accepts it —
+ * see `commands::model_tuning_for`.
+ */
+export type ModelTuningPreferences = { 
+/**
+ * Request adaptive thinking on models that support it (Claude 4.6+).
+ */
+reasoning_enabled?: boolean; 
+/**
+ * Requested effort level; `None` leaves the model default (high).
+ */
+effort?: EffortPreference | null; 
+/**
+ * Sampling temperature, only sent to generations that accept it
+ * (through Claude 4.6); `None` leaves the model default.
+ */
+temperature?: number | null }
+/**
+ * The non-secret half of freshly minted credentials.
+ */
+export type NewCredentialsInfo = { access_key_id: string; iam_user_arn: string }
 /**
  * A single entry in the plan — the spec annotated with what happened.
  * 
@@ -1269,6 +1984,53 @@ export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drif
  * Live state read from AWS (if the resource exists).
  */
 actual: JsonValue | null }
+/**
+ * One section's worth of gate edits. Absent fields are left exactly as the
+ * planner wrote them, so the pane can save the one control the user touched
+ * without restating the rest of the row.
+ */
+export type PlanEntryEdit = { section_id: string; intent?: SectionIntent | null; scope?: string | null; evidence?: EvidenceRef[] | null; 
+/**
+ * Per-section steering. An all-whitespace value clears the instruction
+ * rather than storing a blank one.
+ */
+instruction?: string | null; 
+/**
+ * The record restriction for this section, as filenames the corpus lists.
+ * 
+ * Absent leaves the row's restriction alone; an empty list clears it and
+ * puts the section back on the shared corpus, exactly as an all-whitespace
+ * `instruction` clears the instruction. A non-empty list is validated
+ * against the client's records before it is stored.
+ */
+curated_records?: string[] | null }
+/**
+ * Whether a whole-report draft stops for the clinician between planning and
+ * writing.
+ */
+export type PlanGateMode = 
+/**
+ * The plan lands in the draft-run pane and waits to be read, edited, and
+ * approved. The default: a plan is cheap to fix and expensive to draft
+ * against once it is wrong.
+ */
+"gated" | 
+/**
+ * Drafting begins as soon as the plan lands.
+ */
+"auto_start"
+/**
+ * Named-field patch for the synced preferences. Absent fields are left
+ * untouched, so a UI section (or a single-setting command) saves only what
+ * it owns and can never roll back a sibling section's edit.
+ */
+export type PreferencesPatch = { 
+/**
+ * `Some(Some(id))` sets the preferred model, `Some(None)` clears it
+ * (only expressible in-process — over IPC use `set_preferred_model`),
+ * `None` leaves it unchanged.
+ */
+preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null; draft_pipeline?: DraftPipelinePreferences | null }
 /**
  * What `provision_apply` did.
  * 
@@ -1305,6 +2067,11 @@ needs_escalation: boolean;
 account_id: string }
 export type ProvisionerProgress = { kind: "scan_started"; label: string; index: number; total: number } | { kind: "scan_completed"; label: string; index: number; total: number } | { kind: "apply_started"; label: string; action: string; index: number; total: number } | { kind: "apply_completed"; label: string; action: string; index: number; total: number } | { kind: "escalation_step"; label: string; status: string }
 /**
+ * A quote the writer attributed to a record, used by the completion gate to
+ * check that cited text actually exists in the client's records.
+ */
+export type RecordCitation = { filename: string; quote: string }
+/**
  * A record file with its readable text content, for chat context.
  */
 export type RecordContext = { filename: string; text: string }
@@ -1312,32 +2079,147 @@ export type RecordContext = { filename: string; text: string }
  * A file in a client's record (S3 object metadata).
  */
 export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
-export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
+/**
+ * Per-clinician guardrails for agentic document writing. These values sync
+ * across machines. The report-pipeline crate validates the
+ * relationship between the limits before they are saved or used.
+ */
+export type ReportAuthoringPreferences = { max_tool_rounds?: number; max_converse_calls?: number; max_tool_uses_per_response?: number; max_retained_turns?: number; writer_first_frame_timeout_secs?: number; writer_idle_timeout_secs?: number; writer_max_output_tokens?: number; analysis_first_frame_timeout_secs?: number; analysis_idle_timeout_secs?: number }
+export type ReportAuthoringTurnView = { id: string; model_id: string; timeline: ReportTimelineItemView[]; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; 
+/**
+ * Records preloaded outside the model's record-reading tools. Only the
+ * filename and availability cross IPC; source hashes/counts stay in the
+ * durable workspace and record text is never persisted there.
+ */
+context_files: ReportContextFileView[]; context_reads: ReportContextReadView[]; created_at: string; completed_at: string }
+export type ReportBlock = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | 
+/**
+ * A rectangular, plain-text table. The first row is rendered as a
+ * semantic header when `has_header` is true. Optional widths are basis
+ * points whose sum is exactly 10,000 (100%).
+ */
+{ kind: "table"; rows: string[][]; has_header: boolean; column_widths?: number[] | null }
 export type ReportBlockReferenceInput = { section_id: string; block_index: number }
-export type ReportBlockView = { kind: "paragraph"; text: string } | { kind: "bullet_list"; items: string[] } | { kind: "table"; rows: string[][]; has_header: boolean; column_widths: number[] | null }
-export type ReportContentView = { title: string; sections: ReportSectionView[] }
+export type ReportContent = { title: string; sections: ReportSection[] }
+export type ReportContextFileView = { filename: string; available: boolean }
 export type ReportContextReadView = { filename: string; offset: number; returned_characters: number; total_characters: number | null; read_at: string }
+export type ReportDraft = { revision: number; content: ReportContent; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
 export type ReportDraftEdit = { title: string; sections: ReportSectionEdit[] }
-export type ReportDraftView = { revision: number; content: ReportContentView; created_at: string; updated_at: string; last_applied_proposal_id: string | null }
-export type ReportExportResult = { exported: boolean; report_id: string; revision: number; status: ReportExportStatusView; attempted_at: string; status_persisted: boolean }
-export type ReportExportStatusView = "exported" | "canceled" | "failed"
-export type ReportExportView = { revision: number; status: ReportExportStatusView; attempted_at: string }
-export type ReportOperationView = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSectionView } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlockView[] } | { kind: "remove_section"; section_id: string }
-export type ReportProposalDecision = "accept" | "reject"
-export type ReportProposalResolutionDecision = "accepted" | "rejected"
-export type ReportProposalResolutionView = { proposal_id: string; decision: ReportProposalResolutionDecision; resulting_revision: number; resolved_at: string }
-export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperationView[]; proposed_content: ReportContentView; created_at: string }
-export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlockView[] }
-export type ReportSectionView = { id: string; heading: string; blocks: ReportBlockView[] }
-export type ReportTemplateImportView = { imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
-export type ReportTemplatePreview = { import_id: string; content: ReportContentView; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
+export type ReportExport = { revision: number; status: ReportExportStatus; attempted_at: string }
+export type ReportExportResult = { exported: boolean; report_id: string; revision: number; status: ReportExportStatus; attempted_at: string; status_persisted: boolean; 
+/**
+ * Whether the export carried the imported template's formatting.
+ */
+template_applied?: boolean; 
+/**
+ * Why the template's formatting was reduced or unavailable, when the
+ * workspace expected one — never silently degraded.
+ */
+template_warning?: TemplateExportWarning | null }
+export type ReportExportStatus = "exported" | "canceled" | "failed"
+/**
+ * Earns its life: resolving a finding changes both the report and the
+ * findings that describe it, and the caller needs the pair to stay in step.
+ */
+export type ReportFindingResolution = { workspace: ReportWorkspaceView; findings: ReportFindings }
+/**
+ * Every review finding recorded against one report, plus the coverage
+ * receipts of the sweeps that produced them.
+ */
+export type ReportFindings = { schema_version: number; report_id: string; client_id: string; findings: Finding[]; coverage: ReviewCoverage[]; updated_at: string }
+export type ReportOperation = { kind: "set_title"; title: string } | { kind: "add_section"; position: number; section: ReportSection } | { kind: "replace_section"; section_id: string; heading: string; blocks: ReportBlock[] } | { kind: "remove_section"; section_id: string }
+/**
+ * Earns its life next to `ReportProposalDecision`: this is the imperative
+ * request wire shape (`accept`/`reject`), not the stored past-tense
+ * resolution (`accepted`/`rejected`).
+ */
+export type ReportProposalChoice = "accept" | "reject"
+export type ReportProposalDecision = "accepted" | "rejected"
+export type ReportProposalResolution = { proposal_id: string; decision: ReportProposalDecision; resulting_revision: number; resolved_at: string }
+/**
+ * Earns its life over `ReportProposal`: omits `tool_use_id`, the internal
+ * Bedrock correlation handle the frontend has no business seeing.
+ */
+export type ReportProposalView = { id: string; report_id: string; base_revision: number; model_id: string; summary: string; operations: ReportOperation[]; proposed_content: ReportContent; created_at: string }
+export type ReportRevisionView = { revision: number; title: string; updated_at: string }
+export type ReportSection = { id: string; heading: string; blocks: ReportBlock[]; 
+/**
+ * An explicitly deferred template section: the heading keeps its place
+ * in the document, the body stays empty, and export omits the section
+ * entirely until a later edit writes content into it.
+ */
+skipped?: boolean; 
+/**
+ * Immutable copy of the imported template body for this section, stamped
+ * when the template is applied. It is never exported and never sent to a
+ * model as accepted content; the preview renders it greyed-out while the
+ * section is `skipped`, and it survives a fill so a later "rewrite from
+ * the template" still has the original text.
+ */
+template_blocks?: ReportBlock[] | null; 
+/**
+ * The authoring directives the template's author wrote into this section:
+ * the bracketed instructions a clinical template carries — "[a one
+ * sentence stating why the child was referred]", "[Delete the subsections
+ * of the tests that were not uploaded]". Extracted verbatim at import and
+ * bounded by [`MAX_SECTION_TEMPLATE_DIRECTIVES`] and
+ * [`MAX_TEMPLATE_DIRECTIVE_CHARACTERS`].
+ * 
+ * Unlike [`ReportSection::template_blocks`] these do reach a model, as
+ * host-extracted guidance about the document's *form* — how long a
+ * section runs, how it must open, which subsections to drop. They are
+ * never a source of client facts.
+ */
+template_directives?: string[]; 
+/**
+ * Who last wrote this section, and at which revision.
+ */
+authorship?: SectionAuthorship | null }
+export type ReportSectionEdit = { id: string | null; heading: string; blocks: ReportBlock[]; skipped?: boolean }
+export type ReportTemplateImportView = { writer_template_id: string | null; writer_template_name: string | null; imported_revision: number; imported_at: string; warnings: ReportTemplateWarningView[]; reviewed_revision: number | null; review_required: boolean; placeholder_count: number }
+export type ReportTemplatePreview = { import_id: string; content: ReportContent; warnings: ReportTemplateWarningView[]; stats: ReportTemplateStatsView }
 export type ReportTemplateStatsView = { sections: number; paragraphs: number; bullet_lists: number; tables: number; table_cells: number; placeholder_count: number }
 export type ReportTemplateWarningView = { code: string; message: string; count: number }
 export type ReportTimelineItemView = { kind: "message"; role: ReportTimelineRole; text: string; created_at: string } | { kind: "tool_activity"; name: string; summary: string; status: ReportToolActivityStatus; invocation_json: string; result_json: string | null; created_at: string }
 export type ReportTimelineRole = "user" | "assistant"
 export type ReportToolActivityStatus = "requested" | "succeeded" | "failed"
+export type ReportTurnProgressView = { kind: "record_context_prepared"; included_files: number; unavailable_files: number; total_characters: number } | { kind: "model_call_started"; call_number: number } | 
+/**
+ * The last announced call never landed and the identical request is
+ * going out again. `attempt` is the one about to be made, so the first
+ * retry reports 2 of `max_attempts`.
+ */
+{ kind: "model_call_retrying"; call_number: number; attempt: number; max_attempts: number; delay_ms: number } | { kind: "tool_started"; name: string; context: string | null } | { kind: "tool_finished"; name: string; context: string | null; status: ReportToolActivityStatus } | 
+/**
+ * Another plan row has been counted off the answer the planner is still
+ * streaming. Display only — the plan is validated whole when the call
+ * returns — so the count may restart if the call is re-sent.
+ */
+{ kind: "plan_row_planned"; planned: number; total: number } | 
+/**
+ * One batch of the plan is decided and will not be asked for again.
+ * `first` and `last` are one-based and inclusive, against the document's
+ * whole section count.
+ */
+{ kind: "plan_batch_planned"; first: number; last: number; total: number } | 
+/**
+ * The drafting run's plan is settled, before the first model call: the
+ * honest denominator for the progress that follows.
+ */
+{ kind: "plan_ready"; section_count: number } | { kind: "section_started"; section_id: string; index: number; total: number } | 
+/**
+ * A section landed durably, carrying its content so the preview can
+ * render it without a refetch. The section needs no redaction here: it is
+ * the host-validated staged content the finish cut copies verbatim into
+ * the workspace this same command returns.
+ */
+{ kind: "section_completed"; section_id: string; section: ReportSection; drafted: number; total: number } | { kind: "section_skipped"; section_id: string; drafted: number; total: number } | { kind: "section_failed"; section_id: string; message: string; drafted: number; total: number } | { kind: "title_set"; title: string } | { kind: "review_pass_started"; property: string; index: number; total: number } | { kind: "review_pass_completed"; property: string; findings: number; completed: number; total: number }
 export type ReportTurnResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; proposal_id: string | null }
-export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; draft: ReportDraftView; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolutionView[]; last_agent_revision: number | null; last_export: ReportExportView | null; template_import: ReportTemplateImportView | null; created_at: string; updated_at: string }
+/**
+ * Earns its life over `ReportWorkspace`: flattens the session container and
+ * replaces raw turns with derived timeline/context views.
+ */
+export type ReportWorkspaceView = { schema_version: number; report_id: string; client_id: string; session_name: string; draft: ReportDraft; turns: ReportAuthoringTurnView[]; pending_proposal: ReportProposalView | null; resolutions: ReportProposalResolution[]; last_agent_revision: number | null; last_export: ReportExport | null; template_import: ReportTemplateImportView | null; created_at: string; updated_at: string }
 /**
  * Every resource in the system is declared as a `ResourceSpec`.
  * 
@@ -1383,6 +2265,121 @@ severity: Severity;
  * IAM actions this resource requires (aggregated for policy diff)
  */
 iam_actions: string[] }
+/**
+ * Proof that one review property actually ran over one revision, including
+ * the case where it found nothing.
+ */
+export type ReviewCoverage = { pass: ReviewPass; property: string; model_id: string; 
+/**
+ * The draft revision the pass read.
+ */
+revision: number; sections_reviewed: number; findings: number; completed_at: string }
+export type ReviewPass = 
+/**
+ * Anchored, applicable replacements: tense, terminology, transitions,
+ * redundancy.
+ */
+"style" | 
+/**
+ * Read-only: contradictions, unsupported claims, cross-section conflicts.
+ * The pass has no write access, and the validator enforces it.
+ */
+"consistency"
+/**
+ * User guidance for the run: the instruction it started from, plus anything
+ * added when a stopped run was picked back up.
+ */
+export type RunInstruction = { text: string; added_at: string }
+/**
+ * The section plan the user approved before drafting started.
+ */
+export type RunPlan = { 
+/**
+ * Model that produced the plan, which is not the model that writes the
+ * sections.
+ */
+model_id: string; entries: DraftPlanEntry[]; 
+/**
+ * The user changed the plan at the gate before approving it.
+ */
+user_edited: boolean; 
+/**
+ * Nobody decided this plan: it was manufactured from the sections the
+ * report already had, one `Draft` row each, on a path with no planning
+ * pass in front of it. A synthetic plan has never been through evidence
+ * assignment, so the completion gate cannot hold a section against it for
+ * citing nothing. Inherited when a plan is rebuilt from an earlier one,
+ * because a derived plan is no more decided than its source.
+ */
+synthetic?: boolean; 
+/**
+ * Unset while the plan is still waiting at the gate.
+ */
+approved_at: string | null; 
+/**
+ * What the host could not confirm about the plan the model produced,
+ * as `code:detail` strings — evidence naming a file the client does not
+ * have, a draft row with nothing left backing it. Codes and filenames
+ * only, never record text, so the gate can show them and the console can
+ * log them.
+ * 
+ * A warning never blocks the plan: the user fixes it at the gate.
+ */
+plan_warnings?: string[]; created_at: string }
+/**
+ * The durable state machine for one section of the report.
+ */
+export type RunSection = { section_id: string; heading: string; 
+/**
+ * Zero-based ordering slot, unique across the run. A drafted section's
+ * slot is where the writer put it, so sorting the drafted rows by it
+ * reproduces the document the run is assembling; everything still
+ * undecided trails behind them in the order the report supplied it.
+ */
+position: number; state: RunSectionState; 
+/**
+ * Staged content that has already survived a write. Nonempty only in
+ * [`RunSectionState::Drafted`]; the finish cut reads it verbatim.
+ */
+blocks: ReportBlock[]; citations: RecordCitation[]; 
+/**
+ * How many times the writer has tried this section.
+ */
+attempts: number; 
+/**
+ * PHI-free note about why the section failed: error codes and counts,
+ * never record or draft content.
+ */
+error: string | null; updated_at: string }
+export type RunSectionState = "pending" | 
+/**
+ * Transient: correct only while the writer is mid-section. Any section
+ * still `Drafting` when a run is loaded was interrupted and must be
+ * demoted to `Pending` — see [`DraftRun::demote_interrupted_sections`].
+ */
+"drafting" | "drafted" | "failed" | 
+/**
+ * Drafted, but a review pass raised a finding against it.
+ */
+"flagged" | "skipped" | 
+/**
+ * The base-revision content stands; the run does not touch this section.
+ */
+"kept"
+/**
+ * The latest authorship stamp for one section — not a log, and not per-block.
+ */
+export type SectionAuthorship = { kind: AuthorshipKind; 
+/**
+ * Draft revision this stamp describes. Never newer than the accepted
+ * draft it rides on.
+ */
+revision: number; model_id: string | null; run_id: string | null; updated_at: string }
+export type SectionIntent = "draft" | "rewrite" | 
+/**
+ * Leave the section's base-revision content exactly as it is.
+ */
+"keep" | "skip"
 export type Severity = 
 /**
  * Data sources — read-only checks
@@ -1405,11 +2402,42 @@ export type SpeakerMode = "none" | "diarize" | "channels"
  * Status of an individual bootstrap step.
  */
 export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
-export type TAURI_CHANNEL<TSend> = null
 /**
- * Result from transcription, including detected language.
+ * A style pass's anchored replacement: swap `original_text` for
+ * `replacement_text` inside one paragraph of the anchored section.
+ * 
+ * The match is by text, not offset, and must be unique in the block — a
+ * replacement that no longer matches, or matches twice, is refused rather
+ * than guessed at.
  */
-export type TranscribeMemoResult = { text: string; language: string | null }
+export type StyleProposal = { 
+/**
+ * Zero-based index into the anchored section's blocks.
+ */
+block_index: number; original_text: string; replacement_text: string }
+export type TAURI_CHANNEL<TSend> = null
+export type TemplateExportWarning = 
+/**
+ * The stored template source no longer exists (imports predating the
+ * template shelf never retained it); the export used generated
+ * formatting.
+ */
+"template_missing" | 
+/**
+ * The template body could not be walked (e.g. content controls); the
+ * export used generated body formatting inside the template package.
+ */
+"template_body_fallback"
+/**
+ * A character range inside one block of the anchored section. Offsets are
+ * `char` indices, not bytes.
+ */
+export type TextSpan = { 
+/**
+ * Zero-based index into the section's blocks.
+ */
+block_index: number; start_char: number; end_char: number }
+export type TranscribeMemoResult = { text: string; language: string | null; model_id: LocalModelId; backend: string }
 /**
  * Per-file overrides for the wizard flow. Each field is optional so the
  * frontend only sends what the user actually changed; everything else falls
@@ -1480,6 +2508,12 @@ cache_read_input_tokens: number;
  */
 cache_write_input_tokens: number; 
 /**
+ * TTL carried by the request's cache points. `None` means the
+ * 5-minute default or a legacy/uncached turn — either way cache
+ * writes billed at the 5-minute rate, so absence prices correctly.
+ */
+cache_ttl?: CacheTtlChoice | null; 
+/**
  * USD cost computed at the moment of the call against `pricing_version`.
  * Frozen — never recomputed on read. UI may recompute live for
  * "what-if" estimates but must keep this value as the audit-of-record.
@@ -1495,20 +2529,14 @@ pricing_version: number }
  * Result of checking for a newer release on GitHub.
  */
 export type UpdateCheck = { current_version: string; latest_version: string; update_available: boolean; release_url: string }
+export type WriterPrompt = { schema_version: number; id: string; name: string; body: string; created_at: string; updated_at: string }
+export type WriterTemplateView = { id: string; name: string; size: number; uploaded_at: string; use_count: number }
 /**
- * Info about a Whisper model tier (status, size, path, whether active).
- * Known tiers have `tier: Some(...)`. Orphan directories on disk that don't
- * match any known tier have `tier: None`.
+ * The fixed trust-boundary rules Claria appends to every writer prompt —
+ * surfaced so Preferences can display exactly what always runs, without
+ * making it editable.
  */
-export type WhisperModelInfo = { tier: WhisperModelTier | null; dir_name: string; label: string; description: string; download_size: string; downloaded: boolean; model_size_bytes: number | null; model_path: string | null; active: boolean; 
-/**
- * Whether inference will use GPU acceleration (Metal on macOS).
- */
-gpu_accelerated: boolean }
-/**
- * Available Whisper model tiers.
- */
-export type WhisperModelTier = "base_en" | "small" | "turbo"
+export type WriterTrustRules = { targeted: string; full_draft: string }
 
 /** tauri-specta globals **/
 

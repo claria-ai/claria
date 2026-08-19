@@ -1,9 +1,8 @@
 import CreateTextFileModal from "./CreateTextFileModal";
 import DeleteFileModal from "./DeleteFileModal";
 import EditTextModal from "./EditTextModal";
-import TextPreviewModal from "./TextPreviewModal";
+import RecordFilePreviewModal from "./RecordFilePreviewModal";
 import TranscribeWizard from "./TranscribeWizard";
-import TranscriptEditor from "./TranscriptEditor";
 import VersionHistoryModal from "./VersionHistoryModal";
 import { isAudioSidecar } from "../lib/recordFiles";
 import { recordFileVersions } from "../lib/versions";
@@ -26,18 +25,10 @@ export default function RecordFileDialogs({
 
   switch (dialog.kind) {
     case "preview":
-      return isAudioSidecar(dialog.filename) ? (
-        <TranscriptEditor
+      return (
+        <RecordFilePreviewModal
           clientId={clientId}
           filename={dialog.filename}
-          initialBody={dialog.text}
-          onClose={controller.close}
-          onSaved={controller.updatePreview}
-        />
-      ) : (
-        <TextPreviewModal
-          filename={dialog.filename}
-          text={dialog.text}
           onClose={controller.close}
         />
       );

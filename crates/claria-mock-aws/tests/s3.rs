@@ -39,7 +39,15 @@ async fn create_bucket_with_location_constraint() {
 async fn delete_bucket_removes_an_empty_bucket() {
     let app = app();
     request(&app, Method::PUT, "/del-bucket", "").await;
-    request_with_header(&app, Method::PUT, "/del-bucket/key1", "content-type", "text/plain", "data").await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/del-bucket/key1",
+        "content-type",
+        "text/plain",
+        "data",
+    )
+    .await;
     request(&app, Method::DELETE, "/del-bucket/key1", "").await;
 
     let r = request(&app, Method::DELETE, "/del-bucket", "").await;
@@ -53,7 +61,15 @@ async fn delete_bucket_removes_an_empty_bucket() {
 async fn delete_bucket_rejects_a_bucket_holding_objects() {
     let app = app();
     request(&app, Method::PUT, "/full-bucket", "").await;
-    request_with_header(&app, Method::PUT, "/full-bucket/key1", "content-type", "text/plain", "data").await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/full-bucket/key1",
+        "content-type",
+        "text/plain",
+        "data",
+    )
+    .await;
 
     let r = request(&app, Method::DELETE, "/full-bucket", "").await;
     assert_eq!(r.status, StatusCode::CONFLICT);
@@ -67,9 +83,22 @@ async fn delete_bucket_rejects_a_bucket_holding_objects() {
 async fn delete_bucket_rejects_a_bucket_holding_only_delete_markers() {
     let app = app();
     request(&app, Method::PUT, "/marker-bucket", "").await;
-    request(&app, Method::PUT, "/marker-bucket?versioning",
-        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
-    request_with_header(&app, Method::PUT, "/marker-bucket/key1", "content-type", "text/plain", "data").await;
+    request(
+        &app,
+        Method::PUT,
+        "/marker-bucket?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#,
+    )
+    .await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/marker-bucket/key1",
+        "content-type",
+        "text/plain",
+        "data",
+    )
+    .await;
     request(&app, Method::DELETE, "/marker-bucket/key1", "").await;
 
     let r = request(&app, Method::DELETE, "/marker-bucket", "").await;
@@ -85,9 +114,14 @@ async fn put_and_get_object() {
     request(&app, Method::PUT, "/mybucket", "").await;
 
     let r = request_with_header(
-        &app, Method::PUT, "/mybucket/hello.txt",
-        "content-type", "text/plain", "hello world",
-    ).await;
+        &app,
+        Method::PUT,
+        "/mybucket/hello.txt",
+        "content-type",
+        "text/plain",
+        "hello world",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.header("etag").is_some());
 
@@ -101,7 +135,15 @@ async fn put_and_get_object() {
 async fn head_object_returns_metadata_without_body() {
     let app = app();
     request(&app, Method::PUT, "/hbucket", "").await;
-    request_with_header(&app, Method::PUT, "/hbucket/file.bin", "content-type", "application/octet-stream", "binary data").await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/hbucket/file.bin",
+        "content-type",
+        "application/octet-stream",
+        "binary data",
+    )
+    .await;
 
     let r = request(&app, Method::HEAD, "/hbucket/file.bin", "").await;
     assert_eq!(r.status, StatusCode::OK);
@@ -123,9 +165,14 @@ async fn get_nonexistent_object_returns_404() {
 async fn put_object_to_nonexistent_bucket_returns_404() {
     let app = app();
     let r = request_with_header(
-        &app, Method::PUT, "/no-bucket/key",
-        "content-type", "text/plain", "data",
-    ).await;
+        &app,
+        Method::PUT,
+        "/no-bucket/key",
+        "content-type",
+        "text/plain",
+        "data",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
     assert!(r.body.contains("NoSuchBucket"));
 }
@@ -134,7 +181,15 @@ async fn put_object_to_nonexistent_bucket_returns_404() {
 async fn delete_object_without_versioning_removes_it() {
     let app = app();
     request(&app, Method::PUT, "/delbucket", "").await;
-    request_with_header(&app, Method::PUT, "/delbucket/obj", "content-type", "text/plain", "data").await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/delbucket/obj",
+        "content-type",
+        "text/plain",
+        "data",
+    )
+    .await;
 
     let r = request(&app, Method::DELETE, "/delbucket/obj", "").await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
@@ -147,8 +202,24 @@ async fn delete_object_without_versioning_removes_it() {
 async fn put_overwrites_previous_version_when_unversioned() {
     let app = app();
     request(&app, Method::PUT, "/owbucket", "").await;
-    request_with_header(&app, Method::PUT, "/owbucket/key", "content-type", "text/plain", "v1").await;
-    request_with_header(&app, Method::PUT, "/owbucket/key", "content-type", "text/plain", "v2").await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/owbucket/key",
+        "content-type",
+        "text/plain",
+        "v1",
+    )
+    .await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/owbucket/key",
+        "content-type",
+        "text/plain",
+        "v2",
+    )
+    .await;
 
     let r = request(&app, Method::GET, "/owbucket/key", "").await;
     assert_eq!(r.body, "v2");
@@ -191,13 +262,34 @@ async fn versioning_on_nonexistent_bucket_returns_404() {
 async fn versioned_put_creates_multiple_versions() {
     let app = app();
     request(&app, Method::PUT, "/vbucket", "").await;
-    request(&app, Method::PUT, "/vbucket?versioning",
-        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
+    request(
+        &app,
+        Method::PUT,
+        "/vbucket?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#,
+    )
+    .await;
 
-    let r1 = request_with_header(&app, Method::PUT, "/vbucket/doc.txt", "content-type", "text/plain", "version1").await;
+    let r1 = request_with_header(
+        &app,
+        Method::PUT,
+        "/vbucket/doc.txt",
+        "content-type",
+        "text/plain",
+        "version1",
+    )
+    .await;
     let vid1 = r1.header("x-amz-version-id").unwrap().to_string();
 
-    let r2 = request_with_header(&app, Method::PUT, "/vbucket/doc.txt", "content-type", "text/plain", "version2").await;
+    let r2 = request_with_header(
+        &app,
+        Method::PUT,
+        "/vbucket/doc.txt",
+        "content-type",
+        "text/plain",
+        "version2",
+    )
+    .await;
     let vid2 = r2.header("x-amz-version-id").unwrap().to_string();
 
     assert_ne!(vid1, vid2);
@@ -207,7 +299,13 @@ async fn versioned_put_creates_multiple_versions() {
     assert_eq!(r.body, "version2");
 
     // Specific old version
-    let r = request(&app, Method::GET, &format!("/vbucket/doc.txt?versionId={vid1}"), "").await;
+    let r = request(
+        &app,
+        Method::GET,
+        &format!("/vbucket/doc.txt?versionId={vid1}"),
+        "",
+    )
+    .await;
     assert_eq!(r.body, "version1");
 }
 
@@ -215,17 +313,36 @@ async fn versioned_put_creates_multiple_versions() {
 async fn versioned_delete_creates_delete_marker() {
     let app = app();
     request(&app, Method::PUT, "/vdel", "").await;
-    request(&app, Method::PUT, "/vdel?versioning",
-        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
+    request(
+        &app,
+        Method::PUT,
+        "/vdel?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#,
+    )
+    .await;
 
-    let r = request_with_header(&app, Method::PUT, "/vdel/file.txt", "content-type", "text/plain", "data").await;
+    let r = request_with_header(
+        &app,
+        Method::PUT,
+        "/vdel/file.txt",
+        "content-type",
+        "text/plain",
+        "data",
+    )
+    .await;
     let vid = r.header("x-amz-version-id").unwrap().to_string();
 
     // Delete (creates marker)
     request(&app, Method::DELETE, "/vdel/file.txt", "").await;
 
     // Old version still accessible by version ID
-    let r = request(&app, Method::GET, &format!("/vdel/file.txt?versionId={vid}"), "").await;
+    let r = request(
+        &app,
+        Method::GET,
+        &format!("/vdel/file.txt?versionId={vid}"),
+        "",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.body, "data");
 
@@ -243,7 +360,10 @@ async fn encryption_not_found_by_default() {
 
     let r = request(&app, Method::GET, "/encbucket?encryption", "").await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
-    assert!(r.body.contains("ServerSideEncryptionConfigurationNotFoundError"));
+    assert!(
+        r.body
+            .contains("ServerSideEncryptionConfigurationNotFoundError")
+    );
 }
 
 #[tokio::test]
@@ -342,9 +462,33 @@ async fn list_objects_v2_empty_bucket() {
 async fn list_objects_v2_with_prefix() {
     let app = app();
     request(&app, Method::PUT, "/listbucket2", "").await;
-    request_with_header(&app, Method::PUT, "/listbucket2/a/one.txt", "content-type", "text/plain", "1").await;
-    request_with_header(&app, Method::PUT, "/listbucket2/a/two.txt", "content-type", "text/plain", "2").await;
-    request_with_header(&app, Method::PUT, "/listbucket2/b/three.txt", "content-type", "text/plain", "3").await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/listbucket2/a/one.txt",
+        "content-type",
+        "text/plain",
+        "1",
+    )
+    .await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/listbucket2/a/two.txt",
+        "content-type",
+        "text/plain",
+        "2",
+    )
+    .await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/listbucket2/b/three.txt",
+        "content-type",
+        "text/plain",
+        "3",
+    )
+    .await;
 
     let r = request(&app, Method::GET, "/listbucket2?list-type=2&prefix=a/", "").await;
     assert_eq!(r.status, StatusCode::OK);
@@ -367,11 +511,32 @@ async fn list_objects_v2_nonexistent_bucket() {
 async fn list_object_versions_shows_versions_and_delete_markers() {
     let app = app();
     request(&app, Method::PUT, "/lovbucket", "").await;
-    request(&app, Method::PUT, "/lovbucket?versioning",
-        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
+    request(
+        &app,
+        Method::PUT,
+        "/lovbucket?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#,
+    )
+    .await;
 
-    request_with_header(&app, Method::PUT, "/lovbucket/file.txt", "content-type", "text/plain", "v1").await;
-    request_with_header(&app, Method::PUT, "/lovbucket/file.txt", "content-type", "text/plain", "v2").await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/lovbucket/file.txt",
+        "content-type",
+        "text/plain",
+        "v1",
+    )
+    .await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/lovbucket/file.txt",
+        "content-type",
+        "text/plain",
+        "v2",
+    )
+    .await;
     request(&app, Method::DELETE, "/lovbucket/file.txt", "").await;
 
     let r = request(&app, Method::GET, "/lovbucket?versions", "").await;
@@ -384,12 +549,25 @@ async fn list_object_versions_shows_versions_and_delete_markers() {
 async fn list_object_versions_pages_through_markers() {
     let app = app();
     request(&app, Method::PUT, "/paged", "").await;
-    request(&app, Method::PUT, "/paged?versioning",
-        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
+    request(
+        &app,
+        Method::PUT,
+        "/paged?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#,
+    )
+    .await;
 
     for i in 0..5 {
         let uri = format!("/paged/key{i}.txt");
-        request_with_header(&app, Method::PUT, &uri, "content-type", "text/plain", "data").await;
+        request_with_header(
+            &app,
+            Method::PUT,
+            &uri,
+            "content-type",
+            "text/plain",
+            "data",
+        )
+        .await;
     }
 
     let r = request(&app, Method::GET, "/paged?versions&max-keys=2", "").await;
@@ -416,12 +594,33 @@ async fn list_object_versions_pages_through_markers() {
 async fn delete_objects_removes_a_batch_of_versions() {
     let app = app();
     request(&app, Method::PUT, "/batch", "").await;
-    request(&app, Method::PUT, "/batch?versioning",
-        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
+    request(
+        &app,
+        Method::PUT,
+        "/batch?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#,
+    )
+    .await;
 
-    let r1 = request_with_header(&app, Method::PUT, "/batch/doc.txt", "content-type", "text/plain", "v1").await;
+    let r1 = request_with_header(
+        &app,
+        Method::PUT,
+        "/batch/doc.txt",
+        "content-type",
+        "text/plain",
+        "v1",
+    )
+    .await;
     let vid1 = r1.header("x-amz-version-id").unwrap().to_string();
-    let r2 = request_with_header(&app, Method::PUT, "/batch/doc.txt", "content-type", "text/plain", "v2").await;
+    let r2 = request_with_header(
+        &app,
+        Method::PUT,
+        "/batch/doc.txt",
+        "content-type",
+        "text/plain",
+        "v2",
+    )
+    .await;
     let vid2 = r2.header("x-amz-version-id").unwrap().to_string();
 
     let body = format!(
@@ -442,9 +641,22 @@ async fn delete_objects_removes_a_batch_of_versions() {
 async fn delete_objects_without_version_ids_leaves_delete_markers() {
     let app = app();
     request(&app, Method::PUT, "/soft", "").await;
-    request(&app, Method::PUT, "/soft?versioning",
-        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#).await;
-    request_with_header(&app, Method::PUT, "/soft/doc.txt", "content-type", "text/plain", "v1").await;
+    request(
+        &app,
+        Method::PUT,
+        "/soft?versioning",
+        r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#,
+    )
+    .await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/soft/doc.txt",
+        "content-type",
+        "text/plain",
+        "v1",
+    )
+    .await;
 
     let r = request(
         &app,
@@ -463,9 +675,23 @@ async fn delete_objects_without_version_ids_leaves_delete_markers() {
 async fn delete_query_flag_is_not_confused_with_a_prefix() {
     let app = app();
     request(&app, Method::PUT, "/prefixed", "").await;
-    request_with_header(&app, Method::PUT, "/prefixed/deleted-later.txt", "content-type", "text/plain", "data").await;
+    request_with_header(
+        &app,
+        Method::PUT,
+        "/prefixed/deleted-later.txt",
+        "content-type",
+        "text/plain",
+        "data",
+    )
+    .await;
 
-    let r = request(&app, Method::GET, "/prefixed?list-type=2&prefix=deleted", "").await;
+    let r = request(
+        &app,
+        Method::GET,
+        "/prefixed?list-type=2&prefix=deleted",
+        "",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("<Key>deleted-later.txt</Key>"));
 }

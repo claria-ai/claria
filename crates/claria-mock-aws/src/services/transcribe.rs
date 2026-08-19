@@ -3,7 +3,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::state::{ObjectVersion, RecordedTranscribeRequest, SharedState, TranscriptionJob};
 
@@ -38,14 +38,8 @@ async fn start_job(body: Value, state: SharedState) -> Response {
         .as_str()
         .unwrap_or("")
         .to_string();
-    let language = body["LanguageCode"]
-        .as_str()
-        .unwrap_or("en-US")
-        .to_string();
-    let output_bucket = body["OutputBucketName"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let language = body["LanguageCode"].as_str().unwrap_or("en-US").to_string();
+    let output_bucket = body["OutputBucketName"].as_str().unwrap_or("").to_string();
     let output_key = body["OutputKey"]
         .as_str()
         .unwrap_or(&format!("_transcribe/{job_name}.json"))
@@ -111,17 +105,12 @@ async fn start_job(body: Value, state: SharedState) -> Response {
 }
 
 async fn get_job(body: Value, state: SharedState) -> Response {
-    let job_name = body["TranscriptionJobName"]
-        .as_str()
-        .unwrap_or("");
+    let job_name = body["TranscriptionJobName"].as_str().unwrap_or("");
     let st = state.read().await;
 
     match st.transcription_jobs.get(job_name) {
         Some(job) => {
-            let output_uri = format!(
-                "s3://{}/{}",
-                job.output_bucket, job.output_key
-            );
+            let output_uri = format!("s3://{}/{}", job.output_bucket, job.output_key);
             json_response(json!({
                 "TranscriptionJob": {
                     "TranscriptionJobName": job.job_name,
@@ -142,9 +131,7 @@ async fn get_job(body: Value, state: SharedState) -> Response {
 }
 
 async fn delete_job(body: Value, state: SharedState) -> Response {
-    let job_name = body["TranscriptionJobName"]
-        .as_str()
-        .unwrap_or("");
+    let job_name = body["TranscriptionJobName"].as_str().unwrap_or("");
     let mut st = state.write().await;
     st.transcription_jobs.remove(job_name);
     json_response(json!({}))

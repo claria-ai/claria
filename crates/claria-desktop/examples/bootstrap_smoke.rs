@@ -10,24 +10,20 @@
 //!   CLARIA_SYSTEM_NAME=claria \
 //!   cargo run -p claria-desktop --example bootstrap_smoke
 
-use claria_desktop::aws;
-use claria_desktop::config::CredentialSource;
+use claria_desktop::{aws, config::CredentialSource};
 use claria_provisioner::account_setup::{self, CredentialClass, StepStatus};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     color_eyre::install()?;
-    tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .init();
+    tracing_subscriber::fmt().with_env_filter("info").init();
 
     let access_key_id = std::env::var("AWS_ACCESS_KEY_ID")
         .map_err(|_| eyre::eyre!("set AWS_ACCESS_KEY_ID env var"))?;
     let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY")
         .map_err(|_| eyre::eyre!("set AWS_SECRET_ACCESS_KEY env var"))?;
     let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-    let system_name =
-        std::env::var("CLARIA_SYSTEM_NAME").unwrap_or_else(|_| "claria".to_string());
+    let system_name = std::env::var("CLARIA_SYSTEM_NAME").unwrap_or_else(|_| "claria".to_string());
 
     let key_hint = format!(
         "{}...{}",
@@ -78,10 +74,8 @@ async fn main() -> eyre::Result<()> {
 
             if assessment.credential_class != CredentialClass::Root {
                 println!();
-                println!(
-                    "⚠  These are admin (not root) credentials. The bootstrap will");
-                println!(
-                    "   create a scoped user but will NOT delete your current key.");
+                println!("⚠  These are admin (not root) credentials. The bootstrap will");
+                println!("   create a scoped user but will NOT delete your current key.");
                 println!();
                 println!("   Press Enter to continue, or Ctrl-C to abort.");
                 let mut buf = String::new();
@@ -127,12 +121,8 @@ async fn main() -> eyre::Result<()> {
                     println!("   Root access key deleted from AWS.");
                 }
                 println!();
-                println!(
-                    "   Note: this smoke test does NOT write config to disk."
-                );
-                println!(
-                    "   In the real app, the desktop controller would persist"
-                );
+                println!("   Note: this smoke test does NOT write config to disk.");
+                println!("   In the real app, the desktop controller would persist");
                 println!("   the new credentials now.");
             } else {
                 println!("❌ Bootstrap failed.");
@@ -140,12 +130,8 @@ async fn main() -> eyre::Result<()> {
                     println!("   Error: {err}");
                 }
                 println!();
-                println!(
-                    "   Review the steps above. You may need to clean up"
-                );
-                println!(
-                    "   partially-created resources in the IAM console."
-                );
+                println!("   Review the steps above. You may need to clean up");
+                println!("   partially-created resources in the IAM console.");
             }
         }
 
@@ -158,9 +144,7 @@ async fn main() -> eyre::Result<()> {
             println!("❌ Credentials are insufficient for Claria.");
             println!("   {}", assessment.reason);
             println!();
-            println!(
-                "   Provide root or admin credentials so Claria can create"
-            );
+            println!("   Provide root or admin credentials so Claria can create");
             println!("   a properly scoped IAM user.");
         }
     }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { logFrontendEvent } from "./logBridge";
 import { listEditorHistory, type EditorHistoryEntry } from "./tauri";
 
 /**
@@ -16,7 +17,9 @@ export function useEditorHistory(clientId: string): EditorHistoryEntry[] {
       .then((history) => {
         if (!cancelled) setEntries(history);
       })
-      .catch(() => {
+      .catch((reason) => {
+        // Degrade to an empty folder, but never invisibly.
+        logFrontendEvent("warn", `Editor history unavailable: ${reason}`);
         if (!cancelled) setEntries([]);
       });
 

@@ -1,54 +1,66 @@
 [package]
 name = "claria-desktop"
-version = "0.19.0"
+version = "0.32.0"
 edition.workspace = true
 license.workspace = true
 
 [features]
 default = []
-metal = ["claria-whisper/metal"]
+metal = ["claria-transcribe/metal"]
+vulkan = ["claria-transcribe/vulkan"]
+cuda = ["claria-transcribe/cuda"]
+rocm = ["claria-transcribe/rocm"]
+openmp = ["claria-transcribe/openmp"]
 
 [dependencies]
-claria-audit = { path = "../claria-audit" }
-claria-bedrock = { path = "../claria-bedrock" }
-claria-billing = { path = "../claria-billing" }
-claria-client-lifecycle = { path = "../claria-client-lifecycle" }
-claria-core = { path = "../claria-core" }
-claria-docx = { path = "../claria-docx" }
-claria-provisioner = { path = "../claria-provisioner" }
-claria-report-authoring = { path = "../claria-report-authoring" }
-claria-storage = { path = "../claria-storage" }
-claria-transcribe = { path = "../claria-transcribe" }
-claria-whisper = { path = "../claria-whisper" }
-aws-config = "=1.8.18"
-aws-sdk-s3 = "=1.137.0"
-aws-sdk-sts = "=1.107.0"
-aws-smithy-http-client = { version = "=1.1.13", features = ["default-client", "rustls-aws-lc"] }
+claria-bedrock.workspace = true
+claria-billing.workspace = true
+claria-core.workspace = true
+claria-docx.workspace = true
+claria-provisioner.workspace = true
+claria-records.workspace = true
+claria-report-pipeline.workspace = true
+claria-report-store.workspace = true
+claria-storage.workspace = true
+claria-transcribe.workspace = true
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+aws-sdk-sts.workspace = true
+aws-smithy-http-client = { version = "=1.1.13", features = ["rustls-aws-lc"] }
 base64 = "=0.22.1"
 color-eyre = "=0.6.5"
-dirs = "=6.0.0"
-eyre = "=0.6.12"
-futures = "=0.3.32"
+dirs.workspace = true
+eyre.workspace = true
+futures.workspace = true
 rfd = "=0.17.2"
-jiff = { version = "=0.2.31", features = ["serde"] }
-lru = "=0.18.0"
+jiff.workspace = true
+lru.workspace = true
 semver = "=1.0.28"
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.150"
-specta = { version = "=2.0.0-rc.22", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+specta.workspace = true
 specta-typescript = "=0.0.9"
 tauri = { version = "=2.11.5", features = [] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
-tokio = { version = "=1.52.3", features = ["full"] }
-tracing = "=0.1.44"
-ureq = "=3.3.0"
-tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
-uuid = { version = "=1.23.4", features = ["v4"] }
+thiserror.workspace = true
+# `rt-multi-thread` is what Tauri's runtime uses; declared here because this
+# crate now builds that runtime itself rather than relying on the feature
+# arriving through Tauri's own dependency.
+tokio = { workspace = true, features = ["fs", "macros", "rt", "rt-multi-thread", "sync"] }
+tracing.workspace = true
+tracing-appender.workspace = true
+# rustls is only here so the ureq agent can reuse the aws-lc crypto provider
+# the AWS clients already link (see src/http.rs).
+rustls = { version = "=0.23.41", default-features = false, features = ["aws_lc_rs", "std"] }
+ureq = { version = "=3.3.0", default-features = false, features = ["platform-verifier", "rustls-no-provider"] }
+tracing-subscriber = { workspace = true, features = ["json"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-aws-credential-types = "=1.2.14"
-claria-mock-aws = { path = "../claria-mock-aws" }
-tempfile = "=3.27.0"
+aws-credential-types.workspace = true
+claria-mock-aws.workspace = true
+tempfile.workspace = true
 
 [package.metadata.release]
 pre-release-replacements = [
@@ -57,6 +69,13 @@ pre-release-replacements = [
 ]
 
 [target.'cfg(windows)'.dependencies]
+# Same version tauri already carries on Windows; used for ShellExecuteW so
+# open_url never round-trips through a shell.
+windows = { version = "=0.61.3", features = [
+  "Win32_Foundation",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
 windows-sys = { version = "=0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",

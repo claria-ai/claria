@@ -66,5 +66,5 @@ export function chatHistoryLabel(filename: string): string {
 
 /** Filename from a dropped absolute path, falling back to the whole path. */
 export function basename(path: string): string {
-  return path.split("/").pop() ?? path;
+  return path.split(/[/\\]/).pop() ?? path;
 }

@@ -6,7 +6,7 @@ import {
 } from "./tauri";
 
 export type RecordFileDialog =
-  | { kind: "preview"; filename: string; text: string }
+  | { kind: "preview"; filename: string }
   | { kind: "edit"; filename: string; text: string }
   | { kind: "delete"; filename: string }
   | { kind: "create" }
@@ -35,20 +35,8 @@ export function useRecordFileDialog({
 }) {
   const [dialog, setDialog] = useState<RecordFileDialog>(null);
 
-  async function openPreview(filename: string) {
-    try {
-      setDialog({
-        kind: "preview",
-        filename,
-        text: await getRecordFileText(clientId, filename),
-      });
-    } catch (error) {
-      setDialog({
-        kind: "preview",
-        filename,
-        text: `Error loading preview: ${String(error)}`,
-      });
-    }
+  function openPreview(filename: string) {
+    setDialog({ kind: "preview", filename });
   }
 
   async function openEdit(filename: string) {
@@ -102,12 +90,6 @@ export function useRecordFileDialog({
     return true;
   }
 
-  function updatePreview(text: string) {
-    setDialog((current) =>
-      current?.kind === "preview" ? { ...current, text } : current
-    );
-  }
-
   return {
     dialog,
     close: () => setDialog(null),
@@ -124,7 +106,6 @@ export function useRecordFileDialog({
     confirmDelete,
     create,
     divertDrop,
-    updatePreview,
     refresh: onChanged,
   };
 }

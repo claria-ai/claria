@@ -1,26 +1,24 @@
-//! claria-transcribe
+//! Audio transcription for Claria.
 //!
-//! Audio-to-text transcription via Amazon Transcribe (standard and medical).
+//! Imported recordings use Amazon Transcribe (standard or medical) so they can
+//! take advantage of its language routing, speaker handling, and managed
+//! long-form jobs. Record Memo uses the local transcribe.cpp runtime so live
+//! microphone audio remains on the device.
 //!
-//! Two APIs:
-//!
-//! - [`transcribe_audio_with_options`] — full-featured, accepts [`TranscribeOptions`]
-//!   (language mode, speaker handling, engine, custom vocabulary) and returns a
-//!   structured [`TranscriptResult`] preserving speaker turns, timestamps, and
-//!   per-segment language codes.
-//! - [`transcribe_audio`] — thin legacy wrapper that hardcodes English + standard
-//!   engine + 2-speaker diarization and returns the rendered plain-text body.
-//!   Used by the existing drag-drop upload path during the transition window.
-//!
-//! The structured result is rendered to and parsed from a lightly-structured
-//! plain-text-with-headers format via [`format_transcript_body`] and
-//! [`parse_transcript_body`]. The same `.text` sidecar in S3 holds the body;
-//! S3 object versioning gives us v1-as-canonical history for free.
+//! Imported recordings retain Claria's structured, editable `.text` sidecars;
+//! local memos return text for the existing memo-review flow.
 
+mod engine;
 pub mod error;
+mod types;
 
 pub use aws_sdk_transcribe::types::MediaFormat;
+pub use engine::LocalTranscriber;
 pub use error::TranscribeError;
+pub use types::{
+    InferenceBackend, InferenceTimings, KvPrecision, LocalTranscribeOptions, LocalTranscription,
+    WhisperOptions,
+};
 
 use aws_sdk_transcribe::types::{
     LanguageCode, Media, MedicalContentIdentificationType, MedicalTranscriptionSetting, Settings,
@@ -28,11 +26,49 @@ use aws_sdk_transcribe::types::{
 };
 use backon::{ExponentialBuilder, Retryable};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::time::Duration;
+use std::{collections::HashMap, fmt::Write as _, time::Duration};
 use tracing::info;
 use uuid::Uuid;
+
+/// Version of the linked transcribe.cpp runtime used by Record Memo.
+pub fn runtime_version() -> String {
+    transcribe_cpp::version().to_string()
+}
+
+/// Whether a requested local compute backend is compiled in and usable.
+pub fn backend_available(backend: InferenceBackend) -> bool {
+    transcribe_cpp::backend_available(backend.to_native())
+}
+
+/// Runtime compute devices reported by transcribe.cpp.
+pub fn devices() -> Vec<ComputeDevice> {
+    transcribe_cpp::devices()
+        .into_iter()
+        .map(|device| ComputeDevice {
+            name: device.name,
+            description: device.description,
+            kind: device.kind,
+            device_type: format!("{:?}", device.device_type).to_ascii_lowercase(),
+            device_id: device.device_id,
+            memory_total: device.memory_total,
+            memory_free: device.memory_free,
+            index: device.index,
+        })
+        .collect()
+}
+
+/// Serializable view of a transcribe.cpp compute device.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ComputeDevice {
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+    pub device_type: String,
+    pub device_id: Option<String>,
+    pub memory_total: u64,
+    pub memory_free: u64,
+    pub index: Option<usize>,
+}
 
 // ---------------------------------------------------------------------------
 // Public options
@@ -619,10 +655,7 @@ fn extract_speakers(speaker_labels: Option<&serde_json::Value>) -> Vec<Speaker> 
     let Some(labels) = speaker_labels else {
         return vec![];
     };
-    let count = labels
-        .get("speakers")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as usize;
+    let count = labels.get("speakers").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     (0..count)
         .map(|i| Speaker {
             id: format!("spk_{i}"),

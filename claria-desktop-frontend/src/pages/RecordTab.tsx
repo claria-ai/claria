@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
+  listChatHistories,
   listDeletedFiles,
   restoreDeletedFile,
   type ChatHistoryDetail,
@@ -15,12 +16,12 @@ import FilesPanelHeader from "../components/FilesPanelHeader";
 import MemoRecorderBar from "../components/MemoRecorderBar";
 import MemoReviewModal from "../components/MemoReviewModal";
 import RecordFileDialogs from "../components/RecordFileDialogs";
-import Spinner from "../components/Spinner";
 import UploadingRows from "../components/UploadingRows";
-import { ErrorBanner } from "../components/StateCards";
+import { ErrorBanner, LoadingCard } from "../components/StateCards";
 import { formatDateTime } from "../lib/format";
 import { isChatHistory } from "../lib/recordFiles";
 import { searchMatches } from "../lib/search";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useEditorHistory } from "../lib/useEditorHistory";
 import { useMemoRecorder } from "../lib/useMemoRecorder";
 import { useMoreMode } from "../lib/useMoreMode";
@@ -88,6 +89,20 @@ export default function RecordTab({
   const chatHistoryFiles = files
     .filter((f) => isChatHistory(f.filename))
     .sort((a, b) => (b.uploaded_at ?? "").localeCompare(a.uploaded_at ?? ""));
+  const chatHistorySignature = useMemo(
+    () => chatHistoryFiles.map((file) => `${file.filename}:${file.uploaded_at}`).join("|"),
+    [chatHistoryFiles]
+  );
+  const chatHistoriesLoad = useAsyncLoad(
+    chatHistorySignature === "" ? null : () => listChatHistories(clientId),
+    [clientId, chatHistorySignature]
+  );
+  const visibleChatHistories =
+    chatHistorySignature === "" ? [] : (chatHistoriesLoad.data ?? []);
+  // Feature errors share one banner; the chat-history load error joins it
+  // without being copied into state.
+  const bannerError = error ?? chatHistoriesLoad.error;
+
   const regularFiles = files.filter(
     (f) =>
       !isChatHistory(f.filename) &&
@@ -98,7 +113,7 @@ export default function RecordTab({
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-2xl mx-auto p-8">
-        {error && <ErrorBanner message={error} />}
+        {bannerError && <ErrorBanner message={bannerError} />}
 
         {/* File list / drop zone */}
         <div
@@ -136,18 +151,15 @@ export default function RecordTab({
           />
 
           {loading && (
-            <div className="p-8 text-center">
-              <div className="flex items-center justify-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Loading files...</span>
-              </div>
+            <div className="p-4">
+              <LoadingCard>Loading files...</LoadingCard>
             </div>
           )}
 
-          {!loading && chatHistoryFiles.length > 0 && (
+          {!loading && visibleChatHistories.length > 0 && (
             <ChatHistoryFolder
               clientId={clientId}
-              files={chatHistoryFiles}
+              entries={visibleChatHistories}
               onResume={onResumeChat}
               onDelete={fileDialog.openDelete}
               onError={setError}
@@ -234,7 +246,7 @@ export default function RecordTab({
             onRestore={(df) =>
               restore(
                 df.filename,
-                () => restoreDeletedFile(clientId, df.filename, df.version_id),
+                () => restoreDeletedFile(clientId, df.filename),
                 (f) => f.filename === df.filename,
                 refresh,
               )

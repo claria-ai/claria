@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  startReport: vi.fn(),
   loadReport: vi.fn(),
   sendReport: vi.fn(),
   listFiles: vi.fn(),
@@ -36,7 +37,10 @@ vi.mock("../lib/tauri", () => ({
   restoreFileVersion: vi.fn(),
   listDeletedFiles: vi.fn().mockResolvedValue([]),
   restoreDeletedFile: vi.fn(),
-  getWhisperModels: vi.fn().mockResolvedValue([]),
+  getLocalTranscriptionStatus: vi.fn().mockResolvedValue({
+    accelerated: false,
+    models: [],
+  }),
   transcribeMemo: vi.fn(),
   loadConfig: vi.fn().mockRejectedValue(new Error("not configured in test")),
   getPrompt: mocks.getPrompt,
@@ -46,22 +50,37 @@ vi.mock("../lib/tauri", () => ({
   chatMessage: vi.fn(),
   lookupModelPricing: vi.fn().mockResolvedValue(null),
   acceptModelAgreement: vi.fn(),
+  startReportWorkspace: mocks.startReport,
   loadReportWorkspace: mocks.loadReport,
   saveReportDraft: vi.fn(),
+  discardQueuedReportEdits: vi.fn(),
+  generateFullReport: vi.fn(),
   sendReportMessage: mocks.sendReport,
   resolveReportProposal: vi.fn(),
   exportReportDocx: vi.fn(),
-  pickReportTemplateDocx: vi.fn().mockResolvedValue(null),
+  listWriterTemplates: vi.fn().mockResolvedValue([]),
+  previewWriterTemplate: vi.fn(),
   applyReportTemplate: vi.fn(),
   discardReportTemplatePreview: vi.fn(),
   acknowledgeReportTemplateReview: vi.fn(),
 }));
 
 import { clearWritingComposerDrafts } from "../lib/writingComposerDraft";
+import { ChatModelsContext, type ChatModelsState } from "../lib/chatModels";
 import ClientRecord from "./ClientRecord";
 
+const modelsState: ChatModelsState = {
+  models: [{ model_id: "model-1", name: "Claude" }],
+  loading: false,
+  error: null,
+  preferredModelId: "model-1",
+  retry: () => {},
+  setPreferredModelId: () => {},
+};
+
 const workspace = {
-  schema_version: 2,
+  schema_version: 3,
+  session_name: "Writer Session (1)",
   report_id: "report-1",
   client_id: "client-1",
   draft: {
@@ -83,16 +102,15 @@ const workspace = {
 
 function renderClient(navigate = vi.fn(), onNameChanged = vi.fn()) {
   return render(
-    <ClientRecord
-      navigate={navigate}
-      clientId="client-1"
-      clientName="Ada"
-      chatModels={[{ model_id: "model-1", name: "Claude" }]}
-      chatModelsLoading={false}
-      chatModelsError={null}
-      preferredModelId="model-1"
-      onClientNameChanged={onNameChanged}
-    />
+    <ChatModelsContext.Provider value={modelsState}>
+      <ClientRecord
+        navigate={navigate}
+        clientId="client-1"
+        clientName="Ada"
+        onClientNameChanged={onNameChanged}
+        onManageWriterSection={vi.fn()}
+      />
+    </ChatModelsContext.Provider>
   );
 }
 
@@ -103,6 +121,7 @@ beforeEach(() => {
   mocks.listEditorHistory.mockResolvedValue([]);
   mocks.getPrompt.mockResolvedValue("");
   mocks.listContext.mockResolvedValue([]);
+  mocks.startReport.mockResolvedValue(workspace);
   mocks.loadReport.mockResolvedValue(workspace);
   mocks.getClientRecordDetails.mockResolvedValue({
     id: "client-1",
@@ -180,16 +199,22 @@ describe("ClientRecord Writing integration", () => {
   it("does not issue Writing IPC while Record or Chat is active", async () => {
     renderClient();
     await screen.findByText(/Drag files here/);
+    expect(mocks.startReport).not.toHaveBeenCalled();
     expect(mocks.loadReport).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("tab", { name: "Chat" }));
     expect(await screen.findByText("Start the conversation.")).toBeDefined();
+    expect(mocks.startReport).not.toHaveBeenCalled();
     expect(mocks.loadReport).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     expect(await screen.findByTestId("accepted-report-canvas")).toBeDefined();
-    expect(mocks.loadReport).toHaveBeenCalledTimes(1);
-    expect(mocks.loadReport).toHaveBeenCalledWith("client-1");
+    expect(mocks.startReport).toHaveBeenCalledTimes(1);
+    expect(mocks.startReport).toHaveBeenCalledWith(
+      "client-1",
+      expect.any(String)
+    );
+    expect(mocks.loadReport).not.toHaveBeenCalled();
   });
 
   it("keeps Record usable when Editor History is unavailable", async () => {
@@ -204,6 +229,7 @@ describe("ClientRecord Writing integration", () => {
     mocks.listEditorHistory.mockResolvedValue([
       {
         report_id: "report-1",
+        name: "Writer Session (1)",
         title: "Psychological report",
         revision: 3,
         turn_count: 4,
@@ -227,6 +253,7 @@ describe("ClientRecord Writing integration", () => {
       screen.getByRole("tab", { name: "Writing" }).getAttribute("aria-selected")
     ).toBe("true");
     expect(await screen.findByTestId("accepted-report-canvas")).toBeDefined();
+    expect(mocks.loadReport).toHaveBeenCalledWith("client-1", "report-1");
   });
 
   it("prompts before leaving dirty inline report edits", async () => {
@@ -274,6 +301,9 @@ describe("ClientRecord Writing integration", () => {
     renderClient(navigate);
     await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     await screen.findByTestId("accepted-report-canvas");
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Write with Claude" })
+    );
     await userEvent.type(
       screen.getByLabelText("Writing instruction"),
       "Keep this typed instruction"
@@ -285,11 +315,14 @@ describe("ClientRecord Writing integration", () => {
     vi.unstubAllGlobals();
   });
 
-  it("retains typed instructions across tabs and blocks navigation during a turn", async () => {
+  it("starts a fresh Writing session from the tab and blocks navigation during a turn", async () => {
     mocks.sendReport.mockReturnValue(new Promise(() => undefined));
     renderClient();
     await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     await screen.findByTestId("accepted-report-canvas");
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Write with Claude" })
+    );
     await userEvent.type(
       screen.getByLabelText("Writing instruction"),
       "Keep this typed instruction"
@@ -308,10 +341,21 @@ describe("ClientRecord Writing integration", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: "Writing" }));
     await screen.findByTestId("accepted-report-canvas");
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Write with Claude" })
+    );
     expect(
       (screen.getByLabelText("Writing instruction") as HTMLTextAreaElement).value
-    ).toBe("Keep this typed instruction");
+    ).toBe("");
+    expect(mocks.startReport).toHaveBeenCalledTimes(2);
+    const startedIds = mocks.startReport.mock.calls.map((call) => call[1]);
+    expect(startedIds[0]).not.toBe(startedIds[1]);
+    expect(mocks.loadReport).not.toHaveBeenCalled();
 
+    await userEvent.type(
+      screen.getByLabelText("Writing instruction"),
+      "Start this fresh session"
+    );
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     const alert = vi.fn();
     vi.stubGlobal("alert", alert);

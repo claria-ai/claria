@@ -12,7 +12,11 @@ fn iam_post(action: &str, extra_params: &str) -> String {
     }
 }
 
-async fn iam_request(app: &axum::Router, action: &str, extra_params: &str) -> helpers::TestResponse {
+async fn iam_request(
+    app: &axum::Router,
+    action: &str,
+    extra_params: &str,
+) -> helpers::TestResponse {
     let body = iam_post(action, extra_params);
     request(app, Method::POST, "/?Action=placeholder", body).await
 }
@@ -77,7 +81,12 @@ async fn create_and_get_policy() {
 
     // Extract ARN from response for GetPolicy
     let arn = extract_xml_value(&r.body, "Arn").unwrap();
-    let r = iam_request(&app, "GetPolicy", &format!("PolicyArn={}", percent_encode(&arn))).await;
+    let r = iam_request(
+        &app,
+        "GetPolicy",
+        &format!("PolicyArn={}", percent_encode(&arn)),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("<PolicyName>TestPolicy</PolicyName>"));
 }
@@ -85,7 +94,12 @@ async fn create_and_get_policy() {
 #[tokio::test]
 async fn get_nonexistent_policy_returns_404() {
     let app = app();
-    let r = iam_request(&app, "GetPolicy", "PolicyArn=arn%3Aaws%3Aiam%3A%3A123%3Apolicy%2FNope").await;
+    let r = iam_request(
+        &app,
+        "GetPolicy",
+        "PolicyArn=arn%3Aaws%3Aiam%3A%3A123%3Apolicy%2FNope",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
 }
 
@@ -109,7 +123,12 @@ async fn create_and_list_policy_versions() {
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("<VersionId>v2</VersionId>"));
 
-    let r = iam_request(&app, "ListPolicyVersions", &format!("PolicyArn={}", percent_encode(&arn))).await;
+    let r = iam_request(
+        &app,
+        "ListPolicyVersions",
+        &format!("PolicyArn={}", percent_encode(&arn)),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("v1"));
     assert!(r.body.contains("v2"));
@@ -119,7 +138,10 @@ async fn create_and_list_policy_versions() {
 async fn delete_policy_version() {
     let app = app();
     let doc = r#"{"Version":"2012-10-17","Statement":[]}"#;
-    let params = format!("PolicyName=DelVerPol&PolicyDocument={}", percent_encode(doc));
+    let params = format!(
+        "PolicyName=DelVerPol&PolicyDocument={}",
+        percent_encode(doc)
+    );
     let r = iam_request(&app, "CreatePolicy", &params).await;
     let arn = extract_xml_value(&r.body, "Arn").unwrap();
 
@@ -137,7 +159,12 @@ async fn delete_policy_version() {
     assert_eq!(r.status, StatusCode::OK);
 
     // Should only have v1
-    let r = iam_request(&app, "ListPolicyVersions", &format!("PolicyArn={}", percent_encode(&arn))).await;
+    let r = iam_request(
+        &app,
+        "ListPolicyVersions",
+        &format!("PolicyArn={}", percent_encode(&arn)),
+    )
+    .await;
     assert!(r.body.contains("v1"));
     assert!(!r.body.contains("v2"));
 }
@@ -150,7 +177,15 @@ async fn attach_and_list_user_policies() {
     iam_request(&app, "CreateUser", "UserName=poluser").await;
 
     let doc = r#"{"Version":"2012-10-17","Statement":[]}"#;
-    let r = iam_request(&app, "CreatePolicy", &format!("PolicyName=AttachPol&PolicyDocument={}", percent_encode(doc))).await;
+    let r = iam_request(
+        &app,
+        "CreatePolicy",
+        &format!(
+            "PolicyName=AttachPol&PolicyDocument={}",
+            percent_encode(doc)
+        ),
+    )
+    .await;
     let arn = extract_xml_value(&r.body, "Arn").unwrap();
 
     let params = format!("UserName=poluser&PolicyArn={}", percent_encode(&arn));
@@ -184,14 +219,29 @@ async fn put_get_delete_inline_policy() {
     let r = iam_request(&app, "PutUserPolicy", &params).await;
     assert_eq!(r.status, StatusCode::OK);
 
-    let r = iam_request(&app, "GetUserPolicy", "UserName=inluser&PolicyName=InlineOne").await;
+    let r = iam_request(
+        &app,
+        "GetUserPolicy",
+        "UserName=inluser&PolicyName=InlineOne",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("InlineOne"));
 
-    let r = iam_request(&app, "DeleteUserPolicy", "UserName=inluser&PolicyName=InlineOne").await;
+    let r = iam_request(
+        &app,
+        "DeleteUserPolicy",
+        "UserName=inluser&PolicyName=InlineOne",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
 
-    let r = iam_request(&app, "GetUserPolicy", "UserName=inluser&PolicyName=InlineOne").await;
+    let r = iam_request(
+        &app,
+        "GetUserPolicy",
+        "UserName=inluser&PolicyName=InlineOne",
+    )
+    .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
 }
 
@@ -212,10 +262,20 @@ async fn create_list_delete_access_key() {
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains(&access_key_id));
 
-    let r = iam_request(&app, "GetAccessKeyLastUsed", &format!("AccessKeyId={access_key_id}")).await;
+    let r = iam_request(
+        &app,
+        "GetAccessKeyLastUsed",
+        &format!("AccessKeyId={access_key_id}"),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
 
-    let r = iam_request(&app, "DeleteAccessKey", &format!("UserName=keyuser&AccessKeyId={access_key_id}")).await;
+    let r = iam_request(
+        &app,
+        "DeleteAccessKey",
+        &format!("UserName=keyuser&AccessKeyId={access_key_id}"),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
 
     let r = iam_request(&app, "ListAccessKeys", "UserName=keyuser").await;

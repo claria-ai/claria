@@ -14,12 +14,22 @@ const LETTER_WIDTH_TWIPS: u32 = 12_240;
 const LETTER_HEIGHT_TWIPS: u32 = 15_840;
 const ONE_INCH_TWIPS: i32 = 1_440;
 const TABLE_CONTENT_WIDTH_TWIPS: usize = 9_360;
-const BULLET_NUMBERING_ID: usize = 42;
+pub(crate) const BULLET_NUMBERING_ID: usize = 42;
 const BODY_FONT: &str = "Times New Roman";
+
+/// Export renders the accepted report minus deferred sections: a skipped
+/// section holds its place in the draft but stays out of the document until
+/// content is written into it.
+pub(crate) fn exportable_draft(draft: &ReportDraft) -> ReportDraft {
+    let mut draft = draft.clone();
+    draft.content.sections.retain(|section| !section.skipped);
+    draft
+}
 
 pub fn render_report(draft: &ReportDraft) -> Result<Vec<u8>, DocxError> {
     validate_report_content(&draft.content)
         .map_err(|error| DocxError::Render(error.to_string()))?;
+    let draft = &exportable_draft(draft);
 
     let fonts = RunFonts::new()
         .ascii(BODY_FONT)

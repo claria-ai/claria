@@ -1,27 +1,33 @@
 //! Document text extraction via the Bedrock Converse API.
 //!
 //! Sends PDF or DOCX files to a Claude model using the `DocumentBlock`
-//! content type and asks for pure text extraction. The Converse API handles
-//! parsing the document format natively.
+//! content type and asks for structured Markdown extraction. The Converse API
+//! handles parsing the document format natively.
 
 use aws_sdk_bedrockruntime::types::{
-    ContentBlock, ConversationRole, DocumentBlock, DocumentFormat, DocumentSource, Message,
-    SystemContentBlock,
+    ContentBlock, ConversationRole, DocumentBlock, DocumentFormat, DocumentSource,
+    InferenceConfiguration, Message, SystemContentBlock,
 };
 use claria_core::models::turn_usage::TurnUsage;
 use tracing::info;
 
-use crate::{error::BedrockError, tokens};
+use crate::{converse, error::BedrockError};
+
+/// Output-token ceiling for one extraction Converse call. A `max_tokens`
+/// stop is a hard error — a truncated extraction must never be persisted as
+/// a sidecar, because it would silently hide document content from every
+/// later chat and report turn.
+pub const EXTRACT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 
 /// Default prompt used for document text extraction when no custom prompt
 /// has been saved to S3.
 pub const DEFAULT_EXTRACTION_PROMPT: &str = "\
-Extract the complete text content from this document. \
-Return plain text, preserving paragraph structure. \
-Do not add commentary, headers, or formatting.\n\n\
-Preserve table structure. Use a markdown format.";
+Extract the complete document as structured Markdown. \
+Preserve headings, paragraph boundaries, lists, tables, labels, and reading order. \
+Represent tables with Markdown tables and keep meaningful blank lines between sections. \
+Return only the extracted Markdown without commentary or a wrapping code fence.";
 
-/// Extract plain text from a PDF or DOCX document via Bedrock.
+/// Extract structured Markdown from a PDF or DOCX document via Bedrock.
 ///
 /// Sends the document bytes to the given model using the Converse API's
 /// `DocumentBlock`, which handles PDF and DOCX parsing natively.
@@ -34,8 +40,8 @@ pub async fn extract_document_text(
     filename: &str,
     format: DocumentFormat,
     system_prompt: &str,
-) -> Result<(String, TurnUsage), BedrockError> {
-    let client = aws_sdk_bedrockruntime::Client::new(config);
+) -> Result<(String, Option<TurnUsage>), BedrockError> {
+    let client = converse::runtime_client(config);
 
     let doc_name = sanitize_document_name(filename);
 
@@ -46,61 +52,76 @@ pub async fn extract_document_text(
         .build()
         .map_err(|e| BedrockError::Invocation(e.to_string()))?;
 
+    // The user turn is deliberately neutral: the extraction behavior is
+    // defined by the (S3-customizable) system prompt, and a hardcoded
+    // instruction here could contradict it.
     let message = Message::builder()
         .role(ConversationRole::User)
         .content(ContentBlock::Document(doc_block))
         .content(ContentBlock::Text(
-            "Extract the full text from this document.".to_string(),
+            "Process the attached document according to your instructions.".to_string(),
         ))
         .build()
         .map_err(|e| BedrockError::Invocation(e.to_string()))?;
 
-    info!(model_id, filename, "extracting text from document");
+    // A client-chosen upload filename can identify a person, so the log fields
+    // are the extension and the byte size — what diagnostics actually use.
+    let extension = log_safe_extension(filename);
+    let document_bytes = bytes.len();
+
+    info!(
+        model_id,
+        extension = %extension,
+        document_bytes,
+        "extracting text from document"
+    );
 
     let response = client
         .converse()
         .model_id(model_id)
         .system(SystemContentBlock::Text(system_prompt.to_string()))
         .messages(message)
+        .inference_config(
+            InferenceConfiguration::builder()
+                .max_tokens(EXTRACT_MAX_OUTPUT_TOKENS as i32)
+                .build(),
+        )
         .send()
         .await
-        .map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::error!(model_id, filename, error = %msg, "Bedrock Converse failed during document extraction");
-            BedrockError::Invocation(msg)
-        })?;
+        .map_err(|error| converse::classify_error("document extraction Converse", error))?;
+
+    // Truncation ⇒ Err. The caller persists this text as the document's
+    // sidecar; an incomplete extraction must fail loudly instead.
+    converse::ensure_complete_text_response(response.stop_reason(), EXTRACT_MAX_OUTPUT_TOKENS)?;
 
     let output_message = response
         .output()
         .and_then(|o| o.as_message().ok())
         .ok_or_else(|| BedrockError::ResponseParse("no message in response".to_string()))?;
 
-    let text = output_message
-        .content()
-        .iter()
-        .filter_map(|block| {
-            if let ContentBlock::Text(t) = block {
-                Some(t.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
+    let text = converse::collect_text(output_message);
 
     info!(
         model_id,
-        filename,
+        extension = %extension,
+        document_bytes,
         text_len = text.len(),
         "document text extraction complete"
     );
 
-    let usage = match response.usage() {
-        Some(u) => tokens::extract_turn_usage(u, model_id),
-        None => tokens::empty_turn_usage(model_id),
-    };
+    let usage = converse::optional_usage(response.usage(), model_id, None);
 
     Ok((text, usage))
+}
+
+/// The lowercase extension of an upload filename, or `"none"` when there is
+/// no extension. Only the extension is PHI-safe to log: the rest of a
+/// client-chosen filename can identify a person.
+fn log_safe_extension(filename: &str) -> String {
+    match filename.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() => ext.to_lowercase(),
+        _ => "none".to_string(),
+    }
 }
 
 /// Sanitize a filename for use as a Bedrock `DocumentBlock` name.

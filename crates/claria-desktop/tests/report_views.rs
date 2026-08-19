@@ -1,13 +1,14 @@
 use claria_core::models::{
     report::{
         ReportAuthoringTurn, ReportBlock, ReportContent, ReportProtocolBlock,
-        ReportProtocolMessage, ReportProtocolRole, ReportSection, ReportTemplateImport,
-        ReportTemplateWarning, ReportTemplateWarningCode, ReportToolResultStatus, ReportWorkspace,
+        ReportProtocolMessage, ReportProtocolRole, ReportRecordContextFile, ReportSection,
+        ReportTemplateImport, ReportTemplateWarning, ReportTemplateWarningCode,
+        ReportToolResultStatus, ReportWorkspace,
     },
     turn_usage::TurnUsage,
 };
 use claria_desktop::report_authoring::{
-    ReportBlockView, ReportTimelineItemView, ReportToolActivityStatus, workspace_view,
+    ReportTimelineItemView, ReportToolActivityStatus, workspace_view,
 };
 use uuid::Uuid;
 
@@ -67,12 +68,14 @@ fn failed_tool_activity_uses_safe_error_copy_without_success_summary() {
                     created_at: now,
                 },
             ],
+            record_context_files: vec![],
             usage: TurnUsage {
                 model_id: "us.anthropic.claude-sonnet-test".to_string(),
                 input_tokens: 10,
                 output_tokens: 2,
                 cache_read_input_tokens: 0,
                 cache_write_input_tokens: 0,
+                cache_ttl: None,
                 cost_usd: 0.0,
                 pricing_version: 0,
             },
@@ -170,12 +173,24 @@ fn successful_record_reads_are_exposed_as_context_metadata() {
                     created_at: now,
                 },
             ],
+            record_context_files: vec![
+                ReportRecordContextFile::Included {
+                    filename: "preloaded.txt".to_string(),
+                    sha256: "a".repeat(64),
+                    characters: 120,
+                },
+                ReportRecordContextFile::Unavailable {
+                    filename: "scan.pdf".to_string(),
+                    reason: "text_extraction_unavailable".to_string(),
+                },
+            ],
             usage: TurnUsage {
                 model_id: "us.anthropic.claude-sonnet-test".to_string(),
                 input_tokens: 10,
                 output_tokens: 2,
                 cache_read_input_tokens: 0,
                 cache_write_input_tokens: 0,
+                cache_ttl: None,
                 cost_usd: 0.0,
                 pricing_version: 0,
             },
@@ -188,6 +203,11 @@ fn successful_record_reads_are_exposed_as_context_metadata() {
         .expect("valid turn");
 
     let view = workspace_view(&workspace);
+    assert_eq!(view.turns[0].context_files.len(), 2);
+    assert_eq!(view.turns[0].context_files[0].filename, "preloaded.txt");
+    assert!(view.turns[0].context_files[0].available);
+    assert_eq!(view.turns[0].context_files[1].filename, "scan.pdf");
+    assert!(!view.turns[0].context_files[1].available);
     let read = &view.turns[0].context_reads[0];
     assert_eq!(read.filename, "intake.txt");
     assert_eq!(read.offset, 12);
@@ -207,6 +227,10 @@ fn table_and_template_review_metadata_are_exposed_without_source_identity() {
             ReportContent {
                 title: "Imported".to_string(),
                 sections: vec![ReportSection {
+                    skipped: false,
+                    template_blocks: None,
+                    template_directives: Vec::new(),
+                    authorship: None,
                     id: Uuid::new_v4(),
                     heading: "Scores".to_string(),
                     blocks: vec![ReportBlock::Table {
@@ -223,8 +247,11 @@ fn table_and_template_review_metadata_are_exposed_without_source_identity() {
         )
         .expect("import revision");
     workspace.updated_at = imported_at;
+    let managed_template_id = Uuid::new_v4();
     workspace.template_import = Some(ReportTemplateImport {
         source_sha256: "b".repeat(64),
+        writer_template_id: Some(managed_template_id),
+        writer_template_name: Some("Evaluation template".to_string()),
         imported_revision: 1,
         imported_at,
         warnings: vec![ReportTemplateWarning {
@@ -237,7 +264,7 @@ fn table_and_template_review_metadata_are_exposed_without_source_identity() {
     let view = workspace_view(&workspace);
     assert!(matches!(
         &view.draft.content.sections[0].blocks[0],
-        ReportBlockView::Table {
+        ReportBlock::Table {
             has_header: true,
             column_widths: Some(widths),
             ..
@@ -245,6 +272,15 @@ fn table_and_template_review_metadata_are_exposed_without_source_identity() {
     ));
     let template = view.template_import.expect("template view");
     assert!(template.review_required);
+    let managed_template_id = managed_template_id.to_string();
+    assert_eq!(
+        template.writer_template_id.as_deref(),
+        Some(managed_template_id.as_str())
+    );
+    assert_eq!(
+        template.writer_template_name.as_deref(),
+        Some("Evaluation template")
+    );
     assert_eq!(template.placeholder_count, 1);
     assert_eq!(template.warnings[0].code, "images_omitted");
     let json = serde_json::to_string(&template).expect("view JSON");

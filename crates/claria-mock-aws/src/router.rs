@@ -1,16 +1,15 @@
 use axum::{
+    Router,
     body::Bytes,
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Router,
 };
 use serde_json::Value;
 
 use crate::{
-    params,
-    scenarios,
+    params, scenarios,
     services::{artifact, bedrock, cloudtrail, cost_explorer, iam, s3, sts, transcribe},
     state::SharedState,
 };
@@ -135,11 +134,7 @@ async fn dispatch_aws(
 
         // Also check query string for Action (some SDKs put it there)
         if let Some(action) = extract_form_param(query, "Action") {
-            let sts_actions = [
-                "GetCallerIdentity",
-                "AssumeRole",
-                "GetSessionToken",
-            ];
+            let sts_actions = ["GetCallerIdentity", "AssumeRole", "GetSessionToken"];
             if sts_actions.contains(&action.as_str()) {
                 return sts::dispatch(&action, query, state).await;
             }

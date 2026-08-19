@@ -61,6 +61,57 @@ pub struct MockState {
     /// `toolConfig`. Ordinary chat/extraction requests keep their existing
     /// canned behavior.
     pub bedrock_tool_responses: Vec<ScriptedBedrockResponse>,
+    /// Per-marker FIFO responses for tool-configured Converse requests.
+    ///
+    /// A request whose message text contains one of these keys draws from
+    /// that key's queue instead of the shared one above. Arrival order is not
+    /// a contract once a caller sends requests in parallel — the review
+    /// fan-out issues six at once — so a test that needs a specific answer to
+    /// reach a specific branch keys it on something only that branch's
+    /// request says. Only message text is searched: the tool schemas are
+    /// identical across branches and naming a marker inside one would match
+    /// every request.
+    pub bedrock_tool_responses_by_marker: HashMap<String, Vec<ScriptedBedrockResponse>>,
+    /// FIFO responses for plain (no `toolConfig`) Converse requests. When
+    /// empty, the canned chat/extraction response is returned.
+    pub bedrock_text_responses: Vec<ScriptedBedrockResponse>,
+    /// Raw plain Converse request bodies, in wire order. `ConverseStream`
+    /// requests land here too — the streaming endpoint shares the plain
+    /// script FIFO and canned response, delivered as event-stream frames.
+    pub bedrock_text_requests: Vec<serde_json::Value>,
+    /// How many of the captured plain requests arrived via `ConverseStream`.
+    pub bedrock_stream_request_count: usize,
+    /// Fault injection: the next N `ConverseStream` responses send an
+    /// opening frame and one text delta, then hold the connection open
+    /// forever without finishing. Reproduces a socket that dies
+    /// mid-generation — the one failure the AWS SDK does not cover, since
+    /// the generated streaming operations register no stalled-stream
+    /// protection interceptor. Each stalled response decrements the
+    /// counter, so retry paths can be scripted to stall then recover.
+    /// A stalled response still consumes its scripted payload.
+    pub bedrock_stream_stalls: u32,
+    /// Fault injection: once set, every `ConverseStream` request after the
+    /// Nth stalls the same way [`Self::bedrock_stream_stalls`] does, and goes
+    /// on doing so. The counter above fires on whichever response comes next,
+    /// which a test cannot aim at a particular call without racing the loop
+    /// it is testing; this pins the stall to a chosen point in a scripted
+    /// conversation — say, the call that would follow the second landed
+    /// section.
+    pub bedrock_stream_stalls_after: Option<usize>,
+    /// Fault injection: the next N `ConverseStream` responses send an
+    /// opening frame and one text delta, then sever the connection with a
+    /// body error. Reproduces a socket that resets mid-generation, and —
+    /// unlike a stall — fails immediately, so retry paths can be exercised
+    /// in real time. Checked after `bedrock_stream_stalls`; a dropped
+    /// response still consumes its scripted payload.
+    pub bedrock_stream_drops: u32,
+    /// Fault injection: the next N `ConverseStream` responses answer with
+    /// headers and then never send a frame at all. Reproduces a request the
+    /// service accepted and never began — the failure a mid-stream idle
+    /// bound cannot describe, because nothing was ever in flight to
+    /// interrupt. Checked after `bedrock_stream_drops`; a silent response
+    /// still consumes its scripted payload.
+    pub bedrock_stream_silences: u32,
     /// Raw tool-configured Converse request bodies, in wire order.
     pub bedrock_tool_requests: Vec<serde_json::Value>,
     /// Decoded model IDs for the captured tool-configured requests.

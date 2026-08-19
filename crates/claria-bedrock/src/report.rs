@@ -5,34 +5,99 @@
 //! blocks for a controller-managed agent loop. It never falls back to the
 //! text-only Chat path.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use aws_sdk_bedrockruntime::{
-    operation::RequestId,
-    types::{
-        ContentBlock, ConversationRole, ConverseTokensRequest, CountTokensInput, Message,
-        ReasoningContentBlock, ReasoningTextBlock, SystemContentBlock, Tool, ToolConfiguration,
-        ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolResultStatus,
-        ToolSpecification,
-    },
+use std::collections::BTreeMap;
+
+use aws_sdk_bedrockruntime::types::{
+    ContentBlock, ContentBlockDelta, ContentBlockStart, ConversationRole, ConverseStreamOutput,
+    ConverseTokensRequest, InferenceConfiguration, Message, ReasoningContentBlock,
+    ReasoningContentBlockDelta, ReasoningTextBlock, StopReason, SystemContentBlock, Tool,
+    ToolConfiguration, ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolResultStatus,
+    ToolSpecification, ToolUseBlock,
 };
-use aws_smithy_types::{Blob, Document, Number};
+use aws_smithy_types::Blob;
 use claria_core::models::{
     report::{
-        ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
+        MAX_BULLET_ITEM_CHARACTERS, MAX_BULLET_ITEMS, MAX_PARAGRAPH_CHARACTERS,
+        MAX_TABLE_CELL_CHARACTERS, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, ReportProtocolBlock,
+        ReportProtocolMessage, ReportProtocolRole, ReportToolResultStatus,
         validate_report_conversation,
     },
     turn_usage::TurnUsage,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{error::BedrockError, tokens};
+use crate::{converse, error::BedrockError};
 
 pub const LIST_RECORD_FILES_TOOL: &str = "list_record_files";
 pub const READ_RECORD_FILE_TOOL: &str = "read_record_file";
 pub const PROPOSE_REPORT_CHANGES_TOOL: &str = "propose_report_changes";
-pub const MAX_TOOL_USES_PER_RESPONSE: usize = 8;
-pub const REPORT_OUTPUT_TOKEN_RESERVE: u32 = 8_192;
+pub const SET_FULL_DRAFT_TITLE_TOOL: &str = "set_full_draft_title";
+pub const WRITE_FULL_DRAFT_SECTION_TOOL: &str = "write_full_draft_section";
+pub const SKIP_FULL_DRAFT_SECTION_TOOL: &str = "skip_full_draft_section";
+pub const MARK_SECTION_FAILED_TOOL: &str = "mark_section_failed";
+pub const FINISH_FULL_DRAFT_TOOL: &str = "finish_full_draft";
+pub const DEFAULT_MAX_TOOL_USES_PER_RESPONSE: usize = 80;
+pub const MAX_TOOL_USES_PER_RESPONSE: usize = 100;
+
+/// Output-token reserve for one report Converse call. This is both the
+/// `max_tokens` sent on the wire and the amount subtracted from the model's
+/// context window to form the input budget — the reserve is enforced, not
+/// aspirational. Sized so one response can carry a full replacement of a
+/// long clinical section (a maximal 200-block section is ≈25k tokens);
+/// the 8k reserve shipped in v0.20–v0.23 forced multi-turn splitting and
+/// measurably degraded report flow. Truncation at this ceiling still
+/// surfaces as a MaxTokens stop handled by the caller's salvage path.
+///
+/// The default, not the value: a host may raise it for a template whose
+/// sections are longer than this can express in one response.
+pub const DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE: u32 = 32_768;
+
+/// Floor for a configured writer output ceiling. Below this a maximal
+/// section cannot be written at all, so the setting would only ever produce
+/// truncation.
+pub const MIN_REPORT_OUTPUT_TOKEN_RESERVE: u32 = 4_096;
+
+/// Ceiling for a configured writer output ceiling, at the largest single
+/// response current Claude models will produce.
+pub const MAX_REPORT_OUTPUT_TOKEN_RESERVE: u32 = 65_536;
+
+/// The reserve actually enforced for a given context window.
+///
+/// A configured ceiling is clamped to the supported range and then to half
+/// the model's window: past that there is not enough left to ask the
+/// question, and a budget of nothing fails every call on the input side
+/// rather than doing what the setting was raised for. The same capped value
+/// goes on the wire as `max_tokens`, which is what keeps the reserve
+/// enforced rather than aspirational.
+pub fn effective_output_reserve(context_window_tokens: u32, requested: u32) -> u32 {
+    requested
+        .clamp(
+            MIN_REPORT_OUTPUT_TOKEN_RESERVE,
+            MAX_REPORT_OUTPUT_TOKEN_RESERVE,
+        )
+        .min(context_window_tokens / 2)
+}
+
+/// Proposal wire-schema ceilings mirror the domain validators in
+/// `claria-core`, so the tool schema never rejects a proposal the domain
+/// would accept. Shrinking these below the domain caps is a known quality
+/// regression — the model plans its edits around the advertised schema.
+/// Smaller caps do not prevent oversized responses either: those surface as
+/// a MaxTokens stop and are handled by the caller's truncation-salvage path.
+pub const MAX_PROPOSAL_OPERATIONS: usize = claria_core::models::report::MAX_PROPOSAL_OPERATIONS;
+/// Maximum blocks per proposed section — mirrors the domain validator.
+pub const MAX_SECTION_BLOCKS: usize = claria_core::models::report::MAX_SECTION_BLOCKS;
+/// Citation and failure-note ceilings, mirrored from the drafting-run
+/// validators so the advertised schema never rejects what the domain accepts.
+pub const MAX_SECTION_CITATIONS: usize = claria_core::models::report_run::MAX_SECTION_CITATIONS;
+pub const MIN_CITATION_QUOTE_CHARACTERS: usize =
+    claria_core::models::report_run::MIN_CITATION_QUOTE_CHARACTERS;
+pub const MAX_CITATION_QUOTE_CHARACTERS: usize =
+    claria_core::models::report_run::MAX_CITATION_QUOTE_CHARACTERS;
+pub const MAX_SECTION_ERROR_CHARACTERS: usize =
+    claria_core::models::report_run::MAX_SECTION_ERROR_CHARACTERS;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReportConverseOutput {
@@ -42,6 +107,32 @@ pub struct ReportConverseOutput {
     /// Bedrock may omit usage. Callers must preserve that incompleteness
     /// instead of recording a misleading metered zero.
     pub usage: Option<TurnUsage>,
+    /// Wall-clock time of the Converse round trip; `None` on records
+    /// written before this field existed.
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
+}
+
+impl ReportConverseOutput {
+    /// True when the stop reason disagrees with tool presence in a way that
+    /// has no meaning of its own — a `tool_use` stop without tool calls, or
+    /// tool calls beside a stop that claims the model finished normally.
+    /// The loop attempts a corrective round on this before failing.
+    ///
+    /// `max_tokens` beside complete tool calls is NOT a mismatch: it means
+    /// the response was truncated after the calls were emitted, and the loop
+    /// executes them so the model can continue. Terminal stops (filtered,
+    /// guardrail, malformed, context overflow) keep their own failure
+    /// handling regardless of tool presence.
+    pub fn stop_tool_mismatch(&self) -> bool {
+        match self.stop_reason {
+            ReportStopReason::ToolUse => self.tool_calls.is_empty(),
+            ReportStopReason::EndTurn
+            | ReportStopReason::StopSequence
+            | ReportStopReason::Unknown => !self.tool_calls.is_empty(),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +150,25 @@ pub enum ReportStopReason {
     Unknown,
 }
 
+impl ReportStopReason {
+    /// Stable snake_case label matching the serde representation, for
+    /// PHI-free telemetry fields.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ContentFiltered => "content_filtered",
+            Self::EndTurn => "end_turn",
+            Self::GuardrailIntervened => "guardrail_intervened",
+            Self::MalformedModelOutput => "malformed_model_output",
+            Self::MalformedToolUse => "malformed_tool_use",
+            Self::MaxTokens => "max_tokens",
+            Self::ModelContextWindowExceeded => "model_context_window_exceeded",
+            Self::StopSequence => "stop_sequence",
+            Self::ToolUse => "tool_use",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReportToolCall {
     pub tool_use_id: String,
@@ -72,6 +182,11 @@ pub enum ReportToolRequest {
     ListRecordFiles(ListRecordFilesRequest),
     ReadRecordFile(ReadRecordFileRequest),
     ProposeReportChanges(ProposeReportChangesRequest),
+    SetFullDraftTitle(SetFullDraftTitleRequest),
+    WriteFullDraftSection(WriteFullDraftSectionRequest),
+    SkipFullDraftSection(SkipFullDraftSectionRequest),
+    MarkSectionFailed(MarkSectionFailedRequest),
+    FinishFullDraft(FinishFullDraftRequest),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,6 +208,59 @@ pub struct ReadRecordFileRequest {
 pub struct ProposeReportChangesRequest {
     pub summary: String,
     pub operations: Vec<ReportProposalOperationRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SetFullDraftTitleRequest {
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WriteFullDraftSectionRequest {
+    /// Copy an existing section ID from the supplied report structure, or use
+    /// `null` when adding a genuinely new section.
+    #[serde(default)]
+    pub section_id: Option<String>,
+    pub position: u32,
+    pub heading: String,
+    pub blocks: Vec<ReportBlockRequest>,
+    /// Record quotes the section's claims rest on. Optional, and validated at
+    /// commit against the run's record snapshot.
+    #[serde(default)]
+    pub citations: Option<Vec<RecordCitationRequest>>,
+}
+
+/// One record quote the writer attributes to a named record file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RecordCitationRequest {
+    pub filename: String,
+    pub quote: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SkipFullDraftSectionRequest {
+    /// An existing section ID copied from the supplied report structure —
+    /// only supplied sections can be deferred, never new ones.
+    pub section_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MarkSectionFailedRequest {
+    /// A planned section's 36-character UUID, copied exactly.
+    pub section_id: String,
+    /// Why the section cannot be drafted from the available records.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FinishFullDraftRequest {
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,28 +316,264 @@ pub fn decode_tool_request(call: &ReportToolCall) -> Result<ReportToolRequest, B
         PROPOSE_REPORT_CHANGES_TOOL => serde_json::from_value(call.input.clone())
             .map(ReportToolRequest::ProposeReportChanges)
             .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        SET_FULL_DRAFT_TITLE_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::SetFullDraftTitle)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        WRITE_FULL_DRAFT_SECTION_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::WriteFullDraftSection)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        SKIP_FULL_DRAFT_SECTION_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::SkipFullDraftSection)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        MARK_SECTION_FAILED_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::MarkSectionFailed)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
+        FINISH_FULL_DRAFT_TOOL => serde_json::from_value(call.input.clone())
+            .map(ReportToolRequest::FinishFullDraft)
+            .map_err(|error| BedrockError::SchemaViolation(error.to_string())),
         name => Err(BedrockError::SchemaViolation(format!(
             "unknown report tool: {name}"
         ))),
     }
 }
 
-/// Send one report-protocol Converse request with all three report tools.
+/// Per-turn input-token budget for the report loop.
 ///
-/// The caller owns the bounded tool loop and persistence. This function owns
-/// the exact Bedrock wire shape, validates safe tool correlation, and returns
-/// the response usage priced at this individual call's rates.
-#[tracing::instrument(
-    level = "trace",
-    skip_all,
-    fields(model_id = %model_id, messages = messages.len())
-)]
+/// The first Converse call of a turn runs one real `CountTokens` against the
+/// exact request shape; every later call in the same turn estimates the
+/// appended messages at ~4 chars/token and re-verifies with a real count
+/// only when the estimate comes within ~10% of the budget. Create one per
+/// turn and pass it to every [`converse_report_with_tool_limit`] call.
+pub struct ReportInputBudget {
+    inner: converse::InputTokenBudget,
+    output_token_reserve: u32,
+}
+
+impl ReportInputBudget {
+    pub fn new(model_id: &str, output_token_reserve: u32) -> Self {
+        // One budget per writer turn, so this is also the once-per-turn
+        // record of the context window the capability table resolved.
+        let input_budget_tokens = report_input_token_budget(model_id, output_token_reserve);
+        let output_token_reserve =
+            effective_output_reserve(report_model_context_tokens(model_id), output_token_reserve);
+        converse::log_model_budget(
+            "report",
+            model_id,
+            input_budget_tokens,
+            output_token_reserve,
+        );
+        Self {
+            inner: converse::InputTokenBudget::exact(input_budget_tokens),
+            output_token_reserve,
+        }
+    }
+
+    /// A budget seeded from a count already taken against a request of the
+    /// same shape.
+    ///
+    /// The parallel drafting fan-out is the reason this exists: every section
+    /// branch sends a byte-identical corpus, template, and plan and differs
+    /// only in a short kickoff, so counting each of them separately would
+    /// spend one `CountTokens` per section to learn the same number. The warm
+    /// branch counts once and its siblings estimate forward from that result.
+    ///
+    /// `output_token_reserve` has to be the one the warm branch used: the
+    /// budget is derived from it in [`report_input_token_budget`], so a
+    /// seeded budget built against a different ceiling would disagree with
+    /// the exact one it was seeded from.
+    pub fn seeded(
+        model_id: &str,
+        output_token_reserve: u32,
+        verified_tokens: u32,
+        verified_chars: u64,
+    ) -> Self {
+        Self {
+            inner: converse::InputTokenBudget::seeded(
+                report_input_token_budget(model_id, output_token_reserve),
+                verified_tokens,
+                verified_chars,
+            ),
+            output_token_reserve: effective_output_reserve(
+                report_model_context_tokens(model_id),
+                output_token_reserve,
+            ),
+        }
+    }
+
+    /// The enforced output ceiling this budget was derived from — the same
+    /// number that goes on the wire as `max_tokens`.
+    pub const fn output_token_reserve(&self) -> u32 {
+        self.output_token_reserve
+    }
+
+    /// The exact count this budget has taken, if it has taken one, as
+    /// `(input_tokens, request_characters)` — the seed for [`Self::seeded`].
+    pub fn verified(&self) -> Option<(u32, u64)> {
+        self.inner.verified()
+    }
+}
+
+/// Send one report-protocol Converse request with all three report tools using
+/// the default per-response tool-use limit and a fresh single-call budget.
 pub async fn converse_report(
     config: &aws_config::SdkConfig,
     model_id: &str,
     system_prompt: &str,
     messages: &[ReportProtocolMessage],
 ) -> Result<ReportConverseOutput, BedrockError> {
+    converse_report_with_tool_limit(
+        config,
+        model_id,
+        system_prompt,
+        messages,
+        DEFAULT_MAX_TOOL_USES_PER_RESPONSE,
+        &mut ReportInputBudget::new(model_id, DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE),
+        converse::ModelTuning::default(),
+        converse::CachePlan::report_default(claria_core::model_id::ModelCapabilities::for_id(
+            model_id,
+        )),
+        converse::StreamBounds::conversational(),
+        &converse::StopSignal::new(),
+    )
+    .await
+}
+
+/// Send one targeted-edit Converse request with a caller-selected tool-use
+/// limit.
+///
+/// The caller owns the bounded tool loop, persistence, and — via
+/// `cache_plan` — where the request's `cachePoint` blocks go. This function
+/// owns the exact Bedrock wire shape, validates safe tool correlation, and
+/// returns the response usage priced at this individual call's rates.
+///
+/// `stream_bounds` is how long this call may stay silent before and after
+/// the first frame; [`converse::StreamBounds::conversational`] is the
+/// compile-time default, and a host that lets a clinician raise the wait
+/// passes their pair instead.
+///
+/// `stop` ends the call where it stands; see
+/// [`converse_report_with_tool_set`] for what a stopped response costs.
+#[allow(clippy::too_many_arguments)]
+pub async fn converse_report_with_tool_limit(
+    config: &aws_config::SdkConfig,
+    model_id: &str,
+    system_prompt: &str,
+    messages: &[ReportProtocolMessage],
+    max_tool_uses_per_response: usize,
+    budget: &mut ReportInputBudget,
+    tuning: converse::ModelTuning,
+    cache_plan: converse::CachePlan,
+    stream_bounds: converse::StreamBounds,
+    stop: &converse::StopSignal,
+) -> Result<ReportConverseOutput, BedrockError> {
+    converse_report_with_tool_set(
+        config,
+        model_id,
+        system_prompt,
+        messages,
+        max_tool_uses_per_response,
+        budget,
+        ReportToolSet::TargetedEdit,
+        tuning,
+        cache_plan,
+        stream_bounds,
+        stop,
+    )
+    .await
+}
+
+/// Send one full-draft Converse request. The full-draft tool set writes an
+/// isolated candidate section by section and finalizes it; it cannot stage a
+/// targeted proposal or fetch records because the host supplies the complete
+/// readable-record snapshot in the initial context.
+#[allow(clippy::too_many_arguments)]
+pub async fn converse_full_report_with_tool_limit(
+    config: &aws_config::SdkConfig,
+    model_id: &str,
+    system_prompt: &str,
+    messages: &[ReportProtocolMessage],
+    max_tool_uses_per_response: usize,
+    budget: &mut ReportInputBudget,
+    tuning: converse::ModelTuning,
+    cache_plan: converse::CachePlan,
+    stream_bounds: converse::StreamBounds,
+    stop: &converse::StopSignal,
+) -> Result<ReportConverseOutput, BedrockError> {
+    converse_report_with_tool_set(
+        config,
+        model_id,
+        system_prompt,
+        messages,
+        max_tool_uses_per_response,
+        budget,
+        ReportToolSet::FullDraft,
+        tuning,
+        cache_plan,
+        stream_bounds,
+        stop,
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReportToolSet {
+    TargetedEdit,
+    FullDraft,
+}
+
+impl ReportToolSet {
+    /// The request-family label this tool set's turns carry — on the shared
+    /// usage/cache log line, on the stream watchdog's failures, and in the
+    /// error prose a reader is shown — so a console export separates
+    /// targeted edits from whole-draft runs without parsing anything else.
+    fn operation(self) -> &'static str {
+        match self {
+            Self::TargetedEdit => "report_targeted",
+            Self::FullDraft => "report_full_draft",
+        }
+    }
+}
+
+#[tracing::instrument(
+    level = "trace",
+    skip_all,
+    fields(
+        model_id = %model_id,
+        messages = messages.len(),
+        max_tool_uses_per_response,
+        tool_set = ?tool_set
+    )
+)]
+/// Send one report-protocol Converse request and fold its streamed response
+/// back into a whole assistant message.
+///
+/// `stop` is watched alongside every frame — a writer stream can sit silent
+/// for minutes while a large prefix prefills, so a Stop that waits for the
+/// next frame is not a Stop. Unlike chat, a stopped writer response is
+/// discarded WHOLE rather than salvaged: a half-streamed response can hold a
+/// tool call whose input JSON is still being assembled, and half a
+/// `write_full_draft_section` is not a section. The loop's existing
+/// invariant — a call that fails commits nothing, because the protocol only
+/// ever grows by complete messages — is what makes throwing it away safe.
+#[allow(clippy::too_many_arguments)]
+async fn converse_report_with_tool_set(
+    config: &aws_config::SdkConfig,
+    model_id: &str,
+    system_prompt: &str,
+    messages: &[ReportProtocolMessage],
+    max_tool_uses_per_response: usize,
+    budget: &mut ReportInputBudget,
+    tool_set: ReportToolSet,
+    tuning: converse::ModelTuning,
+    cache_plan: converse::CachePlan,
+    stream_bounds: converse::StreamBounds,
+    stop: &converse::StopSignal,
+) -> Result<ReportConverseOutput, BedrockError> {
+    if max_tool_uses_per_response == 0 || max_tool_uses_per_response > MAX_TOOL_USES_PER_RESPONSE {
+        return Err(BedrockError::SchemaViolation(format!(
+            "report tool-use limit must be between 1 and {MAX_TOOL_USES_PER_RESPONSE}"
+        )));
+    }
     if !model_supports_report_tools(model_id) {
         return Err(BedrockError::UnsupportedModel(format!(
             "{model_id} is not a verified tool-capable Claude model"
@@ -178,126 +582,114 @@ pub async fn converse_report(
     validate_report_conversation(messages)
         .map_err(|error| BedrockError::SchemaViolation(error.to_string()))?;
 
-    let client = aws_sdk_bedrockruntime::Client::new(config);
+    // Read before the budget is borrowed mutably below: the enforced
+    // ceiling is the budget's, so `max_tokens` on the wire and the input
+    // allowance can never be derived from two different numbers.
+    let output_token_reserve = budget.output_token_reserve();
+
+    let client = converse::runtime_client(config);
     let sdk_messages = messages
         .iter()
         .map(protocol_message_to_sdk)
         .collect::<Result<Vec<_>, _>>()?;
-    let tools = report_tool_configuration()?;
+    let tools = report_tool_configuration(tool_set)?;
     let system = SystemContentBlock::Text(system_prompt.to_string());
 
-    // Count the exact Converse shape, including immutable policy, messages,
-    // and tool schemas, immediately before every billed call.
+    // Budget check: an exact CountTokens of the full Converse shape
+    // (policy, messages, tool schemas) on the turn's first call; appended
+    // messages are estimated afterward and re-verified only near the budget.
+    // Cache points are excluded — they do not change the token count.
     let token_request = ConverseTokensRequest::builder()
         .set_messages(Some(sdk_messages.clone()))
         .system(system.clone())
         .tool_config(tools.clone())
         .build();
-    // Converse uses the cross-region inference profile selected in the UI,
-    // while CountTokens requires the underlying foundation model identifier.
-    // Keep the exact selected-model tokenizer by removing only a known
-    // cross-region scope prefix.
-    let counting_model_id = report_counting_model_id(model_id);
-    let input_tokens = match count_report_input_tokens(
-        &client,
-        counting_model_id,
-        token_request.clone(),
-    )
-    .await
-    {
-        Ok(tokens) => tokens,
-        Err(error)
-            if matches!(
-                &error,
-                BedrockError::ReportService { code, .. } if code == "ValidationException"
-            ) =>
-        {
-            // Some newly listed Claude foundations support Converse before
-            // CountTokens. Fall back to the newest active Haiku tokenizer so
-            // the Writing turn remains usable while retaining the selected
-            // model's conservative context-window limit.
-            let fallback_model_id = crate::chat::counting_model(config).await?;
-            if fallback_model_id == counting_model_id {
-                tracing::error!(model_id, error = %error, "report CountTokens fallback unavailable");
-                return Err(error);
-            }
-            tracing::warn!(
-                model_id,
-                counting_model_id,
-                fallback_model_id,
-                error = %error,
-                "selected report model does not support CountTokens; using Haiku tokenizer"
-            );
-            count_report_input_tokens(&client, fallback_model_id, token_request)
-                .await
-                .map_err(|fallback_error| {
-                    tracing::error!(
-                        model_id,
-                        fallback_model_id,
-                        error = %fallback_error,
-                        "report CountTokens fallback failed"
-                    );
-                    fallback_error
-                })?
-        }
-        Err(error) => {
-            tracing::error!(model_id, error = %error, "report CountTokens call failed");
-            return Err(error);
-        }
+    budget
+        .inner
+        .ensure_within(
+            protocol_chars(system_prompt, messages),
+            || count_report_tokens(config, &client, model_id, token_request),
+            |input_tokens, input_token_budget| BedrockError::ContextBudgetExceeded {
+                model_id: model_id.to_string(),
+                input_tokens,
+                input_token_budget,
+            },
+        )
+        .await?;
+
+    // Prompt caching, exactly where the caller's plan says: each point makes
+    // the prefix ahead of it readable from cache on the next call in the
+    // loop instead of re-paying full input rates. The plan already resolved
+    // model capability, the user's setting, and the tier, so this applies it
+    // and decides nothing.
+    let cache_ttl = converse::sdk_cache_ttl(cache_plan.ttl);
+    let converse_messages = converse::with_cache_points_after(
+        sdk_messages,
+        &cache_plan.after_blocks,
+        cache_ttl.clone(),
+    )?;
+    let converse_messages = if cache_plan.tail {
+        converse::with_tail_cache_point(converse_messages, cache_ttl.clone())?
+    } else {
+        converse_messages
     };
-    let input_token_budget = report_input_token_budget(model_id);
-    if input_tokens > input_token_budget {
-        return Err(BedrockError::ContextBudgetExceeded {
-            model_id: model_id.to_string(),
-            input_tokens,
-            input_token_budget,
-        });
-    }
+    let system_blocks = if cache_plan.after_system {
+        vec![
+            system,
+            SystemContentBlock::CachePoint(converse::cache_point(cache_ttl)?),
+        ]
+    } else {
+        vec![system]
+    };
 
-    let response = client
-        .converse()
-        .model_id(model_id)
-        .system(system)
-        .set_messages(Some(sdk_messages))
-        .tool_config(tools)
-        .send()
-        .await
-        .map_err(|error| {
-            let status = error
-                .raw_response()
-                .map(|response| response.status().as_u16());
-            let service_error = error.into_service_error();
-            let code = service_error
-                .meta()
-                .code()
-                .unwrap_or("UnknownServiceError")
-                .to_string();
-            let request_id = service_error.meta().request_id().map(ToString::to_string);
-            tracing::error!(
-                model_id,
-                ?status,
-                code,
-                ?request_id,
-                "report Converse call failed"
-            );
-            BedrockError::ReportService {
-                status,
-                code,
-                request_id,
+    // Streamed, not unary: the writer's output ceiling is far above the
+    // point where a non-streaming Converse call risks an HTTP timeout while
+    // the model generates. Nothing is forwarded incrementally — the loop
+    // needs a whole message before it can execute tool calls — but the
+    // connection carries frames throughout instead of idling.
+    let operation = tool_set.operation();
+    let started = std::time::Instant::now();
+    let response = converse::start_converse_stream(
+        operation,
+        stream_bounds,
+        client
+            .converse_stream()
+            .model_id(model_id)
+            .set_system(Some(system_blocks))
+            .set_messages(Some(converse_messages))
+            .tool_config(tools)
+            .inference_config(
+                InferenceConfiguration::builder()
+                    .max_tokens(output_token_reserve as i32)
+                    .set_temperature(tuning.temperature)
+                    .build(),
+            )
+            .set_additional_model_request_fields(converse::additional_request_fields(tuning)?)
+            .send(),
+    )
+    .await?;
+
+    let mut stream = response.stream;
+    let mut collector = ReportStreamCollector::default();
+    loop {
+        let event = tokio::select! {
+            biased;
+            () = stop.stopped() => {
+                // Dropping the stream closes the connection, so the model
+                // stops generating a response nobody is going to read.
+                drop(stream);
+                tracing::info!(model_id, "report stream stopped by the reader");
+                return Err(BedrockError::Stopped);
             }
-        })?;
-
-    let output_message = response
-        .output()
-        .and_then(|output| output.as_message().ok())
-        .ok_or_else(|| BedrockError::ResponseParse("no message in report response".to_string()))?;
-    if output_message.role() != &ConversationRole::Assistant {
-        return Err(BedrockError::ResponseParse(
-            "report response message did not have assistant role".to_string(),
-        ));
+            event = converse::recv_stream_event(operation, stream_bounds, &mut stream) => event?,
+        };
+        let Some(event) = event else { break };
+        collector.absorb(event);
     }
+    let (streamed_content, streamed_stop_reason, streamed_usage) = collector.finish()?;
+    let latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
 
-    let mut content = Vec::with_capacity(output_message.content().len());
+    let mut content = Vec::with_capacity(streamed_content.len());
     let mut tool_calls = Vec::new();
     let mut tool_ids: HashSet<String> = messages
         .iter()
@@ -307,7 +699,7 @@ pub async fn converse_report(
             _ => None,
         })
         .collect();
-    for block in output_message.content() {
+    for block in &streamed_content {
         match block {
             // Bedrock can emit an empty text block next to a valid tool use.
             // It carries no semantic content and cannot be sent back because
@@ -349,7 +741,7 @@ pub async fn converse_report(
                         "tool use {tool_use_id} has an empty name"
                     )));
                 }
-                let input = document_to_json(tool.input())?;
+                let input = converse::document_to_json(tool.input())?;
                 let call = ReportToolCall {
                     tool_use_id: tool_use_id.clone(),
                     name: tool.name().to_string(),
@@ -380,35 +772,32 @@ pub async fn converse_report(
             "report response had no visible text or tool use".to_string(),
         ));
     }
-    if tool_calls.len() > MAX_TOOL_USES_PER_RESPONSE {
+    if tool_calls.len() > max_tool_uses_per_response {
         return Err(BedrockError::ResponseParse(format!(
-            "report response requested {} tools; maximum is {MAX_TOOL_USES_PER_RESPONSE}",
+            "report response requested {} tools; configured maximum is {max_tool_uses_per_response}",
             tool_calls.len()
         )));
     }
 
-    let stop_reason = map_stop_reason(response.stop_reason());
-    let has_tools = !tool_calls.is_empty();
-    if has_tools != matches!(stop_reason, ReportStopReason::ToolUse) {
-        return Err(BedrockError::ResponseParse(format!(
-            "inconsistent report stop reason {:?} for {} tool uses",
-            stop_reason,
-            tool_calls.len()
-        )));
-    }
+    // A stop reason that disagrees with tool presence (e.g. `end_turn` next
+    // to a tool use) is deliberately NOT an error here: the report loop
+    // attempts a corrective tool-result round before failing, so the
+    // inconsistency must reach it as data via `stop_tool_mismatch`.
+    let stop_reason = map_stop_reason(&streamed_stop_reason);
 
-    // The AWS JSON deserializer may materialize a default all-zero usage
-    // structure when the service omits the block. A successful Converse call
-    // necessarily consumes tokens, so preserve that shape as missing rather
-    // than recording a misleading metered zero.
-    let usage = response.usage().and_then(|usage| {
-        let extracted = tokens::extract_turn_usage(usage, model_id);
-        (extracted.input_tokens > 0
-            || extracted.output_tokens > 0
-            || extracted.cache_read_input_tokens > 0
-            || extracted.cache_write_input_tokens > 0)
-            .then_some(extracted)
-    });
+    let usage = converse::optional_usage(
+        streamed_usage.as_ref(),
+        model_id,
+        cache_plan.effective_ttl(),
+    );
+    converse::log_turn_usage(
+        operation,
+        model_id,
+        usage.as_ref(),
+        Some(stop_reason.as_str()),
+        latency_ms,
+        output_token_reserve,
+    );
 
     Ok(ReportConverseOutput {
         message: ReportProtocolMessage {
@@ -419,84 +808,105 @@ pub async fn converse_report(
         stop_reason,
         tool_calls,
         usage,
+        latency_ms,
     })
 }
 
 /// True only for Claude model IDs whose Bedrock families support Converse
-/// tool use. Capability is determined before invocation; a generic AWS
-/// `ValidationException` is never guessed to mean "tools unsupported".
+/// tool use. Capability is determined before invocation via the central
+/// capability table; a generic AWS `ValidationException` is never guessed to
+/// mean "tools unsupported".
 pub fn model_supports_report_tools(model_id: &str) -> bool {
-    let model_id = model_id.to_ascii_lowercase();
-    model_id.contains("anthropic.claude")
-        && !model_id.contains("claude-v2")
-        && !model_id.contains("claude-instant")
+    claria_core::model_id::ModelCapabilities::for_id(model_id).report_tools
 }
 
-/// Conservative context window for the selected Bedrock model/profile.
-/// Explicit context variants take precedence; current Claude 3/4 profiles
-/// otherwise have a 200k-token window. Unknown IDs get a safe 32k ceiling.
+/// Conservative context window for the selected Bedrock model/profile, from
+/// the central capability table.
 pub fn report_model_context_tokens(model_id: &str) -> u32 {
-    let model_id = model_id.to_ascii_lowercase();
-    if model_id.contains(":48k") {
-        48_000
-    } else if model_id.contains(":200k") {
-        200_000
-    } else if model_id.contains(":1m") || model_id.contains(":1000k") {
-        1_000_000
-    } else if model_id.contains("anthropic.claude") {
-        200_000
-    } else {
-        32_000
-    }
+    claria_core::model_id::ModelCapabilities::for_id(model_id).context_window_tokens
 }
 
-pub fn report_input_token_budget(model_id: &str) -> u32 {
-    report_model_context_tokens(model_id).saturating_sub(REPORT_OUTPUT_TOKEN_RESERVE)
+pub fn report_input_token_budget(model_id: &str, output_token_reserve: u32) -> u32 {
+    let window = report_model_context_tokens(model_id);
+    window.saturating_sub(effective_output_reserve(window, output_token_reserve))
 }
 
-async fn count_report_input_tokens(
+/// Run one real `CountTokens` for the report request shape.
+///
+/// Converse uses the cross-region inference profile selected in the UI,
+/// while CountTokens requires the underlying foundation model identifier, so
+/// only a known scope prefix is stripped. Some newly listed Claude
+/// foundations support Converse before CountTokens; those fall back to the
+/// newest active Haiku tokenizer while retaining the selected model's
+/// conservative context-window limit.
+pub(crate) async fn count_report_tokens(
+    config: &aws_config::SdkConfig,
     client: &aws_sdk_bedrockruntime::Client,
     model_id: &str,
-    request: ConverseTokensRequest,
+    token_request: ConverseTokensRequest,
 ) -> Result<u32, BedrockError> {
-    let response = client
-        .count_tokens()
-        .model_id(model_id)
-        .input(CountTokensInput::Converse(request))
-        .send()
-        .await
-        .map_err(|error| {
-            let status = error
-                .raw_response()
-                .map(|response| response.status().as_u16());
-            let service_error = error.into_service_error();
-            let code = service_error
-                .meta()
-                .code()
-                .unwrap_or("UnknownServiceError")
-                .to_string();
-            let request_id = service_error.meta().request_id().map(ToString::to_string);
-            BedrockError::ReportService {
-                status,
-                code,
-                request_id,
+    let counting_model_id = claria_core::model_id::strip_scope_prefix(model_id);
+    match converse::count_input_tokens(client, counting_model_id, token_request.clone()).await {
+        Ok(tokens) => Ok(tokens),
+        Err(error)
+            if matches!(
+                &error,
+                BedrockError::Service { code, .. } if code == "ValidationException"
+            ) =>
+        {
+            let fallback_model_id = crate::chat::counting_model(config).await?;
+            if fallback_model_id == counting_model_id {
+                tracing::error!(model_id, error = %error, "report CountTokens fallback unavailable");
+                return Err(error);
             }
-        })?;
-    Ok(u32::try_from(response.input_tokens()).unwrap_or(u32::MAX))
-}
-
-fn report_counting_model_id(model_id: &str) -> &str {
-    let Some((scope, foundation_model_id)) = model_id.split_once('.') else {
-        return model_id;
-    };
-    if matches!(scope, "us" | "eu" | "apac" | "global") {
-        foundation_model_id
-    } else {
-        model_id
+            tracing::warn!(
+                model_id,
+                counting_model_id,
+                fallback_model_id,
+                error = %error,
+                "selected report model does not support CountTokens; using Haiku tokenizer"
+            );
+            converse::count_input_tokens(client, fallback_model_id, token_request)
+                .await
+                .map_err(|fallback_error| {
+                    tracing::error!(
+                        model_id,
+                        fallback_model_id,
+                        error = %fallback_error,
+                        "report CountTokens fallback failed"
+                    );
+                    fallback_error
+                })
+        }
+        Err(error) => {
+            tracing::error!(model_id, error = %error, "report CountTokens call failed");
+            Err(error)
+        }
     }
 }
 
-fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
+/// Character measure of the request used for incremental token estimation.
+/// Only message/system content counts — the fixed tool schemas are covered
+/// by the turn's initial exact count.
+pub(crate) fn protocol_chars(system_prompt: &str, messages: &[ReportProtocolMessage]) -> u64 {
+    let mut chars = system_prompt.len() as u64;
+    for message in messages {
+        for block in &message.content {
+            chars += match block {
+                ReportProtocolBlock::Text { text } => text.len(),
+                ReportProtocolBlock::ReasoningText { text, .. } => text.len(),
+                ReportProtocolBlock::ReasoningRedacted { data } => data.len(),
+                ReportProtocolBlock::ToolUse { name, input, .. } => {
+                    name.len() + input.to_string().len()
+                }
+                ReportProtocolBlock::ToolResult { content, .. } => content.to_string().len(),
+            } as u64;
+        }
+    }
+    chars
+}
+
+fn report_tool_configuration(tool_set: ReportToolSet) -> Result<ToolConfiguration, BedrockError> {
     let list_schema = serde_json::json!({
         "type": "object",
         "properties": {},
@@ -507,9 +917,18 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
         "required": ["filename"],
         "additionalProperties": false,
         "properties": {
-            "filename": {"type": "string", "minLength": 1, "maxLength": 1024},
-            "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 12000}
+            "filename": {
+                "type": "string", "minLength": 1, "maxLength": 1024,
+                "description": "A filename copied exactly from a list_record_files result. Paths and invented names fail."
+            },
+            "offset": {
+                "type": "integer", "minimum": 0,
+                "description": "0-based start position in Unicode characters (not bytes). Defaults to 0. To continue a paginated read, pass the previous result's next_offset."
+            },
+            "limit": {
+                "type": "integer", "minimum": 1, "maximum": 12000,
+                "description": "Maximum Unicode characters to return (default 8000, maximum 12000). Reads also draw down the shared 48000-character per-turn budget."
+            }
         }
     });
     let block_schema = serde_json::json!({
@@ -520,7 +939,10 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                 "additionalProperties": false,
                 "properties": {
                     "kind": {"enum": ["paragraph"]},
-                    "text": {"type": "string", "minLength": 1, "maxLength": 20000}
+                    "text": {
+                        "type": "string", "minLength": 1, "maxLength": MAX_PARAGRAPH_CHARACTERS,
+                        "description": format!("Plain paragraph text, at most {MAX_PARAGRAPH_CHARACTERS} characters. No markdown markup is rendered.")
+                    }
                 }
             },
             {
@@ -532,8 +954,9 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                     "items": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 100,
-                        "items": {"type": "string", "minLength": 1, "maxLength": 2000}
+                        "maxItems": MAX_BULLET_ITEMS,
+                        "items": {"type": "string", "minLength": 1, "maxLength": MAX_BULLET_ITEM_CHARACTERS},
+                        "description": "One plain-text string per bullet, in display order."
                     }
                 }
             },
@@ -546,35 +969,52 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                     "rows": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 200,
+                        "maxItems": MAX_TABLE_ROWS,
                         "items": {
                             "type": "array",
                             "minItems": 1,
-                            "maxItems": 20,
-                            "items": {"type": "string", "maxLength": 5000}
-                        }
+                            "maxItems": MAX_TABLE_COLUMNS,
+                            "items": {"type": "string", "maxLength": MAX_TABLE_CELL_CHARACTERS}
+                        },
+                        "description": "Rows in display order; each row is an array of plain-text cells. Every row must have the same number of cells. Leave unknown cells as empty strings rather than inventing values."
                     },
-                    "has_header": {"type": "boolean"},
+                    "has_header": {
+                        "type": "boolean",
+                        "description": "true when rows[0] is a header row (rendered bold and shaded on export)."
+                    },
                     "column_widths": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 20,
-                        "items": {"type": "integer", "minimum": 1, "maximum": 10000}
+                        "maxItems": MAX_TABLE_COLUMNS,
+                        "items": {"type": "integer", "minimum": 1, "maximum": 10000},
+                        "description": "Optional relative column widths (proportions of total table width, not absolute units); one entry per column. Omit for equal widths."
                     }
                 }
             }
         ]
+    });
+    let section_id_schema = serde_json::json!({
+        "type": "string", "minLength": 36, "maxLength": 36,
+        "description": "The 36-character section UUID copied exactly from the accepted_report in the untrusted context. Never invent or modify an ID."
+    });
+    let heading_schema = serde_json::json!({
+        "type": "string", "minLength": 1, "maxLength": 200,
+        "description": "The section's full heading text."
     });
     let proposal_schema = serde_json::json!({
         "type": "object",
         "required": ["summary", "operations"],
         "additionalProperties": false,
         "properties": {
-            "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+            "summary": {
+                "type": "string", "minLength": 1, "maxLength": 500,
+                "description": "One or two plain sentences telling the user what the proposal changes."
+            },
             "operations": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 25,
+                "maxItems": MAX_PROPOSAL_OPERATIONS,
+                "description": "Operations applied in order against the accepted report shown in the untrusted context.",
                 "items": {
                     "oneOf": [
                         {
@@ -583,7 +1023,10 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"enum": ["set_title"]},
-                                "title": {"type": "string", "minLength": 1, "maxLength": 200}
+                                "title": {
+                                    "type": "string", "minLength": 1, "maxLength": 200,
+                                    "description": "The new report title."
+                                }
                             }
                         },
                         {
@@ -592,9 +1035,13 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"enum": ["add_section"]},
-                                "position": {"type": "integer", "minimum": 0, "maximum": 100},
-                                "heading": {"type": "string", "minLength": 1, "maxLength": 200},
-                                "blocks": {"type": "array", "maxItems": 200, "items": block_schema.clone()}
+                                "position": {
+                                    "type": "integer", "minimum": 0, "maximum": 100,
+                                    "description": "0-based insertion index in the report's current section list; 0 inserts before the first section, the current section count appends at the end."
+                                },
+                                "heading": heading_schema.clone(),
+                                "blocks": {"type": "array", "maxItems": MAX_SECTION_BLOCKS, "items": block_schema.clone(),
+                                    "description": "The new section's content blocks in display order."}
                             }
                         },
                         {
@@ -603,9 +1050,10 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"enum": ["replace_section"]},
-                                "section_id": {"type": "string", "minLength": 36, "maxLength": 36},
-                                "heading": {"type": "string", "minLength": 1, "maxLength": 200},
-                                "blocks": {"type": "array", "maxItems": 200, "items": block_schema.clone()}
+                                "section_id": section_id_schema.clone(),
+                                "heading": heading_schema.clone(),
+                                "blocks": {"type": "array", "maxItems": MAX_SECTION_BLOCKS, "items": block_schema.clone(),
+                                    "description": "The complete replacement content. The whole section — heading included — is replaced; unchanged blocks must be restated."}
                             }
                         },
                         {
@@ -614,7 +1062,7 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"enum": ["remove_section"]},
-                                "section_id": {"type": "string", "minLength": 36, "maxLength": 36}
+                                "section_id": section_id_schema.clone()
                             }
                         }
                     ]
@@ -622,24 +1070,180 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
             }
         }
     });
+    let full_title_schema = serde_json::json!({
+        "type": "object",
+        "required": ["title"],
+        "additionalProperties": false,
+        "properties": {
+            "title": {
+                "type": "string", "minLength": 1, "maxLength": 200,
+                "description": "The complete title for the generated working draft."
+            }
+        }
+    });
+    let full_section_schema = serde_json::json!({
+        "type": "object",
+        "required": ["section_id", "position", "heading", "blocks"],
+        "additionalProperties": false,
+        "properties": {
+            "section_id": {
+                "anyOf": [section_id_schema, {"type": "null"}],
+                "description": "Copy an existing 36-character section UUID exactly to fill that template/report section, or null only when adding a genuinely new section."
+            },
+            "position": {
+                "type": "integer", "minimum": 0, "maximum": 100,
+                "description": "0-based final position of this section in the complete generated report."
+            },
+            "heading": heading_schema,
+            "blocks": {
+                "type": "array", "minItems": 1, "maxItems": MAX_SECTION_BLOCKS,
+                "items": block_schema,
+                "description": "The complete blocks for this section. Calling the tool again with the returned section_id replaces the earlier staged version."
+            },
+            "citations": {
+                "type": "array",
+                "maxItems": MAX_SECTION_CITATIONS,
+                "description": format!(
+                    "Optional. Up to {MAX_SECTION_CITATIONS} record quotes this section's claims rest on."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["filename", "quote"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "filename": {
+                            "type": "string", "minLength": 1, "maxLength": 1024,
+                            "description": "A filename copied exactly from the record snapshot in the untrusted context. Invented names are rejected."
+                        },
+                        "quote": {
+                            "type": "string",
+                            "minLength": MIN_CITATION_QUOTE_CHARACTERS,
+                            "maxLength": MAX_CITATION_QUOTE_CHARACTERS,
+                            "description": format!(
+                                "A verbatim span of {MIN_CITATION_QUOTE_CHARACTERS}–{MAX_CITATION_QUOTE_CHARACTERS} Unicode characters copied from that file. Do not paraphrase."
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let mark_section_failed_schema = serde_json::json!({
+        "type": "object",
+        "required": ["section_id", "reason"],
+        "additionalProperties": false,
+        "properties": {
+            "section_id": {
+                "type": "string", "minLength": 36, "maxLength": 36,
+                "description": "The 36-character UUID of a planned section, copied exactly from plan_context."
+            },
+            "reason": {
+                "type": "string", "minLength": 1, "maxLength": MAX_SECTION_ERROR_CHARACTERS,
+                "description": format!(
+                    "Why this section cannot be drafted from the available records, in at most {MAX_SECTION_ERROR_CHARACTERS} characters. Name what is missing; do not quote client content."
+                )
+            }
+        }
+    });
+    let skip_full_section_schema = serde_json::json!({
+        "type": "object",
+        "required": ["section_id"],
+        "additionalProperties": false,
+        "properties": {
+            "section_id": {
+                "type": "string", "minLength": 36, "maxLength": 36,
+                "description": "The 36-character UUID of a supplied template/report section, copied exactly. Only supplied sections can be skipped — never pass an invented ID or the ID of a section you already wrote."
+            }
+        }
+    });
+    let finish_full_draft_schema = serde_json::json!({
+        "type": "object",
+        "required": ["summary"],
+        "additionalProperties": false,
+        "properties": {
+            "summary": {
+                "type": "string", "minLength": 1, "maxLength": 500,
+                "description": "One or two plain sentences summarizing the completed full draft."
+            }
+        }
+    });
 
-    let tools = vec![
-        tool(
-            LIST_RECORD_FILES_TOOL,
-            "List the current client's record filenames and whether readable text is available.",
-            list_schema,
-        )?,
-        tool(
-            READ_RECORD_FILE_TOOL,
-            "Read a bounded Unicode-character range from one filename returned by list_record_files.",
-            read_schema,
-        )?,
-        tool(
-            PROPOSE_REPORT_CHANGES_TOOL,
-            "Stage typed changes for user review. This never saves or applies the report.",
-            proposal_schema,
-        )?,
-    ];
+    let tools = match tool_set {
+        ReportToolSet::TargetedEdit => vec![
+            tool(
+                LIST_RECORD_FILES_TOOL,
+                "List the current client's record filenames and whether each file fits Claria's bounded \
+                 text reader. Printable UTF-8 originals are readable regardless of extension; documents \
+                 and recordings use generated text sidecars. Call this before any read_record_file call \
+                 — only listed filenames are readable.",
+                list_schema,
+            )?,
+            tool(
+                READ_RECORD_FILE_TOOL,
+                "Read a bounded range from one filename returned by list_record_files. offset and limit \
+                 are Unicode characters, not bytes. All reads in a turn share a 48000-character budget; \
+                 when a result includes next_offset, pass it as offset to continue reading from there. \
+                 Binary originals without a generated text sidecar are safely rejected.",
+                read_schema,
+            )?,
+            tool(
+                PROPOSE_REPORT_CHANGES_TOOL,
+                "Stage typed report changes for user review. Copy each section_id exactly from the \
+                 accepted_report in the untrusted context; positions are 0-based; replace_section \
+                 replaces the entire section including its heading. At most one call per turn — a \
+                 second call fails. Nothing is saved or applied until the user accepts the proposal, so \
+                 never claim a change was saved. If a response is cut off at the output-token limit, \
+                 completed tool calls still execute and you can continue in the next response.",
+                proposal_schema,
+            )?,
+        ],
+        ReportToolSet::FullDraft => vec![
+            tool(
+                SET_FULL_DRAFT_TITLE_TOOL,
+                "Set the complete working draft's title. Call this before finalizing, even when retaining the supplied title.",
+                full_title_schema,
+            )?,
+            tool(
+                WRITE_FULL_DRAFT_SECTION_TOOL,
+                "Write one complete section into an isolated full-draft candidate. Work through \
+                 plan_context in the order its entries are listed and write ONE section per \
+                 response, then wait for the tool result before starting the next. Ground the \
+                 section in the records that entry's evidence names; its scope is guidance, but its \
+                 section_id is authoritative — copy it exactly, and pass null only for a genuinely \
+                 new section. position is the 0-based final order. No section is saved to the \
+                 working draft until finish_full_draft succeeds.",
+                full_section_schema,
+            )?,
+            tool(
+                SKIP_FULL_DRAFT_SECTION_TOOL,
+                "Skip only sections the plan marks skip or that the user's guidance defers to a \
+                 later pass — never to shorten the job. The section keeps its heading and place in \
+                 the document, its body stays empty, and exports omit it until a later edit writes \
+                 content into it. Every planned section must be written, skipped, or marked failed \
+                 before finish_full_draft; a later write_full_draft_section with the same \
+                 section_id overrides the skip.",
+                skip_full_section_schema,
+            )?,
+            tool(
+                MARK_SECTION_FAILED_TOOL,
+                "Declare that one planned section cannot be drafted from the available records \
+                 after a genuine attempt — the records needed for it are missing, unreadable, or \
+                 contradict each other beyond what a draft can resolve. The section keeps its \
+                 base-revision content and the run finishes with the failure visible to the user. \
+                 Never use this to shorten the job, and never in place of skip_full_draft_section \
+                 for a section the plan or the user deliberately deferred.",
+                mark_section_failed_schema,
+            )?,
+            tool(
+                FINISH_FULL_DRAFT_TOOL,
+                "Validate and finalize the isolated full-draft candidate after the title has been \
+                 set and every planned section has been written, explicitly skipped, or marked \
+                 failed. A successful result authorizes the host to atomically save one new \
+                 working-draft revision without a proposal gate.",
+                finish_full_draft_schema,
+            )?,
+        ],
+    };
 
     ToolConfiguration::builder()
         .set_tools(Some(tools))
@@ -647,11 +1251,15 @@ fn report_tool_configuration() -> Result<ToolConfiguration, BedrockError> {
         .map_err(|error| BedrockError::Invocation(error.to_string()))
 }
 
-fn tool(name: &str, description: &str, schema: serde_json::Value) -> Result<Tool, BedrockError> {
+pub(crate) fn tool(
+    name: &str,
+    description: &str,
+    schema: serde_json::Value,
+) -> Result<Tool, BedrockError> {
     let specification = ToolSpecification::builder()
         .name(name)
         .description(description)
-        .input_schema(ToolInputSchema::Json(json_to_document(&schema)?))
+        .input_schema(ToolInputSchema::Json(converse::json_to_document(&schema)?))
         // Deliberately omit `strict`; not every supported Claude profile
         // accepts that newer Bedrock field.
         .build()
@@ -659,7 +1267,9 @@ fn tool(name: &str, description: &str, schema: serde_json::Value) -> Result<Tool
     Ok(Tool::ToolSpec(specification))
 }
 
-fn protocol_message_to_sdk(message: &ReportProtocolMessage) -> Result<Message, BedrockError> {
+pub(crate) fn protocol_message_to_sdk(
+    message: &ReportProtocolMessage,
+) -> Result<Message, BedrockError> {
     let role = match message.role {
         ReportProtocolRole::User => ConversationRole::User,
         ReportProtocolRole::Assistant => ConversationRole::Assistant,
@@ -700,7 +1310,7 @@ fn protocol_block_to_sdk(block: &ReportProtocolBlock) -> Result<ContentBlock, Be
             let tool = aws_sdk_bedrockruntime::types::ToolUseBlock::builder()
                 .tool_use_id(tool_use_id)
                 .name(name)
-                .input(json_to_document(input)?)
+                .input(converse::json_to_document(input)?)
                 .build()
                 .map_err(|error| BedrockError::Invocation(error.to_string()))?;
             Ok(ContentBlock::ToolUse(tool))
@@ -716,7 +1326,9 @@ fn protocol_block_to_sdk(block: &ReportProtocolBlock) -> Result<ContentBlock, Be
             };
             let result = ToolResultBlock::builder()
                 .tool_use_id(tool_use_id)
-                .content(ToolResultContentBlock::Json(json_to_document(content)?))
+                .content(ToolResultContentBlock::Json(converse::json_to_document(
+                    content,
+                )?))
                 .status(status)
                 .build()
                 .map_err(|error| BedrockError::Invocation(error.to_string()))?;
@@ -725,7 +1337,178 @@ fn protocol_block_to_sdk(block: &ReportProtocolBlock) -> Result<ContentBlock, Be
     }
 }
 
-fn map_stop_reason(reason: &aws_sdk_bedrockruntime::types::StopReason) -> ReportStopReason {
+/// One content block being assembled from `ConverseStream` events, keyed by
+/// its `contentBlockIndex`. Text, tool input, and reasoning all arrive split
+/// across an arbitrary number of deltas, so every field accumulates.
+#[derive(Debug, Default)]
+struct PartialReportBlock {
+    text: String,
+    reasoning_text: String,
+    reasoning_signature: Option<String>,
+    reasoning_redacted: Option<Vec<u8>>,
+    tool: Option<PartialToolUse>,
+}
+
+#[derive(Debug)]
+struct PartialToolUse {
+    tool_use_id: String,
+    name: String,
+    /// Concatenated partial JSON. The service streams tool input as text
+    /// fragments that are only valid JSON once joined.
+    input: String,
+}
+
+/// Folds a `ConverseStream` response back into the same `ContentBlock` list
+/// the unary path returns, so the protocol validation below has exactly one
+/// implementation regardless of transport.
+#[derive(Debug, Default)]
+pub struct ReportStreamCollector {
+    blocks: BTreeMap<usize, PartialReportBlock>,
+    stop_reason: Option<StopReason>,
+    usage: Option<aws_sdk_bedrockruntime::types::TokenUsage>,
+}
+
+impl ReportStreamCollector {
+    /// Absorb one stream event, returning the tool-input fragment it carried
+    /// so a caller can tell the reader how far a structured answer has got.
+    ///
+    /// Tool input rather than text, because that is what the calls on this
+    /// path produce: a forced tool's JSON, arriving a few characters at a
+    /// time. The fragment is partial JSON and stays that way — it is worth
+    /// counting rows off, never parsing, never logging, and never mistaking
+    /// for the answer. [`Self::finish`] is still the only thing that
+    /// validates.
+    pub fn absorb(&mut self, event: ConverseStreamOutput) -> Option<String> {
+        match event {
+            ConverseStreamOutput::ContentBlockStart(event) => {
+                let index = event.content_block_index() as usize;
+                if let Some(ContentBlockStart::ToolUse(start)) = event.start() {
+                    self.blocks.entry(index).or_default().tool = Some(PartialToolUse {
+                        tool_use_id: start.tool_use_id().to_string(),
+                        name: start.name().to_string(),
+                        input: String::new(),
+                    });
+                }
+                None
+            }
+            ConverseStreamOutput::ContentBlockDelta(event) => {
+                let index = event.content_block_index() as usize;
+                let delta = event.delta()?;
+                let block = self.blocks.entry(index).or_default();
+                match delta {
+                    ContentBlockDelta::Text(text) => {
+                        block.text.push_str(text);
+                        None
+                    }
+                    ContentBlockDelta::ToolUse(tool) => {
+                        // A tool delta before its start event would lose the
+                        // ID and name; the service never does that, and the
+                        // finalizer rejects a nameless tool if it ever does.
+                        let partial = block.tool.as_mut()?;
+                        partial.input.push_str(tool.input());
+                        (!tool.input().is_empty()).then(|| tool.input().to_string())
+                    }
+                    ContentBlockDelta::ReasoningContent(reasoning) => {
+                        match reasoning {
+                            ReasoningContentBlockDelta::Text(text) => {
+                                block.reasoning_text.push_str(text)
+                            }
+                            ReasoningContentBlockDelta::Signature(signature) => {
+                                block.reasoning_signature = Some(signature.clone())
+                            }
+                            ReasoningContentBlockDelta::RedactedContent(data) => {
+                                block.reasoning_redacted = Some(data.as_ref().to_vec())
+                            }
+                            _ => {}
+                        }
+                        None
+                    }
+                    _ => None,
+                }
+            }
+            ConverseStreamOutput::MessageStop(event) => {
+                self.stop_reason = Some(event.stop_reason().clone());
+                None
+            }
+            ConverseStreamOutput::Metadata(event) => {
+                self.usage = event.usage().cloned();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Rebuild the assistant message in wire order. A missing `messageStop`
+    /// is a protocol error rather than a silently-complete turn.
+    pub fn finish(
+        self,
+    ) -> Result<
+        (
+            Vec<ContentBlock>,
+            StopReason,
+            Option<aws_sdk_bedrockruntime::types::TokenUsage>,
+        ),
+        BedrockError,
+    > {
+        let stop_reason = self.stop_reason.ok_or_else(|| {
+            BedrockError::ResponseParse(
+                "the report response stream ended without a messageStop event".to_string(),
+            )
+        })?;
+
+        let mut content = Vec::with_capacity(self.blocks.len());
+        for (_, block) in self.blocks {
+            if let Some(tool) = block.tool {
+                // An empty input stream is a tool called with no arguments.
+                let raw = if tool.input.trim().is_empty() {
+                    "{}"
+                } else {
+                    tool.input.as_str()
+                };
+                let input: serde_json::Value = serde_json::from_str(raw).map_err(|error| {
+                    BedrockError::ResponseParse(format!(
+                        "tool use {} streamed input that is not valid JSON: {error}",
+                        tool.tool_use_id
+                    ))
+                })?;
+                content.push(ContentBlock::ToolUse(
+                    ToolUseBlock::builder()
+                        .tool_use_id(tool.tool_use_id)
+                        .name(tool.name)
+                        .input(converse::json_to_document(&input)?)
+                        .build()
+                        .map_err(|error| BedrockError::ResponseParse(error.to_string()))?,
+                ));
+                continue;
+            }
+            if let Some(data) = block.reasoning_redacted {
+                content.push(ContentBlock::ReasoningContent(
+                    ReasoningContentBlock::RedactedContent(Blob::new(data)),
+                ));
+                continue;
+            }
+            if !block.reasoning_text.is_empty() {
+                content.push(ContentBlock::ReasoningContent(
+                    ReasoningContentBlock::ReasoningText(
+                        ReasoningTextBlock::builder()
+                            .text(block.reasoning_text)
+                            .set_signature(block.reasoning_signature)
+                            .build()
+                            .map_err(|error| BedrockError::ResponseParse(error.to_string()))?,
+                    ),
+                ));
+                continue;
+            }
+            content.push(ContentBlock::Text(block.text));
+        }
+
+        Ok((content, stop_reason, self.usage))
+    }
+}
+
+pub(crate) fn map_stop_reason(
+    reason: &aws_sdk_bedrockruntime::types::StopReason,
+) -> ReportStopReason {
     use aws_sdk_bedrockruntime::types::StopReason;
     match reason {
         StopReason::ContentFiltered => ReportStopReason::ContentFiltered,
@@ -738,72 +1521,5 @@ fn map_stop_reason(reason: &aws_sdk_bedrockruntime::types::StopReason) -> Report
         StopReason::StopSequence => ReportStopReason::StopSequence,
         StopReason::ToolUse => ReportStopReason::ToolUse,
         _ => ReportStopReason::Unknown,
-    }
-}
-
-fn json_to_document(value: &serde_json::Value) -> Result<Document, BedrockError> {
-    match value {
-        serde_json::Value::Null => Ok(Document::Null),
-        serde_json::Value::Bool(value) => Ok(Document::Bool(*value)),
-        serde_json::Value::String(value) => Ok(Document::String(value.clone())),
-        serde_json::Value::Array(values) => values
-            .iter()
-            .map(json_to_document)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Document::Array),
-        serde_json::Value::Object(values) => values
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), json_to_document(value)?)))
-            .collect::<Result<HashMap<_, _>, BedrockError>>()
-            .map(Document::Object),
-        serde_json::Value::Number(value) => {
-            let number = if let Some(value) = value.as_u64() {
-                Number::PosInt(value)
-            } else if let Some(value) = value.as_i64() {
-                Number::NegInt(value)
-            } else if let Some(value) = value.as_f64() {
-                if !value.is_finite() {
-                    return Err(BedrockError::Serialization(serde_json::Error::io(
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "non-finite JSON number",
-                        ),
-                    )));
-                }
-                Number::Float(value)
-            } else {
-                return Err(BedrockError::SchemaViolation(
-                    "JSON number could not be represented for Bedrock".to_string(),
-                ));
-            };
-            Ok(Document::Number(number))
-        }
-    }
-}
-
-fn document_to_json(document: &Document) -> Result<serde_json::Value, BedrockError> {
-    match document {
-        Document::Null => Ok(serde_json::Value::Null),
-        Document::Bool(value) => Ok(serde_json::Value::Bool(*value)),
-        Document::String(value) => Ok(serde_json::Value::String(value.clone())),
-        Document::Array(values) => values
-            .iter()
-            .map(document_to_json)
-            .collect::<Result<Vec<_>, _>>()
-            .map(serde_json::Value::Array),
-        Document::Object(values) => values
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), document_to_json(value)?)))
-            .collect::<Result<serde_json::Map<_, _>, BedrockError>>()
-            .map(serde_json::Value::Object),
-        Document::Number(Number::PosInt(value)) => Ok(serde_json::Value::Number((*value).into())),
-        Document::Number(Number::NegInt(value)) => Ok(serde_json::Value::Number((*value).into())),
-        Document::Number(Number::Float(value)) => serde_json::Number::from_f64(*value)
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| {
-                BedrockError::ResponseParse(
-                    "Bedrock document contained a non-finite number".to_string(),
-                )
-            }),
     }
 }

@@ -77,12 +77,24 @@ fn report_workspace_is_isolated_from_records_and_chat_history() {
     let id = Uuid::new_v4();
     let prefix = s3_keys::report_authoring_client_prefix(id);
     let workspace = s3_keys::report_workspace(id);
+    let report_id = Uuid::new_v4();
+    let sessions = s3_keys::report_sessions_prefix(id);
+    let session = s3_keys::report_session_workspace(id, report_id);
     let attempt_id = Uuid::new_v4();
     let attempt = s3_keys::report_attempt(id, attempt_id);
     let usage = s3_keys::report_call_usage(id, attempt_id, 3);
+    let run_id = Uuid::new_v4();
+    let runs = s3_keys::report_draft_runs_prefix(id, report_id);
+    let run = s3_keys::report_draft_run(id, report_id, run_id);
+    let findings = s3_keys::report_findings(id, report_id);
 
     assert_eq!(prefix, format!("report-authoring/{id}/"));
     assert_eq!(workspace, format!("report-authoring/{id}/workspace.json"));
+    assert_eq!(sessions, format!("report-authoring/{id}/sessions/"));
+    assert_eq!(
+        session,
+        format!("report-authoring/{id}/sessions/{report_id}.json")
+    );
     assert_eq!(
         attempt,
         format!("report-authoring/{id}/attempts/{attempt_id}.json")
@@ -91,9 +103,25 @@ fn report_workspace_is_isolated_from_records_and_chat_history() {
         usage,
         format!("report-authoring/{id}/usage/{attempt_id}/3.json")
     );
+    assert_eq!(runs, format!("report-authoring/{id}/runs/{report_id}/"));
+    assert_eq!(
+        run,
+        format!("report-authoring/{id}/runs/{report_id}/{run_id}.json")
+    );
+    assert_eq!(
+        findings,
+        format!("report-authoring/{id}/findings/{report_id}.json")
+    );
     assert!(prefix.starts_with(s3_keys::REPORT_AUTHORING_PREFIX));
     assert!(attempt.starts_with(&prefix));
     assert!(usage.starts_with(&prefix));
+    // Drafting runs ride the client prefix the delete/restore lifecycle
+    // sweeps, so they follow their client without separate wiring.
+    assert!(run.starts_with(&runs));
+    assert!(runs.starts_with(&prefix));
+    // The client delete/restore lifecycle sweeps this prefix, so findings go
+    // and come back with the workspace they describe.
+    assert!(findings.starts_with(&prefix));
     assert_eq!(
         s3_keys::client_lifecycle(id),
         format!("_state/client-lifecycle/{id}.json")
@@ -164,4 +192,42 @@ fn audit_day_and_month_prefixes_bracket_the_event_key() {
     assert!(key.starts_with(&s3_keys::audit_day_prefix(date)));
     assert!(key.starts_with(&s3_keys::audit_month_prefix(2026, 7)));
     assert!(key.starts_with(s3_keys::AUDIT_PREFIX));
+}
+
+#[test]
+fn log_safe_key_scrubs_record_filenames_only() {
+    let id = uuid::Uuid::nil();
+    let uuid = id.to_string();
+
+    // Client-chosen filenames (and their sidecars) are collapsed.
+    assert_eq!(
+        s3_keys::log_safe_key(&s3_keys::client_record_file(id, "Jane Doe intake.pdf")),
+        format!("records/{uuid}/<file>")
+    );
+    assert_eq!(
+        s3_keys::log_safe_key(&format!(
+            "{}.text",
+            s3_keys::client_record_file(id, "Jane Doe intake.pdf")
+        )),
+        format!("records/{uuid}/<file>.text")
+    );
+    // A filename-search prefix is still a partial filename.
+    assert_eq!(
+        s3_keys::log_safe_key(&s3_keys::client_records_search_prefix(id, "Jane")),
+        format!("records/{uuid}/<file>")
+    );
+
+    // App-generated layouts pass through unchanged.
+    for key in [
+        s3_keys::client(id),
+        s3_keys::client_records_prefix(id),
+        s3_keys::chat_history_prefix(id),
+        s3_keys::chat_history(id, id),
+        s3_keys::report_workspace(id),
+        s3_keys::writer_template_docx(id),
+        s3_keys::SYSTEM_PROMPT.to_string(),
+        s3_keys::PREFERENCES.to_string(),
+    ] {
+        assert_eq!(s3_keys::log_safe_key(&key), key);
+    }
 }

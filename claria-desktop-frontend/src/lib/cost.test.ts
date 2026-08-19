@@ -3,14 +3,14 @@ import {
   EMPTY_SESSION_USAGE,
   accumulateUsage,
   cacheHitPct,
-  estimateTurnCost,
+  cacheWriteRatePerMillion,
   formatCost,
   formatTokens,
   humanRelative,
   prettyModel,
   summarizeHistory,
 } from "./cost";
-import type { ModelPricing, TurnUsage } from "./tauri";
+import type { TurnUsage } from "./tauri";
 
 function usage(over: Partial<TurnUsage> = {}): TurnUsage {
   return {
@@ -19,6 +19,7 @@ function usage(over: Partial<TurnUsage> = {}): TurnUsage {
     output_tokens: 0,
     cache_read_input_tokens: 0,
     cache_write_input_tokens: 0,
+    cache_ttl: null,
     cost_usd: 0,
     pricing_version: 1,
     ...over,
@@ -187,36 +188,67 @@ describe("accumulateUsage", () => {
     );
     expect(total.cacheSavedUsd).toBe(0);
   });
+
+  it("charges cache writes against savings at the turn's TTL rate", () => {
+    const pricing = new Map([
+      [
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        {
+          input_per_million: 3,
+          cache_read_per_million: 0.3,
+          cache_write_per_million: 3.75,
+          cache_write_1h_per_million: 6,
+        },
+      ],
+    ]);
+    // 1M reads save (3 − 0.3) = 2.7; 1M five-minute writes cost
+    // (3.75 − 3) = 0.75 extra → net 1.95.
+    const fiveMinute = accumulateUsage(
+      EMPTY_SESSION_USAGE,
+      usage({
+        cache_read_input_tokens: 1_000_000,
+        cache_write_input_tokens: 1_000_000,
+        cache_ttl: "five_minutes",
+      }),
+      pricing
+    );
+    expect(fiveMinute.cacheSavedUsd).toBeCloseTo(1.95);
+    // The same writes at the 1-hour tier cost (6 − 3) = 3 extra → net −0.3,
+    // clamped to zero.
+    const oneHour = accumulateUsage(
+      EMPTY_SESSION_USAGE,
+      usage({
+        cache_read_input_tokens: 1_000_000,
+        cache_write_input_tokens: 1_000_000,
+        cache_ttl: "one_hour",
+      }),
+      pricing
+    );
+    expect(oneHour.cacheSavedUsd).toBe(0);
+  });
 });
 
-describe("estimateTurnCost", () => {
-  const pricing: ModelPricing = {
+describe("cacheWriteRatePerMillion", () => {
+  const pricing = {
     input_per_million: 3,
-    output_per_million: 15,
     cache_read_per_million: 0.3,
     cache_write_per_million: 3.75,
+    cache_write_1h_per_million: 6,
   };
 
-  it("is null without pricing, so the caller can hide the estimate", () => {
-    expect(estimateTurnCost(null, 1000, 400)).toBeNull();
+  it("uses the 1-hour rate only for one-hour turns", () => {
+    expect(cacheWriteRatePerMillion(pricing, "one_hour")).toBe(6);
+    expect(cacheWriteRatePerMillion(pricing, "five_minutes")).toBe(3.75);
   });
 
-  it("charges the context plus the pending message at input rates", () => {
-    // 1,000,000 context tokens + 4,000,000 chars ≈ 1,000,000 more input
-    // tokens, and 200 projected output tokens.
-    const estimate = estimateTurnCost(pricing, 1_000_000, 4_000_000);
-    expect(estimate).toBeCloseTo(2 * 3 + (200 / 1_000_000) * 15);
+  it("defaults to the 5-minute rate when the TTL is absent", () => {
+    expect(cacheWriteRatePerMillion(pricing, null)).toBe(3.75);
+    expect(cacheWriteRatePerMillion(pricing, undefined)).toBe(3.75);
   });
 
-  it("takes a caller-supplied projection for the response length", () => {
-    const short = estimateTurnCost(pricing, 0, 0, 100);
-    const long = estimateTurnCost(pricing, 0, 0, 1000);
-    expect(short).toBeCloseTo((100 / 1_000_000) * 15);
-    expect(long).toBeCloseTo((1000 / 1_000_000) * 15);
-  });
-
-  it("treats a negative context as empty", () => {
-    expect(estimateTurnCost(pricing, -50, 0, 0)).toBe(0);
+  it("falls back to the 5-minute rate when the 1-hour rate is missing", () => {
+    const legacy = { input_per_million: 3, cache_read_per_million: 0.3, cache_write_per_million: 3.75 };
+    expect(cacheWriteRatePerMillion(legacy, "one_hour")).toBe(3.75);
   });
 });
 

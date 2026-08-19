@@ -1,34 +1,37 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useState, useCallback, useMemo, useRef } from "react";
 import {
   chatMessage,
   countClientContextTokens,
   extractRecordFile,
   getPrompt,
   listRecordContext,
+  renameChatHistory,
   type ChatMessage,
-  type ChatModel,
   type RecordContext,
 } from "../lib/tauri";
 import type { Page } from "../App";
 import ChatWidget from "../components/ChatWidget";
 import ChatHistoryHeader from "../components/ChatHistoryHeader";
-import { BackButton, CloseIcon } from "../components/icons";
+import EditableName from "../components/EditableName";
+import { CloseIcon } from "../components/icons";
+import RecordFilePreviewModal from "../components/RecordFilePreviewModal";
 import Spinner from "../components/Spinner";
+import TextPreviewModal from "../components/TextPreviewModal";
 import TokenCountBadge from "../components/TokenCountBadge";
-import Modal from "../components/Modal";
 import { summarizeHistory } from "../lib/cost";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useContextTokens } from "../lib/useContextTokens";
 
 export type ResumeChat = {
   chatId: string;
+  name: string;
   modelId: string;
   messages: ChatMessage[];
   /// Per-turn token usage aligned with `messages` by index. `null` for
   /// user turns and for legacy assistant turns whose history pre-dates
   /// per-turn usage tracking.
   usageByIndex?: Array<import("../lib/tauri").TurnUsage | null>;
+  timestampsByIndex?: Array<string | null>;
   /// ISO-8601 timestamp of the chat's last activity (for the resume
   /// header — "Last activity: yesterday 4:12pm" etc).
   lastActivityIso?: string | null;
@@ -37,36 +40,43 @@ export type ResumeChat = {
 export default function ClientChat({
   navigate,
   clientId,
-  clientName,
-  embedded,
   resumeChat,
-  onResumeChatConsumed,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
-  clientName: string;
-  embedded?: boolean;
+  /// A persisted chat being resumed. Identity changes must remount this
+  /// component — the caller keys on `resumeChat?.chatId`.
   resumeChat?: ResumeChat | null;
-  onResumeChatConsumed?: () => void;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
 }) {
-  const chatIdRef = useRef<string | null>(null);
+  const chatIdRef = useRef<string | null>(resumeChat?.chatId ?? null);
+  const [chatName, setChatName] = useState(resumeChat?.name ?? "New chat");
+  const [hasPersistedChat, setHasPersistedChat] = useState(resumeChat != null);
 
-  // System prompt state
-  const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
+  // System prompt (read-only; missing prompt hides the button).
+  const { data: systemPrompt } = useAsyncLoad(
+    () => getPrompt("system-prompt"),
+    []
+  );
   const [showPromptModal, setShowPromptModal] = useState(false);
 
-  // Record context state
-  const [contextFiles, setContextFiles] = useState<RecordContext[]>([]);
-  const [contextLoading, setContextLoading] = useState(true);
-  const [contextError, setContextError] = useState<string | null>(null);
+  // Record context: the fetched list plus local remove/extract overlays,
+  // so user edits never mirror server data into duplicate state.
+  const contextLoad = useAsyncLoad(() => listRecordContext(clientId), [clientId]);
+  const contextLoading = contextLoad.loading;
+  const contextError = contextLoad.error;
+  const [removedContext, setRemovedContext] = useState<ReadonlySet<string>>(
+    new Set()
+  );
+  const [extractedContext, setExtractedContext] = useState<
+    ReadonlyMap<string, RecordContext>
+  >(new Map());
+  const contextFiles = useMemo(
+    () =>
+      (contextLoad.data ?? [])
+        .filter((file) => !removedContext.has(file.filename))
+        .map((file) => extractedContext.get(file.filename) ?? file),
+    [contextLoad.data, removedContext, extractedContext]
+  );
   const [previewContext, setPreviewContext] = useState<RecordContext | null>(
     null
   );
@@ -76,25 +86,13 @@ export default function ClientChat({
     message: string;
   } | null>(null);
 
-  // Resume chat state to pass to ChatWidget
-  const [initialMessages, setInitialMessages] = useState<
-    ChatMessage[] | undefined
-  >();
-  const [initialModelId, setInitialModelId] = useState<string | undefined>();
-  const [initialUsageByIndex, setInitialUsageByIndex] = useState<
-    Array<import("../lib/tauri").TurnUsage | null> | undefined
-  >();
-  const [lastActivityIso, setLastActivityIso] = useState<string | null>(null);
-
-  useEffect(() => {
-    getPrompt("system-prompt")
-      .then(setSystemPrompt)
-      .catch(() => {});
-    listRecordContext(clientId)
-      .then(setContextFiles)
-      .catch((e) => setContextError(String(e)))
-      .finally(() => setContextLoading(false));
-  }, [clientId]);
+  // Resumed-chat snapshot — plain initial state, valid for this mount's
+  // lifetime because the caller remounts on resume-identity change.
+  const initialMessages = resumeChat?.messages;
+  const initialModelId = resumeChat?.modelId;
+  const initialUsageByIndex = resumeChat?.usageByIndex;
+  const initialTimestampsByIndex = resumeChat?.timestampsByIndex;
+  const lastActivityIso = resumeChat?.lastActivityIso ?? null;
 
   // Count context tokens once context is loaded. Only files with extracted
   // text are counted — the rest contribute nothing to the prompt.
@@ -115,7 +113,7 @@ export default function ClientChat({
   );
 
   function handleRemoveContext(filename: string) {
-    setContextFiles((prev) => prev.filter((f) => f.filename !== filename));
+    setRemovedContext((prev) => new Set(prev).add(filename));
   }
 
   async function handleExtract(filename: string) {
@@ -123,9 +121,7 @@ export default function ClientChat({
     setExtractError(null);
     try {
       const updated = await extractRecordFile(clientId, filename);
-      setContextFiles((prev) =>
-        prev.map((f) => (f.filename === filename ? updated : f))
-      );
+      setExtractedContext((prev) => new Map(prev).set(filename, updated));
     } catch (e) {
       // The pill stays dimmed so the user can retry from the same button.
       setExtractError({ filename, message: String(e) });
@@ -133,17 +129,6 @@ export default function ClientChat({
       setExtractingFile(null);
     }
   }
-
-  // Resume a previous chat session when resumeChat prop is set.
-  useEffect(() => {
-    if (!resumeChat) return;
-    setInitialMessages(resumeChat.messages);
-    setInitialModelId(resumeChat.modelId);
-    setInitialUsageByIndex(resumeChat.usageByIndex);
-    setLastActivityIso(resumeChat.lastActivityIso ?? null);
-    chatIdRef.current = resumeChat.chatId;
-    onResumeChatConsumed?.();
-  }, [resumeChat, onResumeChatConsumed]);
 
   // Memo'd summary of resumed history for the chat header.
   const historyHeader = initialMessages
@@ -155,12 +140,7 @@ export default function ClientChat({
           })),
           lastActivityIso
         );
-        return (
-          <ChatHistoryHeader
-            summary={summary}
-            onSeeAccountSpend={() => navigate("cost-explorer")}
-          />
-        );
+        return <ChatHistoryHeader summary={summary} />;
       })()
     : undefined;
 
@@ -168,26 +148,63 @@ export default function ClientChat({
   contextFilesRef.current = contextFiles;
 
   const handleSend = useCallback(
-    async (modelId: string, messages: ChatMessage[]) => {
+    async (
+      modelId: string,
+      messages: ChatMessage[],
+      onDelta: (text: string) => void,
+      streamId: string
+    ) => {
       const filenames = contextFilesRef.current
         .filter((f) => f.text.length > 0)
         .map((f) => f.filename);
+      let stopReason: string | null = null;
       const response = await chatMessage(
         clientId,
         modelId,
         messages,
+        streamId,
         chatIdRef.current,
-        filenames
+        filenames,
+        chatIdRef.current || chatName === "New chat" ? null : chatName,
+        (event) => {
+          if (event.kind === "delta") onDelta(event.text);
+          else if (event.kind === "done") stopReason = event.stop_reason;
+        }
       );
       chatIdRef.current = response.chat_id;
-      return { content: response.content, usage: response.usage };
+      setChatName(response.chat_name);
+      setHasPersistedChat(true);
+      return { content: response.content, usage: response.usage, stopReason };
     },
-    [clientId]
+    [clientId, chatName]
   );
+
+  async function handleRename(name: string) {
+    const chatId = chatIdRef.current;
+    if (!chatId) {
+      setChatName(name);
+      return;
+    }
+    const updated = await renameChatHistory(clientId, chatId, name);
+    setChatName(updated.name);
+  }
 
   const toolbar = (
     <>
-      {embedded && systemPrompt && (
+      <div className="flex items-center gap-3 px-6 py-2 border-b border-gray-100 bg-white">
+        <EditableName
+          value={chatName}
+          label="chat"
+          onSave={handleRename}
+          className="flex-1"
+        />
+        {!hasPersistedChat && chatName === "New chat" && (
+          <span className="text-[11px] text-gray-400">
+            A numbered name is assigned after the first message.
+          </span>
+        )}
+      </div>
+      {systemPrompt && (
         <div className="flex items-center gap-2 px-6 py-1.5 border-b border-gray-100 bg-white">
           <button
             onClick={() => setShowPromptModal(true)}
@@ -271,91 +288,49 @@ export default function ClientChat({
   );
 
   return (
-    <div className={`flex flex-col ${embedded ? "flex-1" : "h-screen"}`}>
-      {/* Header — hidden when embedded in ClientRecord */}
-      {!embedded && (
-        <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
-          <BackButton onClick={() => navigate("clients")} />
-          <div className="flex-1">
-            <h2 className="text-lg font-semibold">{clientName}</h2>
-            <p className="text-xs text-gray-400">Chat</p>
-          </div>
-          {systemPrompt && (
-            <button
-              onClick={() => setShowPromptModal(true)}
-              className="px-2.5 py-1 text-xs font-medium text-gray-500 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
-            >
-              System Prompt
-            </button>
-          )}
-        </div>
-      )}
-
+    <div className="flex flex-col flex-1">
       <ChatWidget
-        chatModels={chatModels}
-        chatModelsLoading={chatModelsLoading}
-        chatModelsError={chatModelsError}
-        preferredModelId={preferredModelId}
         onSend={handleSend}
         initialMessages={initialMessages}
         initialModelId={initialModelId}
         initialUsageByIndex={initialUsageByIndex}
-        contextTokens={contextTokens}
+        initialTimestampsByIndex={initialTimestampsByIndex}
         emptyStateTitle="Start the conversation."
         emptyStateSubtitle="The chat includes the context files shown above. Chat messages are saved separately and do not modify your client files."
         extraLoading={contextLoading}
         extraLoadingText="Building context..."
         toolbar={toolbar}
         historyHeader={historyHeader}
-        embedded={embedded}
+        usageActions={
+          resumeChat ? (
+            <button
+              type="button"
+              onClick={() => navigate("cost-explorer")}
+              className="text-xs font-medium text-blue-700 hover:text-blue-900"
+            >
+              See account spend →
+            </button>
+          ) : undefined
+        }
       />
 
       {/* System prompt modal (read-only) */}
       {showPromptModal && systemPrompt && (
-        <Modal
-          open
+        <TextPreviewModal
+          filename="System Prompt"
+          text={systemPrompt}
+          markdown
           onClose={() => setShowPromptModal(false)}
-          title="System Prompt"
-          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
-        >
-          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-            <div className="prose prose-sm max-w-none">
-              <Markdown remarkPlugins={[remarkGfm]}>{systemPrompt}</Markdown>
-            </div>
-          </div>
-          <div className="flex justify-end mt-4">
-            <button
-              onClick={() => setShowPromptModal(false)}
-              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-            >
-              Close
-            </button>
-          </div>
-        </Modal>
+        />
       )}
 
       {/* Context file preview modal */}
       {previewContext && (
-        <Modal
-          open
+        <RecordFilePreviewModal
+          filename={previewContext.filename}
+          text={previewContext.text}
           onClose={() => setPreviewContext(null)}
-          title={previewContext.filename}
-          className="max-w-2xl p-6 max-h-[80vh] flex flex-col"
-        >
-          <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg p-4">
-            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-              {previewContext.text}
-            </pre>
-          </div>
-          <div className="flex justify-end mt-4">
-            <button
-              onClick={() => setPreviewContext(null)}
-              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-            >
-              Close
-            </button>
-          </div>
-        </Modal>
+        />
       )}
     </div>
   );

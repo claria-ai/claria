@@ -1,42 +1,85 @@
-import { useState, useRef, useEffect, type ReactNode } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useMemo,
+  type ReactNode,
+} from "react";
 import {
   acceptModelAgreement,
+  stopStream,
   type ChatMessage,
-  type ChatModel,
   type TurnUsage,
 } from "../lib/tauri";
+import { useChatModels } from "../lib/chatModels";
+import { randomUuid } from "../lib/ids";
+import { isPinnedToBottom } from "../lib/scroll";
 import {
   EMPTY_SESSION_USAGE,
   accumulateUsage,
-  estimateTurnCost,
-  formatCost,
   type SessionUsage,
 } from "../lib/cost";
-import { lookupModelPricing, type ModelPricing } from "../lib/tauri";
-import TurnCostBadge from "./TurnCostBadge";
-import SessionTotalBanner from "./SessionTotalBanner";
-import LastTurnFooter from "./LastTurnFooter";
+import { buildCostLedger } from "../lib/costLedger";
+import { buildChatSessionDiagram } from "../lib/sessionDiagram";
+import { usePreferredModel } from "../lib/usePreferredModel";
+import { usePricingMap } from "../lib/usePricingMap";
+import ChatComposer from "./ChatComposer";
+import ChatEmptyState from "./ChatEmptyState";
+import MessageBubble from "./MessageBubble";
+import ModelSelect from "./ModelSelect";
+import SessionTabs, { UsageTabIcon } from "./SessionTabs";
+import SessionUsagePanel from "./SessionUsagePanel";
 import Spinner from "./Spinner";
 
 function isMarketplaceError(error: string): boolean {
   return error.includes("aws-marketplace:") || error.includes("Marketplace");
 }
 
-/** `handleSend` contract: the assistant reply plus its token usage, if known. */
-export type SendResult = { content: string; usage: TurnUsage | null };
+/**
+ * `handleSend` contract: the assistant reply plus its token usage, if
+ * known. `stopReason` is the streamed `done` event's stop reason when the
+ * sender saw one — used by the session flow diagram to flag truncated
+ * (`max_tokens`) turns.
+ */
+export type SendResult = {
+  content: string;
+  usage: TurnUsage | null;
+  stopReason?: string | null;
+};
+
+/**
+ * `handleSend` also receives an `onDelta` callback and the turn's
+ * `streamId`. Senders whose backend streams call `onDelta` with each
+ * incremental chunk and pass `streamId` to the command so the widget's Stop
+ * button can reach the turn; senders that don't simply ignore both, and the
+ * widget falls back to the awaited result.
+ */
+export type SendFn = (
+  modelId: string,
+  messages: ChatMessage[],
+  onDelta: (text: string) => void,
+  streamId: string
+) => Promise<SendResult>;
+
+/**
+ * Scroll a container to its newest content, tolerating environments (and
+ * test DOMs) without the scroll-options API.
+ */
+function scrollToBottom(element: HTMLDivElement) {
+  if (typeof element.scrollTo === "function") {
+    element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
+  } else {
+    element.scrollTop = element.scrollHeight;
+  }
+}
 
 export default function ChatWidget({
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
   onSend,
   initialMessages,
   initialModelId,
   initialUsageByIndex,
-  contextTokens,
+  initialTimestampsByIndex,
   emptyStateTitle = "Start the conversation.",
   emptyStateSubtitle,
   placeholder,
@@ -44,131 +87,169 @@ export default function ChatWidget({
   extraLoadingText = "Loading...",
   toolbar,
   historyHeader,
-  embedded = false,
+  usageActions,
 }: {
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
-  onSend: (modelId: string, messages: ChatMessage[]) => Promise<SendResult>;
+  onSend: SendFn;
   initialMessages?: ChatMessage[];
   initialModelId?: string;
   /// Per-message usage aligned with `initialMessages` — used when
-  /// resuming a chat from history so old assistant turns can render
-  /// their cost badges.
+  /// resuming a chat from history so old assistant turns can appear in the
+  /// usage tab and render badges when the user enables them.
   initialUsageByIndex?: Array<TurnUsage | null>;
-  /// Optional context-token count used for pre-flight cost estimation.
-  /// When omitted, the pre-flight chip is hidden.
-  contextTokens?: number | null;
+  initialTimestampsByIndex?: Array<string | null>;
   emptyStateTitle?: string;
   emptyStateSubtitle?: string;
   placeholder?: string;
   extraLoading?: boolean;
   extraLoadingText?: string;
   toolbar?: ReactNode;
-  /// Optional content rendered between the session banner and the
-  /// toolbar — typically a chat-history summary header on resume.
+  /// Optional quiet resume context rendered above the conversation toolbar.
   historyHeader?: ReactNode;
-  embedded?: boolean;
+  /** Optional actions that belong with costs rather than in the chat flow. */
+  usageActions?: ReactNode;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
   const [usageByIndex, setUsageByIndex] = useState<Array<TurnUsage | null>>(
     initialUsageByIndex ?? []
   );
-  const [session, setSession] = useState<SessionUsage>(EMPTY_SESSION_USAGE);
+  const [timestampsByIndex, setTimestampsByIndex] = useState<
+    Array<string | null>
+  >(initialTimestampsByIndex ?? []);
+  // Stop reasons only arrive on live streamed turns; history has none.
+  const [stopReasonByIndex, setStopReasonByIndex] = useState<
+    Array<string | null>
+  >(() => (initialMessages ?? []).map(() => null));
+  // Roll up resumed usage for the dedicated session-usage tab. Initial props
+  // are plain initial state — a
+  // different chat identity remounts the widget via the caller's `key`.
+  const [session, setSession] = useState<SessionUsage>(() =>
+    (initialUsageByIndex ?? []).reduce<SessionUsage>(
+      (acc, usage) => accumulateUsage(acc, usage),
+      EMPTY_SESSION_USAGE
+    )
+  );
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // Incrementally streamed assistant text for the in-flight turn. `null`
+  // until the first delta arrives — non-streaming senders (and the mock
+  // paths in tests) never set it, and the widget falls back to the awaited
+  // response.
+  const [streamText, setStreamText] = useState<string | null>(null);
+  // Identity of the in-flight turn, minted here so Stop can name it before
+  // the backend has said anything back. `null` between turns.
+  const [streamId, setStreamId] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
+  const [activeTab, setActiveTab] = useState<"conversation" | "usage">(
+    "conversation"
+  );
+  const [showTurnCosts, setShowTurnCosts] = useState(false);
 
-  // Per-model pricing for pre-flight estimates. Looked up once per
-  // selected model and cached.
-  const [pricing, setPricing] = useState<ModelPricing | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Whether the reader is following the bottom of the conversation. A ref,
+  // not state: it updates on every scroll event and must not re-render the
+  // transcript while a reply is arriving.
+  const pinnedRef = useRef(true);
+  const [detached, setDetached] = useState(false);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [textareaHeight, setTextareaHeight] = useState(80);
-  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
-
-  const [selectedModelId, setSelectedModelId] = useState<string | null>(
-    initialModelId ?? null
+  const {
+    models: chatModels,
+    loading: chatModelsLoading,
+    error: chatModelsError,
+    preferredModelId,
+  } = useChatModels();
+  const [selectedModelId, setSelectedModelId] = usePreferredModel(
+    chatModels,
+    preferredModelId,
+    initialModelId
   );
 
-  // Default to preferred model (or first available) once models are loaded
-  useEffect(() => {
-    if (chatModels.length > 0 && !selectedModelId) {
-      const preferred =
-        preferredModelId &&
-        chatModels.some((m) => m.model_id === preferredModelId)
-          ? preferredModelId
-          : chatModels[0].model_id;
-      setSelectedModelId(preferred);
-    }
-  }, [chatModels, selectedModelId, preferredModelId]);
+  // Ordered assistant-turn usages for the cache-aware ledger. Only
+  // assistant turns are metered; a null slot is a legacy/unmetered turn.
+  const assistantTurnUsages = useMemo(
+    () =>
+      messages
+        .map((message, index) => ({ message, index }))
+        .filter(({ message }) => message.role === "assistant")
+        .map(({ index }) => usageByIndex[index] ?? null),
+    [messages, usageByIndex]
+  );
+  const assistantTurnTimestamps = useMemo(
+    () =>
+      messages
+        .map((message, index) => ({ message, index }))
+        .filter(({ message }) => message.role === "assistant")
+        .map(({ index }) => timestampsByIndex[index] ?? null),
+    [messages, timestampsByIndex]
+  );
+  const turnModelIds = useMemo(
+    () => assistantTurnUsages.flatMap((usage) => (usage ? [usage.model_id] : [])),
+    [assistantTurnUsages]
+  );
+  const pricingByModel = usePricingMap(
+    activeTab === "usage" ? turnModelIds : []
+  );
+  const ledger = useMemo(
+    () =>
+      buildCostLedger(
+        assistantTurnUsages,
+        pricingByModel,
+        assistantTurnTimestamps
+      ),
+    [assistantTurnTimestamps, assistantTurnUsages, pricingByModel]
+  );
 
-  // Resolve pricing for the selected model. `null` when unknown.
-  useEffect(() => {
-    if (!selectedModelId) {
-      setPricing(null);
-      return;
-    }
-    let cancelled = false;
-    lookupModelPricing(selectedModelId)
-      .then((p) => {
-        if (!cancelled) setPricing(p);
-      })
-      .catch(() => {
-        if (!cancelled) setPricing(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedModelId]);
+  // Three-lane session flow model for the usage panel's diagram.
+  const diagram = useMemo(
+    () =>
+      buildChatSessionDiagram(
+        messages.map((message, index) => ({
+          role: message.role,
+          content: message.content,
+          timestamp: timestampsByIndex[index] ?? null,
+          usage: usageByIndex[index] ?? null,
+          stopReason: stopReasonByIndex[index] ?? null,
+        }))
+      ),
+    [messages, stopReasonByIndex, timestampsByIndex, usageByIndex]
+  );
 
-  // Apply initial messages/model when they change (resume chat)
-  useEffect(() => {
-    if (initialMessages) setMessages(initialMessages);
-    if (initialModelId) setSelectedModelId(initialModelId);
-    if (initialUsageByIndex) {
-      setUsageByIndex(initialUsageByIndex);
-      // Roll up resumed usage so the session banner reflects historical
-      // spend on the chat being resumed.
-      const resumed = initialUsageByIndex.reduce<SessionUsage>(
-        (acc, u) => accumulateUsage(acc, u),
-        EMPTY_SESSION_USAGE
-      );
-      setSession(resumed);
-    } else if (initialMessages) {
-      // Reset session when initialMessages change without per-index usage.
-      setUsageByIndex([]);
-      setSession(EMPTY_SESSION_USAGE);
-    }
-  }, [initialMessages, initialModelId, initialUsageByIndex]);
-
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  // Drag-to-resize textarea
-  useEffect(() => {
-    function onPointerMove(e: PointerEvent) {
-      if (!dragRef.current) return;
-      const delta = dragRef.current.startY - e.clientY;
-      setTextareaHeight(
-        Math.max(48, Math.min(400, dragRef.current.startHeight + delta))
-      );
-    }
-    function onPointerUp() {
-      dragRef.current = null;
-      document.body.style.userSelect = "";
-    }
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-    return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
+  /**
+   * Follow the newest content and resume following it from here on.
+   *
+   * Deliberately instant. A smooth scroll emits its own scroll events all
+   * the way down, which read as the user scrolling away and back; restarted
+   * on every chunk of an arriving reply, it is an animation that never
+   * finishes and the reason the transcript could not be read.
+   */
+  const followLatest = useCallback(() => {
+    pinnedRef.current = true;
+    setDetached(false);
+    if (scrollRef.current) scrollToBottom(scrollRef.current);
   }, []);
+
+  /**
+   * Reading is a scroll away from the bottom, so a reader who scrolls up
+   * detaches and keeps their place until they come back or ask to.
+   */
+  const handleScroll = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const atBottom = isPinnedToBottom(element);
+    pinnedRef.current = atBottom;
+    setDetached((previous) => (previous === !atBottom ? previous : !atBottom));
+  }, []);
+
+  useEffect(() => {
+    if (pinnedRef.current) followLatest();
+  }, [messages, followLatest]);
+
+  useEffect(() => {
+    if (streamText !== null && pinnedRef.current && scrollRef.current) {
+      scrollToBottom(scrollRef.current);
+    }
+  }, [streamText]);
 
   const canSend =
     !sending &&
@@ -187,23 +268,61 @@ export default function ChatWidget({
     const userMessage: ChatMessage = { role: "user", content: text };
     const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
-    // Pad usageByIndex for the new user message so indices align.
+    // Pad metadata for the new user message so indices align.
     setUsageByIndex((prev) => [...prev, null]);
+    setTimestampsByIndex((prev) => [...prev, new Date().toISOString()]);
+    setStopReasonByIndex((prev) => [...prev, null]);
+    // Sending is an explicit request to be at the bottom, wherever the
+    // reader had scrolled to.
+    followLatest();
 
+    const turnId = randomUuid();
+    setStreamId(turnId);
     setSending(true);
     try {
-      const { content, usage } = await onSend(selectedModelId, updatedMessages);
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content,
-      };
-      setMessages([...updatedMessages, assistantMessage]);
-      setUsageByIndex((prev) => [...prev, usage]);
+      const { content, usage, stopReason } = await onSend(
+        selectedModelId,
+        updatedMessages,
+        (delta) => setStreamText((prev) => (prev ?? "") + delta),
+        turnId
+      );
+      // A turn stopped before the model said anything leaves no reply worth
+      // a bubble — the user's message stands on its own.
+      if (content.length > 0) {
+        const assistantMessage: ChatMessage = {
+          role: "assistant",
+          content,
+        };
+        setMessages([...updatedMessages, assistantMessage]);
+        setUsageByIndex((prev) => [...prev, usage]);
+        setTimestampsByIndex((prev) => [...prev, new Date().toISOString()]);
+        setStopReasonByIndex((prev) => [...prev, stopReason ?? null]);
+      }
       setSession((prev) => accumulateUsage(prev, usage));
     } catch (e) {
       setError(String(e));
     } finally {
       setSending(false);
+      setStreamId(null);
+      setStopping(false);
+      setStreamText(null);
+    }
+  }
+
+  /**
+   * End the turn in flight. The command keeps whatever text arrived and
+   * returns normally, so the reply lands in the transcript exactly as a
+   * completed one would — just shorter.
+   */
+  async function handleStop() {
+    if (!streamId || stopping) return;
+    setStopping(true);
+    try {
+      await stopStream(streamId);
+    } catch (e) {
+      // The turn is still running; say so rather than leaving a dead button.
+      setError(`Could not stop the reply: ${String(e)}`);
+      setStopping(false);
     }
   }
 
@@ -230,192 +349,150 @@ export default function ChatWidget({
         : "Type a message...");
 
   return (
-    <div className={`flex flex-col ${embedded ? "flex-1" : "flex-1"}`}>
-      {/* Model selector bar */}
-      <div
-        className={`flex items-center gap-2 px-6 py-2 border-b ${embedded ? "border-gray-100 bg-gray-50" : "border-gray-100 bg-white"}`}
-      >
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center gap-2 border-b border-gray-100 bg-white px-6 py-2">
         <div className="flex-1" />
-        {chatModelsLoading ? (
-          <div className="flex items-center gap-1.5 text-gray-400 text-xs">
-            <Spinner />
-            <span>Loading models...</span>
-          </div>
-        ) : chatModelsError ? (
-          <span className="text-red-500 text-xs">Failed to load models</span>
-        ) : (
-          <select
-            value={selectedModelId ?? ""}
-            onChange={(e) => setSelectedModelId(e.target.value)}
-            className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            {chatModels.map((m) => (
-              <option key={m.model_id} value={m.model_id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        )}
+        <ModelSelect
+          models={chatModels}
+          loading={chatModelsLoading}
+          error={chatModelsError}
+          value={selectedModelId}
+          onChange={setSelectedModelId}
+        />
       </div>
 
-      {/* Persistent session-cost banner — fuel-gauge style. */}
-      <SessionTotalBanner session={session} />
-
-      {/* Optional resumed-chat history header. */}
-      {historyHeader}
-
-      {/* Optional toolbar slot (context pills, etc.) */}
-      {toolbar}
-
-      {/* Extra loading indicator */}
-      {extraLoading && (
-        <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-white">
-          <Spinner />
-          <span className="text-xs text-gray-400">{extraLoadingText}</span>
-        </div>
-      )}
-
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {messages.length === 0 && !sending && (
-          <div className="text-center text-gray-400 text-sm mt-8">
-            <p className="mb-1">{emptyStateTitle}</p>
-            {emptyStateSubtitle && (
-              <p className="text-xs">{emptyStateSubtitle}</p>
-            )}
-          </div>
-        )}
-
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} usage={usageByIndex[i]} />
-        ))}
-
-        {sending && (
-          <div className="flex items-start gap-3">
-            <div className="bg-gray-100 rounded-lg px-4 py-2.5 max-w-[80%]">
-              <div className="flex items-center gap-2 text-gray-500 text-sm">
-                <Spinner />
-                <span>Thinking...</span>
-                {(() => {
-                  const est = estimateTurnCost(
-                    pricing,
-                    contextTokens ?? 0,
-                    input.length
-                  );
-                  return est != null && est > 0 ? (
-                    <span className="text-[10px] text-gray-400">
-                      (~{formatCost(est)} for this turn)
-                    </span>
-                  ) : null;
-                })()}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-red-800 text-sm">{error}</p>
-            {isMarketplaceError(error) && selectedModelId && (
-              <button
-                onClick={handleAcceptAgreement}
-                disabled={accepting}
-                className="mt-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-              >
-                {accepting ? "Accepting..." : "Accept Model Agreement"}
-              </button>
-            )}
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Last-turn footer — quiet ambient line above the composer. */}
-      <LastTurnFooter
-        usage={
-          messages.length > 0 && messages[messages.length - 1].role === "assistant"
-            ? usageByIndex[messages.length - 1]
-            : undefined
-        }
-        sessionTotalUsd={session.unknownCostTurns === 0 ? session.totalUsd : null}
+      <SessionTabs
+        idPrefix="chat-session"
+        label="Chat session"
+        active={activeTab}
+        onSelect={setActiveTab}
+        tabs={[
+          { id: "conversation", label: "Conversation" },
+          {
+            id: "usage",
+            label: "Costs and cache",
+            compact: true,
+            icon: <UsageTabIcon />,
+          },
+        ]}
       />
 
-      {/* Input bar */}
-      <div className="border-t border-gray-200 bg-white">
-        {/* Drag handle */}
+      {activeTab === "usage" ? (
         <div
-          className="flex justify-center py-1.5 cursor-row-resize select-none hover:bg-gray-50 transition-colors"
-          onPointerDown={(e) => {
-            dragRef.current = {
-              startY: e.clientY,
-              startHeight: textareaHeight,
-            };
-            document.body.style.userSelect = "none";
-          }}
+          id="chat-session-panel-usage"
+          role="tabpanel"
+          aria-labelledby="chat-session-tab-usage"
+          className="min-h-0 flex-1"
         >
-          <div className="w-8 h-1 rounded-full bg-gray-300" />
-        </div>
-        <div className="flex gap-3 px-6 pb-4">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder={resolvedPlaceholder}
-            disabled={
-              sending ||
-              chatModelsLoading ||
-              extraLoading ||
-              !selectedModelId
-            }
-            style={{ height: textareaHeight, resize: "none" }}
-            className="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
+          <SessionUsagePanel
+            session={session}
+            ledger={ledger}
+            showTurnCosts={showTurnCosts}
+            onShowTurnCostsChange={setShowTurnCosts}
+            actions={usageActions}
+            diagram={diagram}
           />
-          <button
-            onClick={handleSend}
-            disabled={!canSend}
-            className="self-end px-5 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-          >
-            Send
-          </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function MessageBubble({
-  message,
-  usage,
-}: {
-  message: ChatMessage;
-  usage?: TurnUsage | null;
-}) {
-  const isUser = message.role === "user";
-
-  return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[80%] flex flex-col ${isUser ? "items-end" : "items-start"}`}>
+      ) : (
         <div
-          className={`rounded-lg px-4 py-2.5 ${
-            isUser ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-800"
-          }`}
+          id="chat-session-panel-conversation"
+          role="tabpanel"
+          aria-labelledby="chat-session-tab-conversation"
+          className="flex min-h-0 flex-1 flex-col"
         >
-          {isUser ? (
-            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-          ) : (
-            <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-inherit prose-code:before:content-none prose-code:after:content-none">
-              <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
+          {historyHeader}
+          {toolbar}
+
+          {extraLoading && (
+            <div className="flex items-center gap-2 border-b border-gray-100 bg-white px-6 py-2">
+              <Spinner />
+              <span className="text-xs text-gray-400">{extraLoadingText}</span>
             </div>
           )}
+
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="flex-1 space-y-4 overflow-y-auto px-6 py-4"
+          >
+            {messages.length === 0 && !sending && (
+              <ChatEmptyState
+                title={emptyStateTitle}
+                subtitle={emptyStateSubtitle}
+              />
+            )}
+
+            {messages.map((msg, i) => (
+              <MessageBubble
+                key={i}
+                role={msg.role}
+                content={msg.content}
+                usage={showTurnCosts ? usageByIndex[i] : undefined}
+              />
+            ))}
+
+            {sending && streamText !== null && (
+              <MessageBubble role="assistant" content={streamText} writing />
+            )}
+
+            {sending && streamText === null && (
+              <div className="flex items-start gap-3">
+                <div className="max-w-[80%] rounded-lg bg-gray-100 px-4 py-2.5">
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <Spinner />
+                    <span>Thinking...</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3">
+                <p className="text-sm text-red-800">{error}</p>
+                {isMarketplaceError(error) && selectedModelId && (
+                  <button
+                    onClick={handleAcceptAgreement}
+                    disabled={accepting}
+                    className="mt-2 rounded-lg bg-blue-600 px-4 py-1.5 text-sm text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {accepting ? "Accepting..." : "Accept Model Agreement"}
+                  </button>
+                )}
+              </div>
+            )}
+
+          </div>
+
+          {/* Offered only while a reply is arriving out of view — the reader
+              who scrolled up to re-read something keeps their place. */}
+          {detached && sending && (
+            <div className="relative">
+              <button
+                onClick={() => followLatest()}
+                className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
+              >
+                Jump to latest ↓
+              </button>
+            </div>
+          )}
+
+          <div className="border-t border-gray-200 bg-white px-6 py-4">
+            <ChatComposer
+              value={input}
+              onChange={setInput}
+              onSend={() => void handleSend()}
+              onStop={() => void handleStop()}
+              canStop={sending && streamId !== null && !stopping}
+              stopLabel={stopping ? "Stopping..." : "Stop"}
+              disabled={
+                sending || chatModelsLoading || extraLoading || !selectedModelId
+              }
+              canSend={canSend}
+              placeholder={resolvedPlaceholder}
+            />
+          </div>
         </div>
-        {!isUser && <TurnCostBadge usage={usage} />}
-      </div>
+      )}
     </div>
   );
 }

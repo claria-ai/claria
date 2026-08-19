@@ -127,10 +127,7 @@ async fn list_users(state: SharedState) -> Response {
 
     xml_response(xml::xml_doc(&xml::wrap(
         "ListUsersResponse",
-        &xml::wrap(
-            "ListUsersResult",
-            &xml::wrap("Users", &members),
-        ),
+        &xml::wrap("ListUsersResult", &xml::wrap("Users", &members)),
     )))
 }
 
@@ -224,7 +221,7 @@ async fn get_policy_version(params: &str, state: SharedState) -> Response {
                 StatusCode::NOT_FOUND,
                 xml::query_error_xml("NoSuchEntity", "Policy not found"),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -235,7 +232,7 @@ async fn get_policy_version(params: &str, state: SharedState) -> Response {
                 StatusCode::NOT_FOUND,
                 xml::query_error_xml("NoSuchEntity", "Version not found"),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -278,7 +275,7 @@ async fn create_policy_version(params: &str, state: SharedState) -> Response {
                 StatusCode::NOT_FOUND,
                 xml::query_error_xml("NoSuchEntity", "Policy not found"),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -286,7 +283,10 @@ async fn create_policy_version(params: &str, state: SharedState) -> Response {
     if policy.versions.len() >= 5 {
         return (
             StatusCode::CONFLICT,
-            xml::query_error_xml("LimitExceeded", "A managed policy can have up to 5 versions"),
+            xml::query_error_xml(
+                "LimitExceeded",
+                "A managed policy can have up to 5 versions",
+            ),
         )
             .into_response();
     }
@@ -312,10 +312,7 @@ async fn create_policy_version(params: &str, state: SharedState) -> Response {
         "CreatePolicyVersionResponse",
         &xml::wrap(
             "CreatePolicyVersionResult",
-            &xml::wrap(
-                "PolicyVersion",
-                &xml::el("VersionId", &version_id),
-            ),
+            &xml::wrap("PolicyVersion", &xml::el("VersionId", &version_id)),
         ),
     )))
 }
@@ -330,7 +327,7 @@ async fn list_policy_versions(params: &str, state: SharedState) -> Response {
                 StatusCode::NOT_FOUND,
                 xml::query_error_xml("NoSuchEntity", "Policy not found"),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -349,10 +346,7 @@ async fn list_policy_versions(params: &str, state: SharedState) -> Response {
 
     xml_response(xml::xml_doc(&xml::wrap(
         "ListPolicyVersionsResponse",
-        &xml::wrap(
-            "ListPolicyVersionsResult",
-            &xml::wrap("Versions", &members),
-        ),
+        &xml::wrap("ListPolicyVersionsResult", &xml::wrap("Versions", &members)),
     )))
 }
 
@@ -434,11 +428,9 @@ async fn get_user_policy(params: &str, state: SharedState) -> Response {
         .get(&(user_name.clone(), policy_name.clone()))
     {
         Some(doc) => {
-            let encoded = percent_encoding::utf8_percent_encode(
-                doc,
-                percent_encoding::NON_ALPHANUMERIC,
-            )
-            .to_string();
+            let encoded =
+                percent_encoding::utf8_percent_encode(doc, percent_encoding::NON_ALPHANUMERIC)
+                    .to_string();
             xml_response(xml::xml_doc(&xml::wrap(
                 "GetUserPolicyResponse",
                 &xml::wrap(
@@ -474,8 +466,7 @@ async fn delete_user_policy(params: &str, state: SharedState) -> Response {
     let user_name = param(params, "UserName").unwrap_or_default();
     let policy_name = param(params, "PolicyName").unwrap_or_default();
     let mut st = state.write().await;
-    st.user_inline_policies
-        .remove(&(user_name, policy_name));
+    st.user_inline_policies.remove(&(user_name, policy_name));
     xml_response(xml::xml_doc(&xml::wrap("DeleteUserPolicyResponse", "")))
 }
 
@@ -581,14 +572,8 @@ async fn get_access_key_last_used(params: &str, state: SharedState) -> Response 
     let last_used = st.access_keys.get(&access_key_id);
     let last_used_info = match last_used {
         Some(key) => {
-            let date = key
-                .last_used_date
-                .as_deref()
-                .unwrap_or("N/A");
-            let service = key
-                .last_used_service
-                .as_deref()
-                .unwrap_or("N/A");
+            let date = key.last_used_date.as_deref().unwrap_or("N/A");
+            let service = key.last_used_service.as_deref().unwrap_or("N/A");
             format!(
                 "{}{}",
                 xml::el("LastUsedDate", date),

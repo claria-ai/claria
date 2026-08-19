@@ -1,23 +1,35 @@
 [package]
 name = "claria-transcribe"
-version = "0.19.0"
+version = "0.32.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+metal = ["transcribe-cpp/metal"]
+vulkan = ["transcribe-cpp/vulkan"]
+cuda = ["transcribe-cpp/cuda"]
+rocm = ["transcribe-cpp/rocm"]
+openmp = ["transcribe-cpp/openmp"]
+
 [dependencies]
-aws-config = "=1.8.18"
-aws-sdk-s3 = "=1.137.0"
-aws-sdk-transcribe = "=1.108.0"
-backon = "=1.6.0"
-claria-core = { path = "../claria-core" }
-claria-storage = { path = "../claria-storage" }
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.150"
-thiserror = "=2.0.18"
-tokio = { version = "=1.52.3", features = ["full"] }
-tracing = "=0.1.44"
-uuid = { version = "=1.23.4", features = ["v4"] }
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+aws-sdk-transcribe = { version = "=1.108.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+backon.workspace = true
+claria-core.workspace = true
+claria-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+transcribe-cpp = { git = "https://github.com/handy-computer/transcribe.cpp", rev = "553f1099a2b3a5bc4421894be171f09960fc0f3a", default-features = false }
+uuid = { workspace = true, features = ["v4"] }
+
+[build-dependencies]
+cc = "=1.2.66"
 
 [dev-dependencies]
-aws-credential-types = "=1.2.14"
-claria-mock-aws = { path = "../claria-mock-aws" }
+aws-credential-types.workspace = true
+claria-mock-aws.workspace = true
+tokio = { workspace = true, features = ["full"] }

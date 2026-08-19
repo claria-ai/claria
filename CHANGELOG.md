@@ -2,8 +2,325 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.32.0] — 2026-08-18
 
+- A report exported through a template whose headings are bold body text keeps those headings bold after the model rewrites them
+- Word export places each drafted section back into the template section it came from, so paragraphs, tables, and blank spacing stay where their author put them
+- Template tables the importer could not read no longer reappear scattered through the exported report
+- Score tables built from merged cells now import, so the model can fill them in or delete them instead of leaving them behind
+- A merged table the draft filled exports back into the template's own merged cells, with its spans intact
+- Tab-separated label lines export with real tabs, and a filled-in value no longer inherits its label's bolding
+- A template with no title paragraph no longer gains one on export, and the placeholder heading the importer invents for a document's opening block is never written out
+- The bracketed authoring notes a clinical template writes into its own sections are extracted at import and carried with the report
+- The planner is shown those notes, so a section the template holds to one sentence is no longer scoped as five assertions
+- Each writer branch is handed its own section's notes as authoring guidance for form, length, and structure
+- A note may steer the shape of a section and never a fact about the client; template prose itself stays untrusted data
+- A section carries at most eight notes of at most 500 characters each, so the guidance cannot grow into an unbounded prompt
+- A section of the plan can now be restricted to a chosen handful of the client's records, and is written from those alone
+- A restricted section's writer is told it was restricted, and cannot cite a record it was not shown
+- The run records which files were in the model call that wrote each section
+- A restriction may name up to sixteen records, each of which the client must actually have
+- Sections with no restriction cost exactly what they cost before
+
+## [0.31.0] — 2026-08-18
+
+- A template that never applied Word heading styles is now split into sections at its bold and capitalized headings, instead of importing as one section holding the whole document
+- An inferred split says so in the import warnings, and applying Heading styles in Word still overrides it exactly
+- Added a `claria-docx` command that reports how the importer read a template and why it carved the way it did
+- Async worker threads get an 8 MiB stack, so an AWS call cannot exhaust one and abort the app mid-draft
+
+## [0.30.0] — 2026-08-18
+
+- Preferences → Document Writer → Writer Limits now sets how long a Bedrock call may take and how much it may write, alongside the existing call guardrails
+- The writer's wait for Bedrock to start responding, and its wait between response chunks, are settings rather than compiled-in values
+- The planner and reviewer carry their own pair of waits, set from the same place
+- The writer's response-length ceiling is a setting, and raising it shrinks that call's input allowance by the same amount
+- A writing call that gets no response now names the wait that actually ran out — the one for the first token, or the one between chunks — and where to raise it
+- A whole-report draft that exhausted its retries reports how many attempts it made instead of always reporting one
+- Stopping a parallel whole-report draft after its last section has landed now cuts the revision instead of parking the run
+- The drafting activity line counts finished sections instead of naming a position that parallel branches contradict
+- Release screenshots render the Writing tab again, after a new preference field went unmocked and took the page down to the error boundary
+- The writer release screenshot now shows the whole-report section plan waiting for approval, with its scope, evidence, and per-section directive
+- A screenshot capture can be pointed at a port other than the one a live dev session holds
+
+## [0.29.0] — 2026-08-17
+
+- Opening Preferences now reads your synced settings once instead of once per section
+- Preferences is reorganized into an Apple-style settings screen: a category sidebar — Claude, Prompts, Document Writer, Transcription, Billing — with the existing accordion panes grouped inside each category
+- Settings search covers category names, pane titles, and field labels with synonyms, and jumps to and highlights the matched control
+- An opt-in search toggle also looks inside the custom prompts, the writer prompt library, and template names
+- On-device transcription is split into models, compute, and advanced decoding panes, each badged "This Mac" to mark machine-local settings
+- The writer's guardrail-exhausted error now routes to Preferences → Document Writer → Writer Limits
+- The Preferences sidebar can export the synced preferences file for support or backup, and import one back after validation
+- Preferences file history lists past versions with view, restore, and a two-version diff; imports and restores keep the replaced values one version back
+- Transcription and chat-streaming edits now save once when you leave the section or close the screen, instead of writing a preferences version on every click
+- Split the report-authoring crate into focused modules ahead of the drafting-pipeline rework
+- Extracted durable writer storage into its own crate, dropping the Bedrock dependency from client-record lifecycle code
+- Renamed the report-authoring crate to report-pipeline now that storage lives in its own crate
+- Added a durable per-section drafting-run record so interrupted report generation can resume
+- Skipped report sections now keep a copy of their template body, and sections carry authorship metadata
+- Template copies stay out of Word exports and out of everything sent to the model
+- Prompt-cache checkpoints now respect each model's real minimum prefix size, and cache TTL is threaded through report usage records
+- Writer turns are labelled by kind in the cache logs, separating targeted edits from whole-draft runs
+- Bedrock throttling and capacity errors can now be retried with backoff, while an exhausted account quota still fails immediately
+- Whole-report generation now saves each section durably as it lands, survives interruption, and can resume without losing drafted work
+- A report is locked against edits, template changes, and further writer turns only while a whole-report draft is actually running
+- Sections written by a whole-report draft record the run and model that wrote them
+- Whole-report drafting now caches its records and plan across the session, follows an explicit section plan, and can mark sections failed instead of stalling
+- A whole-report draft can cite the record quotes a section rests on
+- Whole-report call and tool-round ceilings now scale with the number of sections being drafted
+- Drafting progress now reports each section as it lands, with the plan's section count as the denominator
+- An interrupted whole-report draft can be finalized from the sections it wrote, or discarded outright
+- Writer runs can now be stopped mid-generation, keeping every section already saved and resuming later
+- A stop that arrives after a whole-report draft has been finished leaves the saved revision standing
+- Model download progress is announced to screen readers as a labelled progress bar
+- The writer's proposal diff is now built from shared primitives so other panes can render the same comparison
+- Skipped sections now show their template text greyed out in the preview and say they are left out of exports
+- Editing a skipped section takes an explicit Include this section button, which fills it with the template text
+- The export line counts how many skipped sections the accepted revision left out
+- A planning pass now assigns scope and record evidence per section before drafting, with an editable plan and per-role model settings
+- Planned evidence is checked against the client's records, and a file the client does not have is flagged on the plan rather than passed to the writer
+- Picking up an interrupted draft re-plans it when you add instructions, and decides it without a model call when you do not
+- Report sections now appear in the preview as they are written, with an honest progress count and a Stop button that keeps completed work
+- Each section is marked in the preview while a draft runs — waiting, writing, drafted, skipped, or failed with the reason
+- A stopped or failed draft offers to start back up, keep what it wrote, or be discarded, and survives closing the app
+- Leaving Writing during a draft run now points at Stop instead of asking you to wait
+- The writer now shows an editable section plan before drafting, with per-section scope, evidence, and skip control, and resumes stopped runs from the same view
+- A new Draft runs preference chooses whether the plan waits for review or drafting starts as soon as it lands, and picks the models that plan and review
+- A resumed draft run can now be stopped like the first attempt
+- Report sections now record who last changed them, whether that was you, a template, or the model
+- Accepting a writer proposal credits the model that wrote it, and saving a hand edit credits you only on the sections you actually changed
+- Review findings have durable storage, so a style suggestion can be applied as a new revision and undone again
+- A finding whose text has moved on since the review is refused rather than applied to the wrong place
+- Draft reviews now sweep the report once per property in parallel, producing anchored findings with uniform per-section coverage
+- A review pass that fails leaves the other six intact, and the properties nobody reviewed are named rather than left to look clean
+- A deterministic completion check now verifies sections, citations, placeholders, and open findings — no model opinion involved
+- Cited record quotes are re-read from the records themselves, so a citation that no longer resolves is named with the file it came from
+- Export is unaffected by the completion check, which reports rather than blocks
+- Review findings now appear beside the draft, grouped by section and filtered by style, consistency, or resolved
+- A style finding applies in one click and can be undone again from the receipt it leaves
+- Consistency findings are read-only: they show the passage they contradict and can be sent to the chat composer, never applied
+- A finding whose section changed since the review is greyed out with a note to re-run the review
+- Sections with open findings are flagged on the document, and the flag jumps to the finding
+- The draft run pane closes with a completion checklist counting what is still outstanding
+- Raised the planner's output ceiling so plans for long reports no longer fail partway through
+- Planning now survives a dropped or stalled Bedrock connection by sending the request again
+- A Bedrock call that never starts responding now fails after ninety seconds instead of waiting indefinitely
+- A response that goes silent part-way through is abandoned after a minute rather than five
+- Planning now produces an outline naming the records each section rests on, instead of copying quoted excerpts out of them, so a plan generates in a fraction of the time
+- The planner's smaller answers hand ~16k tokens back to the record corpus it reads
+- Planning counts its sections off as they are decided instead of showing a spinner for the whole call
+- A report drafted from an approved plan now writes its sections in parallel rather than one after another
+- Sections appear in the order the plan puts them in, however long each one takes to arrive
+- The report title is written alongside the sections, and a title that fails leaves the existing one in place
+- Assembling the finished document no longer costs a model call
+- Sections the plan says to keep or skip are carried out without asking the writer
+- A section that cannot be written fails on its own; the rest of the report is still drafted and saved
+- Stopping a parallel draft keeps every section that had already landed and picks up from there
+- Reports generated without a plan are unchanged
+- Documented the writer, Bedrock, and logging code paths for contributors, and corrected the drafting-runs design doc where it had fallen behind the code
+- Planning and review calls now allow two minutes before the first token and ninety seconds between frames, above the limits chat and writer turns keep
+- An abandoned stream now names the call it belonged to — planning, review, chat, a targeted edit, or a whole-report draft — in the logs and in the error the reader is shown
+- Planning calls log the input-token count they actually measured alongside the budget they were given
+- Planning calls log how long the model took to send its first token and how long each attempt ran
+- Retry warnings now carry the attempt number and the attempt ceiling
+- The writer says when it is re-sending a Bedrock call that never landed, and which attempt it is on, instead of leaving the line frozen
+- Planning a report is now a sequence of eight-section calls rather than one call for the whole document
+- Each planning call is short enough to stay well inside the stream watchdog, and a call that fails re-plans its own eight sections rather than the document
+- The plan pane announces each batch of sections as it is decided, and Stop is answered between them
+- The planner is no longer sent the template's prose, which it was already ordered to disregard
+- The planner is asked for four records per section instead of eight, with a shorter line on each
+- A command-line harness drives the writer end to end with no UI, printing every progress event with elapsed timings, the plan it produced, tokens, and cost
+- The harness refuses to start a run once its attempt allowance is spent, until a human raises it
+- The harness exports traces to an OpenTelemetry collector when one is configured; the desktop app exports nothing
+- Document extraction logs a file's extension and byte size instead of its name
+- Storage errors reduce a record's location to its client folder, so an uploaded file's name no longer reaches the console, the exported logs, or an on-screen error
+
+## [0.28.0] — 2026-08-15
+
+- Chat replies now arrive a paragraph at a time instead of a token at a time, so text stops twitching while it is being read and formatting is never caught half-written
+- A new Chat Streaming preference chooses between a paragraph at a time, word by word, and nothing until the reply is finished
+- A reply that runs on without closing a paragraph is released at the nearest word break rather than held to the end of the turn
+- Scrolling up during a reply now keeps your place; Claria only follows the bottom of the conversation while you are already there, and offers a jump-to-latest button when you are not
+- Chat gains a Stop button, live while a reply is arriving and greyed out otherwise
+- Stopping keeps the text that arrived, saves it to the chat history, and drops the connection so the model stops generating
+- A stopped turn is marked in the session diagram and is not billed a token count, because the reply's usage report never arrives
+
+## [0.27.0] — 2026-08-15
+
+- Whole-report generation can now defer template sections the user's guidance leaves for a later pass, instead of being forced to write every section
+- A deferred section keeps its heading and place in the draft as an empty placeholder, shown greyed in the canvas and left out of Word exports until content is written into it
+- Writing into a deferred section — by proposal, whole-report rewrite, or hand edit — un-defers it
+- The whole-report finalizer still requires an explicit decision for every supplied section: written or skipped, nothing dropped silently
+- The writer gains a saved-prompt library: reusable steering instructions managed in Preferences, one per phase of a report workflow
+- A picker beside the writer's guidance box and composer prefills a saved prompt for editing before it is sent
+- Saved prompts are stored in managed S3 storage and shared across all clients, with a reminder to use placeholders instead of client details
+- The screenshot suite captures the writer setup pane with a saved phase prompt prefilled into the guidance box, for the release site's Report Writer section
+- The frontend dev server no longer discovers a dependency late and reloads the page mid-load on a cold start, which could strand the first screenshot and fail the release site update
+- Screenshot capture waits for the dev server to be able to serve the app rather than merely to answer its port
+- A failed capture now carries the dev server's own output, which was previously discarded
+- Screenshot capture retries in CI and always starts its own dev server there instead of reusing whatever holds the port
+- Playwright is pinned to an exact version
+- Four high-severity advisories in the frontend dependency tree are patched, without moving any declared version range
+- Tagged release builds pin the Tauri command-line tool and the release action to exact versions, so an upstream release can no longer change how a build is produced
+- The two build dependencies that need install scripts are approved explicitly, and the approval is recorded in version control
+- The bundle size warning threshold now reflects a bundle the app loads from local disk rather than over a network
+- Builds no longer print funding notices on every dependency install
+- The Tauri JavaScript API is pinned exactly, so the half of the pair that talks to the Rust runtime can no longer drift on an unrelated install
+- Local transcription's settings file and model downloads are restricted to the account Claria runs as on Windows, where they were previously left at whatever permissions the folder handed out
+- Restricting a file to the current user now fails loudly on every platform instead of reporting success it did not achieve
+- The costs-and-cache tab gains a scrollable three-lane diagram of each session turn — user messages, model replies and tool calls, and Claria state changes — with token, cost, size, and duration tallies
+- The diagram shows no clinical content by default; an Include PHI checkbox, off on every open, reveals truncated excerpts, tool summaries, and record filenames
+
+## [0.26.0] — 2026-08-15
+
+- Chat and writer streams now tolerate five minutes of Bedrock silence before failing, up from two, so a cold prefill of a large record set no longer aborts the turn
+- A writer Bedrock call whose connection breaks before a response completes is retried up to twice before the turn fails
+- When every retry goes unanswered, the writer error now reports the attempt count and how long Bedrock was silent, and says to try again later
+- Pull-request CI compiles, lints, and tests the Rust workspace on Windows alongside Ubuntu, so Windows-only code is validated before a release tag rather than after
+
+## [0.25.0] — 2026-08-15
+
+- Writer turns stream from Bedrock instead of waiting on one unary response, so a long generation no longer risks an HTTP timeout at the writer's output ceiling
+- A chat reply cut off at the output limit keeps the text the reader watched arrive and says why it stops there, instead of discarding the whole answer
+- Chat answers can run to a full clinical section before hitting the output limit, matching the writer's ceiling
+- An exhausted writer guardrail now reports the tool-use rounds and Bedrock calls it reached, names the Preferences field that raises the one that bound, and warns that raising it costs more
+- A writer request that is already at a guardrail's maximum says so and suggests narrowing the request instead
+- Bedrock failures during a writer turn name the call that failed and its cause, so denied model access, throttling, and unreachable endpoints no longer read identically
+- A saved configuration that cannot be loaded now reports why, instead of telling the clinician to complete setup and inviting them to overwrite it
+- Running an older Claria against a newer configuration says the build is out of date and to update
+- Each chat request and writer turn logs the context window resolved for the model alongside the input budget and output reserve derived from it
+- AWS calls run on an explicit timeout policy: a short connect timeout, a bounded wait for response headers, and no cap on total call duration, so a long generation or a large upload is never cut off for taking time
+- Stalled-stream protection is configured explicitly rather than inherited, with a grace period chosen for clinic networks
+- A Bedrock response stream that goes silent mid-generation now fails with the reason instead of waiting forever
+- Chat replays a bounded slice of a long conversation to Bedrock instead of re-uploading the whole thread on every turn; the conversation on screen and in the cloud stays complete
+- Chat caches its prompt for an hour on models that support it, so a conversation resumed after seeing a patient reads from cache instead of paying full input rates again
+
+## [0.24.0] — 2026-08-13
+
+- Writer and chat context no longer rewrite angle brackets and ampersands inside clinical text; only sequences that could forge the untrusted-context delimiters are neutralized
+- The writer's report context is structured, indented JSON again instead of one compacted line
+- Writer proposals can carry 25 operations and 200 blocks per section again; the tool schema's ceilings now mirror the domain validators instead of maintaining smaller copies
+- Writer responses get a four-times-larger output budget, and the proposal tool no longer instructs the model to keep proposals small
+- Template exports keep blank spacer paragraphs aligned with the report instead of piling them near the top when the report outgrows the template
+- Template exports no longer underline or bold generated paragraphs with formatting copied from an unrelated template line such as a signature blank or field label
+- Template exports keep bullet lists numbered when the report also contains multi-line paragraphs
+- Template import and export both recognize custom-named heading styles through the package's style definitions, so section headings keep the template's heading formatting and body text keeps the body font
+- Filling an empty template table cell regenerates the table instead of silently dropping the generated value
+- Multi-line paragraphs in template exports render their newlines as Word line breaks instead of disappearing
+- Bullet lists exported through a template without its own list formatting carry their numbering definition into the package instead of referencing one that does not exist
+- Exports that could not apply the imported Word template's formatting now say so in the export status instead of silently producing a default-formatted document
+- Audit events record the app version and, for AI turns, the stop reason
+- Writer per-call usage records add stop reason, latency, the output ceiling in effect, a system-prompt digest, and the app version; chat history messages add stop reason and latency
+- The turn-complete console line reports stop reason, latency, and the output ceiling for every AI call
+- The document writer's system prompts are editable in Preferences with versioned history, while the untrusted-data and template-carryover trust rules stay fixed and are shown read-only
+- Preferences gains opt-in model tuning — adaptive reasoning, effort, and temperature — with each knob sent only to model generations the capability table says accept it
+- A design/ folder documents the writer workflow and the template system
+
+- The scoped Claria IAM policy no longer grants permanent S3 object-version deletion
+- Full infrastructure teardown requires temporary elevated credentials from the configured AWS account
+- Successful full infrastructure teardown removes the now-invalid local system configuration
+- Tagged releases update the download site only after every desktop artifact is published
+- Older release reruns cannot roll the download site back from a newer version
+- Marketing screenshot dates are fixed so release-site reruns do not create time-only image changes
+
+## [0.23.1] — 2026-08-12
+
+- Writer responses cut off by the output-token limit mid tool call no longer fail the turn; the completed tool calls are executed and the model continues where it was cut
+- The writer's corrective round for an inconsistent stop reason now re-arms after each well-formed response instead of being spent once per turn
+
+## [0.23.0] — 2026-08-11
+
+- Writing can fill an entire report in one action, save it directly as one versioned draft, and reserve reviewable proposals for later targeted edits
+- Writing sessions now behave like chats: opening the Writing tab starts a fresh report, while Editor History resumes a specific prior session
+- Whole-report generation loads every readable client record into one bounded source snapshot and drafts sections through internal cached tool rounds without asking the user to drive record retrieval; its prompt disappears after the first completed turn
+- Writer context now keeps a text-free per-file provenance list for whole-report snapshots, adds files read by later tool turns, and opens those pills through the same preview component as Chat
+- Whole-report replacement uses an in-app confirmation, reports failures beside the action, and logs request, failure, and completion diagnostics without record content
+- Webview `console.error`/`console.warn`, uncaught errors, unhandled rejections, and React render crashes now flow into the Claria Console and rolling logs with useful stacks but without serializing arbitrary objects
+- Reloaded chats and Writing sessions can reuse an exact five-minute prompt-cache prefix through small in-memory LRUs, and cache labels only claim expiry when elapsed time proves it
+- New Writing sessions open on an optional setup tab for choosing a Word template or filling the whole report; a second tab starts tool-driven work, and a compact lightning/dollar tab contains session usage
+- Chat and Writing keep cost and prompt-cache details in the same focused usage-tab design, including cache-write tokens and fees, rather than placing spend banners in the main flow
+- The usage tab can opt into per-turn cost badges, while its full-width breakdown explains component spend, cache reuse, stale windows, and cold starts without a squeezed accordion
+- Chat requests now end with a cache point on the conversation tail, so each turn re-reads the whole history from cache instead of paying full input rates
+- Chat cache entries use the default five-minute tier and a hash-only in-memory prefix tracker rather than paying the doubled hour-long write rate
+- Costs now price hour-long cache writes at their real 2× rate, and each turn records the cache TTL it used so historical totals stay honest
+- Desktop commands are split into per-domain modules sharing one command context and one rich error type, with every error logged and stringified exactly once at the command boundary with its operation name
+- The S3 client is cached alongside the SDK config and invalidated with it, instead of being rebuilt on every command
+- S3 failures now keep their full connection-level error context instead of collapsing to "unhandled error", and storage no longer double-logs errors it already returns
+- S3 timing spans log a scrubbed key class instead of client-chosen filenames, which are PHI
+- Client names and record filenames no longer appear in application logs; the durable audit trail in S3 keeps the full identifiers
+- The audit event's console mirror is now a one-line summary without the details payload, under a dedicated log target
+- The exported console log is written with owner-only file permissions
+- Logs also roll to bounded daily files on disk, and the console gains a button that opens the log folder
+- Log filter directives for all workspace crates are built from one shared list
+- Creating, renaming, deleting, and restoring clients, uploading, editing, deleting, and restoring record files, and saving prompts now all write durable audit events
+- The app window enforces a strict content security policy allowing only bundled resources
+- Assumed-role secrets and freshly minted access-key secrets no longer cross the IPC boundary; the frontend holds an opaque handle and the backend keeps the credentials
+- Opening a URL on Windows goes through the platform API instead of a shell command, and URLs with whitespace or control characters are rejected
+- Creating the IAM policy without a resolved account ID now fails instead of silently widening resource scopes to a wildcard
+- The plaintext-with-file-permissions credential storage model is documented, with keychain migration tracked
+- The provisioner receives its local state directory from the desktop instead of deriving app paths itself
+- Both upload paths share one skeleton and one content-type map, differing only in whether a failed sidecar fails the command
+- Restoring a deleted file uses the race-safe conditional restore, and record-file and prompt version listings, reads, and restores share one implementation
+- Report writer turn audit events build their usage fields through the shared helper and no longer claim complete usage when no attempt ran
+- Numbered default names share one generator, the prompt-cache settings shrink to the fields actually used, and the writer call ceiling is derived from the round ceiling
+- Restore commands no longer take an ignored version parameter
+- Report revision listings fetch uncached versions concurrently and remember per-version summaries, so revisits cost no reads
+- Chat history listings revalidate against the record cache and fan out concurrently instead of one serial read per chat
+- Record uploads stream file bodies from disk instead of buffering whole files in memory, reading bytes only when extraction or text validation needs them
+- Conditional S3 writes and prefix listings share one implementation each, and loading a stored JSON object with validation is a single storage helper used by every reader
+- Unused presign, first-version, and legacy token-cost helpers are removed along with error variants nothing raised
+- Restoring a deleted client's files now runs restores concurrently, attempts every file even when one fails, and reports exactly which restores failed
+- Client CRUD, record inventory, content search, the record cache, and the delete/restore lifecycle move into one records crate with structured errors, and the sidecar-visibility rules are implemented exactly once
+- The audit-trail events and S3 sink fold into the storage crate, and reading a day of audit events fetches concurrently instead of one object at a time
+- Model capabilities (tool support, context window, prompt caching, token-counting model) resolve through one central table, so new Claude generations get modern behavior — including prompt caching — by default
+- All AI calls share one plumbing layer with structured error reporting, and turns whose token usage the service omitted are recorded as unmetered instead of zero-cost
+- Every AI call now enforces an output-token ceiling: a cut-off chat, writer, translation, or document-extraction response fails with a clear error instead of silently saving truncated text
+- Chat checks the conversation against the model's context window before sending and reports overflow with the same guidance the writer gives, instead of a raw AWS error
+- Writer proposals are capped to sizes that fit one response, with large rewrites split across turns
+- Writer tool errors now tell the model exactly what was malformed, and tool descriptions spell out ID copying, 0-based positions, character units, per-turn limits, and pagination
+- Transcript translation receives its results through a forced structured tool call, verifies every segment came back, and no longer pins sampling temperature
+- A writer turn whose final reply is cut short no longer discards an already-staged proposal, and a glitched stop reason gets one corrective retry before the turn fails
+- Writer turns cache their prompt prefix on caching-capable models and count tokens once per turn instead of before every call, cutting cost and latency of multi-step turns
+- The writer's system prompt is organized into headed sections and the untrusted report context travels as compact JSON inside named delimiter tags
+- Chat record context is escaped so document text cannot forge its delimiters, placed after the instructions, and always followed by a fixed do-not-follow-instructions rule
+- Document extraction sends a neutral user turn so the customizable extraction prompt is the single source of instructions
+- Project instructions gain review-derived coding rules covering reuse, frontend patterns, Rust conventions, LLM calls, logging, security, and performance
+- Chat and writer composers both send on Enter and insert a newline with Shift+Enter, with a native resize grip replacing the chat drag handle
+- Writer activity cycles through clearer thinking, working, and inferring labels across internal model rounds
+- Report bullet lists render with the intended compact spacing
+- An unexpected interface crash shows the error with a reload button instead of a blank window
+- Chat, writer, preferences, cost, and provisioning screens share one set of interface primitives, async-load handling, and state hooks without behavior changes
+- The app ships a single modern TLS stack, verifies update checks and model downloads against the operating system's certificate store, and builds a smaller release binary
+- Background interface failures are forwarded to the backend log stack instead of being silently swallowed, so they appear in the console window, saved log exports, and the on-disk log files
+- The console window renders only the newest lines by default and polls with a sequence cursor that receives only new lines, instead of re-shipping the whole buffer twice a second
+- Preference saves send only the changed section's fields and merge into the cloud copy under an ETag precondition, so sections and machines can no longer clobber each other's settings
+- The report domain types cross the IPC boundary directly instead of through a field-for-field mirror layer, and one chat role enum replaces the three that existed
+- Chat responses stream into the conversation as the model writes them, in both record chat and infrastructure chat, with truncation still surfacing as an error instead of silently saved partial text
+
+## [0.22.0] — 2026-08-10
+
+- Chat and writer sessions receive numbered names that can be edited directly in their panes and are shown in history
+- Writing shows live and persisted context in one collapsible pill list, opens record contents from those pills, and uses a reusable activity throbber while the report agent plans, reads records, and drafts proposals
+- Writing previews complete earlier report revisions in a scrollable Word-style view and restores any prior version as a new revision without deleting history
+- Printable UTF-8 record files such as Markdown, JSON, CSV, and extensionless text remain directly previewable and readable by Chat and Writing while PDF and DOCX extraction produces structured Markdown
+- Preferences includes a managed, renameable shelf of redacted Word writer templates with size, upload date, and best-effort usage counts
+- Writing applies managed templates directly, locks the chosen template to its session, shows the applied template name, and removes responsibility popups, review gates, and dismissible warning banners
+- Template-backed Word exports retain the source package's fonts, run styles, paragraph spacing, blank paragraphs, page setup, headers, footers, media, and table formatting
+- A release helper regenerates marketing screenshots, updates website artifact metadata, and rebuilds the generated release site
+
+## [0.21.0] — 2026-08-09
+
+- Document writer loop and history limits are configurable in Preferences with ten-times-higher defaults and explicit cost and runaway-loop warnings
+
+## [0.20.0] — 2026-08-09
+
+- Record Memo transcription now runs locally through transcribe.cpp with verified, downloadable GGUF models
+- Preferences expose machine-local model management, compute backends and devices, CPU/K/V controls, and advanced Whisper decoding settings
+- Imported audio recordings continue to use Amazon Transcribe with speaker, language, medical, and translation options
+- Removed the legacy Candle-based Whisper crate and safetensors model runtime
+- The Apple Silicon app targets macOS 11 or later
+- Metal builds include the macOS platform-availability runtime
 - Distraction mode adds a quiet sock control beside client names, off by default and toggled in preferences
 - A dropped sock summons a gently greying pixel-art Lucia, who play-bows, shakes it from her neck, and carries it away
 - Client record settings can rename a record and show file counts, current and historical storage, creation dates, and name history

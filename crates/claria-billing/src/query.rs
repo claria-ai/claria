@@ -1,8 +1,8 @@
 use aws_sdk_costexplorer::types::ResultByTime;
 
-use crate::error::BillingError;
-use crate::types::{
-    CostAndUsageResult, CostGranularity, CostQuery, CostResultGroup, CostTimePeriod,
+use crate::{
+    error::BillingError,
+    types::{CostAndUsageResult, CostGranularity, CostQuery, CostResultGroup, CostTimePeriod},
 };
 
 /// Validate a cost query before sending it to AWS.
@@ -22,9 +22,9 @@ pub fn validate_query(query: &CostQuery) -> Result<(), BillingError> {
         ));
     }
 
-    let span = start.until(end).map_err(|e| {
-        BillingError::InvalidQuery(format!("failed to compute date range: {e}"))
-    })?;
+    let span = start
+        .until(end)
+        .map_err(|e| BillingError::InvalidQuery(format!("failed to compute date range: {e}")))?;
 
     let days = span.get_days();
 
@@ -64,10 +64,7 @@ pub fn parse_response(results_by_time: &[ResultByTime]) -> CostAndUsageResult {
                             .iter()
                             .map(|(metric_name, metric_value)| CostResultGroup {
                                 key: metric_name.clone(),
-                                amount: metric_value
-                                    .amount()
-                                    .unwrap_or("0.00")
-                                    .to_string(),
+                                amount: metric_value.amount().unwrap_or("0.00").to_string(),
                                 unit: metric_value.unit().unwrap_or("USD").to_string(),
                             })
                             .collect::<Vec<_>>()
@@ -99,11 +96,7 @@ pub fn parse_response(results_by_time: &[ResultByTime]) -> CostAndUsageResult {
                     .collect()
             };
 
-            CostTimePeriod {
-                start,
-                end,
-                groups,
-            }
+            CostTimePeriod { start, end, groups }
         })
         .collect();
 

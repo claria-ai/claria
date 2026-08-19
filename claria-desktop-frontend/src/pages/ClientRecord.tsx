@@ -1,35 +1,29 @@
-import { type ChatModel } from "../lib/tauri";
 import { useClientWorkspace } from "../lib/useClientWorkspace";
 import ClientWorkspaceTabs from "../components/ClientWorkspaceTabs";
 import ClientChat from "./ClientChat";
 import ClientRecordSettings from "./ClientRecordSettings";
 import RecordTab from "./RecordTab";
 import Writing from "./Writing";
-import type { Page } from "../App";
+import type { Page, PreferencesWriterSection } from "../App";
 
 /** Compose one client's Record, Chat, and Writing workspaces. */
 export default function ClientRecord({
   navigate,
   clientId,
   clientName,
-  chatModels,
-  chatModelsLoading,
-  chatModelsError,
-  preferredModelId,
-  onRetryChatModels,
   onClientNameChanged,
+  onManageWriterSection,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
   clientName: string;
-  chatModels: ChatModel[];
-  chatModelsLoading: boolean;
-  chatModelsError: string | null;
-  preferredModelId?: string | null;
-  onRetryChatModels?: () => void;
   onClientNameChanged: (name: string) => void;
+  onManageWriterSection: (section: PreferencesWriterSection) => void;
 }) {
-  const workspace = useClientWorkspace(() => navigate("clients"));
+  const workspace = useClientWorkspace(
+    () => navigate("clients"),
+    onManageWriterSection
+  );
 
   return (
     <ClientWorkspaceTabs
@@ -53,28 +47,19 @@ export default function ClientRecord({
         />
       ) : workspace.activeView === "chat" ? (
         <ClientChat
+          key={workspace.pendingChat?.chatId ?? "new"}
           navigate={navigate}
           clientId={clientId}
-          clientName={clientName}
-          embedded
           resumeChat={workspace.pendingChat}
-          onResumeChatConsumed={workspace.clearPendingChat}
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
         />
       ) : (
         <Writing
           key={`${clientId}:${workspace.expectedReportId ?? "current"}:${workspace.writingInstance}`}
           clientId={clientId}
           expectedReportId={workspace.expectedReportId}
-          chatModels={chatModels}
-          chatModelsLoading={chatModelsLoading}
-          chatModelsError={chatModelsError}
-          preferredModelId={preferredModelId}
           onLeaveStateChange={workspace.updateWritingLeaveState}
-          onRetryModels={onRetryChatModels}
+          onManageTemplates={() => workspace.manageWriterSection("writer-templates")}
+          onManagePrompts={() => workspace.manageWriterSection("writer-prompts")}
         />
       )}
     </ClientWorkspaceTabs>
