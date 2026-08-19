@@ -11,6 +11,7 @@ use super::{
     },
 };
 use crate::state::DesktopState;
+use claria_storage::audit::actions;
 
 /// Default system prompt, used when no custom prompt has been saved to S3.
 const DEFAULT_SYSTEM_PROMPT: &str = "\
@@ -172,7 +173,7 @@ pub async fn save_prompt(
         )
         .await?;
 
-        ctx.record_audit(ctx.audit_event("prompt_saved", "prompt", &prompt_name))
+        ctx.record_audit(ctx.audit_event(actions::PROMPT_SAVE, "prompt", &prompt_name))
             .await;
 
         Ok(())
@@ -238,7 +239,7 @@ pub async fn save_writer_library_prompt(
                     &body,
                 )
                 .await?,
-                "writer_prompt_created",
+                actions::WRITER_PROMPT_CREATE,
             ),
             Some(prompt_id) => (
                 claria_report_store::prompt_library::update(
@@ -249,7 +250,7 @@ pub async fn save_writer_library_prompt(
                     &body,
                 )
                 .await?,
-                "writer_prompt_updated",
+                actions::WRITER_PROMPT_UPDATE,
             ),
         };
         ctx.record_audit(ctx.audit_event(action, "writer_prompt", prompt.id.to_string()))
@@ -271,7 +272,7 @@ pub async fn delete_writer_library_prompt(
         let ctx = CommandContext::new(&state).await?;
         claria_report_store::prompt_library::delete(&ctx.s3, &ctx.bucket, prompt_id).await?;
         ctx.record_audit(ctx.audit_event(
-            "writer_prompt_deleted",
+            actions::WRITER_PROMPT_DELETE,
             "writer_prompt",
             prompt_id.to_string(),
         ))
@@ -345,7 +346,7 @@ pub async fn restore_prompt_version(
         tracing::info!(prompt_name, version_id, "prompt version restored");
 
         ctx.record_audit(
-            ctx.audit_event("prompt_version_restored", "prompt", &prompt_name)
+            ctx.audit_event(actions::PROMPT_RESTORE, "prompt", &prompt_name)
                 .with_details(serde_json::json!({ "version_id": version_id })),
         )
         .await;

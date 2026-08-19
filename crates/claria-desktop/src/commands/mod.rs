@@ -41,7 +41,7 @@ pub use versions::*;
 
 use tauri::State;
 
-use claria_desktop::config::{self as config_file, ClariaConfig};
+use claria_desktop::config::{self as config_file, ClariaConfig, CredentialSource};
 
 use crate::state::DesktopState;
 
@@ -168,9 +168,13 @@ impl CommandContext {
 
     /// Build an [`claria_storage::audit::AuditEvent`] scoped to this
     /// account, ready for [`Self::record_audit`].
+    ///
+    /// `action` is an [`claria_storage::audit::actions`] constant, which
+    /// carries its own category — see that module's docs for the taxonomy and
+    /// the `details`-versus-`phi` contract.
     pub fn audit_event(
         &self,
-        action: &str,
+        action: claria_storage::audit::Action,
         resource_type: &str,
         resource_id: impl Into<String>,
     ) -> claria_storage::audit::AuditEvent {
@@ -181,6 +185,21 @@ impl CommandContext {
             self.cfg.account_id.clone(),
         )
         .with_app_version(env!("CARGO_PKG_VERSION"))
+        .with_credential_id(self.credential_id())
+    }
+
+    /// Which credential is acting: the access key id for an inline
+    /// credential, the profile name for a named profile, `None` for the
+    /// default chain. Stamped once here rather than at each call site.
+    ///
+    /// Access key ids are identifiers, not secrets — CloudTrail records them
+    /// on every call. The secret is never read.
+    fn credential_id(&self) -> Option<String> {
+        match &self.cfg.credentials {
+            CredentialSource::Inline { access_key_id, .. } => Some(access_key_id.clone()),
+            CredentialSource::Profile { profile_name } => Some(profile_name.clone()),
+            CredentialSource::DefaultChain => None,
+        }
     }
 
     /// Record an audit event against this context's bucket.

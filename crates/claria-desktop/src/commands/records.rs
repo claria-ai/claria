@@ -11,6 +11,7 @@ use super::{
     usage_audit_details,
 };
 use crate::state::DesktopState;
+use claria_storage::audit::actions;
 
 /// A file in a client's record (S3 object metadata).
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -270,10 +271,9 @@ async fn upload_record_file_inner(
     // The durable audit trail may carry the filename; it lives only in
     // access-controlled S3.
     ctx.record_audit(
-        ctx.audit_event("record_file_uploaded", "record_file", filename)
-            .with_details(serde_json::json!({
-                "client_id": id.to_string(),
-                "bytes": file_size,
+        ctx.audit_event(actions::RECORD_FILE_UPLOAD, "record_file", filename)
+            .with_client_id(id)
+            .with_details(serde_json::json!({"bytes": file_size,
             })),
     )
     .await;
@@ -345,7 +345,7 @@ async fn generate_upload_sidecar(
         let mut audit_details = usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref(), None);
         audit_details["client_id"] = serde_json::json!(id.to_string());
         ctx.record_audit(
-            ctx.audit_event("extract_document_text", "record_file", filename)
+            ctx.audit_event(actions::RECORD_EXTRACT_TEXT, "record_file", filename)
                 .with_details(audit_details),
         )
         .await;
@@ -415,8 +415,8 @@ pub async fn save_transcript_edits(
         .await?;
 
         ctx.record_audit(
-            ctx.audit_event("save_transcript_edits", "transcript", &filename)
-                .with_details(serde_json::json!({ "client_id": id.to_string() })),
+            ctx.audit_event(actions::RECORD_TRANSCRIPT_EDIT, "transcript", &filename)
+                .with_client_id(id),
         )
         .await;
 
@@ -474,8 +474,8 @@ pub async fn delete_record_file(
         tracing::info!(client_id = %id, "record file deleted");
 
         ctx.record_audit(
-            ctx.audit_event("record_file_deleted", "record_file", &filename)
-                .with_details(serde_json::json!({ "client_id": id.to_string() })),
+            ctx.audit_event(actions::RECORD_FILE_DELETE, "record_file", &filename)
+                .with_client_id(id),
         )
         .await;
 
@@ -548,10 +548,9 @@ pub async fn create_text_record_file(
         tracing::info!(client_id = %id, "text record file created");
 
         ctx.record_audit(
-            ctx.audit_event("record_file_created", "record_file", &filename)
-                .with_details(serde_json::json!({
-                    "client_id": id.to_string(),
-                    "bytes": file_size,
+            ctx.audit_event(actions::RECORD_FILE_CREATE, "record_file", &filename)
+                .with_client_id(id)
+                .with_details(serde_json::json!({"bytes": file_size,
                 })),
         )
         .await;
@@ -592,8 +591,8 @@ pub async fn update_text_record_file(
         tracing::info!(client_id = %id, "text record file updated");
 
         ctx.record_audit(
-            ctx.audit_event("record_file_updated", "record_file", &filename)
-                .with_details(serde_json::json!({ "client_id": id.to_string() })),
+            ctx.audit_event(actions::RECORD_FILE_UPDATE, "record_file", &filename)
+                .with_client_id(id),
         )
         .await;
 
@@ -704,7 +703,7 @@ pub async fn extract_record_file(
             let mut audit_details = usage_audit_details(EXTRACTION_MODEL_ID, usage.as_ref(), None);
             audit_details["client_id"] = serde_json::json!(id.to_string());
             ctx.record_audit(
-                ctx.audit_event("extract_document_text", "record_file", &filename)
+                ctx.audit_event(actions::RECORD_EXTRACT_TEXT, "record_file", &filename)
                     .with_details(audit_details),
             )
             .await;

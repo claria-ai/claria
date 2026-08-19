@@ -5,6 +5,7 @@ use serde::Deserialize;
 use claria_desktop::config::{self, TranscriptionPreferences};
 
 use super::{CommandContext, usage_audit_details};
+use claria_storage::audit::actions;
 
 /// The Bedrock model ID used for per-segment transcript translation.
 ///
@@ -133,7 +134,7 @@ pub(crate) async fn maybe_translate(
             let mut audit_details = usage_audit_details(model_id, usage.as_ref(), None);
             audit_details["segment_count"] = serde_json::json!(outputs.len());
             ctx.record_audit(
-                ctx.audit_event("translate_transcript", "transcript", "")
+                ctx.audit_event(actions::RECORD_TRANSLATE, "transcript", "")
                     .with_details(audit_details),
             )
             .await;

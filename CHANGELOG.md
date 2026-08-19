@@ -2,6 +2,19 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Every audit action the report writer and preferences screens record now carries a category, so the trail separates PHI reads from spend and from operational changes
+- Audit events record which kind of action they are — a read of records, a change, a model call, or an administrative action — so "who read this client's records" is one filter rather than a list of action names
+- Audit events carry the client they concern as a field of their own instead of inside the payload
+- Audit events record which credential acted, which gives per-machine attribution
+- An audit event's payload is split in two, and only the half holding counts, sizes, costs and model ids reaches the exported log
+- The exported log no longer carries an audit event's resource identifier, which can hold a filename
+- The exported log now carries an audit event's token counts and cost, so a support export can answer what a turn cost
+- Every audit action was renamed to a noun.verb name
+- Audit events recorded before this release no longer load, and the audit trail must be cleared when upgrading
+- Values can be marked sensitive so they print as redacted through every formatting path, rather than relying on each log line to leave them out
+
 ## [0.32.0] — 2026-08-18
 
 - A report exported through a template whose headings are bold body text keeps those headings bold after the model rewrites them
@@ -135,6 +148,8 @@ All notable changes to Claria are documented here.
 - The harness exports traces to an OpenTelemetry collector when one is configured; the desktop app exports nothing
 - Document extraction logs a file's extension and byte size instead of its name
 - Storage errors reduce a record's location to its client folder, so an uploaded file's name no longer reaches the console, the exported logs, or an on-screen error
+- Targeted editing now sends a document outline instead of the whole report, reading sections on demand
+- Section reads share the writer's per-turn read budget with record reads, and leave only a digest in the conversation history
 
 ## [0.28.0] — 2026-08-15
 
@@ -145,7 +160,6 @@ All notable changes to Claria are documented here.
 - Chat gains a Stop button, live while a reply is arriving and greyed out otherwise
 - Stopping keeps the text that arrived, saves it to the chat history, and drops the connection so the model stops generating
 - A stopped turn is marked in the session diagram and is not billed a token count, because the reply's usage report never arrives
-
 ## [0.27.0] — 2026-08-15
 
 - Whole-report generation can now defer template sections the user's guidance leaves for a later pass, instead of being forced to write every section
