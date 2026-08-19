@@ -251,6 +251,73 @@ export function buildInitScript(
         ["consistency", "unsupported_claim"],
         ["consistency", "cross_section_conflict"],
       ];
+      // The desktop's history view of a run: the plan row joined onto the
+      // section row, with the staged prose left out.
+      const draftRunHistoryEntry = (run) => {
+        const entries = new Map(
+          (run.plan?.entries ?? []).map((entry) => [entry.section_id, entry])
+        );
+        const counts = {
+          total: run.sections.length,
+          drafted: 0,
+          skipped: 0,
+          kept: 0,
+          failed: 0,
+          undecided: 0,
+          decided: 0,
+        };
+        for (const section of run.sections) {
+          if (section.state === "drafted" || section.state === "flagged") counts.drafted += 1;
+          else if (section.state === "skipped") counts.skipped += 1;
+          else if (section.state === "kept") counts.kept += 1;
+          else if (section.state === "failed") counts.failed += 1;
+          else counts.undecided += 1;
+        }
+        counts.decided = counts.total - counts.undecided;
+        return {
+          run_id: run.run_id,
+          status: run.status,
+          active: run.status === "stopped",
+          base_revision: run.base_revision,
+          finalized_revision: run.finalized_revision ?? null,
+          partial: run.partial ?? false,
+          title: run.title ?? null,
+          writer_model_id: run.writer_model_id,
+          planner_model_id: run.plan?.model_id ?? null,
+          plan_synthetic: run.plan?.synthetic ?? false,
+          plan_user_edited: run.plan?.user_edited ?? false,
+          plan_approved_at: run.plan?.approved_at ?? null,
+          plan_warnings: run.plan?.plan_warnings ?? [],
+          instructions: run.instructions ?? [],
+          record_snapshot: run.record_snapshot ?? null,
+          sections: [...run.sections]
+            .sort((left, right) => left.position - right.position)
+            .map((section) => {
+              const entry = entries.get(section.section_id);
+              return {
+                section_id: section.section_id,
+                heading: section.heading,
+                position: section.position,
+                state: section.state,
+                intent: entry?.intent ?? null,
+                required: entry?.required ?? false,
+                scope: entry?.scope ?? "",
+                evidence: entry?.evidence ?? [],
+                instruction: entry?.instruction ?? null,
+                records: section.records ?? null,
+                citations: section.citations ?? [],
+                block_count: section.blocks.length,
+                characters: 0,
+                attempts: section.attempts,
+                error: section.error,
+                updated_at: section.updated_at,
+              };
+            }),
+          counts,
+          created_at: run.created_at,
+          updated_at: run.updated_at,
+        };
+      };
       // Applying or undoing a replacement cuts a revision and stamps the
       // section, exactly as the store does — which is what makes every other
       // finding against that section derive stale.
@@ -918,6 +985,14 @@ export function buildInitScript(
             const run = draftRuns.get(args.reportId);
             return run ? structuredClone(run) : null;
           }
+          if (cmd === "load_draft_run_history") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            const run = draftRuns.get(args.reportId);
+            return {
+              runs: run ? [draftRunHistoryEntry(run)] : [],
+              active_run_id: run && run.status === "stopped" ? run.run_id : null,
+            };
+          }
           if (cmd === "finalize_partial_draft" || cmd === "abandon_draft_run") {
             window.__REPORT_COMMANDS__.push(cmd);
             window.__REPORT_INVOCATIONS__.push({ cmd, args: structuredClone(args) });
@@ -1356,6 +1431,14 @@ export function buildInitScript(
           if (cmd === "evaluate_report_completion") {
             window.__REPORT_COMMANDS__.push(cmd);
             return completionReport();
+          }
+          if (cmd === "review_pass_presets") {
+            window.__REPORT_COMMANDS__.push(cmd);
+            return REVIEW_PROPERTIES.map(([pass, property]) => ({
+              property,
+              pass,
+              instructions: "Check, for every section:\n1. " + property.replaceAll("_", " ") + ".",
+            }));
           }
           if (cmd === "run_review_sweeps") {
             window.__REPORT_COMMANDS__.push(cmd);

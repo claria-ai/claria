@@ -14,6 +14,16 @@ All notable changes to Claria are documented here.
 - Locking, unlocking, and refused unlock attempts are written to the audit trail
 - The lock covers the window without unmounting what is behind it, so an unsaved draft survives it
 - A forgotten PIN cannot be recovered; clearing Claria's settings on that computer is the only way past it
+- The Draft run tab keeps a finished run as a completed progress bar instead of clearing it, and reopening a report restores it
+- Opening a finished run shows what it did, one level at a time: the run's models and plan, then each section's scope, evidence, directive, and outcome
+- A drafting run records the records it was built from, and each section records which of them were in the model call that wrote it
+- A section that was skipped, kept, or never reached says why on the run, and says so when nothing recorded a reason
+- A run left mid-draft by a crashed process is offered back at the resume gate rather than discarded on load
+- A review sweep shows its checks before firing them, each with the instructions it will send
+- A check's instructions can be edited for one review, and a check can be dropped from it
+- The rules a review pass must obey are composed around whatever is typed and cannot be edited away
+- A check nobody ran leaves no coverage row, and the audit trail names it as skipped alongside the ones that failed
+- The findings pane says which checks were read against the revision on screen
 - The report-writing engine publishes as the `claria` crate instead of `claria-report-pipeline`, so the project owns its own name on crates.io
 - Every audit action the report writer and preferences screens record now carries a category, so the trail separates PHI reads from spend and from operational changes
 - Audit events record which kind of action they are — a read of records, a change, a model call, or an administrative action — so "who read this client's records" is one filter rather than a list of action names

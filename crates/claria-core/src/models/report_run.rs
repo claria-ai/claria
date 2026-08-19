@@ -20,6 +20,11 @@
 //! - [`DraftRun::base_revision`] is the accepted revision the run builds on.
 //!   The finish cut passes it as the expected revision, so a report edited
 //!   underneath a run conflicts instead of silently overwriting.
+//! - [`DraftRun::record_snapshot`] and [`RunSection::records`] are the run's
+//!   own answer to "what was this written from". The snapshot is captured once
+//!   before the first call; each section records whether it read that snapshot
+//!   or a restriction of its own. Both are additive and optional, so a run
+//!   written by an earlier build still decodes at the same schema version.
 
 use std::collections::HashSet;
 
@@ -76,6 +81,16 @@ pub const MAX_CURATED_RECORDS: usize = 16;
 /// pathological value from being persisted.
 const MAX_RECORD_FILENAME_CHARACTERS: usize = 1_024;
 
+/// Ceiling on the record corpus one run may record having been built from.
+///
+/// Generous rather than tight: the corpus preflight already refuses a record
+/// set too large to send, so this only stops a pathological listing from
+/// growing the run object without limit.
+pub const MAX_RUN_SNAPSHOT_FILES: usize = 1_000;
+
+/// Ceiling for the PHI-free note saying why a record could not be read.
+pub const MAX_RECORD_UNAVAILABLE_REASON_CHARACTERS: usize = 300;
+
 /// One resumable whole-report drafting run.
 ///
 /// The object is rewritten (conditionally, on its ETag) after every section
@@ -105,6 +120,15 @@ pub struct DraftRun {
     /// The run was finalized from a stopped state: sections that never landed
     /// were skipped rather than drafted.
     pub partial: bool,
+    /// The record corpus this run was built from, captured once before the
+    /// first model call.
+    ///
+    /// `None` on a run recorded before the field existed, and on one that
+    /// never reached the point of loading records. It is what makes
+    /// [`RunSectionRecords::SharedCorpus`] mean something specific rather
+    /// than "everything, presumably".
+    #[serde(default)]
+    pub record_snapshot: Option<RunRecordSnapshot>,
     #[specta(type = String)]
     pub created_at: Timestamp,
     #[specta(type = String)]
@@ -266,8 +290,66 @@ pub struct RunSection {
     /// PHI-free note about why the section failed: error codes and counts,
     /// never record or draft content.
     pub error: Option<String>,
+    /// Which records were in the model call that wrote this section.
+    ///
+    /// `None` for a section no model was ever asked about — pending, kept, or
+    /// skipped by the plan — and for a section written before the field
+    /// existed. A section a model *did* write always carries one, because the
+    /// question "what was this written from" has an answer for it.
+    #[serde(default)]
+    pub records: Option<RunSectionRecords>,
     #[specta(type = String)]
     pub updated_at: Timestamp,
+}
+
+/// The record corpus a drafting run was built from, as the run recorded it.
+///
+/// Filenames, not text. The run object already carries record filenames on its
+/// plan evidence, its curated restrictions, and its citations, so this adds no
+/// new class of data to the object — it makes the set the writer actually saw
+/// answerable after the fact instead of only inferable from the plan.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+pub struct RunRecordSnapshot {
+    /// Files whose text reached the shared corpus block, in the byte order the
+    /// block listed them — which is the order the model read them in.
+    pub files: Vec<RunRecordFile>,
+    /// Files the run could see but could not read.
+    pub unavailable: Vec<RunUnavailableRecord>,
+    /// Characters of record text in the shared corpus block.
+    pub total_characters: u64,
+    #[specta(type = String)]
+    pub captured_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+pub struct RunRecordFile {
+    pub filename: String,
+    /// Digest of the text the run was shown, so a record edited afterwards is
+    /// distinguishable from the one the writer read.
+    pub sha256: String,
+    pub characters: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+pub struct RunUnavailableRecord {
+    pub filename: String,
+    /// PHI-free reason: an extraction or storage code, never record text.
+    pub reason: String,
+}
+
+/// What one section's writer was given to read.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunSectionRecords {
+    /// The run's whole [`DraftRun::record_snapshot`] was in the call.
+    SharedCorpus,
+    /// The clinician restricted this section, and exactly these files reached
+    /// its call. Not the same list as the plan row's `curated_records`: a
+    /// curated file the client no longer has never made it into the request,
+    /// and this records what was sent rather than what was asked for. Empty
+    /// when every curated file had gone missing — a real outcome, and one the
+    /// reader should be able to see rather than have normalized away.
+    Curated { filenames: Vec<String> },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
@@ -340,6 +422,9 @@ impl DraftRun {
         let section_ids = self.validate_sections()?;
         if let Some(plan) = &self.plan {
             plan.validate(&section_ids)?;
+        }
+        if let Some(snapshot) = &self.record_snapshot {
+            snapshot.validate()?;
         }
 
         if let Some(revision) = self.finalized_revision {
@@ -440,6 +525,70 @@ impl RunSection {
         }
         if let Some(error) = &self.error {
             validate_nonempty_text("section error", error, MAX_SECTION_ERROR_CHARACTERS)?;
+        }
+        if let Some(RunSectionRecords::Curated { filenames }) = &self.records {
+            if filenames.len() > MAX_CURATED_RECORDS {
+                return Err(invalid(format!(
+                    "a section may record at most {MAX_CURATED_RECORDS} curated records"
+                )));
+            }
+            let mut seen = HashSet::with_capacity(filenames.len());
+            for filename in filenames {
+                validate_nonempty_text(
+                    "curated record filename",
+                    filename,
+                    MAX_RECORD_FILENAME_CHARACTERS,
+                )?;
+                if !seen.insert(filename.as_str()) {
+                    return Err(invalid(format!(
+                        "curated record {filename} is recorded twice for the same section"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl RunRecordSnapshot {
+    fn validate(&self) -> Result<(), CoreError> {
+        if self.files.len() + self.unavailable.len() > MAX_RUN_SNAPSHOT_FILES {
+            return Err(invalid(format!(
+                "a drafting run may record at most {MAX_RUN_SNAPSHOT_FILES} records in its snapshot"
+            )));
+        }
+        let mut seen = HashSet::with_capacity(self.files.len() + self.unavailable.len());
+        for file in &self.files {
+            validate_nonempty_text(
+                "record snapshot filename",
+                &file.filename,
+                MAX_RECORD_FILENAME_CHARACTERS,
+            )?;
+            validate_nonempty_text("record snapshot digest", &file.sha256, 128)?;
+            if !seen.insert(file.filename.as_str()) {
+                return Err(invalid(format!(
+                    "record {} appears twice in the run's snapshot",
+                    file.filename
+                )));
+            }
+        }
+        for file in &self.unavailable {
+            validate_nonempty_text(
+                "record snapshot filename",
+                &file.filename,
+                MAX_RECORD_FILENAME_CHARACTERS,
+            )?;
+            validate_nonempty_text(
+                "record unavailability reason",
+                &file.reason,
+                MAX_RECORD_UNAVAILABLE_REASON_CHARACTERS,
+            )?;
+            if !seen.insert(file.filename.as_str()) {
+                return Err(invalid(format!(
+                    "record {} appears twice in the run's snapshot",
+                    file.filename
+                )));
+            }
         }
         Ok(())
     }

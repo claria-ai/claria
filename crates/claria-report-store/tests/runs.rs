@@ -50,6 +50,7 @@ fn section(position: u32, heading: &str, state: RunSectionState) -> RunSection {
         citations: Vec::new(),
         attempts: 0,
         error: None,
+        records: None,
         updated_at: timestamp("2026-08-01T12:00:00Z"),
     }
 }
@@ -72,6 +73,7 @@ fn run(client_id: Uuid, report_id: Uuid, updated_at: &str) -> DraftRun {
         writer_model_id: "us.anthropic.claude-opus-test".to_string(),
         finalized_revision: None,
         partial: false,
+        record_snapshot: None,
         created_at: timestamp("2026-07-01T00:00:00Z"),
         updated_at: timestamp(updated_at),
     }

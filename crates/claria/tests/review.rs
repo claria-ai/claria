@@ -936,3 +936,258 @@ async fn a_stale_revision_is_refused() {
     );
     assert!(requests(&server).await.is_empty());
 }
+
+// ── Choosing the passes ─────────────────────────────────────────────────────
+
+fn sweep_with_passes(
+    sdk: &aws_config::SdkConfig,
+    s3: &aws_sdk_s3::Client,
+    client_id: Uuid,
+    report_id: Uuid,
+    passes: Vec<pipeline::ReviewPassSelection>,
+) -> impl std::future::Future<Output = Result<pipeline::ReviewSweepOutcome, pipeline::ReportPipelineError>>
+{
+    let sdk = sdk.clone();
+    let s3 = s3.clone();
+    async move {
+        pipeline::run_review_sweeps(
+            &sdk,
+            &s3,
+            BUCKET,
+            client_id,
+            report_id,
+            1,
+            REVIEWER_MODEL_ID,
+            pipeline::ReviewSweepRequest::new().with_passes(&passes),
+        )
+        .await
+    }
+}
+
+fn pass(property: claria_bedrock::analysis::ReviewProperty) -> pipeline::ReviewPassSelection {
+    pipeline::ReviewPassSelection {
+        property,
+        body: None,
+    }
+}
+
+#[tokio::test]
+async fn a_removed_pass_is_never_sent_and_earns_no_coverage_row() {
+    use claria_bedrock::analysis::ReviewProperty;
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_drafted_report(&s3, client_id, drafted_content()).await;
+    script_sweep(&server, HashMap::new()).await;
+
+    let outcome = sweep_with_passes(
+        &sdk,
+        &s3,
+        client_id,
+        report_id,
+        vec![
+            pass(ReviewProperty::TenseDrift),
+            pass(ReviewProperty::UnsupportedClaim),
+        ],
+    )
+    .await
+    .expect("the sweep completes");
+
+    assert_eq!(outcome.converse_calls, 2, "one call per requested pass");
+    let requested: HashSet<&str> = outcome
+        .properties
+        .iter()
+        .map(|status| status.property)
+        .collect();
+    assert_eq!(
+        requested,
+        HashSet::from(["tense_drift", "unsupported_claim"])
+    );
+
+    // Coverage is the receipt that a property was read over this revision, so
+    // the five nobody asked for must not have one.
+    let covered: HashSet<&str> = outcome
+        .findings
+        .coverage
+        .iter()
+        .map(|coverage| coverage.property.as_str())
+        .collect();
+    assert_eq!(covered, HashSet::from(["tense_drift", "unsupported_claim"]));
+
+    let skipped: HashSet<&str> = outcome.skipped_properties().into_iter().collect();
+    assert_eq!(
+        skipped,
+        HashSet::from([
+            "terminology",
+            "transitions",
+            "redundancy",
+            "internal_contradiction",
+            "cross_section_conflict",
+        ]),
+        "the audit event has to name what nobody read"
+    );
+
+    let sent: HashSet<String> = review_requests(&server)
+        .await
+        .into_iter()
+        .map(|(property, _)| property)
+        .collect();
+    assert_eq!(
+        sent,
+        HashSet::from(["tense_drift".to_string(), "unsupported_claim".to_string()]),
+        "a removed pass must not reach Bedrock at all"
+    );
+}
+
+#[tokio::test]
+async fn an_edited_checklist_is_sent_inside_the_hosts_own_frame() {
+    use claria_bedrock::analysis::ReviewProperty;
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_drafted_report(&s3, client_id, drafted_content()).await;
+    script_sweep(&server, HashMap::new()).await;
+
+    let outcome = sweep_with_passes(
+        &sdk,
+        &s3,
+        client_id,
+        report_id,
+        vec![pipeline::ReviewPassSelection {
+            property: ReviewProperty::Terminology,
+            body: Some("Check that every instrument keeps its acronym.".to_string()),
+        }],
+    )
+    .await
+    .expect("the sweep completes");
+
+    assert_eq!(outcome.edited_properties, vec!["terminology"]);
+
+    let (_, request) = review_requests(&server)
+        .await
+        .into_iter()
+        .next()
+        .expect("the one branch was sent");
+    let instruction = text_blocks(&request["messages"][0]).join("\n");
+    assert!(
+        instruction.contains("Check that every instrument keeps its acronym."),
+        "the clinician's checklist has to reach the model"
+    );
+    // The frame is composed around whatever was typed, so the validator's own
+    // preconditions survive an edit that deleted them.
+    assert!(instruction.contains("exactly one row per section"));
+    assert!(instruction.contains("character for character"));
+    assert!(instruction.contains("Call submit_review_rows exactly once"));
+    assert!(
+        !instruction.contains("Every acronym, for whether it is expanded"),
+        "the shipped checklist must be replaced, not appended to"
+    );
+}
+
+#[tokio::test]
+async fn an_unedited_pass_sends_the_shipped_checklist_byte_for_byte() {
+    use claria_bedrock::analysis::ReviewProperty;
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_drafted_report(&s3, client_id, drafted_content()).await;
+    script_sweep(&server, HashMap::new()).await;
+
+    // Explicitly re-supplying the default is the same request as not supplying
+    // one: the preflight round-trips its own text, and a reader who edits and
+    // then undoes must not pay for a different prompt.
+    let outcome = sweep_with_passes(
+        &sdk,
+        &s3,
+        client_id,
+        report_id,
+        vec![pipeline::ReviewPassSelection {
+            property: ReviewProperty::Redundancy,
+            body: Some(
+                pipeline::default_review_instructions(ReviewProperty::Redundancy).to_string(),
+            ),
+        }],
+    )
+    .await
+    .expect("the sweep completes");
+
+    assert!(
+        outcome.edited_properties.is_empty(),
+        "restoring the default is not an edit"
+    );
+    let (_, request) = review_requests(&server)
+        .await
+        .into_iter()
+        .next()
+        .expect("the one branch was sent");
+    let instruction = text_blocks(&request["messages"][0]).join("\n");
+    assert!(instruction.contains("Sentences that restate, in different words"));
+}
+
+#[tokio::test]
+async fn a_sweep_with_no_passes_is_refused_before_any_call() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_drafted_report(&s3, client_id, drafted_content()).await;
+
+    let error = sweep_with_passes(&sdk, &s3, client_id, report_id, Vec::new())
+        .await
+        .expect_err("an empty sweep is refused");
+    assert!(
+        error.to_string().contains("at least one pass"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        requests(&server).await.is_empty(),
+        "nothing should have been sent"
+    );
+}
+
+#[tokio::test]
+async fn one_property_cannot_be_reviewed_twice_in_one_sweep() {
+    use claria_bedrock::analysis::ReviewProperty;
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_drafted_report(&s3, client_id, drafted_content()).await;
+
+    let error = sweep_with_passes(
+        &sdk,
+        &s3,
+        client_id,
+        report_id,
+        vec![
+            pass(ReviewProperty::Transitions),
+            pass(ReviewProperty::Transitions),
+        ],
+    )
+    .await
+    .expect_err("a duplicate property is refused");
+    assert!(
+        error.to_string().contains("listed twice"),
+        "unexpected error: {error}"
+    );
+    assert!(requests(&server).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_blank_checklist_is_refused_rather_than_sent_empty() {
+    use claria_bedrock::analysis::ReviewProperty;
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_drafted_report(&s3, client_id, drafted_content()).await;
+
+    let error = sweep_with_passes(
+        &sdk,
+        &s3,
+        client_id,
+        report_id,
+        vec![pipeline::ReviewPassSelection {
+            property: ReviewProperty::Transitions,
+            body: Some("   \n  ".to_string()),
+        }],
+    )
+    .await
+    .expect_err("a blank checklist is refused");
+    assert!(
+        error.to_string().contains("no instructions"),
+        "unexpected error: {error}"
+    );
+    assert!(requests(&server).await.is_empty());
+}

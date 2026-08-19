@@ -9,7 +9,9 @@ use tauri::State;
 use claria_storage::audit::actions;
 
 use claria_core::models::report_run::DraftRun;
-use claria_desktop::report_authoring::ReportWorkspaceView;
+use claria_desktop::report_authoring::{
+    DraftRunHistoryView, ReportWorkspaceView, draft_run_history_view,
+};
 
 use super::{CommandContext, parse_uuid, run};
 use crate::state::DesktopState;
@@ -32,6 +34,33 @@ pub async fn load_draft_run(
             parse_uuid(&report_id)?,
         )
         .await?)
+    })
+    .await
+}
+
+/// Every drafting run this report has recorded, newest first.
+///
+/// The read-only counterpart to `load_draft_run`, which answers only "what can
+/// be picked back up" and therefore never returns a completed run. This is what
+/// the Draft run tab reads: a run that finished is the one that wrote the
+/// document on screen, and it is the history the tab exists to show.
+#[tauri::command]
+#[specta::specta]
+pub async fn load_draft_run_history(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    report_id: String,
+) -> Result<DraftRunHistoryView, String> {
+    run("load_draft_run_history", async {
+        let ctx = CommandContext::new(&state).await?;
+        let history = claria::load_draft_run_history(
+            &ctx.s3,
+            &ctx.bucket,
+            parse_uuid(&client_id)?,
+            parse_uuid(&report_id)?,
+        )
+        .await?;
+        Ok(draft_run_history_view(&history))
     })
     .await
 }

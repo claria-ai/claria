@@ -148,10 +148,18 @@ export function runStateFromDraftRun(run: DraftRun): DraftRunUiState {
     drafted,
     title: run.title,
     sections,
+    // A run stored as `drafting` or `planning` is one whose process died
+    // mid-pass: the executor only ever leaves those states behind when it does
+    // not get to stamp `stopped` or `failed` on the way out. It reads as
+    // failed, and offering it back at the resume gate is the only way out of
+    // the lock it left on the session — before this it was hydrated with no
+    // outcome and then thrown away, so the reader saw no run at all.
     outcome:
       run.status === "stopped"
         ? "stopped"
-        : run.status === "failed"
+        : run.status === "failed" ||
+            run.status === "drafting" ||
+            run.status === "planning"
           ? "failed"
           : null,
     reviewCompleted: 0,

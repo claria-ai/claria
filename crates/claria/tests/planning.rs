@@ -2191,6 +2191,7 @@ async fn seed_interrupted_run(s3: &aws_sdk_s3::Client, client_id: Uuid, report_i
         writer_model_id: WRITER_MODEL_ID.to_string(),
         finalized_revision: None,
         partial: false,
+        record_snapshot: None,
         created_at: now,
         updated_at: now,
     };
@@ -2216,6 +2217,7 @@ fn run_section(id: &str, heading: &str, position: u32, state: RunSectionState) -
         citations: Vec::new(),
         attempts: 0,
         error: None,
+        records: None,
         updated_at: jiff::Timestamp::now(),
     }
 }
@@ -2523,6 +2525,7 @@ async fn a_synthetic_plan_refuses_a_record_restriction() {
         writer_model_id: WRITER_MODEL_ID.to_string(),
         finalized_revision: None,
         partial: false,
+        record_snapshot: None,
         created_at: now,
         updated_at: now,
     };

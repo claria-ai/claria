@@ -1,6 +1,23 @@
 //! The seven per-property review instructions: the only bytes that differ
 //! between the branches of one fan-out.
 //!
+//! An instruction is two halves, and only one of them is the user's.
+//!
+//! - The **body** is the checklist that says what the property *is* — the
+//!   numbered list of things to look at. It is what a clinician has an opinion
+//!   about ("also check the referral question is restated the same way"), and
+//!   it is what the preflight list lets them edit or drop before a sweep
+//!   fires.
+//! - The **frame** is the host's contract with its own validator: the coverage
+//!   rule, the verbatim-quote rule, the style/consistency split on whether a
+//!   replacement may be proposed, and the forced single call to
+//!   `submit_review_rows` under this property's name. Every one of those
+//!   sentences has a check behind it that rejects the answer if it is not
+//!   obeyed, so it is composed around whatever body the caller supplied and is
+//!   not editable. A pass whose contract a user could delete would fail
+//!   validation, cost its repair round, and leave the property with no
+//!   coverage row — a worse outcome than not being able to edit it.
+//!
 //! Everything above these — the analysis policy, the record corpus, the
 //! template structure, the drafted sections — is byte-identical across all
 //! seven requests and sits above a cache checkpoint. These blocks are what
@@ -20,9 +37,10 @@
 
 use claria_bedrock::analysis::ReviewProperty;
 
-/// The instruction for one branch of the fan-out.
-pub(crate) fn instruction(property: ReviewProperty) -> String {
-    let body = match property {
+/// The shipped checklist for one property: the editable half of its
+/// instruction, and the value the preflight list defaults every pass to.
+pub(crate) const fn default_body(property: ReviewProperty) -> &'static str {
+    match property {
         ReviewProperty::TenseDrift => TENSE_DRIFT,
         ReviewProperty::Terminology => TERMINOLOGY,
         ReviewProperty::Transitions => TRANSITIONS,
@@ -30,7 +48,12 @@ pub(crate) fn instruction(property: ReviewProperty) -> String {
         ReviewProperty::InternalContradiction => INTERNAL_CONTRADICTION,
         ReviewProperty::UnsupportedClaim => UNSUPPORTED_CLAIM,
         ReviewProperty::CrossSectionConflict => CROSS_SECTION_CONFLICT,
-    };
+    }
+}
+
+/// The instruction for one branch of the fan-out: the host's fixed frame
+/// composed around `body`.
+pub(crate) fn instruction(property: ReviewProperty, body: &str) -> String {
     let name = property.as_str();
     let closing = if property.is_style() {
         "Attach a replacement to every finding: the exact text to find, copied from the section \

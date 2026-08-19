@@ -63,6 +63,20 @@ vi.mock("../lib/tauri", () => ({
   applyReportTemplate: vi.fn(),
   discardReportTemplatePreview: vi.fn(),
   acknowledgeReportTemplateReview: vi.fn(),
+  loadDraftRun: vi.fn().mockResolvedValue(null),
+  loadDraftRunHistory: vi
+    .fn()
+    .mockResolvedValue({ runs: [], active_run_id: null }),
+  reviewPassPresets: vi.fn().mockResolvedValue([]),
+  listReportFindings: vi.fn().mockResolvedValue({
+    schema_version: 1,
+    report_id: "00000000-0000-4000-8000-000000000001",
+    client_id: "00000000-0000-4000-8000-000000000002",
+    findings: [],
+    coverage: [],
+    updated_at: "2026-03-15T15:08:05Z",
+  }),
+  evaluateReportCompletion: vi.fn().mockResolvedValue(null),
 }));
 
 import { clearWritingComposerDrafts } from "../lib/writingComposerDraft";

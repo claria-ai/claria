@@ -4,7 +4,9 @@ import ChatComposer from "../components/ChatComposer";
 import ChatEmptyState from "../components/ChatEmptyState";
 import ContextPills from "../components/ContextPills";
 import DraftPlanPanel from "../components/DraftPlanPanel";
+import DraftRunHistory from "../components/DraftRunHistory";
 import FindingsPanel from "../components/FindingsPanel";
+import ReviewPassPreflight from "../components/ReviewPassPreflight";
 import type { FindingReference } from "../components/FindingCard";
 import { openFindingCounts } from "../lib/findings";
 import { buildContextPills } from "../lib/contextPills";
@@ -29,6 +31,9 @@ import { buildCostLedger } from "../lib/costLedger";
 import { buildWriterSessionDiagram } from "../lib/sessionDiagram";
 import { usePreferredModel } from "../lib/usePreferredModel";
 import { usePricingMap } from "../lib/usePricingMap";
+import { defaultExpandedRun } from "../lib/draftRunHistory";
+import { useAsyncLoad } from "../lib/useAsyncLoad";
+import { reviewPassPresets } from "../lib/tauri";
 import { useReportWorkspace } from "../lib/useReportWorkspace";
 import { useWriterPrompts } from "../lib/useWriterPrompts";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
@@ -39,7 +44,11 @@ import {
   writeWritingComposerDraft,
   type WritingBlockReference,
 } from "../lib/writingComposerDraft";
-import type { PlanEntryEdit, ReportWorkspaceView } from "../lib/tauri";
+import type {
+  PlanEntryEdit,
+  ReportWorkspaceView,
+  ReviewPassInput,
+} from "../lib/tauri";
 
 /** One shared empty map, so a report with no findings keeps canvas identity. */
 const NO_FINDING_COUNTS: ReadonlyMap<string, number> = new Map();
@@ -127,6 +136,7 @@ export default function Writing({
     liveContext,
     run,
     draftPane,
+    runHistory,
     findings,
     completion,
     resolvingFindingId,
@@ -160,10 +170,30 @@ export default function Writing({
   // produced them is long finished, and a review can be asked for without a
   // run ever having existed.
   const findingRows = useMemo(() => findings?.findings ?? [], [findings]);
+  const runRows = useMemo(() => runHistory?.runs ?? [], [runHistory]);
+  const coverageRows = useMemo(() => findings?.coverage ?? [], [findings]);
+  // A finished run is a reason for the tab to exist. Before this, the tab
+  // vanished the moment a run completed and the record of what it did went
+  // with it — the report was hydrated and nothing said how.
   const hasDraftPane =
-    draftPane !== null || findingRows.length > 0 || busy === "reviewing";
+    draftPane !== null ||
+    runRows.length > 0 ||
+    findingRows.length > 0 ||
+    busy === "reviewing";
   const activePane =
     chosenPane === "draft" && !hasDraftPane ? "write" : chosenPane;
+
+  // The seven checks and their default instructions. Compiled-in text behind a
+  // command, so this is one read for the life of the page.
+  const reviewPresets = useAsyncLoad(() => reviewPassPresets(), []);
+  const [reviewPreflightOpen, setReviewPreflightOpen] = useState(false);
+  const startReview = useCallback(
+    (passes: ReviewPassInput[]) => {
+      setReviewPreflightOpen(false);
+      void reviewDraft(passes);
+    },
+    [reviewDraft]
+  );
 
   const findingCounts = useMemo(
     () =>
@@ -802,15 +832,35 @@ export default function Writing({
                 onCancelPlan={() => void discardRun()}
               />
             )}
+            {runHistory && runHistory.runs.length > 0 && (
+              <div className="min-h-0 shrink-0 overflow-y-auto bg-gray-50 px-5 py-3">
+                <DraftRunHistory
+                  history={runHistory}
+                  draftRevision={workspace.draft.revision}
+                  // Only a run this page is driving is in flight; anything
+                  // else in `drafting` was killed mid-pass.
+                  liveRunId={
+                    draftPane?.mode === "running"
+                      ? (draftPane.run?.run_id ?? null)
+                      : null
+                  }
+                  defaultRunId={defaultExpandedRun(
+                    runHistory,
+                    workspace.draft.revision
+                  )}
+                />
+              </div>
+            )}
             <div
               className={
-                draftPane
+                draftPane || runRows.length > 0
                   ? "flex max-h-80 min-h-0 shrink-0 flex-col"
                   : "flex min-h-0 flex-1 flex-col"
               }
             >
               <FindingsPanel
                 findings={findingRows}
+                coverage={coverageRows}
                 content={workspace.draft.content}
                 draftRevision={workspace.draft.revision}
                 completion={completion}
@@ -820,7 +870,7 @@ export default function Writing({
                 reviewTotal={run.reviewTotal}
                 canReview={canReviewDraft}
                 resolvingId={resolvingFindingId}
-                onReview={() => void reviewDraft()}
+                onReview={() => setReviewPreflightOpen(true)}
                 onApply={(id) => void applyFinding(id)}
                 onUndo={(id) => void undoFinding(id)}
                 onDismiss={(id) => void dismissFinding(id)}
@@ -1053,13 +1103,23 @@ export default function Writing({
             ? undefined
             : () => {
                 setActivePane("draft");
-                void reviewDraft();
+                setReviewPreflightOpen(true);
               }
         }
         canReviewDraft={canReviewDraft}
         reviewing={busy === "reviewing"}
       />
       </div>
+
+      {reviewPreflightOpen && reviewPresets.data && (
+        <ReviewPassPreflight
+          presets={reviewPresets.data}
+          open
+          busy={busy === "reviewing"}
+          onStart={startReview}
+          onCancel={() => setReviewPreflightOpen(false)}
+        />
+      )}
 
       {fullDraftConfirmationOpen && (
         <Modal

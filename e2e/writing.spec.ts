@@ -455,7 +455,13 @@ test("a review flags the draft, style fixes apply and undo, and consistency stay
       (window as unknown as { __REVIEW_STEP__: number }).__REVIEW_STEP__ = value;
     }, through);
   await releasePasses(1);
+  // The button opens the preflight list; the sweep fires from there, with
+  // every check kept and unedited.
   await page.getByRole("button", { name: "Review draft" }).click();
+  await page
+    .getByTestId("review-pass-preflight")
+    .getByRole("button", { name: "Run all checks" })
+    .click();
 
   const reviewProgress = page.getByRole("progressbar", {
     name: "Review checks completed",

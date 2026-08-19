@@ -203,6 +203,7 @@ test("client writing prompt library", async ({ page }) => {
       load_report_workspace: freshWritingWorkspace,
       start_report_workspace: freshWritingWorkspace,
       load_draft_run: null,
+      load_draft_run_history: { runs: [], active_run_id: null },
     }),
   });
   await page.goto(BASE_URL);

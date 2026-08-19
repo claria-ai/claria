@@ -74,6 +74,15 @@ or about what "complete" means.
    record reads on demand, reviewable proposals, and eventually a DOCX
    export rendered back through the stored template package.
 
+**The Draft run tab keeps its history.** A run that finishes stays on the tab
+as a completed progress bar, expandable into what it did: per section, which
+records were in its model call, what the planner decided and why, and the
+reason behind every skip, keep, and failure. All of it is read back from the
+run object in S3, so it survives closing the report and restarting the app —
+`drafting-runs.md` covers the shape. A review sweep is now shown before it
+fires, as a list of the checks it will run, each editable in place and each
+removable from that run.
+
 **Saved writer prompts.** Preferences → Document Writer → Prompt Library keeps a small
 account-wide library of reusable steering instructions
 (`claria-prompts/writer-library/{uuid}.json`), one per phase of a
@@ -83,6 +92,14 @@ the targeted composer prefills the instruction, which the user edits before
 sending. A picked prompt is ordinary user input: it never touches the
 system prompt, the trust rules, or the turn loop, and its ceiling is the
 instruction ceiling so a saved prompt is always submittable.
+
+The library is deliberately not where an edited **reviewer** checklist goes.
+A library prompt is user input that rides into a writer turn as an
+instruction; a reviewer checklist is half of the host's own contract with the
+validator that checks the answer, and the other half is composed around it and
+not editable. Saving one account-wide would make a string nobody re-reads a
+standing precondition for every future sweep, so review edits live and die with
+the run that fires them.
 
 ```mermaid
 flowchart TD
