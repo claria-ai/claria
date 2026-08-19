@@ -7,12 +7,13 @@
 
 use std::path::{Path, PathBuf};
 
+use claria_core::sensitive::Sensitive;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-pub const CURRENT_VERSION: u32 = 12;
+pub const CURRENT_VERSION: u32 = 13;
 
 /// What the user is told when there is no config on disk at all.
 ///
@@ -77,6 +78,66 @@ pub struct ClariaConfig {
     /// for approval, and which models the supporting roles use. Added in v11.
     #[serde(default)]
     pub draft_pipeline: DraftPipelinePreferences,
+    /// Auto-lock and PIN settings. Added in v13. Machine-local by design and
+    /// deliberately absent from [`SyncedPreferences`]: the PIN guards this
+    /// computer, and a hash that travelled to S3 would be a credential
+    /// sitting in the bucket it protects.
+    #[serde(default)]
+    pub security: SecuritySettings,
+}
+
+fn default_auto_lock_timeout_minutes() -> u32 {
+    crate::security::DEFAULT_TIMEOUT_MINUTES
+}
+
+/// How the app locks itself when the clinician walks away from it.
+///
+/// The PIN exists here only as an argon2id PHC string. It is wrapped in
+/// [`Sensitive`] so that `{:?}` on a whole `ClariaConfig` — which happens in
+/// error paths nobody writes deliberately — cannot put the hash into a
+/// support export, and the struct does not derive [`Type`]: the frontend is
+/// given the runtime lock state instead, which reports only whether a PIN
+/// exists.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecuritySettings {
+    /// Whether the idle timer, the wake check, and the startup lock are armed.
+    #[serde(default)]
+    pub auto_lock_enabled: bool,
+    /// Minutes of inactivity before the session locks.
+    #[serde(default = "default_auto_lock_timeout_minutes")]
+    pub auto_lock_timeout_minutes: u32,
+    /// Whether Touch ID / Windows Hello may answer the lock screen. The PIN
+    /// is always accepted regardless.
+    #[serde(default)]
+    pub biometric_unlock_enabled: bool,
+    /// argon2id PHC string for the unlock PIN, or `None` when none is set.
+    #[serde(default)]
+    pub pin_hash: Option<Sensitive<String>>,
+}
+
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        Self {
+            auto_lock_enabled: false,
+            auto_lock_timeout_minutes: default_auto_lock_timeout_minutes(),
+            biometric_unlock_enabled: false,
+            pin_hash: None,
+        }
+    }
+}
+
+impl SecuritySettings {
+    /// Whether a PIN is stored. The only thing about the PIN that may leave
+    /// this struct.
+    pub fn pin_set(&self) -> bool {
+        self.pin_hash.is_some()
+    }
+
+    /// Whether the app should actually lock itself. Enabling auto-lock
+    /// without a PIN would leave no way back in, so both are required.
+    pub fn armed(&self) -> bool {
+        self.auto_lock_enabled && self.pin_set()
+    }
 }
 
 /// Whether a whole-report draft stops for the clinician between planning and
@@ -757,6 +818,26 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
             serde_json::Value::Number(12.into()),
         );
         tracing::info!("migrated config v11 → v12 (added Bedrock runtime limits)");
+    }
+
+    // v12 → v13: add the auto-lock settings, off and with no PIN. Turning
+    // this on for an existing install would lock a clinician out of records
+    // behind a PIN they were never asked to choose.
+    if from_version < 13 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("security").or_insert(serde_json::json!({
+            "auto_lock_enabled": false,
+            "auto_lock_timeout_minutes": default_auto_lock_timeout_minutes(),
+            "biometric_unlock_enabled": false,
+            "pin_hash": null,
+        }));
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(13.into()),
+        );
+        tracing::info!("migrated config v12 → v13 (added auto-lock settings)");
     }
 
     Ok(json)

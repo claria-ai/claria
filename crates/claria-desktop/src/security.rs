@@ -3,6 +3,11 @@
 //! Pure logic only — the Tauri command layer owns the wiring (state, events,
 //! biometric prompts). Kept in the lib so integration tests can exercise it
 //! without a Tauri runtime.
+//!
+//! Every bound the feature has — PIN length, idle-timeout range, the backoff
+//! schedule — lives here rather than at the call sites that enforce them, so
+//! the command layer, the config layer, and the tests cannot disagree about
+//! what the policy is.
 
 use std::time::{Duration, Instant};
 
@@ -13,6 +18,13 @@ use argon2::{
 
 pub const MIN_PIN_LEN: usize = 6;
 pub const MAX_PIN_LEN: usize = 12;
+
+/// Idle timeout offered on first setup.
+pub const DEFAULT_TIMEOUT_MINUTES: u32 = 5;
+/// Shortest idle timeout accepted. Anything under a minute locks mid-sentence.
+pub const MIN_TIMEOUT_MINUTES: u32 = 1;
+/// Longest idle timeout accepted. Past two hours the setting is theatre.
+pub const MAX_TIMEOUT_MINUTES: u32 = 120;
 
 /// Free attempts before backoff kicks in.
 const FREE_ATTEMPTS: u32 = 3;
@@ -30,6 +42,25 @@ pub fn validate_pin(pin: &str) -> Result<(), String> {
         return Err("PIN must contain only digits".to_string());
     }
     Ok(())
+}
+
+pub fn validate_timeout_minutes(minutes: u32) -> Result<(), String> {
+    if !(MIN_TIMEOUT_MINUTES..=MAX_TIMEOUT_MINUTES).contains(&minutes) {
+        return Err(format!(
+            "Lock timeout must be between {MIN_TIMEOUT_MINUTES} and {MAX_TIMEOUT_MINUTES} minutes"
+        ));
+    }
+    Ok(())
+}
+
+/// The idle window a stored timeout means, clamped into the accepted range.
+///
+/// Clamping rather than validating on load is deliberate: a config that has
+/// somehow acquired a zero or absurd timeout should still open the app, and
+/// should still lock it. Refusing the load would strand the clinician outside
+/// their own records over a setting.
+pub fn idle_timeout(minutes: u32) -> Duration {
+    Duration::from_secs(u64::from(minutes.clamp(MIN_TIMEOUT_MINUTES, MAX_TIMEOUT_MINUTES)) * 60)
 }
 
 /// Hash a PIN into an argon2id PHC string (parameters are self-describing,

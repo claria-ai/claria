@@ -228,3 +228,75 @@ fn a_wait_past_the_ceiling_is_refused_before_it_reaches_bedrock() {
     let message = error.to_string();
     assert!(message.contains("600"), "{message}");
 }
+
+/// Auto-lock arrives off. An existing install that gained a lock it never
+/// configured would be one a clinician cannot open — there is no PIN to type.
+#[test]
+fn a_v12_config_migrates_to_v13_with_auto_lock_off() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 12,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "chat_streaming": "token"
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v12 config migrates forward");
+
+    assert!(!config.security.auto_lock_enabled);
+    assert!(!config.security.pin_set());
+    assert!(!config.security.armed());
+    assert!(!config.security.biometric_unlock_enabled);
+    assert_eq!(
+        config.security.auto_lock_timeout_minutes,
+        claria_desktop::security::DEFAULT_TIMEOUT_MINUTES
+    );
+    // Untouched settings survive the migration.
+    assert_eq!(config.chat_streaming, ChatStreamMode::Token);
+
+    let (_, on_disk_version) = config::read_config_at(&path)
+        .expect("reread")
+        .expect("present");
+    assert_eq!(on_disk_version, CURRENT_VERSION);
+}
+
+/// A configured lock survives the round trip through disk. The hash is the
+/// only copy of the PIN that exists, so losing it on a save is losing the
+/// clinician's way back in.
+#[test]
+fn a_configured_lock_survives_a_save_and_reload() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 13,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "security": {
+                "auto_lock_enabled": true,
+                "auto_lock_timeout_minutes": 15,
+                "biometric_unlock_enabled": true,
+                "pin_hash": "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"
+            }
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v13 config loads");
+
+    assert!(config.security.armed());
+    assert_eq!(config.security.auto_lock_timeout_minutes, 15);
+    assert!(config.security.biometric_unlock_enabled);
+    assert_eq!(
+        config.security.pin_hash.as_ref().map(|hash| hash.reveal().as_str()),
+        Some("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA")
+    );
+}

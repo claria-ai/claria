@@ -487,7 +487,7 @@ credentials, may permanently purge S3 version history.
 
 ## Config Versioning
 
-`config.json` carries a `config_version` field (u32). Current version: **12**.
+`config.json` carries a `config_version` field (u32). Current version: **13**.
 
 ### Rules
 - Every schema change to `ClariaConfig` (new field, renamed field, changed type) bumps `CURRENT_VERSION` in `config.rs`

@@ -361,6 +361,7 @@ pub async fn bootstrap_iam_user(
                 model_tuning: Default::default(),
                 chat_streaming: Default::default(),
                 draft_pipeline: Default::default(),
+                security: Default::default(),
             };
 
             if let Err(e) = config::save_config(&cfg) {
@@ -1089,6 +1090,7 @@ pub async fn provision_apply(
                 model_tuning: Default::default(),
                 chat_streaming: Default::default(),
                 draft_pipeline: Default::default(),
+                security: Default::default(),
             };
 
             config::save_config(&cfg)?;
