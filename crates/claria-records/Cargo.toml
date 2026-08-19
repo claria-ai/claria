@@ -3,6 +3,13 @@ name = "claria-records"
 version = "0.32.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "S3-backed client records for Claria: client CRUD, record inventory, cached record text, and the delete/restore lifecycle."
+keywords = ["claria", "aws", "s3", "records", "clinical"]
+categories = ["api-bindings", "database"]
+readme = "../../README.md"
 
 [dependencies]
 aws-sdk-s3.workspace = true

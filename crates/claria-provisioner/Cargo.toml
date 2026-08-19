@@ -3,6 +3,13 @@ name = "claria-provisioner"
 version = "0.32.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Scan/plan/execute engine that provisions and hardens the AWS account Claria runs in."
+keywords = ["claria", "aws", "iam", "provisioning", "hipaa"]
+categories = ["api-bindings", "development-tools"]
+readme = "../../README.md"
 
 [dependencies]
 claria-core.workspace = true

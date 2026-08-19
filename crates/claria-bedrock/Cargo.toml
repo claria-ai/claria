@@ -3,6 +3,13 @@ name = "claria-bedrock"
 version = "0.32.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Amazon Bedrock model calls for Claria: streaming Converse, token budgets, throttle retries, and forced-tool structured output."
+keywords = ["claria", "aws", "bedrock", "llm", "claude"]
+categories = ["api-bindings", "artificial-intelligence"]
+readme = "../../README.md"
 
 [dependencies]
 aws-config.workspace = true

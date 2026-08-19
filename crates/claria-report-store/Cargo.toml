@@ -3,6 +3,13 @@ name = "claria-report-store"
 version = "0.32.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Durable S3-backed writer state for Claria reports: workspaces, revisions, drafting runs, findings, and usage receipts."
+keywords = ["claria", "aws", "s3", "reports", "versioning"]
+categories = ["api-bindings", "database"]
+readme = "../../README.md"
 
 [dependencies]
 aws-sdk-s3.workspace = true
