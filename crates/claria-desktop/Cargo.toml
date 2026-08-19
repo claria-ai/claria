@@ -3,6 +3,14 @@ name = "claria-desktop"
 version = "0.32.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+# Not publishable, for three independent reasons: it depends on
+# `claria-transcribe`, which carries a git dependency; its build script builds
+# `claria-desktop-frontend/`, which lives outside the package directory and so
+# is absent from the packaged .crate; and it is the shipped application, which
+# is distributed as a signed Tauri bundle from the GitHub release, not as a
+# `cargo install` target.
+publish = false
 
 [features]
 default = []
@@ -19,7 +27,7 @@ claria-core.workspace = true
 claria-docx.workspace = true
 claria-provisioner.workspace = true
 claria-records.workspace = true
-claria-report-pipeline.workspace = true
+claria.workspace = true
 claria-report-store.workspace = true
 claria-storage.workspace = true
 claria-transcribe.workspace = true

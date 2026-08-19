@@ -41,16 +41,16 @@ fn resolve_prompt(
             claria_bedrock::extract::DEFAULT_EXTRACTION_PROMPT,
         )),
         // Only the editable body is stored; the fixed trust rules are always
-        // appended by claria-report-pipeline's prompt composition.
+        // appended by claria's prompt composition.
         "report-system" => Ok((
             claria_core::s3_keys::REPORT_SYSTEM_PROMPT,
             None,
-            claria_report_pipeline::REPORT_SYSTEM_PROMPT_BODY,
+            claria::REPORT_SYSTEM_PROMPT_BODY,
         )),
         "report-full-draft" => Ok((
             claria_core::s3_keys::FULL_REPORT_SYSTEM_PROMPT,
             None,
-            claria_report_pipeline::FULL_REPORT_SYSTEM_PROMPT_BODY,
+            claria::FULL_REPORT_SYSTEM_PROMPT_BODY,
         )),
         _ => Err(CommandError::Msg(format!("unknown prompt name: {name}"))),
     }
@@ -69,8 +69,8 @@ pub struct WriterTrustRules {
 #[specta::specta]
 pub async fn get_writer_trust_rules() -> Result<WriterTrustRules, String> {
     Ok(WriterTrustRules {
-        targeted: claria_report_pipeline::REPORT_TRUST_RULES.to_string(),
-        full_draft: claria_report_pipeline::FULL_REPORT_TRUST_RULES.to_string(),
+        targeted: claria::REPORT_TRUST_RULES.to_string(),
+        full_draft: claria::FULL_REPORT_TRUST_RULES.to_string(),
     })
 }
 

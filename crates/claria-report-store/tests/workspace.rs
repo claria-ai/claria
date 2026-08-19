@@ -1,7 +1,7 @@
 //! Durable workspace behaviour: creation and optimistic concurrency, revision
 //! history, template application and export snapshots, and the client
 //! delete/restore lifecycle. Nothing here drives a Bedrock conversation — the
-//! turn loop's own spec lives in `claria-report-pipeline`.
+//! turn loop's own spec lives in `claria`.
 
 use std::collections::HashSet;
 

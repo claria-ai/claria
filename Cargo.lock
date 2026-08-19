@@ -1242,6 +1242,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "claria"
+version = "0.32.0"
+dependencies = [
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
+ "claria-bedrock",
+ "claria-core",
+ "claria-mock-aws",
+ "claria-report-store",
+ "claria-storage",
+ "futures",
+ "jiff",
+ "lru 0.18.0",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "specta",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "claria-bedrock"
 version = "0.32.0"
 dependencies = [
@@ -1304,6 +1329,7 @@ dependencies = [
  "aws-sdk-sts",
  "aws-smithy-http-client",
  "base64 0.22.1",
+ "claria",
  "claria-bedrock",
  "claria-billing",
  "claria-core",
@@ -1311,7 +1337,6 @@ dependencies = [
  "claria-mock-aws",
  "claria-provisioner",
  "claria-records",
- "claria-report-pipeline",
  "claria-report-store",
  "claria-storage",
  "claria-transcribe",
@@ -1378,13 +1403,13 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-s3",
  "clap",
+ "claria",
  "claria-bedrock",
  "claria-billing",
  "claria-core",
  "claria-docx",
  "claria-mock-aws",
  "claria-records",
- "claria-report-pipeline",
  "claria-report-store",
  "claria-storage",
  "dirs",
@@ -1469,31 +1494,6 @@ dependencies = [
  "lru 0.18.0",
  "serde",
  "serde_json",
- "specta",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "claria-report-pipeline"
-version = "0.32.0"
-dependencies = [
- "aws-config",
- "aws-credential-types",
- "aws-sdk-s3",
- "claria-bedrock",
- "claria-core",
- "claria-mock-aws",
- "claria-report-store",
- "claria-storage",
- "futures",
- "jiff",
- "lru 0.18.0",
- "serde",
- "serde_json",
- "sha2 0.10.9",
  "specta",
  "thiserror 2.0.18",
  "tokio",

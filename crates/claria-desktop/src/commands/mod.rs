@@ -65,7 +65,7 @@ pub enum CommandError {
     #[error(transparent)]
     Provisioner(#[from] claria_provisioner::ProvisionerError),
     #[error(transparent)]
-    ReportPipeline(#[from] claria_report_pipeline::ReportPipelineError),
+    ReportPipeline(#[from] claria::ReportPipelineError),
     #[error(transparent)]
     ReportStore(#[from] claria_report_store::ReportStoreError),
     #[error(transparent)]

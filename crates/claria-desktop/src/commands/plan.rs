@@ -78,21 +78,21 @@ pub async fn generate_draft_plan(
         } else {
             preferred
         };
-        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
+        let progress = |event: claria::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
-        let outcome = claria_report_pipeline::generate_draft_plan(
+        let outcome = claria::generate_draft_plan(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
             client_id,
             report_id,
             expected_revision,
-            claria_report_pipeline::PlanModels {
+            claria::PlanModels {
                 planner_model_id: &planner_model_id,
                 writer_model_id: &writer_model_id,
             },
-            claria_report_pipeline::DraftPlanRequest::new(&instructions)
+            claria::DraftPlanRequest::new(&instructions)
                 .with_progress(&progress)
                 .with_stream_bounds(ctx.cfg.report_authoring.runtime().analysis_stream_bounds())
                 .with_stop(&stop.signal),
@@ -127,15 +127,9 @@ pub async fn update_draft_plan(
         let client_id = parse_uuid(&client_id)?;
         let report_id = parse_uuid(&report_id)?;
         let run_id = parse_uuid(&run_id)?;
-        let updated = claria_report_pipeline::update_draft_plan(
-            &ctx.s3,
-            &ctx.bucket,
-            client_id,
-            report_id,
-            run_id,
-            &edits,
-        )
-        .await?;
+        let updated =
+            claria::update_draft_plan(&ctx.s3, &ctx.bucket, client_id, report_id, run_id, &edits)
+                .await?;
         // Counts, never the curated filenames themselves: which of a client's
         // documents a clinician thinks belong to a section is PHI.
         let curated_sections = updated.plan.as_ref().map_or(0, |plan| {
@@ -186,12 +180,12 @@ pub async fn start_draft_run(
         let report_id = parse_uuid(&report_id)?;
         let run_id = parse_uuid(&run_id)?;
         let limits = ctx.cfg.report_authoring.limits()?;
-        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
+        let progress = |event: claria::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
         let prompt_body =
             super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-full-draft").await?;
-        let outcome = claria_report_pipeline::start_draft_run(
+        let outcome = claria::start_draft_run(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
@@ -199,7 +193,7 @@ pub async fn start_draft_run(
             report_id,
             run_id,
             &model_id,
-            claria_report_pipeline::FullReportRequest::new("")
+            claria::FullReportRequest::new("")
                 .with_limits(limits)
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
@@ -271,12 +265,12 @@ pub async fn resume_draft_run(
         let instructions = updated_instructions.unwrap_or_default();
         let planner_override = ctx.cfg.draft_pipeline.planner_model_id.clone();
         let planner_model_id = role_model_id(&ctx, planner_override.as_deref(), &model_id).await?;
-        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
+        let progress = |event: claria::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
         let prompt_body =
             super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-full-draft").await?;
-        let outcome = claria_report_pipeline::resume_planned_draft_run(
+        let outcome = claria::resume_planned_draft_run(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
@@ -285,7 +279,7 @@ pub async fn resume_draft_run(
             run_id,
             &planner_model_id,
             &model_id,
-            claria_report_pipeline::FullReportRequest::new(&instructions)
+            claria::FullReportRequest::new(&instructions)
                 .with_limits(limits)
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
@@ -327,7 +321,7 @@ pub async fn resume_draft_run(
 /// heading, or a record filename.
 fn plan_audit_details(
     planner_model_id: &str,
-    outcome: &claria_report_pipeline::DraftPlanOutcome,
+    outcome: &claria::DraftPlanOutcome,
 ) -> serde_json::Value {
     let plan = outcome.run.plan.as_ref();
     let intent_count = |wanted: SectionIntent| {

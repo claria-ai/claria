@@ -273,8 +273,8 @@ pub struct ReportAuthoringPreferences {
 }
 
 impl ReportAuthoringPreferences {
-    pub fn limits(&self) -> Result<claria_report_pipeline::ReportTurnLimits, String> {
-        claria_report_pipeline::ReportTurnLimits::try_new(
+    pub fn limits(&self) -> Result<claria::ReportTurnLimits, String> {
+        claria::ReportTurnLimits::try_new(
             self.max_tool_rounds,
             self.max_converse_calls,
             self.max_tool_uses_per_response,
@@ -285,8 +285,8 @@ impl ReportAuthoringPreferences {
     }
 
     /// The per-call runtime dials, in the shape the pipeline takes them.
-    pub fn runtime(&self) -> claria_report_pipeline::BedrockRuntimeLimits {
-        claria_report_pipeline::BedrockRuntimeLimits {
+    pub fn runtime(&self) -> claria::BedrockRuntimeLimits {
+        claria::BedrockRuntimeLimits {
             writer_first_frame_timeout_secs: self.writer_first_frame_timeout_secs,
             writer_idle_timeout_secs: self.writer_idle_timeout_secs,
             writer_max_output_tokens: self.writer_max_output_tokens,
@@ -317,39 +317,39 @@ impl Default for ReportAuthoringPreferences {
 }
 
 fn default_max_tool_rounds() -> u32 {
-    claria_report_pipeline::DEFAULT_MAX_TOOL_ROUNDS
+    claria::DEFAULT_MAX_TOOL_ROUNDS
 }
 
 fn default_max_converse_calls() -> u32 {
-    claria_report_pipeline::DEFAULT_MAX_CONVERSE_CALLS
+    claria::DEFAULT_MAX_CONVERSE_CALLS
 }
 
 fn default_max_tool_uses_per_response() -> u32 {
-    claria_report_pipeline::DEFAULT_MAX_TOOL_USES_PER_RESPONSE
+    claria::DEFAULT_MAX_TOOL_USES_PER_RESPONSE
 }
 
 fn default_max_retained_turns() -> u32 {
-    claria_report_pipeline::DEFAULT_MAX_RETAINED_TURNS
+    claria::DEFAULT_MAX_RETAINED_TURNS
 }
 
 fn default_writer_first_frame_timeout_secs() -> u32 {
-    claria_report_pipeline::DEFAULT_WRITER_FIRST_FRAME_TIMEOUT_SECS
+    claria::DEFAULT_WRITER_FIRST_FRAME_TIMEOUT_SECS
 }
 
 fn default_writer_idle_timeout_secs() -> u32 {
-    claria_report_pipeline::DEFAULT_WRITER_IDLE_TIMEOUT_SECS
+    claria::DEFAULT_WRITER_IDLE_TIMEOUT_SECS
 }
 
 fn default_writer_max_output_tokens() -> u32 {
-    claria_report_pipeline::DEFAULT_WRITER_MAX_OUTPUT_TOKENS
+    claria::DEFAULT_WRITER_MAX_OUTPUT_TOKENS
 }
 
 fn default_analysis_first_frame_timeout_secs() -> u32 {
-    claria_report_pipeline::DEFAULT_ANALYSIS_FIRST_FRAME_TIMEOUT_SECS
+    claria::DEFAULT_ANALYSIS_FIRST_FRAME_TIMEOUT_SECS
 }
 
 fn default_analysis_idle_timeout_secs() -> u32 {
-    claria_report_pipeline::DEFAULT_ANALYSIS_IDLE_TIMEOUT_SECS
+    claria::DEFAULT_ANALYSIS_IDLE_TIMEOUT_SECS
 }
 
 /// Per-clinician defaults for the transcription pipeline.

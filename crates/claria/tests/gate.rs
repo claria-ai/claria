@@ -6,6 +6,7 @@
 //! test.
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
+use claria::{self as pipeline, CompletionCheck, CompletionCheckKind};
 use claria_core::models::{
     findings::{Finding, FindingAnchor, FindingStatus, ReportFindings, ReviewPass},
     report::{ReportBlock, ReportContent, ReportSection},
@@ -15,7 +16,6 @@ use claria_core::models::{
     },
 };
 use claria_mock_aws::testing::MockServer;
-use claria_report_pipeline::{self as pipeline, CompletionCheck, CompletionCheckKind};
 use claria_report_store as store;
 use claria_storage::client;
 use uuid::Uuid;
