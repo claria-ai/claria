@@ -9,6 +9,7 @@
 use std::sync::{Arc, Mutex};
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
+use claria as pipeline;
 use claria_bedrock::converse::StopSignal;
 use claria_core::models::{
     report::{AuthorshipKind, ReportBlock, ReportContent, ReportSection},
@@ -18,7 +19,6 @@ use claria_core::models::{
     },
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
-use claria_report_pipeline as pipeline;
 use claria_report_store as store;
 use claria_storage::client;
 use uuid::Uuid;

@@ -14,7 +14,7 @@ pub const CLARIA_CRATES: &[&str] = &[
     "claria_docx",
     "claria_provisioner",
     "claria_records",
-    "claria_report_pipeline",
+    "claria",
     "claria_report_store",
     "claria_storage",
     "claria_transcribe",

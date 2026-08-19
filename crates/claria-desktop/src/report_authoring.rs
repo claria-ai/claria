@@ -1,6 +1,6 @@
 //! Tauri-facing report-authoring view models.
 //!
-//! Workflow policy and AWS orchestration live in `claria-report-pipeline`.
+//! Workflow policy and AWS orchestration live in `claria`.
 //! The report domain types (`ReportDraft`, `ReportContent`, blocks,
 //! operations, exports, resolutions) derive `specta::Type` in `claria-core`
 //! and cross the IPC boundary as-is; this module keeps only the views that
@@ -243,10 +243,10 @@ pub enum ReportTurnProgressView {
     },
 }
 
-impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView {
-    fn from(value: claria_report_pipeline::ReportTurnProgress) -> Self {
+impl From<claria::ReportTurnProgress> for ReportTurnProgressView {
+    fn from(value: claria::ReportTurnProgress) -> Self {
         match value {
-            claria_report_pipeline::ReportTurnProgress::RecordContextPrepared {
+            claria::ReportTurnProgress::RecordContextPrepared {
                 included_files,
                 unavailable_files,
                 total_characters,
@@ -255,10 +255,10 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                 unavailable_files,
                 total_characters,
             },
-            claria_report_pipeline::ReportTurnProgress::ModelCallStarted { call_number } => {
+            claria::ReportTurnProgress::ModelCallStarted { call_number } => {
                 Self::ModelCallStarted { call_number }
             }
-            claria_report_pipeline::ReportTurnProgress::ModelCallRetrying {
+            claria::ReportTurnProgress::ModelCallRetrying {
                 call_number,
                 attempt,
                 max_attempts,
@@ -269,10 +269,10 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                 max_attempts,
                 delay_ms,
             },
-            claria_report_pipeline::ReportTurnProgress::ToolStarted { name, context } => {
+            claria::ReportTurnProgress::ToolStarted { name, context } => {
                 Self::ToolStarted { name, context }
             }
-            claria_report_pipeline::ReportTurnProgress::ToolFinished {
+            claria::ReportTurnProgress::ToolFinished {
                 name,
                 context,
                 status,
@@ -284,16 +284,16 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                     ReportToolResultStatus::Error => ReportToolActivityStatus::Failed,
                 },
             },
-            claria_report_pipeline::ReportTurnProgress::PlanRowPlanned { planned, total } => {
+            claria::ReportTurnProgress::PlanRowPlanned { planned, total } => {
                 Self::PlanRowPlanned { planned, total }
             }
-            claria_report_pipeline::ReportTurnProgress::PlanBatchPlanned { first, last, total } => {
+            claria::ReportTurnProgress::PlanBatchPlanned { first, last, total } => {
                 Self::PlanBatchPlanned { first, last, total }
             }
-            claria_report_pipeline::ReportTurnProgress::PlanReady { section_count } => {
+            claria::ReportTurnProgress::PlanReady { section_count } => {
                 Self::PlanReady { section_count }
             }
-            claria_report_pipeline::ReportTurnProgress::SectionStarted {
+            claria::ReportTurnProgress::SectionStarted {
                 section_id,
                 index,
                 total,
@@ -302,7 +302,7 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                 index,
                 total,
             },
-            claria_report_pipeline::ReportTurnProgress::SectionCompleted {
+            claria::ReportTurnProgress::SectionCompleted {
                 section_id,
                 section,
                 drafted,
@@ -313,7 +313,7 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                 drafted,
                 total,
             },
-            claria_report_pipeline::ReportTurnProgress::SectionSkipped {
+            claria::ReportTurnProgress::SectionSkipped {
                 section_id,
                 drafted,
                 total,
@@ -322,7 +322,7 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                 drafted,
                 total,
             },
-            claria_report_pipeline::ReportTurnProgress::SectionFailed {
+            claria::ReportTurnProgress::SectionFailed {
                 section_id,
                 message,
                 drafted,
@@ -333,10 +333,8 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                 drafted,
                 total,
             },
-            claria_report_pipeline::ReportTurnProgress::TitleSet { title } => {
-                Self::TitleSet { title }
-            }
-            claria_report_pipeline::ReportTurnProgress::ReviewPassStarted {
+            claria::ReportTurnProgress::TitleSet { title } => Self::TitleSet { title },
+            claria::ReportTurnProgress::ReviewPassStarted {
                 property,
                 index,
                 total,
@@ -345,7 +343,7 @@ impl From<claria_report_pipeline::ReportTurnProgress> for ReportTurnProgressView
                 index,
                 total,
             },
-            claria_report_pipeline::ReportTurnProgress::ReviewPassCompleted {
+            claria::ReportTurnProgress::ReviewPassCompleted {
                 property,
                 findings,
                 completed,
@@ -451,8 +449,8 @@ pub struct ReportBlockReferenceInput {
 }
 
 impl ReportBlockReferenceInput {
-    pub fn into_domain(self) -> Result<claria_report_pipeline::ReportBlockReference, String> {
-        Ok(claria_report_pipeline::ReportBlockReference {
+    pub fn into_domain(self) -> Result<claria::ReportBlockReference, String> {
+        Ok(claria::ReportBlockReference {
             section_id: self
                 .section_id
                 .parse::<Uuid>()
@@ -566,9 +564,7 @@ pub fn content_from_edit(edit: ReportDraftEdit) -> Result<ReportContent, String>
     })
 }
 
-pub fn turn_response_view(
-    outcome: claria_report_pipeline::ReportTurnOutcome,
-) -> ReportTurnResponse {
+pub fn turn_response_view(outcome: claria::ReportTurnOutcome) -> ReportTurnResponse {
     ReportTurnResponse {
         workspace: workspace_view(&outcome.workspace),
         turn_id: outcome.turn_id.to_string(),
@@ -583,7 +579,7 @@ pub fn turn_response_view(
 }
 
 pub fn full_report_response_view(
-    outcome: claria_report_pipeline::FullReportGenerationOutcome,
+    outcome: claria::FullReportGenerationOutcome,
 ) -> FullReportGenerationResponse {
     FullReportGenerationResponse {
         workspace: workspace_view(&outcome.workspace),

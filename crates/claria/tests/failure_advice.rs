@@ -4,10 +4,8 @@
 //! nowhere: the two waits govern different failures, and the one that did
 //! not run out will not help however high it goes.
 
+use claria::{FIRST_FRAME_TIMEOUT_FIELD_LABEL, IDLE_TIMEOUT_FIELD_LABEL, interruption_advice};
 use claria_bedrock::error::StreamInterruption;
-use claria_report_pipeline::{
-    FIRST_FRAME_TIMEOUT_FIELD_LABEL, IDLE_TIMEOUT_FIELD_LABEL, interruption_advice,
-};
 
 const FIRST_FRAME_SECS: u32 = 90;
 const IDLE_SECS: u32 = 60;

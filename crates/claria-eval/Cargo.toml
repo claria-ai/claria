@@ -32,7 +32,7 @@ claria-billing.workspace = true
 claria-core.workspace = true
 claria-docx.workspace = true
 claria-records.workspace = true
-claria-report-pipeline.workspace = true
+claria.workspace = true
 claria-report-store.workspace = true
 claria-storage.workspace = true
 clap = { version = "=4.6.1", features = ["derive"] }

@@ -3,6 +3,7 @@
 //! the workspace is never left locked behind a run that ended.
 
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
+use claria as pipeline;
 use claria_core::models::{
     report::{AuthorshipKind, ReportBlock, ReportContent, ReportSection},
     report_run::{
@@ -11,7 +12,6 @@ use claria_core::models::{
     },
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
-use claria_report_pipeline as pipeline;
 use claria_report_store as store;
 use claria_storage::client;
 use uuid::Uuid;

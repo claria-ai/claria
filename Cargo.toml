@@ -8,7 +8,7 @@ members = [
     "crates/claria-transcribe",
     "crates/claria-billing",
     "crates/claria-records",
-    "crates/claria-report-pipeline",
+    "crates/claria",
     "crates/claria-report-store",
     "crates/claria-docx",
     "crates/claria-docx-cli",
@@ -34,7 +34,7 @@ claria-eval = { path = "crates/claria-eval", version = "0.32.0" }
 claria-mock-aws = { path = "crates/claria-mock-aws", version = "0.32.0" }
 claria-provisioner = { path = "crates/claria-provisioner", version = "0.32.0" }
 claria-records = { path = "crates/claria-records", version = "0.32.0" }
-claria-report-pipeline = { path = "crates/claria-report-pipeline", version = "0.32.0" }
+claria = { path = "crates/claria", version = "0.32.0" }
 claria-report-store = { path = "crates/claria-report-store", version = "0.32.0" }
 claria-storage = { path = "crates/claria-storage", version = "0.32.0" }
 claria-transcribe = { path = "crates/claria-transcribe", version = "0.32.0" }

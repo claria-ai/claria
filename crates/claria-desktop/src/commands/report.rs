@@ -8,11 +8,11 @@ pub use claria_desktop::report_authoring::{
     ReportTurnResponse, ReportWorkspaceView, TemplateExportWarning,
 };
 
+use claria::CompletionReport;
 use claria_core::models::{
     report::{ReportDraft, ReportExportStatus},
     report_run::RunSectionState,
 };
-use claria_report_pipeline::CompletionReport;
 
 use super::{
     CommandContext, merge_details, parse_uuid, run, streams::StopRegistration, usage_audit_details,
@@ -340,12 +340,12 @@ pub async fn generate_full_report(
             model_id,
             "whole-report generation requested"
         );
-        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
+        let progress = |event: claria::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
         let prompt_body =
             super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-full-draft").await?;
-        let result = claria_report_pipeline::generate_full_report_for_report(
+        let result = claria::generate_full_report_for_report(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
@@ -353,7 +353,7 @@ pub async fn generate_full_report(
             report_id,
             expected_revision,
             &model_id,
-            claria_report_pipeline::FullReportRequest::new(&guidance)
+            claria::FullReportRequest::new(&guidance)
                 .with_limits(limits)
                 .with_progress(&progress)
                 .with_prompt_cache(&state.report_prompt_cache)
@@ -478,24 +478,18 @@ async fn stopped_run_details(
     report_id: uuid::Uuid,
     run_id: Option<uuid::Uuid>,
 ) -> serde_json::Value {
-    let run = match claria_report_pipeline::load_resumable_draft_run(
-        &ctx.s3,
-        &ctx.bucket,
-        client_id,
-        report_id,
-    )
-    .await
-    {
-        Ok(run) => run,
-        Err(error) => {
-            tracing::warn!(
-                report_id = %report_id,
-                error = %error,
-                "could not read the stopped drafting run for its audit event"
-            );
-            None
-        }
-    };
+    let run =
+        match claria::load_resumable_draft_run(&ctx.s3, &ctx.bucket, client_id, report_id).await {
+            Ok(run) => run,
+            Err(error) => {
+                tracing::warn!(
+                    report_id = %report_id,
+                    error = %error,
+                    "could not read the stopped drafting run for its audit event"
+                );
+                None
+            }
+        };
     let count = |state: RunSectionState| {
         run.as_ref().map_or(0, |run| {
             run.sections
@@ -537,12 +531,12 @@ pub async fn send_report_message(
             .map(ReportBlockReferenceInput::into_domain)
             .collect::<Result<Vec<_>, _>>()?;
         let limits = ctx.cfg.report_authoring.limits()?;
-        let progress = |event: claria_report_pipeline::ReportTurnProgress| {
+        let progress = |event: claria::ReportTurnProgress| {
             let _ = on_progress.send(event.into());
         };
         let prompt_body =
             super::prompts::load_prompt(&ctx.s3, &ctx.bucket, "report-system").await?;
-        let result = claria_report_pipeline::send_report_message_for_report(
+        let result = claria::send_report_message_for_report(
             &ctx.sdk_config,
             &ctx.s3,
             &ctx.bucket,
@@ -550,7 +544,7 @@ pub async fn send_report_message(
             report_id,
             expected_revision,
             &model_id,
-            claria_report_pipeline::ReportMessageRequest::new(&instruction)
+            claria::ReportMessageRequest::new(&instruction)
                 .with_references(&references)
                 .with_limits(limits)
                 .with_progress(&progress)
@@ -701,7 +695,7 @@ pub async fn evaluate_report_completion(
 ) -> Result<CompletionReport, String> {
     run("evaluate_report_completion", async {
         let ctx = CommandContext::new(&state).await?;
-        Ok(claria_report_pipeline::evaluate_report_completion(
+        Ok(claria::evaluate_report_completion(
             &ctx.s3,
             &ctx.bucket,
             parse_uuid(&client_id)?,

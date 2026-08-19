@@ -1,9 +1,9 @@
 use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
+use claria as pipeline;
 use claria_core::models::report::{
     ReportBlock, ReportContent, ReportProposalDecision, ReportSection,
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
-use claria_report_pipeline as pipeline;
 use claria_report_store as store;
 use claria_storage::client;
 use uuid::Uuid;
