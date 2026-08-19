@@ -2,6 +2,14 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Every library crate in the workspace now carries the description, repository, keywords, and categories crates.io requires, so the twelve publishable crates can be released as dependencies
+- Internal dependencies declare a version alongside their path, which is what lets them publish at all
+- `claria-docx-cli` is publishable, so the template-diagnostics binary can be installed with `cargo install claria-docx-cli` on platforms the desktop bundle does not build for
+- `claria-desktop` and `claria-transcribe` are explicitly not published; each Cargo.toml says why
+- A tagged release publishes the workspace to crates.io over GitHub OIDC through crates.io Trusted Publishing, with no registry token stored in repository secrets
+
 ## [0.32.0] — 2026-08-18
 
 - A report exported through a template whose headings are bold body text keeps those headings bold after the model rewrites them
