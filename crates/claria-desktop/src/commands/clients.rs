@@ -6,6 +6,7 @@ pub use claria_records::{ClientNameUpdate, ClientRecordDetails, ClientSummary};
 
 use super::{CommandContext, parse_uuid, run};
 use crate::state::DesktopState;
+use claria_storage::audit::actions;
 
 /// List all client records from S3.
 ///
@@ -64,7 +65,7 @@ pub async fn create_client(
         // The client's name is PHI and never logged.
         tracing::info!(client_id = %id, "client record created");
 
-        ctx.record_audit(ctx.audit_event("client_created", "client", id.to_string()))
+        ctx.record_audit(ctx.audit_event(actions::CLIENT_CREATE, "client", id.to_string()))
             .await;
 
         Ok(ClientSummary {
@@ -104,7 +105,7 @@ pub async fn update_client_name(
         let id = parse_uuid(&client_id)?;
         let update = claria_records::update_client_name(&ctx.s3, &ctx.bucket, id, &name).await?;
         tracing::info!(client_id = %id, "client record renamed");
-        ctx.record_audit(ctx.audit_event("client_renamed", "client", id.to_string()))
+        ctx.record_audit(ctx.audit_event(actions::CLIENT_RENAME, "client", id.to_string()))
             .await;
         Ok(update)
     })
@@ -130,7 +131,7 @@ pub async fn delete_client(
             "client deleted"
         );
         ctx.record_audit(
-            ctx.audit_event("client_deleted", "client", id.to_string())
+            ctx.audit_event(actions::CLIENT_DELETE, "client", id.to_string())
                 .with_details(serde_json::json!({
                     "deleted_records": outcome.deleted_records,
                     "deleted_report_objects": outcome.deleted_report_objects,

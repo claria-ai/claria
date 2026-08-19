@@ -6,6 +6,8 @@
 
 use tauri::State;
 
+use claria_storage::audit::actions;
+
 use claria_core::models::report_run::DraftRun;
 use claria_desktop::report_authoring::ReportWorkspaceView;
 
@@ -59,7 +61,7 @@ pub async fn finalize_partial_draft(
         let workspace = claria_desktop::report_authoring::workspace_view(&outcome.workspace);
         ctx.record_audit(
             ctx.audit_event(
-                "draft_run_finalized_partial",
+                actions::REPORT_DRAFT_RUN_FINALIZE_PARTIAL,
                 "report",
                 workspace.report_id.clone(),
             )
@@ -101,11 +103,15 @@ pub async fn abandon_draft_run(
         .await?;
         let workspace = claria_desktop::report_authoring::workspace_view(&workspace);
         ctx.record_audit(
-            ctx.audit_event("draft_run_abandoned", "report", workspace.report_id.clone())
-                .with_details(serde_json::json!({
-                    "client_id": client_id.to_string(),
-                    "run_id": run_id.to_string(),
-                })),
+            ctx.audit_event(
+                actions::REPORT_DRAFT_RUN_ABANDON,
+                "report",
+                workspace.report_id.clone(),
+            )
+            .with_details(serde_json::json!({
+                "client_id": client_id.to_string(),
+                "run_id": run_id.to_string(),
+            })),
         )
         .await;
         Ok(workspace)
