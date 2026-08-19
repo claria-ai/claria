@@ -12,8 +12,8 @@
 use std::time::{Duration, Instant};
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 
 pub const MIN_PIN_LEN: usize = 6;

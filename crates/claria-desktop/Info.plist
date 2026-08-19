@@ -4,5 +4,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Claria needs microphone access to record audio memos for transcription.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Claria uses Face ID to unlock the app when auto-lock is enabled.</string>
 </dict>
 </plist>

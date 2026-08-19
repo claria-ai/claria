@@ -296,7 +296,11 @@ fn a_configured_lock_survives_a_save_and_reload() {
     assert_eq!(config.security.auto_lock_timeout_minutes, 15);
     assert!(config.security.biometric_unlock_enabled);
     assert_eq!(
-        config.security.pin_hash.as_ref().map(|hash| hash.reveal().as_str()),
+        config
+            .security
+            .pin_hash
+            .as_ref()
+            .map(|hash| hash.reveal().as_str()),
         Some("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA")
     );
 }

@@ -13,7 +13,10 @@ use claria_core::{
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use claria_desktop::config::{ClariaConfig, CredentialSource};
+use claria_desktop::{
+    config::{ClariaConfig, CredentialSource},
+    security::LockRuntime,
+};
 use claria_records::RecordCache;
 
 /// An `SdkConfig` cached with the inputs it was built from. The SDK's pooled
@@ -220,6 +223,27 @@ pub struct DesktopState {
     /// boundary — the frontend only ever holds the handle — and they expire
     /// with the STS session, so entries are replaced rather than accumulated.
     pub(crate) assumed_role_credentials: Arc<Mutex<HashMap<uuid::Uuid, CredentialSource>>>,
+    /// Whether the session is locked, plus the idle clock and failed-attempt
+    /// backoff behind it. A std mutex, never held across an await: every
+    /// caller takes it for one field read or one flag write.
+    ///
+    /// Deliberately not persisted. A fresh launch derives its lock state from
+    /// the config alone, so nothing on disk can leave the app stuck locked.
+    session_lock: Arc<StdMutex<LockRuntime>>,
+}
+
+impl DesktopState {
+    /// The session-lock runtime.
+    ///
+    /// Poison is recovered rather than propagated. The runtime is four plain
+    /// fields with no invariant a panic elsewhere could have broken, and
+    /// refusing to unlock because an unrelated thread panicked would leave a
+    /// clinician staring at an overlay nothing can dismiss.
+    pub(crate) fn lock_runtime(&self) -> std::sync::MutexGuard<'_, LockRuntime> {
+        self.session_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
 }
 
 impl Default for DesktopState {
@@ -237,6 +261,7 @@ impl Default for DesktopState {
             pending_report_templates: Arc::new(Mutex::new(HashMap::new())),
             stream_stops: Arc::new(StdMutex::new(HashMap::new())),
             assumed_role_credentials: Arc::new(Mutex::new(HashMap::new())),
+            session_lock: Arc::new(StdMutex::new(LockRuntime::default())),
         }
     }
 }

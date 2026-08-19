@@ -174,7 +174,11 @@ fn invalid_report_authoring_preferences_are_rejected() {
 fn the_pin_hash_never_reaches_the_synced_preferences() {
     let mut cfg = sample_config();
     cfg.security.auto_lock_enabled = true;
-    cfg.security.pin_hash = Some("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".to_string().into());
+    cfg.security.pin_hash = Some(
+        "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"
+            .to_string()
+            .into(),
+    );
 
     let json = serde_json::to_string(&SyncedPreferences::from_config(&cfg)).expect("serialize");
 
@@ -205,7 +209,11 @@ fn applying_synced_preferences_leaves_the_lock_alone() {
 #[test]
 fn debug_printing_the_config_does_not_print_the_pin_hash() {
     let mut cfg = sample_config();
-    cfg.security.pin_hash = Some("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".to_string().into());
+    cfg.security.pin_hash = Some(
+        "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"
+            .to_string()
+            .into(),
+    );
 
     let rendered = format!("{cfg:?}");
 

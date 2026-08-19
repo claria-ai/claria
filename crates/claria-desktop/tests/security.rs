@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use claria_desktop::security::{
-    backoff_duration, hash_pin, validate_pin, verify_pin, wall_clock_jumped, LockRuntime,
+    LockRuntime, MAX_TIMEOUT_MINUTES, MIN_TIMEOUT_MINUTES, backoff_duration, hash_pin,
+    idle_timeout, validate_pin, validate_timeout_minutes, verify_pin, wall_clock_jumped,
 };
 
 #[test]
@@ -60,15 +61,40 @@ fn wall_clock_jump_detection() {
     let t0 = jiff::Timestamp::UNIX_EPOCH;
 
     // Normal tick cadence, even a slow one, is not a jump.
-    assert!(!wall_clock_jumped(t0, t0 + Duration::from_secs(10), tick, slack));
-    assert!(!wall_clock_jumped(t0, t0 + Duration::from_secs(70), tick, slack));
+    assert!(!wall_clock_jumped(
+        t0,
+        t0 + Duration::from_secs(10),
+        tick,
+        slack
+    ));
+    assert!(!wall_clock_jumped(
+        t0,
+        t0 + Duration::from_secs(70),
+        tick,
+        slack
+    ));
 
     // Past tick + slack means the machine slept.
-    assert!(wall_clock_jumped(t0, t0 + Duration::from_secs(71), tick, slack));
-    assert!(wall_clock_jumped(t0, t0 + Duration::from_secs(3600), tick, slack));
+    assert!(wall_clock_jumped(
+        t0,
+        t0 + Duration::from_secs(71),
+        tick,
+        slack
+    ));
+    assert!(wall_clock_jumped(
+        t0,
+        t0 + Duration::from_secs(3600),
+        tick,
+        slack
+    ));
 
     // Clock moving backwards is not a jump.
-    assert!(!wall_clock_jumped(t0 + Duration::from_secs(100), t0, tick, slack));
+    assert!(!wall_clock_jumped(
+        t0 + Duration::from_secs(100),
+        t0,
+        tick,
+        slack
+    ));
 }
 
 #[test]
@@ -120,4 +146,27 @@ fn lock_runtime_failure_and_backoff() {
     rt.unlock();
     assert_eq!(rt.failed_attempts(), 0);
     assert_eq!(rt.backoff_remaining_secs(), None);
+}
+
+#[test]
+fn timeout_validation() {
+    assert!(validate_timeout_minutes(MIN_TIMEOUT_MINUTES).is_ok());
+    assert!(validate_timeout_minutes(5).is_ok());
+    assert!(validate_timeout_minutes(MAX_TIMEOUT_MINUTES).is_ok());
+
+    assert!(validate_timeout_minutes(0).is_err());
+    assert!(validate_timeout_minutes(MAX_TIMEOUT_MINUTES + 1).is_err());
+}
+
+/// A stored timeout is clamped rather than refused. A config that somehow
+/// carries zero would otherwise lock the app on every watcher tick, and one
+/// that carries `u32::MAX` would overflow the multiplication into minutes.
+#[test]
+fn a_stored_timeout_outside_the_range_is_clamped_not_obeyed() {
+    assert_eq!(idle_timeout(0), Duration::from_secs(60));
+    assert_eq!(idle_timeout(5), Duration::from_secs(300));
+    assert_eq!(
+        idle_timeout(u32::MAX),
+        Duration::from_secs(u64::from(MAX_TIMEOUT_MINUTES) * 60)
+    );
 }
