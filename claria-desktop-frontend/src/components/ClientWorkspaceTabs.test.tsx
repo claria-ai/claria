@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import ClientWorkspaceTabs, {
   type ClientWorkspaceView,
 } from "./ClientWorkspaceTabs";
+import { setDistractionModeEnabled } from "../lib/distractionMode";
 
 function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
   const [active, setActive] = useState<ClientWorkspaceView>("record");
@@ -26,6 +27,10 @@ function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
     </ClientWorkspaceTabs>
   );
 }
+
+beforeEach(() => {
+  setDistractionModeEnabled(false);
+});
 
 describe("client workspace tabs", () => {
   it("keeps Record and Chat identifiers and adds an opt-in Writing tab", () => {
@@ -94,6 +99,22 @@ describe("client workspace tabs", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("tab", { name: "Writing" })
     );
+  });
+
+  it("places the opt-in sock control quietly beside the client name", async () => {
+    setDistractionModeEnabled(true);
+    render(<Harness />);
+
+    const button = screen.getByRole("button", {
+      name: "Drop a sock for Lucia",
+    });
+    const heading = screen.getByRole("heading", { name: "Ada Lovelace" });
+    expect(button.nextElementSibling).toBe(heading);
+    expect(button.className).not.toContain("border");
+
+    await userEvent.click(button);
+    expect(screen.getByTestId("sock-drop")).toBeDefined();
+    expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("routes the back control through the parent guard", async () => {

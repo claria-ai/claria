@@ -54,6 +54,7 @@ import {
 import { logFrontendEvent } from "../lib/logBridge";
 import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
+import { useDistractionMode } from "../lib/distractionMode";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { useSaveOnLeave } from "../lib/useSaveOnLeave";
 import { useWriterPrompts } from "../lib/useWriterPrompts";
@@ -85,6 +86,7 @@ import {
   BackButton,
   ComposeIcon,
   DollarIcon,
+  GearIcon,
   MicrophoneIcon,
   PromptIcon,
   SearchIcon,
@@ -109,6 +111,7 @@ const CATEGORY_ICONS: Record<
   compose: ComposeIcon,
   microphone: MicrophoneIcon,
   dollar: DollarIcon,
+  gear: GearIcon,
 };
 
 /** Accordion open state, provided by the page so search can force-open. */
@@ -1078,6 +1081,43 @@ function ModelTuningBody({ initial }: { initial: ConfigInfo }) {
           {saving ? "Saving..." : "Save"}
         </button>
       </div>
+    </NavPane>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Distraction mode: the sock drop
+// ---------------------------------------------------------------------------
+
+function DistractionModeSection() {
+  const [enabled, setEnabled] = useDistractionMode();
+
+  return (
+    <NavPane
+      paneId="general.distraction-mode"
+      summary={
+        enabled ? <span className="text-xs text-gray-400">On</span> : undefined
+      }
+    >
+      <label
+        className="flex items-start gap-3"
+        data-pref-anchor="distraction_mode"
+      >
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setEnabled(e.target.checked)}
+          className="mt-0.5 rounded border-gray-300"
+        />
+        <div className="flex-1">
+          <span className="text-sm text-gray-900">Enable distraction mode</span>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Adds a quiet sock button beside each client name. Pressing it drops
+            a sock for Lucia, the Claria mascot, who trots in, gives it a good
+            shake, and carries it away.
+          </p>
+        </div>
+      </label>
     </NavPane>
   );
 }
@@ -3054,4 +3094,5 @@ const PANE_COMPONENTS: Record<PaneId, ComponentType> = {
   "transcription.local-compute": LocalTranscriptionPanes,
   "transcription.local-decoding": LocalTranscriptionPanes,
   "billing.cost-explorer": CostExplorerSection,
+  "general.distraction-mode": DistractionModeSection,
 };

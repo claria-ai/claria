@@ -14,6 +14,8 @@ All notable changes to Claria are documented here.
 - Every audit action was renamed to a noun.verb name
 - Audit events recorded before this release no longer load, and the audit trail must be cleared when upgrading
 - Values can be marked sensitive so they print as redacted through every formatting path, rather than relying on each log line to leave them out
+- Distraction mode adds a quiet sock control beside client names, off by default and toggled in preferences
+- A dropped sock summons a gently greying pixel-art Lucia, who play-bows, shakes it from her neck, and carries it away
 
 ## [0.32.0] — 2026-08-18
 
