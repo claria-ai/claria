@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LockState } from "../lib/tauri";
@@ -9,6 +9,7 @@ vi.mock("../lib/tauri", () => ({
   unlockWithBiometric: vi.fn(),
   getBiometryStatus: vi.fn(),
 }));
+vi.mock("../lib/windowFocus", () => ({ isWindowFocused: vi.fn() }));
 
 import LockScreen from "./LockScreen";
 import {
@@ -16,6 +17,7 @@ import {
   unlockWithBiometric,
   unlockWithPin,
 } from "../lib/tauri";
+import { isWindowFocused } from "../lib/windowFocus";
 
 const LOCKED: LockState = {
   locked: true,
@@ -39,11 +41,31 @@ function rejected(backoffSeconds: number | null): {
   };
 }
 
+/** A lock screen with Touch ID offered, which is when the button exists. */
+const WITH_TOUCH_ID: LockState = { ...LOCKED, biometric_unlock_enabled: true };
+
+/** Renders with the sensor available and waits for the button to appear. */
+async function renderWithSensor(): Promise<HTMLElement> {
+  vi.mocked(getBiometryStatus).mockResolvedValue({
+    available: true,
+    kind: "touch_id",
+    error: null,
+  });
+  render(<LockScreen state={WITH_TOUCH_ID} />);
+  return await screen.findByRole("button", { name: "Unlock with Touch ID" });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getBiometryStatus).mockResolvedValue({
     available: false,
     kind: "none",
+    error: null,
+  });
+  vi.mocked(isWindowFocused).mockResolvedValue(true);
+  vi.mocked(unlockWithBiometric).mockResolvedValue({
+    accepted: false,
+    state: LOCKED,
     error: null,
   });
 });
@@ -123,32 +145,81 @@ describe("LockScreen", () => {
     expect(field.placeholder).toBe("Try again in 45 s");
   });
 
-  it("prompts the sensor once and offers a button back to it", async () => {
-    vi.mocked(getBiometryStatus).mockResolvedValue({
-      available: true,
-      kind: "touch_id",
-      error: null,
+  /**
+   * The regression this suite exists for.
+   *
+   * Auto-lock fires on an idle timer, so the overlay routinely appears while
+   * the clinician is working in another application. The biometric panel is
+   * system-modal and always-on-top: raising it without a press drops an OS
+   * dialog over whatever they were actually doing.
+   */
+  it("never reaches for the sensor on its own", async () => {
+    const button = await renderWithSensor();
+
+    expect(vi.mocked(unlockWithBiometric)).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // Settling every pending effect and promise, because "not yet" is not the
+    // property under test — "not without a press" is.
+    await act(async () => {
+      await Promise.resolve();
     });
+    expect(vi.mocked(unlockWithBiometric)).not.toHaveBeenCalled();
+
+    // The button is the only way to it.
+    await userEvent.setup().click(button);
+    expect(vi.mocked(unlockWithBiometric)).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays inert while Claria is not the frontmost app", async () => {
+    vi.mocked(isWindowFocused).mockResolvedValue(false);
+    const button = await renderWithSensor();
+
+    // A click queued before the window went away, or a stray key on a focused
+    // control, must not be able to raise a system panel over another app.
+    await userEvent.setup().click(button);
+    expect(vi.mocked(unlockWithBiometric)).not.toHaveBeenCalled();
+
+    // Silently, too: an error box would be telling the clinician off in a
+    // window they are not looking at.
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  /**
+   * The panel's cancel button is labelled "Use PIN", and pressing it arrives
+   * as `userCancel`. Someone who just asked to type their PIN must not be met
+   * with a red box — least of all one reading `[userCancel] - Authentication
+   * canceled.`, which is what LocalAuthentication's own text says.
+   */
+  it("says nothing when the panel is dismissed, and hands back the PIN field", async () => {
+    const button = await renderWithSensor();
+    await userEvent.setup().click(button);
+
+    await waitFor(() =>
+      expect(vi.mocked(unlockWithBiometric)).toHaveBeenCalledTimes(1)
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(document.body.textContent).not.toContain("userCancel");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("PIN"))
+    );
+  });
+
+  it("shows a real biometric failure as a sentence", async () => {
+    const button = await renderWithSensor();
+    // Rust has already mapped the LocalAuthentication case to prose; the
+    // overlay's job is only to render what it was handed.
     vi.mocked(unlockWithBiometric).mockResolvedValue({
       accepted: false,
       state: LOCKED,
-      error: null,
+      error: "Not recognised. Enter your PIN instead.",
     });
 
-    render(
-      <LockScreen state={{ ...LOCKED, biometric_unlock_enabled: true }} />
-    );
+    await userEvent.setup().click(button);
 
-    const retry = await screen.findByRole("button", {
-      name: "Unlock with Touch ID",
-    });
-    expect(vi.mocked(unlockWithBiometric)).toHaveBeenCalledTimes(1);
-
-    // A dismissed prompt says nothing — the clinician reached for the PIN.
-    expect(screen.queryByRole("alert")).toBeNull();
-
-    await userEvent.setup().click(retry);
-    expect(vi.mocked(unlockWithBiometric)).toHaveBeenCalledTimes(2);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Not recognised");
+    expect(alert.textContent).not.toContain("[");
   });
 
   it("says nothing about biometrics when the setting is off", async () => {

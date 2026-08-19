@@ -3,8 +3,9 @@
 use std::time::Duration;
 
 use claria_desktop::security::{
-    LockRuntime, MAX_TIMEOUT_MINUTES, MIN_TIMEOUT_MINUTES, backoff_duration, hash_pin,
-    idle_timeout, validate_pin, validate_timeout_minutes, verify_pin, wall_clock_jumped,
+    LockRuntime, MAX_TIMEOUT_MINUTES, MIN_TIMEOUT_MINUTES, backoff_duration,
+    biometric_failure_message, hash_pin, idle_timeout, validate_pin, validate_timeout_minutes,
+    verify_pin, wall_clock_jumped,
 };
 
 #[test]
@@ -169,4 +170,56 @@ fn a_stored_timeout_outside_the_range_is_clamped_not_obeyed() {
         idle_timeout(u32::MAX),
         Duration::from_secs(u64::from(MAX_TIMEOUT_MINUTES) * 60)
     );
+}
+
+/// The panel's cancel button is labelled "Use PIN". Pressing it — someone
+/// explicitly asking to type their PIN — arrives as `userCancel`, and must
+/// not come back as an error to render at them.
+#[test]
+fn a_dismissed_biometric_panel_is_not_an_error() {
+    for raw in [
+        "[userCancel] - Authentication canceled.",
+        "[userFallback] - Fallback authentication mechanism selected.",
+        "[appCancel] - Authentication was canceled by application.",
+        "[systemCancel] - Authentication was canceled by system.",
+    ] {
+        assert_eq!(biometric_failure_message(raw), None, "{raw}");
+    }
+}
+
+/// Whatever else the panel says, the clinician gets a sentence. A `LAError`
+/// case name in a red box on a lock screen is the bug this mapping exists to
+/// prevent, so the assertion is about the shape of every answer, not just the
+/// cases named here.
+#[test]
+fn every_real_biometric_failure_reads_as_prose() {
+    let raws = [
+        "[authenticationFailed] - Biometry is locked out.",
+        "[biometryLockout] - Biometry is locked out.",
+        "[biometryNotEnrolled] - Biometry is not enrolled.",
+        "[biometryNotAvailable] - Biometry is not available.",
+        "[passcodeNotSet] - Passcode not set.",
+        "[invalidContext] - Context is invalid.",
+        "[notInteractive] - Interaction is not allowed.",
+        // Windows' own catch-all, and a case the plugin has not invented yet.
+        "[internalError] - Failed to request user verification: Error(...)",
+        "[somethingNewInTheNextRelease] - who knows",
+        // Not every variant of the plugin's error even carries a code.
+        "failed to deserialize response: expected value",
+        "",
+    ];
+
+    for raw in raws {
+        let message = biometric_failure_message(raw).unwrap_or_else(|| panic!("{raw} was silenced"));
+        assert!(
+            !message.contains('[') && !message.contains(']'),
+            "{raw} leaked a code: {message}"
+        );
+        assert!(
+            message.ends_with("Enter your PIN instead."),
+            "{raw} left no way forward: {message}"
+        );
+        // The panel's own text is Apple's or Microsoft's, not ours.
+        assert!(!raw.contains(message), "{raw} was passed through verbatim");
+    }
 }

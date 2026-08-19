@@ -412,6 +412,13 @@ pub async fn unlock_with_pin(
 
 /// Answer the lock screen with Touch ID / Face ID / Windows Hello.
 ///
+/// **Only ever called from an explicit press on the lock screen.** The panel
+/// this raises is system-modal and always-on-top, and auto-lock fires on an
+/// idle timer, so anything that invoked it on its own would drop an OS dialog
+/// over whatever application the clinician was actually using. The frontend
+/// checks focus before calling; this checks again immediately before the
+/// panel goes up, because the window can lose focus in the gap.
+///
 /// A dismissed prompt comes back as `accepted: false` with no error — the
 /// clinician chose the PIN field instead, which is not a failure and does not
 /// count against the backoff budget. Only a prompt that actually rejected
@@ -433,6 +440,18 @@ pub async fn unlock_with_biometric(
         // with no fallback behind it.
         let _ = stored_hash(&settings)?;
 
+        // Nothing to tell the clinician here: they did not ask for this, and
+        // whatever they *are* looking at should not learn that Claria wanted
+        // the screen. Reported as a dismissal, which is what it is.
+        if !app_is_frontmost(&app) {
+            tracing::debug!("biometric unlock refused: no Claria window is focused");
+            return Ok(LockOutcome {
+                accepted: false,
+                state: snapshot(&state, &settings),
+                error: None,
+            });
+        }
+
         match prompt_for_biometric(app.clone()).await? {
             Ok(()) => {
                 let state_after = release_lock(&app, &state, &settings, "biometric").await?;
@@ -443,17 +462,29 @@ pub async fn unlock_with_biometric(
                 })
             }
             Err(failure) => {
-                let message = failure.to_string();
-                record_session_audit(
-                    &state,
-                    actions::SESSION_UNLOCK_FAILED,
-                    serde_json::json!({ "method": "biometric" }),
-                )
-                .await;
+                // The raw text is `[userCancel] - Authentication canceled.` —
+                // a LocalAuthentication case name. It belongs in the log,
+                // where a support export can find it, and nowhere near the
+                // overlay.
+                let raw = failure.to_string();
+                tracing::warn!(error = %raw, "biometric unlock did not succeed");
+                let message = security::biometric_failure_message(&raw);
+
+                // Pressing the panel's "Use PIN" button arrives here as
+                // `userCancel`. Someone asking to type their PIN has not
+                // failed to unlock, so it is not audited as one.
+                if message.is_some() {
+                    record_session_audit(
+                        &state,
+                        actions::SESSION_UNLOCK_FAILED,
+                        serde_json::json!({ "method": "biometric" }),
+                    )
+                    .await;
+                }
                 Ok(LockOutcome {
                     accepted: false,
                     state: snapshot(&state, &settings),
-                    error: Some(message),
+                    error: message.map(str::to_owned),
                 })
             }
         }
@@ -762,6 +793,24 @@ async fn biometry_status(app: AppHandle) -> Result<BiometryAvailability, Command
             error: Some(error.to_string()),
         },
     })
+}
+
+/// Whether any Claria window currently has OS focus.
+///
+/// Asked of Tauri rather than of the webview's DOM: `document.hasFocus()`
+/// describes focus *within* the page and stays true in cases the window
+/// manager does not consider the app frontmost. `is_focused()` is implemented
+/// on every desktop platform Tauri supports, so this reads the same on macOS
+/// and on Windows.
+///
+/// Any window counts. The lock overlay is raised in all of them, so unlocking
+/// from the console window is as legitimate as unlocking from the main one.
+/// A window that cannot answer is treated as unfocused — the failure mode
+/// worth having is a press that does nothing, not a panel nobody asked for.
+fn app_is_frontmost(app: &AppHandle) -> bool {
+    app.webview_windows()
+        .values()
+        .any(|window| window.is_focused().unwrap_or(false))
 }
 
 /// Present the platform's biometric prompt.

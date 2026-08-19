@@ -6,6 +6,7 @@ import {
   type LockState,
 } from "../lib/tauri";
 import { biometricLabel } from "../lib/biometry";
+import { isWindowFocused } from "../lib/windowFocus";
 import { logFrontendEvent } from "../lib/logBridge";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
 import { LockIcon } from "./icons";
@@ -31,7 +32,6 @@ export default function LockScreen({ state }: { state: LockState }) {
   const [pin, setPin] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const promptedOnce = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Hold the deadline the backoff ends at, not the seconds left. Each state
@@ -68,29 +68,35 @@ export default function LockScreen({ state }: { state: LockState }) {
     }
   }, [biometryError]);
 
+  // Never invoked on mount, on a broadcast, or on any timer — only from the
+  // button below. The panel this raises is system-modal and always-on-top,
+  // and auto-lock fires on an idle timer, so a prompt nobody asked for lands
+  // on top of whatever application the clinician actually had in front of
+  // them.
   const tryBiometric = useCallback(async () => {
+    // And not even from the button unless Claria is frontmost. A click that
+    // was queued before the window went away, or a stray key on a focused
+    // control, must not be able to raise an OS dialog over another app.
+    if (!(await isWindowFocused())) return;
+
     setBusy(true);
     setMessage(null);
     try {
       const outcome = await unlockWithBiometric();
-      // A dismissed prompt comes back with no error — the clinician reached
-      // for the PIN field, which is a choice and not a failure.
+      // A dismissed prompt comes back with no error — the clinician pressed
+      // "Use PIN", or walked away from the panel. Rust maps every real
+      // failure to a sentence, so whatever arrives here is fit to show.
       if (!outcome.accepted && outcome.error) setMessage(outcome.error);
     } catch (reason) {
       logFrontendEvent("warn", `biometric unlock failed: ${reason}`);
       setMessage(String(reason));
     } finally {
       setBusy(false);
+      // Dismissing the panel is how someone asks to type instead, so put them
+      // in the field rather than making them click into it.
+      inputRef.current?.focus();
     }
   }, []);
-
-  // Present the sensor once when the overlay appears; after that the button
-  // is the way back to it.
-  useEffect(() => {
-    if (!biometry?.available || promptedOnce.current) return;
-    promptedOnce.current = true;
-    tryBiometric();
-  }, [biometry, tryBiometric]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();

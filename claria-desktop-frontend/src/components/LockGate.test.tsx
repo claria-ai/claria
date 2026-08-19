@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LockState } from "../lib/tauri";
 
 vi.mock("../lib/logBridge", () => ({ logFrontendEvent: vi.fn() }));
+vi.mock("../lib/windowFocus", () => ({ isWindowFocused: vi.fn() }));
 
 type Listener = (event: { payload: { state: LockState } }) => void;
 const listeners: Listener[] = [];
@@ -12,11 +13,7 @@ vi.mock("../lib/tauri", () => ({
   recordActivity: vi.fn(async () => {}),
   unlockWithPin: vi.fn(),
   unlockWithBiometric: vi.fn(),
-  getBiometryStatus: vi.fn(async () => ({
-    available: false,
-    kind: "none",
-    error: null,
-  })),
+  getBiometryStatus: vi.fn(),
   events: {
     lockStateChanged: {
       listen: vi.fn(async (listener: Listener) => {
@@ -30,8 +27,14 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import LockGate from "./LockGate";
-import { getLockState, recordActivity } from "../lib/tauri";
+import {
+  getBiometryStatus,
+  getLockState,
+  recordActivity,
+  unlockWithBiometric,
+} from "../lib/tauri";
 import { logFrontendEvent } from "../lib/logBridge";
+import { isWindowFocused } from "../lib/windowFocus";
 
 const UNLOCKED: LockState = {
   locked: false,
@@ -53,6 +56,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   listeners.length = 0;
   vi.mocked(getLockState).mockResolvedValue(UNLOCKED);
+  vi.mocked(getBiometryStatus).mockResolvedValue({
+    available: false,
+    kind: "none",
+    error: null,
+  });
+  vi.mocked(isWindowFocused).mockResolvedValue(true);
 });
 
 describe("LockGate", () => {
@@ -131,6 +140,44 @@ describe("LockGate", () => {
       }
     });
     expect(vi.mocked(recordActivity)).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The path the bug actually took: the idle timer expires, Rust broadcasts a
+   * lock, and the overlay goes up on its own. Nobody pressed anything, so
+   * nothing may reach the sensor — a system-modal panel would appear over
+   * whatever application the clinician had walked over to.
+   *
+   * Asserted with the window *focused*, so the sensor staying quiet is the
+   * absence of an automatic prompt and not the focus guard standing in for
+   * one.
+   */
+  it("raises the overlay on an idle lock without touching the sensor", async () => {
+    vi.mocked(getBiometryStatus).mockResolvedValue({
+      available: true,
+      kind: "touch_id",
+      error: null,
+    });
+
+    render(
+      <LockGate>
+        <p>patient notes</p>
+      </LockGate>
+    );
+    await screen.findByText("patient notes");
+
+    broadcast({
+      ...UNLOCKED,
+      locked: true,
+      auto_lock_enabled: true,
+      biometric_unlock_enabled: true,
+      pin_set: true,
+    });
+
+    // The offer is there; taking it is the clinician's move to make.
+    await screen.findByRole("button", { name: "Unlock with Touch ID" });
+    expect(vi.mocked(unlockWithBiometric)).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("stops feeding the idle timer while locked", async () => {

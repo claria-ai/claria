@@ -6,7 +6,9 @@ All notable changes to Claria are documented here.
 
 - Claria can hide itself behind a PIN after a set period of inactivity, when this Mac wakes from sleep, and when the app starts
 - Help → Lock Claria, or Cmd-Shift-L, locks the app on demand
-- Touch ID and Windows Hello answer the lock screen when biometric unlock is turned on
+- Touch ID and Windows Hello answer the lock screen when biometric unlock is turned on, and only when you press the button for it
+- The fingerprint prompt is never raised on its own, and never while Claria is in the background, so an idle lock cannot drop a system dialog over the app you are actually using
+- Dismissing the fingerprint prompt returns you to the PIN field without an error
 - The PIN is stored as a hash on the computer it was set on and never reaches your bucket or your other machines
 - Three wrong PINs start a wait that doubles with each further attempt, up to five minutes
 - Locking, unlocking, and refused unlock attempts are written to the audit trail

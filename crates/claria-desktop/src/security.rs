@@ -96,6 +96,46 @@ pub fn backoff_duration(failed_attempts: u32) -> Option<Duration> {
     Some(Duration::from_secs(secs))
 }
 
+/// What to show a clinician when the biometric panel comes back refusing.
+///
+/// `None` means "say nothing": the panel was dismissed rather than failed.
+/// Cancelling Touch ID is how someone chooses the PIN field, and the lock
+/// screen already invites that, so rendering it as a red error box tells them
+/// off for doing the intended thing.
+///
+/// Everything else is mapped to a sentence. The plugin's own `Display` is
+/// `[userCancel] - Authentication canceled.` — a `LAError` case name and an
+/// Apple string — and that must never reach the overlay. The raw text is
+/// matched here rather than the plugin's error enum because
+/// `tauri-plugin-biometry` re-exports only `Error` and `Result`; its
+/// `ErrorResponse`, which holds the code as a field, is private. Callers log
+/// the raw string so a support export keeps the diagnostic.
+pub fn biometric_failure_message(raw: &str) -> Option<&'static str> {
+    let code = raw
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .map(|(code, _)| code)
+        .unwrap_or_default();
+
+    Some(match code {
+        // Deliberate dismissals. `userFallback` is the panel's own "Use
+        // Password…" button: also a decision to type something instead, and
+        // the thing they can type here is the PIN.
+        "userCancel" | "userFallback" | "appCancel" | "systemCancel" => return None,
+        "authenticationFailed" => "Not recognised. Enter your PIN instead.",
+        "biometryLockout" => "Too many biometric attempts. Enter your PIN instead.",
+        "biometryNotEnrolled" => "No biometric is enrolled on this computer. Enter your PIN instead.",
+        "biometryNotAvailable" => "Biometric unlock is unavailable. Enter your PIN instead.",
+        "passcodeNotSet" => {
+            "Biometric unlock needs a passcode on this computer. Enter your PIN instead."
+        }
+        // `invalidContext`, `notInteractive`, `unknown`, and anything the
+        // plugin adds later. A case nobody anticipated is exactly the one
+        // that would otherwise leak its code into the UI.
+        _ => "Biometric unlock could not run. Enter your PIN instead.",
+    })
+}
+
 /// True when the wall clock advanced far beyond one watcher tick — the
 /// machine was asleep (or the clock jumped), so the session should lock.
 /// Monotonic clocks behave differently across platforms during sleep;
