@@ -350,6 +350,7 @@ pub async fn save_config(
             model_tuning: Default::default(),
             chat_streaming: Default::default(),
             draft_pipeline: Default::default(),
+            security: Default::default(),
         };
 
         config::save_config(&cfg)?;

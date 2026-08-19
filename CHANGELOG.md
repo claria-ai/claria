@@ -4,6 +4,16 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Claria can hide itself behind a PIN after a set period of inactivity, when this Mac wakes from sleep, and when the app starts
+- Help → Lock Claria, or Cmd-Shift-L, locks the app on demand
+- Touch ID and Windows Hello answer the lock screen when biometric unlock is turned on, and only when you press the button for it
+- The fingerprint prompt is never raised on its own, and never while Claria is in the background, so an idle lock cannot drop a system dialog over the app you are actually using
+- Dismissing the fingerprint prompt returns you to the PIN field without an error
+- The PIN is stored as a hash on the computer it was set on and never reaches your bucket or your other machines
+- Three wrong PINs start a wait that doubles with each further attempt, up to five minutes
+- Locking, unlocking, and refused unlock attempts are written to the audit trail
+- The lock covers the window without unmounting what is behind it, so an unsaved draft survives it
+- A forgotten PIN cannot be recovered; clearing Claria's settings on that computer is the only way past it
 - The report-writing engine publishes as the `claria` crate instead of `claria-report-pipeline`, so the project owns its own name on crates.io
 - Every audit action the report writer and preferences screens record now carries a category, so the trail separates PHI reads from spend and from operational changes
 - Audit events record which kind of action they are — a read of records, a change, a model call, or an administrative action — so "who read this client's records" is one filter rather than a list of action names

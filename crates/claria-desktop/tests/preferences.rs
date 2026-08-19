@@ -2,7 +2,8 @@
 
 use claria_desktop::config::{
     ChatStreamMode, ClariaConfig, CredentialSource, DraftPipelinePreferences, PlanGateMode,
-    ReportAuthoringPreferences, SyncedPreferences, TranscriptionLanguage, TranscriptionPreferences,
+    ReportAuthoringPreferences, SecuritySettings, SyncedPreferences, TranscriptionLanguage,
+    TranscriptionPreferences,
 };
 
 fn sample_config() -> ClariaConfig {
@@ -27,6 +28,7 @@ fn sample_config() -> ClariaConfig {
         model_tuning: Default::default(),
         chat_streaming: ChatStreamMode::Token,
         draft_pipeline: DraftPipelinePreferences::default(),
+        security: SecuritySettings::default(),
     }
 }
 
@@ -163,4 +165,58 @@ fn invalid_report_authoring_preferences_are_rejected() {
     };
 
     assert!(invalid.validate().is_err());
+}
+
+/// The PIN hash is a credential for this computer. Syncing it would put it in
+/// the bucket it exists to protect, and would carry a lock a clinician set on
+/// one machine onto every other one they use.
+#[test]
+fn the_pin_hash_never_reaches_the_synced_preferences() {
+    let mut cfg = sample_config();
+    cfg.security.auto_lock_enabled = true;
+    cfg.security.pin_hash = Some(
+        "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"
+            .to_string()
+            .into(),
+    );
+
+    let json = serde_json::to_string(&SyncedPreferences::from_config(&cfg)).expect("serialize");
+
+    assert!(!json.contains("security"), "{json}");
+    assert!(!json.contains("pin_hash"), "{json}");
+    assert!(!json.contains("argon2"), "{json}");
+}
+
+/// A synced-preferences overlay arriving from another machine must not be
+/// able to reach the lock settings, however it was written.
+#[test]
+fn applying_synced_preferences_leaves_the_lock_alone() {
+    let mut cfg = sample_config();
+    cfg.security.auto_lock_enabled = true;
+    cfg.security.auto_lock_timeout_minutes = 15;
+    cfg.security.pin_hash = Some("$argon2id$v=19$hash".to_string().into());
+
+    let synced = SyncedPreferences::from_config(&sample_config());
+    synced.apply_to_config(&mut cfg);
+
+    assert!(cfg.security.auto_lock_enabled);
+    assert_eq!(cfg.security.auto_lock_timeout_minutes, 15);
+    assert!(cfg.security.pin_set());
+}
+
+/// `Sensitive` is what makes a stray `{:?}` of the whole config harmless. The
+/// hash is one debug-print away from a support export otherwise.
+#[test]
+fn debug_printing_the_config_does_not_print_the_pin_hash() {
+    let mut cfg = sample_config();
+    cfg.security.pin_hash = Some(
+        "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"
+            .to_string()
+            .into(),
+    );
+
+    let rendered = format!("{cfg:?}");
+
+    assert!(!rendered.contains("argon2"), "{rendered}");
+    assert!(rendered.contains("[redacted]"), "{rendered}");
 }

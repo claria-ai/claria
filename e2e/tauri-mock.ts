@@ -21,6 +21,47 @@ export function buildInitScript(
     (() => {
       const MOCK_AWS_URL = "${MOCK_AWS_URL}";
 
+      // ── Session lock (mirrors claria-desktop/src/commands/security.rs) ─
+      //
+      // The PIN lives here in the clear because this mock is the backend, not
+      // the app: the real one only ever stores an argon2 hash.
+      const lock = {
+        locked: false,
+        pin: null,
+        autoLockEnabled: false,
+        biometricEnabled: false,
+        timeoutMinutes: 5,
+        failedAttempts: 0,
+      };
+
+      function lockState() {
+        return {
+          locked: lock.locked,
+          auto_lock_enabled: lock.autoLockEnabled,
+          auto_lock_timeout_minutes: lock.timeoutMinutes,
+          biometric_unlock_enabled: lock.biometricEnabled,
+          pin_set: lock.pin !== null,
+          failed_attempts: lock.failedAttempts,
+          backoff_remaining_seconds: null,
+        };
+      }
+
+      // Minimal event bus so the lock broadcast reaches the gate the same way
+      // it does in the app.
+      const eventListeners = {};
+
+      function emitEvent(name, payload) {
+        for (const id of eventListeners[name] || []) {
+          const handler = window["_" + id];
+          if (handler) handler({ event: name, id, payload });
+        }
+      }
+
+      function publishLock() {
+        emitEvent("lock-state-changed", { state: lockState() });
+        return lockState();
+      }
+
       // ── Mutable app state ──────────────────────────────────────────────
       let configSaved = ${configured};
       let savedConfig = ${configured ? `{
@@ -413,7 +454,10 @@ export function buildInitScript(
           if (cmd === "plugin:app|version") return "0.15.0";
           if (cmd === "plugin:app|name") return "Claria";
           if (cmd === "plugin:app|tauri_version") return "2.0.0";
-          if (cmd === "plugin:event|listen") return 0;
+          if (cmd === "plugin:event|listen") {
+            (eventListeners[args.event] ||= []).push(args.handler);
+            return 0;
+          }
           if (cmd === "plugin:event|unlisten") return;
           if (cmd === "plugin:webview|get_all_webviews") {
             return [{ label: "main", url: "http://localhost:1420" }];
@@ -1498,6 +1542,70 @@ export function buildInitScript(
 
           // ── Cost explorer ────────────────────────────────────────────
           if (cmd === "probe_cost_explorer") return false;
+
+          // ── Session lock ─────────────────────────────────────────────
+          if (cmd === "get_lock_state") return lockState();
+          if (cmd === "record_activity") return null;
+          if (cmd === "get_biometry_status") {
+            return { available: false, kind: "none", error: "No sensor in E2E" };
+          }
+          if (cmd === "unlock_with_biometric") throw "Biometric unlock is not enabled";
+
+          if (cmd === "lock_session") {
+            if (lock.pin === null) throw "Auto-lock is not set up on this computer";
+            lock.locked = true;
+            publishLock();
+            return null;
+          }
+
+          if (cmd === "unlock_with_pin") {
+            if (args.pin === lock.pin) {
+              lock.locked = false;
+              lock.failedAttempts = 0;
+              return { accepted: true, state: publishLock(), error: null };
+            }
+            lock.failedAttempts += 1;
+            return { accepted: false, state: publishLock(), error: null };
+          }
+
+          if (cmd === "enable_auto_lock") {
+            if (!/^[0-9]{6,12}$/.test(args.pin)) throw "PIN must be 6\u201312 digits long";
+            lock.pin = args.pin;
+            lock.autoLockEnabled = true;
+            lock.timeoutMinutes = args.timeoutMinutes;
+            return publishLock();
+          }
+
+          if (cmd === "disable_auto_lock") {
+            if (args.pin !== lock.pin) {
+              return { accepted: false, state: lockState(), error: null };
+            }
+            lock.pin = null;
+            lock.autoLockEnabled = false;
+            lock.biometricEnabled = false;
+            lock.timeoutMinutes = 5;
+            lock.locked = false;
+            return { accepted: true, state: publishLock(), error: null };
+          }
+
+          if (cmd === "change_pin") {
+            if (args.currentPin !== lock.pin) {
+              return { accepted: false, state: lockState(), error: null };
+            }
+            if (!/^[0-9]{6,12}$/.test(args.newPin)) throw "PIN must be 6\u201312 digits long";
+            lock.pin = args.newPin;
+            return { accepted: true, state: publishLock(), error: null };
+          }
+
+          if (cmd === "set_auto_lock_timeout") {
+            lock.timeoutMinutes = args.timeoutMinutes;
+            return publishLock();
+          }
+
+          if (cmd === "set_biometric_unlock") {
+            lock.biometricEnabled = args.enabled;
+            return publishLock();
+          }
 
           console.warn("[tauri-mock-e2e] unhandled command:", cmd, args);
           return null;

@@ -25,6 +25,18 @@ async function capture(page: Page, filename: string, fullPage: boolean) {
   });
 }
 
+/**
+ * Re-inject the Tauri mock with per-test fixture overrides.
+ *
+ * `beforeEach` has already added the default script. Init scripts run in the
+ * order they were registered and the mock is a whole-object assignment to
+ * `window.__TAURI_INTERNALS__`, so a later one simply wins. Call this before
+ * `goto`.
+ */
+async function overrideFixtures(page: Page, overrides: Record<string, unknown>) {
+  await page.addInitScript({ content: buildInitScript(overrides) });
+}
+
 async function settleConversationAtStart(page: Page) {
   // Chat auto-scrolls smoothly after appending the response. Wait for that
   // motion to finish, then show the start of the exchange consistently.
@@ -348,4 +360,43 @@ test("file history – diff", async ({ page }) => {
   await page.click('button:has-text("Compare")');
   await page.waitForSelector("h4:has-text('Diff')");
   await capture(page, "history-diff.png", true);
+});
+
+// ── Session lock screenshot ──────────────────────────────────────────
+
+/**
+ * The lock overlay, driven entirely from fixture state — no idle timer, no
+ * real clock, no waiting.
+ *
+ * This shot is also a regression test for the auto-lock ambush: the overlay
+ * mounting must not invoke the biometric sensor. If it ever does again, the
+ * plugin command is unmocked here, the failure surfaces as a red error box,
+ * and the assertion below fails before the capture is taken.
+ */
+test("session lock screen", async ({ page }) => {
+  await overrideFixtures(page, {
+    get_lock_state: {
+      locked: true,
+      auto_lock_enabled: true,
+      auto_lock_timeout_minutes: 5,
+      biometric_unlock_enabled: true,
+      pin_set: true,
+      failed_attempts: 0,
+      backoff_remaining_seconds: null,
+    },
+    get_biometry_status: { available: true, kind: "touch_id", error: null },
+  });
+
+  await page.goto(BASE_URL);
+  await page.waitForSelector("[data-testid=lock-screen]");
+  await page.waitForSelector("text=Claria is locked");
+  await expect(
+    page.getByRole("button", { name: "Unlock with Touch ID" })
+  ).toBeVisible();
+
+  // The empty PIN field and a clean overlay are the whole composition.
+  await expect(page.getByLabel("PIN")).toHaveValue("");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+
+  await capture(page, "lock-screen.png", false);
 });

@@ -60,6 +60,7 @@ Screenshots are written to `output/` at 2× resolution (Retina):
 - `infra-chat.png` — Infrastructure assistant
 - `cost-explorer.png` — AWS cost explorer
 - `history-diff.png` — Record-version comparison
+- `lock-screen.png` — Session lock overlay with PIN entry and Touch ID unlock
 
 ## Updating claria-ai.github.io after a release
 

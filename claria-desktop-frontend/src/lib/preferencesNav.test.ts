@@ -99,6 +99,16 @@ describe("searchPreferencesNav", () => {
     ).toBe(true);
   });
 
+  it("finds auto-lock by the words a clinician would use", () => {
+    for (const query of ["pin", "touch id", "idle", "lock"]) {
+      expect(
+        searchPreferencesNav(query).some(
+          (hit) => hit.paneId === "security.auto-lock"
+        )
+      ).toBe(true);
+    }
+  });
+
   it("field hits carry a breadcrumb with category and pane titles", () => {
     const hit = searchPreferencesNav("hourly data resolution")[0];
     expect(hit.context).toBe("Billing › Cost Explorer");

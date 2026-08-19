@@ -1386,12 +1386,134 @@ async stopStream(streamId: string) : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getLockState() : Promise<Result<LockState, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_lock_state") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Report that the clinician did something. Feeds the idle timer.
+ * 
+ * The frontend throttles these hard — this is a heartbeat, not an event
+ * stream, and it must stay cheap enough to call from a pointer handler.
+ */
+async recordActivity() : Promise<void> {
+    await TAURI_INVOKE("record_activity");
+},
+async lockSession() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("lock_session") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Answer the lock screen with the PIN.
+ */
+async unlockWithPin(pin: string) : Promise<Result<LockOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("unlock_with_pin", { pin }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Answer the lock screen with Touch ID / Face ID / Windows Hello.
+ * 
+ * A dismissed prompt comes back as `accepted: false` with no error — the
+ * clinician chose the PIN field instead, which is not a failure and does not
+ * count against the backoff budget. Only a prompt that actually rejected
+ * them is audited.
+ */
+async unlockWithBiometric() : Promise<Result<LockOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("unlock_with_biometric") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getBiometryStatus() : Promise<Result<BiometryAvailability, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_biometry_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Turn auto-lock on with a freshly chosen PIN.
+ */
+async enableAutoLock(pin: string, timeoutMinutes: number) : Promise<Result<LockState, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("enable_auto_lock", { pin, timeoutMinutes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Turn auto-lock off and discard the stored PIN. Requires the PIN, so
+ * walking up to an unlocked machine is not enough to remove the lock.
+ */
+async disableAutoLock(pin: string) : Promise<Result<LockOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("disable_auto_lock", { pin }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Replace the unlock PIN. The current one is required.
+ */
+async changePin(currentPin: string, newPin: string) : Promise<Result<LockOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_pin", { currentPin, newPin }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Change how long the app waits before locking itself.
+ */
+async setAutoLockTimeout(timeoutMinutes: number) : Promise<Result<LockState, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_auto_lock_timeout", { timeoutMinutes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Accept or stop accepting a biometric at the lock screen. The PIN keeps
+ * working either way.
+ */
+async setBiometricUnlock(enabled: boolean) : Promise<Result<LockState, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_biometric_unlock", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
 /** user-defined events **/
 
 
+export const events = __makeEvents__<{
+lockStateChanged: LockStateChanged
+}>({
+lockStateChanged: "lock-state-changed"
+})
 
 /** user-defined constants **/
 
@@ -1475,6 +1597,23 @@ assumed_role_arn: string;
  */
 account_id: string }
 export type AuthorshipKind = "template" | "model_generated" | "model_revised" | "human_edited"
+/**
+ * Whether a fingerprint or face can answer the lock screen on this machine.
+ */
+export type BiometryAvailability = { available: boolean; kind: BiometryKind; 
+/**
+ * Why biometrics are unavailable, when they are — no sensor, nothing
+ * enrolled, locked out after too many failures.
+ */
+error: string | null }
+/**
+ * Which biometric this machine offers, if any.
+ */
+export type BiometryKind = "touch_id" | "face_id" | "windows_hello" | 
+/**
+ * A sensor the platform did not name.
+ */
+"biometric" | "none"
 /**
  * Redacted [`BootstrapResult`] for the frontend: the minted secret access
  * key is persisted to the local config Rust-side and never returned.
@@ -1930,6 +2069,58 @@ export type LocalModelId = "whisper_base_en_q8" | "whisper_small_q8" | "whisper_
 export type LocalModelInfo = { id: LocalModelId; label: string; description: string; filename: string; quantization: string; languages: string[]; download_size_bytes: number; downloaded: boolean; model_size_bytes: number | null; model_path: string | null; active: boolean }
 export type LocalTranscriptionSettings = { settings_version: number; speech_model: LocalModelId; backend: LocalBackend; gpu_device: number; cpu_threads: number; kv_precision: LocalKvPrecision; initial_prompt: string; condition_on_previous_text: boolean; max_previous_context_tokens: number; temperature: number; temperature_increment: number; compression_ratio_threshold: number; log_probability_threshold: number; no_speech_threshold: number; seed: number }
 export type LocalTranscriptionStatus = { runtime_version: string; settings: LocalTranscriptionSettings; models: LocalModelInfo[]; backends: LocalBackendInfo[]; devices: LocalComputeDevice[]; legacy_model_bytes: number; accelerated: boolean }
+/**
+ * The result of a command that had to check a credential first.
+ */
+export type LockOutcome = { 
+/**
+ * Whether the credential was accepted.
+ */
+accepted: boolean; 
+/**
+ * Lock state after the attempt, including any backoff it earned.
+ */
+state: LockState; 
+/**
+ * Why the attempt could not be made, when there is something worth
+ * saying — a backoff window, a biometric lockout, an unenrolled sensor.
+ * `None` for a plain wrong PIN and for a prompt the user dismissed;
+ * both of those the UI phrases itself.
+ */
+error: string | null }
+/**
+ * Everything the frontend is allowed to know about the lock.
+ * 
+ * The stored PIN appears here only as `pin_set`. There is deliberately no
+ * field that could carry the hash, so no future edit can add one by
+ * forgetting to redact.
+ */
+export type LockState = { 
+/**
+ * Whether the overlay should be up.
+ */
+locked: boolean; auto_lock_enabled: boolean; auto_lock_timeout_minutes: number; biometric_unlock_enabled: boolean; 
+/**
+ * Whether a PIN is stored. Never the PIN, never its hash.
+ */
+pin_set: boolean; 
+/**
+ * Consecutive failed unlock attempts since the last success.
+ */
+failed_attempts: number; 
+/**
+ * Seconds until attempts are accepted again, or `None` when they already
+ * are.
+ */
+backoff_remaining_seconds: number | null }
+/**
+ * Broadcast to every window whenever the lock changes.
+ * 
+ * Carries the whole state rather than a `locked` flag so a window that was
+ * not the one making the change does not have to follow the event with a
+ * round trip to find out what changed.
+ */
+export type LockStateChanged = { state: LockState }
 export type ModelDownloadProgress = { model_id: LocalModelId; downloaded_bytes: number; total_bytes: number }
 /**
  * Pricing per million tokens for a Bedrock model.
@@ -2415,7 +2606,6 @@ export type StyleProposal = {
  * Zero-based index into the anchored section's blocks.
  */
 block_index: number; original_text: string; replacement_text: string }
-export type TAURI_CHANNEL<TSend> = null
 export type TemplateExportWarning = 
 /**
  * The stored template source no longer exists (imports predating the

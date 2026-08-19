@@ -186,6 +186,26 @@ export function GearIcon({ className = "w-5 h-5" }: IconProps) {
   );
 }
 
+/** Closed padlock. The Security category tile, and the lock screen. */
+export function LockIcon({ className = "w-4 h-4" }: IconProps) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={1.5}
+        d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"
+      />
+    </svg>
+  );
+}
+
 /** Four-point spark. The Claude category tile in Preferences. */
 export function SparkleIcon({ className = "w-4 h-4" }: IconProps) {
   return (

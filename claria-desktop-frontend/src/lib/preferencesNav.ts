@@ -18,6 +18,7 @@ export type CategoryId =
   | "writer"
   | "transcription"
   | "billing"
+  | "security"
   | "general";
 
 export type PaneId =
@@ -37,6 +38,7 @@ export type PaneId =
   | "transcription.local-compute"
   | "transcription.local-decoding"
   | "billing.cost-explorer"
+  | "security.auto-lock"
   | "general.distraction-mode";
 
 /** A labeled control search can land on. */
@@ -71,7 +73,14 @@ export interface CategorySpec {
   /** Short line under the category heading. */
   blurb: string;
   /** Key into the icon map in Preferences.tsx. */
-  icon: "sparkle" | "prompt" | "compose" | "microphone" | "dollar" | "gear";
+  icon:
+    | "sparkle"
+    | "prompt"
+    | "compose"
+    | "microphone"
+    | "dollar"
+    | "lock"
+    | "gear";
   /** Tailwind background class for the sidebar icon tile. */
   tint: string;
   panes: PaneSpec[];
@@ -448,6 +457,58 @@ export const PREFERENCES_NAV: CategorySpec[] = [
             anchor: "hourly_cost_data",
             label: "Hourly data resolution",
             terms: ["hourly"],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "security",
+    title: "Security",
+    blurb: "Locking this Mac's copy of Claria when you step away",
+    icon: "lock",
+    tint: "bg-amber-600",
+    panes: [
+      {
+        id: "security.auto-lock",
+        title: "Auto-Lock",
+        blurb:
+          "Hide Claria behind a PIN after a period of inactivity, when this Mac wakes from sleep, and when the app starts. Set up on this computer only — the PIN is never sent to your bucket and never reaches your other machines.",
+        terms: [
+          "pin",
+          "lock",
+          "touch id",
+          "face id",
+          "windows hello",
+          "biometric",
+          "idle",
+          "timeout",
+          "screen lock",
+          "hipaa",
+          "walk away",
+        ],
+        machineLocal: true,
+        defaultOpen: true,
+        fields: [
+          {
+            anchor: "auto_lock_enabled",
+            label: "Auto-lock",
+            terms: ["set up", "turn on", "turn off", "disable"],
+          },
+          {
+            anchor: "auto_lock_timeout_minutes",
+            label: "Lock after",
+            terms: ["idle", "inactivity", "minutes", "timeout"],
+          },
+          {
+            anchor: "biometric_unlock_enabled",
+            label: "Unlock with a biometric",
+            terms: ["touch id", "face id", "windows hello", "fingerprint"],
+          },
+          {
+            anchor: "change_pin",
+            label: "Change PIN",
+            terms: ["new pin", "reset pin"],
           },
         ],
       },

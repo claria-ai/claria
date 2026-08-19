@@ -26,6 +26,17 @@ const configInfo = {
   },
 };
 
+/** No lock configured — the Security pane's "Set up auto-lock" state. */
+const lockState = {
+  locked: false,
+  auto_lock_enabled: false,
+  auto_lock_timeout_minutes: 5,
+  biometric_unlock_enabled: false,
+  pin_set: false,
+  failed_attempts: 0,
+  backoff_remaining_seconds: null,
+};
+
 const localStatus = {
   runtime_version: "0.2.0",
   accelerated: true,
@@ -119,10 +130,35 @@ vi.mock("../lib/tauri", () => ({
   listFileVersions: vi.fn(async () => []),
   getFileVersionText: vi.fn(async () => ""),
   restoreFileVersion: vi.fn(async () => {}),
+  // Session lock — reached through the Security pane and `useLockState`.
+  getLockState: vi.fn(async () => lockState),
+  getBiometryStatus: vi.fn(async () => ({
+    available: false,
+    kind: "none",
+    error: null,
+  })),
+  enableAutoLock: vi.fn(async () => lockState),
+  disableAutoLock: vi.fn(async () => ({
+    accepted: true,
+    state: lockState,
+    error: null,
+  })),
+  changePin: vi.fn(async () => ({
+    accepted: true,
+    state: lockState,
+    error: null,
+  })),
+  setAutoLockTimeout: vi.fn(async () => lockState),
+  setBiometricUnlock: vi.fn(async () => lockState),
+  lockSession: vi.fn(async () => {}),
+  events: {
+    lockStateChanged: { listen: vi.fn(async () => () => {}) },
+  },
 }));
 
 import Preferences from "./Preferences";
 import {
+  enableAutoLock,
   fetchCloudPreferences,
   loadConfig,
   savePreferencesPatch,
@@ -419,6 +455,47 @@ describe("Preferences", () => {
     const pane = paneElement("writer.draft-runs");
     expect(categoryVisible(pane)).toBe(true);
     expect(pane.querySelector("details")?.open).toBe(true);
+  });
+
+  it("sets up auto-lock with one PIN and one timeout", async () => {
+    const user = userEvent.setup();
+    const enableMock = vi.mocked(enableAutoLock);
+    enableMock.mockClear();
+    render(<Preferences navigate={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Security" }));
+    await user.click(screen.getByRole("button", { name: "Set up auto-lock" }));
+    await user.type(screen.getByLabelText("Choose a PIN (6–12 digits)"), "482913");
+    await user.type(screen.getByLabelText("Repeat PIN"), "482913");
+    await user.selectOptions(screen.getByRole("combobox"), "15");
+    await user.click(screen.getByRole("button", { name: "Turn on auto-lock" }));
+
+    expect(enableMock).toHaveBeenCalledWith("482913", 15);
+  });
+
+  it("refuses a mismatched confirmation without asking Rust", async () => {
+    const user = userEvent.setup();
+    const enableMock = vi.mocked(enableAutoLock);
+    enableMock.mockClear();
+    render(<Preferences navigate={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Security" }));
+    await user.click(screen.getByRole("button", { name: "Set up auto-lock" }));
+    await user.type(screen.getByLabelText("Choose a PIN (6–12 digits)"), "482913");
+    await user.type(screen.getByLabelText("Repeat PIN"), "482914");
+    await user.click(screen.getByRole("button", { name: "Turn on auto-lock" }));
+
+    expect(await screen.findByText("Those PINs do not match.")).toBeTruthy();
+    expect(enableMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the auto-lock pane on this Mac", async () => {
+    const user = userEvent.setup();
+    render(<Preferences navigate={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Security" }));
+    const pane = paneElement("security.auto-lock");
+    // The PIN hash is machine-local by design; the badge is what says so.
+    expect(pane.textContent).toContain("This Mac");
   });
 
   it("opens the preferences file version history", async () => {

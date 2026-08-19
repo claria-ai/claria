@@ -324,6 +324,35 @@ pub mod actions {
     pub const WRITER_PROMPT_DELETE: Action = admin("writer_prompt.delete");
     /// The Claria Console log was exported to a file.
     pub const CONSOLE_EXPORT: Action = admin("console.export");
+
+    // -- admin: the session lock ------------------------------------------
+    //
+    // Locking is walk-away protection over PHI, not a read of it, so these
+    // are operational events. Nothing here may carry the PIN, its hash, or
+    // any value derived from either — `details` is console-safe by contract
+    // and these events are the ones most likely to be exported after an
+    // incident.
+    /// The session was locked behind its PIN. Why — `idle`, `sleep`,
+    /// `startup`, or `manual` — is in `details`.
+    pub const SESSION_LOCK: Action = admin("session.lock");
+    /// The session was unlocked. Which credential answered — `pin` or
+    /// `biometric` — is in `details`.
+    pub const SESSION_UNLOCK: Action = admin("session.unlock");
+    /// An unlock attempt was rejected. Its own action rather than a flag on
+    /// `session.unlock`, so a run of failed attempts is one query instead of
+    /// a filter over every unlock in the day.
+    pub const SESSION_UNLOCK_FAILED: Action = admin("session.unlock_failed");
+    /// Auto-lock was turned on, with the idle timeout it was set to.
+    pub const SESSION_AUTO_LOCK_ENABLE: Action = admin("session.auto_lock_enable");
+    /// Auto-lock was turned off and the stored PIN discarded.
+    pub const SESSION_AUTO_LOCK_DISABLE: Action = admin("session.auto_lock_disable");
+    /// The unlock PIN was replaced. The old and new PINs are equally absent
+    /// from the event.
+    pub const SESSION_PIN_CHANGE: Action = admin("session.pin_change");
+    /// A live auto-lock setting was changed — the idle timeout, or whether
+    /// biometric unlock is accepted. Recorded because both weaken or
+    /// strengthen the posture the other session events are written under.
+    pub const SESSION_AUTO_LOCK_UPDATE: Action = admin("session.auto_lock_update");
 }
 
 /// A structured, application-level audit event. Schema v2.

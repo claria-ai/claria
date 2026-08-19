@@ -9,7 +9,7 @@
 // `TAURI_CHANNEL<ProvisionerProgress>`.
 
 import { Channel } from "@tauri-apps/api/core";
-import { commands } from "./bindings";
+import { commands, events } from "./bindings";
 import type {
   ChatHistoryDetail,
   ChatHistorySummary,
@@ -34,6 +34,8 @@ import type {
   LocalModelId,
   LocalTranscriptionSettings,
   LocalTranscriptionStatus,
+  LockOutcome,
+  LockState,
   ModelDownloadProgress,
   ModelPricing,
   PlanEntry,
@@ -64,12 +66,14 @@ import type {
   WriterTrustRules,
 } from "./bindings";
 
-export { commands };
+export { commands, events };
 export type {
   AccessKeyInfo,
   AccessKeyLimitReached,
   Action,
   AssumedRoleSession,
+  BiometryAvailability,
+  BiometryKind,
   BootstrapOutcome,
   BootstrapStep,
   CallerIdentity,
@@ -125,6 +129,9 @@ export type {
   LocalModelInfo,
   LocalTranscriptionSettings,
   LocalTranscriptionStatus,
+  LockOutcome,
+  LockState,
+  LockStateChanged,
   ModelDownloadProgress,
   ModelPricing,
   NewCredentialsInfo,
@@ -1239,4 +1246,61 @@ export async function saveConsoleLogs(): Promise<boolean> {
 
 export async function revealLogFolder(): Promise<void> {
   unwrap(await commands.revealLogFolder());
+}
+
+// ---------------------------------------------------------------------------
+// Session lock
+// ---------------------------------------------------------------------------
+
+export async function getLockState(): Promise<LockState> {
+  return unwrap(await commands.getLockState());
+}
+
+// Infallible on the Rust side: the idle heartbeat has nothing to fail at.
+export async function recordActivity(): Promise<void> {
+  await commands.recordActivity();
+}
+
+export async function lockSession(): Promise<void> {
+  unwrap(await commands.lockSession());
+}
+
+export async function unlockWithPin(pin: string): Promise<LockOutcome> {
+  return unwrap(await commands.unlockWithPin(pin));
+}
+
+export async function unlockWithBiometric(): Promise<LockOutcome> {
+  return unwrap(await commands.unlockWithBiometric());
+}
+
+export async function getBiometryStatus() {
+  return unwrap(await commands.getBiometryStatus());
+}
+
+export async function enableAutoLock(
+  pin: string,
+  timeoutMinutes: number
+): Promise<LockState> {
+  return unwrap(await commands.enableAutoLock(pin, timeoutMinutes));
+}
+
+export async function disableAutoLock(pin: string): Promise<LockOutcome> {
+  return unwrap(await commands.disableAutoLock(pin));
+}
+
+export async function changePin(
+  currentPin: string,
+  newPin: string
+): Promise<LockOutcome> {
+  return unwrap(await commands.changePin(currentPin, newPin));
+}
+
+export async function setAutoLockTimeout(
+  timeoutMinutes: number
+): Promise<LockState> {
+  return unwrap(await commands.setAutoLockTimeout(timeoutMinutes));
+}
+
+export async function setBiometricUnlock(enabled: boolean): Promise<LockState> {
+  return unwrap(await commands.setBiometricUnlock(enabled));
 }

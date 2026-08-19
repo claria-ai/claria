@@ -31,6 +31,7 @@ claria.workspace = true
 claria-report-store.workspace = true
 claria-storage.workspace = true
 claria-transcribe.workspace = true
+argon2 = "=0.5.3"
 aws-config.workspace = true
 aws-sdk-s3.workspace = true
 aws-sdk-sts.workspace = true
@@ -50,6 +51,9 @@ sha2.workspace = true
 specta.workspace = true
 specta-typescript = "=0.0.9"
 tauri = { version = "=2.11.5", features = [] }
+# Biometric unlock. 0.2.8 is the newest stable line; 0.3.0 is still an rc
+# and a release candidate is not what a lock screen runs on.
+tauri-plugin-biometry = "=0.2.8"
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 thiserror.workspace = true
 # `rt-multi-thread` is what Tauri's runtime uses; declared here because this

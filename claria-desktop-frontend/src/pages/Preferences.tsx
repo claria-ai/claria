@@ -32,6 +32,13 @@ import {
   importPreferences,
   saveWriterLibraryPrompt,
   deleteWriterLibraryPrompt,
+  changePin,
+  disableAutoLock,
+  enableAutoLock,
+  getBiometryStatus,
+  lockSession,
+  setAutoLockTimeout,
+  setBiometricUnlock,
   type ChatStreamMode,
   type ConfigInfo,
   type DraftPipelinePreferences,
@@ -55,7 +62,9 @@ import { logFrontendEvent } from "../lib/logBridge";
 import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
 import { useDistractionMode } from "../lib/distractionMode";
+import { biometricLabel } from "../lib/biometry";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
+import { useLockState } from "../lib/useLockState";
 import { useSaveOnLeave } from "../lib/useSaveOnLeave";
 import { useWriterPrompts } from "../lib/useWriterPrompts";
 import { useWriterTemplates } from "../lib/useWriterTemplates";
@@ -87,6 +96,7 @@ import {
   ComposeIcon,
   DollarIcon,
   GearIcon,
+  LockIcon,
   MicrophoneIcon,
   PromptIcon,
   SearchIcon,
@@ -111,6 +121,7 @@ const CATEGORY_ICONS: Record<
   compose: ComposeIcon,
   microphone: MicrophoneIcon,
   dollar: DollarIcon,
+  lock: LockIcon,
   gear: GearIcon,
 };
 
@@ -1082,6 +1093,383 @@ function ModelTuningBody({ initial }: { initial: ConfigInfo }) {
         </button>
       </div>
     </NavPane>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Auto-lock: PIN, idle timeout, and biometric unlock
+// ---------------------------------------------------------------------------
+
+/** Matches `MAX_PIN_LEN` in `claria-desktop/src/security.rs`. */
+const MAX_PIN_LENGTH = 12;
+
+/** A round subset of the 1–120 minutes Rust accepts. */
+const TIMEOUT_OPTIONS = [1, 5, 15, 30, 60];
+
+const PIN_INPUT_CLASS =
+  "w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent";
+const PRIMARY_BUTTON_CLASS =
+  "px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50";
+const SECONDARY_BUTTON_CLASS =
+  "px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50";
+
+/** Which credential form the pane is showing, if any. */
+type AutoLockForm = "none" | "setup" | "change-pin" | "turn-off";
+
+function digitsOnly(value: string): string {
+  return value.replace(/\D/g, "").slice(0, MAX_PIN_LENGTH);
+}
+
+function PinField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <input
+      type="password"
+      inputMode="numeric"
+      autoComplete="off"
+      aria-label={label}
+      placeholder={label}
+      value={value}
+      onChange={(event) => onChange(digitsOnly(event.target.value))}
+      className={PIN_INPUT_CLASS}
+    />
+  );
+}
+
+/**
+ * The Security pane.
+ *
+ * Every command here broadcasts the resulting lock state, so `useLockState`
+ * is the single source of truth and nothing in this component refetches after
+ * a save. The PIN fields are write-only: what comes back is `pin_set`, never
+ * anything derived from the PIN itself.
+ */
+function AutoLockSection() {
+  const lock = useLockState();
+  const { data: biometry } = useAsyncLoad(getBiometryStatus, []);
+  const [form, setForm] = useState<AutoLockForm>("none");
+  const [pin, setPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const [currentPin, setCurrentPin] = useState("");
+  const [timeout, setTimeoutMinutes] = useState(TIMEOUT_OPTIONS[1]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function openForm(next: AutoLockForm) {
+    setPin("");
+    setConfirmPin("");
+    setCurrentPin("");
+    setError(null);
+    setForm(next);
+  }
+
+  /** Run one command, keeping the pane's error and busy state honest. */
+  async function run(operation: () => Promise<boolean>) {
+    setBusy(true);
+    setError(null);
+    try {
+      if (await operation()) openForm("none");
+    } catch (reason) {
+      logFrontendEvent("error", `auto-lock command failed: ${reason}`);
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleEnable(event: React.FormEvent) {
+    event.preventDefault();
+    if (pin !== confirmPin) {
+      setError("Those PINs do not match.");
+      return;
+    }
+    await run(async () => {
+      await enableAutoLock(pin, timeout);
+      return true;
+    });
+  }
+
+  async function handleChangePin(event: React.FormEvent) {
+    event.preventDefault();
+    if (pin !== confirmPin) {
+      setError("Those PINs do not match.");
+      return;
+    }
+    await run(async () => {
+      const outcome = await changePin(currentPin, pin);
+      if (!outcome.accepted) setError("That is not your current PIN.");
+      return outcome.accepted;
+    });
+  }
+
+  async function handleTurnOff(event: React.FormEvent) {
+    event.preventDefault();
+    await run(async () => {
+      const outcome = await disableAutoLock(currentPin);
+      if (!outcome.accepted) setError("That is not your current PIN.");
+      return outcome.accepted;
+    });
+  }
+
+  if (lock === null) {
+    return (
+      <NavPane paneId="security.auto-lock">
+        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+          <Spinner />
+          <span>Loading auto-lock settings...</span>
+        </div>
+      </NavPane>
+    );
+  }
+
+  const enabled = lock.auto_lock_enabled && lock.pin_set;
+
+  return (
+    <NavPane
+      paneId="security.auto-lock"
+      summary={
+        enabled ? (
+          <span className="text-xs text-gray-400">
+            After {lock.auto_lock_timeout_minutes} min
+          </span>
+        ) : undefined
+      }
+    >
+      {!enabled ? (
+        <div data-pref-anchor="auto_lock_enabled">
+          {form === "setup" ? (
+            <form onSubmit={handleEnable} className="space-y-3">
+              <PinField
+                label="Choose a PIN (6–12 digits)"
+                value={pin}
+                onChange={setPin}
+              />
+              <PinField
+                label="Repeat PIN"
+                value={confirmPin}
+                onChange={setConfirmPin}
+              />
+              <TimeoutField
+                value={timeout}
+                onChange={(minutes) => setTimeoutMinutes(minutes)}
+              />
+              <p className="text-xs text-gray-400">
+                There is no way to recover a forgotten PIN. Resetting Claria's
+                settings on this Mac clears it; nothing in your bucket is
+                affected.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={busy || pin.length === 0}
+                  className={PRIMARY_BUTTON_CLASS}
+                >
+                  Turn on auto-lock
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openForm("none")}
+                  className={SECONDARY_BUTTON_CLASS}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => openForm("setup")}
+              className={PRIMARY_BUTTON_CLASS}
+            >
+              Set up auto-lock
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div data-pref-anchor="auto_lock_enabled">
+            <TimeoutField
+              value={lock.auto_lock_timeout_minutes}
+              disabled={busy}
+              onChange={(minutes) =>
+                run(async () => {
+                  await setAutoLockTimeout(minutes);
+                  return false;
+                })
+              }
+            />
+          </div>
+
+          {biometry?.available && (
+            <label
+              className="flex items-start gap-3"
+              data-pref-anchor="biometric_unlock_enabled"
+            >
+              <input
+                type="checkbox"
+                checked={lock.biometric_unlock_enabled}
+                disabled={busy}
+                onChange={(event) => {
+                  const next = event.target.checked;
+                  run(async () => {
+                    await setBiometricUnlock(next);
+                    return false;
+                  });
+                }}
+                className="mt-0.5 rounded border-gray-300"
+              />
+              <div className="flex-1">
+                <span className="text-sm text-gray-900">
+                  {biometricLabel(biometry.kind)}
+                </span>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Your PIN keeps working either way.
+                </p>
+              </div>
+            </label>
+          )}
+
+          {form === "change-pin" ? (
+            <form
+              onSubmit={handleChangePin}
+              className="space-y-3"
+              data-pref-anchor="change_pin"
+            >
+              <PinField
+                label="Current PIN"
+                value={currentPin}
+                onChange={setCurrentPin}
+              />
+              <PinField
+                label="New PIN (6–12 digits)"
+                value={pin}
+                onChange={setPin}
+              />
+              <PinField
+                label="Repeat new PIN"
+                value={confirmPin}
+                onChange={setConfirmPin}
+              />
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={busy || pin.length === 0}
+                  className={PRIMARY_BUTTON_CLASS}
+                >
+                  Change PIN
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openForm("none")}
+                  className={SECONDARY_BUTTON_CLASS}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : form === "turn-off" ? (
+            <form onSubmit={handleTurnOff} className="space-y-3">
+              <p className="text-sm text-gray-900">
+                Enter your PIN to turn auto-lock off.
+              </p>
+              <PinField
+                label="Current PIN"
+                value={currentPin}
+                onChange={setCurrentPin}
+              />
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={busy || currentPin.length === 0}
+                  className={PRIMARY_BUTTON_CLASS}
+                >
+                  Turn off auto-lock
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openForm("none")}
+                  className={SECONDARY_BUTTON_CLASS}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  run(async () => {
+                    await lockSession();
+                    return false;
+                  })
+                }
+                className={SECONDARY_BUTTON_CLASS}
+              >
+                Lock now
+              </button>
+              <button
+                type="button"
+                onClick={() => openForm("change-pin")}
+                className={SECONDARY_BUTTON_CLASS}
+                data-pref-anchor="change_pin"
+              >
+                Change PIN
+              </button>
+              <button
+                type="button"
+                onClick={() => openForm("turn-off")}
+                className={SECONDARY_BUTTON_CLASS}
+              >
+                Turn off
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && <ErrorBanner message={error} className="mt-3" />}
+    </NavPane>
+  );
+}
+
+function TimeoutField({
+  value,
+  disabled = false,
+  onChange,
+}: {
+  value: number;
+  disabled?: boolean;
+  onChange: (minutes: number) => void;
+}) {
+  return (
+    <label
+      className="flex items-center gap-2 text-sm text-gray-900"
+      data-pref-anchor="auto_lock_timeout_minutes"
+    >
+      Lock after
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="px-2 py-1 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+      >
+        {TIMEOUT_OPTIONS.map((minutes) => (
+          <option key={minutes} value={minutes}>
+            {minutes} minute{minutes === 1 ? "" : "s"}
+          </option>
+        ))}
+      </select>
+      of inactivity
+    </label>
   );
 }
 
@@ -3094,5 +3482,6 @@ const PANE_COMPONENTS: Record<PaneId, ComponentType> = {
   "transcription.local-compute": LocalTranscriptionPanes,
   "transcription.local-decoding": LocalTranscriptionPanes,
   "billing.cost-explorer": CostExplorerSection,
+  "security.auto-lock": AutoLockSection,
   "general.distraction-mode": DistractionModeSection,
 };

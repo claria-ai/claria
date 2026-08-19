@@ -6,7 +6,7 @@ use tauri::{
     menu::{HELP_SUBMENU_ID, Menu, MenuItem, MenuItemKind, PredefinedMenuItem},
     webview::WebviewWindowBuilder,
 };
-use tauri_specta::{Builder, collect_commands};
+use tauri_specta::{Builder, collect_commands, collect_events};
 use tracing_subscriber::prelude::*;
 
 use claria_desktop::console;
@@ -66,126 +66,139 @@ fn main() -> Result<()> {
         .with(file_layer)
         .init();
 
-    let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
-        commands::has_config,
-        commands::load_config,
-        commands::save_config,
-        commands::delete_config,
-        commands::save_preferences_patch,
-        commands::fetch_cloud_preferences,
-        commands::export_preferences,
-        commands::import_preferences,
-        commands::list_preferences_versions,
-        commands::get_preferences_version,
-        commands::restore_preferences_version,
-        commands::upload_record_file_with_options,
-        commands::save_transcript_edits,
-        commands::pick_audio_file,
-        commands::set_preferred_model,
-        commands::assess_credentials,
-        commands::assume_role,
-        commands::list_aws_profiles,
-        commands::list_user_access_keys,
-        commands::delete_user_access_key,
-        commands::bootstrap_iam_user,
-        commands::escalate_iam_policy,
-        commands::provision_scan,
-        commands::provision_apply,
-        commands::plan,
-        commands::apply,
-        commands::destroy,
-        commands::reset_provisioner_state,
-        commands::list_clients,
-        commands::create_client,
-        commands::get_client_record_details,
-        commands::update_client_name,
-        commands::delete_client,
-        commands::start_report_workspace,
-        commands::load_report_workspace,
-        commands::list_editor_history,
-        commands::rename_report_session,
-        commands::list_report_revisions,
-        commands::load_report_revision,
-        commands::revert_report_revision,
-        commands::save_report_draft,
-        commands::discard_queued_report_edits,
-        report_template_commands::list_writer_templates,
-        report_template_commands::upload_writer_template,
-        report_template_commands::rename_writer_template,
-        report_template_commands::delete_writer_template,
-        report_template_commands::preview_writer_template,
-        report_template_commands::apply_report_template,
-        report_template_commands::discard_report_template_preview,
-        commands::generate_full_report,
-        commands::load_draft_run,
-        commands::finalize_partial_draft,
-        commands::abandon_draft_run,
-        commands::generate_draft_plan,
-        commands::update_draft_plan,
-        commands::start_draft_run,
-        commands::resume_draft_run,
-        commands::send_report_message,
-        commands::resolve_report_proposal,
-        commands::run_review_sweeps,
-        commands::list_report_findings,
-        commands::resolve_report_finding,
-        commands::evaluate_report_completion,
-        commands::export_report_docx,
-        commands::list_record_files,
-        commands::search_record_contents,
-        commands::upload_record_file,
-        commands::delete_record_file,
-        commands::get_record_file_text,
-        commands::create_text_record_file,
-        commands::update_text_record_file,
-        commands::list_record_context,
-        commands::extract_record_file,
-        commands::list_chat_models,
-        commands::chat_message,
-        commands::infra_chat,
-        commands::accept_model_agreement,
-        commands::list_chat_histories,
-        commands::load_chat_history,
-        commands::rename_chat_history,
-        commands::get_prompt,
-        commands::get_writer_trust_rules,
-        commands::save_prompt,
-        commands::delete_prompt,
-        commands::list_prompt_versions,
-        commands::get_prompt_version,
-        commands::restore_prompt_version,
-        commands::list_writer_library_prompts,
-        commands::save_writer_library_prompt,
-        commands::delete_writer_library_prompt,
-        commands::list_file_versions,
-        commands::get_file_version_text,
-        commands::restore_file_version,
-        commands::list_deleted_files,
-        commands::restore_deleted_file,
-        commands::list_deleted_clients,
-        commands::restore_client,
-        local_transcription::get_local_transcription_status,
-        local_transcription::save_local_transcription_settings,
-        local_transcription::download_local_model,
-        local_transcription::delete_local_model,
-        local_transcription::delete_legacy_transcription_models,
-        local_transcription::transcribe_memo,
-        commands::check_for_updates,
-        commands::get_cost_and_usage,
-        commands::probe_cost_explorer,
-        commands::enable_cost_explorer,
-        commands::set_hourly_cost_data,
-        commands::lookup_model_pricing,
-        commands::open_url,
-        commands::reveal_log_folder,
-        commands::count_client_context_tokens,
-        commands::count_infra_context_tokens,
-        commands::get_console_logs_since,
-        commands::get_console_logs_text,
-        commands::save_console_logs,
-        commands::log_frontend_event,
-        commands::stop_stream,
-    ]);
+    let builder = Builder::<tauri::Wry>::new()
+        .commands(collect_commands![
+            commands::has_config,
+            commands::load_config,
+            commands::save_config,
+            commands::delete_config,
+            commands::save_preferences_patch,
+            commands::fetch_cloud_preferences,
+            commands::export_preferences,
+            commands::import_preferences,
+            commands::list_preferences_versions,
+            commands::get_preferences_version,
+            commands::restore_preferences_version,
+            commands::upload_record_file_with_options,
+            commands::save_transcript_edits,
+            commands::pick_audio_file,
+            commands::set_preferred_model,
+            commands::assess_credentials,
+            commands::assume_role,
+            commands::list_aws_profiles,
+            commands::list_user_access_keys,
+            commands::delete_user_access_key,
+            commands::bootstrap_iam_user,
+            commands::escalate_iam_policy,
+            commands::provision_scan,
+            commands::provision_apply,
+            commands::plan,
+            commands::apply,
+            commands::destroy,
+            commands::reset_provisioner_state,
+            commands::list_clients,
+            commands::create_client,
+            commands::get_client_record_details,
+            commands::update_client_name,
+            commands::delete_client,
+            commands::start_report_workspace,
+            commands::load_report_workspace,
+            commands::list_editor_history,
+            commands::rename_report_session,
+            commands::list_report_revisions,
+            commands::load_report_revision,
+            commands::revert_report_revision,
+            commands::save_report_draft,
+            commands::discard_queued_report_edits,
+            report_template_commands::list_writer_templates,
+            report_template_commands::upload_writer_template,
+            report_template_commands::rename_writer_template,
+            report_template_commands::delete_writer_template,
+            report_template_commands::preview_writer_template,
+            report_template_commands::apply_report_template,
+            report_template_commands::discard_report_template_preview,
+            commands::generate_full_report,
+            commands::load_draft_run,
+            commands::finalize_partial_draft,
+            commands::abandon_draft_run,
+            commands::generate_draft_plan,
+            commands::update_draft_plan,
+            commands::start_draft_run,
+            commands::resume_draft_run,
+            commands::send_report_message,
+            commands::resolve_report_proposal,
+            commands::run_review_sweeps,
+            commands::list_report_findings,
+            commands::resolve_report_finding,
+            commands::evaluate_report_completion,
+            commands::export_report_docx,
+            commands::list_record_files,
+            commands::search_record_contents,
+            commands::upload_record_file,
+            commands::delete_record_file,
+            commands::get_record_file_text,
+            commands::create_text_record_file,
+            commands::update_text_record_file,
+            commands::list_record_context,
+            commands::extract_record_file,
+            commands::list_chat_models,
+            commands::chat_message,
+            commands::infra_chat,
+            commands::accept_model_agreement,
+            commands::list_chat_histories,
+            commands::load_chat_history,
+            commands::rename_chat_history,
+            commands::get_prompt,
+            commands::get_writer_trust_rules,
+            commands::save_prompt,
+            commands::delete_prompt,
+            commands::list_prompt_versions,
+            commands::get_prompt_version,
+            commands::restore_prompt_version,
+            commands::list_writer_library_prompts,
+            commands::save_writer_library_prompt,
+            commands::delete_writer_library_prompt,
+            commands::list_file_versions,
+            commands::get_file_version_text,
+            commands::restore_file_version,
+            commands::list_deleted_files,
+            commands::restore_deleted_file,
+            commands::list_deleted_clients,
+            commands::restore_client,
+            local_transcription::get_local_transcription_status,
+            local_transcription::save_local_transcription_settings,
+            local_transcription::download_local_model,
+            local_transcription::delete_local_model,
+            local_transcription::delete_legacy_transcription_models,
+            local_transcription::transcribe_memo,
+            commands::check_for_updates,
+            commands::get_cost_and_usage,
+            commands::probe_cost_explorer,
+            commands::enable_cost_explorer,
+            commands::set_hourly_cost_data,
+            commands::lookup_model_pricing,
+            commands::open_url,
+            commands::reveal_log_folder,
+            commands::count_client_context_tokens,
+            commands::count_infra_context_tokens,
+            commands::get_console_logs_since,
+            commands::get_console_logs_text,
+            commands::save_console_logs,
+            commands::log_frontend_event,
+            commands::stop_stream,
+            commands::get_lock_state,
+            commands::record_activity,
+            commands::lock_session,
+            commands::unlock_with_pin,
+            commands::unlock_with_biometric,
+            commands::get_biometry_status,
+            commands::enable_auto_lock,
+            commands::disable_auto_lock,
+            commands::change_pin,
+            commands::set_auto_lock_timeout,
+            commands::set_biometric_unlock,
+        ])
+        .events(collect_events![commands::LockStateChanged]);
 
     #[cfg(debug_assertions)]
     {
@@ -211,9 +224,15 @@ fn main() -> Result<()> {
     tauri::Builder::default()
         .manage(state::DesktopState::default())
         .manage(console_buffer)
+        .plugin(tauri_plugin_biometry::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+
+            // Before any window exists: a configured lock has to be up by the
+            // time the webview asks, not a round trip later.
+            commands::lock_at_startup(app.handle());
+            commands::spawn_idle_watcher(app.handle().clone());
 
             // Keep Tauri's native application menu—including the standard
             // Edit actions that make Cmd/Ctrl+C/V/X/A work in the webview—and
@@ -221,10 +240,14 @@ fn main() -> Result<()> {
             // with Help alone silently disables normal clipboard shortcuts.
             let console_item =
                 MenuItem::with_id(app, "console", "Claria Console", true, None::<&str>)?;
+            // Walk-away protection is only useful if leaving is one keystroke.
+            let lock_item =
+                MenuItem::with_id(app, "lock", "Lock Claria", true, Some("CmdOrCtrl+Shift+L"))?;
             let menu = Menu::default(app.handle())?;
             if let Some(MenuItemKind::Submenu(help_menu)) = menu.get(HELP_SUBMENU_ID) {
                 help_menu.append(&PredefinedMenuItem::separator(app)?)?;
                 help_menu.append(&console_item)?;
+                help_menu.append(&lock_item)?;
             }
             app.set_menu(menu)?;
 
@@ -243,6 +266,15 @@ fn main() -> Result<()> {
                         .inner_size(900.0, 600.0)
                         .build();
                     }
+                } else if event.id() == "lock" {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) =
+                            commands::engage_lock(&app, commands::LockReason::Manual).await
+                        {
+                            tracing::warn!(error = %error, "manual lock failed");
+                        }
+                    });
                 }
             });
 

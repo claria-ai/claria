@@ -77,6 +77,23 @@ export function buildInitScript(config: ScenarioConfig): string {
             return [{ label: "main", url: "http://localhost:1420" }];
           }
 
+          // ── Session lock — unlocked so the gate renders the app ────
+          if (cmd === "get_lock_state") {
+            return {
+              locked: false,
+              auto_lock_enabled: false,
+              auto_lock_timeout_minutes: 5,
+              biometric_unlock_enabled: false,
+              pin_set: false,
+              failed_attempts: 0,
+              backoff_remaining_seconds: null,
+            };
+          }
+          if (cmd === "record_activity") return null;
+          if (cmd === "get_biometry_status") {
+            return { available: false, kind: "none", error: null };
+          }
+
           // ── Config ─────────────────────────────────────────────────
           if (cmd === "has_config") return configSaved;
 
