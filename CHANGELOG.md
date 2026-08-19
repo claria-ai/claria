@@ -14,6 +14,8 @@ All notable changes to Claria are documented here.
 - Every audit action was renamed to a noun.verb name
 - Audit events recorded before this release no longer load, and the audit trail must be cleared when upgrading
 - Values can be marked sensitive so they print as redacted through every formatting path, rather than relying on each log line to leave them out
+- Distraction mode adds a quiet sock control beside client names, off by default and toggled in preferences
+- A dropped sock summons a gently greying pixel-art Lucia, who play-bows, shakes it from her neck, and carries it away
 
 ## [0.32.0] — 2026-08-18
 
@@ -335,8 +337,6 @@ All notable changes to Claria are documented here.
 - Removed the legacy Candle-based Whisper crate and safetensors model runtime
 - The Apple Silicon app targets macOS 11 or later
 - Metal builds include the macOS platform-availability runtime
-- Distraction mode adds a quiet sock control beside client names, off by default and toggled in preferences
-- A dropped sock summons a gently greying pixel-art Lucia, who play-bows, shakes it from her neck, and carries it away
 - Client record settings can rename a record and show file counts, current and historical storage, creation dates, and name history
 - The client record page is split into components and hooks, with each feature owning its own state
 - The voice memo capture engine is a reusable hook rather than a page component's internals
