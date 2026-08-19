@@ -143,9 +143,33 @@ directly. macOS goes through `LAContext`, Windows through
 system panel is up, so it runs on a blocking thread.
 
 Biometric unlock cannot be enabled without a PIN: it is a convenience over the
-credential, never a replacement for it. A dismissed prompt is not a failure and
-does not count against the backoff budget — the clinician reached for the PIN
-field, which is a choice.
+credential, never a replacement for it.
+
+**The sensor is invoked only by a press on the lock screen, and only while
+Claria is frontmost.** Both halves matter because the panel is system-modal and
+always-on-top and auto-lock fires on an idle timer: anything that raised it
+without a press would put an OS dialog over whatever application the clinician
+had walked over to. The frontend checks focus before calling, and
+`unlock_with_biometric` checks again immediately before the panel goes up,
+because the window can lose focus in the gap. Both read Tauri's `is_focused()`
+rather than `document.hasFocus()` — the DOM reports focus *within* the page and
+stays true when the window manager does not consider the app frontmost — and
+`is_focused()` is the same call on macOS and Windows. A call that arrives
+unfocused returns a dismissal and says nothing.
+
+A dismissed prompt is not a failure: it does not count against the backoff
+budget, it is not audited as `session.unlock_failed`, and it renders no error.
+The panel's cancel button is Claria's own `cancel_title`, "Use PIN", so
+pressing it is someone asking for the PIN field — and it arrives as
+`userCancel`, alongside `userFallback`, `appCancel`, and `systemCancel`.
+
+Every other outcome goes through `security::biometric_failure_message`, which
+maps the plugin's code to a sentence. No `LAError` case name reaches a
+clinician; unrecognised codes fall to a generic sentence rather than through,
+and the raw text is logged instead. The mapping reads the code out of the
+error's `Display` text because the plugin re-exports only `Error` and `Result`
+— its `ErrorResponse`, which holds the code as a field, is private. The macOS
+and Windows backends use the same code names, so one mapping serves both.
 
 Linux has no backend; the plugin's stub errors, which is reported as
 "unavailable" so the toggle simply does not appear. PIN unlock is unaffected.

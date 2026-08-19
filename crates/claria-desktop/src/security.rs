@@ -124,7 +124,9 @@ pub fn biometric_failure_message(raw: &str) -> Option<&'static str> {
         "userCancel" | "userFallback" | "appCancel" | "systemCancel" => return None,
         "authenticationFailed" => "Not recognised. Enter your PIN instead.",
         "biometryLockout" => "Too many biometric attempts. Enter your PIN instead.",
-        "biometryNotEnrolled" => "No biometric is enrolled on this computer. Enter your PIN instead.",
+        "biometryNotEnrolled" => {
+            "No biometric is enrolled on this computer. Enter your PIN instead."
+        }
         "biometryNotAvailable" => "Biometric unlock is unavailable. Enter your PIN instead.",
         "passcodeNotSet" => {
             "Biometric unlock needs a passcode on this computer. Enter your PIN instead."

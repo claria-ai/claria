@@ -210,7 +210,8 @@ fn every_real_biometric_failure_reads_as_prose() {
     ];
 
     for raw in raws {
-        let message = biometric_failure_message(raw).unwrap_or_else(|| panic!("{raw} was silenced"));
+        let message =
+            biometric_failure_message(raw).unwrap_or_else(|| panic!("{raw} was silenced"));
         assert!(
             !message.contains('[') && !message.contains(']'),
             "{raw} leaked a code: {message}"
