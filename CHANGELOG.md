@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.32.0] — 2026-08-18
 
 - A report exported through a template whose headings are bold body text keeps those headings bold after the model rewrites them
 - Word export places each drafted section back into the template section it came from, so paragraphs, tables, and blank spacing stay where their author put them
