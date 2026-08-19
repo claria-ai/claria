@@ -277,6 +277,9 @@ back over `Channel<ChatStreamEvent>`. History objects live at
   each other by a `const` assertion in `plan.rs` deriving
   `WORST_CASE_PLAN_ROW_CHARS` from the schema's own ceilings. Widening the
   evidence schema without widening the reserve fails the build.
+- The session lock's settings are machine-local on purpose. Adding them to
+  `SyncedPreferences` would put a PIN hash in the bucket it protects and carry
+  one machine's lock onto every other.
 - A new `ReportTemplateWarningCode` variant that is not added to
   `WARNING_ORDER` in `import.rs` is counted and then silently discarded —
   `into_sorted` uses that list as a filter, not just an ordering.
@@ -301,6 +304,7 @@ traced; see **Coverage of this guide** for what is listed but unexplored.
 | Cost / billing | `pages/CostExplorer.tsx`, `lib/cost*.ts`, `lib/usePricingMap.ts` | `claria-billing` |
 | Provisioning / onboarding | `pages/Provision.tsx`, `StartScreen.tsx`, the `*Guide.tsx` pages | `claria-provisioner`, `commands/provision.rs` |
 | Console / diagnostics | `pages/Console.tsx`, `lib/logBridge.ts` | `console.rs`, `logging.rs` |
+| Session lock (auto-lock, PIN, biometrics) | `components/LockGate.tsx`, `LockScreen.tsx`, `lib/useLockState.ts` | `commands/security.rs`, `claria-desktop/src/security.rs` — see `design/app-lock.md` |
 
 Chat and the Writer are separate flows that happen to share `claria-bedrock`.
 They do **not** share prompt composition, retry policy, stream bounds, or

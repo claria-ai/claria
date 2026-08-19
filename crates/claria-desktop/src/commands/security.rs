@@ -363,8 +363,12 @@ pub async fn unlock_with_pin(
         let stored = stored_hash(&settings)?;
 
         // Refuse before spending the argon2 verification, so a flood of
-        // attempts cannot use the check itself as the workload.
-        if let Some(seconds) = state.lock_runtime().backoff_remaining_secs() {
+        // attempts cannot use the check itself as the workload. The guard is
+        // released on its own line: `snapshot` takes the same non-reentrant
+        // mutex, and leaning on scrutinee-temporary scoping for that would be
+        // a deadlock one edition change away.
+        let waiting = state.lock_runtime().backoff_remaining_secs();
+        if let Some(seconds) = waiting {
             return Ok(LockOutcome {
                 accepted: false,
                 state: snapshot(&state, &settings),
