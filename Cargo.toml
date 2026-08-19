@@ -20,21 +20,24 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "GPL-3.0-only"
+repository = "https://github.com/claria-ai/claria"
+homepage = "https://claria-ai.github.io/"
+rust-version = "1.97"
 
 [workspace.dependencies]
 # Internal crates
-claria-bedrock = { path = "crates/claria-bedrock" }
-claria-billing = { path = "crates/claria-billing" }
-claria-core = { path = "crates/claria-core" }
-claria-docx = { path = "crates/claria-docx" }
-claria-eval = { path = "crates/claria-eval" }
-claria-mock-aws = { path = "crates/claria-mock-aws" }
-claria-provisioner = { path = "crates/claria-provisioner" }
-claria-records = { path = "crates/claria-records" }
-claria-report-pipeline = { path = "crates/claria-report-pipeline" }
-claria-report-store = { path = "crates/claria-report-store" }
-claria-storage = { path = "crates/claria-storage" }
-claria-transcribe = { path = "crates/claria-transcribe" }
+claria-bedrock = { path = "crates/claria-bedrock", version = "0.32.0" }
+claria-billing = { path = "crates/claria-billing", version = "0.32.0" }
+claria-core = { path = "crates/claria-core", version = "0.32.0" }
+claria-docx = { path = "crates/claria-docx", version = "0.32.0" }
+claria-eval = { path = "crates/claria-eval", version = "0.32.0" }
+claria-mock-aws = { path = "crates/claria-mock-aws", version = "0.32.0" }
+claria-provisioner = { path = "crates/claria-provisioner", version = "0.32.0" }
+claria-records = { path = "crates/claria-records", version = "0.32.0" }
+claria-report-pipeline = { path = "crates/claria-report-pipeline", version = "0.32.0" }
+claria-report-store = { path = "crates/claria-report-store", version = "0.32.0" }
+claria-storage = { path = "crates/claria-storage", version = "0.32.0" }
+claria-transcribe = { path = "crates/claria-transcribe", version = "0.32.0" }
 
 # Shared external pins — versions live here only; crates add features they need
 #
@@ -90,6 +93,10 @@ uuid = "=1.23.4"
 [workspace.metadata.release]
 shared-version = true
 tag-name = "v{{version}}"
+# `cargo release` never uploads. The tag it pushes starts
+# .github/workflows/publish.yml, which publishes the workspace to crates.io
+# over GitHub OIDC — no registry token is stored anywhere, on a laptop or in
+# repository secrets.
 publish = false
 push = true
 

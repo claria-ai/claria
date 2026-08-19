@@ -16,6 +16,11 @@ All notable changes to Claria are documented here.
 - Values can be marked sensitive so they print as redacted through every formatting path, rather than relying on each log line to leave them out
 - Distraction mode adds a quiet sock control beside client names, off by default and toggled in preferences
 - A dropped sock summons a gently greying pixel-art Lucia, who play-bows, shakes it from her neck, and carries it away
+- Every library crate in the workspace now carries the description, repository, keywords, and categories crates.io requires, so the twelve publishable crates can be released as dependencies
+- Internal dependencies declare a version alongside their path, which is what lets them publish at all
+- `claria-docx-cli` is publishable, so the template-diagnostics binary can be installed with `cargo install claria-docx-cli` on platforms the desktop bundle does not build for
+- `claria-desktop` and `claria-transcribe` are explicitly not published; each Cargo.toml says why
+- A tagged release publishes the workspace to crates.io over GitHub OIDC through crates.io Trusted Publishing, with no registry token stored in repository secrets
 
 ## [0.32.0] — 2026-08-18
 
