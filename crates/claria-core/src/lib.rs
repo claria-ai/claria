@@ -8,3 +8,4 @@ pub mod model_id;
 pub mod models;
 pub mod record_text;
 pub mod s3_keys;
+pub mod sensitive;

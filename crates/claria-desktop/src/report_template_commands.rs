@@ -6,6 +6,8 @@ use claria_desktop::report_authoring::{
     ReportTemplatePreview, ReportWorkspaceView, WriterTemplateView, writer_template_view,
 };
 
+use claria_storage::audit::actions;
+
 use crate::{
     commands::{CommandContext, CommandError, next_ordinal_name, parse_uuid, run},
     state::{DesktopState, PendingReportTemplate},
@@ -82,7 +84,7 @@ pub async fn upload_writer_template(
 
         ctx.record_audit(
             ctx.audit_event(
-                "writer_template_uploaded",
+                actions::WRITER_TEMPLATE_UPLOAD,
                 "writer_template",
                 id.to_string(),
             )
@@ -108,7 +110,7 @@ pub async fn rename_writer_template(
             claria_report_store::template_library::rename(&ctx.s3, &ctx.bucket, template_id, &name)
                 .await?;
         ctx.record_audit(ctx.audit_event(
-            "writer_template_renamed",
+            actions::WRITER_TEMPLATE_RENAME,
             "writer_template",
             template_id.to_string(),
         ))
@@ -129,7 +131,7 @@ pub async fn delete_writer_template(
         let ctx = CommandContext::new(&state).await?;
         claria_report_store::template_library::delete(&ctx.s3, &ctx.bucket, template_id).await?;
         ctx.record_audit(ctx.audit_event(
-            "writer_template_deleted",
+            actions::WRITER_TEMPLATE_DELETE,
             "writer_template",
             template_id.to_string(),
         ))
@@ -266,13 +268,12 @@ pub async fn apply_report_template(
 
         ctx.record_audit(
             ctx.audit_event(
-                "report_template_imported",
+                actions::REPORT_TEMPLATE_IMPORT,
                 "report",
                 workspace.report_id.clone(),
             )
-            .with_details(serde_json::json!({
-                "client_id": client_id.to_string(),
-                "report_id": workspace.report_id,
+            .with_client_id(client_id)
+            .with_details(serde_json::json!({"report_id": workspace.report_id,
                 "writer_template_id": writer_template_id.to_string(),
                 "revision": workspace.draft.revision,
                 "warning_category_count": warning_count,

@@ -2,6 +2,8 @@
 
 use tauri::State;
 
+use claria_storage::audit::actions;
+
 use claria_desktop::config::{
     self, ClariaConfig, ConfigInfo, CredentialSource, DraftPipelinePreferences,
     ReportAuthoringPreferences, SyncedPreferences, TranscriptionPreferences,
@@ -528,7 +530,7 @@ pub async fn import_preferences(
         )
         .await?;
         ctx.record_audit(ctx.audit_event(
-            "preferences_imported",
+            actions::PREFERENCES_IMPORT,
             "preferences",
             claria_core::s3_keys::PREFERENCES,
         ))
@@ -603,7 +605,7 @@ pub async fn restore_preferences_version(
         tracing::info!(version_id, "preferences version restored");
         ctx.record_audit(
             ctx.audit_event(
-                "preferences_version_restored",
+                actions::PREFERENCES_VERSION_RESTORE,
                 "preferences",
                 claria_core::s3_keys::PREFERENCES,
             )

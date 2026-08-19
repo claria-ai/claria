@@ -3,6 +3,8 @@
 use claria_core::models::findings::{FindingAction, ReportFindings};
 use tauri::State;
 
+use claria_storage::audit::{Action, actions};
+
 pub use claria_desktop::report_authoring::ReportFindingResolution;
 use claria_desktop::report_authoring::ReportTurnProgressView;
 
@@ -10,11 +12,11 @@ use super::{CommandContext, merge_details, parse_uuid, run, usage_audit_details}
 use crate::state::DesktopState;
 
 /// The durable audit action one resolution records.
-const fn audit_action(action: FindingAction) -> &'static str {
+const fn audit_action(action: FindingAction) -> Action {
     match action {
-        FindingAction::ApplyStyle => "finding_applied",
-        FindingAction::UndoStyle => "finding_undone",
-        FindingAction::Dismiss => "finding_dismissed",
+        FindingAction::ApplyStyle => actions::REPORT_FINDING_APPLY,
+        FindingAction::UndoStyle => actions::REPORT_FINDING_UNDO,
+        FindingAction::Dismiss => actions::REPORT_FINDING_DISMISS,
     }
 }
 
@@ -71,8 +73,12 @@ pub async fn run_review_sweeps(
             }),
         );
         ctx.record_audit(
-            ctx.audit_event("review_sweep_completed", "report", report_id.to_string())
-                .with_details(details),
+            ctx.audit_event(
+                actions::REPORT_REVIEW_SWEEP,
+                "report",
+                report_id.to_string(),
+            )
+            .with_details(details),
         )
         .await;
         Ok(outcome.findings)

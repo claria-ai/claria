@@ -8,6 +8,8 @@
 use claria_core::models::report_run::{DraftRun, PlanEntryEdit, SectionIntent};
 use tauri::State;
 
+use claria_storage::audit::actions;
+
 use claria_desktop::report_authoring::{FullReportGenerationResponse, ReportTurnProgressView};
 
 use super::{
@@ -97,8 +99,12 @@ pub async fn generate_draft_plan(
         )
         .await?;
         ctx.record_audit(
-            ctx.audit_event("draft_plan_generated", "report", report_id.to_string())
-                .with_details(plan_audit_details(&planner_model_id, &outcome)),
+            ctx.audit_event(
+                actions::REPORT_DRAFT_PLAN_GENERATE,
+                "report",
+                report_id.to_string(),
+            )
+            .with_details(plan_audit_details(&planner_model_id, &outcome)),
         )
         .await;
         Ok(outcome.run)
@@ -139,14 +145,18 @@ pub async fn update_draft_plan(
                 .count()
         });
         ctx.record_audit(
-            ctx.audit_event("draft_plan_edited", "report", report_id.to_string())
-                .with_details(serde_json::json!({
-                    "client_id": client_id.to_string(),
-                    "run_id": run_id.to_string(),
-                    "edited_sections": edits.len(),
-                    "section_count": updated.sections.len(),
-                    "curated_sections": curated_sections,
-                })),
+            ctx.audit_event(
+                actions::REPORT_DRAFT_PLAN_EDIT,
+                "report",
+                report_id.to_string(),
+            )
+            .with_details(serde_json::json!({
+                "client_id": client_id.to_string(),
+                "run_id": run_id.to_string(),
+                "edited_sections": edits.len(),
+                "section_count": updated.sections.len(),
+                "curated_sections": curated_sections,
+            })),
         )
         .await;
         Ok(updated)
@@ -213,8 +223,12 @@ pub async fn start_draft_run(
             }),
         );
         ctx.record_audit(
-            ctx.audit_event("draft_run_started", "report", report_id.to_string())
-                .with_details(details),
+            ctx.audit_event(
+                actions::REPORT_DRAFT_RUN_START,
+                "report",
+                report_id.to_string(),
+            )
+            .with_details(details),
         )
         .await;
         Ok(response)
@@ -296,8 +310,12 @@ pub async fn resume_draft_run(
             }),
         );
         ctx.record_audit(
-            ctx.audit_event("draft_run_resumed", "report", report_id.to_string())
-                .with_details(details),
+            ctx.audit_event(
+                actions::REPORT_DRAFT_RUN_RESUME,
+                "report",
+                report_id.to_string(),
+            )
+            .with_details(details),
         )
         .await;
         Ok(response)

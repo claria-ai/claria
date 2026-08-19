@@ -96,7 +96,7 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
     let config = &request["toolConfig"];
     assert!(config.get("toolChoice").is_none());
     let tools = config["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 4);
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["toolSpec"]["name"].as_str().unwrap())
@@ -106,6 +106,7 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
         vec![
             "list_record_files",
             "read_record_file",
+            "read_report_section",
             "propose_report_changes"
         ]
     );
@@ -113,7 +114,26 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
         assert!(tool["toolSpec"].get("strict").is_none());
         assert_eq!(tool["toolSpec"]["inputSchema"]["json"]["type"], "object");
     }
-    let proposal = &tools[2]["toolSpec"]["inputSchema"]["json"];
+    // The section reader is a contract, not a caption: it names where a
+    // copyable ID comes from, when it is mandatory, and whose budget it spends.
+    let section_reader = &tools[2]["toolSpec"];
+    assert_eq!(
+        section_reader["inputSchema"]["json"]["required"],
+        serde_json::json!(["section_id"])
+    );
+    assert_eq!(
+        section_reader["inputSchema"]["json"]["properties"]["section_id"]["minLength"],
+        36
+    );
+    let section_reader_description = section_reader["description"]
+        .as_str()
+        .expect("section reader description");
+    assert!(section_reader_description.contains("document_outline"));
+    assert!(section_reader_description.contains("target_sections"));
+    assert!(section_reader_description.contains("before proposing a replace_section"));
+    assert!(section_reader_description.contains("48000-character per-turn budget"));
+
+    let proposal = &tools[3]["toolSpec"]["inputSchema"]["json"];
     assert_eq!(
         proposal["properties"]["operations"]["maxItems"],
         claria_bedrock::report::MAX_PROPOSAL_OPERATIONS
@@ -131,10 +151,14 @@ async fn request_carries_exactly_three_tools_without_choice_or_strict() {
     // is a deliberate quality decision requiring a golden update.
     assert_eq!(proposal["properties"]["operations"]["maxItems"], 25);
     assert_eq!(request["inferenceConfig"]["maxTokens"], 32_768);
-    let description = tools[2]["toolSpec"]["description"]
+    let description = tools[3]["toolSpec"]["description"]
         .as_str()
         .expect("proposal description");
     assert!(description.contains("completed tool calls still execute"));
+    // Section IDs are copied from the outline the targeted context actually
+    // carries — naming a payload the model was never given invites invention.
+    assert!(description.contains("document_outline"));
+    assert!(!description.contains("accepted_report"));
     assert!(!description.contains("keep one proposal small"));
     assert!(!description.to_ascii_lowercase().contains("output tokens:"));
 

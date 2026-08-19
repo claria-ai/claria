@@ -234,7 +234,9 @@ Targeted turns can also legitimately reach double digits: a turn that
 consults the records costs `list_record_files` (1) plus one
 `read_record_file` per file — and large sidecars paginate at 8,000
 characters per read (12,000 max) against a 48,000-character per-turn read
-budget — before the single `propose_report_changes` call.
+budget — plus one `read_report_section` per section it is about to rewrite
+whose body the turn's context did not already carry, before the single
+`propose_report_changes` call.
 
 Section-per-call is a correctness choice, not an inefficiency: each section
 arrives as validated structured JSON (schema-checked by Bedrock before
@@ -257,25 +259,39 @@ the prompt is independently bounded:
 |---|---|
 | Conversation history (protocol) | 512 KiB hard ceiling (~128k tokens); oldest turns pruned first. Retained turns configurable, default 200 |
 | Old record reads in history | Sanitized to `{"content_retained": false}` stubs after the 5-minute exact-protocol cache expires — record text is never re-sent across turns |
-| Record reads within a turn | 48,000 characters per turn |
+| Record and section reads within a turn | 48,000 characters per turn, shared by `read_record_file` and `read_report_section` |
 | Whole-report record snapshot | Preflight: eligible source bytes ≤ input budget × 3 (~490 KiB on Opus 4.6); oversized sets fail with a remove-or-split error before any model call |
-| The report itself | Domain cap of 500,000 characters of content |
+| The report itself | Outline of every section every turn (headings and sizes); bodies only for focused sections and sections read on demand, both inside the shared 48,000-character read budget |
 
-The one contributor that grows with the user's work is the report: in
-targeted editing the **entire accepted report rides into every turn** inside
-`<untrusted_report_context>` (pretty-printed JSON), because the user may
-have hand-edited between turns and the model must copy real section ids.
-Whole-report drafting sends the base revision's structure and template
-bodies instead — the mutable draft it is about to replace never enters the
-cached prefix.
-A report near the 500k-character domain cap is ~125k+ tokens before history
-and instructions, so a sufficiently huge document can make a turn exceed the
-input budget. When that happens the turn **fails up front with an explicit
-context-overflow error** — never a silently truncated prompt — and the
-remedy is splitting the report. In clinical practice a report has to be
-enormous (on the order of a hundred thousand words of content) before this
-bites; rising per-turn input cost shows up in the usage tab long before the
-hard error does.
+The report used to be the one contributor that grew with the user's work:
+the **entire accepted report rode into every targeted turn** inside
+`<untrusted_report_context>`. It no longer does. A targeted turn carries the
+`document_title` (200 characters at most, and the model cannot propose
+`set_title` without it) and a `document_outline` — one row per section with
+its id, heading, `skipped` flag, block count, and character count, and no
+body text — plus
+`target_sections`, the full content of the sections the user's focused
+blocks came from. Everything else the model fetches with
+`read_report_section`, which draws down the same per-turn read budget as
+`read_record_file`, so a turn's report cost scales with the sections it
+actually opens rather than with the document. The outline still carries
+every real section id, which is what the model copies into
+`replace_section`. Whole-report drafting sends the base revision's structure
+and template bodies instead — the mutable draft it is about to replace never
+enters the cached prefix.
+
+The outline is also what makes the tail cache pay: the stable prefix a turn
+re-sends is now a few hundred tokens of headings instead of the whole
+document, so the growing conversation, not the report, is what the cache
+point protects.
+
+A report near the 500k-character domain cap would be ~125k+ tokens if it all
+travelled at once, which is why it no longer does; a single section larger
+than the whole read budget is refused with both numbers named rather than
+truncated. Turns that still exceed the input budget **fail up front with an
+explicit context-overflow error** — never a silently truncated prompt — and
+the remedy is splitting the report. Rising per-turn input cost shows up in
+the usage tab long before the hard error does.
 
 Note the coupling: raising the output reserve (8k → 32k in the quality-
 regression fix) shrank both the input budget and the whole-report snapshot
@@ -290,8 +306,13 @@ there is always room left to ask the question.
 
 Inbound: composed system prompt (editable body + fixed trust rules), the
 protocol history (exact cached copy within 5 minutes, sanitized persisted
-history after), and a fresh user message carrying the full report context
-plus the instruction. Outbound: **typed section-level operations only** —
+history after), and a fresh user message carrying the report context — the
+title, the document outline, the focused sections in full, template
+provenance, and the recent proposal resolutions — plus the instruction. Section bodies fetched
+mid-turn are sanitized out of persisted history the same way record reads
+are, down to `{section_id, characters, sha256, content_retained: false}`, so
+a stale copy of a section the user has since edited can never be mined out
+of the conversation. Outbound: **typed section-level operations only** —
 the model never emits the document. Within a turn's tool loop each Converse
 call resends the growing protocol, but a cache point on the conversation
 tail means repeated prefix tokens bill at cache-read rates; the `turn

@@ -13,6 +13,9 @@ fn report_tool_config() -> serde_json::Value {
             {"toolSpec": {"name": "read_record_file", "inputSchema": {"json": {
                 "type": "object", "required": ["filename"], "properties": {"filename": {"type": "string"}}, "additionalProperties": false
             }}}},
+            {"toolSpec": {"name": "read_report_section", "inputSchema": {"json": {
+                "type": "object", "required": ["section_id"], "properties": {"section_id": {"type": "string"}}, "additionalProperties": false
+            }}}},
             {"toolSpec": {"name": "propose_report_changes", "inputSchema": {"json": {
                 "type": "object", "required": ["summary", "operations"], "properties": {"summary": {"type": "string"}, "operations": {"type": "array"}}, "additionalProperties": false
             }}}}

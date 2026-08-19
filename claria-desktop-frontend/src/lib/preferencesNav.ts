@@ -17,7 +17,8 @@ export type CategoryId =
   | "prompts"
   | "writer"
   | "transcription"
-  | "billing";
+  | "billing"
+  | "general";
 
 export type PaneId =
   | "claude.preferred-model"
@@ -35,7 +36,8 @@ export type PaneId =
   | "transcription.local-models"
   | "transcription.local-compute"
   | "transcription.local-decoding"
-  | "billing.cost-explorer";
+  | "billing.cost-explorer"
+  | "general.distraction-mode";
 
 /** A labeled control search can land on. */
 export interface SearchableField {
@@ -69,7 +71,7 @@ export interface CategorySpec {
   /** Short line under the category heading. */
   blurb: string;
   /** Key into the icon map in Preferences.tsx. */
-  icon: "sparkle" | "prompt" | "compose" | "microphone" | "dollar";
+  icon: "sparkle" | "prompt" | "compose" | "microphone" | "dollar" | "gear";
   /** Tailwind background class for the sidebar icon tile. */
   tint: string;
   panes: PaneSpec[];
@@ -446,6 +448,30 @@ export const PREFERENCES_NAV: CategorySpec[] = [
             anchor: "hourly_cost_data",
             label: "Hourly data resolution",
             terms: ["hourly"],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "general",
+    title: "General",
+    blurb: "Odds and ends that live on this Mac",
+    icon: "gear",
+    tint: "bg-gray-500",
+    panes: [
+      {
+        id: "general.distraction-mode",
+        title: "Distraction Mode",
+        blurb: "A moment of levity for heavy sessions.",
+        terms: ["sock", "lucia", "dog", "mascot", "levity"],
+        defaultOpen: true,
+        machineLocal: true,
+        fields: [
+          {
+            anchor: "distraction_mode",
+            label: "Enable distraction mode",
+            terms: ["sock drop"],
           },
         ],
       },

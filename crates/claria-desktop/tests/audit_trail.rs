@@ -7,7 +7,7 @@ use tracing_subscriber::prelude::*;
 
 use claria_desktop::console::{ConsoleBuffer, ConsoleLayer};
 use claria_mock_aws::testing::MockServer;
-use claria_storage::audit::AuditEvent;
+use claria_storage::audit::{AuditEvent, actions};
 
 const BUCKET: &str = "123456789012-claria-data";
 
@@ -27,17 +27,23 @@ fn build_sdk_config(endpoint: &str) -> aws_config::SdkConfig {
         .build()
 }
 
+/// Carries both payload slots, so every assertion below is about which one a
+/// value landed in rather than whether the event was recorded at all.
 fn chat_turn_event() -> AuditEvent {
     AuditEvent::new(
-        "chat_message",
+        actions::CHAT_TURN,
         "client",
         uuid::Uuid::nil().to_string(),
         "123456789012",
     )
+    .with_client_id(uuid::Uuid::nil())
     .with_details(serde_json::json!({
         "input_tokens": 1234,
         "output_tokens": 88,
         "cost_usd": 0.0042,
+    }))
+    .with_phi(serde_json::json!({
+        "query": "Jane Doe custody evaluation",
     }))
 }
 
@@ -78,21 +84,35 @@ async fn a_recorded_event_reaches_s3_and_carries_its_details_into_the_exported_l
         stored[0].details.as_ref().expect("details")["input_tokens"],
         1234
     );
+    // The PHI slot reaches S3 whole. The trail is the one place it belongs.
+    assert_eq!(
+        stored[0].phi.as_ref().expect("phi")["query"],
+        "Jane Doe custody evaluation"
+    );
 
-    // The console mirror is a one-line summary: action and UUID reference,
-    // never the details payload — that lives only in the durable S3 object.
+    // The console mirror carries the console-safe half and nothing else.
     let text = buffer.to_text();
     let line = text
         .lines()
         .find(|l| l.contains("audit event"))
         .unwrap_or_else(|| panic!("no audit line in export:\n{text}"));
-    assert!(line.contains("audit.action=chat_message"), "{line}");
+    assert!(line.contains("audit.action=chat.turn"), "{line}");
+    assert!(line.contains("audit.category=ai"), "{line}");
+
+    // Cost attribution is the reason details is console-safe: a clinician who
+    // exports this log can still answer "what did that turn cost".
+    assert!(text.contains("input_tokens"), "{text}");
+    assert!(text.contains("cost_usd"), "{text}");
+
+    // The two things that must never appear, whatever else does.
     assert!(
-        line.contains(&format!("audit.resource_id={}", uuid::Uuid::nil())),
-        "{line}"
+        !line.contains("audit.resource_id"),
+        "resource_id reached the export: {line}"
     );
-    assert!(!text.contains("input_tokens"), "{text}");
-    assert!(!text.contains("cost_usd"), "{text}");
+    assert!(
+        !text.contains("Jane Doe"),
+        "phi reached the export:\n{text}"
+    );
 }
 
 #[tokio::test]
@@ -126,7 +146,14 @@ async fn an_unwritable_sink_surfaces_an_error_without_failing_the_caller() {
     // never reached S3.
     assert!(
         text.lines()
-            .any(|l| l.contains("audit event") && l.contains("audit.action=chat_message")),
+            .any(|l| l.contains("audit event") && l.contains("audit.action=chat.turn")),
         "the event summary was lost along with the write:\n{text}"
+    );
+
+    // When the write fails, the PHI slot is lost everywhere — the console
+    // never had it and S3 never got it. Losing a query beats leaking one.
+    assert!(
+        !text.contains("Jane Doe"),
+        "phi reached the export on the failed-write path:\n{text}"
     );
 }

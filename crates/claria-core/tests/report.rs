@@ -6,7 +6,8 @@ use claria_core::models::{
         ReportOperation, ReportProposal, ReportProtocolBlock, ReportProtocolMessage,
         ReportProtocolRole, ReportSection, ReportTemplateImport, ReportTemplateWarning,
         ReportTemplateWarningCode, ReportWorkspace, SectionAuthorship, decode_report_workspace,
-        prompt_content_view, report_template_placeholder_count, validate_report_content,
+        prompt_content_view, prompt_section_view, report_template_placeholder_count,
+        section_text_characters, validate_report_content,
     },
     turn_usage::TurnUsage,
 };
@@ -477,6 +478,38 @@ fn prompt_content_view_hides_template_copies_and_authorship() {
         section.remove("authorship");
     }
     assert_eq!(prompt_content_view(&plain), expected);
+}
+
+#[test]
+fn section_text_characters_counts_what_the_document_ceiling_counts() {
+    let mut section = section(Uuid::new_v4(), "History", "Documented.");
+    section.blocks.push(ReportBlock::BulletList {
+        items: vec!["First".to_string(), "Second".to_string()],
+    });
+    section.blocks.push(ReportBlock::Table {
+        rows: vec![vec!["Scale".to_string(), "72".to_string()]],
+        has_header: true,
+        column_widths: None,
+    });
+    // Heading + every block's text, and nothing else: the same arithmetic the
+    // 500,000-character document ceiling uses, so an outline row and the
+    // validator can never disagree about a section's size.
+    assert_eq!(
+        section_text_characters(&section),
+        "History".len() + "Documented.".len() + "FirstSecond".len() + "Scale72".len()
+    );
+
+    // Template copies are excluded here exactly as they are from the ceiling.
+    section.template_blocks = Some(vec![paragraph("A much longer template body.")]);
+    assert_eq!(
+        section_text_characters(&section),
+        "History".len() + "Documented.".len() + "FirstSecond".len() + "Scale72".len()
+    );
+    assert!(
+        prompt_section_view(&section)
+            .get("template_blocks")
+            .is_none()
+    );
 }
 
 #[test]

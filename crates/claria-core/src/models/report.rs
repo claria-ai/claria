@@ -830,23 +830,52 @@ pub fn validate_report_content(content: &ReportContent) -> Result<(), CoreError>
 ///
 /// Template copies and authorship stamps are host bookkeeping: the model must
 /// never read a section's template body as accepted content, and neither field
-/// belongs in a prompt it would only bloat. The section shape is written out
-/// field by field so a field added to [`ReportSection`] later has to be
-/// admitted here deliberately rather than leaking into every prompt.
+/// belongs in a prompt it would only bloat.
 pub fn prompt_content_view(content: &ReportContent) -> serde_json::Value {
     serde_json::json!({
         "title": content.title,
         "sections": content
             .sections
             .iter()
-            .map(|section| serde_json::json!({
-                "id": section.id,
-                "heading": section.heading,
-                "blocks": section.blocks,
-                "skipped": section.skipped
-            }))
+            .map(prompt_section_view)
             .collect::<Vec<_>>()
     })
+}
+
+/// Serialize one section for a model prompt.
+///
+/// The shape is written out field by field so a field added to
+/// [`ReportSection`] later has to be admitted here deliberately rather than
+/// leaking into every prompt that carries a section.
+pub fn prompt_section_view(section: &ReportSection) -> serde_json::Value {
+    serde_json::json!({
+        "id": section.id,
+        "heading": section.heading,
+        "blocks": section.blocks,
+        "skipped": section.skipped
+    })
+}
+
+/// Characters of authored text in one section — its heading plus every block —
+/// counted the same way [`MAX_REPORT_TEXT_CHARACTERS`] counts them, so a size
+/// shown to a model and the ceiling that would reject it never disagree.
+/// `template_blocks` are excluded, exactly as they are from the ceiling.
+pub fn section_text_characters(section: &ReportSection) -> usize {
+    section
+        .blocks
+        .iter()
+        .map(block_text_characters)
+        .fold(section.heading.chars().count(), usize::saturating_add)
+}
+
+fn block_text_characters(block: &ReportBlock) -> usize {
+    match block {
+        ReportBlock::Paragraph { text } => text.chars().count(),
+        ReportBlock::BulletList { items } => items.iter().map(|item| item.chars().count()).sum(),
+        ReportBlock::Table { rows, .. } => {
+            rows.iter().flatten().map(|cell| cell.chars().count()).sum()
+        }
+    }
 }
 
 pub fn validate_report_summary(summary: &str) -> Result<(), CoreError> {
@@ -962,15 +991,7 @@ fn validate_content(content: &ReportContent) -> Result<(), CoreError> {
                     )));
                 }
             }
-            total_characters += match block {
-                ReportBlock::Paragraph { text } => text.chars().count(),
-                ReportBlock::BulletList { items } => {
-                    items.iter().map(|item| item.chars().count()).sum()
-                }
-                ReportBlock::Table { rows, .. } => {
-                    rows.iter().flatten().map(|cell| cell.chars().count()).sum()
-                }
-            };
+            total_characters += block_text_characters(block);
         }
         if total_characters > MAX_REPORT_TEXT_CHARACTERS {
             return Err(invalid(format!(
