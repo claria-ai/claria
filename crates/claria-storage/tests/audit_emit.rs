@@ -255,3 +255,31 @@ fn every_category_round_trips_through_its_wire_spelling() {
         );
     }
 }
+
+/// Locking and unlocking are operational events over PHI, never reads of it.
+/// A session action that drifted into `Access` would put every walk-away lock
+/// into the "who read this client's records" answer.
+#[test]
+fn every_session_action_is_administrative() {
+    for action in [
+        actions::SESSION_LOCK,
+        actions::SESSION_UNLOCK,
+        actions::SESSION_UNLOCK_FAILED,
+        actions::SESSION_AUTO_LOCK_ENABLE,
+        actions::SESSION_AUTO_LOCK_DISABLE,
+        actions::SESSION_PIN_CHANGE,
+        actions::SESSION_AUTO_LOCK_UPDATE,
+    ] {
+        assert_eq!(
+            action.category,
+            EventCategory::Admin,
+            "{} is not administrative",
+            action.name
+        );
+        assert!(
+            action.name.starts_with("session."),
+            "{} is not a session action",
+            action.name
+        );
+    }
+}
