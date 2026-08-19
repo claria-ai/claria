@@ -509,9 +509,20 @@ async fn run_parallel_draft(
     drop(fanned);
     log_fan_out(model_id, turn_kind, &state);
 
-    // A Stop that arrived while sections were being written to S3 belongs to
-    // this round: what landed stands, and the run is parked exactly here.
-    if state.stopped || request.stop.is_stopped() {
+    // Past the cut, Stop is a no-op — the same rule the serial loop keeps at
+    // `full_draft_is_finalized`. Every branch has handed back its verdict and
+    // every one of them is durable; all that is left is assembling the plan's
+    // own answer and cutting the revision, and neither calls a model. Parking
+    // here would throw away a draft the fan-out finished and make the reader
+    // click "keep what it wrote" to get back exactly what they already had.
+    //
+    // `state.stopped` is what separates the two windows, and it is set only by
+    // a branch the Stop actually cut short — its pre-call check or a stopped
+    // stream. A Stop that lands while branches are still in flight therefore
+    // still parks the run: the branches still queued behind it refuse to open
+    // a billed conversation, report `Stopped`, and set the flag before the
+    // fan-out drains. `request.stop` is deliberately not consulted here.
+    if state.stopped {
         return Err(TurnInterruption::Stopped);
     }
 

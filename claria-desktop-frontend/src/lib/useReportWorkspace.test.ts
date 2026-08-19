@@ -245,7 +245,7 @@ describe("useReportWorkspace drafting runs", () => {
     // The qualitative line names the section, not the tool.
     expect(hook.result.current.agentActivity).toEqual({
       label: "Saved “Reason for Referral”",
-      detail: "section 1 of 3",
+      detail: "1 of 3 sections done",
     });
 
     await act(async () => {
@@ -306,7 +306,7 @@ describe("useReportWorkspace drafting runs", () => {
     expect(hook.result.current.run.planTotal).toBeNull();
   });
 
-  it("names the section it is drafting and how far along it is", async () => {
+  it("names the section it is drafting without claiming a position", async () => {
     const hook = renderWorkspace();
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
     const run = await startGeneration(hook);
@@ -320,9 +320,53 @@ describe("useReportWorkspace drafting runs", () => {
       });
     });
 
+    // The event's `index` is a document slot, and branches run concurrently,
+    // so it is never shown as an ordinal beside the heading.
     expect(hook.result.current.agentActivity).toEqual({
       label: "Drafting “Reason for Referral”",
-      detail: "section 5 of 9",
+    });
+
+    await act(async () => {
+      run.settle(generationResponse());
+      await run.generating();
+    });
+  });
+
+  it("counts settled sections when a branch lands out of document order", async () => {
+    const hook = renderWorkspace();
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    const run = await startGeneration(hook);
+
+    // The section sitting third in the document is the first branch to land.
+    // Its line must say one of three is done, not name it the third.
+    act(() => {
+      run.emit({
+        kind: "section_started",
+        section_id: SECTION_ID,
+        index: 2,
+        total: 3,
+      });
+      run.emit({
+        kind: "section_completed",
+        section_id: SECTION_ID,
+        section: {
+          id: SECTION_ID,
+          heading: "Reason for Referral",
+          blocks: [
+            { kind: "paragraph", text: "Referred for attention concerns." },
+          ],
+          skipped: false,
+          template_blocks: null,
+          authorship: null,
+        },
+        drafted: 1,
+        total: 3,
+      });
+    });
+
+    expect(hook.result.current.agentActivity).toEqual({
+      label: "Saved “Reason for Referral”",
+      detail: "1 of 3 sections done",
     });
 
     await act(async () => {

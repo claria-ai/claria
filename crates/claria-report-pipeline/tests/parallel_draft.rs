@@ -1137,6 +1137,69 @@ async fn a_stop_mid_fan_out_keeps_landed_sections_and_parks_the_run() {
     assert_eq!(workspace.draft.revision, 1);
 }
 
+/// The fan-out's own "past the cut, Stop is a no-op" window: every branch has
+/// committed and nothing is left but assembling the plan's answer and cutting
+/// the revision, neither of which calls a model. Parking here would throw away
+/// a draft the run finished and make the reader click "keep what it wrote" to
+/// get back exactly what they already had.
+#[tokio::test]
+async fn a_stop_after_every_branch_committed_still_cuts_the_revision() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let run_id = seed_gated_run(&s3, client_id, report_id, all_draft()).await;
+    script_clean_fan_out(&server).await;
+
+    // Pressed on the last commit of the fan-out: every section is durable and
+    // the title has landed, so nothing is in flight to cut short.
+    let stop = StopSignal::new();
+    let stopper = stop.clone();
+    let landed = Arc::new(Mutex::new((0_u32, 0_u32, false)));
+    let progress = move |event: pipeline::ReportTurnProgress| {
+        let mut landed = landed.lock().expect("the landed counters");
+        match event {
+            pipeline::ReportTurnProgress::SectionCompleted { drafted, total, .. } => {
+                landed.0 = drafted;
+                landed.1 = total;
+            }
+            pipeline::ReportTurnProgress::TitleSet { .. } => landed.2 = true,
+            _ => return,
+        }
+        let (drafted, total, title) = *landed;
+        if title && total > 0 && drafted == total {
+            stopper.stop();
+        }
+    };
+
+    let outcome = pipeline::start_draft_run(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run_id,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("")
+            .with_stop(&stop)
+            .with_progress(&progress),
+    )
+    .await
+    .expect("a Stop past the cut is a no-op");
+
+    assert!(stop.is_stopped(), "the Stop never fired");
+    assert_eq!(outcome.workspace.draft.revision, 2);
+    assert_eq!(outcome.workspace.active_run_id, None);
+    assert_eq!(outcome.workspace.draft.content.title, TITLE);
+
+    let run = only_run(&s3, client_id, report_id).await;
+    assert_eq!(run.status, DraftRunStatus::Completed);
+    assert_eq!(run.finalized_revision, Some(2));
+    assert!(!run.partial);
+    for id in [REFERRAL_ID, BACKGROUND_ID, SUMMARY_ID] {
+        assert_eq!(section_of(&run, id).state, RunSectionState::Drafted);
+    }
+}
+
 #[tokio::test]
 async fn a_resume_after_a_partial_run_drafts_only_the_remaining_sections() {
     let (server, sdk, s3) = setup().await;
