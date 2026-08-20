@@ -33,6 +33,7 @@ jobs:
   publish:
     name: crates.io
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -40,11 +41,14 @@ jobs:
       # clang and mold because rust-setup writes a mold linker config on Linux;
       # cmake because aws-lc-sys builds from source during `cargo publish`'s
       # verification step.
+      # Plain apt-get rather than a caching action: awalsh128/cache-apt-pkgs-action
+      # wedged the CI jobs on 2026-08-19 and held the job open until the 6h limit, taking
+      # every downstream step with it. These packages cost well under a minute to
+      # install outright, which is not worth a step that can hang.
       - name: Install system dependencies
-        uses: awalsh128/cache-apt-pkgs-action@v1.4.3
-        with:
-          packages: clang cmake mold
-          version: 1.0
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake mold
 
       - name: Rust setup (toolchain, sccache, caches, mold)
         uses: ./.github/actions/rust-setup
