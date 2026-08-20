@@ -12,7 +12,7 @@ describes the durable machinery underneath the whole-report mode. Targeted
 editing has no run.
 
 Crates: `claria-report-store` owns the run and findings objects and their
-optimistic-concurrency protocol; `claria-report-pipeline` owns the planner, the
+optimistic-concurrency protocol; `claria` owns the planner, the
 run executor, the review fan-out, and the completion gate; `claria-bedrock`
 owns the Converse wire shape, forced-tool calls, and cache placement.
 

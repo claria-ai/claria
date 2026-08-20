@@ -8,6 +8,33 @@ Every reported symptom was reproduced and root-caused **statically** — none of
 require Bedrock to reproduce. The model calls behaved as prompted; the defects are in the
 docx import/export pipeline and in what the prompts withhold from or forbid to the models.
 
+## Status — shipped 2026-08-18, released in v0.32.0
+
+All four remediation items merged and shipped in v0.32.0 (`aecdc41`); v0.33.0 left
+`crates/claria-docx/src` byte-identical to it. This file stays as the post-mortem record —
+the root causes below are still the reference for *why* the code looks the way it does —
+but the code and `design/templates.md` are authoritative for how the export behaves now.
+The remediation items describe intent at the time of writing, not the shipped design.
+
+| Item | PR | Landed as |
+| --- | --- | --- |
+| 1 — Section-aware export | #130 | `TemplateCarve`, `FlowClassifier`, `TemplateLayout`, `align_sections`, `gap_events`, and tab slots in `crates/claria-docx/src/template_render.rs`; `nearest_span` and `scaled_source_position` deleted |
+| 2 — Merged-cell tables | #133 | `crates/claria-docx/src/table_grid.rs` (`expand_rows`), with patch-back into the template's own merged geometry in `template_render.rs` |
+| 3 — Template directives | #132 | `ReportSection::template_directives` (`crates/claria-core/src/models/report.rs:126`), planner and drafter context in `crates/claria/src/full_draft_context.rs`, prompt rules in `prompts.rs` |
+| 4 — Curated records | #134 | `PlanEntry::curated_records`, validation in `plan.rs`, fan-out in `parallel_draft.rs`, plan-editing UI; extended by #139 with the durable `RunSectionRecords::Curated` receipt, and by #143, which marks restricted sections in the review's drafted-section block |
+
+Two things have not landed, and are the remaining work:
+
+1. **The acceptance test has never run.** Every green test is against the synthetic
+   `template-c-like.docx` fixture. The real Jordan Rivera / Template C run that produced
+   the symptoms below has not been repeated since the fixes merged, so "headings bold,
+   header block aligned, no orphan tables, one-sentence Reason for Referral" is still
+   unverified against the specimen that failed.
+2. **The serial drafting path gets no directives.** `section_directives_block` has one
+   caller, `section_kickoff_instruction` (the per-section parallel path);
+   `kickoff_instruction` (`full_draft_context.rs:209`) passes none. Deliberate at the
+   time, unrecorded until now.
+
 ## Symptoms observed in the exported document
 
 1. Every rewritten section heading lost its bold ("Reason for Referral", "Background
@@ -104,6 +131,8 @@ land after it.
 
 ### Item 1 — Section-aware template export (claria-docx)
 
+*Shipped in #130. The plan below is intent, not the shipped design.*
+
 Owner file: `crates/claria-docx/src/template_render.rs` (+ shared classifier helpers in
 `import.rs`; avoid claria-core model changes in this PR).
 
@@ -152,6 +181,8 @@ Owner file: `crates/claria-docx/src/template_render.rs` (+ shared classifier hel
 
 ### Item 2 — Merged-cell tables become importable (claria-docx, after Item 1)
 
+*Shipped in #133.*
+
 1. Import `gridSpan`/`vMerge` tables rectangularized instead of dropping them: expand
    spans into grid positions (spanning cell's text in the first covered position, empty
    strings for covered/continuation positions). Keep `MergedTablesOmitted` only for
@@ -162,7 +193,9 @@ Owner file: `crates/claria-docx/src/template_render.rs` (+ shared classifier hel
 3. Extend the Item-1 fixture tests: a merged table filled by the draft round-trips with
    its merges intact; a merged table deleted by the draft is absent from the export.
 
-### Item 3 — Template authoring directives reach the planner and drafter (claria-docx, claria-core, claria-report-pipeline)
+### Item 3 — Template authoring directives reach the planner and drafter (claria-docx, claria-core, claria)
+
+*Shipped in #132, except step 3 for the serial path — see Status.*
 
 1. **Extraction.** At import, deterministically extract per-section bracketed directive
    text (`[…]` segments; cap count and length, e.g. ≤8 × ≤500 chars per section) into a
@@ -186,7 +219,10 @@ Owner file: `crates/claria-docx/src/template_render.rs` (+ shared classifier hel
    included). No Bedrock calls: validation runs come later via `claria-eval` / a manual
    Jordan Rivera re-run.
 
-### Item 4 — User-curated per-section record context (claria-core, claria-report-pipeline, claria-desktop, frontend; after Item 3)
+### Item 4 — User-curated per-section record context (claria-core, claria, claria-desktop, frontend; after Item 3)
+
+*Shipped in #134, extended by #139, and completed by #143, which gave step 5's review
+sweep the curation it could not see.*
 
 Motivation: clinicians today simulate this by opening a separate chat per section so
 they control which documents the model sees. Formalize it as an opt-in, per-plan-row
@@ -233,7 +269,7 @@ object records exactly which files were in the model call that wrote a section.
 8. **Tests.** Filter determinism; plan-update validation rejects unknown filenames and
    over-cap lists; serde round-trip with the field absent (old plans must deserialize);
    fan-out builds the filtered block and skips seeding for curated branches (follow
-   existing `claria-report-pipeline/tests/` patterns); Vitest coverage for the plan-edit
+   existing `claria/tests/` patterns); Vitest coverage for the plan-edit
    flow where the frontend has testable logic.
 
 ## Validation
@@ -243,3 +279,7 @@ merge, Xavier re-runs the Jordan Rivera client through the Writer against Templa
 compares: headings bold, header block aligned, no orphan tables, Reason for Referral one
 sentence. `claria-eval draft` can do the same headlessly but consumes governed Bedrock
 attempts — implementing agents must not run Bedrock-invoking eval commands.
+
+**Not done as of v0.33.0.** The fixture tests all pass; the re-run against the real
+Template C specimen has not happened, so nothing here has been confirmed end to end
+against the document that produced the symptoms.

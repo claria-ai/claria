@@ -80,7 +80,7 @@ No custom API, just direct Desktop -> AWS via AWS Rust SDK authentication.
 - Retryable, compensating client delete/restore lifecycle
 - Depends on `claria-report-store` (lifecycle restores report workspaces), so the report crates must never depend on this one
 
-**`claria-report-pipeline` — Report-writing orchestration**
+**`claria` — Report-writing orchestration**
 - Runs one writing request end to end: prompt composition, the Bedrock tool loop, bounded record reads, proposal staging, and the whole-document draft protocol
 
 **`claria-report-store` — Durable writer state**
@@ -138,7 +138,7 @@ The money path, front to back. Each hop is one file.
 | Reducer | `lib/draftRun.ts` — `DraftRunUiState`, `emptyDraftRun`, `runStateFromDraftRun`, `reduceDraftRun`, `overlaySections` |
 | Bridge | `lib/tauri.ts` — `generateDraftPlan`, `updateDraftPlan`, `startDraftRun`, `resumeDraftRun`; each mints the `Channel` |
 | Command | `claria-desktop/src/commands/plan.rs` — the same four commands, each opening a `StopRegistration` (`commands/streams.rs`) keyed by `stream_id` |
-| Plan pass | `claria-report-pipeline/src/plan.rs` — `generate_draft_plan` → `plan_fresh_run`, a sequential loop of `PLAN_BATCH_SECTIONS`-section batches over `AnalysisPass::run_call`; resume via `plan_draft_resume`, which calls the same core once |
+| Plan pass | `claria/src/plan.rs` — `generate_draft_plan` → `plan_fresh_run`, a sequential loop of `PLAN_BATCH_SECTIONS`-section batches over `AnalysisPass::run_call`; resume via `plan_draft_resume`, which calls the same core once |
 | Plan system blocks | `plan.rs::analysis_system_blocks` — `prompts.rs::planner_system_prompt`, then the corpus block from `record_context.rs::load_full_record_context` (one compact JSON blob, per-file bound `claria_core::record_text::MAX_RECORD_TEXT_BYTES`), then `full_draft_context.rs::planner_template_context` (pretty-printed, structure only — the writer's `template_context` is what carries `template_body`) |
 | The model call | `claria-bedrock/src/analysis.rs::converse_structured`, forcing `SUBMIT_SECTION_PLAN_TOOL` once per batch; decoded by `decode_section_plan`, checked by `plan.rs::validate_section_plan` against the batch's own section list |
 | Approved plan → drafting | `parallel_draft.rs` fan-out, `buffer_unordered(BEDROCK_FAN_OUT_CONCURRENCY)` (3, in `lib.rs`); the sequential tool-loop shape lives in `turn.rs` |
@@ -146,7 +146,7 @@ The money path, front to back. Each hop is one file.
 | Run lifecycle | `run.rs` — `resume_draft_run`, `finalize_partial_draft`, `abandon_draft_run`, `park_stopped_run`, `release_failed_run` |
 
 **Progress comes back over an IPC Channel, not Tauri events.** The pipeline emits
-`ReportTurnProgress` (`claria-report-pipeline/src/turn.rs`); `claria-desktop`
+`ReportTurnProgress` (`claria/src/turn.rs`); `claria-desktop`
 mirrors it as `ReportTurnProgressView` with a `From` impl in
 `src/report_authoring.rs`; the command pushes it down a
 `tauri::ipc::Channel<ReportTurnProgressView>` supplied by the caller;
@@ -202,7 +202,7 @@ The window comes from the central capability table
 `claria-core/src/model_id.rs::ModelCapabilities::for_id`, which is suffix-driven
 (`:48k` / `:200k` / `:1m`) and otherwise an assumption. Reserves:
 `PLAN_OUTPUT_TOKEN_RESERVE` and `REVIEW_OUTPUT_TOKEN_RESERVE` in
-`claria-report-pipeline` (`plan.rs`, `review.rs`), the writer's configured
+`claria` (`plan.rs`, `review.rs`), the writer's configured
 reserve (defaulting to `DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE`)
 and `CHAT_MAX_OUTPUT_TOKENS` in `claria-bedrock`. Actual counting is
 `converse.rs::InputTokenBudget` — `exact` counts once then estimates at ~4
@@ -265,6 +265,14 @@ back over `Channel<ChatStreamEvent>`. History objects live at
 - The writer flow's progress transport is an IPC `Channel`, not Tauri events.
 - `lib/bindings.ts` regenerates only when the binary actually **runs**
   (`#[cfg(debug_assertions)]` in `main()`); `cargo build` is not enough.
+- On a type that crosses to TypeScript, `#[serde(default)]` is the only optional-field
+  spelling specta respects. `skip_serializing_if` **assigns** optionality rather than
+  or-ing it (`specta-macros-2.0.0-rc.18/src/type/attr/field.rs:43`), so any predicate
+  other than `Option::is_none` makes the generated field *required* — overriding a
+  preceding `default` and an explicit `#[specta(optional)]` alike — and the binding then
+  disagrees with the wire. `ReportSection::template_directives`
+  (`claria-core/src/models/report.rs:126`) ships an always-present empty array for
+  exactly this reason.
 - The `log_model_budget` INFO line is the **allowance** (window − reserve), not
   the measured size of the request. The `CountTokens` result is a separate thing.
 - A retry is only visible to the reader if the call site passes a
@@ -294,8 +302,8 @@ traced; see **Coverage of this guide** for what is listed but unexplored.
 
 | Surface | Frontend | Backend |
 |---|---|---|
-| Writer (whole-report drafting) | `pages/Writing.tsx`, `lib/useReportWorkspace.ts`, `lib/draftRun.ts`, `lib/draftPlan.ts` | `claria-report-pipeline` (`plan.rs`, `turn.rs`, `parallel_draft.rs`, `run.rs`, `gate.rs`), `claria-report-store`, `claria-bedrock/report.rs` |
-| Review / findings | `lib/findings.ts` | `claria-report-pipeline/review.rs`, `claria-bedrock/analysis.rs` |
+| Writer (whole-report drafting) | `pages/Writing.tsx`, `lib/useReportWorkspace.ts`, `lib/draftRun.ts`, `lib/draftPlan.ts` | `claria` (`plan.rs`, `turn.rs`, `parallel_draft.rs`, `run.rs`, `gate.rs`), `claria-report-store`, `claria-bedrock/report.rs` |
+| Review / findings | `lib/findings.ts` | `claria/review.rs`, `claria-bedrock/analysis.rs` |
 | Chat (per-client and infra) | `pages/ClientChat.tsx`, `pages/InfraChat.tsx` | `commands/chat.rs`, `claria-bedrock/chat.rs` |
 | Preferences | `pages/Preferences.tsx`, `lib/preferencesNav.ts`, `lib/preferencesSearchContent.ts` | `claria-desktop/config.rs`, `commands/config.rs` |
 | Templates (import/export) | template panes inside Writing | `claria-docx`, `claria-docx-cli`, `report_template_commands.rs` |
@@ -334,7 +342,7 @@ Adding one writer-limit field touches, in order:
 
 1. `claria-desktop/src/config.rs` — field, `#[serde(default = "…")]`, the
    default fn, and a migration block (bump `CURRENT_VERSION`)
-2. `claria-report-pipeline/src/lib.rs` — `DEFAULT_*`/`MAX_CONFIGURABLE_*`
+2. `claria/src/lib.rs` — `DEFAULT_*`/`MAX_CONFIGURABLE_*`
    consts, validation, accessor
 3. `pages/Preferences.tsx` — `WRITER_LIMIT_DEFAULTS`, the field-descriptor
    array, `normalizeWriterPreferences`. `WriterLimits` is
@@ -343,10 +351,10 @@ Adding one writer-limit field touches, in order:
 5. `lib/bindings.ts` — regenerated by **running** the debug binary
 6. `e2e/tauri-mock.ts` — every `report_authoring` fixture, or the Writing tab
    drops to its error boundary (this is what broke release screenshots once)
-7. tests: `claria-report-pipeline/tests/limits.rs`,
+7. tests: `claria/tests/limits.rs`,
    `claria-desktop/tests/config_load.rs`
 
-Field-label constants in `claria-report-pipeline/src/lib.rs`
+Field-label constants in `claria/src/lib.rs`
 (`TOOL_ROUNDS_FIELD_LABEL`, `IDLE_TIMEOUT_FIELD_LABEL`, …) are quoted verbatim
 in failure messages and must match the labels in `Preferences.tsx`, or an
 error sends a clinician looking for a control that does not exist.

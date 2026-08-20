@@ -22,7 +22,7 @@ use. It has two modes that share one loop:
   the exception: it keeps the session, because it is the state the report is
   picked back up from.
 
-Crates: `claria-report-pipeline` owns the turn loop, budgets, and prompt
+Crates: `claria` owns the turn loop, budgets, and prompt
 composition; `claria-report-store` owns everything durable — workspaces and
 their ETag protocol, revisions, drafting runs, attempt and usage receipts,
 and the writer prompt and template libraries; `claria-bedrock` owns the exact Converse wire
