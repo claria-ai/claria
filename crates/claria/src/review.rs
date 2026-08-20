@@ -80,7 +80,7 @@ use crate::{
         BudgetRole, FullRecordContext, STRUCTURAL_ALLOWANCE_BYTES, load_full_record_context,
         load_record_inventory,
     },
-    review_instructions::instruction,
+    review_instructions::{default_body, instruction},
     text::normalize_whitespace,
     turn::{ReportTurnProgress, ensure_ready_for_turn, validate_model_choice},
 };
@@ -125,12 +125,64 @@ const REVIEWER_LABELS: AnalysisRoleLabels = AnalysisRoleLabels {
 const DUPLICATE_ANCHOR_NOTE: &str = " [duplicate_anchor: this passage appears more than once in the section; the first occurrence \
      is anchored.]";
 
+/// One pass a caller asked a sweep to run.
+///
+/// A sweep runs exactly the passes it is handed, in the order it is handed
+/// them. The default is [`ReviewPassSelection::all`] — every property with its
+/// shipped checklist — so a caller that has no opinion gets the sweep that
+/// always existed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewPassSelection {
+    pub property: ReviewProperty,
+    /// The editable checklist this pass reads. `None` uses the shipped
+    /// default; the host's fixed frame is composed around it either way.
+    pub body: Option<String>,
+}
+
+/// Ceiling for one pass's checklist. Roomy enough to rewrite a property's
+/// checklist several times over, and bounded because it becomes the differing
+/// bytes of a cached request — a body that dwarfed the shared prefix would
+/// undo the reason the fan-out shares one.
+pub const MAX_REVIEW_INSTRUCTION_CHARACTERS: usize = 8_000;
+
+impl ReviewPassSelection {
+    /// Every property, in fan-out order, on its shipped checklist.
+    pub fn all() -> Vec<Self> {
+        ReviewProperty::ALL
+            .into_iter()
+            .map(|property| Self {
+                property,
+                body: None,
+            })
+            .collect()
+    }
+
+    /// The checklist this pass sends.
+    fn body(&self) -> &str {
+        self.body
+            .as_deref()
+            .unwrap_or_else(|| default_body(self.property))
+    }
+
+    /// Whether the caller changed this pass's checklist from the shipped one.
+    fn edited(&self) -> bool {
+        self.body
+            .as_deref()
+            .is_some_and(|body| body != default_body(self.property))
+    }
+}
+
 /// What one review sweep produced, and what it cost.
 #[derive(Debug, Clone)]
 pub struct ReviewSweepOutcome {
     pub findings: ReportFindings,
-    /// One entry per property, in fan-out order, whether it completed or not.
+    /// One entry per property the sweep was asked to run, in fan-out order,
+    /// whether it completed or not. A property the caller removed before
+    /// firing has no entry here and no coverage row — the two say the same
+    /// thing, which is that nobody read it.
     pub properties: Vec<ReviewPropertyStatus>,
+    /// Properties whose checklist the caller changed for this sweep.
+    pub edited_properties: Vec<&'static str>,
     pub usage: Option<TurnUsage>,
     pub converse_calls: u32,
 }
@@ -156,6 +208,23 @@ impl ReviewSweepOutcome {
         serde_json::Value::Object(map)
     }
 
+    /// The properties nobody asked this sweep to read, for the audit event.
+    ///
+    /// Derived rather than passed, so the record of what was skipped cannot
+    /// disagree with the record of what ran.
+    pub fn skipped_properties(&self) -> Vec<&'static str> {
+        ReviewProperty::ALL
+            .into_iter()
+            .map(ReviewProperty::as_str)
+            .filter(|name| {
+                !self
+                    .properties
+                    .iter()
+                    .any(|status| status.property == *name)
+            })
+            .collect()
+    }
+
     /// The properties that did not complete, for the audit event.
     pub fn failed_properties(&self) -> Vec<&'static str> {
         self.properties
@@ -166,6 +235,15 @@ impl ReviewSweepOutcome {
     }
 }
 
+/// The shipped checklist for one review property: what the preflight list
+/// offers as the default, and what a pass sends when nobody edits it.
+///
+/// The host's fixed frame around it — the coverage rule, the quoting rule, the
+/// forced tool call — is not part of this and is not editable.
+pub fn default_review_instructions(property: ReviewProperty) -> &'static str {
+    default_body(property)
+}
+
 /// A review request: the optional channels a live sweep reports and cancels
 /// through.
 #[derive(Clone, Copy, Default)]
@@ -173,6 +251,7 @@ pub struct ReviewSweepRequest<'a> {
     progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
     stop: Option<&'a StopSignal>,
     stream_bounds: Option<StreamBounds>,
+    passes: Option<&'a [ReviewPassSelection]>,
 }
 
 impl<'a> ReviewSweepRequest<'a> {
@@ -198,6 +277,14 @@ impl<'a> ReviewSweepRequest<'a> {
     /// Fire this signal to abandon every branch mid-call.
     pub fn with_stop(mut self, stop: &'a StopSignal) -> Self {
         self.stop = Some(stop);
+        self
+    }
+
+    /// Run exactly these passes, in this order, instead of all seven on their
+    /// shipped checklists. The first is the warming branch, so the order the
+    /// caller supplies is the order the cache is written in.
+    pub fn with_passes(mut self, passes: &'a [ReviewPassSelection]) -> Self {
+        self.passes = Some(passes);
         self
     }
 
@@ -229,6 +316,15 @@ pub async fn run_review_sweeps(
     request: ReviewSweepRequest<'_>,
 ) -> Result<ReviewSweepOutcome, ReportPipelineError> {
     validate_model_choice(reviewer_model_id)?;
+    let default_passes;
+    let passes = match request.passes {
+        Some(passes) => passes,
+        None => {
+            default_passes = ReviewPassSelection::all();
+            &default_passes
+        }
+    };
+    validate_passes(passes)?;
     let loaded = claria_report_store::load_for_report(s3, bucket, client_id, report_id).await?;
     ensure_ready_for_turn(&loaded.workspace, revision)?;
 
@@ -254,6 +350,7 @@ pub async fn run_review_sweeps(
 
     let branches = fan_out(
         sdk_config,
+        passes,
         &BranchContext {
             reviewer_model_id,
             system: &system,
@@ -275,9 +372,53 @@ pub async fn run_review_sweeps(
         report_id,
         revision,
         reviewer_model_id,
+        passes,
         branches,
     )
     .await
+}
+
+/// A sweep's pass list has to be answerable: at least one pass, no property
+/// twice, and no checklist so long it swamps the shared prefix it differs
+/// from.
+///
+/// A duplicate is refused rather than deduplicated because the two rows would
+/// produce two sets of findings under one property name and one coverage row
+/// claiming to describe both.
+fn validate_passes(passes: &[ReviewPassSelection]) -> Result<(), ReportPipelineError> {
+    if passes.is_empty() {
+        return Err(ReportPipelineError::InvalidInput(
+            "A review needs at least one pass. Keep one of the checks, or cancel the review."
+                .to_string(),
+        ));
+    }
+    let mut seen = HashSet::with_capacity(passes.len());
+    for pass in passes {
+        if !seen.insert(pass.property) {
+            return Err(ReportPipelineError::InvalidInput(format!(
+                "The {} check was listed twice. Each property is reviewed by exactly one pass.",
+                pass.property.as_str()
+            )));
+        }
+        if let Some(body) = &pass.body {
+            if body.trim().is_empty() {
+                return Err(ReportPipelineError::InvalidInput(format!(
+                    "The {} check has no instructions. Write what it should look for, or remove \
+                     the check from this review.",
+                    pass.property.as_str()
+                )));
+            }
+            let characters = body.chars().count();
+            if characters > MAX_REVIEW_INSTRUCTION_CHARACTERS {
+                return Err(ReportPipelineError::InvalidInput(format!(
+                    "The {} check's instructions are {characters} characters; the limit is \
+                     {MAX_REVIEW_INSTRUCTION_CHARACTERS}.",
+                    pass.property.as_str()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Execution ───────────────────────────────────────────────────────────────
@@ -309,13 +450,14 @@ struct BranchOutcome {
     warnings: Vec<String>,
 }
 
-/// Run the warming branch to completion, then the remaining six in parallel.
+/// Run the warming branch to completion, then the rest in parallel.
 async fn fan_out(
     sdk_config: &aws_config::SdkConfig,
+    passes: &[ReviewPassSelection],
     context: &BranchContext<'_>,
     request: ReviewSweepRequest<'_>,
 ) -> Result<Vec<Result<BranchOutcome, ReportPipelineError>>, ReportPipelineError> {
-    let total = u32::try_from(ReviewProperty::ALL.len()).unwrap_or(u32::MAX);
+    let total = u32::try_from(passes.len()).unwrap_or(u32::MAX);
     let tools = analysis::analysis_tool_configuration()
         .map_err(|error| map_bedrock_error(error, REVIEWER_LABELS))?;
     let cache_plan = claria_bedrock::converse::CachePlan::review(
@@ -326,9 +468,12 @@ async fn fan_out(
     let unstoppable = StopSignal::new();
     let stop = request.stop.unwrap_or(&unstoppable);
 
-    let (warm_property, siblings) = ReviewProperty::ALL
+    // `validate_passes` refused an empty list before any of this ran, so the
+    // split is total.
+    let (warm_pass, siblings) = passes
         .split_first()
-        .expect("the property list is a fixed non-empty array");
+        .expect("a sweep always runs at least one pass");
+    let warm_property = warm_pass.property;
 
     request.emit_progress(ReportTurnProgress::ReviewPassStarted {
         property: warm_property.as_str().to_string(),
@@ -339,14 +484,14 @@ async fn fan_out(
         sdk_config,
         context,
         request,
-        *warm_property,
+        warm_pass,
         &tools,
         &cache_plan,
         stop,
         None,
     )
     .await;
-    emit_completed(request, &warm, *warm_property, 1, total);
+    emit_completed(request, &warm, warm_property, 1, total);
 
     // The seed is what makes the siblings free of CountTokens: they send the
     // same bytes plus a different instruction, so the warming branch's exact
@@ -355,29 +500,28 @@ async fn fan_out(
     let seed = warm.as_ref().ok().and_then(|branch| branch.verified);
     let mut results = vec![warm];
 
-    let fanned = stream::iter(
-        siblings
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(offset, property)| {
-                let tools = &tools;
-                let cache_plan = &cache_plan;
-                async move {
-                    let index = u32::try_from(offset + 2).unwrap_or(u32::MAX);
-                    request.emit_progress(ReportTurnProgress::ReviewPassStarted {
-                        property: property.as_str().to_string(),
-                        index,
-                        total,
-                    });
-                    let outcome = run_branch(
-                        sdk_config, context, request, property, tools, cache_plan, stop, seed,
-                    )
-                    .await;
-                    (outcome, property, index)
-                }
-            }),
-    )
+    // Each future owns its pass. Borrowing from `siblings` instead makes this
+    // a closure over a reference with a bound lifetime, which callers inside a
+    // `#[tauri::command]` async block cannot prove is higher-ranked — the same
+    // trap the run listing hit.
+    let fanned = stream::iter(siblings.iter().cloned().enumerate().map(|(offset, pass)| {
+        let tools = &tools;
+        let cache_plan = &cache_plan;
+        async move {
+            let property = pass.property;
+            let index = u32::try_from(offset + 2).unwrap_or(u32::MAX);
+            request.emit_progress(ReportTurnProgress::ReviewPassStarted {
+                property: property.as_str().to_string(),
+                index,
+                total,
+            });
+            let outcome = run_branch(
+                sdk_config, context, request, &pass, tools, cache_plan, stop, seed,
+            )
+            .await;
+            (outcome, property, index)
+        }
+    }))
     .buffered(REVIEW_FAN_OUT_CONCURRENCY)
     .collect::<Vec<_>>()
     .await;
@@ -426,12 +570,13 @@ async fn run_branch(
     sdk_config: &aws_config::SdkConfig,
     context: &BranchContext<'_>,
     request: ReviewSweepRequest<'_>,
-    property: ReviewProperty,
+    pass: &ReviewPassSelection,
     tools: &AnalysisToolConfiguration,
     cache_plan: &claria_bedrock::converse::CachePlan,
     stop: &StopSignal,
     seed: Option<(u32, u64)>,
 ) -> Result<BranchOutcome, ReportPipelineError> {
+    let property = pass.property;
     let budget = tokio::sync::Mutex::new(match seed {
         Some((tokens, chars)) => AnalysisInputBudget::seeded(
             context.reviewer_model_id,
@@ -452,7 +597,7 @@ async fn run_branch(
                 text: context.draft_block.to_string(),
             },
             ReportProtocolBlock::Text {
-                text: instruction(property),
+                text: instruction(property, pass.body()),
             },
         ],
         created_at: jiff::Timestamp::now(),
@@ -1089,6 +1234,10 @@ fn normalize_with_origins(text: &str) -> (String, Vec<(usize, usize)>) {
 
 // ── Persistence and instrumentation ─────────────────────────────────────────
 
+// Client, report, and the revision the sweep read are the same explicit
+// orchestration boundary the entry point keeps; the pass list and the branches
+// are the two halves of the answer being folded together.
+#[allow(clippy::too_many_arguments)]
 async fn persist_sweep(
     s3: &S3Client,
     bucket: &str,
@@ -1096,6 +1245,7 @@ async fn persist_sweep(
     report_id: Uuid,
     revision: u64,
     reviewer_model_id: &str,
+    passes: &[ReviewPassSelection],
     branches: Vec<Result<BranchOutcome, ReportPipelineError>>,
 ) -> Result<ReviewSweepOutcome, ReportPipelineError> {
     let now = jiff::Timestamp::now();
@@ -1105,7 +1255,11 @@ async fn persist_sweep(
     let mut usage: Option<TurnUsage> = None;
     let mut converse_calls = 0_u32;
 
-    for (property, branch) in ReviewProperty::ALL.into_iter().zip(branches) {
+    // Zipped against the passes the sweep was asked for, not against every
+    // property there is: a removed pass has no branch, and pairing branches
+    // with a fixed list would file one property's answer under another's name.
+    for (pass, branch) in passes.iter().zip(branches) {
+        let property = pass.property;
         match branch {
             Ok(branch) => {
                 usage = merge_optional_usage(usage, branch.usage.clone());
@@ -1173,6 +1327,11 @@ async fn persist_sweep(
     Ok(ReviewSweepOutcome {
         findings: loaded.findings,
         properties: statuses,
+        edited_properties: passes
+            .iter()
+            .filter(|pass| pass.edited())
+            .map(|pass| pass.property.as_str())
+            .collect(),
         usage,
         converse_calls,
     })

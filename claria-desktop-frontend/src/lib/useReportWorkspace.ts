@@ -19,6 +19,7 @@ import {
   listReportFindings,
   loadConfig,
   loadDraftRun,
+  loadDraftRunHistory,
   loadReportWorkspace,
   previewWriterTemplate,
   renameReportSession,
@@ -34,6 +35,7 @@ import {
   updateDraftPlan,
   type CompletionReport,
   type DraftRun,
+  type DraftRunHistoryView,
   type FindingAction,
   type FullReportGenerationResponse,
   type PlanEntryEdit,
@@ -41,6 +43,7 @@ import {
   type ReportFindings,
   type ReportTurnProgressView,
   type ReportWorkspaceView,
+  type ReviewPassInput,
 } from "./tauri";
 import type { DraftPlanMode } from "./draftPlan";
 import { randomUuid } from "./ids";
@@ -291,6 +294,16 @@ export function useReportWorkspace({
   const [run, dispatchRun] = useReducer(runReducer, undefined, emptyDraftRun);
   const [draftPane, setDraftPane] = useState<DraftPaneState>(null);
   const [findings, setFindings] = useState<ReportFindings | null>(null);
+  /**
+   * Every run this report has recorded, newest first — the Draft run tab's
+   * history. Kept apart from `run` (the live reducer state) and from
+   * `draftPane.run` (the one run the writer can act on): those two are about
+   * a run in flight or one waiting for an answer, and this one is about runs
+   * that are over, including the completed run that wrote the document.
+   */
+  const [runHistory, setRunHistory] = useState<DraftRunHistoryView | null>(
+    null
+  );
   const [completion, setCompletion] = useState<CompletionReport | null>(null);
   /** The finding whose apply/undo/dismiss is in flight. */
   const [resolvingFindingId, setResolvingFindingId] = useState<string | null>(
@@ -402,6 +415,31 @@ export function useReportWorkspace({
   );
 
   /**
+   * Re-read the drafting runs this report has recorded.
+   *
+   * Separate from `adoptDraftRun` on purpose. That one answers "is there
+   * something to pick back up", which is at most one run and deliberately
+   * excludes completed ones; this answers "what has been done to this report",
+   * which is all of them. Losing it degrades the tab to no history rather than
+   * failing the load — but silently would be a lie, so it is logged.
+   */
+  const refreshRunHistory = useCallback(
+    async (reportId: string, generation: number) => {
+      try {
+        const history = await loadDraftRunHistory(clientId, reportId);
+        if (generation === generationRef.current) setRunHistory(history);
+      } catch (error) {
+        logFrontendEvent(
+          "error",
+          `Writer drafting-run history lookup failed: ${String(error)}`
+        );
+        if (generation === generationRef.current) setRunHistory(null);
+      }
+    },
+    [clientId]
+  );
+
+  /**
    * Re-read the findings this report carries. Failing to read them degrades
    * the pane to empty, which is a lie worth logging: a finding nobody can see
    * is a finding nobody can dismiss.
@@ -471,12 +509,14 @@ export function useReportWorkspace({
       setDraftPane(null);
       setFindings(null);
       setCompletion(null);
+      setRunHistory(null);
       dispatchRun({ kind: "cleared" });
       // A run stopped before the app was closed is still resumable, so the
       // banner has to survive a restart, not just a re-render. None of these
       // three depend on each other, so the load waits once, not three times.
       await Promise.all([
         adoptDraftRun(result.report_id, generation),
+        refreshRunHistory(result.report_id, generation),
         refreshFindings(result.report_id, generation),
         refreshCompletion(result.report_id, result.draft.revision, generation),
       ]);
@@ -492,6 +532,7 @@ export function useReportWorkspace({
     expectedReportId,
     refreshCompletion,
     refreshFindings,
+    refreshRunHistory,
   ]);
 
   useEffect(() => {
@@ -805,6 +846,10 @@ export function useReportWorkspace({
         showActionError(error);
         return false;
       } finally {
+        // However the run ended — cut, stopped, or failed — it is now part of
+        // this report's history, and the tab that shows that history must not
+        // need a reload to say so.
+        if (reportId) await refreshRunHistory(reportId, generation);
         if (generation === generationRef.current) {
           setAgentActivity(null);
           setBusy(null);
@@ -812,7 +857,7 @@ export function useReportWorkspace({
         }
       }
     },
-    [adoptDraftRun, showActionError]
+    [adoptDraftRun, refreshRunHistory, showActionError]
   );
 
   const generateFullDraft = useCallback(
@@ -1169,9 +1214,10 @@ export function useReportWorkspace({
       setSaveStatus(null);
       return false;
     } finally {
+      await refreshRunHistory(current.report_id, generation);
       if (generation === generationRef.current) setBusy(null);
     }
-  }, [clientId, showActionError]);
+  }, [clientId, refreshRunHistory, showActionError]);
 
   /** Throw the interrupted run away. The report keeps its revision. */
   const discardRun = useCallback(async (): Promise<boolean> => {
@@ -1206,9 +1252,10 @@ export function useReportWorkspace({
       setSaveStatus(null);
       return false;
     } finally {
+      await refreshRunHistory(current.report_id, generation);
       if (generation === generationRef.current) setBusy(null);
     }
-  }, [clientId, showActionError]);
+  }, [clientId, refreshRunHistory, showActionError]);
 
   const resolveProposal = useCallback(
     async (decision: "accept" | "reject") => {
@@ -1252,16 +1299,23 @@ export function useReportWorkspace({
   );
 
   /**
-   * Review the saved draft, one pass per property.
+   * Review the saved draft, running exactly the passes it is handed.
+   *
+   * The caller supplies the pass list because the reader chooses it at the
+   * preflight: a pass they removed is not run, gets no coverage row, and is
+   * named as skipped in the audit trail. Every property on its default
+   * checklist is the sweep that always ran.
    *
    * It occupies the busy slot for its life like a drafting run does, but it
    * writes nothing to the report: it produces findings, and the reader
    * decides what becomes of them.
    */
-  const reviewDraft = useCallback(async (): Promise<boolean> => {
+  const reviewDraft = useCallback(
+    async (passes: ReviewPassInput[]): Promise<boolean> => {
     const { workspace: current, busy: currentBusy } = stateRef.current;
     if (!current || currentBusy !== null) return false;
     if (current.draft.revision === 0 || current.pending_proposal) return false;
+    if (passes.length === 0) return false;
     const generation = generationRef.current;
     const revision = current.draft.revision;
     setBusy("reviewing");
@@ -1269,15 +1323,22 @@ export function useReportWorkspace({
     dispatchRun({ kind: "review_started" });
     setAgentActivity({
       label: "Reviewing the draft",
-      detail: "One pass per property",
+      detail:
+        passes.length === 1
+          ? "One check"
+          : `${passes.length} checks, one request each`,
     });
     setSaveStatus("Reviewing the saved draft for style and consistency…");
-    logFrontendEvent("info", "Writer review sweep requested");
+    logFrontendEvent(
+      "info",
+      `Writer review sweep requested for ${passes.length} propert${passes.length === 1 ? "y" : "ies"}`
+    );
     try {
       const result = await runReviewSweeps(
         clientId,
         current.report_id,
         revision,
+        passes,
         (progress) => {
           if (generation === generationRef.current) handleAgentProgress(progress);
         }
@@ -1309,7 +1370,9 @@ export function useReportWorkspace({
         setBusy(null);
       }
     }
-  }, [clientId, handleAgentProgress, refreshCompletion, showActionError]);
+    },
+    [clientId, handleAgentProgress, refreshCompletion, showActionError]
+  );
 
   /** What each resolution says while it runs, and once it has landed. */
   const FINDING_MESSAGES: Record<
@@ -1568,6 +1631,7 @@ export function useReportWorkspace({
     liveContext,
     run,
     draftPane,
+    runHistory,
     findings,
     completion,
     resolvingFindingId,

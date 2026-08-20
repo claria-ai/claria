@@ -18,6 +18,11 @@ use claria_core::models::{
         ReportTemplateWarning, ReportTemplateWarningCode, ReportToolResultStatus, ReportWorkspace,
         report_template_placeholder_count,
     },
+    report_run::{
+        DraftRun, DraftRunStatus, EvidenceRef, PlanEntry as DraftPlanEntry, RecordCitation,
+        RunInstruction, RunRecordSnapshot, RunSection, RunSectionRecords, RunSectionState,
+        SectionIntent,
+    },
     turn_usage::TurnUsage,
 };
 use serde::{Deserialize, Serialize};
@@ -967,5 +972,220 @@ fn tool_activity_summary(
             "Staged report changes for approval".to_string()
         }
         _ => format!("Requested {name}"),
+    }
+}
+
+// ── Drafting-run history ────────────────────────────────────────────────────
+
+/// One report's drafting runs, newest first, as the Draft run tab reads them.
+///
+/// Earns its life over `Vec<DraftRun>` on two counts. It **drops the staged
+/// blocks**: every drafted section carries a copy of its own prose, so a
+/// history of five runs would ship the document five times over the bridge to
+/// render a summary that never shows a word of it — the pane renders the
+/// report itself from the workspace. And it **joins each section to its plan
+/// row**, because every reader of this data wants the pair (what was decided,
+/// what happened) and doing the join once here is cheaper and less
+/// error-prone than doing it in the pane.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct DraftRunHistoryView {
+    pub runs: Vec<DraftRunHistoryEntry>,
+    /// The run that currently owns the session, if one does. It is the only
+    /// entry the writer will refuse edits behind.
+    pub active_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct DraftRunHistoryEntry {
+    pub run_id: String,
+    pub status: DraftRunStatus,
+    /// This run holds the session right now.
+    pub active: bool,
+    pub base_revision: u64,
+    /// The revision the finish cut produced. Present only on a completed run,
+    /// and what lets the pane say which run wrote the document on screen.
+    pub finalized_revision: Option<u64>,
+    /// Finalized from a stopped state: what never landed was skipped.
+    pub partial: bool,
+    pub title: Option<String>,
+    pub writer_model_id: String,
+    /// The planning model. Absent on a run that never got a plan.
+    pub planner_model_id: Option<String>,
+    /// Nobody decided this plan — it was manufactured 1:1 from the sections
+    /// the report already had.
+    pub plan_synthetic: bool,
+    /// The clinician changed the plan at the gate before approving it.
+    pub plan_user_edited: bool,
+    pub plan_approved_at: Option<String>,
+    /// PHI-free `code:detail` strings about what the host could not confirm.
+    pub plan_warnings: Vec<String>,
+    /// The guidance the run was given, oldest first: what was typed at the
+    /// plan step, plus anything added at a resume.
+    pub instructions: Vec<RunInstruction>,
+    /// The record corpus the run was built from. `None` on a run recorded
+    /// before Claria captured one.
+    pub record_snapshot: Option<RunRecordSnapshot>,
+    pub sections: Vec<DraftRunHistorySection>,
+    pub counts: DraftRunSectionCounts,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// One section of one run: the plan's decision and the run's outcome, in one
+/// row.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct DraftRunHistorySection {
+    pub section_id: String,
+    pub heading: String,
+    pub position: u32,
+    pub state: RunSectionState,
+    /// What the plan decided for this section. `None` when the run has no
+    /// plan row for it — an invented section on a run without a plan.
+    pub intent: Option<SectionIntent>,
+    /// The report cannot be complete while this section is empty.
+    pub required: bool,
+    /// What the section had to cover, in the planner's words.
+    pub scope: String,
+    pub evidence: Vec<EvidenceRef>,
+    /// Per-section steering that overrode the run-wide instructions.
+    pub instruction: Option<String>,
+    /// The records that were in the model call that wrote this section.
+    pub records: Option<RunSectionRecords>,
+    pub citations: Vec<RecordCitation>,
+    /// Blocks the run staged for this section. The prose itself is the
+    /// report; this is how much of it the run wrote.
+    pub block_count: u32,
+    pub characters: u64,
+    pub attempts: u32,
+    /// PHI-free note about why the section failed, or why a skip diverged
+    /// from the approved plan.
+    pub error: Option<String>,
+    pub updated_at: String,
+}
+
+/// How one run's sections came out, so the pane's progress bar and its
+/// summary line read the same number.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+pub struct DraftRunSectionCounts {
+    pub total: u32,
+    pub drafted: u32,
+    pub skipped: u32,
+    pub kept: u32,
+    pub failed: u32,
+    /// Sections still undecided: pending, or left mid-flight by an
+    /// interruption.
+    pub undecided: u32,
+    /// Sections in any terminal state — the numerator of the progress bar.
+    pub decided: u32,
+}
+
+pub fn draft_run_history_view(history: &claria::DraftRunHistory) -> DraftRunHistoryView {
+    DraftRunHistoryView {
+        runs: history
+            .runs
+            .iter()
+            .map(|run| draft_run_history_entry(run, history.active_run_id))
+            .collect(),
+        active_run_id: history.active_run_id.map(|id| id.to_string()),
+    }
+}
+
+fn draft_run_history_entry(run: &DraftRun, active_run_id: Option<Uuid>) -> DraftRunHistoryEntry {
+    let plan_entries: HashMap<Uuid, &DraftPlanEntry> = run
+        .plan
+        .iter()
+        .flat_map(|plan| plan.entries.iter())
+        .map(|entry| (entry.section_id, entry))
+        .collect();
+    let mut sections: Vec<&RunSection> = run.sections.iter().collect();
+    sections.sort_by_key(|section| section.position);
+
+    let mut counts = DraftRunSectionCounts {
+        total: u32::try_from(sections.len()).unwrap_or(u32::MAX),
+        drafted: 0,
+        skipped: 0,
+        kept: 0,
+        failed: 0,
+        undecided: 0,
+        decided: 0,
+    };
+    for section in &sections {
+        match section.state {
+            RunSectionState::Drafted | RunSectionState::Flagged => counts.drafted += 1,
+            RunSectionState::Skipped => counts.skipped += 1,
+            RunSectionState::Kept => counts.kept += 1,
+            RunSectionState::Failed => counts.failed += 1,
+            // `Drafting` is transient and never true across a load: a section
+            // stored in it belongs to a run whose process died mid-section,
+            // which leaves it exactly as undecided as a pending one.
+            RunSectionState::Pending | RunSectionState::Drafting => counts.undecided += 1,
+        }
+    }
+    counts.decided = counts.total.saturating_sub(counts.undecided);
+
+    DraftRunHistoryEntry {
+        run_id: run.run_id.to_string(),
+        status: run.status,
+        active: active_run_id == Some(run.run_id),
+        base_revision: run.base_revision,
+        finalized_revision: run.finalized_revision,
+        partial: run.partial,
+        title: run.title.clone(),
+        writer_model_id: run.writer_model_id.clone(),
+        planner_model_id: run.plan.as_ref().map(|plan| plan.model_id.clone()),
+        plan_synthetic: run.plan.as_ref().is_some_and(|plan| plan.synthetic),
+        plan_user_edited: run.plan.as_ref().is_some_and(|plan| plan.user_edited),
+        plan_approved_at: run
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.approved_at)
+            .map(|at| at.to_string()),
+        plan_warnings: run
+            .plan
+            .as_ref()
+            .map(|plan| plan.plan_warnings.clone())
+            .unwrap_or_default(),
+        instructions: run.instructions.clone(),
+        record_snapshot: run.record_snapshot.clone(),
+        sections: sections
+            .into_iter()
+            .map(|section| {
+                let entry = plan_entries.get(&section.section_id);
+                DraftRunHistorySection {
+                    section_id: section.section_id.to_string(),
+                    heading: section.heading.clone(),
+                    position: section.position,
+                    state: section.state,
+                    intent: entry.map(|entry| entry.intent),
+                    required: entry.is_some_and(|entry| entry.required),
+                    scope: entry.map(|entry| entry.scope.clone()).unwrap_or_default(),
+                    evidence: entry
+                        .map(|entry| entry.evidence.clone())
+                        .unwrap_or_default(),
+                    instruction: entry.and_then(|entry| entry.instruction.clone()),
+                    records: section.records.clone(),
+                    citations: section.citations.clone(),
+                    block_count: u32::try_from(section.blocks.len()).unwrap_or(u32::MAX),
+                    characters: section.blocks.iter().map(block_characters).sum(),
+                    attempts: section.attempts,
+                    error: section.error.clone(),
+                    updated_at: section.updated_at.to_string(),
+                }
+            })
+            .collect(),
+        counts,
+        created_at: run.created_at.to_string(),
+        updated_at: run.updated_at.to_string(),
+    }
+}
+
+/// How much text one staged block holds. Counts only — the block itself never
+/// crosses in a history entry.
+fn block_characters(block: &ReportBlock) -> u64 {
+    let characters = |text: &String| u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+    match block {
+        ReportBlock::Paragraph { text } => characters(text),
+        ReportBlock::BulletList { items } => items.iter().map(characters).sum(),
+        ReportBlock::Table { rows, .. } => rows.iter().flatten().map(characters).sum(),
     }
 }

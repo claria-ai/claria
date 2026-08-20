@@ -63,8 +63,8 @@ use claria_core::models::{
         ReportProtocolRole, ReportToolResultStatus, validate_report_content,
     },
     report_run::{
-        DraftRun, DraftRunStatus, MAX_SECTION_ERROR_CHARACTERS, PlanEntry, RunSectionState,
-        SectionIntent,
+        DraftRun, DraftRunStatus, MAX_SECTION_ERROR_CHARACTERS, PlanEntry, RunSectionRecords,
+        RunSectionState, SectionIntent,
     },
     turn_usage::TurnUsage,
 };
@@ -241,6 +241,9 @@ struct BranchOutcome {
     /// prefix, so its cache receipts say nothing about how well the shared one
     /// was reused and are accounted for separately.
     curated: bool,
+    /// What this branch was actually shown, for the run object. `None` on the
+    /// title branch, which writes no section.
+    records: Option<RunSectionRecords>,
 }
 
 /// Everything every branch reads, borrowed rather than cloned: the shared
@@ -388,6 +391,13 @@ async fn run_parallel_draft(
     // branch can be told which slot its section owns.
     let now = jiff::Timestamp::now();
     renumber_positions_plan_order(&mut run.run);
+    // What the fan-out is about to send, recorded before it sends it. Stamped
+    // once and never rewritten: a resume re-reads the same corpus, and a
+    // snapshot that moved would make the run disagree with the sections it
+    // already holds about what they were written from.
+    if run.run.record_snapshot.is_none() {
+        run.run.record_snapshot = Some(record_context.run_snapshot(now));
+    }
     let host_skipped = apply_host_side_rows(&mut run.run, now);
     commit_run(s3, bucket, run).await?;
     for section_id in &host_skipped {
@@ -749,6 +759,7 @@ async fn commit_branch(
         verdict,
         receipts,
         tool_uses,
+        records,
         ..
     } = outcome;
 
@@ -793,7 +804,13 @@ async fn commit_branch(
                 return Ok(());
             };
             state.section_ids.push(section_id);
-            apply_section_content(&mut run.run, section_id, content, now);
+            apply_section_content(
+                &mut run.run,
+                section_id,
+                content,
+                records.unwrap_or(RunSectionRecords::SharedCorpus),
+                now,
+            );
             commit_run(s3, bucket, run).await?;
             let (drafted, total) = counters(&run.run);
             if let Some(section) = run
@@ -1117,6 +1134,17 @@ async fn run_branch(
     // if its plan row carries a restriction. The title branch never has one:
     // it names the document, which is not a claim about any record.
     let curated = kind_id.and_then(|section_id| context.curated.get(&section_id));
+    // What the run will record this section as having been written from. The
+    // curated branch reports the filenames that actually reached it, not the
+    // ones its plan row named: a curated file the client no longer has never
+    // made it into the request, and the run is the audit record for what was
+    // sent.
+    let records = kind_id.map(|_| match curated {
+        Some(curated) => RunSectionRecords::Curated {
+            filenames: curated.citable_filenames.clone(),
+        },
+        None => RunSectionRecords::SharedCorpus,
+    });
     let mut receipts = Vec::new();
     let mut tool_uses = 0_u32;
     let finished = |verdict, receipts, tool_uses, verified| BranchOutcome {
@@ -1126,6 +1154,7 @@ async fn run_branch(
         tool_uses,
         verified,
         curated: curated.is_some(),
+        records: records.clone(),
     };
 
     // Checked before the first call, not only between rounds: a branch still

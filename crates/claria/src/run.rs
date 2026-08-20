@@ -99,6 +99,7 @@ fn new_draft_run(
                 citations: Vec::new(),
                 attempts: 0,
                 error: None,
+                records: None,
                 updated_at: now,
             })
             .collect(),
@@ -113,6 +114,9 @@ fn new_draft_run(
         writer_model_id: model_id.to_string(),
         finalized_revision: None,
         partial: false,
+        // Stamped by the executor, once the corpus it is about to send has
+        // actually been loaded.
+        record_snapshot: None,
         created_at: now,
         updated_at: now,
     }
@@ -417,6 +421,48 @@ pub async fn load_resumable_draft_run(
             matches!(run.status, DraftRunStatus::Stopped | DraftRunStatus::Failed)
                 && run.base_revision == revision
         }))
+}
+
+/// Drafting runs a report has recorded, newest first, and which of them (if
+/// any) currently owns the session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DraftRunHistory {
+    pub runs: Vec<DraftRun>,
+    pub active_run_id: Option<Uuid>,
+}
+
+/// How many runs one report's history carries back.
+///
+/// A cap rather than the whole listing: every run is a separate GET, and a
+/// report re-drafted fifty times has fifty of them. Twenty is more history
+/// than anybody reads and still one page of S3 reads.
+pub const MAX_DRAFT_RUN_HISTORY: usize = 20;
+
+/// Every drafting run this report recorded, newest first.
+///
+/// The read-only counterpart to [`load_resumable_draft_run`]: that one answers
+/// "what can the writer pick back up", which is at most one run and deliberately
+/// excludes the completed ones. This one answers "what has been done to this
+/// report", which is all of them — a completed run is the whole point, because
+/// it is the run that produced the document the clinician is looking at.
+///
+/// Nothing here mutates. A section left in the transient
+/// [`RunSectionState::Drafting`] state is reported as it was stored; the caller
+/// renders it as the interruption it is rather than the host rewriting history
+/// on a read.
+pub async fn load_draft_run_history(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    report_id: Uuid,
+) -> Result<DraftRunHistory, ReportPipelineError> {
+    let loaded = load_for_report(s3, bucket, client_id, report_id).await?;
+    let mut runs = list_draft_runs(s3, bucket, client_id, report_id).await?;
+    runs.truncate(MAX_DRAFT_RUN_HISTORY);
+    Ok(DraftRunHistory {
+        runs,
+        active_run_id: loaded.workspace.active_run_id,
+    })
 }
 
 /// What [`finalize_partial_draft`] changed, so the caller can record it

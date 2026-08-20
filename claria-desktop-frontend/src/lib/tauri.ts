@@ -12,6 +12,9 @@ import { Channel } from "@tauri-apps/api/core";
 import { commands, events } from "./bindings";
 import type {
   ChatHistoryDetail,
+  DraftRunHistoryView,
+  ReviewPassInput,
+  ReviewPassPreset,
   ChatHistorySummary,
   ChatMessage,
   ChatStreamEvent,
@@ -109,6 +112,10 @@ export type {
   DraftPipelinePreferences,
   DraftPlanEntry,
   DraftRun,
+  DraftRunHistoryEntry,
+  DraftRunHistorySection,
+  DraftRunHistoryView,
+  DraftRunSectionCounts,
   DraftRunStatus,
   EditorHistoryEntry,
   EvidenceRef,
@@ -180,10 +187,16 @@ export type {
   ResourceSpec,
   ReviewCoverage,
   ReviewPass,
+  ReviewPassInput,
+  ReviewPassPreset,
   RunInstruction,
   RunPlan,
+  RunRecordFile,
+  RunRecordSnapshot,
   RunSection,
+  RunSectionRecords,
   RunSectionState,
+  RunUnavailableRecord,
   SectionIntent,
   StyleProposal,
   TextSpan,
@@ -636,6 +649,23 @@ export async function loadDraftRun(
 }
 
 /**
+ * Every drafting run this report has recorded, newest first, with the plan
+ * decision and the outcome joined per section.
+ *
+ * The read-only counterpart to {@link loadDraftRun}: that one answers what the
+ * writer can pick back up and so never returns a completed run, this one is
+ * the history the Draft run tab renders — including the completed run that
+ * wrote the document on screen. Staged prose is deliberately absent; the pane
+ * renders the report from the workspace.
+ */
+export async function loadDraftRunHistory(
+  clientId: string,
+  reportId: string
+): Promise<DraftRunHistoryView> {
+  return unwrap(await commands.loadDraftRunHistory(clientId, reportId));
+}
+
+/**
  * Keep what an interrupted run wrote as a new revision. Sections it never
  * finished are saved as skipped placeholders.
  */
@@ -798,19 +828,32 @@ export async function resolveReportProposal(
 }
 
 /**
- * Review one accepted revision for every property at once. The seven passes
+ * The seven review passes and the checklist each sends by default. Compiled-in
+ * text — no AWS call — so the preflight list can be built before anything is
+ * fired.
+ */
+export async function reviewPassPresets(): Promise<ReviewPassPreset[]> {
+  return commands.reviewPassPresets();
+}
+
+/**
+ * Review one accepted revision, running exactly the passes handed to it. They
  * run in parallel, so this resolves when the slowest of them does.
+ *
+ * A property absent from `passes` is not reviewed and earns no coverage row —
+ * which is the same thing the findings say about a pass that failed.
  */
 export async function runReviewSweeps(
   clientId: string,
   reportId: string,
   revision: number,
+  passes: ReviewPassInput[],
   onProgress?: (progress: ReportTurnProgressView) => void
 ): Promise<ReportFindings> {
   const channel = new Channel<ReportTurnProgressView>();
   if (onProgress) channel.onmessage = onProgress;
   return unwrap(
-    await commands.runReviewSweeps(clientId, reportId, revision, channel)
+    await commands.runReviewSweeps(clientId, reportId, revision, passes, channel)
   );
 }
 

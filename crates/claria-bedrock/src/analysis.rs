@@ -121,6 +121,15 @@ impl ReviewProperty {
         }
     }
 
+    /// The property one persisted or user-supplied name refers to, or `None`
+    /// for a name no pass answers to. The inverse of [`Self::as_str`], so the
+    /// two cannot drift.
+    pub fn from_key(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|property| property.as_str() == name)
+    }
+
     /// Whether findings from this property carry an applicable replacement.
     pub const fn is_style(self) -> bool {
         matches!(

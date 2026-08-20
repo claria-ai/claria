@@ -689,6 +689,9 @@ export const fixtures: Record<string, unknown> = {
   // writer capture answers this. The plan waiting at the gate is the one the
   // `client writing` shot is about.
   load_draft_run: plannedDraftRun,
+  // The Draft run tab also reads the report's run history. The planned run is
+  // still waiting at the gate here, so the history is empty.
+  load_draft_run_history: { runs: [], active_run_id: null },
 
   // A report nobody has asked for a review of yet.
   list_report_findings: {

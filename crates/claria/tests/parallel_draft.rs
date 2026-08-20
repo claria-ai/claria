@@ -15,7 +15,7 @@ use claria_core::models::{
     report::{AuthorshipKind, ReportBlock, ReportContent, ReportSection},
     report_run::{
         DRAFT_RUN_SCHEMA_VERSION, DraftRun, DraftRunStatus, PlanEntry, RunInstruction, RunPlan,
-        RunSection, RunSectionState, SectionIntent,
+        RunSection, RunSectionRecords, RunSectionState, SectionIntent,
     },
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
@@ -203,6 +203,7 @@ fn run_section(id: &str, heading: &str, position: u32, state: RunSectionState) -
         citations: Vec::new(),
         attempts: 0,
         error: None,
+        records: None,
         updated_at: jiff::Timestamp::now(),
     }
 }
@@ -290,6 +291,7 @@ async fn seed_gated_run(
         writer_model_id: MODEL_ID.to_string(),
         finalized_revision: None,
         partial: false,
+        record_snapshot: None,
         created_at: now,
         updated_at: now,
     };
@@ -1243,6 +1245,7 @@ async fn a_resume_after_a_partial_run_drafts_only_the_remaining_sections() {
             writer_model_id: MODEL_ID.to_string(),
             finalized_revision: None,
             partial: false,
+            record_snapshot: None,
             created_at: now,
             updated_at: now,
         },
@@ -1880,4 +1883,105 @@ async fn a_curated_record_the_client_has_lost_is_reported_as_unavailable() {
     let block = record_block(&curated);
     assert!(block.contains("not_in_record_inventory"), "{block}");
     assert!(block.contains("\"snapshot_complete\":false"), "{block}");
+}
+
+// ── What the run records about its own sources ──────────────────────────────
+
+/// The run is the durable answer to "what was this written from". Before this
+/// the answer only existed in the request bytes, which nobody keeps.
+#[tokio::test]
+async fn a_finished_run_records_the_corpus_and_what_each_section_read() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    seed_second_record(&s3, client_id).await;
+    let run_id = seed_gated_run(
+        &s3,
+        client_id,
+        report_id,
+        plan_curating(SUMMARY_ID, &[TEACHER_FILE]),
+    )
+    .await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the gated run completes");
+
+    let run = only_run(&s3, client_id, report_id).await;
+    let snapshot = run
+        .record_snapshot
+        .as_ref()
+        .expect("the run records the corpus it was built from");
+    let filenames: Vec<&str> = snapshot
+        .files
+        .iter()
+        .map(|file| file.filename.as_str())
+        .collect();
+    assert_eq!(
+        filenames,
+        vec![INTAKE_FILE, TEACHER_FILE],
+        "the snapshot lists the shared corpus in the order the block did"
+    );
+    assert!(snapshot.files.iter().all(|file| !file.sha256.is_empty()));
+    assert!(snapshot.total_characters > 0);
+    assert!(snapshot.unavailable.is_empty());
+
+    // An uncurated section read the shared corpus, so it points at the
+    // snapshot rather than restating it.
+    assert_eq!(
+        section_of(&run, REFERRAL_ID).records,
+        Some(RunSectionRecords::SharedCorpus)
+    );
+    // The curated one records what actually reached its call.
+    assert_eq!(
+        section_of(&run, SUMMARY_ID).records,
+        Some(RunSectionRecords::Curated {
+            filenames: vec![TEACHER_FILE.to_string()]
+        })
+    );
+}
+
+/// The two run lookups answer different questions, and the completed run is
+/// exactly the case where they diverge: nothing to resume, everything to show.
+#[tokio::test]
+async fn a_completed_run_leaves_history_even_though_nothing_is_resumable() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let run_id = seed_gated_run(&s3, client_id, report_id, all_draft()).await;
+    script_clean_fan_out(&server).await;
+
+    start(&sdk, &s3, client_id, report_id, run_id)
+        .await
+        .expect("the gated run completes");
+
+    assert_eq!(
+        pipeline::load_resumable_draft_run(&s3, BUCKET, client_id, report_id)
+            .await
+            .expect("resumable lookup"),
+        None,
+        "a completed run is not something to pick back up"
+    );
+
+    let history = pipeline::load_draft_run_history(&s3, BUCKET, client_id, report_id)
+        .await
+        .expect("run history");
+    assert_eq!(history.active_run_id, None, "the cut released the session");
+    assert_eq!(history.runs.len(), 1);
+    let run = &history.runs[0];
+    assert_eq!(run.run_id, run_id);
+    assert_eq!(run.status, DraftRunStatus::Completed);
+    assert_eq!(run.finalized_revision, Some(2));
+    // The plan, the guidance and the per-section outcomes are all still there,
+    // which is what the Draft run tab renders after a reload.
+    assert_eq!(run.plan.as_ref().expect("the plan").entries.len(), 3);
+    assert_eq!(run.instructions[0].text, GUIDANCE);
+    assert!(
+        run.sections
+            .iter()
+            .all(|section| section.state == RunSectionState::Drafted),
+        "every planned section landed"
+    );
+    assert!(run.record_snapshot.is_some());
 }

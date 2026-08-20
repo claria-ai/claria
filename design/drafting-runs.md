@@ -26,6 +26,14 @@ owns the Converse wire shape, forced-tool calls, and cache placement.
 | Run | `report-authoring/{client}/runs/{report_id}/{run_id}.json` | One run's plan, per-section state, and staged content |
 | Findings | `report-authoring/{client}/findings/{report_id}.json` | Every review finding for the report, with apply/undo history |
 
+A run is never deleted. `abandon_draft_run` and the finish cut both leave the
+object where it is, which is what makes the run listing a **history** rather
+than a pointer: `load_draft_run_history` reads every run a report has recorded,
+newest first, and the Draft run tab renders it. `load_resumable_draft_run`
+answers the narrower question — what can the writer pick back up — and
+deliberately returns nothing for a completed run, so the two are separate reads
+with separate answers rather than one read with a flag.
+
 The workspace and the run are two objects on purpose, written in a fixed order:
 **workspace first, run second**. The revision is the clinician's document and
 the run is bookkeeping about it, so the one crash window the protocol leaves
@@ -112,6 +120,33 @@ its forty-seventh section has forty-six sections on disk and resumes into the
 forty-seventh. The cost is one whole-object PUT per section — accepted
 deliberately over per-section objects, which would buy smaller writes at the
 price of atomic resume, one GET, and one ETag.
+
+### What a section was written from
+
+The run answers "where did this come from" for itself, because nothing else
+can: the request bytes are not kept, and the plan's evidence rows are the
+planner's shortlist rather than the set the writer was shown.
+
+- `DraftRun.record_snapshot` is the shared corpus, captured once before the
+  first model call and never rewritten — filename, SHA-256, and character count
+  per readable file, plus the files that could not be read and the code saying
+  why. Stamped once because a resume re-reads the same corpus, and a snapshot
+  that moved would make the run disagree with sections it already holds.
+- `RunSection.records` says which of those a section's own call carried:
+  `shared_corpus` for a section that read the snapshot, or `curated` with the
+  filenames that **actually reached** the branch. Not the plan row's
+  `curated_records` — a curated file the client no longer has never made it
+  into the request, and the run records what was sent. An empty curated list is
+  a real outcome, recorded rather than normalized into "the shared corpus".
+
+Both fields are additive and optional at the same schema version, so a run
+written before they existed still decodes and says "not recorded" rather than
+"no records". Bumping the version would have made every existing run
+unreadable, which is a worse answer to the same question.
+
+Filenames on the run are not new: plan evidence, curated restrictions, and
+citations all carry them already. They stay out of logs and audit payloads,
+which carry counts.
 
 ### The revision cut
 
@@ -351,6 +386,32 @@ to carry across a document, and every pass answers with one row per section —
 including the sections it found nothing in, so "found nothing" is a claim the
 host can check.
 
+**The sweep runs the passes it is handed.** Seven with their shipped checklists
+is the default and the button nobody has to think about, but the caller may
+drop passes or rewrite what one looks for. Each pass's instruction is two
+halves: an **editable checklist** — the numbered list of what the property
+means — and a **fixed frame** the host composes around it, carrying the
+coverage rule, the verbatim-quote rule, the style/consistency split on
+proposing text, and the single forced call under this property's name. Every
+sentence in the frame has a validator behind it, so it is not editable: a pass
+that dropped it would fail validation, spend its repair round, and leave the
+property with no coverage row.
+
+Edits are **per run**, not saved back to the writer prompt library. The two are
+different things — a library prompt is user input riding into a writer turn as
+an instruction, while a reviewer checklist is half of the host's own contract
+with its validator — and a saved checklist nobody re-reads would be a standing
+precondition for every future sweep.
+
+A removed pass is not run, is not sent, and earns no coverage row. That is the
+same shape a failed branch leaves behind, and deliberately so: coverage is the
+receipt that a property was read over this revision, and both "nobody asked"
+and "it failed" mean nobody read it. The `report.review_sweep` audit event
+separates them — `failed_properties` for the branches that broke,
+`skipped_properties` for the ones nobody requested, `edited_properties` for the
+checklists the clinician changed. Property names only; the checklist text is
+user input and never reaches the audit payload.
+
 A single union `submit_review_rows` tool with an identical `tool_choice` across
 all seven branches is what preserves the shared prefix: a per-property forced
 tool would move the tools tier of the cache, which sits above system and
@@ -455,6 +516,42 @@ over them.
 A resume refuses if the report moved underneath it — the saved sections no
 longer fit a document at a different revision, and a new run is the honest
 answer.
+
+A run found stored as `drafting` or `planning` is one whose **process** died:
+the executor stamps `stopped` or `failed` on its way out, so those two states
+are never true across a load. The writer surface reads them as failed and
+offers the run back at the resume gate, which is the only way out of the lock
+such a run left on the session.
+
+---
+
+## Reading a run afterwards
+
+The run object outlives the run, so the Draft run tab does not have to be told
+what happened — it reads it back. A finished run stays on the tab as a full
+progress bar that opens into three levels:
+
+1. **The row.** Status, title, the revision the finish cut produced, and
+   `decided / total` sections as a bar.
+2. **The run.** Which model planned it and which wrote it, where the plan came
+   from (planned and approved, edited at the gate, or manufactured 1:1), the
+   instructions it was given, the plan warnings the host could not confirm, and
+   the record corpus it was built from.
+3. **The section.** What the plan asked for and why, the evidence it named, any
+   per-section directive, which records were in that section's call, what it
+   quoted, and — for a section that was skipped, kept, or never reached — the
+   reason.
+
+Every level is read-only and every field comes from S3, which is what makes the
+tab survive closing the report and restarting the app. The staged prose is the
+one thing deliberately left out of the history payload: it is the report, which
+the pane already renders, and shipping it per run would send the document once
+per run to draw a summary that never shows a word of it.
+
+One gap is worth naming. A skip the **writer** chose, on a run with no approved
+plan to diverge from, records no reason — `skip_full_draft_section` takes no
+argument for one. The history says the section was deferred and that no reason
+was recorded, rather than inventing one.
 
 A run can also be interrupted deliberately. Every streaming command opens a
 `StopRegistration` keyed by the `stream_id` the frontend passed in, so

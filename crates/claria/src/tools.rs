@@ -22,7 +22,7 @@ use claria_core::models::{
     report_run::{
         DraftRun, MAX_CITATION_QUOTE_CHARACTERS, MAX_SECTION_CITATIONS,
         MAX_SECTION_ERROR_CHARACTERS, MIN_CITATION_QUOTE_CHARACTERS, PlanEntry, RecordCitation,
-        RunSection, RunSectionState, SectionIntent,
+        RunSection, RunSectionRecords, RunSectionState, SectionIntent,
     },
 };
 use claria_report_store::{LoadedRun, ReportFailureCode, save_draft_run};
@@ -476,7 +476,16 @@ impl<'a> ToolExecutionContext<'a> {
         };
         draft.consecutive_write_failures.remove(&section_id);
         let run = &mut draft.run.run;
-        apply_section_content(run, section_id, content, now);
+        // The serial conversation sends one message 0 with the run's shared
+        // corpus in it, so every section it writes was written from that
+        // snapshot and nothing else.
+        apply_section_content(
+            run,
+            section_id,
+            content,
+            RunSectionRecords::SharedCorpus,
+            now,
+        );
         renumber_positions(run, &written_order, &supplied_order);
         self.commit_run().await?;
         self.emit_section_completed(section_id);
@@ -1186,6 +1195,7 @@ pub(crate) fn apply_section_content(
     run: &mut DraftRun,
     section_id: Uuid,
     content: PreparedSectionContent,
+    records: RunSectionRecords,
     now: jiff::Timestamp,
 ) {
     match run
@@ -1202,6 +1212,7 @@ pub(crate) fn apply_section_content(
             section.state = RunSectionState::Drafted;
             section.attempts = section.attempts.saturating_add(1);
             section.error = None;
+            section.records = Some(records);
             section.updated_at = now;
         }
         None => {
@@ -1217,6 +1228,7 @@ pub(crate) fn apply_section_content(
                 citations: content.citations,
                 attempts: 1,
                 error: None,
+                records: Some(records),
                 updated_at: now,
             });
             if let Some(plan) = run.plan.as_mut() {

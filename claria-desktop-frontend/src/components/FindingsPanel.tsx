@@ -2,8 +2,14 @@ import { useMemo } from "react";
 import FindingsList from "./FindingsList";
 import type { FindingReference } from "./FindingCard";
 import ProgressBar from "./ProgressBar";
-import { summarizeCompletion } from "../lib/findings";
-import type { CompletionReport, Finding, ReportContent } from "../lib/tauri";
+import StatusChip from "./StatusChip";
+import { reviewPropertyLabel, summarizeCompletion } from "../lib/findings";
+import type {
+  CompletionReport,
+  Finding,
+  ReportContent,
+  ReviewCoverage,
+} from "../lib/tauri";
 
 /**
  * The findings half of the Draft run pane: the button that asks for a review,
@@ -14,6 +20,7 @@ import type { CompletionReport, Finding, ReportContent } from "../lib/tauri";
  */
 export default function FindingsPanel({
   findings,
+  coverage,
   content,
   draftRevision,
   completion,
@@ -32,6 +39,13 @@ export default function FindingsPanel({
   registerSection,
 }: {
   findings: readonly Finding[];
+  /**
+   * One row per property a sweep actually read, at the revision it read. A
+   * property with no row was not reviewed — because its branch failed, or
+   * because the clinician removed it before firing — and the strip below says
+   * so rather than leaving the reader to assume seven checks always run.
+   */
+  coverage: readonly ReviewCoverage[];
   content: ReportContent;
   draftRevision: number;
   /** `null` before the first evaluation, and for a report with no revisions. */
@@ -54,6 +68,13 @@ export default function FindingsPanel({
   const summary = useMemo(
     () => (completion ? summarizeCompletion(completion, content) : []),
     [completion, content]
+  );
+  // Coverage rows are anchored to the revision they read. One from an older
+  // revision says nothing about the document on screen, so it is not shown as
+  // though it did.
+  const readAtRevision = useMemo(
+    () => coverage.filter((row) => row.revision === draftRevision),
+    [coverage, draftRevision]
   );
 
   return (
@@ -88,6 +109,25 @@ export default function FindingsPanel({
             max={reviewTotal}
             valueText={`${reviewCompleted} of ${reviewTotal} checks`}
           />
+        </div>
+      )}
+
+      {readAtRevision.length > 0 && (
+        <div data-testid="review-coverage" className="px-5 pb-2">
+          <p className="text-[11px] text-gray-500">
+            Checks read against revision {draftRevision}
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {readAtRevision.map((row) => (
+              <StatusChip
+                key={row.property}
+                tone={row.findings === 0 ? "success" : "warning"}
+                label={`${reviewPropertyLabel(row.property)} · ${
+                  row.findings === 0 ? "clean" : row.findings
+                }`}
+              />
+            ))}
+          </div>
         </div>
       )}
 

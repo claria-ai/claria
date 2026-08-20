@@ -599,6 +599,14 @@ pub(crate) async fn execute_full_draft_turn(
             return Err(error);
         }
     };
+    // The corpus the serial conversation is about to freeze into message 0.
+    // Recorded on the run before the first call, so a run that dies before it
+    // lands a section still says what it was going to read. Stamped once: a
+    // resume re-reads the same corpus, and a snapshot that moved would make
+    // the run disagree with sections it already holds.
+    if run.run.record_snapshot.is_none() {
+        run.run.record_snapshot = Some(record_context.run_snapshot(jiff::Timestamp::now()));
+    }
 
     let outcome = execute_turn(
         sdk_config,

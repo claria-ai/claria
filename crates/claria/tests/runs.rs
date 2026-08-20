@@ -267,6 +267,7 @@ fn run_section(id: &str, heading: &str, position: u32, state: RunSectionState) -
         citations: Vec::new(),
         attempts: 0,
         error: None,
+        records: None,
         updated_at: jiff::Timestamp::now(),
     }
 }
@@ -313,6 +314,7 @@ async fn seed_run(
         writer_model_id: MODEL_ID.to_string(),
         finalized_revision: None,
         partial: false,
+        record_snapshot: None,
         created_at: now,
         updated_at: now,
     };

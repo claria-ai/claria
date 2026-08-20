@@ -228,6 +228,7 @@ fn run_section(
         citations,
         attempts: 1,
         error: None,
+        records: None,
         updated_at: jiff::Timestamp::now(),
     }
 }
@@ -306,6 +307,7 @@ async fn seed_completed_run(
         writer_model_id: MODEL_ID.to_string(),
         finalized_revision: Some(1),
         partial: false,
+        record_snapshot: None,
         created_at: now,
         updated_at: now,
     };
@@ -337,6 +339,7 @@ async fn seed_stopped_run(
         writer_model_id: MODEL_ID.to_string(),
         finalized_revision: None,
         partial: false,
+        record_snapshot: None,
         created_at: now,
         updated_at: now,
     };

@@ -14,6 +14,16 @@ All notable changes to Claria are documented here.
 - Locking, unlocking, and refused unlock attempts are written to the audit trail
 - The lock covers the window without unmounting what is behind it, so an unsaved draft survives it
 - A forgotten PIN cannot be recovered; clearing Claria's settings on that computer is the only way past it
+- The Draft run tab keeps a finished run as a completed progress bar instead of clearing it, and reopening a report restores it
+- Opening a finished run shows what it did, one level at a time: the run's models and plan, then each section's scope, evidence, directive, and outcome
+- A drafting run records the records it was built from, and each section records which of them were in the model call that wrote it
+- A section that was skipped, kept, or never reached says why on the run, and says so when nothing recorded a reason
+- A run left mid-draft by a crashed process is offered back at the resume gate rather than discarded on load
+- A review sweep shows its checks before firing them, each with the instructions it will send
+- A check's instructions can be edited for one review, and a check can be dropped from it
+- The rules a review pass must obey are composed around whatever is typed and cannot be edited away
+- A check nobody ran leaves no coverage row, and the audit trail names it as skipped alongside the ones that failed
+- The findings pane says which checks were read against the revision on screen
 - The planner and reviewer now tolerate ten minutes of mid-response silence instead of ninety seconds, which is what a review branch composing a long list of findings actually looks like
 - The writer tolerates five minutes, and both families wait longer before deciding a call never started
 - Waits a clinician never changed are raised on upgrade; a wait they set themselves is left exactly where they put it

@@ -6,8 +6,9 @@ use claria_core::models::{
         DRAFT_RUN_SCHEMA_VERSION, DraftRun, DraftRunStatus, EvidenceRef,
         MAX_CITATION_QUOTE_CHARACTERS, MAX_CURATED_RECORDS, MAX_INSTRUCTION_CHARACTERS,
         MAX_PLAN_EVIDENCE, MAX_PLAN_SCOPE_CHARACTERS, MAX_RUN_INSTRUCTIONS, MAX_SECTION_CITATIONS,
-        PlanEntry, RecordCitation, RunInstruction, RunPlan, RunSection, RunSectionState,
-        SectionIntent, decode_draft_run,
+        PlanEntry, RecordCitation, RunInstruction, RunPlan, RunRecordFile, RunRecordSnapshot,
+        RunSection, RunSectionRecords, RunSectionState, RunUnavailableRecord, SectionIntent,
+        decode_draft_run,
     },
 };
 use jiff::Timestamp;
@@ -37,6 +38,7 @@ fn section(position: u32, heading: &str, state: RunSectionState) -> RunSection {
         citations: Vec::new(),
         attempts: 0,
         error: None,
+        records: None,
         updated_at: created(),
     }
 }
@@ -96,6 +98,7 @@ fn run() -> DraftRun {
         writer_model_id: "us.anthropic.claude-opus-test".to_string(),
         finalized_revision: None,
         partial: false,
+        record_snapshot: None,
         created_at: created(),
         updated_at: timestamp("2026-08-01T12:10:00Z"),
     }
@@ -483,4 +486,118 @@ fn a_curated_restriction_may_name_the_whole_ceiling() {
             .collect(),
     );
     decode_draft_run(&encode(&run)).expect("a restriction at the ceiling is valid");
+}
+
+// ── Where a section's words came from ───────────────────────────────────────
+
+fn snapshot() -> RunRecordSnapshot {
+    RunRecordSnapshot {
+        files: vec![
+            RunRecordFile {
+                filename: "intake.pdf".to_string(),
+                sha256: "a".repeat(64),
+                characters: 4_200,
+            },
+            RunRecordFile {
+                filename: "teacher-form.pdf".to_string(),
+                sha256: "b".repeat(64),
+                characters: 1_100,
+            },
+        ],
+        unavailable: vec![RunUnavailableRecord {
+            filename: "scan.pdf".to_string(),
+            reason: "extraction_failed".to_string(),
+        }],
+        total_characters: 5_300,
+        captured_at: created(),
+    }
+}
+
+/// The whole point of the additive shape: a run written by an earlier build
+/// still decodes at the same schema version, and says "not recorded" rather
+/// than "no records".
+#[test]
+fn a_run_written_before_provenance_existed_still_decodes() {
+    let run = run();
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&encode(&run)).expect("run serializes");
+    let object = value.as_object_mut().expect("run object");
+    assert!(
+        object.remove("record_snapshot").is_some(),
+        "a record_snapshot key should have been written to remove"
+    );
+    for section in value["sections"].as_array_mut().expect("sections") {
+        let section = section.as_object_mut().expect("section object");
+        assert!(section.remove("records").is_some());
+    }
+    let bytes = serde_json::to_vec(&value).expect("re-serialize");
+
+    let decoded = decode_draft_run(&bytes).expect("an older run still decodes");
+    assert_eq!(decoded.record_snapshot, None);
+    assert!(
+        decoded
+            .sections
+            .iter()
+            .all(|section| section.records.is_none())
+    );
+}
+
+#[test]
+fn the_corpus_and_the_per_section_sources_round_trip() {
+    let mut run = run();
+    run.record_snapshot = Some(snapshot());
+    run.sections[0].records = Some(RunSectionRecords::SharedCorpus);
+    run.sections[1].records = Some(RunSectionRecords::Curated {
+        filenames: vec!["teacher-form.pdf".to_string()],
+    });
+
+    let decoded = decode_draft_run(&encode(&run)).expect("decode a run with provenance");
+    let stored = decoded.record_snapshot.expect("the snapshot");
+    assert_eq!(stored.files.len(), 2);
+    assert_eq!(stored.unavailable[0].reason, "extraction_failed");
+    assert_eq!(stored.total_characters, 5_300);
+    assert_eq!(
+        decoded.sections[0].records,
+        Some(RunSectionRecords::SharedCorpus)
+    );
+    assert_eq!(
+        decoded.sections[1].records,
+        Some(RunSectionRecords::Curated {
+            filenames: vec!["teacher-form.pdf".to_string()]
+        })
+    );
+}
+
+/// A snapshot that names a file twice would make the run disagree with itself
+/// about what the writer read, so it is refused rather than deduplicated.
+#[test]
+fn a_snapshot_cannot_name_one_record_twice() {
+    let mut run = run();
+    let mut duplicated = snapshot();
+    duplicated.unavailable[0].filename = "intake.pdf".to_string();
+    run.record_snapshot = Some(duplicated);
+
+    let error = decode_draft_run(&encode(&run)).expect_err("a duplicate is refused");
+    assert!(
+        error.to_string().contains("appears twice"),
+        "unexpected error: {error}"
+    );
+}
+
+/// An empty curated list is a real outcome — every curated file had gone
+/// missing — so it is recorded rather than normalized into "the shared
+/// corpus", which would be a different and untrue claim.
+#[test]
+fn a_section_may_record_that_its_restriction_reached_nothing() {
+    let mut run = run();
+    run.sections[0].records = Some(RunSectionRecords::Curated {
+        filenames: Vec::new(),
+    });
+    let decoded = decode_draft_run(&encode(&run)).expect("an empty restriction is recordable");
+    assert_eq!(
+        decoded.sections[0].records,
+        Some(RunSectionRecords::Curated {
+            filenames: Vec::new()
+        })
+    );
 }

@@ -30,6 +30,8 @@ const mocks = vi.hoisted(() => ({
   revertRevision: vi.fn(),
   logFrontend: vi.fn(),
   loadDraftRun: vi.fn(),
+  loadDraftRunHistory: vi.fn(),
+  reviewPassPresets: vi.fn(),
   resumeDraftRun: vi.fn(),
   finalizePartialDraft: vi.fn(),
   abandonDraftRun: vi.fn(),
@@ -73,6 +75,8 @@ vi.mock("../lib/tauri", () => ({
   loadReportRevision: mocks.loadRevision,
   revertReportRevision: mocks.revertRevision,
   loadDraftRun: mocks.loadDraftRun,
+  loadDraftRunHistory: mocks.loadDraftRunHistory,
+  reviewPassPresets: mocks.reviewPassPresets,
   resumeDraftRun: mocks.resumeDraftRun,
   finalizePartialDraft: mocks.finalizePartialDraft,
   abandonDraftRun: mocks.abandonDraftRun,
@@ -255,6 +259,21 @@ function renderWriting(
   );
 }
 
+/** The preflight list's rows, in the order the fan-out runs them. */
+const REVIEW_PRESETS = [
+  ["style", "tense_drift"],
+  ["style", "terminology"],
+  ["style", "transitions"],
+  ["style", "redundancy"],
+  ["consistency", "internal_contradiction"],
+  ["consistency", "unsupported_claim"],
+  ["consistency", "cross_section_conflict"],
+].map(([pass, property]) => ({
+  property,
+  pass,
+  instructions: `Check, for every section:\n1. Anything about ${property}.`,
+}));
+
 beforeEach(() => {
   vi.clearAllMocks();
   clearWritingComposerDrafts();
@@ -315,6 +334,8 @@ beforeEach(() => {
     status_persisted: true,
   });
   mocks.loadDraftRun.mockResolvedValue(null);
+  mocks.loadDraftRunHistory.mockResolvedValue({ runs: [], active_run_id: null });
+  mocks.reviewPassPresets.mockResolvedValue(REVIEW_PRESETS);
   mocks.stopStream.mockResolvedValue(undefined);
   mocks.loadConfig.mockResolvedValue({
     draft_pipeline: {
@@ -528,6 +549,94 @@ function stoppedRun(status: "stopped" | "failed" = "stopped") {
     partial: false,
     created_at: "2026-08-01T00:00:00Z",
     updated_at: "2026-08-01T00:05:00Z",
+  };
+}
+
+/**
+ * A completed run as the history command returns it: the plan decision joined
+ * onto the section outcome, with the staged prose left out.
+ */
+function completedRunHistory() {
+  return {
+    runs: [
+      {
+        run_id: RUN_ID,
+        status: "completed",
+        active: false,
+        base_revision: 0,
+        finalized_revision: 1,
+        partial: false,
+        title: "Psychoeducational Evaluation",
+        writer_model_id: "model-1",
+        planner_model_id: "planner-1",
+        plan_synthetic: false,
+        plan_user_edited: true,
+        plan_approved_at: "2026-08-01T00:01:00Z",
+        plan_warnings: [],
+        instructions: [
+          { text: "Keep the summary to one page.", added_at: "2026-08-01T00:00:00Z" },
+        ],
+        record_snapshot: {
+          files: [
+            { filename: "intake.pdf", sha256: "a".repeat(64), characters: 4200 },
+            { filename: "teacher-form.pdf", sha256: "b".repeat(64), characters: 1100 },
+          ],
+          unavailable: [],
+          total_characters: 5300,
+          captured_at: "2026-08-01T00:00:30Z",
+        },
+        sections: [
+          {
+            section_id: SECTION_ID,
+            heading: "Findings",
+            position: 0,
+            state: "drafted",
+            intent: "draft",
+            required: true,
+            scope: "State what the testing showed.",
+            evidence: [{ filename: "intake.pdf", note: "Presenting concerns" }],
+            instruction: null,
+            records: { kind: "shared_corpus" },
+            citations: [],
+            block_count: 2,
+            characters: 640,
+            attempts: 1,
+            error: null,
+            updated_at: "2026-08-01T00:04:00Z",
+          },
+          {
+            section_id: "22222222-2222-4222-8222-222222222222",
+            heading: "Summary",
+            position: 1,
+            state: "skipped",
+            intent: "skip",
+            required: false,
+            scope: "",
+            evidence: [],
+            instruction: null,
+            records: null,
+            citations: [],
+            block_count: 0,
+            characters: 0,
+            attempts: 0,
+            error: null,
+            updated_at: "2026-08-01T00:05:00Z",
+          },
+        ],
+        counts: {
+          total: 2,
+          drafted: 1,
+          skipped: 1,
+          kept: 0,
+          failed: 0,
+          undecided: 0,
+          decided: 2,
+        },
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-01T00:05:00Z",
+      },
+    ],
+    active_run_id: null,
   };
 }
 
@@ -2062,6 +2171,7 @@ describe("Writing review findings", () => {
         _clientId: string,
         _reportId: string,
         _revision: number,
+        _passes: unknown,
         onProgress?: (progress: unknown) => void
       ) => {
         emit = onProgress;
@@ -2073,11 +2183,19 @@ describe("Writing review findings", () => {
     renderWriting();
     await screen.findByText("Accepted report title");
 
+    // The button opens the preflight list; the sweep fires from there.
     await userEvent.click(screen.getByRole("button", { name: "Review draft" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Run all checks" })
+    );
     expect(mocks.runReviewSweeps).toHaveBeenCalledWith(
       "client-1",
       "report-1",
       1,
+      REVIEW_PRESETS.map((preset) => ({
+        property: preset.property,
+        instructions: null,
+      })),
       expect.any(Function)
     );
 
@@ -2299,5 +2417,181 @@ describe("Writing review findings", () => {
 
     expect(mocks.evaluateReportCompletion).not.toHaveBeenCalled();
     expect(screen.queryByTestId("completion-checklist")).toBeNull();
+  });
+});
+
+describe("Writing draft run history", () => {
+  it("keeps a finished run on the Draft run tab across a reload", async () => {
+    // The regression: `load_draft_run` answers only "what can be picked back
+    // up", so a completed run returned nothing and the tab disappeared with
+    // the record of what hydrated the report.
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.loadDraftRun.mockResolvedValue(null);
+    mocks.loadDraftRunHistory.mockResolvedValue(completedRunHistory());
+    renderWriting();
+    await screen.findByText("Accepted report title");
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Draft run" }));
+    const history = await screen.findByTestId("draft-run-history");
+    const run = within(history).getByTestId("draft-run-history-run");
+    expect(run.getAttribute("data-status")).toBe("completed");
+    expect(within(run).getByText("Completed")).toBeTruthy();
+    expect(within(run).getByText("Wrote the report on screen")).toBeTruthy();
+
+    // The finished bar reads full, and the counts behind it agree.
+    const bar = within(run).getByRole("progressbar", {
+      name: /Sections decided/,
+    });
+    expect(bar.getAttribute("aria-valuenow")).toBe("2");
+    expect(bar.getAttribute("aria-valuemax")).toBe("2");
+    expect(within(run).getByText(/1 written · 1 skipped/)).toBeTruthy();
+  });
+
+  it("opens a finished run into what each section was written from", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.loadDraftRun.mockResolvedValue(null);
+    mocks.loadDraftRunHistory.mockResolvedValue(completedRunHistory());
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.click(await screen.findByRole("tab", { name: "Draft run" }));
+    const history = await screen.findByTestId("draft-run-history");
+
+    // Level two: the run's own facts, without a section opened.
+    expect(within(history).getByText("Planned, then edited before approval")).toBeTruthy();
+    expect(within(history).getByText("planner-1")).toBeTruthy();
+    expect(within(history).getByText("Keep the summary to one page.")).toBeTruthy();
+    expect(within(history).getByText(/2 records · 5,300 characters/)).toBeTruthy();
+
+    // The corpus is a list behind one more click, not a wall of filenames.
+    expect(within(history).queryByText("teacher-form.pdf")).toBeNull();
+    await userEvent.click(
+      within(history).getByRole("button", { name: "Show the file list" })
+    );
+    expect(within(history).getByText("teacher-form.pdf")).toBeTruthy();
+
+    // Level three: one section's plan row and its sources.
+    const sections = within(history).getAllByTestId("draft-run-history-section");
+    const drafted = sections[0];
+    expect(drafted.getAttribute("data-state")).toBe("drafted");
+    await userEvent.click(within(drafted).getByText("Findings"));
+    expect(within(drafted).getByText("State what the testing showed.")).toBeTruthy();
+    expect(within(drafted).getByText("Every readable record (2 files)")).toBeTruthy();
+    expect(within(drafted).getByText(/Presenting concerns/)).toBeTruthy();
+
+    const skipped = sections[1];
+    await userEvent.click(within(skipped).getByText("Summary"));
+    expect(
+      within(skipped).getByText("The approved plan left this section out.")
+    ).toBeTruthy();
+  });
+
+  it("runs only the review passes the reader kept, with the text they typed", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.runReviewSweeps.mockResolvedValue({
+      schema_version: 1,
+      report_id: "report-1",
+      client_id: "client-1",
+      findings: [],
+      coverage: [],
+      updated_at: "2026-08-01T00:00:00Z",
+    });
+    renderWriting();
+    await screen.findByText("Accepted report title");
+
+    await userEvent.click(screen.getByRole("button", { name: "Review draft" }));
+    const preflight = await screen.findByTestId("review-pass-preflight");
+
+    // Drop two checks and rewrite a third.
+    const rows = within(preflight).getAllByTestId("review-pass-row");
+    const terminology = rows.find(
+      (row) => row.getAttribute("data-property") === "terminology"
+    )!;
+    const transitions = rows.find(
+      (row) => row.getAttribute("data-property") === "transitions"
+    )!;
+    await userEvent.click(
+      within(terminology).getByRole("button", { name: "Remove" })
+    );
+    await userEvent.click(
+      within(transitions).getByRole("button", { name: "Remove" })
+    );
+    const tense = rows.find(
+      (row) => row.getAttribute("data-property") === "tense_drift"
+    )!;
+    const box = within(tense).getByRole("textbox");
+    await userEvent.clear(box);
+    await userEvent.type(box, "Only check the recommendations section.");
+    expect(within(tense).getByText("Edited")).toBeTruthy();
+
+    await userEvent.click(
+      within(preflight).getByRole("button", { name: "Run 5 checks" })
+    );
+
+    const passes = mocks.runReviewSweeps.mock.calls[0][3];
+    expect(passes.map((pass: { property: string }) => pass.property)).toEqual([
+      "tense_drift",
+      "redundancy",
+      "internal_contradiction",
+      "unsupported_claim",
+      "cross_section_conflict",
+    ]);
+    expect(passes[0].instructions).toBe(
+      "Only check the recommendations section."
+    );
+    // An untouched check sends null, so the host stays the authority on its
+    // own default and the request bytes are the ones that were always sent.
+    expect(passes[1].instructions).toBeNull();
+  });
+
+  it("says which checks were actually read at this revision", async () => {
+    mocks.load.mockResolvedValue(workspace({ revision: 1 }));
+    mocks.listReportFindings.mockResolvedValue({
+      schema_version: 1,
+      report_id: "report-1",
+      client_id: "client-1",
+      findings: [],
+      // Two properties read, five never asked for — the shape a preflight
+      // with removed passes leaves behind.
+      coverage: [
+        {
+          pass: "style",
+          property: "tense_drift",
+          model_id: "model-1",
+          revision: 1,
+          sections_reviewed: 2,
+          findings: 0,
+          completed_at: "2026-08-01T00:00:00Z",
+        },
+        {
+          pass: "consistency",
+          property: "unsupported_claim",
+          model_id: "model-1",
+          revision: 1,
+          sections_reviewed: 2,
+          findings: 3,
+          completed_at: "2026-08-01T00:00:00Z",
+        },
+        // An older revision's row says nothing about the draft on screen.
+        {
+          pass: "style",
+          property: "redundancy",
+          model_id: "model-1",
+          revision: 0,
+          sections_reviewed: 2,
+          findings: 0,
+          completed_at: "2026-07-01T00:00:00Z",
+        },
+      ],
+      updated_at: "2026-08-01T00:00:00Z",
+    });
+    mocks.loadDraftRunHistory.mockResolvedValue(completedRunHistory());
+    renderWriting();
+    await screen.findByText("Accepted report title");
+    await userEvent.click(await screen.findByRole("tab", { name: "Draft run" }));
+
+    const coverage = await screen.findByTestId("review-coverage");
+    expect(within(coverage).getByText("tense drift · clean")).toBeTruthy();
+    expect(within(coverage).getByText("unsupported claim · 3")).toBeTruthy();
+    expect(within(coverage).queryByText(/redundancy/)).toBeNull();
   });
 });

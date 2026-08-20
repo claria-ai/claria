@@ -4,7 +4,10 @@ use std::collections::BTreeSet;
 
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::report;
-use claria_core::models::report::ReportRecordContextFile;
+use claria_core::models::{
+    report::ReportRecordContextFile,
+    report_run::{MAX_RUN_SNAPSHOT_FILES, RunRecordFile, RunRecordSnapshot, RunUnavailableRecord},
+};
 use claria_storage::error::StorageError;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -147,6 +150,49 @@ pub(crate) struct FullRecordContext {
 }
 
 impl FullRecordContext {
+    /// The durable record of what this corpus contained, for the run object.
+    ///
+    /// Derived from the same `files` list the prompt block was serialized
+    /// from, so the snapshot the reader is shown afterwards cannot disagree
+    /// with the bytes the model read. Filenames, digests, and sizes only —
+    /// the text itself lives in S3 and is never copied into the run.
+    pub(crate) fn run_snapshot(&self, captured_at: jiff::Timestamp) -> RunRecordSnapshot {
+        let mut files = Vec::new();
+        let mut unavailable = Vec::new();
+        for file in &self.files {
+            match file {
+                ReportRecordContextFile::Included {
+                    filename,
+                    sha256,
+                    characters,
+                } => files.push(RunRecordFile {
+                    filename: filename.clone(),
+                    sha256: sha256.clone(),
+                    characters: *characters,
+                }),
+                ReportRecordContextFile::Unavailable { filename, reason } => {
+                    unavailable.push(RunUnavailableRecord {
+                        filename: filename.clone(),
+                        reason: reason.clone(),
+                    });
+                }
+            }
+        }
+        // A pathological listing is truncated rather than allowed to fail the
+        // run's next save: the snapshot is a receipt, and a run that could not
+        // be written because its receipt was too long would be a regression
+        // caused entirely by bookkeeping. Readable files take the room first —
+        // they are the ones a section can have been written from.
+        files.truncate(MAX_RUN_SNAPSHOT_FILES);
+        unavailable.truncate(MAX_RUN_SNAPSHOT_FILES - files.len());
+        RunRecordSnapshot {
+            files,
+            unavailable,
+            total_characters: self.summary.total_characters,
+            captured_at,
+        }
+    }
+
     /// Whether `quote` appears in `filename` as the model was shown it,
     /// under the shared rule in [`crate::text`].
     pub(crate) fn resolves_quote(&self, filename: &str, quote: &str) -> bool {

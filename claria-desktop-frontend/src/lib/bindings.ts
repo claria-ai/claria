@@ -617,6 +617,22 @@ async loadDraftRun(clientId: string, reportId: string) : Promise<Result<DraftRun
 }
 },
 /**
+ * Every drafting run this report has recorded, newest first.
+ * 
+ * The read-only counterpart to `load_draft_run`, which answers only "what can
+ * be picked back up" and therefore never returns a completed run. This is what
+ * the Draft run tab reads: a run that finished is the one that wrote the
+ * document on screen, and it is the history the tab exists to show.
+ */
+async loadDraftRunHistory(clientId: string, reportId: string) : Promise<Result<DraftRunHistoryView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_draft_run_history", { clientId, reportId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Keep what an interrupted run wrote: undone sections become skipped
  * placeholders and the result is saved as a new revision.
  */
@@ -715,17 +731,27 @@ async resolveReportProposal(clientId: string, reportId: string, proposalId: stri
 }
 },
 /**
- * Review one accepted revision for every property and save what comes back.
+ * The seven passes and their default checklists, for the preflight list.
  * 
- * One request per property runs in parallel against the reviewing model, so
- * the command holds its future for the length of the slowest branch. A
- * property whose branch fails leaves no coverage row: the returned findings
- * say which properties were actually read, and the audit event names the
- * ones that were not.
+ * A pure read of compiled-in text: no AWS call, no state, and safe to call
+ * before a workspace exists.
  */
-async runReviewSweeps(clientId: string, reportId: string, revision: number, onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportFindings, string>> {
+async reviewPassPresets() : Promise<ReviewPassPreset[]> {
+    return await TAURI_INVOKE("review_pass_presets");
+},
+/**
+ * Review one accepted revision and save what comes back.
+ * 
+ * One request per requested pass runs in parallel against the reviewing
+ * model, so the command holds its future for the length of the slowest
+ * branch. A property whose branch fails leaves no coverage row, and so does
+ * one the clinician removed before firing: the returned findings say which
+ * properties were actually read, and the audit event names both the ones that
+ * failed and the ones nobody asked for.
+ */
+async runReviewSweeps(clientId: string, reportId: string, revision: number, passes: ReviewPassInput[], onProgress: TAURI_CHANNEL<ReportTurnProgressView>) : Promise<Result<ReportFindings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("run_review_sweeps", { clientId, reportId, revision, onProgress }) };
+    return { status: "ok", data: await TAURI_INVOKE("run_review_sweeps", { clientId, reportId, revision, passes, onProgress }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1951,7 +1977,126 @@ finalized_revision: number | null;
  * The run was finalized from a stopped state: sections that never landed
  * were skipped rather than drafted.
  */
-partial: boolean; created_at: string; updated_at: string }
+partial: boolean; 
+/**
+ * The record corpus this run was built from, captured once before the
+ * first model call.
+ * 
+ * `None` on a run recorded before the field existed, and on one that
+ * never reached the point of loading records. It is what makes
+ * [`RunSectionRecords::SharedCorpus`] mean something specific rather
+ * than "everything, presumably".
+ */
+record_snapshot?: RunRecordSnapshot | null; created_at: string; updated_at: string }
+export type DraftRunHistoryEntry = { run_id: string; status: DraftRunStatus; 
+/**
+ * This run holds the session right now.
+ */
+active: boolean; base_revision: number; 
+/**
+ * The revision the finish cut produced. Present only on a completed run,
+ * and what lets the pane say which run wrote the document on screen.
+ */
+finalized_revision: number | null; 
+/**
+ * Finalized from a stopped state: what never landed was skipped.
+ */
+partial: boolean; title: string | null; writer_model_id: string; 
+/**
+ * The planning model. Absent on a run that never got a plan.
+ */
+planner_model_id: string | null; 
+/**
+ * Nobody decided this plan — it was manufactured 1:1 from the sections
+ * the report already had.
+ */
+plan_synthetic: boolean; 
+/**
+ * The clinician changed the plan at the gate before approving it.
+ */
+plan_user_edited: boolean; plan_approved_at: string | null; 
+/**
+ * PHI-free `code:detail` strings about what the host could not confirm.
+ */
+plan_warnings: string[]; 
+/**
+ * The guidance the run was given, oldest first: what was typed at the
+ * plan step, plus anything added at a resume.
+ */
+instructions: RunInstruction[]; 
+/**
+ * The record corpus the run was built from. `None` on a run recorded
+ * before Claria captured one.
+ */
+record_snapshot: RunRecordSnapshot | null; sections: DraftRunHistorySection[]; counts: DraftRunSectionCounts; created_at: string; updated_at: string }
+/**
+ * One section of one run: the plan's decision and the run's outcome, in one
+ * row.
+ */
+export type DraftRunHistorySection = { section_id: string; heading: string; position: number; state: RunSectionState; 
+/**
+ * What the plan decided for this section. `None` when the run has no
+ * plan row for it — an invented section on a run without a plan.
+ */
+intent: SectionIntent | null; 
+/**
+ * The report cannot be complete while this section is empty.
+ */
+required: boolean; 
+/**
+ * What the section had to cover, in the planner's words.
+ */
+scope: string; evidence: EvidenceRef[]; 
+/**
+ * Per-section steering that overrode the run-wide instructions.
+ */
+instruction: string | null; 
+/**
+ * The records that were in the model call that wrote this section.
+ */
+records: RunSectionRecords | null; citations: RecordCitation[]; 
+/**
+ * Blocks the run staged for this section. The prose itself is the
+ * report; this is how much of it the run wrote.
+ */
+block_count: number; characters: number; attempts: number; 
+/**
+ * PHI-free note about why the section failed, or why a skip diverged
+ * from the approved plan.
+ */
+error: string | null; updated_at: string }
+/**
+ * One report's drafting runs, newest first, as the Draft run tab reads them.
+ * 
+ * Earns its life over `Vec<DraftRun>` on two counts. It **drops the staged
+ * blocks**: every drafted section carries a copy of its own prose, so a
+ * history of five runs would ship the document five times over the bridge to
+ * render a summary that never shows a word of it — the pane renders the
+ * report itself from the workspace. And it **joins each section to its plan
+ * row**, because every reader of this data wants the pair (what was decided,
+ * what happened) and doing the join once here is cheaper and less
+ * error-prone than doing it in the pane.
+ */
+export type DraftRunHistoryView = { runs: DraftRunHistoryEntry[]; 
+/**
+ * The run that currently owns the session, if one does. It is the only
+ * entry the writer will refuse edits behind.
+ */
+active_run_id: string | null }
+/**
+ * How one run's sections came out, so the pane's progress bar and its
+ * summary line read the same number.
+ */
+export type DraftRunSectionCounts = { total: number; drafted: number; skipped: number; kept: number; failed: number; 
+/**
+ * Sections still undecided: pending, or left mid-flight by an
+ * interruption.
+ */
+undecided: number; 
+/**
+ * Sections in any terminal state — the numerator of the progress bar.
+ */
+decided: number }
 export type DraftRunStatus = "planning" | "awaiting_approval" | "drafting" | "stopped" | "failed" | "completed" | "abandoned"
 export type EditorHistoryEntry = { report_id: string; name: string; title: string; revision: number; turn_count: number; updated_at: string; last_export: ReportExport | null }
 export type EffortPreference = "low" | "medium" | "high" | "max"
@@ -2477,6 +2622,29 @@ export type ReviewPass =
  */
 "consistency"
 /**
+ * One pass the clinician kept, with whatever they typed into it.
+ */
+export type ReviewPassInput = { property: string; 
+/**
+ * `null` sends the shipped checklist. Anything else is this run's
+ * checklist and this run's only — nothing is written back to the saved
+ * prompt library.
+ */
+instructions: string | null }
+/**
+ * One review pass as the preflight list shows it: what it checks, and the
+ * checklist it will send unless the clinician edits it.
+ * 
+ * The `instructions` field is the **editable half** of the pass — the
+ * numbered checklist. The rules the host's validator enforces (one row per
+ * section, quote verbatim, style-may-propose / consistency-may-not, call the
+ * tool once under this property's name) are composed around it by the
+ * pipeline and are deliberately not in this payload: a sweep whose contract
+ * the reader could delete would fail validation and leave the property with
+ * no coverage row.
+ */
+export type ReviewPassPreset = { property: string; pass: ReviewPass; instructions: string }
+/**
  * User guidance for the run: the instruction it started from, plus anything
  * added when a stopped run was picked back up.
  */
@@ -2517,6 +2685,34 @@ approved_at: string | null;
  * A warning never blocks the plan: the user fixes it at the gate.
  */
 plan_warnings?: string[]; created_at: string }
+export type RunRecordFile = { filename: string; 
+/**
+ * Digest of the text the run was shown, so a record edited afterwards is
+ * distinguishable from the one the writer read.
+ */
+sha256: string; characters: number }
+/**
+ * The record corpus a drafting run was built from, as the run recorded it.
+ * 
+ * Filenames, not text. The run object already carries record filenames on its
+ * plan evidence, its curated restrictions, and its citations, so this adds no
+ * new class of data to the object — it makes the set the writer actually saw
+ * answerable after the fact instead of only inferable from the plan.
+ */
+export type RunRecordSnapshot = { 
+/**
+ * Files whose text reached the shared corpus block, in the byte order the
+ * block listed them — which is the order the model read them in.
+ */
+files: RunRecordFile[]; 
+/**
+ * Files the run could see but could not read.
+ */
+unavailable: RunUnavailableRecord[]; 
+/**
+ * Characters of record text in the shared corpus block.
+ */
+total_characters: number; captured_at: string }
 /**
  * The durable state machine for one section of the report.
  */
@@ -2541,7 +2737,33 @@ attempts: number;
  * PHI-free note about why the section failed: error codes and counts,
  * never record or draft content.
  */
-error: string | null; updated_at: string }
+error: string | null; 
+/**
+ * Which records were in the model call that wrote this section.
+ * 
+ * `None` for a section no model was ever asked about — pending, kept, or
+ * skipped by the plan — and for a section written before the field
+ * existed. A section a model *did* write always carries one, because the
+ * question "what was this written from" has an answer for it.
+ */
+records?: RunSectionRecords | null; updated_at: string }
+/**
+ * What one section's writer was given to read.
+ */
+export type RunSectionRecords = 
+/**
+ * The run's whole [`DraftRun::record_snapshot`] was in the call.
+ */
+{ kind: "shared_corpus" } | 
+/**
+ * The clinician restricted this section, and exactly these files reached
+ * its call. Not the same list as the plan row's `curated_records`: a
+ * curated file the client no longer has never made it into the request,
+ * and this records what was sent rather than what was asked for. Empty
+ * when every curated file had gone missing — a real outcome, and one the
+ * reader should be able to see rather than have normalized away.
+ */
+{ kind: "curated"; filenames: string[] }
 export type RunSectionState = "pending" | 
 /**
  * Transient: correct only while the writer is mid-section. Any section
@@ -2557,6 +2779,11 @@ export type RunSectionState = "pending" |
  * The base-revision content stands; the run does not touch this section.
  */
 "kept"
+export type RunUnavailableRecord = { filename: string; 
+/**
+ * PHI-free reason: an extraction or storage code, never record text.
+ */
+reason: string }
 /**
  * The latest authorship stamp for one section — not a log, and not per-block.
  */

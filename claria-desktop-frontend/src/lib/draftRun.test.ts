@@ -607,8 +607,22 @@ describe("runStateFromDraftRun", () => {
     );
   });
 
-  it("reports no outcome for a run that is still going", () => {
-    expect(runStateFromDraftRun(draftRun({ status: "drafting" })).outcome).toBeNull();
+  it("reports no outcome for a run nobody has to decide about", () => {
+    expect(
+      runStateFromDraftRun(draftRun({ status: "completed" })).outcome
+    ).toBeNull();
+  });
+
+  it("reads a run left mid-draft as one that failed", () => {
+    // The executor stamps `stopped` or `failed` on its way out, so a run still
+    // stored as `drafting` is one whose process died. Reporting no outcome
+    // makes the writer surface throw it away instead of offering it back.
+    expect(
+      runStateFromDraftRun(draftRun({ status: "drafting" })).outcome
+    ).toBe("failed");
+    expect(
+      runStateFromDraftRun(draftRun({ status: "planning" })).outcome
+    ).toBe("failed");
   });
 });
 
