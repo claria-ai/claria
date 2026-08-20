@@ -21,21 +21,16 @@ The remediation items describe intent at the time of writing, not the shipped de
 | 1 — Section-aware export | #130 | `TemplateCarve`, `FlowClassifier`, `TemplateLayout`, `align_sections`, `gap_events`, and tab slots in `crates/claria-docx/src/template_render.rs`; `nearest_span` and `scaled_source_position` deleted |
 | 2 — Merged-cell tables | #133 | `crates/claria-docx/src/table_grid.rs` (`expand_rows`), with patch-back into the template's own merged geometry in `template_render.rs` |
 | 3 — Template directives | #132 | `ReportSection::template_directives` (`crates/claria-core/src/models/report.rs:126`), planner and drafter context in `crates/claria/src/full_draft_context.rs`, prompt rules in `prompts.rs` |
-| 4 — Curated records | #134 | `PlanEntry::curated_records`, validation in `plan.rs`, fan-out in `parallel_draft.rs`, plan-editing UI; extended by #139 with the durable `RunSectionRecords::Curated` receipt |
+| 4 — Curated records | #134 | `PlanEntry::curated_records`, validation in `plan.rs`, fan-out in `parallel_draft.rs`, plan-editing UI; extended by #139 with the durable `RunSectionRecords::Curated` receipt, and by #143, which marks restricted sections in the review's drafted-section block |
 
-Three things did not land, and are the remaining work:
+Two things have not landed, and are the remaining work:
 
 1. **The acceptance test has never run.** Every green test is against the synthetic
    `template-c-like.docx` fixture. The real Jordan Rivera / Template C run that produced
    the symptoms below has not been repeated since the fixes merged, so "headings bold,
    header block aligned, no orphan tables, one-sentence Reason for Referral" is still
    unverified against the specimen that failed.
-2. **The review sweep cannot see curation** (Item 4.5, half-shipped). The run object now
-   records which files a curated section actually saw, but `ReviewSweepRequest`
-   (`crates/claria/src/review.rs`) carries no plan or run and never reads
-   `RunSectionRecords`, so a reviewer of a curated section gets only the general sentence
-   in `review_instructions.rs` — never which section was curated.
-3. **The serial drafting path gets no directives.** `section_directives_block` has one
+2. **The serial drafting path gets no directives.** `section_directives_block` has one
    caller, `section_kickoff_instruction` (the per-section parallel path);
    `kickoff_instruction` (`full_draft_context.rs:209`) passes none. Deliberate at the
    time, unrecorded until now.
@@ -226,7 +221,8 @@ Owner file: `crates/claria-docx/src/template_render.rs` (+ shared classifier hel
 
 ### Item 4 — User-curated per-section record context (claria-core, claria, claria-desktop, frontend; after Item 3)
 
-*Shipped in #134 and extended by #139, except the review-sweep half of step 5 — see Status.*
+*Shipped in #134, extended by #139, and completed by #143, which gave step 5's review
+sweep the curation it could not see.*
 
 Motivation: clinicians today simulate this by opening a separate chat per section so
 they control which documents the model sees. Formalize it as an opt-in, per-plan-row
