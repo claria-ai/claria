@@ -12,6 +12,26 @@ concurrency:
 permissions:
   contents: read
 
+# Timeouts are two-layered, because a job timeout can only ever be as tight as
+# the slowest legitimate run of that job.
+#
+#   Job level    sized to that job's own observed history with 30 minutes as the
+#                ceiling. Across 254 successful jobs, exactly one has ever run
+#                past 20 minutes (Test/ubuntu, 23.9m; the next slowest is 14.3m).
+#                Sized at roughly 2x the worst real observation, not that
+#                sample's max — a cold cache can double a job's runtime, and
+#                Clippy/windows did exactly that (4.6m sampled, 9.9m observed).
+#
+#   Step level   every dependency-acquisition step — checkout, toolchain setup,
+#                package installs — is bounded at 5 minutes (10 for rust-setup,
+#                which restores the large cargo and sccache archives). These are
+#                pure network and finish in seconds, so a wedged one is caught in
+#                minutes rather than burning the job's whole compile allowance.
+#
+# GitHub's default is 360 minutes. An unbounded hang in "Install system
+# dependencies" spent exactly that much on 2026-08-19 and reported every step
+# after it as skipped.
+
 jobs:
   # Not matrixed: this job compiles no Rust and touches no platform API. The
   # bundle it produces is byte-identical everywhere, so a second run would only
@@ -19,12 +39,14 @@ jobs:
   frontend:
     name: Frontend (lint + test + build)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
 
       - name: Setup Node.js
+        timeout-minutes: 5
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -56,7 +78,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -64,12 +86,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
 
       # Plain apt-get rather than a caching action: awalsh128/cache-apt-pkgs-action
       # wedged here on 2026-08-19 and held the job open until the 6h limit, taking
       # every downstream step with it. These packages cost well under a minute to
       # install outright, which is not worth a step that can hang.
       - name: Install system dependencies
+        timeout-minutes: 5
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -77,6 +101,7 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev mold clang cmake
 
       - name: Setup Node.js
+        timeout-minutes: 5
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -84,6 +109,7 @@ jobs:
           cache-dependency-path: claria-desktop-frontend/package-lock.json
 
       - name: Install frontend dependencies
+        timeout-minutes: 5
         working-directory: claria-desktop-frontend
         run: npm ci --no-fund
 
@@ -92,6 +118,7 @@ jobs:
         run: npm run build
 
       - name: Rust setup (toolchain, sccache, caches, mold)
+        timeout-minutes: 10
         uses: ./.github/actions/rust-setup
         with:
           components: clippy
@@ -104,7 +131,7 @@ jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -112,12 +139,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
 
       # Plain apt-get rather than a caching action: awalsh128/cache-apt-pkgs-action
       # wedged here on 2026-08-19 and held the job open until the 6h limit, taking
       # every downstream step with it. These packages cost well under a minute to
       # install outright, which is not worth a step that can hang.
       - name: Install system dependencies
+        timeout-minutes: 5
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -125,6 +154,7 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev mold clang cmake
 
       - name: Setup Node.js
+        timeout-minutes: 5
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -132,6 +162,7 @@ jobs:
           cache-dependency-path: claria-desktop-frontend/package-lock.json
 
       - name: Install frontend dependencies
+        timeout-minutes: 5
         working-directory: claria-desktop-frontend
         run: npm ci --no-fund
 
@@ -140,6 +171,7 @@ jobs:
         run: npm run build
 
       - name: Rust setup (toolchain, sccache, caches, mold)
+        timeout-minutes: 10
         uses: ./.github/actions/rust-setup
 
       - name: Test (workspace)
@@ -158,22 +190,25 @@ jobs:
   tauri-build:
     name: Tauri build
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
 
       # Plain apt-get rather than a caching action: awalsh128/cache-apt-pkgs-action
       # wedged here on 2026-08-19 and held the job open until the 6h limit, taking
       # every downstream step with it. These packages cost well under a minute to
       # install outright, which is not worth a step that can hang.
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev mold clang cmake xvfb
 
       - name: Setup Node.js
+        timeout-minutes: 5
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -181,6 +216,7 @@ jobs:
           cache-dependency-path: claria-desktop-frontend/package-lock.json
 
       - name: Install frontend dependencies
+        timeout-minutes: 5
         working-directory: claria-desktop-frontend
         run: npm ci --no-fund
 
@@ -189,6 +225,7 @@ jobs:
         run: npm run build
 
       - name: Rust setup (toolchain, sccache, caches, mold)
+        timeout-minutes: 10
         uses: ./.github/actions/rust-setup
 
       - name: Build Tauri app
@@ -197,6 +234,7 @@ jobs:
         run: cargo build --release -p claria-desktop
 
       - name: Smoke test (WebView loads without crashing)
+        timeout-minutes: 5
         if: github.event.pull_request.draft != true
         env:
           RUST_LOG: debug
