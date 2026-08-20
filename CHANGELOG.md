@@ -2,6 +2,10 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- A review of a section that was drafted from a restricted set of records is told which files that section's writer actually read, instead of only that some section somewhere may have been restricted
+
 ## [0.33.0] — 2026-08-20
 
 - Claria can hide itself behind a PIN after a set period of inactivity, when this Mac wakes from sleep, and when the app starts

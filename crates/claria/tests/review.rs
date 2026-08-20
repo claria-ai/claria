@@ -10,7 +10,11 @@ use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
 use claria as pipeline;
 use claria_core::models::{
     findings::{FindingStatus, ReviewPass},
-    report::{ReportBlock, ReportContent, ReportSection},
+    report::{AuthorshipKind, ReportBlock, ReportContent, ReportSection, SectionAuthorship},
+    report_run::{
+        DRAFT_RUN_SCHEMA_VERSION, DraftRun, DraftRunStatus, RunSection, RunSectionRecords,
+        RunSectionState,
+    },
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
 use claria_report_store as store;
@@ -1190,4 +1194,217 @@ async fn a_blank_checklist_is_refused_rather_than_sent_empty() {
         "unexpected error: {error}"
     );
     assert!(requests(&server).await.is_empty());
+}
+
+// ── What the reviewer is told about restricted sections ─────────────────────
+
+const WRITER_MODEL_ID: &str = "us.anthropic.claude-opus-test";
+
+/// A completed run over the three drafted sections: the referral written from
+/// one named record, the background from the whole corpus, and the summary
+/// from a restriction whose every file had gone missing before it was written.
+async fn seed_curated_run(s3: &aws_sdk_s3::Client, client_id: Uuid, report_id: Uuid) -> Uuid {
+    let now = jiff::Timestamp::now();
+    let run_id = Uuid::new_v4();
+    let drafted = |id: &str, heading: &str, position: u32, records: RunSectionRecords| RunSection {
+        section_id: Uuid::parse_str(id).expect("section ID"),
+        heading: heading.to_string(),
+        position,
+        state: RunSectionState::Drafted,
+        blocks: Vec::new(),
+        citations: Vec::new(),
+        attempts: 1,
+        error: None,
+        records: Some(records),
+        updated_at: now,
+    };
+    let run = DraftRun {
+        schema_version: DRAFT_RUN_SCHEMA_VERSION,
+        run_id,
+        report_id,
+        client_id,
+        base_revision: 0,
+        status: DraftRunStatus::Completed,
+        plan: None,
+        title: Some("Psychoeducational Evaluation".to_string()),
+        sections: vec![
+            drafted(
+                REFERRAL_ID,
+                "Reason for Referral",
+                0,
+                RunSectionRecords::Curated {
+                    filenames: vec!["intake.txt".to_string()],
+                },
+            ),
+            drafted(
+                BACKGROUND_ID,
+                "Background",
+                1,
+                RunSectionRecords::SharedCorpus,
+            ),
+            drafted(
+                SUMMARY_ID,
+                "Summary",
+                2,
+                RunSectionRecords::Curated {
+                    filenames: Vec::new(),
+                },
+            ),
+        ],
+        instructions: Vec::new(),
+        writer_model_id: WRITER_MODEL_ID.to_string(),
+        finalized_revision: Some(1),
+        partial: false,
+        record_snapshot: None,
+        created_at: now,
+        updated_at: now,
+    };
+    store::create_draft_run(s3, BUCKET, run)
+        .await
+        .expect("create the drafting run");
+    run_id
+}
+
+/// Stamp the stored sections as written by `run_id`, the way a finished run
+/// does. Sections named in `edited_since` keep a stamp that carries no run, as
+/// a section someone has rewritten by hand does.
+async fn attribute_sections_to_run(
+    s3: &aws_sdk_s3::Client,
+    client_id: Uuid,
+    report_id: Uuid,
+    run_id: Uuid,
+    edited_since: &[&str],
+) {
+    let mut workspace = store::load_report_workspace_by_id(s3, BUCKET, client_id, report_id)
+        .await
+        .expect("load the workspace");
+    let revision = workspace.draft.revision;
+    for section in &mut workspace.draft.content.sections {
+        let edited = edited_since
+            .iter()
+            .any(|id| Uuid::parse_str(id).ok() == Some(section.id));
+        section.authorship = Some(SectionAuthorship {
+            kind: if edited {
+                AuthorshipKind::HumanEdited
+            } else {
+                AuthorshipKind::ModelGenerated
+            },
+            revision,
+            model_id: Some(WRITER_MODEL_ID.to_string()),
+            run_id: (!edited).then_some(run_id),
+            updated_at: jiff::Timestamp::now(),
+        });
+    }
+    claria_storage::objects::put_object(
+        s3,
+        BUCKET,
+        &claria_core::s3_keys::report_session_workspace(client_id, report_id),
+        serde_json::to_vec(&workspace).expect("workspace JSON"),
+        Some("application/json"),
+    )
+    .await
+    .expect("stamp the authorship");
+}
+
+/// The drafted-section block one branch sent, parsed back out of its opening
+/// message.
+fn drafted_sections(request: &serde_json::Value) -> serde_json::Value {
+    let block = text_blocks(&request["messages"][0])
+        .into_iter()
+        .next()
+        .expect("a drafted-section block");
+    let json = block
+        .trim()
+        .trim_start_matches("<untrusted_draft_sections>")
+        .trim_end_matches("</untrusted_draft_sections>")
+        .trim();
+    serde_json::from_str(json).expect("the drafted sections parse as JSON")
+}
+
+fn section_view<'a>(block: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    block["report"]["sections"]
+        .as_array()
+        .expect("a sections array")
+        .iter()
+        .find(|section| section["id"] == serde_json::json!(id))
+        .unwrap_or_else(|| panic!("section {id} is missing from the block"))
+}
+
+#[tokio::test]
+async fn a_restricted_section_tells_the_reviewer_which_records_reached_it() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_drafted_report(&s3, client_id, drafted_content()).await;
+    let run_id = seed_curated_run(&s3, client_id, report_id).await;
+    attribute_sections_to_run(&s3, client_id, report_id, run_id, &[]).await;
+    script_sweep(&server, HashMap::new()).await;
+
+    sweep(&sdk, &s3, client_id, report_id, REVIEWER_MODEL_ID)
+        .await
+        .expect("the sweep completes");
+
+    let captured = review_requests(&server).await;
+    assert_eq!(captured.len(), 7);
+    let block = drafted_sections(&captured[0].1);
+
+    assert_eq!(
+        section_view(&block, REFERRAL_ID)["records_restricted_to"],
+        serde_json::json!(["intake.txt"]),
+        "the restricted section did not name the file its writer read"
+    );
+    assert!(
+        section_view(&block, BACKGROUND_ID)
+            .get("records_restricted_to")
+            .is_none(),
+        "a section written from the whole corpus was marked restricted"
+    );
+    // Every curated file had gone missing by the time this section was
+    // written, and an empty list is the honest answer rather than no marker.
+    assert_eq!(
+        section_view(&block, SUMMARY_ID)["records_restricted_to"],
+        serde_json::json!([]),
+        "a section drafted from no records at all lost its marker"
+    );
+
+    // The block is still built once for all seven branches.
+    let first = text_blocks(&captured[0].1["messages"][0])
+        .into_iter()
+        .next();
+    for (property, request) in &captured {
+        assert_eq!(
+            text_blocks(&request["messages"][0]).into_iter().next(),
+            first,
+            "{property} sent a different drafted-section block"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_section_edited_since_the_run_is_reviewed_without_the_restriction() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_drafted_report(&s3, client_id, drafted_content()).await;
+    let run_id = seed_curated_run(&s3, client_id, report_id).await;
+    // The run restricted the referral, but a human has rewritten it since, so
+    // the restriction no longer describes the text under review.
+    attribute_sections_to_run(&s3, client_id, report_id, run_id, &[REFERRAL_ID]).await;
+    script_sweep(&server, HashMap::new()).await;
+
+    sweep(&sdk, &s3, client_id, report_id, REVIEWER_MODEL_ID)
+        .await
+        .expect("the sweep completes");
+
+    let captured = review_requests(&server).await;
+    let block = drafted_sections(&captured[0].1);
+    assert!(
+        section_view(&block, REFERRAL_ID)
+            .get("records_restricted_to")
+            .is_none(),
+        "a hand-edited section carried the drafting run's restriction"
+    );
+    assert_eq!(
+        section_view(&block, SUMMARY_ID)["records_restricted_to"],
+        serde_json::json!([]),
+        "the untouched section lost its marker"
+    );
 }

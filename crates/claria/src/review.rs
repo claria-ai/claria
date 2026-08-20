@@ -39,7 +39,7 @@
 //! property that proposes text is refused — the persisted model has no shape
 //! for it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::{
@@ -59,12 +59,13 @@ use claria_core::models::{
     },
     report::{
         ReportBlock, ReportContent, ReportProtocolBlock, ReportProtocolMessage, ReportProtocolRole,
-        ReportSection, ReportToolResultStatus, ReportWorkspace, prompt_content_view,
+        ReportSection, ReportToolResultStatus, ReportWorkspace, prompt_section_view,
     },
+    report_run::RunSectionRecords,
     turn_usage::TurnUsage,
 };
 use claria_report_store::{
-    load_report_findings, replace_findings_for_revision, save_report_findings,
+    load_draft_run, load_report_findings, replace_findings_for_revision, save_report_findings,
 };
 use futures::stream::{self, StreamExt};
 use uuid::Uuid;
@@ -345,7 +346,8 @@ pub async fn run_review_sweeps(
 
     let corpus = prepare_review_corpus(s3, bucket, client_id, reviewer_model_id, request).await?;
     let system = analysis_system_blocks(&loaded.workspace, &corpus)?;
-    let draft_block = draft_sections_block(&loaded.workspace, &reviewed)?;
+    let curated = curated_section_records(s3, bucket, client_id, report_id, &reviewed).await;
+    let draft_block = draft_sections_block(&loaded.workspace, &reviewed, &curated)?;
     preflight_request_size(reviewer_model_id, &system, &draft_block)?;
 
     let branches = fan_out(
@@ -737,28 +739,112 @@ async fn prepare_review_corpus(
     Ok(corpus)
 }
 
+/// Which reviewed sections were drafted from a clinician-restricted subset of
+/// the record corpus, and exactly which files reached each one.
+///
+/// Read from the durable run rather than from the plan row it came from: the
+/// plan says which files were asked for, the run says which ones were sent,
+/// and a curated file the client had already deleted never reached the writer.
+/// An empty list is therefore a real answer — that section was written with no
+/// records at all — and is passed through as one.
+///
+/// A section is looked up only in the run its own authorship names, so a
+/// re-drafted section carries the restriction of the run that actually wrote
+/// the text under review. A section whose authorship carries no run — template
+/// boilerplate, or a section a human has edited since — is absent from the
+/// map: a restriction the drafter worked under says nothing about prose
+/// someone has rewritten by hand.
+///
+/// A run that cannot be read costs its sections their marker and nothing else.
+/// The review is anchored to the accepted revision, not to the run, and
+/// refusing to review a finished report because an old run object has gone
+/// missing would be the worse failure.
+async fn curated_section_records(
+    s3: &S3Client,
+    bucket: &str,
+    client_id: Uuid,
+    report_id: Uuid,
+    reviewed: &[&ReportSection],
+) -> HashMap<Uuid, Vec<String>> {
+    let mut author: HashMap<Uuid, Uuid> = HashMap::new();
+    let mut runs: Vec<Uuid> = Vec::new();
+    for section in reviewed {
+        let Some(run_id) = section.authorship.as_ref().and_then(|stamp| stamp.run_id) else {
+            continue;
+        };
+        author.insert(section.id, run_id);
+        if !runs.contains(&run_id) {
+            runs.push(run_id);
+        }
+    }
+
+    let mut curated: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for run_id in runs {
+        let loaded = match load_draft_run(s3, bucket, client_id, report_id, run_id).await {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                tracing::warn!(
+                    %run_id,
+                    error = %error,
+                    "the review could not read a drafting run; its sections are reviewed without \
+                     their record restriction"
+                );
+                continue;
+            }
+        };
+        for section in &loaded.run.sections {
+            if author.get(&section.section_id) != Some(&run_id) {
+                continue;
+            }
+            if let Some(RunSectionRecords::Curated { filenames }) = &section.records {
+                curated.insert(section.section_id, filenames.clone());
+            }
+        }
+    }
+    curated
+}
+
 /// The accepted draft as the reviewer reads it: the revision it is anchored
-/// to, and every section that is actually drafted.
+/// to, every section that is actually drafted, and which of them were written
+/// from a restricted set of records.
 ///
 /// Built once and sent by all seven branches, so it has to be a pure function
-/// of the workspace — a reordered key here costs six branches their cache
-/// read. Skipped sections are left out entirely: they have no content to
-/// review, and every property's coverage rule is "one row per section in this
-/// block", so listing them would demand rows about nothing.
+/// of its inputs — a reordered key here costs six branches their cache read.
+/// The curation map is drawn from durable run objects and the sweep is guarded
+/// against a drafting run in flight, so it cannot move underneath the fan-out.
+/// Skipped sections are left out entirely: they have no content to review, and
+/// every property's coverage rule is "one row per section in this block", so
+/// listing them would demand rows about nothing.
 fn draft_sections_block(
     workspace: &ReportWorkspace,
     reviewed: &[&ReportSection],
+    curated: &HashMap<Uuid, Vec<String>>,
 ) -> Result<String, ReportPipelineError> {
-    // `prompt_content_view` is what strips the template copies and authorship
-    // stamps from anything a model sees; routing through it rather than
-    // re-serializing the sections is what keeps that stripping in one place.
-    let visible = ReportContent {
-        title: workspace.draft.content.title.clone(),
-        sections: reviewed.iter().map(|section| (*section).clone()).collect(),
-    };
+    let sections: Vec<serde_json::Value> = reviewed
+        .iter()
+        .map(|section| {
+            // `prompt_section_view` is what strips the template copies and
+            // authorship stamps from anything a model sees; routing through it
+            // rather than re-serializing the section is what keeps that
+            // stripping in one place.
+            let mut view = prompt_section_view(section);
+            if let (Some(object), Some(filenames)) =
+                (view.as_object_mut(), curated.get(&section.id))
+            {
+                object.insert(
+                    "records_restricted_to".to_string(),
+                    serde_json::Value::from(filenames.clone()),
+                );
+            }
+            view
+        })
+        .collect();
     let value = serde_json::json!({
         "revision": workspace.draft.revision,
-        "report": prompt_content_view(&visible),
+        "report": {
+            "title": workspace.draft.content.title,
+            "sections": sections,
+        },
     });
     serde_json::to_string_pretty(&value)
         .map(|json| {
