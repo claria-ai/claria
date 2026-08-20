@@ -9,7 +9,7 @@ use std::sync::{
 
 use claria_bedrock::{
     error::{BedrockError, StreamInterruption},
-    retry::{MAX_ATTEMPTS, with_throttle_retry, with_throttle_retry_observed},
+    retry::{MAX_ATTEMPTS, MAX_RETRY_ELAPSED, with_throttle_retry, with_throttle_retry_observed},
 };
 
 fn service(code: &str, status: Option<u16>) -> BedrockError {
@@ -169,4 +169,54 @@ async fn the_retry_observer_stops_at_the_attempt_ceiling() {
 
     assert_eq!(seen.into_inner().expect("observer lock"), vec![2, 3, 4]);
     assert_eq!(MAX_ATTEMPTS, 4);
+}
+
+fn went_silent() -> BedrockError {
+    BedrockError::StreamInterrupted {
+        operation: "report_review",
+        kind: StreamInterruption::WentSilent,
+        message: "synthetic".to_string(),
+    }
+}
+
+/// The attempt count stopped being a bound once the stream waits grew. An
+/// attempt that burns its first-frame wait and then its idle wait costs a
+/// quarter of an hour at the analysis defaults, and four of those is an hour
+/// spent on a call that has already failed the same way three times.
+#[tokio::test(start_paused = true)]
+async fn a_call_that_has_spent_its_budget_is_not_sent_again() {
+    let attempts = AtomicUsize::new(0);
+    let error = with_throttle_retry("report_review", || async {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        // One attempt of the shape the longer waits make possible: silent
+        // long enough that a second one is not worth the reader's time.
+        tokio::time::sleep(MAX_RETRY_ELAPSED).await;
+        Err::<(), _>(went_silent())
+    })
+    .await
+    .expect_err("the budget surfaces the last failure");
+
+    assert!(error.is_interrupted_before_completion());
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "a call past its wall-clock budget must not be retried to the attempt ceiling"
+    );
+}
+
+/// The budget bounds the sequence, not the failures worth retrying: a call
+/// that fails quickly still gets all four attempts, which is what carried
+/// two live review branches through a stall to a completed sweep.
+#[tokio::test(start_paused = true)]
+async fn a_fast_failure_still_gets_every_attempt() {
+    let attempts = AtomicUsize::new(0);
+    let error = with_throttle_retry("report_review", || async {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        Err::<(), _>(went_silent())
+    })
+    .await
+    .expect_err("exhausted retries surface the last failure");
+
+    assert!(error.is_interrupted_before_completion());
+    assert_eq!(attempts.load(Ordering::SeqCst), MAX_ATTEMPTS as usize);
 }

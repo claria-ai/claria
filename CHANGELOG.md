@@ -24,6 +24,11 @@ All notable changes to Claria are documented here.
 - The rules a review pass must obey are composed around whatever is typed and cannot be edited away
 - A check nobody ran leaves no coverage row, and the audit trail names it as skipped alongside the ones that failed
 - The findings pane says which checks were read against the revision on screen
+- The planner and reviewer now tolerate ten minutes of mid-response silence instead of ninety seconds, which is what a review branch composing a long list of findings actually looks like
+- The writer tolerates five minutes, and both families wait longer before deciding a call never started
+- Waits a clinician never changed are raised on upgrade; a wait they set themselves is left exactly where they put it
+- The ceiling on all four waits moves from ten minutes to twenty, so ten minutes is a default with room above it rather than the highest value the setting allows
+- A Bedrock call stops retrying once it has spent fifteen minutes across its attempts, so the longer waits cannot compound into an hour of a request that has already failed three times
 - The report-writing engine publishes as the `claria` crate instead of `claria-report-pipeline`, so the project owns its own name on crates.io
 - Every audit action the report writer and preferences screens record now carries a category, so the trail separates PHI reads from spend and from operational changes
 - Audit events record which kind of action they are — a read of records, a change, a model call, or an administrative action — so "who read this client's records" is one filter rather than a list of action names

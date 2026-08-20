@@ -460,10 +460,16 @@ pub struct StreamOutcome {
 /// Sized for the longest prefill a live call really has: a cross-region
 /// profile can miss the prompt cache and re-prefill the whole input cold,
 /// and a field failure showed that wait exceeding two minutes when the two
-/// waits below shared a single five-minute bound. Ninety seconds and a
-/// fresh request beat waiting out a five-minute silence, and a request that
-/// produced nothing is safe to send again verbatim.
-pub const DEFAULT_STREAM_FIRST_FRAME_TIMEOUT_SECS: u64 = 90;
+/// waits below shared a single five-minute bound.
+///
+/// The two waits are lengthened on different terms, and this is the one
+/// held back. A call that has produced no frame has produced nothing:
+/// abandoning it throws away no generated tokens, the identical request is
+/// safe to send again, and the retry can find warm what the abandoned
+/// attempt was prefilling cold. Three minutes clears the prefill that field
+/// failure measured — which ninety seconds did not — without paying for the
+/// case where a fresh request is the faster answer.
+pub const DEFAULT_STREAM_FIRST_FRAME_TIMEOUT_SECS: u64 = 180;
 
 pub(crate) const STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(DEFAULT_STREAM_FIRST_FRAME_TIMEOUT_SECS);
@@ -478,25 +484,47 @@ pub(crate) const STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
 /// the wait for response headers — a `ConverseStream` whose socket dies
 /// mid-generation would otherwise hang forever.
 ///
-/// Frames flow continuously once generation starts — the gaps are the
-/// pauses between reasoning deltas, not minutes — so a silent minute
-/// mid-response means the connection is gone, not that the model is busy.
-pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
+/// A silent minute used to be read as a dead connection. It is not: a call
+/// composing a large structured tool payload can emit nothing for minutes
+/// while it builds one, and the analysis family lost live calls to exactly
+/// that at a *longer* wait than this one had. The writer has not been seen
+/// to stall — a thirteen-branch parallel draft cleared with no retries at
+/// sixty seconds — so this moves as insurance against a mechanism already
+/// proven on a sibling path rather than as a fix for an observed failure,
+/// and it stops at half the analysis wait below.
+///
+/// [`StreamBounds::conversational`] carries this to chat as well as to the
+/// writer, which is deliberate: a chat reply that pauses to think is the
+/// same shape of silence, and the cost of the longer wait is bounded by
+/// Stop being answered between frames rather than at the next one, so
+/// neither surface can leave a reader stuck behind a dead socket without
+/// their consent.
+pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 300;
 
 pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(DEFAULT_STREAM_IDLE_TIMEOUT_SECS);
 
 /// Ceiling for either configured wait.
 ///
-/// Ten minutes is past any prefill a real request has: it exists so a knob
-/// set to "never give up" still gives up, because a socket that died
-/// silently has to fail eventually or the turn hangs forever.
-pub const MAX_STREAM_TIMEOUT_SECS: u64 = 600;
+/// It exists so a knob set to "never give up" still gives up, because a
+/// socket that died silently has to fail eventually or the turn hangs
+/// forever. Twenty minutes rather than ten because ten is now a default:
+/// a ceiling equal to the largest shipped default is a setting that can
+/// only ever be lowered, which takes the knob away from the one user it is
+/// for — the one whose corpus and template need longer than anything seen
+/// in the field. Doubling the largest default leaves that user room while
+/// keeping the ceiling a real bound.
+pub const MAX_STREAM_TIMEOUT_SECS: u64 = 1200;
 
 /// First-frame wait for the analysis family, which sends the largest input
 /// of any flow — the whole record corpus, in system blocks — and gets no
 /// frame until the model has read all of it.
-pub const DEFAULT_ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT_SECS: u64 = 120;
+///
+/// Raised on the same restraint as the writer's first-frame wait: nothing
+/// is discarded by giving up here, so five minutes is generous for the
+/// largest cold prefill the flow has rather than an attempt to outlast any
+/// silence at all. The wait that outlasts silence is the one below.
+pub const DEFAULT_ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT_SECS: u64 = 300;
 
 pub(crate) const ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(DEFAULT_ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT_SECS);
@@ -505,7 +533,22 @@ pub(crate) const ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT: std::time::Duration =
 /// single large structured document, and the model deliberates inside it
 /// rather than between sentences, so the pauses that count as normal are
 /// longer than a chat reply's.
-pub const DEFAULT_ANALYSIS_STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
+///
+/// Ten minutes, and the longest wait of the four, because this is the one a
+/// live sweep lost calls to. Two `report_review` branches went silent at
+/// ninety seconds despite having started answering inside three — first
+/// frames at 2.2s and 2.6s — and both were the branches carrying the
+/// largest accumulated tool-use payloads of the sweep: 3575 and 9356 input
+/// tokens against roughly 600 on the branches that finished clean. The
+/// silence scales with the size of the findings the model is composing, so
+/// it is load-dependent rather than random, and no wait sized for the
+/// healthy branches would have covered them.
+///
+/// Waiting is also the cheaper of the two moves here. A stream that has
+/// started has already produced billed output tokens; abandoning it
+/// discards them and makes the retry pay the whole input again. So the wait
+/// that costs something to give up on is the one lengthened furthest.
+pub const DEFAULT_ANALYSIS_STREAM_IDLE_TIMEOUT_SECS: u64 = 600;
 
 pub(crate) const ANALYSIS_STREAM_IDLE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(DEFAULT_ANALYSIS_STREAM_IDLE_TIMEOUT_SECS);

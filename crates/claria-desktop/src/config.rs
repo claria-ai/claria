@@ -13,7 +13,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-pub const CURRENT_VERSION: u32 = 13;
+pub const CURRENT_VERSION: u32 = 14;
 
 /// What the user is told when there is no config on disk at all.
 ///
@@ -840,8 +840,78 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v12 → v13 (added auto-lock settings)");
     }
 
+    // v13 → v14: lift the stream waits that were never a choice.
+    //
+    // A default change alone would reach nobody. v11 → v12 wrote the four
+    // waits into every existing config as literal numbers, and a fresh
+    // install serialises them the same way, so `serde(default)` will never
+    // re-derive them and the whole installed base would keep the
+    // ninety-second analysis wait that lost live review calls.
+    //
+    // Only a value still sitting on its old default is lifted, and only
+    // upward. A wait a clinician actually typed is theirs — including one
+    // they raised to less than the new default, which was a considered
+    // number under the old ceiling and is not ours to overwrite. The cost of
+    // that rule is that a clinician who deliberately chose exactly the old
+    // default is indistinguishable from one who never looked, and is lifted
+    // with everyone else; the alternative is stranding everyone who never
+    // looked, which is almost all of them.
+    if from_version < 14 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        if let Some(serde_json::Value::Object(report_authoring)) = obj.get_mut("report_authoring") {
+            for (field, superseded, raised) in SUPERSEDED_STREAM_WAITS {
+                if report_authoring
+                    .get(field)
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(u64::from(superseded))
+                {
+                    report_authoring.insert(field.to_string(), serde_json::json!(raised()));
+                }
+            }
+        }
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(14.into()),
+        );
+        tracing::info!("migrated config v13 → v14 (raised the untouched stream waits)");
+    }
+
     Ok(json)
 }
+
+/// The four stream waits, each as `(field, the default it shipped with
+/// through v12, the default now)`.
+///
+/// The superseded numbers are written out rather than derived, because they
+/// no longer exist as constants anywhere: they are history, and a migration
+/// that read them from today's defaults would turn into a no-op the moment
+/// those defaults moved again.
+type SupersededWait = (&'static str, u32, fn() -> u32);
+
+const SUPERSEDED_STREAM_WAITS: [SupersededWait; 4] = [
+    (
+        "writer_first_frame_timeout_secs",
+        90,
+        default_writer_first_frame_timeout_secs,
+    ),
+    (
+        "writer_idle_timeout_secs",
+        60,
+        default_writer_idle_timeout_secs,
+    ),
+    (
+        "analysis_first_frame_timeout_secs",
+        120,
+        default_analysis_first_frame_timeout_secs,
+    ),
+    (
+        "analysis_idle_timeout_secs",
+        90,
+        default_analysis_idle_timeout_secs,
+    ),
+];
 
 pub fn save_config(config: &ClariaConfig) -> eyre::Result<()> {
     save_config_at(&config_path()?, config)
