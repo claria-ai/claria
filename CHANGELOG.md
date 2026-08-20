@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.33.0] — 2026-08-20
 
 - Claria can hide itself behind a PIN after a set period of inactivity, when this Mac wakes from sleep, and when the app starts
 - Help → Lock Claria, or Cmd-Shift-L, locks the app on demand
