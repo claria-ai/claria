@@ -17,9 +17,15 @@ comments are omitted with warnings. Section boundaries come from a **style
 catalog** resolved from the package's `styles.xml`: a paragraph is a heading
 when its style is a literal `Heading*`/`Title`, carries an outline level, or
 inherits one through the style's `basedOn` chain — so custom-named styles
-like "Section Heading" section correctly. The importer and the export
-renderer share this one classifier so they can never disagree about the
-same package.
+like "Section Heading" section correctly. When that pass finds no headings
+at all — the clinical template that marks its sections in bold and applies
+no styles — an appearance rule promotes short, unpunctuated, bold-or-caps
+paragraphs instead, and is refused unless it finds at least two of them and
+they stay under 60% of the document (a page set entirely in bold is not a
+table of contents). The importer and the export renderer share this one
+carve so they can never disagree about the same package: the export
+classifies the template against the sections the import already found
+rather than re-deriving its own.
 
 Applying a template to a session sets the working draft to that imported
 content — headings **and** boilerplate body text. From then on the template
@@ -47,6 +53,19 @@ context, not because Claria parses them. (Claria does *count* common
 placeholder markers — `{{`, `<<`, `[client`, `[name`, `[date`, `_____` —
 but only as an import statistic surfaced in the UI, never for
 substitution.)
+
+**Bracketed authoring notes reach the model, as form.** Clinical templates
+carry instructions their author wrote for whoever fills them in — "[a one
+sentence statement of why the client was referred]", "[Delete the
+subsections of the tests that were not administered]". Import extracts those
+`[…]` segments verbatim per section into `ReportSection::template_directives`
+(at most 8 per section, 500 characters each), and the host hands them to the
+planner and the drafting branch as its own named field. They steer *form*
+only — how long a section runs, how it must open, which subsection to drop —
+and the planner is told to scope a row that fits them, so a one-sentence
+directive stops producing a five-sentence plan. They are never evidence and
+never a fact about the client. The serial whole-report path does not supply
+them; the per-section parallel path does.
 
 ## Layer 2 — formatting: the original package is the export
 
@@ -102,7 +121,13 @@ boundary is enforced in three stacked ways:
    only where it could forge those delimiters — a document containing
    `</untrusted_report_context>` cannot close the region, while ordinary
    clinical text (`T-score >70`, `<3rd percentile`, `&`) passes through
-   verbatim.
+   verbatim. The one carve-out is `template_directives`: because the host
+   extracts them deterministically and presents them as its own field
+   rather than as template prose, the prompts grant them authority over
+   form alone — never over tools, records, or the rules themselves. A
+   template already dictates the document's entire shape, so letting its
+   bracketed notes say how long a section runs is not new authority;
+   carrying facts across clients stays forbidden.
 2. **The trust rules cannot be edited away.** The writer's system prompts
    are user-customizable in Preferences, but only the behavioral body: the
    *Untrusted data* and *Template carryover* sections are a fixed suffix
