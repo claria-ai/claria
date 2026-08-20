@@ -498,11 +498,12 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
         }
         other => panic!("expected a stream-interrupted error, got {other:?}"),
     }
-    // Chat holds the conversational idle bound: a minute of silence
-    // mid-reply, not the ninety seconds the analysis family gets.
+    // Chat holds the conversational idle bound, which is shorter than the
+    // analysis family's: read from the constant so the two cannot silently
+    // converge.
     assert_waited(
         started.elapsed(),
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(claria_bedrock::converse::DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
         "the chat idle bound",
     );
     // Whatever did arrive before the stall reached the reader.
@@ -557,7 +558,9 @@ async fn a_stream_that_never_starts_says_it_never_started() {
     }
     assert_waited(
         started.elapsed(),
-        std::time::Duration::from_secs(90),
+        std::time::Duration::from_secs(
+            claria_bedrock::converse::DEFAULT_STREAM_FIRST_FRAME_TIMEOUT_SECS,
+        ),
         "the chat first-frame bound",
     );
     assert!(
@@ -800,10 +803,10 @@ async fn planner_call(endpoint: &str) -> BedrockError {
 }
 
 /// The planner's request is the biggest one Claria sends, and the model
-/// reads all of it before the first frame. Ninety seconds is the chat
-/// family's patience, not this one's — and the failure has to name the
-/// request family, because "analysis" cannot tell a plan pass from a review
-/// sweep in a console export or in the sentence the reader is shown.
+/// reads all of it before the first frame, so it waits longer than the chat
+/// family does — and the failure has to name the request family, because
+/// "analysis" cannot tell a plan pass from a review sweep in a console
+/// export or in the sentence the reader is shown.
 #[tokio::test]
 async fn an_analysis_stream_that_never_starts_waits_the_analysis_first_frame_bound() {
     let server = MockServer::spawn().await;
@@ -834,14 +837,16 @@ async fn an_analysis_stream_that_never_starts_waits_the_analysis_first_frame_bou
     }
     assert_waited(
         started.elapsed(),
-        std::time::Duration::from_secs(120),
+        std::time::Duration::from_secs(
+            claria_bedrock::converse::DEFAULT_ANALYSIS_STREAM_FIRST_FRAME_TIMEOUT_SECS,
+        ),
         "the analysis first-frame bound",
     );
 }
 
 /// One forced tool call emits a single large structured document and the
-/// model deliberates inside it, so the analysis family tolerates ninety
-/// seconds of mid-stream silence where chat tolerates sixty.
+/// model deliberates inside it, so the analysis family tolerates the
+/// longest mid-stream silence of any flow — longer than chat's.
 #[tokio::test]
 async fn an_analysis_stream_that_goes_silent_waits_the_analysis_idle_bound() {
     let server = MockServer::spawn().await;
@@ -868,7 +873,9 @@ async fn an_analysis_stream_that_goes_silent_waits_the_analysis_idle_bound() {
     }
     assert_waited(
         started.elapsed(),
-        std::time::Duration::from_secs(90),
+        std::time::Duration::from_secs(
+            claria_bedrock::converse::DEFAULT_ANALYSIS_STREAM_IDLE_TIMEOUT_SECS,
+        ),
         "the analysis idle bound",
     );
 }

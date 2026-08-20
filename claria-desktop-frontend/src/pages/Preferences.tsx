@@ -2689,16 +2689,16 @@ const WRITER_LIMIT_DEFAULTS: WriterLimits = {
   max_converse_calls: 50,
   max_tool_uses_per_response: 80,
   max_retained_turns: 200,
-  writer_first_frame_timeout_secs: 90,
-  writer_idle_timeout_secs: 60,
+  writer_first_frame_timeout_secs: 180,
+  writer_idle_timeout_secs: 300,
   writer_max_output_tokens: 32768,
-  analysis_first_frame_timeout_secs: 120,
-  analysis_idle_timeout_secs: 90,
+  analysis_first_frame_timeout_secs: 300,
+  analysis_idle_timeout_secs: 600,
 };
 
 // The `label` values below are quoted verbatim in the writer's
 // guardrail-exhausted error, which tells the clinician which field to raise.
-// Renaming one here means renaming it in `claria-report-pipeline`'s
+// Renaming one here means renaming it in `claria`'s
 // `TOOL_ROUNDS_FIELD_LABEL` / `CONVERSE_CALLS_FIELD_LABEL`.
 const WRITER_LIMIT_FIELDS: Array<{
   key: WriterLimitField;
@@ -2745,7 +2745,7 @@ const WRITER_LIMIT_FIELDS: Array<{
 // make. They exist so a run that is merely slow, or a section longer than one
 // response can hold, can be fixed from here instead of by shipping a build.
 // `label` values are quoted in the writer's timeout failure; renaming one here
-// means renaming it in `claria-report-pipeline`'s field-label constants.
+// means renaming it in `claria`'s field-label constants.
 const BEDROCK_RUNTIME_FIELDS: Array<{
   key: WriterLimitField;
   label: string;
@@ -2759,15 +2759,15 @@ const BEDROCK_RUNTIME_FIELDS: Array<{
     description:
       "Seconds a writing call may take to produce its first output before Claria abandons it and re-sends. Raise this for long templates: a cold prompt cache re-reads the whole request before answering.",
     min: 1,
-    max: 600,
+    max: 1200,
   },
   {
     key: "writer_idle_timeout_secs",
     label: "Wait between writer response chunks",
     description:
-      "Seconds a writing call may go silent mid-response before Claria treats the connection as lost.",
+      "Seconds a writing call may go silent mid-response before Claria treats the connection as lost. A call composing one very large section can be quiet for minutes and still be working, so waiting usually beats re-sending.",
     min: 1,
-    max: 600,
+    max: 1200,
   },
   {
     key: "writer_max_output_tokens",
@@ -2783,15 +2783,15 @@ const BEDROCK_RUNTIME_FIELDS: Array<{
     description:
       "Seconds a planning or review call may take to produce its first output. These send the whole record corpus and answer only after reading all of it.",
     min: 1,
-    max: 600,
+    max: 1200,
   },
   {
     key: "analysis_idle_timeout_secs",
     label: "Wait between planner and reviewer response chunks",
     description:
-      "Seconds a planning or review call may go silent mid-response before Claria treats the connection as lost.",
+      "Seconds a planning or review call may go silent mid-response before Claria treats the connection as lost. A review branch writing a long list of findings goes quiet for as long as it takes to compose them.",
     min: 1,
-    max: 600,
+    max: 1200,
   },
 ];
 
