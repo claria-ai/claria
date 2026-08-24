@@ -153,12 +153,12 @@ fn a_v11_config_migrates_forward_onto_todays_waits() {
 
     // An install that never said anything about the waits lands on today's
     // defaults, not on the ones that were compiled in when it was written.
-    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 180);
-    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 300);
+    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 600);
+    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 600);
     assert_eq!(config.report_authoring.writer_max_output_tokens, 32_768);
     assert_eq!(
         config.report_authoring.analysis_first_frame_timeout_secs,
-        300
+        600
     );
     assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 600);
     // The guardrails the clinician had already chosen survive.
@@ -259,11 +259,15 @@ fn a_v12_config_still_on_the_old_waits_is_lifted_onto_the_new_ones() {
 
     let config = config::load_config_at(&path).expect("a v12 config migrates forward");
 
-    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 180);
-    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 300);
+    // v14 recognises all four and lifts them, and it lifts them to whatever
+    // the default is now rather than to the number it shipped with, so this
+    // config reaches today's waits at the v14 hop and v15 finds nothing left
+    // to do.
+    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 600);
+    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 600);
     assert_eq!(
         config.report_authoring.analysis_first_frame_timeout_secs,
-        300
+        600
     );
     assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 600);
     // Not a wait, and not swept up by a migration that only knows about
@@ -298,7 +302,7 @@ fn a_wait_the_clinician_chose_survives_the_v14_migration() {
     let config = config::load_config_at(&path).expect("a v12 config migrates forward");
 
     // Untouched, so lifted.
-    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 180);
+    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 600);
     // Deliberately below the old default, deliberately below the new one,
     // and left exactly where it was put.
     assert_eq!(config.report_authoring.writer_idle_timeout_secs, 45);
@@ -307,6 +311,91 @@ fn a_wait_the_clinician_chose_survives_the_v14_migration() {
         200
     );
     assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 150);
+}
+
+/// v14 wrote its own numbers into every config it touched, so an install
+/// that has already migrated once is sitting on literals again and the
+/// default change alone would reach it no better than it reached a v12.
+#[test]
+fn a_v14_config_still_on_the_old_waits_is_lifted_onto_ten_minutes() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 14,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "report_authoring": {
+                "writer_first_frame_timeout_secs": 180,
+                "writer_idle_timeout_secs": 300,
+                "writer_max_output_tokens": 32768,
+                "analysis_first_frame_timeout_secs": 300,
+                "analysis_idle_timeout_secs": 600
+            }
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v14 config migrates forward");
+
+    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 600);
+    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 600);
+    assert_eq!(
+        config.report_authoring.analysis_first_frame_timeout_secs,
+        600
+    );
+    // Already there before the migration ran, and the only one of the four
+    // v15 does not carry an entry for.
+    assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 600);
+    // Not a wait, and not swept up by a migration that only knows about
+    // waits.
+    assert_eq!(config.report_authoring.writer_max_output_tokens, 32_768);
+
+    let (_, on_disk_version) = config::read_config_at(&path)
+        .expect("reread")
+        .expect("present");
+    assert_eq!(on_disk_version, CURRENT_VERSION);
+}
+
+/// The same rule one version on: v15 lifts a wait nobody chose and leaves a
+/// wait somebody did, including one deliberately shorter than the ten
+/// minutes we would now pick.
+#[test]
+fn a_wait_the_clinician_chose_survives_the_v15_migration() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 14,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "report_authoring": {
+                "writer_first_frame_timeout_secs": 180,
+                "writer_idle_timeout_secs": 210,
+                "analysis_first_frame_timeout_secs": 450,
+                "analysis_idle_timeout_secs": 720
+            }
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v14 config migrates forward");
+
+    // On v14's default, so nobody chose it, so it moves.
+    assert_eq!(config.report_authoring.writer_first_frame_timeout_secs, 600);
+    // Below the new default and left exactly where it was put.
+    assert_eq!(config.report_authoring.writer_idle_timeout_secs, 210);
+    // Above the old default, below the new one, and still theirs.
+    assert_eq!(
+        config.report_authoring.analysis_first_frame_timeout_secs,
+        450
+    );
+    // A field v15 has no entry for cannot be touched by it at all.
+    assert_eq!(config.report_authoring.analysis_idle_timeout_secs, 720);
 }
 
 /// Auto-lock arrives off. An existing install that gained a lock it never

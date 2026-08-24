@@ -43,19 +43,20 @@ fn writer_limits_enforce_structural_safety_ceilings() {
     assert!(ReportTurnLimits::try_new(1, 2, 1, MAX_CONFIGURABLE_RETAINED_TURNS + 1).is_err());
 }
 
-/// The four waits are not one number. A stream that has produced nothing is
-/// free to abandon, so the first-frame waits stay the shorter pair; a stream
-/// that has started has already billed output tokens, so the idle waits are
-/// the ones lengthened, and the analysis idle wait — the one a live review
-/// sweep lost calls to — is the longest of the four.
+/// The four waits are one number: ten minutes, before a first frame and
+/// between frames, for the writer and for the planner and reviewer alike.
+/// They were graded once, on the argument that a stream which has produced
+/// nothing is free to abandon — but the retry that argument buys re-reads
+/// the same input from cold, and it is the demanding requests, the ones
+/// whose progress is worth the most, that take longest to answer.
 #[test]
-fn bedrock_runtime_defaults_wait_longest_where_giving_up_costs_most() {
+fn bedrock_runtime_defaults_wait_ten_minutes_everywhere() {
     let runtime = BedrockRuntimeLimits::default();
 
-    assert_eq!(runtime.writer_first_frame_timeout_secs, 180);
-    assert_eq!(runtime.writer_idle_timeout_secs, 300);
+    assert_eq!(runtime.writer_first_frame_timeout_secs, 600);
+    assert_eq!(runtime.writer_idle_timeout_secs, 600);
     assert_eq!(runtime.writer_max_output_tokens, 32_768);
-    assert_eq!(runtime.analysis_first_frame_timeout_secs, 300);
+    assert_eq!(runtime.analysis_first_frame_timeout_secs, 600);
     assert_eq!(runtime.analysis_idle_timeout_secs, 600);
     assert_eq!(ReportTurnLimits::default().runtime(), runtime);
 

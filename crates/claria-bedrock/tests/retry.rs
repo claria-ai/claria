@@ -180,8 +180,8 @@ fn went_silent() -> BedrockError {
 }
 
 /// The attempt count stopped being a bound once the stream waits grew. An
-/// attempt that burns its first-frame wait and then its idle wait costs a
-/// quarter of an hour at the analysis defaults, and four of those is an hour
+/// attempt that burns its first-frame wait and then its idle wait costs
+/// twenty minutes at the defaults, and four of those is eighty minutes
 /// spent on a call that has already failed the same way three times.
 #[tokio::test(start_paused = true)]
 async fn a_call_that_has_spent_its_budget_is_not_sent_again() {

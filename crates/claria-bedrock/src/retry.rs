@@ -26,10 +26,11 @@ pub const MAX_ATTEMPTS: u32 = 4;
 /// [`MAX_ATTEMPTS`] alone stopped bounding anything useful once the stream
 /// waits grew. An attempt ends when one of two waits runs out, so the
 /// pathological attempt costs the first-frame wait plus the idle wait —
-/// fifteen minutes at the analysis defaults, forty at the ceiling a
-/// clinician may type. Four of those in a row is an hour of a turn that has
-/// already failed the same way three times, which is not a wait anyone
-/// would choose over an error message.
+/// twenty minutes at the defaults, which are now the same ten-minute pair
+/// for the writer and the analysis family alike, and forty at the ceiling a
+/// clinician may type. Four of those in a row is eighty minutes of a turn
+/// that has already failed the same way three times, which is not a wait
+/// anyone would choose over an error message.
 ///
 /// So the schedule is bounded by elapsed time as well as by count: once a
 /// call has spent this long, the failure it just took is the one the caller
@@ -39,10 +40,14 @@ pub const MAX_ATTEMPTS: u32 = 4;
 /// longer waits. The true worst case is therefore this budget plus one
 /// full attempt, not this budget.
 ///
-/// Fifteen minutes because it has to sit above any single healthy call and
-/// below the hour it replaces. Throttle retries are unaffected: they fail
-/// in milliseconds and their whole schedule fits in seven seconds.
-pub const MAX_RETRY_ELAPSED: std::time::Duration = std::time::Duration::from_secs(900);
+/// Twenty minutes because it tracks that pathological attempt exactly. A
+/// budget below it would be spent by a single attempt, and a call whose
+/// first attempt has already exhausted the budget is retried zero times —
+/// which is the opposite of what the long waits are for. So this number
+/// moves whenever the defaults it is derived from move. Throttle retries
+/// are unaffected: they fail in milliseconds and their whole schedule fits
+/// in seven seconds.
+pub const MAX_RETRY_ELAPSED: std::time::Duration = std::time::Duration::from_secs(1200);
 
 /// Told about each scheduled retry: the number of the attempt about to be
 /// made — 2 for the first retry, up to [`MAX_ATTEMPTS`] — and how long the

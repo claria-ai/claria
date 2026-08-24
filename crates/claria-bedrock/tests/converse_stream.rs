@@ -498,9 +498,9 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
         }
         other => panic!("expected a stream-interrupted error, got {other:?}"),
     }
-    // Chat holds the conversational idle bound, which is shorter than the
-    // analysis family's: read from the constant so the two cannot silently
-    // converge.
+    // Chat holds the conversational idle bound, which currently matches the
+    // analysis family's: read from the constant so this stays a test of
+    // which bound chat uses rather than of what the number happens to be.
     assert_waited(
         started.elapsed(),
         std::time::Duration::from_secs(claria_bedrock::converse::DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
@@ -845,8 +845,9 @@ async fn an_analysis_stream_that_never_starts_waits_the_analysis_first_frame_bou
 }
 
 /// One forced tool call emits a single large structured document and the
-/// model deliberates inside it, so the analysis family tolerates the
-/// longest mid-stream silence of any flow — longer than chat's.
+/// model deliberates inside it, so the analysis family tolerates a long
+/// mid-stream silence — the one every other flow's idle wait was brought up
+/// to meet.
 #[tokio::test]
 async fn an_analysis_stream_that_goes_silent_waits_the_analysis_idle_bound() {
     let server = MockServer::spawn().await;
