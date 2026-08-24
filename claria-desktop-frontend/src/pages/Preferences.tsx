@@ -2689,10 +2689,10 @@ const WRITER_LIMIT_DEFAULTS: WriterLimits = {
   max_converse_calls: 50,
   max_tool_uses_per_response: 80,
   max_retained_turns: 200,
-  writer_first_frame_timeout_secs: 180,
-  writer_idle_timeout_secs: 300,
+  writer_first_frame_timeout_secs: 600,
+  writer_idle_timeout_secs: 600,
   writer_max_output_tokens: 32768,
-  analysis_first_frame_timeout_secs: 300,
+  analysis_first_frame_timeout_secs: 600,
   analysis_idle_timeout_secs: 600,
 };
 

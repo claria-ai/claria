@@ -13,7 +13,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-pub const CURRENT_VERSION: u32 = 14;
+pub const CURRENT_VERSION: u32 = 15;
 
 /// What the user is told when there is no config on disk at all.
 ///
@@ -878,6 +878,49 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v13 → v14 (raised the untouched stream waits)");
     }
 
+    // v14 → v15: the same lift again, onto one ten-minute wait everywhere.
+    //
+    // v14 kept the four waits distinct on the argument that a call which has
+    // produced no frame is free to abandon. The flow that pays for that is
+    // the writer: a demanding section is one response a run spent minutes of
+    // planning and prefill to reach, and cutting it loses work rather than
+    // an idle socket. Ten minutes is also what a reader who knows the model
+    // is thinking already sits through in chat without calling it a failure,
+    // so it is a wait the person on the other side has effectively already
+    // agreed to.
+    //
+    // Three fields move, not four: the analysis idle wait was already at ten
+    // minutes, so it has no superseded value to lift.
+    //
+    // The rule is v14's, unchanged. Only a value still sitting on the
+    // default it shipped with is raised, and only upward — a wait a
+    // clinician typed is theirs, including one they set below what we would
+    // now pick, and including one that happens to equal a neighbouring
+    // field's old default.
+    if from_version < 15 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        if let Some(serde_json::Value::Object(report_authoring)) = obj.get_mut("report_authoring") {
+            for (field, superseded, raised) in SUPERSEDED_STREAM_WAITS_V15 {
+                if report_authoring
+                    .get(field)
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(u64::from(superseded))
+                {
+                    report_authoring.insert(field.to_string(), serde_json::json!(raised()));
+                }
+            }
+        }
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(15.into()),
+        );
+        tracing::info!(
+            "migrated config v14 → v15 (raised the untouched stream waits to ten minutes)"
+        );
+    }
+
     Ok(json)
 }
 
@@ -910,6 +953,43 @@ const SUPERSEDED_STREAM_WAITS: [SupersededWait; 4] = [
         "analysis_idle_timeout_secs",
         90,
         default_analysis_idle_timeout_secs,
+    ),
+];
+
+/// The same table for v14 → v15, each entry `(field, the default it shipped
+/// with through v14, the default now)`.
+///
+/// A second table rather than a rewrite of the one above, because both run
+/// in order on a config old enough to need them and each has to keep its own
+/// snapshot of what it superseded. This one is what reaches an install that
+/// has already migrated once: v14 wrote its numbers in as literals, and a
+/// v14-era fresh install serialised them the same way, so those configs sit
+/// on 180/300/300 and nothing but a second lift moves them.
+///
+/// A config coming from v12 or earlier is lifted by v14 and then offered to
+/// this table, which finds nothing — v14 raises to whatever the default is
+/// now rather than to the number it shipped with, so those waits are already
+/// at ten minutes by the time v15 looks. That is the same idempotence the
+/// v14 rule has, not an accident of ordering.
+///
+/// Three entries, not four. `analysis_idle_timeout_secs` shipped at ten
+/// minutes in v14 and stays there, so there is nothing to lift and nothing
+/// a clinician's value could be mistaken for.
+const SUPERSEDED_STREAM_WAITS_V15: [SupersededWait; 3] = [
+    (
+        "writer_first_frame_timeout_secs",
+        180,
+        default_writer_first_frame_timeout_secs,
+    ),
+    (
+        "writer_idle_timeout_secs",
+        300,
+        default_writer_idle_timeout_secs,
+    ),
+    (
+        "analysis_first_frame_timeout_secs",
+        300,
+        default_analysis_first_frame_timeout_secs,
     ),
 ];
 

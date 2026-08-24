@@ -2,6 +2,12 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- The writer, the planner, and the reviewer all wait ten minutes now, both for a call to start answering and for it to break a mid-response silence
+- Waits a clinician never changed are raised on upgrade; a wait they set themselves is left exactly where they put it
+- A Bedrock call may spend twenty minutes across its attempts before it stops retrying, so a single slow attempt no longer uses up the whole budget on its own
+
 ## [0.34.0] — 2026-08-24
 
 - A review of a section that was drafted from a restricted set of records is told which files that section's writer actually read, instead of only that some section somewhere may have been restricted

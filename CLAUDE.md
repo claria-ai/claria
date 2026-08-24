@@ -182,10 +182,12 @@ and the SDK read timeout bounds only the wait for response headers.
 Both are clinician-configurable through `BedrockRuntimeLimits`, which reaches
 the writer as `ReportTurnLimits::stream_bounds` and the planner/reviewer through
 `DraftPlanRequest::with_stream_bounds` / `ReviewSweepRequest::with_stream_bounds`.
-The family defaults are unchanged (`DEFAULT_STREAM_*` 90s/60s conversational,
-`DEFAULT_ANALYSIS_STREAM_*` 120s/90s), and every configured value is clamped to
-`1..=MAX_STREAM_TIMEOUT_SECS` in `StreamBounds::writer`. Chat is not
-configurable and still reads the const default.
+All four family defaults are 600s — ten minutes, before a first frame and
+between frames, for both families — and every configured value is clamped to
+`1..=MAX_STREAM_TIMEOUT_SECS` (1200s) in `StreamBounds::writer`. Chat is not
+configurable and still reads the const default. `retry.rs::MAX_RETRY_ELAPSED`
+is derived from these: it sits at first-frame + idle for one attempt, so
+moving a default means moving it.
 
 **The writer's output ceiling** is configurable the same way. The `max_tokens`
 one writer call sends and the reserve subtracted from the model's window are the
@@ -499,7 +501,7 @@ credentials, may permanently purge S3 version history.
 
 ## Config Versioning
 
-`config.json` carries a `config_version` field (u32). Current version: **14**.
+`config.json` carries a `config_version` field (u32). Current version: **15**.
 
 ### Rules
 - Every schema change to `ClariaConfig` (new field, renamed field, changed type) bumps `CURRENT_VERSION` in `config.rs`
