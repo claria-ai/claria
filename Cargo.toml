@@ -26,18 +26,18 @@ rust-version = "1.97"
 
 [workspace.dependencies]
 # Internal crates
-claria-bedrock = { path = "crates/claria-bedrock", version = "0.34.0" }
-claria-billing = { path = "crates/claria-billing", version = "0.34.0" }
-claria-core = { path = "crates/claria-core", version = "0.34.0" }
-claria-docx = { path = "crates/claria-docx", version = "0.34.0" }
-claria-eval = { path = "crates/claria-eval", version = "0.34.0" }
-claria-mock-aws = { path = "crates/claria-mock-aws", version = "0.34.0" }
-claria-provisioner = { path = "crates/claria-provisioner", version = "0.34.0" }
-claria-records = { path = "crates/claria-records", version = "0.34.0" }
-claria = { path = "crates/claria", version = "0.34.0" }
-claria-report-store = { path = "crates/claria-report-store", version = "0.34.0" }
-claria-storage = { path = "crates/claria-storage", version = "0.34.0" }
-claria-transcribe = { path = "crates/claria-transcribe", version = "0.34.0" }
+claria-bedrock = { path = "crates/claria-bedrock", version = "0.34.1" }
+claria-billing = { path = "crates/claria-billing", version = "0.34.1" }
+claria-core = { path = "crates/claria-core", version = "0.34.1" }
+claria-docx = { path = "crates/claria-docx", version = "0.34.1" }
+claria-eval = { path = "crates/claria-eval", version = "0.34.1" }
+claria-mock-aws = { path = "crates/claria-mock-aws", version = "0.34.1" }
+claria-provisioner = { path = "crates/claria-provisioner", version = "0.34.1" }
+claria-records = { path = "crates/claria-records", version = "0.34.1" }
+claria = { path = "crates/claria", version = "0.34.1" }
+claria-report-store = { path = "crates/claria-report-store", version = "0.34.1" }
+claria-storage = { path = "crates/claria-storage", version = "0.34.1" }
+claria-transcribe = { path = "crates/claria-transcribe", version = "0.34.1" }
 
 # Shared external pins — versions live here only; crates add features they need
 #

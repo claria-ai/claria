@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.34.1] — 2026-08-24
 
 - The writer, the planner, and the reviewer all wait ten minutes now, both for a call to start answering and for it to break a mid-response silence
 - Waits a clinician never changed are raised on upgrade; a wait they set themselves is left exactly where they put it
