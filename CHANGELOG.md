@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.34.0] — 2026-08-24
 
 - A review of a section that was drafted from a restricted set of records is told which files that section's writer actually read, instead of only that some section somewhere may have been restricted
 
