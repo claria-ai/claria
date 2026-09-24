@@ -30,6 +30,21 @@ pub struct MockState {
     pub s3_get_object_requests: HashMap<String, usize>,
     /// Keys whose GET Object operation returns an injected service failure.
     pub s3_get_object_failures: HashSet<String>,
+    /// Operations that answer with a service error instead of doing their
+    /// work, keyed by AWS operation name (`HeadBucket`, `GetTrail`,
+    /// `ListAttachedUserPolicies`). The value is the error code to report.
+    ///
+    /// A test hook for the one failure a scan cannot otherwise reach: a read
+    /// the credentials are not allowed to make. Use `AccessDenied` for S3 and
+    /// `AccessDeniedException` for the JSON and query protocols, matching what
+    /// each service really returns; every injected failure answers 403.
+    ///
+    /// Only the operations Claria's provisioner reads are named — see
+    /// `services::s3::operation_name`. Anything the mock cannot name runs
+    /// normally rather than silently ignoring the entry, which is why
+    /// `services::s3::operation_name` returns the canonical AWS name rather
+    /// than a route description.
+    pub operation_failures: HashMap<String, String>,
     /// Fault injection: conditional PUTs for a key return 409 this many times.
     pub s3_conditional_conflicts_remaining: HashMap<String, u32>,
     /// Fault injection: conditional PUTs for a key return 412 this many times.
@@ -142,6 +157,11 @@ pub struct MockState {
 
     // Cost Explorer
     pub cost_data: Vec<CostPeriod>,
+    /// How many `GetCostAndUsage` requests have arrived.
+    ///
+    /// AWS bills $0.01 for each one, so "did not call it" is a property worth
+    /// asserting rather than assuming.
+    pub cost_explorer_requests: usize,
 
     // Artifact
     pub baa_accepted: bool,

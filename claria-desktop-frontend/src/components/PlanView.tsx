@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { PlanEntry } from "../lib/tauri";
 import type { ApplyItem } from "../lib/provisioner";
+import { unreadableEntries } from "../lib/plan";
 import PlanEntryCard from "./PlanEntryCard";
 import EscalationCard from "./EscalationCard";
 import Spinner from "./Spinner";
@@ -30,6 +31,36 @@ function applyBadge(entry: PlanEntry, applyItems: ApplyItem[]): ReactNode {
 }
 
 /**
+ * The resources this scan could not read.
+ *
+ * Above the plan rather than only in the cards: the plan is incomplete, and
+ * the operator is about to decide whether to apply it. "In sync" over a
+ * resource nobody could see is the claim this notice exists to stop.
+ */
+function UnreadableNotice({ entries }: { entries: PlanEntry[] }) {
+  return (
+    <div className="bg-gray-50 border border-gray-300 rounded-lg p-4">
+      <p className="text-sm font-medium text-gray-800">
+        {entries.length} resource{entries.length !== 1 ? "s" : ""} could not be
+        checked
+      </p>
+      <p className="text-sm text-gray-600 mt-1">
+        AWS refused or failed these reads, so this plan does not describe them.
+        They may be missing, or configured differently from what Claria expects
+        — usually the credentials in use are missing a permission.
+      </p>
+      <ul className="mt-2 space-y-0.5">
+        {entries.map((e) => (
+          <li key={e.spec.resource_name} className="text-sm text-gray-700">
+            {e.spec.label}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
  * The whole plan as one flat list in manifest order — every resource visible,
  * drift diffs inline in the cards. During apply, `applyItems` adds a per-row
  * progress badge.
@@ -44,7 +75,10 @@ export default function PlanView({
   applyItems?: ApplyItem[];
 }) {
   const total = entries.length;
-  const changesCount = entries.filter((e) => e.action !== "ok").length;
+  const unreadable = unreadableEntries(entries);
+  const changesCount = entries.filter(
+    (e) => e.action !== "ok" && e.action !== "unknown"
+  ).length;
 
   return (
     <div className="space-y-4">
@@ -55,8 +89,12 @@ export default function PlanView({
           ? `applying ${changesCount} change${changesCount !== 1 ? "s" : ""}...`
           : changesCount > 0
             ? `${changesCount} change${changesCount !== 1 ? "s" : ""} needed`
-            : "all resources in sync"}
+            : unreadable.length > 0
+              ? "everything Claria could check is in sync"
+              : "all resources in sync"}
       </p>
+
+      {unreadable.length > 0 && <UnreadableNotice entries={unreadable} />}
 
       {showEscalationNotice && <EscalationCard />}
 

@@ -9,7 +9,7 @@ use axum::{
 use serde_json::Value;
 
 use crate::{
-    params, scenarios,
+    faults, params, scenarios,
     services::{artifact, bedrock, cloudtrail, cost_explorer, iam, s3, sts, transcribe},
     state::SharedState,
 };
@@ -77,6 +77,10 @@ async fn dispatch_aws(
         // Extract the operation name (after the last `.`)
         let op = target.rsplit('.').next().unwrap_or(target);
 
+        if let Some(refusal) = faults::injected(op, faults::Wire::Json, &state).await {
+            return refusal;
+        }
+
         if target.contains("CloudTrail") {
             return cloudtrail::dispatch(op, json_body, state).await;
         }
@@ -97,9 +101,23 @@ async fn dispatch_aws(
             .into_response();
     }
 
-    // 2. Bedrock REST paths
+    // 2. Artifact REST path. `ListCustomerAgreements` is REST-JSON, not one of
+    // the `x-amz-target` protocols, so without this it falls through to S3 and
+    // the BAA precondition reads as a service error no scan can explain.
+    if path.starts_with("/v1/customer-agreement") {
+        if let Some(refusal) =
+            faults::injected("ListCustomerAgreements", faults::Wire::Json, &state).await
+        {
+            return refusal;
+        }
+        return artifact::dispatch("ListCustomerAgreements", Value::Null, state).await;
+    }
+
+    // 3. Bedrock REST paths
     if path.starts_with("/foundation-models")
-        || path.starts_with("/custom-model-agreements")
+        || path.starts_with("/foundation-model-availability/")
+        || path.starts_with("/list-foundation-model-agreement-offers/")
+        || path.starts_with("/create-foundation-model-agreement")
         || path.starts_with("/inference-profiles")
         || path.starts_with("/model/")
     {
@@ -111,12 +129,16 @@ async fn dispatch_aws(
         return bedrock::dispatch(&method, path, json_body, state).await;
     }
 
-    // 3. Query-protocol services (IAM / STS): POST with Action= in body
+    // 4. Query-protocol services (IAM / STS): POST with Action= in body
     if method == Method::POST {
         let body_str = String::from_utf8_lossy(&body);
 
         // Check if body contains Action= (form-encoded)
         if let Some(action) = extract_form_param(&body_str, "Action") {
+            if let Some(refusal) = faults::injected(&action, faults::Wire::Query, &state).await {
+                return refusal;
+            }
+
             // Distinguish IAM from STS by action name
             let sts_actions = [
                 "GetCallerIdentity",
@@ -134,6 +156,10 @@ async fn dispatch_aws(
 
         // Also check query string for Action (some SDKs put it there)
         if let Some(action) = extract_form_param(query, "Action") {
+            if let Some(refusal) = faults::injected(&action, faults::Wire::Query, &state).await {
+                return refusal;
+            }
+
             let sts_actions = ["GetCallerIdentity", "AssumeRole", "GetSessionToken"];
             if sts_actions.contains(&action.as_str()) {
                 return sts::dispatch(&action, query, state).await;
@@ -142,7 +168,7 @@ async fn dispatch_aws(
         }
     }
 
-    // 4. Everything else → S3
+    // 5. Everything else → S3
     s3::dispatch(method, uri, headers, state, body).await
 }
 

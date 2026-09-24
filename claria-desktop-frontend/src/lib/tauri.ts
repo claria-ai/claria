@@ -23,7 +23,6 @@ import type {
   ConsoleDelta,
   CostAndUsageResult,
   CostGranularity,
-  CredentialClass,
   CredentialInput,
   CredentialSource,
   DeletedClient,
@@ -77,8 +76,6 @@ export type {
   AssumedRoleSession,
   BiometryAvailability,
   BiometryKind,
-  BootstrapOutcome,
-  BootstrapStep,
   CallerIdentity,
   Cause,
   CredentialScope,
@@ -141,7 +138,6 @@ export type {
   LockStateChanged,
   ModelDownloadProgress,
   ModelPricing,
-  NewCredentialsInfo,
   PlanEntry,
   PlanEntryEdit,
   PlanGateMode,
@@ -202,7 +198,6 @@ export type {
   TextSpan,
   Severity,
   SpeakerMode,
-  StepStatus,
   EffortPreference,
   ModelTuningPreferences,
   TranscribeOptionsOverrides,
@@ -332,26 +327,6 @@ export async function assumeRole(
 ) {
   return unwrap(
     await commands.assumeRole(region, credentials, accountId, roleName)
-  );
-}
-
-export async function bootstrapIamUser(
-  region: string,
-  systemName: string,
-  rootAccessKeyId: string,
-  rootSecretAccessKey: string,
-  sessionToken: string | null,
-  credentialClass: CredentialClass
-) {
-  return unwrap(
-    await commands.bootstrapIamUser(
-      region,
-      systemName,
-      rootAccessKeyId,
-      rootSecretAccessKey,
-      sessionToken,
-      credentialClass
-    )
   );
 }
 

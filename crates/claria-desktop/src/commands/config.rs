@@ -5,8 +5,7 @@ use tauri::State;
 use claria_storage::audit::actions;
 
 use claria_desktop::config::{
-    self, ClariaConfig, ConfigInfo, CredentialSource, DraftPipelinePreferences,
-    ReportAuthoringPreferences, SyncedPreferences, TranscriptionPreferences,
+    self, ClariaConfig, ConfigInfo, CredentialSource, PreferencesPatch, SyncedPreferences,
 };
 
 use super::{
@@ -64,6 +63,12 @@ pub async fn load_config(state: State<'_, DesktopState>) -> Result<ConfigInfo, S
                     }
                 }
                 Err(e) => {
+                    // The app has to boot, so this degrades to the local
+                    // values rather than failing. A document this build
+                    // cannot read is the one case worth naming: nothing is
+                    // lost by it — refusing to read is what stops the next
+                    // save truncating it — but the clinician's settings from
+                    // their other machine are not the ones in front of them.
                     tracing::warn!(error = %e, "failed to read cloud preferences; using local values");
                 }
             }
@@ -81,8 +86,14 @@ pub async fn load_config(state: State<'_, DesktopState>) -> Result<ConfigInfo, S
 
 /// Read `_state/preferences.json` from S3, with the object's ETag for
 /// conditional writes. Returns `Ok(None)` when the object doesn't exist
-/// (first launch, fresh provisioner); errors only on transport failure or
-/// malformed JSON.
+/// (first launch, fresh provisioner); errors on transport failure, malformed
+/// JSON, or a document this build cannot read.
+///
+/// The version check is the same one a preferences file picked off disk has
+/// always had. It was missing here, so the same bytes were refused from a
+/// file and accepted from the bucket — and accepting them is what does the
+/// damage, since every save rewrites this object from what was read. See
+/// [`config::preferences_version_is_readable`].
 async fn read_cloud_preferences(
     s3: &aws_sdk_s3::Client,
     cfg: &ClariaConfig,
@@ -92,6 +103,9 @@ async fn read_cloud_preferences(
     {
         Ok(output) => {
             let synced: SyncedPreferences = serde_json::from_slice(&output.body)?;
+            if !config::preferences_version_is_readable(synced.preferences_version) {
+                return Err(CommandError::Msg(config::PREFERENCES_TOO_NEW.to_string()));
+            }
             synced.report_authoring.validate()?;
             Ok(Some((synced, output.etag)))
         }
@@ -117,75 +131,6 @@ async fn write_cloud_preferences(
     )
     .await?;
     Ok(())
-}
-
-/// Named-field patch for the synced preferences. Absent fields are left
-/// untouched, so a UI section (or a single-setting command) saves only what
-/// it owns and can never roll back a sibling section's edit.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct PreferencesPatch {
-    /// `Some(Some(id))` sets the preferred model, `Some(None)` clears it
-    /// (only expressible in-process — over IPC use `set_preferred_model`),
-    /// `None` leaves it unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(optional)]
-    pub preferred_model_id: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(optional)]
-    pub cost_explorer_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(optional)]
-    pub hourly_cost_data: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(optional)]
-    pub prompt_caching_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(optional)]
-    pub transcription: Option<TranscriptionPreferences>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(optional)]
-    pub report_authoring: Option<ReportAuthoringPreferences>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(optional)]
-    pub model_tuning: Option<claria_desktop::config::ModelTuningPreferences>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(optional)]
-    pub chat_streaming: Option<claria_desktop::config::ChatStreamMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(optional)]
-    pub draft_pipeline: Option<DraftPipelinePreferences>,
-}
-
-impl PreferencesPatch {
-    fn apply_to(&self, synced: &mut SyncedPreferences) {
-        if let Some(preferred_model_id) = &self.preferred_model_id {
-            synced.preferred_model_id = preferred_model_id.clone();
-        }
-        if let Some(cost_explorer_enabled) = self.cost_explorer_enabled {
-            synced.cost_explorer_enabled = cost_explorer_enabled;
-        }
-        if let Some(hourly_cost_data) = self.hourly_cost_data {
-            synced.hourly_cost_data = hourly_cost_data;
-        }
-        if let Some(prompt_caching_enabled) = self.prompt_caching_enabled {
-            synced.prompt_caching_enabled = prompt_caching_enabled;
-        }
-        if let Some(transcription) = &self.transcription {
-            synced.transcription = transcription.clone();
-        }
-        if let Some(report_authoring) = &self.report_authoring {
-            synced.report_authoring = report_authoring.clone();
-        }
-        if let Some(model_tuning) = self.model_tuning {
-            synced.model_tuning = model_tuning;
-        }
-        if let Some(chat_streaming) = self.chat_streaming {
-            synced.chat_streaming = chat_streaming;
-        }
-        if let Some(draft_pipeline) = &self.draft_pipeline {
-            synced.draft_pipeline = draft_pipeline.clone();
-        }
-    }
 }
 
 /// Conflict-retry budget for the preferences read-modify-write loop.
@@ -219,7 +164,7 @@ pub(crate) async fn apply_preferences_patch(
 
     // Persist locally first so we don't lose the user's edit if S3 is down.
     let mut local = SyncedPreferences::from_config(&cfg);
-    patch.apply_to(&mut local);
+    local.merge(patch);
     local.apply_to_config(&mut cfg);
     config::save_config(&cfg)?;
 
@@ -231,7 +176,7 @@ pub(crate) async fn apply_preferences_patch(
             Some((synced, etag)) => (synced, etag),
             None => (SyncedPreferences::from_config(&cfg), None),
         };
-        patch.apply_to(&mut synced);
+        synced.merge(patch);
         let body = serde_json::to_vec_pretty(&synced)?;
         let put = match etag.as_deref() {
             Some(etag) => {
@@ -424,11 +369,8 @@ fn parse_preferences_file(bytes: &[u8]) -> Result<SyncedPreferences, CommandErro
             "The selected file is not a Claria preferences export: {e}"
         ))
     })?;
-    if synced.preferences_version > config::PREFERENCES_VERSION {
-        return Err(CommandError::Msg(
-            "This preferences file was written by a newer Claria. Update Claria, then try again."
-                .to_string(),
-        ));
+    if !config::preferences_version_is_readable(synced.preferences_version) {
+        return Err(CommandError::Msg(config::PREFERENCES_TOO_NEW.to_string()));
     }
     Ok(synced)
 }

@@ -126,33 +126,6 @@ export function buildInitScript(config: ScenarioConfig): string {
             };
           }
 
-          // ── Bootstrap IAM user ─────────────────────────────────────
-          if (cmd === "bootstrap_iam_user") {
-            const steps = [
-              { name: "create_policy", status: "succeeded", detail: "arn:aws:iam::185735714230:policy/ClariaProvisionerAccess" },
-              { name: "create_user", status: "succeeded", detail: "claria-admin" },
-              { name: "attach_policy", status: "succeeded", detail: null },
-              { name: "create_access_key", status: "succeeded", detail: "AKIA...0001" },
-              { name: "validate_new_credentials", status: "succeeded", detail: null },
-              { name: "delete_source_key", status: "succeeded", detail: "Root access key deleted" },
-              { name: "write_config", status: "succeeded", detail: null },
-              { name: "accept_model_agreements", status: "succeeded", detail: "3 models" },
-            ];
-            configSaved = true;
-            return {
-              success: true,
-              steps,
-              account_id: "185735714230",
-              // NewCredentialsInfo is the non-secret half: the minted secret
-              // access key stays Rust-side and never crosses the IPC boundary.
-              new_credentials: {
-                access_key_id: "AKIAMOCKKEY00000001",
-                iam_user_arn: "arn:aws:iam::185735714230:user/claria-admin",
-              },
-              error: null,
-            };
-          }
-
           // ── Plan ───────────────────────────────────────────────────
           if (cmd === "plan") {
             if (appliedOnce) return ${allOkJson};

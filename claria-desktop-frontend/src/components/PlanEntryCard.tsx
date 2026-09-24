@@ -12,6 +12,7 @@ const actionStyles: Record<Action, { icon: string; border: string }> = {
   modify: { icon: "\uD83D\uDD27", border: "border-amber-200" },
   delete: { icon: "\uD83D\uDDD1\uFE0F", border: "border-red-200" },
   precondition_failed: { icon: "\uD83D\uDD12", border: "border-amber-300" },
+  unknown: { icon: "\u2753", border: "border-gray-300" },
 };
 
 export default function PlanEntryCard({
@@ -42,6 +43,7 @@ export default function PlanEntryCard({
               {entry.spec.description}
             </p>
             <CauseBadge cause={entry.cause} />
+            <ReadFailure error={entry.error} />
             <FieldDriftList drifts={entry.drift} />
           </div>
           {trailing && <span className="shrink-0 mt-0.5">{trailing}</span>}
@@ -67,6 +69,7 @@ export default function PlanEntryCard({
             {entry.spec.description}
           </p>
           <CauseBadge cause={entry.cause} />
+          <ReadFailure error={entry.error} />
           <FieldDriftList drifts={entry.drift} />
         </div>
         {trailing && <span className="shrink-0 mt-0.5">{trailing}</span>}
@@ -78,6 +81,20 @@ export default function PlanEntryCard({
         <ResourceDetail entry={entry} />
       </div>
     </details>
+  );
+}
+
+/**
+ * Why a resource could not be read.
+ *
+ * Only an unknown entry carries one. It is shown rather than folded into the
+ * cause badge because the AWS error names the call that was refused, which is
+ * what tells the operator which permission to grant.
+ */
+function ReadFailure({ error }: { error?: string | null }) {
+  if (!error) return null;
+  return (
+    <p className="text-xs text-gray-600 mt-1 font-mono break-words">{error}</p>
   );
 }
 

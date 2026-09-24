@@ -28,6 +28,7 @@ pub fn build_plan_entry(
             cause: Cause::Missing,
             drift: vec![],
             actual: None,
+            error: None,
         },
 
         // Data source exists → check it matches
@@ -47,6 +48,7 @@ pub fn build_plan_entry(
                 },
                 drift,
                 actual: Some(actual_val.clone()),
+                error: None,
             }
         }
 
@@ -57,6 +59,7 @@ pub fn build_plan_entry(
             cause: Cause::Missing,
             drift: vec![],
             actual: None,
+            error: None,
         },
 
         // Managed resource exists → check for drift
@@ -76,8 +79,29 @@ pub fn build_plan_entry(
                 },
                 drift,
                 actual: Some(actual_val.clone()),
+                error: None,
             }
         }
+    }
+}
+
+/// Build the entry for a resource whose read failed.
+///
+/// The one honest answer to "is it there?" when AWS refused to say. Kept
+/// beside [`build_plan_entry`] so the two ways an entry can be made stay in
+/// one file, and separate from it because there is nothing to compare: no
+/// desired state, no drift, no `actual`.
+///
+/// Reported for `Data` and `Managed` alike. A precondition Claria cannot read
+/// is not a precondition it may call satisfied.
+pub fn build_unreadable_entry(syncer: &dyn ResourceSyncer, error: &ProvisionerError) -> PlanEntry {
+    PlanEntry {
+        spec: syncer.spec().clone(),
+        action: Action::Unknown,
+        cause: Cause::Unreadable,
+        drift: vec![],
+        actual: None,
+        error: Some(error.to_string()),
     }
 }
 
@@ -98,6 +122,7 @@ pub fn find_orphans(manifest: &Manifest, state: &ProvisionerState) -> Vec<PlanEn
             cause: Cause::Orphaned,
             drift: vec![],
             actual: None,
+            error: None,
         })
         .collect()
 }
@@ -131,10 +156,11 @@ pub fn record_applied(
 /// is what lets a deleted or reset state file rebuild itself from a scan,
 /// instead of leaving already-conformant resources unowned forever.
 ///
-/// Additive on purpose. Several syncers report a read they could not complete
-/// as "absent", and dropping a record on that basis is how a bucket survives a
-/// teardown that reported success. Stale rows cost nothing, because nothing
-/// reads them to decide drift.
+/// Additive on purpose. A read Claria could not complete arrives here as an
+/// [`Action::Unknown`] entry with no `actual`, and is skipped rather than
+/// treated as an absence — dropping a record on that basis is how a bucket
+/// survives a teardown that reported success. Stale rows cost nothing, because
+/// nothing reads them to decide drift.
 ///
 /// Only meaningful for a scan of the whole manifest — given a scope-filtered
 /// scan, resources outside that scope simply go unrecorded.
@@ -165,16 +191,25 @@ pub fn reconcile_state(entries: &[PlanEntry], state: &mut ProvisionerState) -> b
 }
 
 /// Log a summary of the scan results.
+///
+/// Unreadable resources are counted apart from out-of-sync ones. They are not
+/// drift — nobody knows whether they have drifted — and a reader who cannot
+/// tell the two apart cannot tell a conformant account from an unseen one.
 pub fn log_scan_summary(entries: &[PlanEntry]) {
     let total = entries.len();
     let conformant = entries.iter().filter(|e| e.action == Action::Ok).count();
+    let unreadable: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.action == Action::Unknown)
+        .map(|e| e.spec.label.as_str())
+        .collect();
     let out_of_sync: Vec<&str> = entries
         .iter()
-        .filter(|e| e.action != Action::Ok)
+        .filter(|e| e.action != Action::Ok && e.action != Action::Unknown)
         .map(|e| e.spec.label.as_str())
         .collect();
 
-    if out_of_sync.is_empty() {
+    if out_of_sync.is_empty() && unreadable.is_empty() {
         tracing::info!(
             count = total,
             conformant,
@@ -186,6 +221,8 @@ pub fn log_scan_summary(entries: &[PlanEntry]) {
             conformant,
             out_of_sync_count = out_of_sync.len(),
             out_of_sync = out_of_sync.join(", "),
+            unreadable_count = unreadable.len(),
+            unreadable = unreadable.join(", "),
             "scan complete"
         );
     }
@@ -197,6 +234,12 @@ pub fn log_scan_summary(entries: &[PlanEntry]) {
 /// entries when `orphan_basis` is supplied. Pass it only for a scan of the
 /// whole manifest; a scope-filtered pass has no business deciding what is
 /// orphaned.
+///
+/// A read that fails produces an [`Action::Unknown`] entry rather than ending
+/// the scan. One resource the credentials cannot see used to cost the operator
+/// the whole plan, which is why every syncer learned to call a refused read
+/// "absent" — the worst answer of the three, because a bucket full of PHI then
+/// reads as one that needs creating.
 pub async fn plan(
     syncers: &[Box<dyn ResourceSyncer>],
     orphan_basis: Option<(&Manifest, &ProvisionerState)>,
@@ -206,8 +249,17 @@ pub async fn plan(
     tracing::info!(count = syncers.len(), "starting scan");
 
     for syncer in syncers.iter() {
-        let actual = syncer.read().await?;
-        entries.push(build_plan_entry(syncer.as_ref(), actual));
+        match syncer.read().await {
+            Ok(actual) => entries.push(build_plan_entry(syncer.as_ref(), actual)),
+            Err(error) => {
+                tracing::warn!(
+                    addr = %syncer.spec().addr(),
+                    error = %error,
+                    "could not read resource during scan"
+                );
+                entries.push(build_unreadable_entry(syncer.as_ref(), &error));
+            }
+        }
     }
 
     if let Some((manifest, state)) = orphan_basis {
@@ -228,6 +280,11 @@ pub async fn plan(
 /// [`crate::build_orphan_syncers`]. An orphan with no syncer cannot be
 /// destroyed, so its state record is deliberately left in place rather than
 /// dropped.
+///
+/// [`Action::Unknown`] entries are acted on by neither pass, and that is the
+/// point: the scan could not read the resource, so there is no basis for
+/// creating, changing, or destroying it. They are left in the plan for the
+/// operator to see.
 pub async fn execute(
     entries: &[PlanEntry],
     syncers: &[Box<dyn ResourceSyncer>],

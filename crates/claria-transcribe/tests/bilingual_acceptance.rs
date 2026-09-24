@@ -106,9 +106,15 @@ async fn mixed_mode_request_uses_language_identification_and_returns_both_langua
         .expect("transcription succeeded");
 
     // ── Assert on the request the SDK actually sent ───────────────────────────
-    let recorded = {
+    // Only the starts: the mock records every Transcribe call, and polling
+    // for the result issues its own gets.
+    let recorded: Vec<_> = {
         let st = mock.state.read().await;
-        st.transcribe_requests.clone()
+        st.transcribe_requests
+            .iter()
+            .filter(|r| r.operation == "StartTranscriptionJob")
+            .cloned()
+            .collect()
     };
     assert_eq!(
         recorded.len(),
@@ -117,7 +123,6 @@ async fn mixed_mode_request_uses_language_identification_and_returns_both_langua
         recorded.len()
     );
     let req = &recorded[0];
-    assert_eq!(req.operation, "StartTranscriptionJob");
 
     assert_eq!(
         req.body.get("LanguageCode"),

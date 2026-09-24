@@ -7,6 +7,7 @@ use claria_provisioner::{
     ResourceAddr, ResourceSpec, ResourceSyncer, orchestrate,
     state::{ResourceState, ResourceStatus},
     syncer::BoxFuture,
+    syncers::s3_bucket_policy::S3BucketPolicySyncer,
 };
 
 // ── Constants ─────────────────────────────────────────────────────────
@@ -70,11 +71,13 @@ impl ResourceSyncer for MockSyncer {
 
 // ── Builders ──────────────────────────────────────────────────────────
 
+/// The action names the IAM policy syncer compares against, as `desired_state`
+/// builds them: sorted and deduplicated.
 fn collect_required_actions(manifest: &Manifest) -> Vec<String> {
     let mut actions: Vec<String> = manifest
         .specs
         .iter()
-        .flat_map(|s| s.iam_actions.iter().cloned())
+        .flat_map(|s| s.iam_actions.iter().map(|a| a.action.clone()))
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
@@ -82,34 +85,18 @@ fn collect_required_actions(manifest: &Manifest) -> Vec<String> {
     actions
 }
 
-/// Replicate `S3BucketPolicySyncer::render_policy_document` for the mock.
+/// The bucket policy the real syncer would render for this spec.
+///
+/// Calls the syncer rather than restating it: a second rendering here would
+/// drift from what Claria writes, and the test would keep passing while doing
+/// so. The client is never used — `render_policy_document` reads only the
+/// spec.
 fn render_policy_document(spec: &ResourceSpec) -> Value {
-    let statements = spec.desired.get("statements").cloned().unwrap_or(json!([]));
-    let stmts = statements.as_array().cloned().unwrap_or_default();
-    let aws_stmts: Vec<Value> = stmts
-        .into_iter()
-        .map(|s| {
-            json!({
-                "Sid": s.get("sid").and_then(|v| v.as_str()).unwrap_or(""),
-                "Effect": s.get("effect").and_then(|v| v.as_str()).unwrap_or("Allow"),
-                "Principal": s.get("principal").map(|p| {
-                    if let Some(svc) = p.get("service").and_then(|v| v.as_str()) {
-                        json!({"Service": svc})
-                    } else {
-                        p.clone()
-                    }
-                }).unwrap_or(json!("*")),
-                "Action": s.get("action").cloned().unwrap_or(json!("")),
-                "Resource": s.get("resource").cloned().unwrap_or(json!("")),
-                "Condition": s.get("condition").cloned().unwrap_or(json!({})),
-            })
-        })
-        .collect();
-
-    json!({
-        "Version": "2012-10-17",
-        "Statement": aws_stmts,
-    })
+    let config = aws_config::SdkConfig::builder()
+        .behavior_version(aws_config::BehaviorVersion::latest())
+        .build();
+    S3BucketPolicySyncer::new(spec.clone(), claria_storage::client::from_config(&config))
+        .render_policy_document()
 }
 
 /// Build mock syncers from manifest + sparse read map.
@@ -304,11 +291,11 @@ async fn plan_fresh_account() {
             ),
             (
                 "transcribe_access.transcribe",
-                Some(json!({"enabled": true})),
+                Some(json!({"access": "granted"})),
             ),
             (
                 "cost_explorer_access.cost-explorer",
-                Some(json!({"enabled": true})),
+                Some(json!({"access": "granted_by_policy"})),
             ),
         ],
     );

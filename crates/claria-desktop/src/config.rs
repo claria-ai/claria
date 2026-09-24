@@ -28,6 +28,29 @@ pub const SETUP_REQUIRED: &str = "No config loaded. Complete setup first.";
 /// builds.
 pub const PREFERENCES_VERSION: u32 = 5;
 
+/// What a clinician is told when a synced-preferences document was written by
+/// a build newer than this one.
+pub const PREFERENCES_TOO_NEW: &str =
+    "These preferences were written by a newer Claria. Update Claria, then try again.";
+
+/// Whether this build may read a synced-preferences document of `version`.
+///
+/// Serde drops fields it does not know, so a newer document deserializes
+/// cleanly and quietly loses whatever this build has never heard of. That
+/// alone would be survivable — the damage is the write that follows: every
+/// preference save is a read-modify-write of the same object, so accepting a
+/// newer document means writing the truncated one back over it. One machine
+/// running an older build silently strips the settings every other machine
+/// can still see.
+///
+/// Refusing is the whole remedy. There is no migration chain for these the
+/// way there is for `config.json`: the local file is this machine's to
+/// rewrite, while this object is shared, and a build cannot migrate forward
+/// into a schema it does not know.
+pub fn preferences_version_is_readable(version: u32) -> bool {
+    version <= PREFERENCES_VERSION
+}
+
 fn default_prompt_caching_enabled() -> bool {
     true
 }
@@ -452,6 +475,19 @@ impl SyncedPreferences {
         }
     }
 
+    /// Apply a patch and stamp the version this build writes.
+    ///
+    /// One operation, because they were two and the second was forgettable:
+    /// a patch carries only the fields its pane edits and never touches
+    /// `preferences_version`, so a read-modify-write of a document another
+    /// build wrote handed that build's number back on contents written in
+    /// this build's schema. Every write of the synced document goes through
+    /// here.
+    pub fn merge(&mut self, patch: &PreferencesPatch) {
+        patch.overlay(self);
+        self.preferences_version = PREFERENCES_VERSION;
+    }
+
     /// Overlay synced fields onto an in-memory config. Machine-local fields are
     /// left untouched.
     pub fn apply_to_config(&self, config: &mut ClariaConfig) {
@@ -464,6 +500,78 @@ impl SyncedPreferences {
         config.model_tuning = self.model_tuning;
         config.chat_streaming = self.chat_streaming;
         config.draft_pipeline = self.draft_pipeline.clone();
+    }
+}
+
+/// Named-field patch for the synced preferences. Absent fields are left
+/// untouched, so a UI section (or a single-setting command) saves only what
+/// it owns and can never roll back a sibling section's edit.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+pub struct PreferencesPatch {
+    /// `Some(Some(id))` sets the preferred model, `Some(None)` clears it
+    /// (only expressible in-process — over IPC use `set_preferred_model`),
+    /// `None` leaves it unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub preferred_model_id: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub cost_explorer_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub hourly_cost_data: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub prompt_caching_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub transcription: Option<TranscriptionPreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub report_authoring: Option<ReportAuthoringPreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub model_tuning: Option<ModelTuningPreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub chat_streaming: Option<ChatStreamMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub draft_pipeline: Option<DraftPipelinePreferences>,
+}
+
+impl PreferencesPatch {
+    /// Overlay this patch's present fields. Private: the version stamp that
+    /// must accompany a write lives in [`SyncedPreferences::merge`], and a
+    /// caller reaching this directly would skip it.
+    fn overlay(&self, synced: &mut SyncedPreferences) {
+        if let Some(preferred_model_id) = &self.preferred_model_id {
+            synced.preferred_model_id = preferred_model_id.clone();
+        }
+        if let Some(cost_explorer_enabled) = self.cost_explorer_enabled {
+            synced.cost_explorer_enabled = cost_explorer_enabled;
+        }
+        if let Some(hourly_cost_data) = self.hourly_cost_data {
+            synced.hourly_cost_data = hourly_cost_data;
+        }
+        if let Some(prompt_caching_enabled) = self.prompt_caching_enabled {
+            synced.prompt_caching_enabled = prompt_caching_enabled;
+        }
+        if let Some(transcription) = &self.transcription {
+            synced.transcription = transcription.clone();
+        }
+        if let Some(report_authoring) = &self.report_authoring {
+            synced.report_authoring = report_authoring.clone();
+        }
+        if let Some(model_tuning) = self.model_tuning {
+            synced.model_tuning = model_tuning;
+        }
+        if let Some(chat_streaming) = self.chat_streaming {
+            synced.chat_streaming = chat_streaming;
+        }
+        if let Some(draft_pipeline) = &self.draft_pipeline {
+            synced.draft_pipeline = draft_pipeline.clone();
+        }
     }
 }
 
@@ -525,6 +633,51 @@ pub fn has_config() -> bool {
     config_path().map(|p| p.exists()).unwrap_or(false)
 }
 
+/// The lock settings out of raw `config.json` contents, whatever else about
+/// the file this build cannot handle.
+///
+/// The session lock is the one thing that must survive a config the rest of
+/// the app gives up on. [`parse_config`] fails whole — a `config_version`
+/// from a newer build, limits that no longer validate — and the startup lock
+/// used to take that as "not armed" and let the machine boot unlocked. A
+/// clinician who set a PIN would find their records on screen after an
+/// upgrade went wrong, which is the exact walk-away case the lock exists for.
+///
+/// So it reads only the `security` subtree. Migrations move forward and never
+/// rename a field out from under an older build, so the subtree of a newer
+/// document still means what it says and its unknown fields are ignored;
+/// an older document is migrated first, like any other read. Every field of
+/// [`SecuritySettings`] is `#[serde(default)]`, so a subtree missing
+/// entirely reads as the default — unarmed, which is correct for a config
+/// written before the lock existed.
+///
+/// `None` only when the JSON will not parse at all. That case genuinely
+/// cannot lock: there is no PIN hash to check an unlock against, and an
+/// overlay nothing can dismiss is not protection, it is a clinician locked
+/// out of their records. `design/app-lock.md` states that rule.
+///
+/// Pure — it touches no files — so it is reachable from a test without a
+/// Tauri runtime.
+pub fn parse_security_settings(contents: &str) -> Option<SecuritySettings> {
+    let json: serde_json::Value = serde_json::from_str(contents).ok()?;
+    let on_disk_version = json
+        .get("config_version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
+    // A document this build can migrate is migrated, so a renamed or moved
+    // field is read the way the rest of the config would read it. One from a
+    // newer build is read as it stands.
+    let json = if on_disk_version <= CURRENT_VERSION {
+        migrate(json, on_disk_version).ok()?
+    } else {
+        json
+    };
+
+    let security = json.get("security")?;
+    serde_json::from_value(security.clone()).ok()
+}
+
 /// Parse raw `config.json` contents: migrate to [`CURRENT_VERSION`],
 /// deserialize, validate. Pure — it touches no files — so every way a config
 /// can fail to load is reachable from a test.
@@ -576,6 +729,20 @@ pub fn read_config_at(path: &Path) -> eyre::Result<Option<(ClariaConfig, u32)>> 
 /// on disk says so instead of sending the clinician back through setup.
 pub fn load_config() -> eyre::Result<ClariaConfig> {
     load_config_at(&config_path()?)
+}
+
+/// The saved lock settings, read narrowly enough to survive a config the rest
+/// of this build cannot load.
+///
+/// See [`parse_security_settings`] for why that matters and what `None`
+/// means. `None` also covers a config that is simply not there.
+pub fn load_security_settings() -> Option<SecuritySettings> {
+    load_security_settings_at(&config_path().ok()?)
+}
+
+/// [`load_security_settings`] against an explicit path.
+pub fn load_security_settings_at(path: &Path) -> Option<SecuritySettings> {
+    parse_security_settings(&std::fs::read_to_string(path).ok()?)
 }
 
 /// [`load_config`] against an explicit path. Migrated configs are written

@@ -264,22 +264,6 @@ async deleteUserAccessKey(region: string, credentials: CredentialInput, accessKe
 }
 },
 /**
- * Run the full bootstrap flow: create a scoped IAM user and policy using
- * the operator's current (broad) credentials, then persist the new scoped
- * credentials to the local config.
- * 
- * The provisioner does all the IAM work and returns the new credentials.
- * We handle only the config write and in-memory state update.
- */
-async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: string, rootSecretAccessKey: string, sessionToken: string | null, credentialClass: CredentialClass) : Promise<Result<BootstrapOutcome, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("bootstrap_iam_user", { region, systemName, rootAccessKeyId, rootSecretAccessKey, sessionToken, credentialClass }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
  * Update the `ClariaProvisionerAccess` IAM policy using temporary elevated
  * credentials (root or admin).
  * 
@@ -1452,6 +1436,13 @@ async unlockWithPin(pin: string) : Promise<Result<LockOutcome, string>> {
 /**
  * Answer the lock screen with Touch ID / Face ID / Windows Hello.
  * 
+ * **Only ever called from an explicit press on the lock screen.** The panel
+ * this raises is system-modal and always-on-top, and auto-lock fires on an
+ * idle timer, so anything that invoked it on its own would drop an OS dialog
+ * over whatever application the clinician was actually using. The frontend
+ * checks focus before calling; this checks again immediately before the
+ * panel goes up, because the window can lose focus in the gap.
+ * 
  * A dismissed prompt comes back as `accepted: false` with no error — the
  * clinician chose the PIN field instead, which is not a failure and does not
  * count against the backoff budget. Only a prompt that actually rejected
@@ -1595,7 +1586,13 @@ limit: number;
  * The full error text, so the operator sees exactly what AWS said.
  */
 message: string }
-export type Action = "ok" | "create" | "modify" | "delete" | "precondition_failed"
+export type Action = "ok" | "create" | "modify" | "delete" | "precondition_failed" | 
+/**
+ * The read failed, so nothing is known about this resource. Never acted
+ * on: a resource Claria cannot see is not a resource it may create,
+ * change, or destroy.
+ */
+"unknown"
 /**
  * What `assume_role` returns to the frontend: everything about the assumed
  * session except its secrets, plus the opaque handle later provisioning
@@ -1641,19 +1638,6 @@ export type BiometryKind = "touch_id" | "face_id" | "windows_hello" |
  */
 "biometric" | "none"
 /**
- * Redacted [`BootstrapResult`] for the frontend: the minted secret access
- * key is persisted to the local config Rust-side and never returned.
- */
-export type BootstrapOutcome = { success: boolean; steps: BootstrapStep[]; account_id: string | null; 
-/**
- * Present when bootstrap minted scoped credentials.
- */
-new_credentials: NewCredentialsInfo | null; error: string | null }
-/**
- * A single step in the bootstrap sequence, reported for UI rendering.
- */
-export type BootstrapStep = { name: string; status: StepStatus; detail: string | null }
-/**
  * Time-to-live for a Bedrock prompt-cache entry.
  * 
  * Lives next to the capability table because which TTLs a model accepts is
@@ -1668,7 +1652,13 @@ export type CacheTtlChoice = "five_minutes" | "one_hour"
  * Identity information returned by STS `GetCallerIdentity`.
  */
 export type CallerIdentity = { account_id: string; arn: string; user_id: string; is_root: boolean }
-export type Cause = "in_sync" | "missing" | "drift" | "orphaned"
+export type Cause = "in_sync" | "missing" | "drift" | "orphaned" | 
+/**
+ * AWS refused or failed the read — permission, throttling, transport.
+ * Distinct from `Missing`, which is a resource that genuinely is not
+ * there.
+ */
+"unreadable"
 /**
  * Detail of a persisted chat session, returned when resuming a conversation.
  */
@@ -2199,6 +2189,38 @@ export type FindingStatus = "open" |
 export type FrontendLogLevel = "error" | "warn" | "info"
 export type FullReportGenerationResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; included_record_files: number; unavailable_record_files: number; record_characters: number }
 /**
+ * One IAM action and what it may be used on.
+ */
+export type IamAction = { 
+/**
+ * The IAM action name, which is not always the API operation name —
+ * `s3:GetEncryptionConfiguration`, not `s3:GetBucketEncryption`.
+ */
+action: string; scope: IamScope }
+/**
+ * What a granted IAM action may be used on.
+ * 
+ * Carried per action rather than per resource because one resource's actions
+ * do not share a scope — `iam_user` needs `iam:GetUser` against its own user
+ * ARN and `sts:GetCallerIdentity` against the account.
+ */
+export type IamScope = 
+/**
+ * Only buckets under this deployment's `{account}-{system}-` prefix.
+ */
+"claria_buckets" | 
+/**
+ * Only Claria's own IAM user and policy.
+ */
+"claria_identity" | 
+/**
+ * Account-wide. For actions AWS does not scope to a resource — trails
+ * are looked up by name, foundation models and agreements are not
+ * account resources, `ce:GetCostAndUsage` and `sts:GetCallerIdentity`
+ * are account-wide by definition.
+ */
+"account"
+/**
  * Response from an infrastructure chat turn. Infra chat does not persist
  * history, but we still return token usage so the UI can display cost.
  * Usage is `None` when Bedrock omitted the usage block.
@@ -2304,10 +2326,6 @@ effort?: EffortPreference | null;
  */
 temperature?: number | null }
 /**
- * The non-secret half of freshly minted credentials.
- */
-export type NewCredentialsInfo = { access_key_id: string; iam_user_arn: string }
-/**
  * A single entry in the plan — the spec annotated with what happened.
  * 
  * The plan is a flat `Vec<PlanEntry>` — same shape as the manifest array,
@@ -2319,7 +2337,16 @@ export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drif
 /**
  * Live state read from AWS (if the resource exists).
  */
-actual: JsonValue | null }
+actual: JsonValue | null; 
+/**
+ * Why the resource could not be read, when `action` is
+ * [`Action::Unknown`]. `None` for every other action.
+ * 
+ * `#[serde(default)]` is the only optional-field spelling specta
+ * respects — a `skip_serializing_if` predicate here would make the
+ * generated binding required and disagree with the wire.
+ */
+error?: string | null }
 /**
  * One section's worth of gate edits. Absent fields are left exactly as the
  * planner wrote them, so the pane can save the one control the user touched
@@ -2598,9 +2625,13 @@ description: string;
  */
 severity: Severity; 
 /**
- * IAM actions this resource requires (aggregated for policy diff)
+ * IAM actions this resource requires.
+ * 
+ * The single declaration of what Claria's policy grants: the diff
+ * compares against it and [`crate::account_setup::claria_policy_document`]
+ * renders it. Widening an action list here widens the policy.
  */
-iam_actions: string[] }
+iam_actions: IamAction[] }
 /**
  * Proof that one review property actually ran over one revision, including
  * the case where it found nothing.
@@ -2816,10 +2847,6 @@ export type Severity =
  */
 "destructive"
 export type SpeakerMode = "none" | "diarize" | "channels"
-/**
- * Status of an individual bootstrap step.
- */
-export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
 /**
  * A style pass's anchored replacement: swap `original_text` for
  * `replacement_text` inside one paragraph of the anchored section.

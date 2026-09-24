@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findEscalationEntry, hasChanges } from "./plan";
+import { findEscalationEntry, hasChanges, unreadableEntries } from "./plan";
 import type { Action, CredentialScope, PlanEntry } from "./tauri";
 
 function entry(
@@ -20,9 +20,11 @@ function entry(
       desired: null,
     },
     action,
-    cause: action === "ok" ? "in_sync" : "missing",
+    cause:
+      action === "ok" ? "in_sync" : action === "unknown" ? "unreadable" : "missing",
     drift: [],
     actual: null,
+    error: action === "unknown" ? "AWS error: s3:HeadBucket failed" : null,
   };
 }
 
@@ -47,6 +49,35 @@ describe("hasChanges", () => {
         true
       );
     }
+  });
+
+  // Nothing is known about an unreadable resource, so Apply has nothing to
+  // do with it. Counting it would light up a button that cannot change it.
+  it("is false when the only non-ok entry could not be read", () => {
+    expect(
+      hasChanges([entry("a", "ok", "regular"), entry("b", "unknown", "regular")])
+    ).toBe(false);
+  });
+
+  it("is still true when something readable needs changing alongside", () => {
+    expect(
+      hasChanges([entry("a", "unknown", "regular"), entry("b", "create", "regular")])
+    ).toBe(true);
+  });
+});
+
+describe("unreadableEntries", () => {
+  it("is empty before a scan has run", () => {
+    expect(unreadableEntries(null)).toEqual([]);
+  });
+
+  it("picks out only the resources the scan could not read", () => {
+    const found = unreadableEntries([
+      entry("bucket", "unknown", "regular"),
+      entry("trail", "create", "regular"),
+      entry("policy", "ok", "elevated"),
+    ]);
+    expect(found.map((e) => e.spec.resource_name)).toEqual(["bucket"]);
   });
 });
 

@@ -143,20 +143,23 @@ impl LockReason {
 /// The security settings in force: the in-memory config first, disk as the
 /// fallback, defaults before setup has run.
 ///
-/// Fails open on a config that cannot be parsed, because the alternative is
-/// worse: a machine whose config no longer reads has no PIN hash to check
-/// against, so failing closed would mean an overlay nothing can dismiss.
-async fn settings(state: &State<'_, DesktopState>) -> Result<SecuritySettings, CommandError> {
+/// The disk fallback is the narrow read, not a whole `load_config`. A config
+/// this build cannot load in full still holds a readable `security` subtree,
+/// and that is what makes locking such a machine survivable: without it, the
+/// lock screen would go up and `unlock_with_pin` would hit the same load
+/// error, leaving an overlay nothing can dismiss.
+///
+/// A config whose JSON will not parse at all yields the default — unarmed.
+/// That is the one place this still fails open, and deliberately: there is no
+/// PIN hash to check an unlock against. See `design/app-lock.md`.
+async fn settings(state: &State<'_, DesktopState>) -> SecuritySettings {
     {
         let guard = state.config.lock().await;
         if let Some(cfg) = guard.as_ref() {
-            return Ok(cfg.security.clone());
+            return cfg.security.clone();
         }
     }
-    if !config::has_config() {
-        return Ok(SecuritySettings::default());
-    }
-    Ok(config::load_config()?.security)
+    config::load_security_settings().unwrap_or_default()
 }
 
 /// Read the saved config, let `edit` change its lock settings, write it back,
@@ -248,7 +251,7 @@ async fn record_session_audit(
 /// screen is covered whether or not S3 answers.
 pub(crate) async fn engage_lock(app: &AppHandle, reason: LockReason) -> Result<(), CommandError> {
     let state = app.state::<DesktopState>();
-    let settings = settings(&state).await?;
+    let settings = settings(&state).await;
     if !settings.pin_set() {
         return Err(CommandError::Msg(
             "Auto-lock is not set up on this computer".to_string(),
@@ -328,7 +331,7 @@ fn stored_hash(settings: &SecuritySettings) -> Result<String, CommandError> {
 #[specta::specta]
 pub async fn get_lock_state(state: State<'_, DesktopState>) -> Result<LockState, String> {
     run("get_lock_state", async {
-        let settings = settings(&state).await?;
+        let settings = settings(&state).await;
         Ok(snapshot(&state, &settings))
     })
     .await
@@ -359,7 +362,7 @@ pub async fn unlock_with_pin(
     pin: String,
 ) -> Result<LockOutcome, String> {
     run("unlock_with_pin", async {
-        let settings = settings(&state).await?;
+        let settings = settings(&state).await;
         let stored = stored_hash(&settings)?;
 
         // Refuse before spending the argon2 verification, so a flood of
@@ -430,7 +433,7 @@ pub async fn unlock_with_biometric(
     state: State<'_, DesktopState>,
 ) -> Result<LockOutcome, String> {
     run("unlock_with_biometric", async {
-        let settings = settings(&state).await?;
+        let settings = settings(&state).await;
         if !settings.biometric_unlock_enabled {
             return Err(CommandError::Msg(
                 "Biometric unlock is not enabled".to_string(),
@@ -545,7 +548,7 @@ pub async fn disable_auto_lock(
     pin: String,
 ) -> Result<LockOutcome, String> {
     run("disable_auto_lock", async {
-        let settings = settings(&state).await?;
+        let settings = settings(&state).await;
         let stored = stored_hash(&settings)?;
 
         if !verify(pin, stored).await? {
@@ -590,7 +593,7 @@ pub async fn change_pin(
 ) -> Result<LockOutcome, String> {
     run("change_pin", async {
         security::validate_pin(&new_pin)?;
-        let settings = settings(&state).await?;
+        let settings = settings(&state).await;
         let stored = stored_hash(&settings)?;
 
         if !verify(current_pin, stored).await? {
@@ -656,7 +659,7 @@ pub async fn set_biometric_unlock(
     enabled: bool,
 ) -> Result<LockState, String> {
     run("set_biometric_unlock", async {
-        if enabled && !settings(&state).await?.pin_set() {
+        if enabled && !settings(&state).await.pin_set() {
             return Err(CommandError::Msg(
                 "Set a PIN before turning on biometric unlock".to_string(),
             ));
@@ -691,14 +694,19 @@ pub(crate) fn lock_at_startup(app: &AppHandle) {
     if !config::has_config() {
         return;
     }
-    let armed = match config::load_config() {
-        Ok(cfg) => cfg.security.armed(),
-        Err(error) => {
-            tracing::warn!(error = %error, "could not read auto-lock settings at startup");
-            false
-        }
-    };
-    if !armed {
+    // The narrow read, so a config this build cannot load in full still locks
+    // the machine it was armed on. Taking a failed whole-config load as "not
+    // armed" meant a clinician who set a PIN found their records on screen
+    // after an upgrade went wrong — and it quietly undid the backoff
+    // argument in `design/app-lock.md`, which rests on a restart coming back
+    // locked.
+    let settings = config::load_security_settings();
+    if settings.is_none() {
+        tracing::warn!(
+            "could not read auto-lock settings at startup; the config holds no PIN to unlock with"
+        );
+    }
+    if !settings.unwrap_or_default().armed() {
         return;
     }
 
@@ -734,13 +742,7 @@ pub(crate) fn spawn_idle_watcher(app: AppHandle) {
             previous = now;
 
             let state = app.state::<DesktopState>();
-            let settings = match settings(&state).await {
-                Ok(settings) => settings,
-                Err(error) => {
-                    tracing::warn!(error = %error, "auto-lock watcher could not read settings");
-                    continue;
-                }
-            };
+            let settings = settings(&state).await;
             if !settings.armed() {
                 continue;
             }

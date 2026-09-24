@@ -8,6 +8,7 @@ use crate::{
     error::ProvisionerError,
     manifest::ResourceSpec,
     syncer::{BoxFuture, ResourceSyncer},
+    syncers::read_failed,
 };
 
 pub struct IamUserPolicySyncer {
@@ -58,21 +59,18 @@ impl ResourceSyncer for IamUserPolicySyncer {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    // Access denied or user doesn't exist → can't read
+                    // No user means no policy attached to it — an absence.
+                    // A refused read means nothing about the policy at all,
+                    // and calling it "no policy" would show the clinician a
+                    // plan to grant permissions that may already be granted.
                     let is_no_entity = e
                         .as_service_error()
                         .map(|se| se.is_no_such_entity_exception())
                         .unwrap_or(false);
-                    let is_access_denied = e
-                        .as_service_error()
-                        .map(|se| se.meta().code() == Some("AccessDenied"))
-                        .unwrap_or(false);
-                    if is_no_entity || is_access_denied {
+                    if is_no_entity {
                         return Ok(None);
                     }
-                    return Err(ProvisionerError::Aws(format!(
-                        "iam:ListAttachedUserPolicies failed: {e}"
-                    )));
+                    return Err(read_failed("iam:ListAttachedUserPolicies", &e));
                 }
             };
 

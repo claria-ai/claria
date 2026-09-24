@@ -106,6 +106,13 @@ async fn start_job(body: Value, state: SharedState) -> Response {
 
 async fn get_job(body: Value, state: SharedState) -> Response {
     let job_name = body["TranscriptionJobName"].as_str().unwrap_or("");
+    {
+        let mut st = state.write().await;
+        st.transcribe_requests.push(RecordedTranscribeRequest {
+            operation: "GetTranscriptionJob".to_string(),
+            body: body.clone(),
+        });
+    }
     let st = state.read().await;
 
     match st.transcription_jobs.get(job_name) {

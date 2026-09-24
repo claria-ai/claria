@@ -111,7 +111,7 @@ fn scoped_policy_manifest_does_not_request_permanent_version_deletion() {
     let actions: HashSet<&str> = manifest
         .specs
         .iter()
-        .flat_map(|spec| spec.iam_actions.iter().map(String::as_str))
+        .flat_map(|spec| spec.iam_actions.iter().map(|a| a.action.as_str()))
         .collect();
 
     assert!(!actions.contains("s3:DeleteObjectVersion"));

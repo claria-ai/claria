@@ -1,4 +1,4 @@
-use aws_sdk_cloudtrail::Client;
+use aws_sdk_cloudtrail::{Client, error::ProvideErrorMetadata};
 use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
@@ -6,6 +6,7 @@ use crate::{
     error::ProvisionerError,
     manifest::ResourceSpec,
     syncer::{BoxFuture, ResourceSyncer},
+    syncers::read_failed,
 };
 
 pub struct CloudTrailTrailLoggingSyncer {
@@ -41,15 +42,9 @@ impl ResourceSyncer for CloudTrailTrailLoggingSyncer {
                     let is_logging = status.is_logging().unwrap_or(false);
                     Ok(Some(json!({"enabled": is_logging})))
                 }
-                // TODO: differentiate NotFound from real failures (AccessDenied, Throttling).
-                Err(e) => {
-                    tracing::warn!(
-                        trail = %self.trail_name(),
-                        error = %e,
-                        "get_trail_status failed during read — treating as absent"
-                    );
-                    Ok(None)
-                }
+                // No trail, so no logging status to report.
+                Err(e) if e.code() == Some("TrailNotFoundException") => Ok(None),
+                Err(e) => Err(read_failed("cloudtrail:GetTrailStatus", &e)),
             }
         })
     }

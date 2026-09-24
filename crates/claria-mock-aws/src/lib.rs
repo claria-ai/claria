@@ -1,3 +1,4 @@
+pub mod faults;
 pub mod params;
 pub mod router;
 pub mod scenarios;
