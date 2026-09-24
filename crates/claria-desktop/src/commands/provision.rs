@@ -519,11 +519,38 @@ pub async fn escalate_iam_policy(
 // Provisioner commands — scan, plan, provision, destroy
 // ---------------------------------------------------------------------------
 
+/// Bring the ownership record in line with what a whole-manifest scan found.
+///
+/// The record answers one question — which resources is Claria responsible for —
+/// and a scan is the only thing that can rebuild it. Without this, a resource
+/// that was already conformant the first time Claria saw it is never recorded,
+/// so a reset state file stays empty and teardown walks past everything in it.
+///
+/// Flushes only when the record changed, so a steady-state scan stays read-only.
+async fn reconcile_and_flush(
+    entries: &[PlanEntry],
+    prov_state: &mut claria_provisioner::ProvisionerState,
+    persistence: &claria_provisioner::StatePersistence,
+) -> Result<(), CommandError> {
+    if claria_provisioner::reconcile_state(entries, prov_state) {
+        persistence.flush(prov_state).await?;
+    }
+    Ok(())
+}
+
 /// Helper: scan all resources concurrently (up to 5 at a time), streaming
 /// progress events via the channel. Returns plan entries in manifest order.
+///
+/// `orphan_basis` supplies the manifest and state to derive orphan entries from,
+/// and belongs only to a scan of the whole manifest. A scope-filtered pass must
+/// pass `None`: comparing state against a partial syncer list calls every
+/// resource outside that scope an orphan and queues it for deletion.
 async fn scan_with_progress(
     syncers: &[Box<dyn claria_provisioner::ResourceSyncer>],
-    prov_state: &claria_provisioner::ProvisionerState,
+    orphan_basis: Option<(
+        &claria_provisioner::Manifest,
+        &claria_provisioner::ProvisionerState,
+    )>,
     on_progress: &tauri::ipc::Channel<ProvisionerProgress>,
 ) -> Result<Vec<PlanEntry>, CommandError> {
     let total = syncers.len() as u32;
@@ -565,7 +592,9 @@ async fn scan_with_progress(
         ));
     }
 
-    entries.extend(claria_provisioner::find_orphans(syncers, prov_state));
+    if let Some((manifest, prov_state)) = orphan_basis {
+        entries.extend(claria_provisioner::find_orphans(manifest, prov_state));
+    }
     claria_provisioner::log_scan_summary(&entries);
 
     Ok(entries)
@@ -611,32 +640,22 @@ async fn execute_with_progress(
             total: action_total,
         });
 
-        if entry.action == Action::Create {
+        let (status, result) = if entry.action == Action::Create {
             tracing::info!(addr = %addr, "creating resource");
             let result = syncer
                 .create()
                 .await
                 .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
-            prov_state.resources.insert(
-                addr.clone(),
-                claria_provisioner::state::ResourceState {
-                    resource_type: entry.spec.resource_type.clone(),
-                    resource_id: entry.spec.resource_name.clone(),
-                    status: claria_provisioner::state::ResourceStatus::Created,
-                    properties: result,
-                },
-            );
+            (claria_provisioner::state::ResourceStatus::Created, result)
         } else {
             tracing::info!(addr = %addr, "updating resource");
             let result = syncer
                 .update()
                 .await
                 .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
-            if let Some(rs) = prov_state.resources.get_mut(&addr) {
-                rs.status = claria_provisioner::state::ResourceStatus::Updated;
-                rs.properties = result;
-            }
-        }
+            (claria_provisioner::state::ResourceStatus::Updated, result)
+        };
+        claria_provisioner::record_applied(prov_state, &entry.spec, result, status);
         persistence.flush(prov_state).await?;
 
         let _ = on_progress.send(ProvisionerProgress::ApplyCompleted {
@@ -650,13 +669,20 @@ async fn execute_with_progress(
     // Deletes — reverse order.
     for entry in entries.iter().filter(|e| e.action == Action::Delete).rev() {
         let addr = entry.spec.addr();
-        if let Some(syncer) = syncer_map.get(&addr) {
-            tracing::info!(addr = %addr, "destroying resource");
-            syncer
-                .destroy()
-                .await
-                .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
-        }
+        let Some(syncer) = syncer_map.get(&addr) else {
+            // Nothing here can tear the resource down, so forgetting it would
+            // strand it in the account with no record that it is there.
+            tracing::warn!(
+                addr = %addr,
+                "no syncer for orphaned resource — leaving its state record in place"
+            );
+            continue;
+        };
+        tracing::info!(addr = %addr, "destroying resource");
+        syncer
+            .destroy()
+            .await
+            .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
         prov_state.resources.remove(&addr);
         persistence.flush(prov_state).await?;
     }
@@ -686,9 +712,14 @@ pub async fn plan(
             &cfg.account_id,
             &config::provisioner_state_dir(&cfg.system_name)?,
         )?;
-        let prov_state = persistence.load().await?;
+        let mut prov_state = persistence.load().await?;
 
-        scan_with_progress(&syncers, &prov_state, &on_progress).await
+        let entries =
+            scan_with_progress(&syncers, Some((&manifest, &prov_state)), &on_progress).await?;
+
+        reconcile_and_flush(&entries, &mut prov_state, &persistence).await?;
+
+        Ok(entries)
     })
     .await
 }
@@ -720,12 +751,23 @@ pub async fn apply(
         let mut prov_state = persistence.load().await?;
 
         // Scan first (with progress).
-        let entries = scan_with_progress(&syncers, &prov_state, &on_progress).await?;
+        let entries =
+            scan_with_progress(&syncers, Some((&manifest, &prov_state)), &on_progress).await?;
+
+        // Orphans are absent from the manifest, so their syncers have to be
+        // rebuilt from state — without them the delete pass has nothing to call
+        // and the only thing that happens is that Claria forgets them.
+        let mut executable = claria_provisioner::build_syncers(&ctx.sdk_config, &manifest, None);
+        executable.extend(claria_provisioner::build_orphan_syncers(
+            &ctx.sdk_config,
+            &manifest,
+            &prov_state,
+        ));
 
         // Execute (with progress).
         execute_with_progress(
             &entries,
-            &syncers,
+            &executable,
             &mut prov_state,
             &persistence,
             &on_progress,
@@ -733,7 +775,12 @@ pub async fn apply(
         .await?;
 
         // Re-scan to show updated state (with progress).
-        scan_with_progress(&syncers, &prov_state, &on_progress).await
+        let entries =
+            scan_with_progress(&syncers, Some((&manifest, &prov_state)), &on_progress).await?;
+
+        reconcile_and_flush(&entries, &mut prov_state, &persistence).await?;
+
+        Ok(entries)
     })
     .await
 }
@@ -759,7 +806,7 @@ pub async fn destroy(
 
         let manifest =
             claria_provisioner::build_manifest(&cfg.account_id, &cfg.system_name, &cfg.region);
-        let syncers = claria_provisioner::build_syncers(&elevated_config, &manifest, None);
+        let mut syncers = claria_provisioner::build_syncers(&elevated_config, &manifest, None);
         let persistence = claria_provisioner::build_persistence(
             &elevated_config,
             &cfg.system_name,
@@ -768,6 +815,15 @@ pub async fn destroy(
         )?;
 
         let mut prov_state = persistence.load().await?;
+
+        // Resources the manifest no longer declares are still the operator's to
+        // be rid of; without these, teardown leaves them running.
+        syncers.extend(claria_provisioner::build_orphan_syncers(
+            &elevated_config,
+            &manifest,
+            &prov_state,
+        ));
+
         claria_provisioner::destroy_all(&syncers, &mut prov_state, &persistence).await?;
         Ok(())
     })
@@ -888,7 +944,8 @@ pub async fn provision_scan(
             },
         };
 
-        let entries = scan_with_progress(&syncers, &prov_state, &on_progress).await?;
+        let entries =
+            scan_with_progress(&syncers, Some((&manifest, &prov_state)), &on_progress).await?;
 
         let needs_escalation = entries.iter().any(|e| {
             e.spec.credential_scope == CredentialScope::Elevated
@@ -974,9 +1031,11 @@ pub async fn provision_apply(
                 Some(CredentialScope::Elevated),
             );
 
-            // Scan elevated resources.
+            // Scan elevated resources. No orphan basis: this pass only built
+            // the elevated syncers, and every regular resource in state would
+            // otherwise be called an orphan and queued for deletion.
             let elevated_entries =
-                scan_with_progress(&elevated_syncers, &prov_state, &on_progress).await?;
+                scan_with_progress(&elevated_syncers, None, &on_progress).await?;
 
             let has_elevated_work = elevated_entries
                 .iter()
@@ -1123,8 +1182,8 @@ pub async fn provision_apply(
             Some(CredentialScope::Regular),
         );
 
-        let regular_entries =
-            scan_with_progress(&regular_syncers, &prov_state, &on_progress).await?;
+        // Scope-filtered again, so no orphan basis — see phase 1.
+        let regular_entries = scan_with_progress(&regular_syncers, None, &on_progress).await?;
 
         let has_regular_work = regular_entries.iter().any(|e| {
             e.action == Action::Create || e.action == Action::Modify || e.action == Action::Delete
@@ -1155,7 +1214,10 @@ pub async fn provision_apply(
 
         let all_syncers = claria_provisioner::build_syncers(&regular_config, &manifest, None);
 
-        let entries = scan_with_progress(&all_syncers, &prov_state, &on_progress).await?;
+        let entries =
+            scan_with_progress(&all_syncers, Some((&manifest, &prov_state)), &on_progress).await?;
+
+        reconcile_and_flush(&entries, &mut prov_state, &persistence).await?;
 
         Ok(ProvisionApplyOutcome {
             entries,

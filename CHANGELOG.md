@@ -2,6 +2,17 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Provisioner state can be written at all; a state file holding any resource was silently rejected as unserializable, so the record every teardown reads from stayed empty
+- A resource Claria no longer manages is torn down when you apply the plan that says it will be removed, instead of being dropped from the record and left running in the account
+- A resource this build cannot tear down keeps its record, so it stays visible instead of being quietly forgotten
+- Scanning a provisioned account records what it finds, so a reset or never-written state file rebuilds itself
+- Destroy All Resources works from what is actually in the account, not only from what the state file remembers
+- Destroy All Resources no longer stops on the first read-only precondition it mistakes for a resource of its own
+- Applying with admin credentials no longer marks every resource outside that step as unmanaged and queues it for deletion
+- A permission change applied to a resource the state file had not recorded is now recorded
+
 ## [0.34.1] — 2026-08-24
 
 - The writer, the planner, and the reviewer all wait ten minutes now, both for a call to start answering and for it to break a mid-response silence
