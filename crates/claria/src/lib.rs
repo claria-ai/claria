@@ -38,6 +38,7 @@ pub use plan::{
     resume_planned_draft_run, start_draft_run, update_draft_plan,
 };
 pub use prompt_cache::ReportPromptCache;
+pub use record_context::corpus_ceiling_bytes;
 pub use prompts::{
     FULL_REPORT_SYSTEM_PROMPT_BODY, FULL_REPORT_TRUST_RULES, PLANNER_SYSTEM_PROMPT_BODY,
     PLANNER_TRUST_RULES, REPORT_SYSTEM_PROMPT_BODY, REPORT_TRUST_RULES, full_report_system_prompt,

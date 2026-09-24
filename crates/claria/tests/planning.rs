@@ -372,6 +372,7 @@ fn models() -> pipeline::PlanModels<'static> {
     pipeline::PlanModels {
         planner_model_id: PLANNER_MODEL_ID,
         writer_model_id: WRITER_MODEL_ID,
+        writer_output_token_reserve: pipeline::DEFAULT_WRITER_MAX_OUTPUT_TOKENS,
     }
 }
 
@@ -2574,4 +2575,147 @@ async fn a_synthetic_plan_refuses_a_record_restriction() {
     )
     .await
     .expect("clearing a restriction on a synthetic plan is a no-op");
+}
+
+// ---------------------------------------------------------------------------
+// The corpus ceiling both passes have to agree on
+// ---------------------------------------------------------------------------
+
+/// The writer's shipped output ceiling, and a raised one a clinician can set.
+const DEFAULT_WRITER_RESERVE: u32 = pipeline::DEFAULT_WRITER_MAX_OUTPUT_TOKENS;
+const RAISED_WRITER_RESERVE: u32 = 60_000;
+
+/// Put one readable record of exactly `bytes` length under `filename`.
+async fn put_padded_record(
+    s3: &aws_sdk_s3::Client,
+    client_id: Uuid,
+    filename: &str,
+    bytes: u64,
+) {
+    let body = "Clinical history paragraph. ".repeat(
+        usize::try_from(bytes).expect("fixture size fits a usize") / "Clinical history paragraph. ".len()
+        + 1,
+    );
+    let body = body[..usize::try_from(bytes).expect("fixture size fits a usize")].to_string();
+    claria_storage::objects::put_object(
+        s3,
+        BUCKET,
+        &claria_core::s3_keys::client_record_file(client_id, filename),
+        body.into_bytes(),
+        Some("text/plain"),
+    )
+    .await
+    .expect("put padded record");
+}
+
+/// The ceiling is derived from the output reserve, so raising the reserve has to
+/// shrink it. Stated as a test because two passes size a corpus and both read
+/// this one function; while they each derived the number, raising the writer's
+/// ceiling moved only one of them.
+#[test]
+fn a_raised_output_reserve_shrinks_the_corpus_ceiling() {
+    let shipped = pipeline::corpus_ceiling_bytes(WRITER_MODEL_ID, DEFAULT_WRITER_RESERVE);
+    let raised = pipeline::corpus_ceiling_bytes(WRITER_MODEL_ID, RAISED_WRITER_RESERVE);
+    assert!(
+        raised < shipped,
+        "a raised reserve must shrink the corpus ceiling: {raised} is not below {shipped}"
+    );
+}
+
+/// A corpus the configured writer cannot hold is refused by the *planning* pass.
+///
+/// The regression this pins: the plan pass used to size the writer's half of the
+/// preflight from the shipped default while drafting sized it from the
+/// clinician's setting. A corpus between the two ceilings then planned
+/// successfully — billing for the pass and every batch in it — and was refused
+/// only later by `start_draft_run`. Refusing up front costs nothing.
+#[tokio::test]
+async fn a_corpus_over_the_configured_writer_ceiling_is_refused_at_plan_time() {
+    let (_server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    let shipped = pipeline::corpus_ceiling_bytes(WRITER_MODEL_ID, DEFAULT_WRITER_RESERVE);
+    let raised = pipeline::corpus_ceiling_bytes(WRITER_MODEL_ID, RAISED_WRITER_RESERVE);
+    // Strictly between the two: comfortably inside the shipped ceiling, over the
+    // raised one. This is the band the regression lived in.
+    let between = raised + (shipped - raised) / 2;
+    put_padded_record(&s3, client_id, "history.txt", between).await;
+
+    let error = pipeline::generate_draft_plan(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        pipeline::PlanModels {
+            planner_model_id: PLANNER_MODEL_ID,
+            writer_model_id: WRITER_MODEL_ID,
+            writer_output_token_reserve: RAISED_WRITER_RESERVE,
+        },
+        pipeline::DraftPlanRequest::new(""),
+    )
+    .await
+    .expect_err("a corpus over the writer's ceiling must be refused before any model call");
+
+    let message = error.to_string();
+    assert!(message.contains("too large"), "{message}");
+    assert!(
+        message.contains("writing model"),
+        "the refusal must name the role whose ceiling bound it: {message}"
+    );
+}
+
+/// The same corpus, at the shipped reserve, plans without complaint — so the
+/// test above is pinning the reserve's effect and not merely an oversized file.
+#[tokio::test]
+async fn the_same_corpus_fits_the_shipped_writer_ceiling() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+
+    let shipped = pipeline::corpus_ceiling_bytes(WRITER_MODEL_ID, DEFAULT_WRITER_RESERVE);
+    let raised = pipeline::corpus_ceiling_bytes(WRITER_MODEL_ID, RAISED_WRITER_RESERVE);
+    let between = raised + (shipped - raised) / 2;
+    put_padded_record(&s3, client_id, "history.txt", between).await;
+
+    script(
+        &server,
+        vec![section_plan(vec![
+            plan_row(
+                REFERRAL_ID,
+                "draft",
+                "Why they were referred.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(
+                BACKGROUND_ID,
+                "draft",
+                "Developmental history.",
+                Some(INTAKE_FILE),
+            ),
+            plan_row(SUMMARY_ID, "skip", "Nothing to interpret yet.", None),
+        ])],
+    )
+    .await;
+
+    let outcome = pipeline::generate_draft_plan(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        pipeline::PlanModels {
+            planner_model_id: PLANNER_MODEL_ID,
+            writer_model_id: WRITER_MODEL_ID,
+            writer_output_token_reserve: DEFAULT_WRITER_RESERVE,
+        },
+        pipeline::DraftPlanRequest::new(""),
+    )
+    .await
+    .expect("a corpus inside the shipped ceiling must plan");
+
+    assert_eq!(outcome.run.status, DraftRunStatus::AwaitingApproval);
 }

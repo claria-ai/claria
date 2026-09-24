@@ -1011,10 +1011,11 @@ function ModelTuningBody({ initial }: { initial: ConfigInfo }) {
             Adaptive reasoning
           </span>
           <span className="text-xs text-gray-500 block">
-            Lets supported models (Claude 4.6 and newer) think before
-            answering, which can improve report quality. Reasoning tokens
-            bill as output and count against the response budget, so
-            turns cost more and take longer.
+            On by default. Supported models (Claude 4.6 and newer) think
+            before answering. Reasoning tokens bill as output and count
+            against the response budget, so turning this off makes turns
+            cheaper and faster, and leaves the model no room to reason
+            about the records before it writes a section.
           </span>
         </span>
       </label>

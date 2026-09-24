@@ -169,6 +169,18 @@ pub struct PlanModels<'a> {
     /// to fit both windows, and this is the one that will hold the corpus for
     /// a hundred calls rather than one.
     pub writer_model_id: &'a str,
+    /// The writer's configured output ceiling, which is what sizes its half of
+    /// the corpus preflight.
+    ///
+    /// Carried rather than defaulted. The reserve is subtracted from the
+    /// model's window to form the input budget, and the corpus ceiling is a
+    /// multiple of that budget, so sizing this pass from the shipped default
+    /// while the drafting pass sizes from the clinician's setting gives two
+    /// different ceilings: a corpus between them plans successfully, bills for
+    /// the pass, and is then refused by `start_draft_run`. Reserve, input
+    /// budget and snapshot preflight are derived from each other by design —
+    /// that only holds if both passes derive them from the same number.
+    pub writer_output_token_reserve: u32,
 }
 
 /// A planning request: the clinician's guidance, plus the optional channels a
@@ -610,6 +622,7 @@ pub async fn resume_planned_draft_run(
         PlanModels {
             planner_model_id,
             writer_model_id: model_id,
+            writer_output_token_reserve: request.limits.writer_max_output_tokens(),
         },
         DraftPlanRequest::new(request.guidance)
             .with_stream_bounds(request.limits.runtime().analysis_stream_bounds()),
@@ -1130,13 +1143,7 @@ async fn prepare_analysis_corpus(
         bucket,
         &[
             BudgetRole::planner(models.planner_model_id),
-            // The writer's own ceiling is a per-request setting the plan pass
-            // never sees; the default is what sizes this corpus, exactly as
-            // it did before that ceiling became configurable.
-            BudgetRole::writer(
-                models.writer_model_id,
-                claria_bedrock::report::DEFAULT_REPORT_OUTPUT_TOKEN_RESERVE,
-            ),
+            BudgetRole::writer(models.writer_model_id, models.writer_output_token_reserve),
         ],
         &inventory,
         None,

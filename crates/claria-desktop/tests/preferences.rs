@@ -119,7 +119,12 @@ fn synced_preferences_serialize_snake_case() {
     assert!(json.contains("\"default_language\":\"mixed\""));
     assert!(json.contains("\"use_medical_for_english\":true"));
     assert!(json.contains("\"max_tool_rounds\":40"));
-    assert!(json.contains("\"preferences_version\":5"));
+    // Symbolic, not a literal: this test is about the wire spelling of the
+    // fields, and a version bump is not a spelling change.
+    assert!(json.contains(&format!(
+        "\"preferences_version\":{}",
+        claria_desktop::config::PREFERENCES_VERSION
+    )));
     assert!(json.contains("\"plan_gate\":\"gated\""));
     assert!(json.contains("\"chat_streaming\":\"token\""));
 }

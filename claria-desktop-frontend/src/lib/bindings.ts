@@ -1452,6 +1452,13 @@ async unlockWithPin(pin: string) : Promise<Result<LockOutcome, string>> {
 /**
  * Answer the lock screen with Touch ID / Face ID / Windows Hello.
  * 
+ * **Only ever called from an explicit press on the lock screen.** The panel
+ * this raises is system-modal and always-on-top, and auto-lock fires on an
+ * idle timer, so anything that invoked it on its own would drop an OS dialog
+ * over whatever application the clinician was actually using. The frontend
+ * checks focus before calling; this checks again immediately before the
+ * panel goes up, because the window can lose focus in the gap.
+ * 
  * A dismissed prompt comes back as `accepted: false` with no error — the
  * clinician chose the PIN field instead, which is not a failure and does not
  * count against the backoff budget. Only a prompt that actually rejected
@@ -2285,13 +2292,27 @@ export type ModelPricing = { input_per_million: number; output_per_million: numb
  */
 cache_write_1h_per_million?: number }
 /**
- * Opt-in model-tuning knobs. Every knob defaults to "send nothing", and
- * each is applied only on models whose capability-table entry accepts it —
- * see `commands::model_tuning_for`.
+ * Model-tuning knobs, each applied only on models whose capability-table
+ * entry accepts it — see `commands::model_tuning_for`.
+ * 
+ * `effort` and `temperature` default to "send nothing". Reasoning does not:
+ * Claude 4.6 runs *without* thinking when the request omits it, so an
+ * unticked box meant every report section was drafted with no reasoning at
+ * all. That is a defect rather than a setting, so adaptive thinking is on by
+ * default and a clinician turns it off deliberately.
+ * 
+ * Only the writer and chat carry a reasoning knob. The planner and reviewer
+ * have none and cannot: they force a tool choice, and on Bedrock a forced
+ * `tool_choice` requires `thinking: {type: "disabled"}`, so no analysis-family
+ * call can think while it forces its schema.
  */
 export type ModelTuningPreferences = { 
 /**
  * Request adaptive thinking on models that support it (Claude 4.6+).
+ * 
+ * `#[serde(default = ...)]` rather than a bare `#[serde(default)]`: the
+ * bare form reads `bool::default()` and would deserialize an absent field
+ * as `false` no matter what this struct's `Default` says.
  */
 reasoning_enabled?: boolean; 
 /**

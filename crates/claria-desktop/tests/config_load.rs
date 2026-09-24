@@ -12,6 +12,25 @@ fn write_config(dir: &tempfile::TempDir, contents: &str) -> std::path::PathBuf {
     path
 }
 
+/// A config with nothing set beyond what loading requires, for tests that only
+/// care about one field's default.
+fn minimal_config(dir: &tempfile::TempDir) -> config::ClariaConfig {
+    let path = write_config(
+        dir,
+        &format!(
+            r#"{{
+                "config_version": {CURRENT_VERSION},
+                "region": "us-east-1",
+                "system_name": "test",
+                "account_id": "123456789012",
+                "created_at": "1970-01-01T00:00:00Z",
+                "credentials": {{ "type": "default_chain" }}
+            }}"#
+        ),
+    );
+    config::load_config_at(&path).expect("a minimal config loads")
+}
+
 #[test]
 fn missing_config_asks_the_user_to_complete_setup() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -472,4 +491,146 @@ fn a_configured_lock_survives_a_save_and_reload() {
             .map(|hash| hash.reveal().as_str()),
         Some("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA")
     );
+}
+
+/// Adaptive reasoning is on for an install that never chose, because Claude 4.6
+/// drafts with no reasoning at all when a request omits thinking.
+///
+/// The trap this pins: a bare `#[serde(default)]` on the field would read
+/// `bool::default()` and hand back `false` here no matter what the struct's
+/// `Default` impl says, so the knob would look switched on in code and be off
+/// on every real config.
+#[test]
+fn an_absent_reasoning_flag_defaults_to_on() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        &format!(
+            r#"{{
+                "config_version": {CURRENT_VERSION},
+                "region": "us-east-1",
+                "system_name": "test",
+                "account_id": "123456789012",
+                "created_at": "1970-01-01T00:00:00Z",
+                "credentials": {{ "type": "default_chain" }},
+                "model_tuning": {{}}
+            }}"#
+        ),
+    );
+
+    let config = config::load_config_at(&path).expect("a config without the flag loads");
+
+    assert!(
+        config.model_tuning.reasoning_enabled,
+        "an absent reasoning flag must deserialize as on"
+    );
+}
+
+/// The struct default and the serde default have to agree, or an install
+/// created in code reasons while one loaded from disk does not.
+#[test]
+fn the_reasoning_default_agrees_between_serde_and_default() {
+    assert!(
+        config::ModelTuningPreferences::default().reasoning_enabled,
+        "Default::default() must match the serde default"
+    );
+}
+
+/// A v15 install carrying the old `false` is switched on by the migration.
+///
+/// A `false` here cannot be told apart from a deliberate one — it was both the
+/// shipped default and the only other value — so this is a behaviour change on
+/// purpose, and the CHANGELOG says so.
+#[test]
+fn v15_turns_reasoning_on() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 15,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "model_tuning": { "reasoning_enabled": false, "effort": null, "temperature": null }
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v15 config migrates forward");
+
+    assert!(
+        config.model_tuning.reasoning_enabled,
+        "the v15 to v16 migration must turn reasoning on"
+    );
+    let (_, on_disk_version) = config::read_config_at(&path)
+        .expect("reread")
+        .expect("present");
+    assert_eq!(on_disk_version, CURRENT_VERSION);
+}
+
+/// An effort a clinician chose is theirs — the reasoning migration must not
+/// disturb the neighbouring knobs.
+#[test]
+fn the_reasoning_migration_leaves_effort_and_temperature_alone() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_config(
+        &dir,
+        r#"{
+            "config_version": 15,
+            "region": "us-east-1",
+            "system_name": "test",
+            "account_id": "123456789012",
+            "created_at": "1970-01-01T00:00:00Z",
+            "credentials": { "type": "default_chain" },
+            "model_tuning": { "reasoning_enabled": false, "effort": "low", "temperature": 0.4 }
+        }"#,
+    );
+
+    let config = config::load_config_at(&path).expect("a v15 config migrates forward");
+
+    assert_eq!(
+        config.model_tuning.effort,
+        Some(config::EffortPreference::Low)
+    );
+    assert_eq!(config.model_tuning.temperature, Some(0.4));
+}
+
+/// The synced copy carries its own version and wins over the local config, so it
+/// needs the same migration. Without this, a bucket still holding the old value
+/// puts reasoning back off on the next read and undoes the config migration on
+/// every machine.
+#[test]
+fn an_older_synced_copy_turns_reasoning_on() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut synced = config::SyncedPreferences {
+        preferences_version: 5,
+        ..config::SyncedPreferences::from_config(&minimal_config(&dir))
+    };
+    synced.model_tuning.reasoning_enabled = false;
+
+    synced.migrate();
+
+    assert!(
+        synced.model_tuning.reasoning_enabled,
+        "an older synced copy must be brought forward, not trusted as-is"
+    );
+    assert_eq!(synced.preferences_version, config::PREFERENCES_VERSION);
+}
+
+/// Running it twice changes nothing, so a read path may call it unconditionally.
+#[test]
+fn migrating_a_synced_copy_is_idempotent() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut synced = config::SyncedPreferences {
+        preferences_version: 5,
+        ..config::SyncedPreferences::from_config(&minimal_config(&dir))
+    };
+    synced.model_tuning.reasoning_enabled = false;
+
+    synced.migrate();
+    let once = synced.clone();
+    synced.migrate();
+
+    assert_eq!(once, synced);
 }
