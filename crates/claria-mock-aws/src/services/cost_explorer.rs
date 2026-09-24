@@ -18,6 +18,7 @@ pub async fn dispatch(target_suffix: &str, body: Value, state: SharedState) -> R
 }
 
 async fn get_cost_and_usage(_body: Value, state: SharedState) -> Response {
+    state.write().await.cost_explorer_requests += 1;
     let st = state.read().await;
 
     let results: Vec<Value> = st

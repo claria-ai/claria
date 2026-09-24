@@ -105,6 +105,15 @@ pub struct FieldDrift {
     pub actual: Value,
 }
 
+/// A service precondition the IAM policy grants but nothing has exercised.
+///
+/// Honest rather than reassuring: Claria asked for the permission and does not
+/// know whether the account will honour it. The first real call proves it.
+pub const GRANTED_BY_POLICY: &str = "granted_by_policy";
+
+/// A service precondition a live call has proved.
+pub const VERIFIED: &str = "verified";
+
 /// The full manifest: all resource specs for a Claria deployment.
 ///
 /// No version tracking — the reconciler uses structural comparison.
@@ -133,7 +142,14 @@ impl Manifest {
                     resource_type: "iam_user".into(),
                     resource_name: "claria-admin".into(),
                     lifecycle: Lifecycle::Managed,
-                    desired: json!({"exists": true}),
+                    // The ARN is part of what is wanted, not decoration: it
+                    // pins the user to this account. Without it the syncer
+                    // had nothing to compare and reported "exists" against
+                    // "exists" forever.
+                    desired: json!({
+                        "exists": true,
+                        "user_arn": format!("arn:aws:iam::{account_id}:user/claria-admin"),
+                    }),
                     credential_scope: CredentialScope::Elevated,
                     label: "IAM User".into(),
                     description: "Dedicated least-privilege user that Claria operates as".into(),
@@ -340,7 +356,7 @@ impl Manifest {
                     resource_type: "transcribe_access".into(),
                     resource_name: "transcribe".into(),
                     lifecycle: Lifecycle::Data,
-                    desired: json!({"enabled": true}),
+                    desired: json!({"access": "granted"}),
                     credential_scope: CredentialScope::Regular,
                     label: "Amazon Transcribe".into(),
                     description: "Audio-to-text transcription for uploaded recordings".into(),
@@ -358,14 +374,41 @@ impl Manifest {
                     resource_type: "cost_explorer_access".into(),
                     resource_name: "cost-explorer".into(),
                     lifecycle: Lifecycle::Data,
-                    desired: json!({"enabled": true}),
+                    desired: json!({"access": GRANTED_BY_POLICY}),
                     credential_scope: CredentialScope::Regular,
                     label: "AWS Cost Explorer".into(),
-                    description: "Read-only access to view your AWS spending".into(),
+                    description:
+                        "Permission to read your AWS spending, granted by Claria's IAM policy"
+                            .into(),
                     severity: Severity::Info,
                     iam_actions: vec!["ce:GetCostAndUsage".into()],
                 },
             ],
         }
+    }
+
+    /// Ask the Cost Explorer precondition to prove itself with a live call.
+    ///
+    /// Off by default, and the only resource in the manifest with a switch,
+    /// because Cost Explorer's one granted action — `ce:GetCostAndUsage` — is
+    /// billed at $0.01 per request and the Provision page scans on mount. An
+    /// operator who has not turned Cost Explorer on would be paying a cent a
+    /// visit to verify a feature they do not use; one who has is already
+    /// paying per request on the Cost page, where the same call runs for real.
+    ///
+    /// Without it the precondition reports [`GRANTED_BY_POLICY`] — what the
+    /// policy asked for, stated as such, rather than a check dressed up as
+    /// one.
+    pub fn with_cost_explorer_probe(mut self, probe: bool) -> Self {
+        if !probe {
+            return self;
+        }
+        for spec in &mut self.specs {
+            if spec.resource_type == "cost_explorer_access" {
+                spec.desired = json!({"access": VERIFIED});
+                spec.description = "Read-only access to view your AWS spending".into();
+            }
+        }
+        self
     }
 }

@@ -703,8 +703,11 @@ pub async fn plan(
     run("plan", async {
         let ctx = CommandContext::new(&state).await?;
         let cfg = &ctx.cfg;
+        // Probe Cost Explorer only for an operator already using it: the one
+        // action it grants is billed per request, and this page scans on mount.
         let manifest =
-            claria_provisioner::build_manifest(&cfg.account_id, &cfg.system_name, &cfg.region);
+            claria_provisioner::build_manifest(&cfg.account_id, &cfg.system_name, &cfg.region)
+                .with_cost_explorer_probe(cfg.cost_explorer_enabled);
         let syncers = claria_provisioner::build_syncers(&ctx.sdk_config, &manifest, None);
         let persistence = claria_provisioner::build_persistence(
             &ctx.sdk_config,
@@ -738,8 +741,11 @@ pub async fn apply(
     run("apply", async {
         let ctx = CommandContext::new(&state).await?;
         let cfg = &ctx.cfg;
+        // Probe Cost Explorer only for an operator already using it: the one
+        // action it grants is billed per request, and this page scans on mount.
         let manifest =
-            claria_provisioner::build_manifest(&cfg.account_id, &cfg.system_name, &cfg.region);
+            claria_provisioner::build_manifest(&cfg.account_id, &cfg.system_name, &cfg.region)
+                .with_cost_explorer_probe(cfg.cost_explorer_enabled);
         let syncers = claria_provisioner::build_syncers(&ctx.sdk_config, &manifest, None);
         let persistence = claria_provisioner::build_persistence(
             &ctx.sdk_config,

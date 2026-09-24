@@ -50,10 +50,11 @@ impl ResourceSyncer for IamUserSyncer {
         })
     }
 
-    fn current_state(&self, _actual: &serde_json::Value) -> serde_json::Value {
-        // read() returns {exists, user_arn} — only compare the exists flag
-        self.spec().desired.clone()
-    }
+    // No `current_state` override: `read` already returns exactly the two
+    // fields the spec wants compared. The override that used to live here
+    // returned `self.spec().desired`, so the comparison was the desired state
+    // against itself and no drift could ever be reported — including a user
+    // in the wrong AWS account.
 
     fn create(&self) -> BoxFuture<'_, Result<serde_json::Value, ProvisionerError>> {
         Box::pin(async {

@@ -1,4 +1,4 @@
-use aws_sdk_s3::Client;
+use aws_sdk_s3::{Client, operation::head_bucket::HeadBucketOutput};
 use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
@@ -30,14 +30,17 @@ impl S3BucketSyncer {
             .unwrap_or("us-east-1")
     }
 
-    /// Whether the bucket is there, distinguishing "gone" from "couldn't tell".
+    /// The bucket's live state, or `None` when it is genuinely not there.
     ///
     /// `HeadBucket` answers 404 with an empty body, so the status line is the
     /// reliable signal and the typed `NotFound` is the backstop. Anything else
-    /// — a refused permission above all — is an error, never a `false`: the
+    /// — a refused permission above all — is an error, never a `None`: the
     /// read path would report a bucket of PHI as one that needs creating, and
     /// the destroy path would report it as already gone.
-    async fn bucket_exists(&self) -> Result<bool, ProvisionerError> {
+    ///
+    /// One call site for both paths, so they cannot come to disagree about
+    /// what a failed head means.
+    async fn head_bucket(&self) -> Result<Option<HeadBucketOutput>, ProvisionerError> {
         match self
             .client
             .head_bucket()
@@ -45,12 +48,12 @@ impl S3BucketSyncer {
             .send()
             .await
         {
-            Ok(_) => Ok(true),
+            Ok(resp) => Ok(Some(resp)),
             Err(e) => {
                 let status_404 = e.raw_response().is_some_and(|r| r.status().as_u16() == 404);
                 let err = e.into_service_error();
                 if status_404 || err.is_not_found() {
-                    Ok(false)
+                    Ok(None)
                 } else {
                     Err(ProvisionerError::Aws(format!(
                         "s3:HeadBucket failed: {}",
@@ -69,10 +72,18 @@ impl ResourceSyncer for S3BucketSyncer {
 
     fn read(&self) -> BoxFuture<'_, Result<Option<serde_json::Value>, ProvisionerError>> {
         Box::pin(async {
-            if !self.bucket_exists().await? {
+            let Some(resp) = self.head_bucket().await? else {
                 return Ok(None);
-            }
-            Ok(Some(json!({"region": self.region()})))
+            };
+            // The region AWS reports, not the one the spec asked for. Reading
+            // it back off `self.spec.desired` made drift structurally
+            // impossible: a bucket in the wrong region compared equal to the
+            // region it was supposed to be in.
+            //
+            // `HeadBucket` carries it in `x-amz-bucket-region`, so this costs
+            // no extra call and no permission the policy does not already
+            // grant — `GetBucketLocation` would need both.
+            Ok(Some(json!({"region": resp.bucket_region()})))
         })
     }
 
@@ -111,7 +122,7 @@ impl ResourceSyncer for S3BucketSyncer {
             // A re-run after a destroy that got as far as the bucket itself
             // has nothing left to do. Only a genuine 404 counts — any other
             // failure here would otherwise report the bucket as destroyed.
-            if !self.bucket_exists().await? {
+            if self.head_bucket().await?.is_none() {
                 tracing::info!(
                     bucket = %self.bucket_name(),
                     "S3 bucket already absent, nothing to destroy"

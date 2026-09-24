@@ -18,11 +18,14 @@ aws-config.workspace = true
 aws-sdk-artifact = { version = "=1.94.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-bedrock.workspace = true
 aws-sdk-cloudtrail = { version = "=1.112.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-costexplorer.workspace = true
 aws-sdk-iam = { version = "=1.113.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3.workspace = true
 aws-sdk-sts.workspace = true
+aws-sdk-transcribe.workspace = true
 aws-smithy-types.workspace = true
 backon.workspace = true
+jiff.workspace = true
 serde.workspace = true
 specta = { workspace = true, features = ["serde_json"] }
 serde_json.workspace = true

@@ -304,11 +304,11 @@ async fn plan_fresh_account() {
             ),
             (
                 "transcribe_access.transcribe",
-                Some(json!({"enabled": true})),
+                Some(json!({"access": "granted"})),
             ),
             (
                 "cost_explorer_access.cost-explorer",
-                Some(json!({"enabled": true})),
+                Some(json!({"access": "granted_by_policy"})),
             ),
         ],
     );

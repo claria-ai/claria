@@ -157,6 +157,11 @@ pub struct MockState {
 
     // Cost Explorer
     pub cost_data: Vec<CostPeriod>,
+    /// How many `GetCostAndUsage` requests have arrived.
+    ///
+    /// AWS bills $0.01 for each one, so "did not call it" is a property worth
+    /// asserting rather than assuming.
+    pub cost_explorer_requests: usize,
 
     // Artifact
     pub baa_accepted: bool,

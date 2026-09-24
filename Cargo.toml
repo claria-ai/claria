@@ -54,8 +54,10 @@ aws-config = { version = "=1.8.18", default-features = false, features = [
 ] }
 aws-credential-types = "=1.2.14"
 aws-sdk-bedrock = { version = "=1.147.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-costexplorer = { version = "=1.120.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3 = { version = "=1.137.0", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
 aws-sdk-sts = { version = "=1.107.0", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
+aws-sdk-transcribe = { version = "=1.108.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-smithy-eventstream = "=0.60.21"
 aws-smithy-types = "=1.5.0"
 backon = "=1.6.0"

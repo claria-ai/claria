@@ -156,10 +156,14 @@ fn syncer_for(
         ),
         "transcribe_access" => Box::new(syncers::transcribe_access::TranscribeAccessSyncer::new(
             spec.clone(),
+            clients.config,
         )),
-        "cost_explorer_access" => {
-            Box::new(syncers::cost_explorer_access::CostExplorerAccessSyncer::new(spec.clone()))
-        }
+        "cost_explorer_access" => Box::new(
+            syncers::cost_explorer_access::CostExplorerAccessSyncer::new(
+                spec.clone(),
+                clients.config,
+            ),
+        ),
         _ => return None,
     };
     Some(syncer)

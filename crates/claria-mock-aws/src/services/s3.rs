@@ -196,8 +196,11 @@ async fn dispatch_object(
 
 async fn head_bucket(bucket: &str, state: SharedState) -> Response {
     let st = state.read().await;
-    if st.buckets.contains_key(bucket) {
-        StatusCode::OK.into_response()
+    if let Some(b) = st.buckets.get(bucket) {
+        // The region rides on this header. Without it a caller reading the
+        // bucket's region back has nothing to compare against, and a bucket
+        // in the wrong region cannot be told from one in the right one.
+        (StatusCode::OK, [("x-amz-bucket-region", b.region.clone())]).into_response()
     } else {
         (
             StatusCode::NOT_FOUND,
