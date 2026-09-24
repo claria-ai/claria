@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{Value, json};
 
 use claria_provisioner::{
-    Action, Cause, Manifest, PlanEntry, ProvisionerError, ProvisionerState, ResourceSpec,
-    ResourceSyncer, orchestrate,
+    Action, Cause, Lifecycle, Manifest, PlanEntry, ProvisionerError, ProvisionerState,
+    ResourceAddr, ResourceSpec, ResourceSyncer, orchestrate,
     state::{ResourceState, ResourceStatus},
     syncer::BoxFuture,
 };
@@ -313,7 +313,9 @@ async fn plan_fresh_account() {
         ],
     );
 
-    let result = orchestrate::plan(&syncers, &state).await.unwrap();
+    let result = orchestrate::plan(&syncers, Some((&m, &state)))
+        .await
+        .unwrap();
 
     // Structural comparison: missing resources → Create/Missing,
     // drifted resources → Modify/Drift, in-sync → Ok/InSync.
@@ -389,7 +391,9 @@ async fn plan_fully_provisioned() {
     let reads = all_in_sync_reads(&m);
     let syncers = mock_syncers(&m, &reads);
 
-    let result = orchestrate::plan(&syncers, &state).await.unwrap();
+    let result = orchestrate::plan(&syncers, Some((&m, &state)))
+        .await
+        .unwrap();
 
     assert_eq!(result.len(), m.specs.len());
     for entry in &result {
@@ -433,7 +437,9 @@ async fn plan_versioning_drifted() {
     }
 
     let syncers = mock_syncers(&m, &reads);
-    let result = orchestrate::plan(&syncers, &state).await.unwrap();
+    let result = orchestrate::plan(&syncers, Some((&m, &state)))
+        .await
+        .unwrap();
 
     for entry in &result {
         let addr = entry.spec.addr().to_string();
@@ -485,7 +491,9 @@ async fn plan_policy_escalation() {
     }
 
     let syncers = mock_syncers(&m, &reads);
-    let result = orchestrate::plan(&syncers, &state).await.unwrap();
+    let result = orchestrate::plan(&syncers, Some((&m, &state)))
+        .await
+        .unwrap();
 
     for entry in &result {
         let addr = entry.spec.addr().to_string();
@@ -532,7 +540,9 @@ async fn plan_policy_reduction_escalation() {
     }
 
     let syncers = mock_syncers(&m, &reads);
-    let result = orchestrate::plan(&syncers, &state).await.unwrap();
+    let result = orchestrate::plan(&syncers, Some((&m, &state)))
+        .await
+        .unwrap();
     let policy = result
         .iter()
         .find(|entry| entry.spec.addr().to_string() == policy_addr)
@@ -540,4 +550,173 @@ async fn plan_policy_reduction_escalation() {
 
     assert_eq!(policy.action, Action::Modify);
     assert_eq!(policy.cause, Cause::Drift);
+}
+
+// ── The ownership record ──────────────────────────────────────────────
+//
+// State answers one question: which resources is Claria responsible for.
+// Nothing reads it to decide drift. These pin the two ways it used to end up
+// wrong — a scan that recorded nothing, and an update that recorded nothing
+// unless the resource was already known.
+
+/// A scan of a healthy account is the only thing that can rebuild the record.
+///
+/// Before this, `Action::Ok` wrote nothing, so a reset state file stayed empty
+/// forever and teardown skipped every resource it no longer knew about.
+#[tokio::test]
+async fn reconcile_records_resources_a_scan_found() {
+    let m = manifest();
+    let state = ProvisionerState::new(REGION.into(), BUCKET.into());
+    let reads = all_in_sync_reads(&m);
+    let syncers = mock_syncers(&m, &reads);
+
+    let entries = orchestrate::plan(&syncers, Some((&m, &state)))
+        .await
+        .unwrap();
+    assert!(
+        entries.iter().all(|e| e.action == Action::Ok),
+        "fixture should be fully conformant"
+    );
+
+    let mut rebuilt = ProvisionerState::new(REGION.into(), BUCKET.into());
+    assert!(
+        orchestrate::reconcile_state(&entries, &mut rebuilt),
+        "a scan of a provisioned account should have something to record"
+    );
+
+    for spec in &m.specs {
+        let recorded = rebuilt.resources.contains_key(&spec.addr());
+        match spec.lifecycle {
+            // Preconditions Claria reads are not resources it owns.
+            Lifecycle::Data => assert!(
+                !recorded,
+                "{} is a data source and should not be recorded",
+                spec.addr()
+            ),
+            Lifecycle::Managed => assert!(recorded, "{} went unrecorded", spec.addr()),
+        }
+    }
+}
+
+/// A second scan of an unchanged account must not ask for a flush.
+#[tokio::test]
+async fn reconcile_is_idempotent() {
+    let m = manifest();
+    let state = fully_provisioned_state(&m);
+    let reads = all_in_sync_reads(&m);
+    let syncers = mock_syncers(&m, &reads);
+
+    let entries = orchestrate::plan(&syncers, Some((&m, &state)))
+        .await
+        .unwrap();
+    let mut again = state.clone();
+    assert!(
+        !orchestrate::reconcile_state(&entries, &mut again),
+        "nothing changed, so nothing should be flushed"
+    );
+}
+
+/// A read that could not be completed reports "absent", and several syncers do
+/// exactly that on AccessDenied. Dropping the record on that basis is how a
+/// bucket survives a teardown that reported success, so reconcile only adds.
+#[tokio::test]
+async fn reconcile_never_drops_a_record_for_an_absent_read() {
+    let m = manifest();
+    let state = fully_provisioned_state(&m);
+    // Every read fails closed: the whole account looks missing.
+    let syncers = mock_syncers::<&str>(&m, &[]);
+
+    let entries = orchestrate::plan(&syncers, Some((&m, &state)))
+        .await
+        .unwrap();
+    let mut kept = state.clone();
+    assert!(!orchestrate::reconcile_state(&entries, &mut kept));
+    assert_eq!(
+        kept.resources.len(),
+        state.resources.len(),
+        "an unreadable account must not erase the ownership record"
+    );
+}
+
+/// An orphan is pending deletion. Recording it as managed would put it back
+/// under the manifest's care and lose the delete.
+#[tokio::test]
+async fn reconcile_leaves_orphans_alone() {
+    let m = manifest();
+    let mut state = fully_provisioned_state(&m);
+    let orphan = ResourceAddr {
+        resource_type: "s3_bucket".into(),
+        resource_name: "123456789012-oldname-data".into(),
+    };
+    state.resources.insert(
+        orphan.clone(),
+        ResourceState {
+            resource_type: orphan.resource_type.clone(),
+            resource_id: orphan.resource_name.clone(),
+            status: ResourceStatus::Created,
+            properties: json!({}),
+        },
+    );
+
+    let reads = all_in_sync_reads(&m);
+    let syncers = mock_syncers(&m, &reads);
+    let entries = orchestrate::plan(&syncers, Some((&m, &state)))
+        .await
+        .unwrap();
+
+    let orphans: Vec<_> = entries
+        .iter()
+        .filter(|e| e.cause == Cause::Orphaned)
+        .collect();
+    assert_eq!(
+        orphans.len(),
+        1,
+        "the stale bucket should be the one orphan"
+    );
+    assert_eq!(orphans[0].action, Action::Delete);
+    assert_eq!(orphans[0].spec.addr(), orphan);
+
+    let mut after = state.clone();
+    assert!(!orchestrate::reconcile_state(&entries, &mut after));
+}
+
+/// Orphans are decided against the manifest, not against whichever syncers a
+/// pass happened to build. A scope-filtered pass used to call every resource
+/// outside its scope an orphan — which queued the data bucket for deletion.
+#[test]
+fn orphans_are_decided_against_the_manifest() {
+    let m = manifest();
+    let state = fully_provisioned_state(&m);
+
+    assert!(
+        orchestrate::find_orphans(&m, &state).is_empty(),
+        "everything in state is in the manifest"
+    );
+}
+
+/// An update to a resource the state file had never heard of has to land, or
+/// the resource stays invisible to teardown.
+#[test]
+fn record_applied_upserts() {
+    let m = manifest();
+    let spec = m
+        .specs
+        .iter()
+        .find(|s| s.resource_type == "s3_bucket_encryption")
+        .expect("manifest has bucket encryption");
+    let mut state = ProvisionerState::new(REGION.into(), BUCKET.into());
+
+    orchestrate::record_applied(
+        &mut state,
+        spec,
+        json!({"sse_algorithm": "AES256"}),
+        ResourceStatus::Updated,
+    );
+
+    let recorded = state
+        .resources
+        .get(&spec.addr())
+        .expect("an update on an unknown resource must still be recorded");
+    assert_eq!(recorded.resource_id, spec.resource_name);
+    assert_eq!(recorded.properties, json!({"sse_algorithm": "AES256"}));
 }

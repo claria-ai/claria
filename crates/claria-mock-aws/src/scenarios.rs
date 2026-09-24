@@ -273,8 +273,9 @@ fn load_sample_data(state: &mut MockState) {
 
     // Provisioner state
     let prov_state = serde_json::json!({
-        "manifest_version": 1,
-        "resources": {}
+        "resources": {},
+        "region": "us-east-1",
+        "bucket": &bucket,
     });
     put_object(
         state,

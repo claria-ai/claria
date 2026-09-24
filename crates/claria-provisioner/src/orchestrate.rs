@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     addr::ResourceAddr,
     error::ProvisionerError,
-    manifest::{Lifecycle, ResourceSpec},
+    manifest::{Lifecycle, Manifest, ResourceSpec},
     persistence::StatePersistence,
     plan::{Action, Cause, PlanEntry},
     state::{ProvisionerState, ResourceState, ResourceStatus},
@@ -82,11 +82,12 @@ pub fn build_plan_entry(
 }
 
 /// Find orphaned resources — those in state but not in the current manifest.
-pub fn find_orphans(
-    syncers: &[Box<dyn ResourceSyncer>],
-    state: &ProvisionerState,
-) -> Vec<PlanEntry> {
-    let manifest_addrs: HashSet<_> = syncers.iter().map(|s| s.spec().addr()).collect();
+///
+/// Compared against the whole manifest, never against a scope-filtered syncer
+/// list. A pass that builds only the elevated syncers would otherwise call
+/// every regular resource an orphan and queue the data bucket for deletion.
+pub fn find_orphans(manifest: &Manifest, state: &ProvisionerState) -> Vec<PlanEntry> {
+    let manifest_addrs: HashSet<_> = manifest.specs.iter().map(|s| s.addr()).collect();
     state
         .resources
         .keys()
@@ -99,6 +100,68 @@ pub fn find_orphans(
             actual: None,
         })
         .collect()
+}
+
+/// Record the result of a create or update against the resource's address.
+///
+/// Upserts. A `Modify` on a resource the state file had never heard of still
+/// lands, which is what keeps teardown able to find it afterwards.
+pub fn record_applied(
+    state: &mut ProvisionerState,
+    spec: &ResourceSpec,
+    properties: serde_json::Value,
+    status: ResourceStatus,
+) {
+    state.resources.insert(
+        spec.addr(),
+        ResourceState {
+            resource_type: spec.resource_type.clone(),
+            resource_id: spec.resource_name.clone(),
+            status,
+            properties,
+        },
+    );
+}
+
+/// Record every managed resource this scan actually found.
+///
+/// State answers one question — which resources Claria is responsible for — so
+/// [`destroy_all`] and [`find_orphans`] have something to work from. Drift is
+/// never read from here; [`build_plan_entry`] derives it from live reads. This
+/// is what lets a deleted or reset state file rebuild itself from a scan,
+/// instead of leaving already-conformant resources unowned forever.
+///
+/// Additive on purpose. Several syncers report a read they could not complete
+/// as "absent", and dropping a record on that basis is how a bucket survives a
+/// teardown that reported success. Stale rows cost nothing, because nothing
+/// reads them to decide drift.
+///
+/// Only meaningful for a scan of the whole manifest — given a scope-filtered
+/// scan, resources outside that scope simply go unrecorded.
+///
+/// Returns true when the record changed and the caller should flush.
+pub fn reconcile_state(entries: &[PlanEntry], state: &mut ProvisionerState) -> bool {
+    let mut changed = false;
+
+    for entry in entries {
+        // Data sources are preconditions Claria reads, not resources it owns.
+        if entry.spec.lifecycle != Lifecycle::Managed || entry.cause == Cause::Orphaned {
+            continue;
+        }
+        let Some(actual) = &entry.actual else {
+            continue;
+        };
+        let addr = entry.spec.addr();
+        if state.resources.contains_key(&addr) {
+            continue;
+        }
+
+        tracing::info!(addr = %addr, "recording existing resource as managed");
+        record_applied(state, &entry.spec, actual.clone(), ResourceStatus::Unknown);
+        changed = true;
+    }
+
+    changed
 }
 
 /// Log a summary of the scan results.
@@ -130,11 +193,13 @@ pub fn log_scan_summary(entries: &[PlanEntry]) {
 
 /// Scan all resources and produce an annotated plan.
 ///
-/// The plan is a flat `Vec<PlanEntry>` — one entry per manifest spec, plus
-/// orphan entries for resources in state but not in the current manifest.
+/// The plan is a flat `Vec<PlanEntry>` — one entry per syncer, plus orphan
+/// entries when `orphan_basis` is supplied. Pass it only for a scan of the
+/// whole manifest; a scope-filtered pass has no business deciding what is
+/// orphaned.
 pub async fn plan(
     syncers: &[Box<dyn ResourceSyncer>],
-    state: &ProvisionerState,
+    orphan_basis: Option<(&Manifest, &ProvisionerState)>,
 ) -> Result<Vec<PlanEntry>, ProvisionerError> {
     let mut entries = Vec::new();
 
@@ -145,7 +210,9 @@ pub async fn plan(
         entries.push(build_plan_entry(syncer.as_ref(), actual));
     }
 
-    entries.extend(find_orphans(syncers, state));
+    if let Some((manifest, state)) = orphan_basis {
+        entries.extend(find_orphans(manifest, state));
+    }
     log_scan_summary(&entries);
 
     Ok(entries)
@@ -156,6 +223,11 @@ pub async fn plan(
 /// Creates and modifies run in a single pass in manifest order so that
 /// dependencies are satisfied (e.g. bucket policy applied before CloudTrail
 /// trail creation). Deletes run in reverse order (dependents first).
+///
+/// `syncers` must cover every address the plan acts on, orphans included — see
+/// [`crate::build_orphan_syncers`]. An orphan with no syncer cannot be
+/// destroyed, so its state record is deliberately left in place rather than
+/// dropped.
 pub async fn execute(
     entries: &[PlanEntry],
     syncers: &[Box<dyn ResourceSyncer>],
@@ -180,45 +252,42 @@ pub async fn execute(
                 resource_id: addr.resource_name.clone(),
             })?;
 
-        if entry.action == Action::Create {
+        let (status, result) = if entry.action == Action::Create {
             tracing::info!(addr = %addr, "creating resource");
             let result = syncer
                 .create()
                 .await
                 .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
-            state.resources.insert(
-                addr,
-                ResourceState {
-                    resource_type: entry.spec.resource_type.clone(),
-                    resource_id: entry.spec.resource_name.clone(),
-                    status: ResourceStatus::Created,
-                    properties: result,
-                },
-            );
+            (ResourceStatus::Created, result)
         } else {
             tracing::info!(addr = %addr, "updating resource");
             let result = syncer
                 .update()
                 .await
                 .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
-            if let Some(rs) = state.resources.get_mut(&addr) {
-                rs.status = ResourceStatus::Updated;
-                rs.properties = result;
-            }
-        }
+            (ResourceStatus::Updated, result)
+        };
+        record_applied(state, &entry.spec, result, status);
         persistence.flush(state).await?;
     }
 
     // Deletes — reverse order (dependents before dependencies)
     for entry in entries.iter().filter(|e| e.action == Action::Delete).rev() {
         let addr = entry.spec.addr();
-        if let Some(syncer) = syncer_map.get(&addr) {
-            tracing::info!(addr = %addr, "destroying resource");
-            syncer
-                .destroy()
-                .await
-                .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
-        }
+        let Some(syncer) = syncer_map.get(&addr) else {
+            // Nothing here can tear the resource down, so forgetting it would
+            // strand it in the account with no record that it is there.
+            tracing::warn!(
+                addr = %addr,
+                "no syncer for orphaned resource — leaving its state record in place"
+            );
+            continue;
+        };
+        tracing::info!(addr = %addr, "destroying resource");
+        syncer
+            .destroy()
+            .await
+            .map_err(|e| e.with_resource(&entry.spec.label, &entry.spec.resource_name))?;
         state.resources.remove(&addr);
         persistence.flush(state).await?;
     }
@@ -228,24 +297,54 @@ pub async fn execute(
     Ok(())
 }
 
-/// Destroy all managed resources.
+/// Destroy every managed resource.
 ///
-/// Marks every resource in state as an orphan and walks the delete list
-/// in reverse syncer order.
+/// Walks syncers in reverse (dependents first) and destroys a resource when a
+/// live read finds it **or** state records it. The union matters in both
+/// directions: a state file that was reset still tears the account down, and a
+/// read that fails closed does not quietly leave a bucket of PHI standing.
+///
+/// `Lifecycle::Data` entries are skipped — they are preconditions Claria reads,
+/// not resources it created, and their syncers refuse to destroy anything.
+///
+/// Pass orphan syncers alongside the manifest ones for a teardown that leaves
+/// nothing behind.
 pub async fn destroy_all(
     syncers: &[Box<dyn ResourceSyncer>],
     state: &mut ProvisionerState,
     persistence: &StatePersistence,
 ) -> Result<(), ProvisionerError> {
-    // Walk syncers in reverse (dependents first)
     for syncer in syncers.iter().rev() {
-        let addr = syncer.spec().addr();
-        if state.resources.contains_key(&addr) {
-            tracing::info!(addr = %addr, "destroying resource");
-            syncer.destroy().await?;
-            state.resources.remove(&addr);
-            persistence.flush(state).await?;
+        let spec = syncer.spec();
+        if spec.lifecycle == Lifecycle::Data {
+            continue;
         }
+        let addr = spec.addr();
+
+        let recorded = state.resources.contains_key(&addr);
+        let present = match syncer.read().await {
+            Ok(actual) => actual.is_some(),
+            Err(error) => {
+                tracing::warn!(
+                    addr = %addr,
+                    error = %error,
+                    "could not read resource during teardown — falling back to the state record"
+                );
+                false
+            }
+        };
+
+        if !recorded && !present {
+            continue;
+        }
+
+        tracing::info!(addr = %addr, recorded, present, "destroying resource");
+        syncer
+            .destroy()
+            .await
+            .map_err(|e| e.with_resource(&spec.label, &spec.resource_name))?;
+        state.resources.remove(&addr);
+        persistence.flush(state).await?;
     }
 
     state.resources.clear();
