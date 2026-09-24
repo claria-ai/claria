@@ -1033,11 +1033,6 @@ impl TurnRunFailure {
 // The run is threaded alongside the workspace rather than inside the request
 // because both are mutated for the life of the turn.
 #[allow(clippy::too_many_arguments)]
-// `needless_late_init` fires on the declarations above the kind match, whose
-// arms also fill `inventory`. Clippy's fix — destructuring one tuple out of the
-// match — would rewrite seventy lines of the drafting path to satisfy a lint
-// about two `let`s, so the declarations stay where the arms can see them.
-#[allow(clippy::needless_late_init)]
 async fn run_turn(
     sdk_config: &aws_config::SdkConfig,
     s3: &S3Client,
