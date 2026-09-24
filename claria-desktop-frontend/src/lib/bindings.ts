@@ -264,22 +264,6 @@ async deleteUserAccessKey(region: string, credentials: CredentialInput, accessKe
 }
 },
 /**
- * Run the full bootstrap flow: create a scoped IAM user and policy using
- * the operator's current (broad) credentials, then persist the new scoped
- * credentials to the local config.
- * 
- * The provisioner does all the IAM work and returns the new credentials.
- * We handle only the config write and in-memory state update.
- */
-async bootstrapIamUser(region: string, systemName: string, rootAccessKeyId: string, rootSecretAccessKey: string, sessionToken: string | null, credentialClass: CredentialClass) : Promise<Result<BootstrapOutcome, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("bootstrap_iam_user", { region, systemName, rootAccessKeyId, rootSecretAccessKey, sessionToken, credentialClass }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
  * Update the `ClariaProvisionerAccess` IAM policy using temporary elevated
  * credentials (root or admin).
  * 
@@ -1654,19 +1638,6 @@ export type BiometryKind = "touch_id" | "face_id" | "windows_hello" |
  */
 "biometric" | "none"
 /**
- * Redacted [`BootstrapResult`] for the frontend: the minted secret access
- * key is persisted to the local config Rust-side and never returned.
- */
-export type BootstrapOutcome = { success: boolean; steps: BootstrapStep[]; account_id: string | null; 
-/**
- * Present when bootstrap minted scoped credentials.
- */
-new_credentials: NewCredentialsInfo | null; error: string | null }
-/**
- * A single step in the bootstrap sequence, reported for UI rendering.
- */
-export type BootstrapStep = { name: string; status: StepStatus; detail: string | null }
-/**
  * Time-to-live for a Bedrock prompt-cache entry.
  * 
  * Lives next to the capability table because which TTLs a model accepts is
@@ -2355,10 +2326,6 @@ effort?: EffortPreference | null;
  */
 temperature?: number | null }
 /**
- * The non-secret half of freshly minted credentials.
- */
-export type NewCredentialsInfo = { access_key_id: string; iam_user_arn: string }
-/**
  * A single entry in the plan — the spec annotated with what happened.
  * 
  * The plan is a flat `Vec<PlanEntry>` — same shape as the manifest array,
@@ -2880,10 +2847,6 @@ export type Severity =
  */
 "destructive"
 export type SpeakerMode = "none" | "diarize" | "channels"
-/**
- * Status of an individual bootstrap step.
- */
-export type StepStatus = "pending" | "in_progress" | "succeeded" | "failed"
 /**
  * A style pass's anchored replacement: swap `original_text` for
  * `replacement_text` inside one paragraph of the anchored section.

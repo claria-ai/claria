@@ -364,6 +364,14 @@ pub fn validate_teardown_credentials(
 /// Create a least-privilege IAM user for Claria using the provided
 /// (broad) credentials.
 ///
+/// **Not what the app runs.** The desktop's setup path is
+/// `provision_apply`, which reconciles the whole manifest and performs the
+/// same credential handoff as part of it; this is the standalone version, and
+/// its only caller is the `bootstrap_smoke` example that exercises account
+/// setup against a real AWS account. Do not wire it back into the app — a
+/// second implementation of account setup is how the root-key deletion step
+/// below came to exist in code that nothing ever called.
+///
 /// # Arguments
 ///
 /// * `config` — SDK config built from the operator's current credentials.
@@ -699,6 +707,26 @@ pub async fn delete_user_access_key(
 ) -> Result<(), ProvisionerError> {
     let client = aws_sdk_iam::Client::new(config);
     delete_access_key(&client, access_key_id, Some(IAM_USER_NAME)).await
+}
+
+/// Delete the root account's own access key.
+///
+/// `config` must carry the root credentials themselves: omitting `UserName`
+/// is what makes `DeleteAccessKey` act on the caller, and the caller is the
+/// root user. A separate entry point rather than a parameter on
+/// [`delete_user_access_key`], whose `Some(IAM_USER_NAME)` is load-bearing —
+/// a `None` reaching it from anywhere else would delete a key belonging to
+/// whoever happened to be calling.
+///
+/// Onboarding tells the operator Claria will do this once the scoped user is
+/// in place, and AWS's own guidance is that an account should hold no root
+/// access key at all.
+pub async fn delete_root_access_key(
+    config: &aws_config::SdkConfig,
+    access_key_id: &str,
+) -> Result<(), ProvisionerError> {
+    let client = aws_sdk_iam::Client::new(config);
+    delete_access_key(&client, access_key_id, None).await
 }
 
 // ── Policy document ──────────────────────────────────────────────────────────

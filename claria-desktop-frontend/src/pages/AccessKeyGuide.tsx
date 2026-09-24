@@ -52,9 +52,11 @@ export default function AccessKeyGuide({
 
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <p className="text-blue-800 text-sm">
-            You will paste these into Claria on the next screen. Claria will use
-            them to create a scoped IAM user with minimal permissions and then
-            delete this root access key from your account.
+            You will paste these into Claria on the next screen. Claria uses
+            them to create a scoped IAM user with minimal permissions and to
+            set up your infrastructure, then deletes this root access key from
+            your account once the new user is working. If it cannot, it will
+            tell you, and you can remove the key yourself in the IAM console.
           </p>
         </div>
       </div>

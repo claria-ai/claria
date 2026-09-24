@@ -561,6 +561,28 @@ async fn list_access_keys(params: &str, state: SharedState) -> Response {
 async fn delete_access_key(params: &str, state: SharedState) -> Response {
     let access_key_id = param(params, "AccessKeyId").unwrap_or_default();
     let mut st = state.write().await;
+
+    // `UserName` is optional, and omitting it is meaningful rather than lax:
+    // IAM then acts on the caller's own key, which is the only way to delete
+    // the root account's. A name that does not own the key is `NoSuchEntity`.
+    if let Some(user_name) = param(params, "UserName")
+        && st
+            .access_keys
+            .get(&access_key_id)
+            .is_some_and(|k| k.user_name != user_name)
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            xml::query_error_xml(
+                "NoSuchEntity",
+                &format!(
+                    "The access key with id {access_key_id} cannot be found for user {user_name}"
+                ),
+            ),
+        )
+            .into_response();
+    }
+
     st.access_keys.remove(&access_key_id);
     xml_response(xml::xml_doc(&xml::wrap("DeleteAccessKeyResponse", "")))
 }

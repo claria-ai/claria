@@ -1,4 +1,4 @@
-//! Credential assessment, bootstrap, and provisioner scan/apply commands.
+//! Credential assessment and provisioner scan/apply commands.
 
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -9,10 +9,7 @@ use crate::state::DesktopState;
 use claria_desktop::config::{self, ClariaConfig, CredentialSource};
 use claria_provisioner::{
     Action, CredentialScope, PlanEntry,
-    account_setup::{
-        AccessKeyInfo, BootstrapResult, BootstrapStep, CredentialAssessment, CredentialClass,
-        StepStatus,
-    },
+    account_setup::{AccessKeyInfo, CredentialAssessment, CredentialClass},
 };
 
 // ---------------------------------------------------------------------------
@@ -98,38 +95,6 @@ pub struct AssumedRoleSession {
     pub assumed_role_arn: String,
     /// The account ID of the sub-account we assumed into.
     pub account_id: String,
-}
-
-/// Redacted [`BootstrapResult`] for the frontend: the minted secret access
-/// key is persisted to the local config Rust-side and never returned.
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct BootstrapOutcome {
-    pub success: bool,
-    pub steps: Vec<BootstrapStep>,
-    pub account_id: Option<String>,
-    /// Present when bootstrap minted scoped credentials.
-    pub new_credentials: Option<NewCredentialsInfo>,
-    pub error: Option<String>,
-}
-
-/// The non-secret half of freshly minted credentials.
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct NewCredentialsInfo {
-    pub access_key_id: String,
-    pub iam_user_arn: String,
-}
-
-fn redact_bootstrap(result: BootstrapResult) -> BootstrapOutcome {
-    BootstrapOutcome {
-        success: result.success,
-        steps: result.steps,
-        account_id: result.account_id,
-        new_credentials: result.new_credentials.map(|creds| NewCredentialsInfo {
-            access_key_id: creds.access_key_id,
-            iam_user_arn: creds.iam_user_arn,
-        }),
-        error: result.error,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -288,170 +253,6 @@ pub async fn delete_user_access_key(
         let credentials = credentials.resolve(&state).await?;
         let sdk_config = claria_desktop::aws::build_aws_config(&region, &credentials).await;
         Ok(claria_provisioner::delete_user_access_key(&sdk_config, &access_key_id).await?)
-    })
-    .await
-}
-
-// ---------------------------------------------------------------------------
-// Bootstrap command — orchestrates provisioner + config persistence
-// ---------------------------------------------------------------------------
-
-/// Run the full bootstrap flow: create a scoped IAM user and policy using
-/// the operator's current (broad) credentials, then persist the new scoped
-/// credentials to the local config.
-///
-/// The provisioner does all the IAM work and returns the new credentials.
-/// We handle only the config write and in-memory state update.
-#[tauri::command]
-#[specta::specta]
-pub async fn bootstrap_iam_user(
-    state: State<'_, DesktopState>,
-    region: String,
-    system_name: String,
-    root_access_key_id: String,
-    root_secret_access_key: String,
-    session_token: Option<String>,
-    credential_class: CredentialClass,
-) -> Result<BootstrapOutcome, String> {
-    run("bootstrap_iam_user", async {
-        // Build an SDK config from the raw credentials. These are held only in
-        // memory — the desktop app never persists broad/root credentials to disk.
-        // When a session_token is present, the credentials come from an
-        // AssumeRole call (sub-account flow).
-        let sdk_config = claria_desktop::aws::build_aws_config(
-            &region,
-            &CredentialSource::Inline {
-                access_key_id: root_access_key_id.clone(),
-                secret_access_key: root_secret_access_key,
-                session_token,
-            },
-        )
-        .await;
-
-        // Delegate all IAM logic to the provisioner.
-        let mut result = claria_provisioner::bootstrap_account(
-            &sdk_config,
-            &system_name,
-            &root_access_key_id,
-            credential_class,
-        )
-        .await;
-
-        // If bootstrap succeeded, persist the new scoped credentials to config.
-        if result.success
-            && let Some(new_creds) = &result.new_credentials
-        {
-            let cfg = ClariaConfig {
-                config_version: 0, // save_config stamps CURRENT_VERSION
-                region: region.clone(),
-                system_name,
-                account_id: result.account_id.clone().unwrap_or_default(),
-                created_at: jiff::Timestamp::now(),
-                credentials: CredentialSource::Inline {
-                    access_key_id: new_creds.access_key_id.clone(),
-                    secret_access_key: new_creds.secret_access_key.clone(),
-                    session_token: None,
-                },
-                preferred_model_id: None,
-                cost_explorer_enabled: false,
-                hourly_cost_data: false,
-                prompt_caching_enabled: true,
-                transcription: Default::default(),
-                report_authoring: Default::default(),
-                model_tuning: Default::default(),
-                chat_streaming: Default::default(),
-                draft_pipeline: Default::default(),
-                security: Default::default(),
-            };
-
-            if let Err(e) = config::save_config(&cfg) {
-                // Bootstrap succeeded in AWS but we failed to write config
-                // locally. The minted secret only lives in that config, so
-                // tell the operator to free the key slot and retry rather
-                // than echoing the secret back over IPC.
-                let mut failed = result;
-                failed.steps.push(claria_provisioner::BootstrapStep {
-                    name: "write_config".to_string(),
-                    status: StepStatus::Failed,
-                    detail: Some(format!(
-                        "Failed to write config: {e}. The new access key exists in AWS but \
-                         could not be saved locally — delete it from the IAM user and run \
-                         setup again."
-                    )),
-                });
-                return Ok(redact_bootstrap(failed));
-            }
-
-            let mut guard = state.config.lock().await;
-            *guard = Some(cfg);
-            drop(guard);
-
-            // ── Accept Bedrock model agreements ─────────────────────────
-            //
-            // Use the new scoped credentials to accept Marketplace agreements
-            // for all available Claude models. This prevents the user from
-            // hitting agreement errors when they first try to use chat.
-            result.steps.push(claria_provisioner::BootstrapStep {
-                name: "accept_model_agreements".to_string(),
-                status: StepStatus::InProgress,
-                detail: None,
-            });
-
-            let new_sdk_config = claria_desktop::aws::build_aws_config(
-                &region,
-                &CredentialSource::Inline {
-                    access_key_id: new_creds.access_key_id.clone(),
-                    secret_access_key: new_creds.secret_access_key.clone(),
-                    session_token: None,
-                },
-            )
-            .await;
-
-            match claria_bedrock::chat::accept_all_model_agreements(&new_sdk_config).await {
-                Ok(summary) => {
-                    let detail = if summary.newly_accepted.is_empty() && summary.failed.is_empty() {
-                        "All model agreements already accepted.".to_string()
-                    } else {
-                        let mut parts = Vec::new();
-                        if !summary.newly_accepted.is_empty() {
-                            parts.push(format!(
-                                "Accepted {} model(s)",
-                                summary.newly_accepted.len()
-                            ));
-                        }
-                        if !summary.failed.is_empty() {
-                            parts.push(format!("{} failed", summary.failed.len()));
-                        }
-                        parts.join(", ")
-                    };
-
-                    let step = result
-                        .steps
-                        .iter_mut()
-                        .rfind(|s| s.name == "accept_model_agreements");
-                    if let Some(s) = step {
-                        s.status = StepStatus::Succeeded;
-                        s.detail = Some(detail);
-                    }
-                }
-                Err(e) => {
-                    // Non-fatal: agreement acceptance failure shouldn't block
-                    // the user from proceeding. They can accept later from chat.
-                    let step = result
-                        .steps
-                        .iter_mut()
-                        .rfind(|s| s.name == "accept_model_agreements");
-                    if let Some(s) = step {
-                        s.status = StepStatus::Failed;
-                        s.detail = Some(format!(
-                            "Non-fatal: {e}. You can accept model agreements later from the chat screen."
-                        ));
-                    }
-                }
-            }
-        }
-
-        Ok(redact_bootstrap(result))
     })
     .await
 }
@@ -1063,7 +864,12 @@ pub async fn provision_apply(
         // If no config exists yet, the IAM user was just created. Create an
         // access key so we can switch to scoped credentials.
 
-        let regular_config = if !config::has_config() {
+        // Whether this run performs the credential handoff. Read once: the
+        // branch below writes the config, so asking again afterwards answers
+        // about the config this very call created.
+        let handing_off = !config::has_config();
+
+        let regular_config = if handing_off {
             // We need elevated creds for CreateAccessKey.
             let elevated_creds = elevated_credentials.as_ref().ok_or_else(|| {
                 CommandError::Msg(
@@ -1225,6 +1031,13 @@ pub async fn provision_apply(
 
         reconcile_and_flush(&entries, &mut prov_state, &persistence).await?;
 
+        // Last, so the scoped credentials are minted, validated, saved and
+        // proven by a full pass before the credential they replace is
+        // destroyed — and so the bucket exists to record it in.
+        if handing_off && let Some(ref elevated_creds) = elevated_credentials {
+            retire_root_access_key(&state, &region, elevated_creds, &on_progress).await;
+        }
+
         Ok(ProvisionApplyOutcome {
             entries,
             access_key_limit: None,
@@ -1232,3 +1045,103 @@ pub async fn provision_apply(
     })
     .await
 }
+
+/// Delete the root access key that set this account up, once the scoped user
+/// has fully replaced it.
+///
+/// The onboarding guide tells the operator, twice, that Claria will create a
+/// least-privilege user "and then delete the root access key automatically".
+/// `bootstrap_account` has always had the step; nothing ever called it,
+/// because the shipping path is `provision_apply`, which never learned the
+/// source key's id. So the key stayed Active, against the promise and against
+/// AWS's own guidance that an account should hold no root access key at all.
+///
+/// Non-fatal by design, matching `bootstrap_account`: setup that finishes with
+/// a live root key is bad, setup that rolls back the account it just built
+/// because of one is worse. The operator is told what to delete by hand.
+///
+/// Only a credential classified `Root` is touched. The classification comes
+/// from a live `GetCallerIdentity` here rather than from anything the
+/// frontend passed, because this call destroys a credential.
+async fn retire_root_access_key(
+    state: &State<'_, DesktopState>,
+    region: &str,
+    elevated: &CredentialSource,
+    on_progress: &tauri::ipc::Channel<ProvisionerProgress>,
+) {
+    // Only an inline credential names a key that can be deleted. A profile,
+    // the default chain, or an assumed role gives nothing to act on.
+    let CredentialSource::Inline { access_key_id, .. } = elevated else {
+        return;
+    };
+
+    let elevated_config = claria_desktop::aws::build_aws_config(region, elevated).await;
+    match claria_provisioner::assess_credentials(&elevated_config).await {
+        Ok(assessment) if assessment.credential_class == CredentialClass::Root => {}
+        Ok(_) => return,
+        Err(error) => {
+            // Not fatal, and not silent: the promise went unkept and the
+            // operator is the only one who can now keep it.
+            tracing::warn!(
+                error = %error,
+                "could not classify the setup credentials, so the root access key was left alone"
+            );
+            let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+                label: ROOT_KEY_STEP.into(),
+                status: "failed".into(),
+            });
+            return;
+        }
+    }
+
+    let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+        label: ROOT_KEY_STEP.into(),
+        status: "in_progress".into(),
+    });
+
+    if let Err(error) =
+        claria_provisioner::delete_root_access_key(&elevated_config, access_key_id).await
+    {
+        tracing::warn!(
+            error = %error,
+            "failed to delete the root access key — the operator must remove it by hand"
+        );
+        let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+            label: ROOT_KEY_STEP.into(),
+            status: "failed".into(),
+        });
+        return;
+    }
+
+    let _ = on_progress.send(ProvisionerProgress::EscalationStep {
+        label: ROOT_KEY_STEP.into(),
+        status: "done".into(),
+    });
+
+    // Destroying a credential is not something that may happen only in a ring
+    // buffer. Best-effort, like every audit write — the key is already gone,
+    // and failing the setup over the record of it would be the wrong trade.
+    match CommandContext::new(state).await {
+        Ok(ctx) => {
+            let event = ctx
+                .audit_event(
+                    claria_storage::audit::actions::ROOT_ACCESS_KEY_DELETE,
+                    "iam_access_key",
+                    access_key_id.clone(),
+                )
+                .with_details(serde_json::json!({
+                    "reason": "replaced by the scoped Claria IAM user during setup",
+                }));
+            ctx.record_audit(event).await;
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "root access key deleted but the audit event could not be recorded"
+            );
+        }
+    }
+}
+
+/// The progress label for the root-key step, quoted in two places.
+const ROOT_KEY_STEP: &str = "Deleting the root access key";

@@ -324,6 +324,10 @@ pub mod actions {
     pub const WRITER_PROMPT_DELETE: Action = admin("writer_prompt.delete");
     /// The Claria Console log was exported to a file.
     pub const CONSOLE_EXPORT: Action = admin("console.export");
+    /// The account's root access key was deleted, once the scoped IAM user
+    /// that replaces it was in place and working. Destroying a credential is
+    /// not something that may happen only in a ring buffer.
+    pub const ROOT_ACCESS_KEY_DELETE: Action = admin("credential.root_access_key_delete");
 
     // -- admin: the session lock ------------------------------------------
     //
