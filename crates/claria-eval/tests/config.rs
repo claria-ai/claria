@@ -107,3 +107,67 @@ fn a_config_missing_a_required_field_says_so() {
     let error = config::parse(br#"{"system_name":"smoke"}"#).expect_err("no region, no config");
     assert!(format!("{error}").contains("did not parse"));
 }
+
+// ---------------------------------------------------------------------------
+// The headless path: no desktop, no config.json
+// ---------------------------------------------------------------------------
+
+/// The three values this tool cannot discover for itself, supplied directly.
+#[test]
+fn explicit_parts_build_a_config_without_a_file() {
+    let config = config::from_parts(
+        Some("us-west-2".to_string()),
+        Some("123456789012".to_string()),
+        Some("smoke".to_string()),
+    )
+    .expect("explicit parts are enough");
+
+    assert_eq!(config.region, "us-west-2");
+    assert_eq!(config.credentials, CredentialSource::DefaultChain);
+    assert_eq!(config.bucket().expect("bucket"), {
+        claria_core::s3_keys::bucket_name("123456789012", "smoke")
+    });
+}
+
+/// A security-scoping value fails closed. An empty account ID must not resolve
+/// to some other account's bucket.
+#[test]
+fn a_blank_account_id_is_refused() {
+    let error = config::from_parts(
+        Some("us-east-1".to_string()),
+        Some("   ".to_string()),
+        Some("smoke".to_string()),
+    )
+    .expect_err("a blank account ID cannot name a bucket");
+    assert!(format!("{error}").contains("account ID"), "{error}");
+}
+
+#[test]
+fn a_missing_region_names_the_flag_and_the_variable() {
+    let error = config::from_parts(None, Some("123456789012".to_string()), None)
+        .expect_err("no region");
+    let message = format!("{error}");
+    assert!(message.contains("--region"), "{message}");
+    assert!(message.contains(config::REGION_ENV), "{message}");
+}
+
+/// Naming nothing at all means the desktop config is what was intended.
+#[test]
+fn nothing_supplied_is_not_a_headless_request() {
+    // Only meaningful when the environment is clean; the variables are read
+    // per-process and this test does not set them.
+    if std::env::var_os(config::REGION_ENV).is_some()
+        || std::env::var_os(config::ACCOUNT_ID_ENV).is_some()
+        || std::env::var_os(config::SYSTEM_NAME_ENV).is_some()
+    {
+        return;
+    }
+    assert!(!config::headless_requested(None, None, None));
+}
+
+/// One flag is enough to mean it: a half-supplied set should say which part is
+/// missing rather than quietly read a file that happens to exist.
+#[test]
+fn one_flag_is_a_headless_request() {
+    assert!(config::headless_requested(Some("us-east-1"), None, None));
+}

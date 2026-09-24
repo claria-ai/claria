@@ -31,6 +31,20 @@ struct Cli {
     #[arg(long, value_name = "PATH", global = true)]
     state: Option<PathBuf>,
 
+    /// AWS region, for running without a desktop install. Naming any of the
+    /// three headless values below uses the default credential chain and reads
+    /// no `config.json`. Each also reads a `CLARIA_EVAL_*` variable.
+    #[arg(long, value_name = "REGION", global = true)]
+    region: Option<String>,
+
+    /// The 12-digit AWS account ID. Half of the bucket name.
+    #[arg(long, value_name = "ID", global = true)]
+    account_id: Option<String>,
+
+    /// The provisioned system name. The other half of the bucket name.
+    #[arg(long, value_name = "NAME", global = true)]
+    system_name: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -99,17 +113,34 @@ async fn main() -> Result<()> {
     result.and(flushed)
 }
 
+/// Where one invocation gets its region, bucket and credentials from.
+///
+/// Taken off the CLI before the subcommand match moves `command`, so every
+/// subcommand can build a context from the same values.
+struct ConfigSource {
+    config: Option<PathBuf>,
+    region: Option<String>,
+    account_id: Option<String>,
+    system_name: Option<String>,
+}
+
 async fn dispatch(cli: Cli) -> Result<()> {
     let state_path = match cli.state {
         Some(path) => path,
         None => claria_eval::governor::default_state_path()?,
+    };
+    let source = ConfigSource {
+        config: cli.config,
+        region: cli.region,
+        account_id: cli.account_id,
+        system_name: cli.system_name,
     };
 
     match cli.command {
         Command::Report => report(&state_path),
         Command::Grant { n } => grant(&state_path, n),
         Command::ListClients => {
-            let context = context(cli.config.as_deref()).await?;
+            let context = context(&source).await?;
             list_clients(&context).await
         }
         Command::Plan {
@@ -119,7 +150,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             planner_model,
             writer_model,
         } => {
-            let context = context(cli.config.as_deref()).await?;
+            let context = context(&source).await?;
             let span = tracing::info_span!(
                 "eval.plan",
                 client_id = %client,
@@ -146,7 +177,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             planner_model,
             writer_model,
         } => {
-            let context = context(cli.config.as_deref()).await?;
+            let context = context(&source).await?;
             let span = tracing::info_span!(
                 "eval.run",
                 client_id = %client,
@@ -168,17 +199,37 @@ async fn dispatch(cli: Cli) -> Result<()> {
     }
 }
 
-/// Load the desktop's config and build the AWS handles from it.
-async fn context(config_path: Option<&std::path::Path>) -> Result<EvalContext> {
-    let path = match config_path {
-        Some(path) => path.to_path_buf(),
-        None => config::default_config_path()?,
+/// Build the AWS handles, from the desktop's config or from explicit values.
+///
+/// The headless path exists because there is no `config.json` in a container or
+/// on CI, and this tool is the only consumer that has to run there. Naming any
+/// one of region, account ID or system name selects it, so a half-supplied set
+/// reports the missing part instead of quietly falling back to whatever file
+/// happens to be on disk.
+async fn context(source: &ConfigSource) -> Result<EvalContext> {
+    let (config, origin) = if config::headless_requested(
+        source.region.as_deref(),
+        source.account_id.as_deref(),
+        source.system_name.as_deref(),
+    ) {
+        let config = config::from_parts(
+            source.region.clone(),
+            source.account_id.clone(),
+            source.system_name.clone(),
+        )?;
+        (config, "flags and environment".to_string())
+    } else {
+        let path = match source.config.as_deref() {
+            Some(path) => path.to_path_buf(),
+            None => config::default_config_path()?,
+        };
+        let config = config::load(&path)?;
+        (config, path.display().to_string())
     };
-    let config = config::load(&path)?;
     let bucket = config.bucket()?;
     let sdk_config = config::build_aws_config(&config).await;
     let s3 = claria_storage::client::from_config(&sdk_config);
-    eprintln!("config: {} | bucket: {bucket}", path.display());
+    eprintln!("config: {origin} | bucket: {bucket}");
     Ok(EvalContext {
         sdk_config,
         s3,

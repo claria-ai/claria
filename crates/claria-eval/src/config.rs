@@ -77,6 +77,66 @@ pub fn default_config_path() -> Result<PathBuf> {
     Ok(desktop_config_dir()?.join("config.json"))
 }
 
+/// Environment variables the headless path reads, in place of a desktop config.
+pub const REGION_ENV: &str = "CLARIA_EVAL_REGION";
+pub const ACCOUNT_ID_ENV: &str = "CLARIA_EVAL_ACCOUNT_ID";
+pub const SYSTEM_NAME_ENV: &str = "CLARIA_EVAL_SYSTEM_NAME";
+
+/// Build a config from explicit values rather than the desktop's file.
+///
+/// There is no `config.json` in a container, and this tool is the only consumer
+/// that has to run where the desktop has never been installed. Credentials come
+/// from the default chain — an instance role, a profile, or the `AWS_*`
+/// environment — because the three values below are the only ones this tool
+/// cannot discover for itself.
+///
+/// The account ID and system name are refused when empty rather than defaulted:
+/// together they name the bucket every object is read from and written to, so a
+/// missing one has to fail rather than resolve to somebody else's bucket.
+pub fn from_parts(
+    region: Option<String>,
+    account_id: Option<String>,
+    system_name: Option<String>,
+) -> Result<EvalConfig> {
+    let pick = |flag: Option<String>, env: &str| {
+        flag.or_else(|| std::env::var(env).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let region = pick(region, REGION_ENV)
+        .ok_or_else(|| eyre!("no region: pass --region or set {REGION_ENV}"))?;
+    let account_id = pick(account_id, ACCOUNT_ID_ENV)
+        .ok_or_else(|| eyre!("no AWS account ID: pass --account-id or set {ACCOUNT_ID_ENV}"))?;
+    let system_name = pick(system_name, SYSTEM_NAME_ENV)
+        .ok_or_else(|| eyre!("no system name: pass --system-name or set {SYSTEM_NAME_ENV}"))?;
+    Ok(EvalConfig {
+        region,
+        system_name,
+        account_id,
+        credentials: CredentialSource::DefaultChain,
+        preferred_model_id: None,
+    })
+}
+
+/// Whether any part of the headless configuration was supplied.
+///
+/// Used to decide between the two paths without making the caller guess: naming
+/// even one of the three means the desktop's config is not what was intended,
+/// and a half-supplied set should say which part is missing rather than
+/// silently fall back to a file that happens to exist.
+pub fn headless_requested(
+    region: Option<&str>,
+    account_id: Option<&str>,
+    system_name: Option<&str>,
+) -> bool {
+    [region, account_id, system_name]
+        .iter()
+        .any(Option::is_some)
+        || [REGION_ENV, ACCOUNT_ID_ENV, SYSTEM_NAME_ENV]
+            .iter()
+            .any(|env| std::env::var_os(env).is_some())
+}
+
 /// Load and parse a `config.json`. Never writes, never migrates.
 pub fn load(path: &Path) -> Result<EvalConfig> {
     let bytes = std::fs::read(path)
