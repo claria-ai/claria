@@ -5,6 +5,7 @@ const labels: Record<Cause, string> = {
   missing: "Not yet provisioned",
   drift: "Configuration drift detected",
   orphaned: "No longer managed — will be removed",
+  unreadable: "Could not be checked",
 };
 
 export default function CauseBadge({ cause }: { cause: Cause }) {

@@ -4,6 +4,11 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- A resource Claria cannot read is reported as unreadable, so a bucket it is not allowed to see is never queued for creation
+- A scan that meets a refused permission still returns a plan for everything else, instead of ending on an error
+- The plan names the resources it could not check, and the AWS error for each
+- Applying a plan skips a resource nothing could read rather than acting on a guess
+- A teardown that cannot confirm a bucket is gone says so instead of reporting success
 - Provisioner state can be written at all; a state file holding any resource was silently rejected as unserializable, so the record every teardown reads from stayed empty
 - A resource Claria no longer manages is torn down when you apply the plan that says it will be removed, instead of being dropped from the record and left running in the account
 - A resource this build cannot tear down keeps its record, so it stays visible instead of being quietly forgotten

@@ -1452,6 +1452,13 @@ async unlockWithPin(pin: string) : Promise<Result<LockOutcome, string>> {
 /**
  * Answer the lock screen with Touch ID / Face ID / Windows Hello.
  * 
+ * **Only ever called from an explicit press on the lock screen.** The panel
+ * this raises is system-modal and always-on-top, and auto-lock fires on an
+ * idle timer, so anything that invoked it on its own would drop an OS dialog
+ * over whatever application the clinician was actually using. The frontend
+ * checks focus before calling; this checks again immediately before the
+ * panel goes up, because the window can lose focus in the gap.
+ * 
  * A dismissed prompt comes back as `accepted: false` with no error — the
  * clinician chose the PIN field instead, which is not a failure and does not
  * count against the backoff budget. Only a prompt that actually rejected
@@ -1595,7 +1602,13 @@ limit: number;
  * The full error text, so the operator sees exactly what AWS said.
  */
 message: string }
-export type Action = "ok" | "create" | "modify" | "delete" | "precondition_failed"
+export type Action = "ok" | "create" | "modify" | "delete" | "precondition_failed" | 
+/**
+ * The read failed, so nothing is known about this resource. Never acted
+ * on: a resource Claria cannot see is not a resource it may create,
+ * change, or destroy.
+ */
+"unknown"
 /**
  * What `assume_role` returns to the frontend: everything about the assumed
  * session except its secrets, plus the opaque handle later provisioning
@@ -1668,7 +1681,13 @@ export type CacheTtlChoice = "five_minutes" | "one_hour"
  * Identity information returned by STS `GetCallerIdentity`.
  */
 export type CallerIdentity = { account_id: string; arn: string; user_id: string; is_root: boolean }
-export type Cause = "in_sync" | "missing" | "drift" | "orphaned"
+export type Cause = "in_sync" | "missing" | "drift" | "orphaned" | 
+/**
+ * AWS refused or failed the read — permission, throttling, transport.
+ * Distinct from `Missing`, which is a resource that genuinely is not
+ * there.
+ */
+"unreadable"
 /**
  * Detail of a persisted chat session, returned when resuming a conversation.
  */
@@ -2319,7 +2338,16 @@ export type PlanEntry = { spec: ResourceSpec; action: Action; cause: Cause; drif
 /**
  * Live state read from AWS (if the resource exists).
  */
-actual: JsonValue | null }
+actual: JsonValue | null; 
+/**
+ * Why the resource could not be read, when `action` is
+ * [`Action::Unknown`]. `None` for every other action.
+ * 
+ * `#[serde(default)]` is the only optional-field spelling specta
+ * respects — a `skip_serializing_if` predicate here would make the
+ * generated binding required and disagree with the wire.
+ */
+error?: string | null }
 /**
  * One section's worth of gate edits. Absent fields are left exactly as the
  * planner wrote them, so the pane can save the one control the user touched

@@ -4,6 +4,17 @@ use axum::http::{Method, StatusCode};
 
 use helpers::{app, request, request_with_header};
 
+/// `GetFoundationModelAvailability` as the Bedrock SDK actually spells it: a
+/// flat path with the model ID as its last segment, percent-encoded.
+///
+/// These tests drive the router by hand rather than through an SDK client, so
+/// a path invented here matches a route invented there and both agree about
+/// something AWS never does. What guards the real shape is
+/// `claria-provisioner/tests/unreadable_reads.rs`, which scans the
+/// `fully-provisioned` scenario with real SDK clients.
+const AVAILABILITY_PATH: &str =
+    "/foundation-model-availability/anthropic.claude-opus-4-6-20260301-v1%3A0";
+
 fn report_tool_config() -> serde_json::Value {
     serde_json::json!({
         "tools": [
@@ -62,16 +73,11 @@ async fn model_availability_not_agreed_by_default() {
         claria_mock_aws::router::build_router(state)
     };
 
-    let r = request(
-        &app,
-        Method::GET,
-        "/foundation-models/anthropic.claude-opus-4-6-20260301-v1:0/availability",
-        "",
-    )
-    .await;
+    let r = request(&app, Method::GET, AVAILABILITY_PATH, "").await;
     assert_eq!(r.status, StatusCode::OK);
     let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
     assert_eq!(body["agreementAvailability"]["status"], "NOT_AGREED");
+    assert_eq!(body["entitlementAvailability"], "NOT_AVAILABLE");
 }
 
 #[tokio::test]
@@ -88,7 +94,7 @@ async fn create_agreement_makes_model_available() {
     let r = request_with_header(
         &app,
         Method::POST,
-        "/custom-model-agreements",
+        "/create-foundation-model-agreement",
         "content-type",
         "application/json",
         r#"{"modelId": "anthropic.claude-opus-4-6-20260301-v1:0"}"#,
@@ -96,15 +102,10 @@ async fn create_agreement_makes_model_available() {
     .await;
     assert_eq!(r.status, StatusCode::OK);
 
-    let r = request(
-        &app,
-        Method::GET,
-        "/foundation-models/anthropic.claude-opus-4-6-20260301-v1:0/availability",
-        "",
-    )
-    .await;
+    let r = request(&app, Method::GET, AVAILABILITY_PATH, "").await;
     let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
     assert_eq!(body["agreementAvailability"]["status"], "AVAILABLE");
+    assert_eq!(body["entitlementAvailability"], "AVAILABLE");
 }
 
 #[tokio::test]

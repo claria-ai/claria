@@ -1,4 +1,4 @@
-use aws_sdk_s3::Client;
+use aws_sdk_s3::{Client, error::ProvideErrorMetadata};
 use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
@@ -6,6 +6,7 @@ use crate::{
     error::ProvisionerError,
     manifest::ResourceSpec,
     syncer::{BoxFuture, ResourceSyncer},
+    syncers::read_failed,
 };
 
 pub struct S3BucketVersioningSyncer {
@@ -44,15 +45,11 @@ impl ResourceSyncer for S3BucketVersioningSyncer {
                         .unwrap_or_default();
                     Ok(Some(json!({"status": status})))
                 }
-                // TODO: differentiate NotFound from real failures (AccessDenied, Throttling).
-                Err(e) => {
-                    tracing::warn!(
-                        bucket = %self.bucket_name(),
-                        error = %e,
-                        "get_bucket_versioning failed during read — treating as absent"
-                    );
-                    Ok(None)
-                }
+                // Only a bucket that is not there is an absence. A refused
+                // read is not one, and reporting it as one would queue
+                // versioning to be turned on over a bucket nobody can see.
+                Err(e) if e.code() == Some("NoSuchBucket") => Ok(None),
+                Err(e) => Err(read_failed("s3:GetBucketVersioning", &e)),
             }
         })
     }

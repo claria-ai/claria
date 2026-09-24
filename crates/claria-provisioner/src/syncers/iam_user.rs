@@ -6,6 +6,7 @@ use crate::{
     error::ProvisionerError,
     manifest::ResourceSpec,
     syncer::{BoxFuture, ResourceSyncer},
+    syncers::read_failed,
 };
 
 pub struct IamUserSyncer {
@@ -39,16 +40,11 @@ impl ResourceSyncer for IamUserSyncer {
                     if is_not_found {
                         return Ok(None);
                     }
-                    // Access denied during scan is fine — we just can't read
-                    // this resource with the current credentials.
-                    let is_access_denied = e
-                        .as_service_error()
-                        .map(|se| se.meta().code() == Some("AccessDenied"))
-                        .unwrap_or(false);
-                    if is_access_denied {
-                        return Ok(None);
-                    }
-                    Err(ProvisionerError::Aws(format!("iam:GetUser failed: {e}")))
+                    // A refused read is not an absent user. Calling it one
+                    // put the IAM user back in the plan as something to
+                    // create, under credentials that had just proved they
+                    // cannot even look at it.
+                    Err(read_failed("iam:GetUser", &e))
                 }
             }
         })

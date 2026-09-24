@@ -1,4 +1,4 @@
-use aws_sdk_s3::Client;
+use aws_sdk_s3::{Client, error::ProvideErrorMetadata};
 use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
@@ -6,6 +6,7 @@ use crate::{
     error::ProvisionerError,
     manifest::ResourceSpec,
     syncer::{BoxFuture, ResourceSyncer},
+    syncers::read_failed,
 };
 
 pub struct S3BucketPublicAccessBlockSyncer {
@@ -46,12 +47,20 @@ impl ResourceSyncer for S3BucketPublicAccessBlockSyncer {
                         "restrict_public_buckets": config.and_then(|c| c.restrict_public_buckets()).unwrap_or(false),
                     })))
                 }
-                Err(_) => Ok(Some(json!({
-                    "block_public_acls": false,
-                    "ignore_public_acls": false,
-                    "block_public_policy": false,
-                    "restrict_public_buckets": false,
-                }))),
+                // No block configured at all: every flag really is off, and
+                // that is exactly the drift this resource exists to close.
+                Err(e) if e.code() == Some("NoSuchPublicAccessBlockConfiguration") => {
+                    Ok(Some(json!({
+                        "block_public_acls": false,
+                        "ignore_public_acls": false,
+                        "block_public_policy": false,
+                        "restrict_public_buckets": false,
+                    })))
+                }
+                Err(e) if e.code() == Some("NoSuchBucket") => Ok(None),
+                // A refused read is not four false flags. Claiming it is
+                // tells the clinician their data is publicly reachable.
+                Err(e) => Err(read_failed("s3:GetBucketPublicAccessBlock", &e)),
             }
         })
     }

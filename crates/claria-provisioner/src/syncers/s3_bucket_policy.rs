@@ -1,4 +1,4 @@
-use aws_sdk_s3::Client;
+use aws_sdk_s3::{Client, error::ProvideErrorMetadata};
 use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
@@ -6,6 +6,7 @@ use crate::{
     error::ProvisionerError,
     manifest::ResourceSpec,
     syncer::{BoxFuture, ResourceSyncer},
+    syncers::read_failed,
 };
 
 pub struct S3BucketPolicySyncer {
@@ -79,7 +80,11 @@ impl ResourceSyncer for S3BucketPolicySyncer {
                         serde_json::from_str(policy_str).unwrap_or(json!(null));
                     Ok(Some(parsed))
                 }
-                Err(_) => Ok(Some(json!(null))),
+                // A bucket with no policy attached; the desired document is
+                // genuinely absent, which is drift Claria can fix.
+                Err(e) if e.code() == Some("NoSuchBucketPolicy") => Ok(Some(json!(null))),
+                Err(e) if e.code() == Some("NoSuchBucket") => Ok(None),
+                Err(e) => Err(read_failed("s3:GetBucketPolicy", &e)),
             }
         })
     }

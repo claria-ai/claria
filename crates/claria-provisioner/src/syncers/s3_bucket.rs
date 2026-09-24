@@ -33,7 +33,10 @@ impl S3BucketSyncer {
     /// Whether the bucket is there, distinguishing "gone" from "couldn't tell".
     ///
     /// `HeadBucket` answers 404 with an empty body, so the status line is the
-    /// reliable signal and the typed `NotFound` is the backstop.
+    /// reliable signal and the typed `NotFound` is the backstop. Anything else
+    /// — a refused permission above all — is an error, never a `false`: the
+    /// read path would report a bucket of PHI as one that needs creating, and
+    /// the destroy path would report it as already gone.
     async fn bucket_exists(&self) -> Result<bool, ProvisionerError> {
         match self
             .client
@@ -49,9 +52,10 @@ impl S3BucketSyncer {
                 if status_404 || err.is_not_found() {
                     Ok(false)
                 } else {
-                    Err(ProvisionerError::DeleteFailed(
-                        DisplayErrorContext(&err).to_string(),
-                    ))
+                    Err(ProvisionerError::Aws(format!(
+                        "s3:HeadBucket failed: {}",
+                        DisplayErrorContext(&err)
+                    )))
                 }
             }
         }
@@ -65,16 +69,10 @@ impl ResourceSyncer for S3BucketSyncer {
 
     fn read(&self) -> BoxFuture<'_, Result<Option<serde_json::Value>, ProvisionerError>> {
         Box::pin(async {
-            match self
-                .client
-                .head_bucket()
-                .bucket(self.bucket_name())
-                .send()
-                .await
-            {
-                Ok(_) => Ok(Some(json!({"region": self.region()}))),
-                Err(_) => Ok(None),
+            if !self.bucket_exists().await? {
+                return Ok(None);
             }
+            Ok(Some(json!({"region": self.region()})))
         })
     }
 

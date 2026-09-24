@@ -1,4 +1,4 @@
-use aws_sdk_s3::Client;
+use aws_sdk_s3::{Client, error::ProvideErrorMetadata};
 use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
@@ -6,6 +6,7 @@ use crate::{
     error::ProvisionerError,
     manifest::ResourceSpec,
     syncer::{BoxFuture, ResourceSyncer},
+    syncers::read_failed,
 };
 
 pub struct S3BucketEncryptionSyncer {
@@ -45,7 +46,17 @@ impl ResourceSyncer for S3BucketEncryptionSyncer {
                         .map(|default| default.sse_algorithm().as_str().to_string());
                     Ok(Some(json!({"sse_algorithm": algo})))
                 }
-                Err(_) => Ok(Some(json!({"sse_algorithm": null}))),
+                // A bucket with no encryption rule answers with this code —
+                // the one case where "no algorithm" is the truth rather than
+                // a read that did not happen.
+                Err(e) if e.code() == Some("ServerSideEncryptionConfigurationNotFoundError") => {
+                    Ok(Some(json!({"sse_algorithm": null})))
+                }
+                Err(e) if e.code() == Some("NoSuchBucket") => Ok(None),
+                // Anything else is unread. Reporting it as unencrypted would
+                // show the clinician drift that may not exist, and then fail
+                // the write that tried to fix it.
+                Err(e) => Err(read_failed("s3:GetEncryptionConfiguration", &e)),
             }
         })
     }

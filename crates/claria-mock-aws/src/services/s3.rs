@@ -7,7 +7,7 @@ use bytes::Bytes;
 use uuid::Uuid;
 
 use crate::{
-    params,
+    faults, params,
     state::{BucketState, ObjectVersion, PublicAccessBlock, SharedState, VersioningStatus},
     xml,
 };
@@ -37,6 +37,12 @@ pub async fn dispatch(
         return (StatusCode::BAD_REQUEST, "Missing bucket name").into_response();
     }
 
+    if let Some(operation) = operation_name(&method, &query, key.as_deref())
+        && let Some(refusal) = faults::injected(operation, faults::Wire::RestXml, &state).await
+    {
+        return refusal;
+    }
+
     // Bucket-level operations (no key)
     if key.is_none() || key.as_deref() == Some("") {
         return dispatch_bucket(&method, &bucket, &query, state, body).await;
@@ -45,6 +51,62 @@ pub async fn dispatch(
     // Object-level operations
     let key = key.unwrap();
     dispatch_object(&method, &bucket, &key, &query, &headers, state, body).await
+}
+
+/// The canonical AWS operation name for a request, for the sake of
+/// [`crate::faults`].
+///
+/// S3 names its operations by method and query flag rather than in a header,
+/// so the mapping has to be restated here. It covers the reads Claria's
+/// provisioner makes plus the writes those reads pair with; anything else
+/// returns `None` and runs normally. A route with no name cannot have a
+/// failure injected — better than guessing at a name a test would then set
+/// and watch do nothing.
+fn operation_name(method: &Method, query: &str, key: Option<&str>) -> Option<&'static str> {
+    if key.is_some_and(|k| !k.is_empty()) {
+        return match *method {
+            Method::HEAD => Some("HeadObject"),
+            Method::GET => Some("GetObject"),
+            Method::PUT => Some("PutObject"),
+            Method::DELETE => Some("DeleteObject"),
+            _ => None,
+        };
+    }
+
+    if has_flag(query, "delete") {
+        return Some("DeleteObjects");
+    }
+    for (flag, get, put) in [
+        ("versioning", "GetBucketVersioning", "PutBucketVersioning"),
+        ("encryption", "GetBucketEncryption", "PutBucketEncryption"),
+        (
+            "publicAccessBlock",
+            "GetPublicAccessBlock",
+            "PutPublicAccessBlock",
+        ),
+        ("policy", "GetBucketPolicy", "PutBucketPolicy"),
+    ] {
+        if query.contains(flag) {
+            return match *method {
+                Method::GET => Some(get),
+                Method::PUT => Some(put),
+                _ => None,
+            };
+        }
+    }
+    if query.contains("list-type=2") {
+        return Some("ListObjectsV2");
+    }
+    if query.contains("versions") {
+        return Some("ListObjectVersions");
+    }
+
+    match *method {
+        Method::HEAD => Some("HeadBucket"),
+        Method::PUT => Some("CreateBucket"),
+        Method::DELETE => Some("DeleteBucket"),
+        _ => None,
+    }
 }
 
 async fn dispatch_bucket(

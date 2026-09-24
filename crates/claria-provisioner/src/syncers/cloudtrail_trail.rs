@@ -1,4 +1,4 @@
-use aws_sdk_cloudtrail::Client;
+use aws_sdk_cloudtrail::{Client, error::ProvideErrorMetadata};
 use aws_smithy_types::error::display::DisplayErrorContext;
 use serde_json::json;
 
@@ -6,6 +6,7 @@ use crate::{
     error::ProvisionerError,
     manifest::ResourceSpec,
     syncer::{BoxFuture, ResourceSyncer},
+    syncers::read_failed,
 };
 
 pub struct CloudTrailTrailSyncer {
@@ -32,17 +33,13 @@ impl ResourceSyncer for CloudTrailTrailSyncer {
         Box::pin(async {
             let resp = match self.client.get_trail().name(self.trail_name()).send().await {
                 Ok(resp) => resp,
-                // TODO: differentiate NotFound (legitimately absent) from
-                // AccessDenied/Throttling (masked failure). For now log
-                // everything before swallowing.
-                Err(e) => {
-                    tracing::warn!(
-                        trail = %self.trail_name(),
-                        error = %e,
-                        "get_trail failed during read — treating as absent"
-                    );
-                    return Ok(None);
-                }
+                // The trail is genuinely not there — the one absence.
+                Err(e) if e.code() == Some("TrailNotFoundException") => return Ok(None),
+                // Everything else is a read that did not happen. The audit
+                // trail is a HIPAA requirement, so "I could not check" must
+                // never arrive as "it needs creating" and then as a create
+                // that fails.
+                Err(e) => return Err(read_failed("cloudtrail:GetTrail", &e)),
             };
 
             let trail = resp.trail();

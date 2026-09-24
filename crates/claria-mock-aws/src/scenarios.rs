@@ -49,8 +49,11 @@ fn fully_provisioned(state: &mut MockState) {
     create_iam_policy(state);
     create_bucket_with_all_config(state);
     create_cloudtrail(state);
-    accept_bedrock_models(state);
+    // Load before accepting: `accept_bedrock_models` walks the models already
+    // there, so the other order agrees to an empty list and leaves a
+    // "fully provisioned" account whose every model reads as blocked.
     load_bedrock_models(state);
+    accept_bedrock_models(state);
     state.baa_accepted = true;
     load_sample_data(state);
     load_cost_data(state);

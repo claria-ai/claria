@@ -28,19 +28,24 @@ pub async fn dispatch(method: &Method, path: &str, body: Value, state: SharedSta
         return count_tokens(path, body, state).await;
     }
 
-    // Bedrock control plane
+    // Bedrock control plane.
+    //
+    // The three agreement paths are flat and model-id-suffixed, not nested
+    // under `/foundation-models`. Guessing at the shape is how they sat here
+    // matching nothing: the SDK's requests fell through to S3 and came back
+    // as `NoSuchKey` with the model ID as the key.
     match (method, path) {
-        (&Method::GET, p) if p.starts_with("/foundation-models") && p.contains("/availability") => {
+        (&Method::GET, p) if p.starts_with("/foundation-model-availability/") => {
             get_model_availability(p, state).await
         }
-        (&Method::GET, p)
-            if p.starts_with("/foundation-models") && p.contains("/agreement-offers") =>
-        {
+        (&Method::GET, p) if p.starts_with("/list-foundation-model-agreement-offers/") => {
             list_agreement_offers(p, state).await
         }
         (&Method::GET, "/foundation-models") => list_foundation_models(state).await,
         (&Method::GET, "/inference-profiles") => list_inference_profiles(state).await,
-        (&Method::POST, "/custom-model-agreements") => create_model_agreement(body, state).await,
+        (&Method::POST, "/create-foundation-model-agreement") => {
+            create_model_agreement(body, state).await
+        }
         _ => (
             StatusCode::NOT_FOUND,
             json!({"message": format!("Unknown Bedrock path: {path}")}).to_string(),
@@ -394,28 +399,37 @@ async fn list_inference_profiles(state: SharedState) -> Response {
 }
 
 async fn get_model_availability(path: &str, state: SharedState) -> Response {
-    // Path: /foundation-models/{model_id}/availability
-    let model_id = path
-        .strip_prefix("/foundation-models/")
-        .and_then(|rest| rest.strip_suffix("/availability"))
-        .unwrap_or("");
+    // Path: /foundation-model-availability/{model_id}
+    let model_id = decode_model_id(path.strip_prefix("/foundation-model-availability/"));
 
     let st = state.read().await;
-    let agreed = st.model_agreements.contains(model_id);
+    let agreed = st.model_agreements.contains(&model_id);
 
+    // `entitlementAvailability` is what the provisioner reads to decide
+    // whether a model is invokable — an accepted agreement with no entitlement
+    // reported is a model it calls blocked.
     json_response(json!({
         "agreementAvailability": {
             "status": if agreed { "AVAILABLE" } else { "NOT_AGREED" },
-        }
+        },
+        "entitlementAvailability": if agreed { "AVAILABLE" } else { "NOT_AVAILABLE" },
     }))
 }
 
+/// A model ID taken from a path segment.
+///
+/// Model IDs carry a `:` before the version (`…-v1:0`), which the SDK
+/// percent-encodes. Comparing the raw segment against a seeded ID silently
+/// never matches, and the scenario then reports every model as blocked.
+fn decode_model_id(segment: Option<&str>) -> String {
+    percent_encoding::percent_decode_str(segment.unwrap_or(""))
+        .decode_utf8_lossy()
+        .to_string()
+}
+
 async fn list_agreement_offers(path: &str, _state: SharedState) -> Response {
-    // Path: /foundation-models/{model_id}/agreement-offers
-    let model_id = path
-        .strip_prefix("/foundation-models/")
-        .and_then(|rest| rest.strip_suffix("/agreement-offers"))
-        .unwrap_or("");
+    // Path: /list-foundation-model-agreement-offers/{model_id}
+    let model_id = decode_model_id(path.strip_prefix("/list-foundation-model-agreement-offers/"));
 
     json_response(json!({
         "offers": [{

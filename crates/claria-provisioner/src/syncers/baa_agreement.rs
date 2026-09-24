@@ -5,6 +5,7 @@ use crate::{
     error::ProvisionerError,
     manifest::ResourceSpec,
     syncer::{BoxFuture, ResourceSyncer},
+    syncers::read_failed,
 };
 
 pub struct BaaAgreementSyncer {
@@ -33,9 +34,7 @@ impl ResourceSyncer for BaaAgreementSyncer {
                 .list_customer_agreements()
                 .send()
                 .await
-                .map_err(|e| {
-                    ProvisionerError::Aws(format!("artifact:ListCustomerAgreements failed: {e}"))
-                })?;
+                .map_err(|e| read_failed("artifact:ListCustomerAgreements", &e))?;
 
             for agreement in resp.customer_agreements() {
                 let is_active = agreement
