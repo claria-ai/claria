@@ -1,0 +1,2 @@
+# Padded corpora from `build_fixture.py --scale N`; only records/ is committed.
+records-x*/
