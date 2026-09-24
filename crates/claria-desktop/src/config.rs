@@ -633,6 +633,51 @@ pub fn has_config() -> bool {
     config_path().map(|p| p.exists()).unwrap_or(false)
 }
 
+/// The lock settings out of raw `config.json` contents, whatever else about
+/// the file this build cannot handle.
+///
+/// The session lock is the one thing that must survive a config the rest of
+/// the app gives up on. [`parse_config`] fails whole — a `config_version`
+/// from a newer build, limits that no longer validate — and the startup lock
+/// used to take that as "not armed" and let the machine boot unlocked. A
+/// clinician who set a PIN would find their records on screen after an
+/// upgrade went wrong, which is the exact walk-away case the lock exists for.
+///
+/// So it reads only the `security` subtree. Migrations move forward and never
+/// rename a field out from under an older build, so the subtree of a newer
+/// document still means what it says and its unknown fields are ignored;
+/// an older document is migrated first, like any other read. Every field of
+/// [`SecuritySettings`] is `#[serde(default)]`, so a subtree missing
+/// entirely reads as the default — unarmed, which is correct for a config
+/// written before the lock existed.
+///
+/// `None` only when the JSON will not parse at all. That case genuinely
+/// cannot lock: there is no PIN hash to check an unlock against, and an
+/// overlay nothing can dismiss is not protection, it is a clinician locked
+/// out of their records. `design/app-lock.md` states that rule.
+///
+/// Pure — it touches no files — so it is reachable from a test without a
+/// Tauri runtime.
+pub fn parse_security_settings(contents: &str) -> Option<SecuritySettings> {
+    let json: serde_json::Value = serde_json::from_str(contents).ok()?;
+    let on_disk_version = json
+        .get("config_version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
+    // A document this build can migrate is migrated, so a renamed or moved
+    // field is read the way the rest of the config would read it. One from a
+    // newer build is read as it stands.
+    let json = if on_disk_version <= CURRENT_VERSION {
+        migrate(json, on_disk_version).ok()?
+    } else {
+        json
+    };
+
+    let security = json.get("security")?;
+    serde_json::from_value(security.clone()).ok()
+}
+
 /// Parse raw `config.json` contents: migrate to [`CURRENT_VERSION`],
 /// deserialize, validate. Pure — it touches no files — so every way a config
 /// can fail to load is reachable from a test.
@@ -684,6 +729,20 @@ pub fn read_config_at(path: &Path) -> eyre::Result<Option<(ClariaConfig, u32)>> 
 /// on disk says so instead of sending the clinician back through setup.
 pub fn load_config() -> eyre::Result<ClariaConfig> {
     load_config_at(&config_path()?)
+}
+
+/// The saved lock settings, read narrowly enough to survive a config the rest
+/// of this build cannot load.
+///
+/// See [`parse_security_settings`] for why that matters and what `None`
+/// means. `None` also covers a config that is simply not there.
+pub fn load_security_settings() -> Option<SecuritySettings> {
+    load_security_settings_at(&config_path().ok()?)
+}
+
+/// [`load_security_settings`] against an explicit path.
+pub fn load_security_settings_at(path: &Path) -> Option<SecuritySettings> {
+    parse_security_settings(&std::fs::read_to_string(path).ok()?)
 }
 
 /// [`load_config`] against an explicit path. Migrated configs are written

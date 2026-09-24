@@ -33,7 +33,9 @@ down machine.
 
 `LockRuntime` is process-local and deliberately never persisted. A launch
 derives its lock state from the config alone, so nothing on disk can leave the
-app stuck locked, and the failure counter starts fresh on every launch.
+app stuck locked, and the failure counter starts fresh on every launch. What
+"from the config" means when the config will not load is its own section
+below.
 
 The stored settings are machine-local by construction: `SecuritySettings` is
 not part of `SyncedPreferences`, so it never reaches `_state/preferences.json`.
@@ -111,6 +113,28 @@ so the flag is already set when the webview's first `get_lock_state` arrives.
 
 Locking is refused when no PIN is stored. An overlay with no credential that
 dismisses it is not protection; it is a clinician locked out of their records.
+
+## A config the build cannot load
+
+`config.json` can fail to load whole — a `config_version` from a newer Claria,
+a limit that no longer validates — and the lock must not go with it. Taking
+that failure as "not armed" is how a machine with a PIN set boots unlocked
+after an upgrade goes wrong, which is precisely the walk-away case the lock
+exists for. It also quietly removes the ground under the backoff argument
+above, which rests on a restart coming back locked.
+
+So the lock reads narrowly: `config::parse_security_settings` pulls the
+`security` subtree out of the raw JSON, migrating first when the document is
+one this build knows. Both the startup lock and `settings()` — the single
+choke point behind every lock command and the watcher — go through it. That
+second part is what makes failing closed survivable: the PIN the overlay
+checks against comes from the same narrow read, so a machine that locks can
+still be unlocked.
+
+One case still fails open, deliberately. JSON that will not parse at all
+yields no `security` subtree and therefore no PIN hash, and locking then would
+mean an overlay nothing can dismiss. The rule above decides it: no stored PIN,
+no lock.
 
 ## Broadcast, not polling
 
