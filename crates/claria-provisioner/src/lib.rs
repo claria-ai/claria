@@ -33,12 +33,16 @@ pub use crate::{
         AccessKeyInfo, AssumeRoleResult, BootstrapResult, BootstrapStep, CallerIdentity,
         CredentialAssessment, CredentialClass, MAX_ACCESS_KEYS_PER_USER, NewCredentials,
         StepStatus, assess_credentials, assume_role, bootstrap_account, build_role_arn,
-        create_access_key, delete_user_access_key, get_caller_identity, list_user_access_keys,
-        update_iam_policy, validate_new_credentials, validate_teardown_credentials,
+        claria_policy_document, create_access_key, delete_user_access_key, get_caller_identity,
+        list_user_access_keys, render_policy_document, update_iam_policy, validate_new_credentials,
+        validate_teardown_credentials,
     },
     addr::ResourceAddr,
     error::ProvisionerError,
-    manifest::{CredentialScope, FieldDrift, Lifecycle, Manifest, ResourceSpec, Severity},
+    manifest::{
+        CredentialScope, FieldDrift, IamAction, IamScope, Lifecycle, Manifest, ResourceSpec,
+        Severity,
+    },
     orchestrate::{
         build_plan_entry, destroy_all, execute, find_orphans, log_scan_summary, plan,
         reconcile_state, record_applied,
@@ -55,11 +59,15 @@ pub fn build_manifest(account_id: &str, system_name: &str, region: &str) -> Mani
 }
 
 /// Every IAM action the manifest's resources need, aggregated for the policy diff.
+///
+/// The action names alone: the policy the diff compares against is a live read
+/// from AWS, which reports actions and not the scopes the manifest attaches to
+/// them. `claria_policy_document` renders those scopes from the same list.
 fn required_actions(manifest: &Manifest) -> HashSet<String> {
     manifest
         .specs
         .iter()
-        .flat_map(|s| s.iam_actions.iter().cloned())
+        .flat_map(|s| s.iam_actions.iter().map(|a| a.action.clone()))
         .collect()
 }
 

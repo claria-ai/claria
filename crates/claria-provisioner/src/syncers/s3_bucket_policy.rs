@@ -24,7 +24,12 @@ impl S3BucketPolicySyncer {
     }
 
     /// Render the full IAM policy document from the desired spec.
-    fn render_policy_document(&self) -> serde_json::Value {
+    /// The bucket policy this spec asks for, in AWS's own spelling.
+    ///
+    /// `pub` so a test can compare a mock's read against the real rendering
+    /// rather than restating it — a second copy of this is a copy that
+    /// silently stops agreeing with what Claria actually writes.
+    pub fn render_policy_document(&self) -> serde_json::Value {
         let statements = self
             .spec
             .desired

@@ -103,6 +103,13 @@ fn create_iam_user(state: &mut MockState) {
         .insert("AKIAMOCKKEY00000001".to_string(), key);
 }
 
+/// An attached policy granting only part of what Claria's manifest asks for.
+///
+/// Deliberately short of the real document, so a scan of this scenario reports
+/// the IAM policy as drifted and the escalation path has something to act on.
+/// Do not sync it with `claria_policy_document` — that would be a fourth copy
+/// of the action list, and it would also leave the scenario with no policy
+/// drift to exercise.
 fn create_iam_policy(state: &mut MockState) {
     let policy_arn = format!("arn:aws:iam::{ACCOUNT_ID}:policy/ClariaProvisionerAccess");
     let document = serde_json::json!({

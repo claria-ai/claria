@@ -2218,6 +2218,38 @@ export type FindingStatus = "open" |
 export type FrontendLogLevel = "error" | "warn" | "info"
 export type FullReportGenerationResponse = { workspace: ReportWorkspaceView; turn_id: string; attempt_id: string; assistant_text: string; usage: TurnUsage; usage_complete: boolean; converse_calls: number; tool_uses: number; included_record_files: number; unavailable_record_files: number; record_characters: number }
 /**
+ * One IAM action and what it may be used on.
+ */
+export type IamAction = { 
+/**
+ * The IAM action name, which is not always the API operation name —
+ * `s3:GetEncryptionConfiguration`, not `s3:GetBucketEncryption`.
+ */
+action: string; scope: IamScope }
+/**
+ * What a granted IAM action may be used on.
+ * 
+ * Carried per action rather than per resource because one resource's actions
+ * do not share a scope — `iam_user` needs `iam:GetUser` against its own user
+ * ARN and `sts:GetCallerIdentity` against the account.
+ */
+export type IamScope = 
+/**
+ * Only buckets under this deployment's `{account}-{system}-` prefix.
+ */
+"claria_buckets" | 
+/**
+ * Only Claria's own IAM user and policy.
+ */
+"claria_identity" | 
+/**
+ * Account-wide. For actions AWS does not scope to a resource — trails
+ * are looked up by name, foundation models and agreements are not
+ * account resources, `ce:GetCostAndUsage` and `sts:GetCallerIdentity`
+ * are account-wide by definition.
+ */
+"account"
+/**
  * Response from an infrastructure chat turn. Infra chat does not persist
  * history, but we still return token usage so the UI can display cost.
  * Usage is `None` when Bedrock omitted the usage block.
@@ -2626,9 +2658,13 @@ description: string;
  */
 severity: Severity; 
 /**
- * IAM actions this resource requires (aggregated for policy diff)
+ * IAM actions this resource requires.
+ * 
+ * The single declaration of what Claria's policy grants: the diff
+ * compares against it and [`crate::account_setup::claria_policy_document`]
+ * renders it. Widening an action list here widens the policy.
  */
-iam_actions: string[] }
+iam_actions: IamAction[] }
 /**
  * Proof that one review property actually ran over one revision, including
  * the case where it found nothing.

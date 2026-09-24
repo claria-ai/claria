@@ -31,8 +31,64 @@ pub struct ResourceSpec {
     pub description: String,
     /// How much attention this entry needs
     pub severity: Severity,
-    /// IAM actions this resource requires (aggregated for policy diff)
-    pub iam_actions: Vec<String>,
+    /// IAM actions this resource requires.
+    ///
+    /// The single declaration of what Claria's policy grants: the diff
+    /// compares against it and [`crate::account_setup::claria_policy_document`]
+    /// renders it. Widening an action list here widens the policy.
+    pub iam_actions: Vec<IamAction>,
+}
+
+/// What a granted IAM action may be used on.
+///
+/// Carried per action rather than per resource because one resource's actions
+/// do not share a scope — `iam_user` needs `iam:GetUser` against its own user
+/// ARN and `sts:GetCallerIdentity` against the account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum IamScope {
+    /// Only buckets under this deployment's `{account}-{system}-` prefix.
+    ClariaBuckets,
+    /// Only Claria's own IAM user and policy.
+    ClariaIdentity,
+    /// Account-wide. For actions AWS does not scope to a resource — trails
+    /// are looked up by name, foundation models and agreements are not
+    /// account resources, `ce:GetCostAndUsage` and `sts:GetCallerIdentity`
+    /// are account-wide by definition.
+    Account,
+}
+
+/// One IAM action and what it may be used on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct IamAction {
+    /// The IAM action name, which is not always the API operation name —
+    /// `s3:GetEncryptionConfiguration`, not `s3:GetBucketEncryption`.
+    pub action: String,
+    pub scope: IamScope,
+}
+
+impl IamAction {
+    fn new(action: &str, scope: IamScope) -> Self {
+        Self {
+            action: action.to_string(),
+            scope,
+        }
+    }
+
+    /// Scoped to this deployment's buckets.
+    pub fn bucket(action: &str) -> Self {
+        Self::new(action, IamScope::ClariaBuckets)
+    }
+
+    /// Scoped to Claria's own IAM user and policy.
+    pub fn identity(action: &str) -> Self {
+        Self::new(action, IamScope::ClariaIdentity)
+    }
+
+    /// Account-wide.
+    pub fn account(action: &str) -> Self {
+        Self::new(action, IamScope::Account)
+    }
 }
 
 impl ResourceSpec {
@@ -155,8 +211,8 @@ impl Manifest {
                     description: "Dedicated least-privilege user that Claria operates as".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "iam:GetUser".into(),
-                        "sts:GetCallerIdentity".into(),
+                        IamAction::identity("iam:GetUser"),
+                        IamAction::account("sts:GetCallerIdentity"),
                     ],
                 },
                 ResourceSpec {
@@ -169,9 +225,9 @@ impl Manifest {
                     description: "Permissions scoped to only what Claria needs".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "iam:ListAttachedUserPolicies".into(),
-                        "iam:GetPolicy".into(),
-                        "iam:GetPolicyVersion".into(),
+                        IamAction::identity("iam:ListAttachedUserPolicies"),
+                        IamAction::identity("iam:GetPolicy"),
+                        IamAction::identity("iam:GetPolicyVersion"),
                     ],
                 },
                 // ── regular resources ─────────────────────────────────────
@@ -185,7 +241,7 @@ impl Manifest {
                     description: "Business Associate Agreement — must be accepted in the AWS Artifact console"
                         .into(),
                     severity: Severity::Elevated,
-                    iam_actions: vec!["artifact:ListCustomerAgreements".into()],
+                    iam_actions: vec![IamAction::account("artifact:ListCustomerAgreements")],
                 },
                 ResourceSpec {
                     resource_type: "s3_bucket".into(),
@@ -199,15 +255,15 @@ impl Manifest {
                     // Permanent version deletion belongs exclusively to the
                     // temporary elevated credentials used for full teardown.
                     iam_actions: vec![
-                        "s3:HeadBucket".into(),
-                        "s3:CreateBucket".into(),
-                        "s3:DeleteBucket".into(),
-                        "s3:ListBucket".into(),
-                        "s3:ListBucketVersions".into(),
-                        "s3:GetObject".into(),
-                        "s3:GetObjectVersion".into(),
-                        "s3:PutObject".into(),
-                        "s3:DeleteObject".into(),
+                        IamAction::bucket("s3:HeadBucket"),
+                        IamAction::bucket("s3:CreateBucket"),
+                        IamAction::bucket("s3:DeleteBucket"),
+                        IamAction::bucket("s3:ListBucket"),
+                        IamAction::bucket("s3:ListBucketVersions"),
+                        IamAction::bucket("s3:GetObject"),
+                        IamAction::bucket("s3:GetObjectVersion"),
+                        IamAction::bucket("s3:PutObject"),
+                        IamAction::bucket("s3:DeleteObject"),
                     ],
                 },
                 ResourceSpec {
@@ -220,8 +276,8 @@ impl Manifest {
                     description: "S3 version history — protects against accidental deletion".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "s3:GetBucketVersioning".into(),
-                        "s3:PutBucketVersioning".into(),
+                        IamAction::bucket("s3:GetBucketVersioning"),
+                        IamAction::bucket("s3:PutBucketVersioning"),
                     ],
                 },
                 ResourceSpec {
@@ -234,8 +290,8 @@ impl Manifest {
                     description: "Server-side encryption — all objects in this bucket are encrypted at rest".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "s3:GetEncryptionConfiguration".into(),
-                        "s3:PutEncryptionConfiguration".into(),
+                        IamAction::bucket("s3:GetEncryptionConfiguration"),
+                        IamAction::bucket("s3:PutEncryptionConfiguration"),
                     ],
                 },
                 ResourceSpec {
@@ -253,8 +309,8 @@ impl Manifest {
                     description: "Prevents your data from ever being publicly accessible".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "s3:GetBucketPublicAccessBlock".into(),
-                        "s3:PutBucketPublicAccessBlock".into(),
+                        IamAction::bucket("s3:GetBucketPublicAccessBlock"),
+                        IamAction::bucket("s3:PutBucketPublicAccessBlock"),
                     ],
                 },
                 ResourceSpec {
@@ -290,8 +346,8 @@ impl Manifest {
                         .into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "s3:GetBucketPolicy".into(),
-                        "s3:PutBucketPolicy".into(),
+                        IamAction::bucket("s3:GetBucketPolicy"),
+                        IamAction::bucket("s3:PutBucketPolicy"),
                     ],
                 },
                 ResourceSpec {
@@ -309,9 +365,9 @@ impl Manifest {
                         .into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "cloudtrail:GetTrail".into(),
-                        "cloudtrail:CreateTrail".into(),
-                        "cloudtrail:DeleteTrail".into(),
+                        IamAction::account("cloudtrail:GetTrail"),
+                        IamAction::account("cloudtrail:CreateTrail"),
+                        IamAction::account("cloudtrail:DeleteTrail"),
                     ],
                 },
                 ResourceSpec {
@@ -324,9 +380,9 @@ impl Manifest {
                     description: "Audit logging status — must be active for compliance".into(),
                     severity: Severity::Normal,
                     iam_actions: vec![
-                        "cloudtrail:GetTrailStatus".into(),
-                        "cloudtrail:StartLogging".into(),
-                        "cloudtrail:StopLogging".into(),
+                        IamAction::account("cloudtrail:GetTrailStatus"),
+                        IamAction::account("cloudtrail:StartLogging"),
+                        IamAction::account("cloudtrail:StopLogging"),
                     ],
                 },
                 ResourceSpec {
@@ -340,16 +396,16 @@ impl Manifest {
                         .into(),
                     severity: Severity::Elevated,
                     iam_actions: vec![
-                        "bedrock:ListFoundationModels".into(),
-                        "bedrock:ListInferenceProfiles".into(),
-                        "bedrock:GetFoundationModelAvailability".into(),
-                        "bedrock:ListFoundationModelAgreementOffers".into(),
-                        "bedrock:CreateFoundationModelAgreement".into(),
-                        "bedrock:InvokeModel".into(),
-                        "bedrock:InvokeModelWithResponseStream".into(),
-                        "bedrock:CountTokens".into(),
-                        "aws-marketplace:ViewSubscriptions".into(),
-                        "aws-marketplace:Subscribe".into(),
+                        IamAction::account("bedrock:ListFoundationModels"),
+                        IamAction::account("bedrock:ListInferenceProfiles"),
+                        IamAction::account("bedrock:GetFoundationModelAvailability"),
+                        IamAction::account("bedrock:ListFoundationModelAgreementOffers"),
+                        IamAction::account("bedrock:CreateFoundationModelAgreement"),
+                        IamAction::account("bedrock:InvokeModel"),
+                        IamAction::account("bedrock:InvokeModelWithResponseStream"),
+                        IamAction::account("bedrock:CountTokens"),
+                        IamAction::account("aws-marketplace:ViewSubscriptions"),
+                        IamAction::account("aws-marketplace:Subscribe"),
                     ],
                 },
                 ResourceSpec {
@@ -362,12 +418,12 @@ impl Manifest {
                     description: "Audio-to-text transcription for uploaded recordings".into(),
                     severity: Severity::Info,
                     iam_actions: vec![
-                        "transcribe:StartTranscriptionJob".into(),
-                        "transcribe:GetTranscriptionJob".into(),
-                        "transcribe:DeleteTranscriptionJob".into(),
-                        "transcribe:StartMedicalTranscriptionJob".into(),
-                        "transcribe:GetMedicalTranscriptionJob".into(),
-                        "transcribe:DeleteMedicalTranscriptionJob".into(),
+                        IamAction::account("transcribe:StartTranscriptionJob"),
+                        IamAction::account("transcribe:GetTranscriptionJob"),
+                        IamAction::account("transcribe:DeleteTranscriptionJob"),
+                        IamAction::account("transcribe:StartMedicalTranscriptionJob"),
+                        IamAction::account("transcribe:GetMedicalTranscriptionJob"),
+                        IamAction::account("transcribe:DeleteMedicalTranscriptionJob"),
                     ],
                 },
                 ResourceSpec {
@@ -381,10 +437,28 @@ impl Manifest {
                         "Permission to read your AWS spending, granted by Claria's IAM policy"
                             .into(),
                     severity: Severity::Info,
-                    iam_actions: vec!["ce:GetCostAndUsage".into()],
+                    iam_actions: vec![IamAction::account("ce:GetCostAndUsage")],
                 },
             ],
         }
+    }
+
+    /// Every IAM action this deployment's resources declare.
+    ///
+    /// The whole point of the type: the policy document and the drift
+    /// comparison are both rendered from this one list, so they cannot come
+    /// to disagree. They were separate declarations, and a divergence in
+    /// either direction made the plan report a drift that applying could
+    /// never resolve — the diff read the manifest, the write emitted a
+    /// hand-kept JSON document.
+    ///
+    /// Region does not reach a policy, so this does not ask for one.
+    pub fn iam_actions(account_id: &str, system_name: &str) -> Vec<IamAction> {
+        Manifest::claria(account_id, system_name, "us-east-1")
+            .specs
+            .into_iter()
+            .flat_map(|spec| spec.iam_actions)
+            .collect()
     }
 
     /// Ask the Cost Explorer precondition to prove itself with a live call.

@@ -14,6 +14,7 @@ All notable changes to Claria are documented here.
 - Cost Explorer reports whether Claria asked for the permission or proved it, and is only tested for clinicians who have turned it on, because AWS charges for the call that tests it
 - An IAM user belonging to a different AWS account is reported as wrong instead of accepted
 - A storage bucket in the wrong region is reported as wrong instead of accepted
+- The permissions Claria writes are the permissions it checks for, so a permission change can no longer report a difference that applying it never resolves
 - Provisioner state can be written at all; a state file holding any resource was silently rejected as unserializable, so the record every teardown reads from stayed empty
 - A resource Claria no longer manages is torn down when you apply the plan that says it will be removed, instead of being dropped from the record and left running in the account
 - A resource this build cannot tear down keeps its record, so it stays visible instead of being quietly forgotten

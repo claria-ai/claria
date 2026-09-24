@@ -31,7 +31,10 @@ use backon::{ExponentialBuilder, Retryable};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use crate::error::ProvisionerError;
+use crate::{
+    error::ProvisionerError,
+    manifest::{IamAction, IamScope, Manifest},
+};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -702,141 +705,96 @@ pub async fn delete_user_access_key(
 
 /// Build the Claria minimal IAM policy document.
 ///
-/// S3 actions are scoped to buckets matching `{system_name}-*`.
-/// `s3:DeleteObjectVersion` is deliberately absent: only a temporary elevated
-/// credential may permanently erase version history during full teardown.
-/// IAM read actions are scoped to the `claria-admin` user and
-/// `ClariaProvisionerAccess` policy so the dashboard can verify its own setup.
+/// Rendered from the manifest's own `iam_actions`, which is what the drift
+/// comparison reads. They used to be two independent declarations kept in
+/// step by hand: the moment they diverged, the plan reported a permanent
+/// `Modify`, applying it wrote the other list, and the next scan reported the
+/// same drift forever, because the comparison is exact set equality in both
+/// directions.
+///
+/// Each action carries the scope it may be used on, so widening a statement is
+/// something you do by editing the manifest, in the same place that says which
+/// resource needs the action and why.
 ///
 /// `account_id` must be a concrete, resolved account ID — never a wildcard.
-/// The remaining `"Resource": "*"` statements below are deliberate and must
-/// stay narrow in *actions* instead: CloudTrail, Bedrock, Marketplace,
+/// [`IamScope::Account`] renders `"Resource": "*"`, which is deliberate and
+/// must stay narrow in *actions* instead: CloudTrail, Bedrock, Marketplace,
 /// Artifact, Transcribe, Cost Explorer, and STS either do not support
-/// resource-level scoping for the listed actions or operate on
-/// account-global resources (trails are looked up by name, foundation models
-/// and agreements are not account resources, `ce:GetCostAndUsage` and
-/// `sts:GetCallerIdentity` are account-wide by definition). Widening any of
-/// those statements' action lists is what would grant new power — do not.
-pub(crate) fn claria_policy_document(system_name: &str, account_id: &str) -> String {
+/// resource-level scoping for the listed actions or operate on account-global
+/// resources (trails are looked up by name, foundation models and agreements
+/// are not account resources, `ce:GetCostAndUsage` and `sts:GetCallerIdentity`
+/// are account-wide by definition). Widening those action lists is what would
+/// grant new power — do not.
+///
+/// `s3:DeleteObjectVersion` is deliberately absent from every scope: only a
+/// temporary elevated credential may permanently erase version history during
+/// full teardown.
+pub fn claria_policy_document(system_name: &str, account_id: &str) -> String {
+    render_policy_document(
+        &Manifest::iam_actions(account_id, system_name),
+        system_name,
+        account_id,
+    )
+}
+
+/// Render `actions` as a policy document, one statement per scope.
+///
+/// Separate from [`claria_policy_document`] so a test can render an action
+/// list of its own and check what each scope actually grants.
+pub fn render_policy_document(
+    actions: &[IamAction],
+    system_name: &str,
+    account_id: &str,
+) -> String {
+    // (Sid, scope, the ARNs that scope allows)
+    let statements = [
+        (
+            "ClariaBuckets",
+            IamScope::ClariaBuckets,
+            serde_json::json!([
+                format!("arn:aws:s3:::{account_id}-{system_name}-*"),
+                format!("arn:aws:s3:::{account_id}-{system_name}-*/*")
+            ]),
+        ),
+        (
+            "ClariaIdentity",
+            IamScope::ClariaIdentity,
+            serde_json::json!([
+                format!("arn:aws:iam::{account_id}:user/{IAM_USER_NAME}"),
+                format!("arn:aws:iam::{account_id}:policy/{IAM_POLICY_NAME}")
+            ]),
+        ),
+        ("ClariaAccount", IamScope::Account, serde_json::json!("*")),
+    ];
+
+    let rendered: Vec<serde_json::Value> = statements
+        .into_iter()
+        .filter_map(|(sid, scope, resource)| {
+            // Sorted and deduplicated: several resources ask for the same
+            // action, and a policy that reorders itself between renders reads
+            // as a change in every diff.
+            let mut names: Vec<&str> = actions
+                .iter()
+                .filter(|a| a.scope == scope)
+                .map(|a| a.action.as_str())
+                .collect();
+            names.sort_unstable();
+            names.dedup();
+            if names.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({
+                "Sid": sid,
+                "Effect": "Allow",
+                "Action": names,
+                "Resource": resource,
+            }))
+        })
+        .collect();
+
     serde_json::json!({
         "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Sid": "ClariaS3",
-                "Effect": "Allow",
-                "Action": [
-                    "s3:HeadBucket",
-                    "s3:CreateBucket",
-                    "s3:DeleteBucket",
-                    "s3:GetBucketVersioning",
-                    "s3:PutBucketVersioning",
-                    "s3:GetEncryptionConfiguration",
-                    "s3:PutEncryptionConfiguration",
-                    "s3:GetBucketPublicAccessBlock",
-                    "s3:PutBucketPublicAccessBlock",
-                    "s3:GetBucketPolicy",
-                    "s3:PutBucketPolicy",
-                    "s3:GetObject",
-                    "s3:GetObjectVersion",
-                    "s3:PutObject",
-                    "s3:DeleteObject",
-                    "s3:ListBucket",
-                    "s3:ListBucketVersions"
-                ],
-                "Resource": [
-                    format!("arn:aws:s3:::{account_id}-{system_name}-*"),
-                    format!("arn:aws:s3:::{account_id}-{system_name}-*/*")
-                ]
-            },
-            {
-                "Sid": "ClariaCloudTrail",
-                "Effect": "Allow",
-                "Action": [
-                    "cloudtrail:GetTrail",
-                    "cloudtrail:GetTrailStatus",
-                    "cloudtrail:CreateTrail",
-                    "cloudtrail:StartLogging",
-                    "cloudtrail:StopLogging",
-                    "cloudtrail:DeleteTrail"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Sid": "ClariaBedrock",
-                "Effect": "Allow",
-                "Action": [
-                    "bedrock:ListFoundationModels",
-                    "bedrock:ListInferenceProfiles",
-                    "bedrock:GetFoundationModelAvailability",
-                    "bedrock:ListFoundationModelAgreementOffers",
-                    "bedrock:CreateFoundationModelAgreement",
-                    "bedrock:InvokeModel",
-                    "bedrock:InvokeModelWithResponseStream",
-                    "bedrock:CountTokens"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Sid": "ClariaMarketplace",
-                "Effect": "Allow",
-                "Action": [
-                    "aws-marketplace:ViewSubscriptions",
-                    "aws-marketplace:Subscribe"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Sid": "ClariaIAMReadSelf",
-                "Effect": "Allow",
-                "Action": [
-                    "iam:GetUser",
-                    "iam:ListAttachedUserPolicies",
-                    "iam:GetPolicy",
-                    "iam:GetPolicyVersion"
-                ],
-                "Resource": [
-                    format!("arn:aws:iam::{account_id}:user/{IAM_USER_NAME}"),
-                    format!("arn:aws:iam::{account_id}:policy/{IAM_POLICY_NAME}")
-                ]
-            },
-            {
-                "Sid": "ClariaArtifact",
-                "Effect": "Allow",
-                "Action": [
-                    "artifact:ListCustomerAgreements"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Sid": "ClariaTranscribe",
-                "Effect": "Allow",
-                "Action": [
-                    "transcribe:StartTranscriptionJob",
-                    "transcribe:GetTranscriptionJob",
-                    "transcribe:DeleteTranscriptionJob",
-                    "transcribe:StartMedicalTranscriptionJob",
-                    "transcribe:GetMedicalTranscriptionJob",
-                    "transcribe:DeleteMedicalTranscriptionJob"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Sid": "ClariaCostExplorer",
-                "Effect": "Allow",
-                "Action": [
-                    "ce:GetCostAndUsage"
-                ],
-                "Resource": "*"
-            },
-            {
-                "Sid": "ClariaSTS",
-                "Effect": "Allow",
-                "Action": [
-                    "sts:GetCallerIdentity"
-                ],
-                "Resource": "*"
-            }
-        ]
+        "Statement": rendered,
     })
     .to_string()
 }
