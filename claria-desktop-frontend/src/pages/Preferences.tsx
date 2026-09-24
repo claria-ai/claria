@@ -157,9 +157,22 @@ function useSyncedPreferences(): SyncedPreferencesState {
   return useContext(SyncedPreferencesContext);
 }
 
-/** Cloud first; the local config carries a machine that has no S3 read yet. */
+/**
+ * Cloud first; the local config carries a machine that has no S3 read yet.
+ *
+ * Degrading is allowed, doing it invisibly is not — a bucket holding
+ * preferences this build cannot read, or one it cannot reach at all, would
+ * otherwise show the local values with nothing to say they are not the synced
+ * ones.
+ */
 function readSyncedPreferences(): Promise<ConfigInfo> {
-  return fetchCloudPreferences().catch(() => loadConfig());
+  return fetchCloudPreferences().catch((reason) => {
+    logFrontendEvent(
+      "warn",
+      `synced preferences unavailable, showing this machine's own: ${reason}`
+    );
+    return loadConfig();
+  });
 }
 
 /**

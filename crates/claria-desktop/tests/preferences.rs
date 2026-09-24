@@ -1,9 +1,9 @@
 //! Tests for synced workflow preferences and their backward-compatible defaults.
 
 use claria_desktop::config::{
-    ChatStreamMode, ClariaConfig, CredentialSource, DraftPipelinePreferences, PlanGateMode,
-    ReportAuthoringPreferences, SecuritySettings, SyncedPreferences, TranscriptionLanguage,
-    TranscriptionPreferences,
+    self as config, ChatStreamMode, ClariaConfig, CredentialSource, DraftPipelinePreferences,
+    PlanGateMode, PreferencesPatch, ReportAuthoringPreferences, SecuritySettings,
+    SyncedPreferences, TranscriptionLanguage, TranscriptionPreferences,
 };
 
 fn sample_config() -> ClariaConfig {
@@ -219,4 +219,83 @@ fn debug_printing_the_config_does_not_print_the_pin_hash() {
 
     assert!(!rendered.contains("argon2"), "{rendered}");
     assert!(rendered.contains("[redacted]"), "{rendered}");
+}
+
+// ── The version gate on the synced document ──────────────────────────────
+
+#[test]
+fn a_document_this_build_wrote_is_readable() {
+    assert!(config::preferences_version_is_readable(
+        config::PREFERENCES_VERSION
+    ));
+}
+
+#[test]
+fn a_document_an_older_build_wrote_is_readable() {
+    // Missing fields fall to their `#[serde(default)]`, which is what makes
+    // an older document safe to read and rewrite.
+    for version in 0..config::PREFERENCES_VERSION {
+        assert!(
+            config::preferences_version_is_readable(version),
+            "v{version} must still load"
+        );
+    }
+}
+
+/// Serde drops what it does not know, so a newer document reads cleanly and
+/// quietly loses fields. The damage is the write that follows: every save is a
+/// read-modify-write of this object, so accepting it means writing the
+/// truncated copy back over the newer one. Refusing is the whole remedy.
+#[test]
+fn a_document_a_newer_build_wrote_is_refused() {
+    assert!(!config::preferences_version_is_readable(
+        config::PREFERENCES_VERSION + 1
+    ));
+}
+
+#[test]
+fn the_refusal_tells_the_clinician_what_to_do() {
+    assert!(
+        config::PREFERENCES_TOO_NEW.contains("Update Claria"),
+        "the message names the remedy: {}",
+        config::PREFERENCES_TOO_NEW
+    );
+}
+
+/// The write half, and the reason `merge` exists at all. A patch carries only
+/// the fields its pane edits and never touches the version, so a
+/// read-modify-write of a document another build wrote used to hand that
+/// build's number back on contents written in this build's schema.
+#[test]
+fn merging_a_patch_stamps_the_version_that_wrote_it() {
+    let mut synced = SyncedPreferences::from_config(&sample_config());
+    // As read back from a bucket some other build last wrote.
+    synced.preferences_version = 99;
+
+    synced.merge(&PreferencesPatch {
+        hourly_cost_data: Some(true),
+        ..Default::default()
+    });
+
+    assert_eq!(synced.preferences_version, config::PREFERENCES_VERSION);
+    assert!(synced.hourly_cost_data, "the patch still applied");
+}
+
+/// The merge is a merge: a pane saving its own field cannot roll back a
+/// sibling's, which is the property patch-saves exist for.
+#[test]
+fn merging_a_patch_leaves_the_fields_it_does_not_name() {
+    let mut synced = SyncedPreferences::from_config(&sample_config());
+    let before = synced.transcription.clone();
+
+    synced.merge(&PreferencesPatch {
+        hourly_cost_data: Some(true),
+        ..Default::default()
+    });
+
+    assert_eq!(synced.transcription, before);
+    assert_eq!(
+        synced.preferred_model_id,
+        Some("anthropic.claude-opus-4-7".into())
+    );
 }

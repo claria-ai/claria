@@ -18,6 +18,9 @@ All notable changes to Claria are documented here.
 - Setup deletes the root access key once your dedicated user is working, which is what it has always said it would do
 - A root access key Claria could not delete is reported, with what to remove by hand, instead of being left behind in silence
 - Deleting the root access key is written to the audit trail
+- An older Claria no longer silently strips settings a newer Claria saved, on the machines that share them
+- Preferences written by a newer Claria are refused with a note to update, the way a preferences file you open already was
+- A saved preference records the Claria that wrote it
 - Provisioner state can be written at all; a state file holding any resource was silently rejected as unserializable, so the record every teardown reads from stayed empty
 - A resource Claria no longer manages is torn down when you apply the plan that says it will be removed, instead of being dropped from the record and left running in the account
 - A resource this build cannot tear down keeps its record, so it stays visible instead of being quietly forgotten

@@ -28,6 +28,29 @@ pub const SETUP_REQUIRED: &str = "No config loaded. Complete setup first.";
 /// builds.
 pub const PREFERENCES_VERSION: u32 = 5;
 
+/// What a clinician is told when a synced-preferences document was written by
+/// a build newer than this one.
+pub const PREFERENCES_TOO_NEW: &str =
+    "These preferences were written by a newer Claria. Update Claria, then try again.";
+
+/// Whether this build may read a synced-preferences document of `version`.
+///
+/// Serde drops fields it does not know, so a newer document deserializes
+/// cleanly and quietly loses whatever this build has never heard of. That
+/// alone would be survivable — the damage is the write that follows: every
+/// preference save is a read-modify-write of the same object, so accepting a
+/// newer document means writing the truncated one back over it. One machine
+/// running an older build silently strips the settings every other machine
+/// can still see.
+///
+/// Refusing is the whole remedy. There is no migration chain for these the
+/// way there is for `config.json`: the local file is this machine's to
+/// rewrite, while this object is shared, and a build cannot migrate forward
+/// into a schema it does not know.
+pub fn preferences_version_is_readable(version: u32) -> bool {
+    version <= PREFERENCES_VERSION
+}
+
 fn default_prompt_caching_enabled() -> bool {
     true
 }
@@ -452,6 +475,19 @@ impl SyncedPreferences {
         }
     }
 
+    /// Apply a patch and stamp the version this build writes.
+    ///
+    /// One operation, because they were two and the second was forgettable:
+    /// a patch carries only the fields its pane edits and never touches
+    /// `preferences_version`, so a read-modify-write of a document another
+    /// build wrote handed that build's number back on contents written in
+    /// this build's schema. Every write of the synced document goes through
+    /// here.
+    pub fn merge(&mut self, patch: &PreferencesPatch) {
+        patch.overlay(self);
+        self.preferences_version = PREFERENCES_VERSION;
+    }
+
     /// Overlay synced fields onto an in-memory config. Machine-local fields are
     /// left untouched.
     pub fn apply_to_config(&self, config: &mut ClariaConfig) {
@@ -464,6 +500,78 @@ impl SyncedPreferences {
         config.model_tuning = self.model_tuning;
         config.chat_streaming = self.chat_streaming;
         config.draft_pipeline = self.draft_pipeline.clone();
+    }
+}
+
+/// Named-field patch for the synced preferences. Absent fields are left
+/// untouched, so a UI section (or a single-setting command) saves only what
+/// it owns and can never roll back a sibling section's edit.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+pub struct PreferencesPatch {
+    /// `Some(Some(id))` sets the preferred model, `Some(None)` clears it
+    /// (only expressible in-process — over IPC use `set_preferred_model`),
+    /// `None` leaves it unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub preferred_model_id: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub cost_explorer_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub hourly_cost_data: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub prompt_caching_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub transcription: Option<TranscriptionPreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub report_authoring: Option<ReportAuthoringPreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub model_tuning: Option<ModelTuningPreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub chat_streaming: Option<ChatStreamMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub draft_pipeline: Option<DraftPipelinePreferences>,
+}
+
+impl PreferencesPatch {
+    /// Overlay this patch's present fields. Private: the version stamp that
+    /// must accompany a write lives in [`SyncedPreferences::merge`], and a
+    /// caller reaching this directly would skip it.
+    fn overlay(&self, synced: &mut SyncedPreferences) {
+        if let Some(preferred_model_id) = &self.preferred_model_id {
+            synced.preferred_model_id = preferred_model_id.clone();
+        }
+        if let Some(cost_explorer_enabled) = self.cost_explorer_enabled {
+            synced.cost_explorer_enabled = cost_explorer_enabled;
+        }
+        if let Some(hourly_cost_data) = self.hourly_cost_data {
+            synced.hourly_cost_data = hourly_cost_data;
+        }
+        if let Some(prompt_caching_enabled) = self.prompt_caching_enabled {
+            synced.prompt_caching_enabled = prompt_caching_enabled;
+        }
+        if let Some(transcription) = &self.transcription {
+            synced.transcription = transcription.clone();
+        }
+        if let Some(report_authoring) = &self.report_authoring {
+            synced.report_authoring = report_authoring.clone();
+        }
+        if let Some(model_tuning) = self.model_tuning {
+            synced.model_tuning = model_tuning;
+        }
+        if let Some(chat_streaming) = self.chat_streaming {
+            synced.chat_streaming = chat_streaming;
+        }
+        if let Some(draft_pipeline) = &self.draft_pipeline {
+            synced.draft_pipeline = draft_pipeline.clone();
+        }
     }
 }
 

@@ -2,11 +2,9 @@
 
 use tauri::State;
 
-use super::{
-    CommandContext,
-    config::{PreferencesPatch, apply_preferences_patch},
-    run,
-};
+use claria_desktop::config::PreferencesPatch;
+
+use super::{CommandContext, config::apply_preferences_patch, run};
 use crate::state::DesktopState;
 
 #[tauri::command]
