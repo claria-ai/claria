@@ -104,6 +104,27 @@ impl<'a> BudgetRole<'a> {
 /// buy precision nobody needs.
 pub(crate) const STRUCTURAL_ALLOWANCE_BYTES: u64 = 36 * 1024;
 
+/// The largest readable-record snapshot one role can hold, in source bytes.
+///
+/// Three source bytes per available input token leaves headroom for UTF-8 and
+/// JSON escaping, which can expand before the provider tokenizer sees the
+/// request; the fixed structure of the request is then subtracted outright.
+///
+/// Named and public because two passes have to agree on it. The plan pass and
+/// the drafting pass each size the corpus for the writing model, and when they
+/// derived the number separately they disagreed the moment the writer's output
+/// ceiling stopped being the shipped default: a corpus between the two
+/// ceilings planned successfully, billed for the pass, and was then refused.
+/// One function, one ceiling.
+pub fn corpus_ceiling_bytes(model_id: &str, output_token_reserve: u32) -> u64 {
+    u64::from(report::report_input_token_budget(
+        model_id,
+        output_token_reserve,
+    ))
+    .saturating_mul(3)
+    .saturating_sub(STRUCTURAL_ALLOWANCE_BYTES)
+}
+
 /// The clinician's restriction on which records one section may be written
 /// from, as the corpus builder reads it.
 ///
@@ -262,11 +283,9 @@ pub(crate) async fn load_full_record_context(
         .filter(|entry| filter.is_none_or(|filter| filter.allows(&entry.filename)))
         .cloned()
         .collect();
-    // Three source bytes per available input token leaves headroom for UTF-8
-    // and JSON escaping, which can expand before the provider tokenizer sees
-    // the request; the fixed structure of the request is then subtracted
-    // outright. The smallest role window binds, because the same corpus goes
-    // to every role that reads it.
+    // The smallest role window binds, because the same corpus goes to every
+    // role that reads it. How a window becomes a byte ceiling is
+    // `corpus_ceiling_bytes`.
     let binding = roles
         .iter()
         .min_by_key(|role| {
@@ -277,12 +296,7 @@ pub(crate) async fn load_full_record_context(
                 "Claria could not size the record snapshot: no model was named for it.".to_string(),
             )
         })?;
-    let max_source_bytes = u64::from(report::report_input_token_budget(
-        binding.model_id,
-        binding.output_token_reserve,
-    ))
-    .saturating_mul(3)
-    .saturating_sub(STRUCTURAL_ALLOWANCE_BYTES);
+    let max_source_bytes = corpus_ceiling_bytes(binding.model_id, binding.output_token_reserve);
     let eligible_source_bytes = inventory
         .iter()
         .filter(|entry| entry.source_bytes <= claria_core::record_text::MAX_RECORD_TEXT_BYTES)

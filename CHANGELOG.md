@@ -4,6 +4,10 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- The writer reasons before it drafts a section, on every model that supports it
+- Reasoning is turned on when you upgrade, including on installs that never opened the setting — reports drafted until now were written with it off
+- A record set too large for your writing model is refused while planning, instead of being planned, billed for, and then refused when drafting starts
+- Raising the writer's response ceiling now lowers the record allowance for planning as well as drafting, so the two agree on what fits
 - Provisioner state can be written at all; a state file holding any resource was silently rejected as unserializable, so the record every teardown reads from stayed empty
 - A resource Claria no longer manages is torn down when you apply the plan that says it will be removed, instead of being dropped from the record and left running in the account
 - A resource this build cannot tear down keeps its record, so it stays visible instead of being quietly forgotten

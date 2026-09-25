@@ -91,6 +91,11 @@ pub async fn generate_draft_plan(
             claria::PlanModels {
                 planner_model_id: &planner_model_id,
                 writer_model_id: &writer_model_id,
+                writer_output_token_reserve: ctx
+                    .cfg
+                    .report_authoring
+                    .runtime()
+                    .writer_max_output_tokens,
             },
             claria::DraftPlanRequest::new(&instructions)
                 .with_progress(&progress)

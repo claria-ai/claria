@@ -30,6 +30,8 @@
 pub mod config;
 pub mod cost;
 pub mod governor;
+pub mod grade;
+pub mod manifest;
 pub mod pipeline;
 pub mod preferences;
 pub mod progress;

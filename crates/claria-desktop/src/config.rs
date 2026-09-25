@@ -13,7 +13,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-pub const CURRENT_VERSION: u32 = 15;
+pub const CURRENT_VERSION: u32 = 16;
 
 /// What the user is told when there is no config on disk at all.
 ///
@@ -26,7 +26,7 @@ pub const SETUP_REQUIRED: &str = "No config loaded. Complete setup first.";
 /// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
 /// because the synced subset lives in S3 and may be read by other machines'
 /// builds.
-pub const PREFERENCES_VERSION: u32 = 5;
+pub const PREFERENCES_VERSION: u32 = 6;
 
 fn default_prompt_caching_enabled() -> bool {
     true
@@ -199,13 +199,27 @@ impl ChatStreamMode {
     }
 }
 
-/// Opt-in model-tuning knobs. Every knob defaults to "send nothing", and
-/// each is applied only on models whose capability-table entry accepts it —
-/// see `commands::model_tuning_for`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, Type)]
+/// Model-tuning knobs, each applied only on models whose capability-table
+/// entry accepts it — see `commands::model_tuning_for`.
+///
+/// `effort` and `temperature` default to "send nothing". Reasoning does not:
+/// Claude 4.6 runs *without* thinking when the request omits it, so an
+/// unticked box meant every report section was drafted with no reasoning at
+/// all. That is a defect rather than a setting, so adaptive thinking is on by
+/// default and a clinician turns it off deliberately.
+///
+/// Only the writer and chat carry a reasoning knob. The planner and reviewer
+/// have none and cannot: they force a tool choice, and on Bedrock a forced
+/// `tool_choice` requires `thinking: {type: "disabled"}`, so no analysis-family
+/// call can think while it forces its schema.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct ModelTuningPreferences {
     /// Request adaptive thinking on models that support it (Claude 4.6+).
-    #[serde(default)]
+    ///
+    /// `#[serde(default = ...)]` rather than a bare `#[serde(default)]`: the
+    /// bare form reads `bool::default()` and would deserialize an absent field
+    /// as `false` no matter what this struct's `Default` says.
+    #[serde(default = "default_reasoning_enabled")]
     pub reasoning_enabled: bool,
     /// Requested effort level; `None` leaves the model default (high).
     #[serde(default)]
@@ -232,6 +246,25 @@ impl EffortPreference {
             Self::Medium => claria_bedrock::converse::EffortLevel::Medium,
             Self::High => claria_bedrock::converse::EffortLevel::High,
             Self::Max => claria_bedrock::converse::EffortLevel::Max,
+        }
+    }
+}
+
+/// Adaptive thinking is on unless a clinician turns it off. See
+/// [`ModelTuningPreferences`] for why this one knob is not opt-in.
+fn default_reasoning_enabled() -> bool {
+    true
+}
+
+impl Default for ModelTuningPreferences {
+    /// Written out rather than derived, because `derive(Default)` would give
+    /// `reasoning_enabled: false` and silently disagree with the serde default
+    /// above — the two have to say the same thing.
+    fn default() -> Self {
+        Self {
+            reasoning_enabled: default_reasoning_enabled(),
+            effort: None,
+            temperature: None,
         }
     }
 }
@@ -436,6 +469,25 @@ pub struct SyncedPreferences {
 }
 
 impl SyncedPreferences {
+    /// Bring a synced object forward to [`PREFERENCES_VERSION`].
+    ///
+    /// The synced copy needs its own migrations, separately from `config.json`,
+    /// precisely because it wins: [`Self::apply_to_config`] overwrites the
+    /// local value, so a field a `config.json` migration fixed is put back the
+    /// way it was on the very next read while the copy in S3 still carries the
+    /// old one. Migrating on read rather than on write means a bucket nobody
+    /// writes to again still stops pushing the old value, and running it twice
+    /// changes nothing.
+    pub fn migrate(&mut self) {
+        if self.preferences_version < 6 {
+            // The same change as the config's v15 → v16, for the same reason:
+            // Claude 4.6 drafts with no reasoning at all when the request omits
+            // thinking, so an install still carrying `false` is switched on.
+            self.model_tuning.reasoning_enabled = true;
+        }
+        self.preferences_version = PREFERENCES_VERSION;
+    }
+
     /// Extract the syncable subset from a full local config.
     pub fn from_config(config: &ClariaConfig) -> Self {
         Self {
@@ -919,6 +971,31 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!(
             "migrated config v14 → v15 (raised the untouched stream waits to ten minutes)"
         );
+    }
+
+    // Reasoning is the one tuning knob that is not opt-in, so an install that
+    // still carries the old `false` is switched on.
+    //
+    // Unlike the stream waits above, a `false` here cannot be told apart from a
+    // deliberate one: it was both the shipped default and the only other value.
+    // It is migrated anyway, because Claude 4.6 drafts with no reasoning at all
+    // when the request omits thinking, which made every section of every report
+    // worse than the model can write — a defect, not a preference. The extra
+    // spend lands in the usage tab and the box is one click away.
+    if from_version < 16 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        if let Some(serde_json::Value::Object(model_tuning)) = obj.get_mut("model_tuning")
+            && model_tuning.get("reasoning_enabled") == Some(&serde_json::Value::Bool(false))
+        {
+            model_tuning.insert("reasoning_enabled".to_string(), serde_json::Value::Bool(true));
+        }
+        obj.insert(
+            "config_version".to_string(),
+            serde_json::Value::Number(16.into()),
+        );
+        tracing::info!("migrated config v15 → v16 (turned adaptive reasoning on for the writer)");
     }
 
     Ok(json)

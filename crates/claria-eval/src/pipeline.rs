@@ -202,6 +202,7 @@ pub async fn plan(
         claria::PlanModels {
             planner_model_id,
             writer_model_id,
+            writer_output_token_reserve: claria::DEFAULT_WRITER_MAX_OUTPUT_TOKENS,
         },
         claria::DraftPlanRequest::new(instructions).with_progress(&sink),
     )

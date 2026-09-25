@@ -1,0 +1,29 @@
+HALVORSEN INTELLIGENCE SCALES FOR CHILDREN, SECOND EDITION (HISC-2)
+Score Report
+
+Examinee: Jonah Petrakis-Whitlow    DOB: 2017-04-06    Age at testing: 8 years 7 months
+Examiner: Dr. Lena Voskuijlen    Administered: 4 and 6 November 2025    Norms: age-based, 2019 standardisation
+
+Composite scores (mean 100, SD 15; 95% confidence intervals)
+FSIQ 98 (45th percentile; CI 93 to 103) — Average
+VCI 109 (73rd percentile; CI 102 to 115) — Average
+VSI 103 (58th percentile; CI 96 to 110) — Average
+FRI 101 (53rd percentile; CI 94 to 108) — Average
+WMI 82 (12th percentile; CI 76 to 90) — Low Average
+PSI 77 (6th percentile; CI 71 to 86) — Very Low
+
+Subtest scaled scores (mean 10, SD 3)
+Verbal Comprehension: Similarities 12, Vocabulary 11, (Information 11)
+Visual Spatial: Block Design 11, Visual Puzzles 10
+Fluid Reasoning: Matrix Reasoning 10, Figure Weights 10, (Arithmetic 7)
+Working Memory: Digit Span 6, Picture Span 8, (Letter-Number Sequencing 6)
+Processing Speed: Coding 5, Symbol Search 7, (Cancellation 8)
+
+Discrepancy analysis
+The difference between the VCI and the WMI (27 points) and between the VCI and the PSI (32 points) are statistically significant (p < .05) and uncommon in the standardisation sample (base rates 6.1% and 3.4% respectively). The FSIQ should be interpreted with reference to this variability.
+
+Subtest notes
+Digit Span backward and sequencing were markedly weaker than forward. Coding: slow but accurate, no errors. Arithmetic: errors on items requiring two-step retention.
+
+Administration notes
+Session 2 subtests (Coding, Symbol Search, Cancellation, Letter-Number Sequencing) administered in the afternoon following a short night of sleep; see session notes.

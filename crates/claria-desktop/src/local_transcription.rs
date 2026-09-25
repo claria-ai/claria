@@ -779,9 +779,13 @@ pub async fn transcribe_memo(
     if pcm_bytes.len() % 4 != 0 {
         return Err("PCM data length is not a multiple of four bytes".to_string());
     }
+    // The length check above leaves no remainder, so the second half of
+    // `as_chunks` is empty by construction.
     let pcm_samples: Vec<f32> = pcm_bytes
-        .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
         .collect();
     if pcm_samples.is_empty() {
         return Err("memo contains no audio samples".to_string());

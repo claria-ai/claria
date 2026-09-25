@@ -91,7 +91,8 @@ async fn read_cloud_preferences(
     match claria_storage::objects::get_object(s3, &bucket, claria_core::s3_keys::PREFERENCES).await
     {
         Ok(output) => {
-            let synced: SyncedPreferences = serde_json::from_slice(&output.body)?;
+            let mut synced: SyncedPreferences = serde_json::from_slice(&output.body)?;
+            synced.migrate();
             synced.report_authoring.validate()?;
             Ok(Some((synced, output.etag)))
         }
@@ -419,7 +420,7 @@ const MAX_PREFERENCES_IMPORT_BYTES: u64 = 1024 * 1024;
 /// happens in [`apply_preferences_patch`], which every accepted import and
 /// restore goes through.
 fn parse_preferences_file(bytes: &[u8]) -> Result<SyncedPreferences, CommandError> {
-    let synced: SyncedPreferences = serde_json::from_slice(bytes).map_err(|e| {
+    let mut synced: SyncedPreferences = serde_json::from_slice(bytes).map_err(|e| {
         CommandError::Msg(format!(
             "The selected file is not a Claria preferences export: {e}"
         ))
@@ -430,6 +431,8 @@ fn parse_preferences_file(bytes: &[u8]) -> Result<SyncedPreferences, CommandErro
                 .to_string(),
         ));
     }
+    // An older export carries older values, the same as an older object in S3.
+    synced.migrate();
     Ok(synced)
 }
 
