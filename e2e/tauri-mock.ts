@@ -50,6 +50,15 @@ export function buildInitScript(
       // it does in the app.
       const eventListeners = {};
 
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+        unregisterListener(event, eventId) {
+          eventListeners[event] = (eventListeners[event] || []).filter(
+            (id) => id !== eventId,
+          );
+          delete window["_" + eventId];
+        },
+      };
+
       function emitEvent(name, payload) {
         for (const id of eventListeners[name] || []) {
           const handler = window["_" + id];
@@ -523,7 +532,7 @@ export function buildInitScript(
           if (cmd === "plugin:app|tauri_version") return "2.0.0";
           if (cmd === "plugin:event|listen") {
             (eventListeners[args.event] ||= []).push(args.handler);
-            return 0;
+            return args.handler;
           }
           if (cmd === "plugin:event|unlisten") return;
           if (cmd === "plugin:webview|get_all_webviews") {
@@ -1437,7 +1446,7 @@ export function buildInitScript(
             return REVIEW_PROPERTIES.map(([pass, property]) => ({
               property,
               pass,
-              instructions: "Check, for every section:\n1. " + property.replaceAll("_", " ") + ".",
+              instructions: "Check, for every section:\\n1. " + property.replaceAll("_", " ") + ".",
             }));
           }
           if (cmd === "run_review_sweeps") {
