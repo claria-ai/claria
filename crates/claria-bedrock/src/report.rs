@@ -108,6 +108,8 @@ pub struct ReportConverseOutput {
     /// Bedrock may omit usage. Callers must preserve that incompleteness
     /// instead of recording a misleading metered zero.
     pub usage: Option<TurnUsage>,
+    #[serde(default)]
+    pub usage_complete: bool,
     /// Wall-clock time of the Converse round trip; `None` on records
     /// written before this field existed.
     #[serde(default)]
@@ -696,6 +698,7 @@ async fn converse_report_with_tool_set(
     };
     let streamed_content = response.message.content();
     let streamed_stop_reason = response.stop_reason;
+    let usage_complete = response.usage.is_some() && response.sdk_attempts == 1;
     let streamed_usage = response.usage;
     let latency_ms = Some(response.latency_ms);
 
@@ -818,6 +821,7 @@ async fn converse_report_with_tool_set(
         stop_reason,
         tool_calls,
         usage,
+        usage_complete,
         latency_ms,
     })
 }

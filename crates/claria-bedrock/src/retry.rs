@@ -4,7 +4,7 @@
 //! wait", so a flow that fans requests out cannot invent its own schedule and
 //! quietly hammer a throttled account.
 
-use backon::{ExponentialBuilder, Retryable};
+use backon::{BackoffBuilder, ExponentialBuilder, Retryable};
 
 use crate::error::BedrockError;
 
@@ -69,6 +69,17 @@ fn backoff() -> ExponentialBuilder {
         .with_max_times(MAX_ATTEMPTS as usize - 1)
 }
 
+/// The existing finite schedule, for a driver that owns the retry wait itself.
+pub fn retry_delays() -> impl Iterator<Item = std::time::Duration> + Send {
+    backoff().build()
+}
+
+/// Shared eligibility and elapsed budget for wrappers and embedded session hosts.
+pub fn should_retry(error: &BedrockError, elapsed: std::time::Duration) -> bool {
+    elapsed < MAX_RETRY_ELAPSED
+        && (error.is_retryable_throttle() || error.is_interrupted_before_completion())
+}
+
 /// Run `operation`, retrying only failures that the request can survive
 /// being repeated: a throttle or capacity signal
 /// ([`BedrockError::is_retryable_throttle`]), or a call that provably never
@@ -121,20 +132,20 @@ where
     operation
         .retry(backoff())
         .when(|error: &BedrockError| {
+            let elapsed = started.elapsed();
+            if should_retry(error, elapsed) {
+                return true;
+            }
             if !(error.is_retryable_throttle() || error.is_interrupted_before_completion()) {
                 return false;
             }
-            let elapsed = started.elapsed();
-            if elapsed >= MAX_RETRY_ELAPSED {
-                tracing::warn!(
-                    operation = label,
-                    ?elapsed,
-                    budget = ?MAX_RETRY_ELAPSED,
-                    "Bedrock call is out of retry budget, surfacing the failure: {error}"
-                );
-                return false;
-            }
-            true
+            tracing::warn!(
+                operation = label,
+                ?elapsed,
+                budget = ?MAX_RETRY_ELAPSED,
+                "Bedrock call is out of retry budget, surfacing the failure: {error}"
+            );
+            false
         })
         .notify(|error: &BedrockError, delay| {
             attempts_made = attempts_made.saturating_add(1);

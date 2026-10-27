@@ -45,17 +45,20 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
+    num::NonZeroU32,
+    ops::ControlFlow,
     sync::atomic::{AtomicU32, Ordering},
+    time::Duration,
 };
 
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::{
-    converse::CachePlan,
+    converse::{CachePlan, StopSignal},
     error::BedrockError,
     report::{
         self, ReportStopReason, ReportToolCall, ReportToolRequest, WriteFullDraftSectionRequest,
     },
-    retry::{MAX_ATTEMPTS, with_throttle_retry_observed},
+    retry::{MAX_ATTEMPTS, retry_delays, should_retry},
 };
 use claria_core::models::{
     report::{
@@ -72,6 +75,7 @@ use claria_report_store::{
     LoadedRun, LoadedWorkspace, REPORT_CONFLICT_MESSAGE, ReportAttemptStatus, ReportFailureCode,
     ReportStoreError, mark_template_current, persist_call_usage, save_draft_run, save_loaded,
 };
+use dekopon_embedded::agent::{self, Cancellation, DriveLimits, Session};
 use futures::stream::{self, StreamExt};
 use uuid::Uuid;
 
@@ -97,7 +101,8 @@ use crate::{
     turn::{
         AttemptProgress, FailedReportCall, FullReportRequest, ReportTurnProgress, TurnInterruption,
         TurnRunFailure, call_usage_record, map_bedrock_failure, merge_usage,
-        prepare_full_draft_context, settle_attempt, terminal_stop_failure,
+        model_error_usage_is_uncertain, prepare_full_draft_context, settle_attempt,
+        terminal_stop_failure,
     },
 };
 
@@ -213,13 +218,14 @@ enum BranchVerdict {
     },
     Stopped,
     Errored(TurnRunFailure),
+    /// Usage persistence is an effect barrier for the whole draft, not a
+    /// recoverable failure of the assigned section.
+    ReceiptFailed(TurnRunFailure),
 }
 
 /// One completed Converse call inside a branch.
 struct BranchCallReceipt {
     usage: Option<TurnUsage>,
-    stop_reason: ReportStopReason,
-    latency_ms: Option<u64>,
 }
 
 /// A finished branch.
@@ -233,6 +239,7 @@ struct BranchOutcome {
     kind_id: Option<Uuid>,
     verdict: BranchVerdict,
     receipts: Vec<BranchCallReceipt>,
+    usage_complete: bool,
     tool_uses: u32,
     /// The exact input count this branch took, if it took one. Only the warm
     /// branch does.
@@ -251,6 +258,11 @@ struct BranchOutcome {
 /// section to satisfy the borrow checker would defeat the point of sharing it.
 struct DraftBranchContext<'a> {
     sdk_config: &'a aws_config::SdkConfig,
+    s3: &'a S3Client,
+    bucket: &'a str,
+    /// Immutable attempt identity and prompt digest for independently keyed
+    /// receipts. Only the coordinator accumulates the live attempt totals.
+    receipt_metadata: AttemptProgress,
     model_id: &'a str,
     system_prompt: &'a str,
     /// Blocks 0–2 of message 0, identical in every branch's request that is
@@ -270,10 +282,30 @@ struct DraftBranchContext<'a> {
     tuning: claria_bedrock::converse::ModelTuning,
     max_tool_uses_per_response: usize,
     limits: ReportTurnLimits,
-    stop: &'a claria_bedrock::converse::StopSignal,
+    cancellation: BranchCancellation<'a>,
     /// Calls the whole fan-out has opened, against the run's shared ceiling.
     calls: &'a AtomicU32,
     progress: Option<&'a (dyn Fn(ReportTurnProgress) + Send + Sync)>,
+}
+
+/// A failed coordinator stops remaining inference without changing the
+/// reader's Stop signal. The driver still finishes admitted receipt writes.
+struct BranchCancellation<'a> {
+    reader: &'a StopSignal,
+    fatal: &'a StopSignal,
+}
+
+impl Cancellation for BranchCancellation<'_> {
+    fn is_stopped(&self) -> bool {
+        self.reader.is_stopped() || self.fatal.is_stopped()
+    }
+
+    async fn stopped(&self) {
+        tokio::select! {
+            () = self.reader.stopped() => {},
+            () = self.fatal.stopped() => {},
+        }
+    }
 }
 
 impl DraftBranchContext<'_> {
@@ -299,9 +331,8 @@ impl DraftBranchContext<'_> {
 /// What the coordinator has accumulated while draining the fan-out.
 #[derive(Default)]
 struct MergeState {
-    /// Coordinator-assigned call numbers. A branch cannot number its own
-    /// calls without racing its siblings, so numbering happens where the
-    /// receipts are written, in commit order.
+    /// Number of completed calls merged, independent of the reserved IDs
+    /// used for receipts. A failed or stopped call can leave an ID unused.
     call_number: u32,
     stopped: bool,
     /// The first branch failure with a typed cause, kept in case every branch
@@ -423,8 +454,12 @@ async fn run_parallel_draft(
     .map_err(|error| TurnRunFailure::new(ReportFailureCode::InvalidProtocol, error.to_string()))?;
     let snapshot = run.run.clone();
     let calls = AtomicU32::new(0);
+    let fatal_stop = StopSignal::new();
     let context = DraftBranchContext {
         sdk_config,
+        s3,
+        bucket,
+        receipt_metadata: progress.clone(),
         model_id,
         system_prompt: &system_prompt,
         prefix: &prefix,
@@ -437,7 +472,10 @@ async fn run_parallel_draft(
         tuning: request.model_tuning,
         max_tool_uses_per_response: limits.max_tool_uses_per_response() as usize,
         limits,
-        stop: request.stop,
+        cancellation: BranchCancellation {
+            reader: request.stop,
+            fatal: &fatal_stop,
+        },
         calls: &calls,
         progress: request.progress,
     };
@@ -499,6 +537,7 @@ async fn run_parallel_draft(
             .map(|kind| run_branch(&context, kind, seed)),
     )
     .buffer_unordered(BEDROCK_FAN_OUT_CONCURRENCY);
+    let mut fatal_failure = None;
     while let Some(outcome) = fanned.next().await {
         if outcome.curated {
             state.curated_branches = state.curated_branches.saturating_add(1);
@@ -514,9 +553,22 @@ async fn run_parallel_draft(
                 .branch_cache_read_tokens
                 .saturating_add(cache_read_tokens(&outcome));
         }
-        commit_branch(s3, bucket, run, progress, &mut state, request, outcome).await?;
+        if fatal_failure.is_some() {
+            account_branch(progress, &mut state, &outcome);
+        } else if let Err(error) =
+            commit_branch(s3, bucket, run, progress, &mut state, request, outcome).await
+        {
+            // Drain accounting under local cancellation. Dropping the fan-out
+            // here could discard a sibling's admitted receipt or omit its
+            // earlier durable receipts from the final attempt's known totals.
+            fatal_stop.stop();
+            fatal_failure = Some(error);
+        }
     }
     drop(fanned);
+    if let Some(failure) = fatal_failure {
+        return Err(failure.into());
+    }
     log_fan_out(model_id, turn_kind, &state);
 
     // Past the cut, Stop is a no-op — the same rule the serial loop keeps at
@@ -741,7 +793,7 @@ async fn commit_run(
 /// Fold one finished branch into the run.
 ///
 /// Single-threaded by construction, which is what every guarantee downstream
-/// rests on: call numbers are assigned in one place, the run's ETag chain is a
+/// rests on: completed usage is accumulated once, the run's ETag chain is a
 /// chain, and a `SectionCompleted` event is only ever emitted after the write
 /// it describes is durable — so the counters a reader watches never go
 /// backwards and never run ahead of S3.
@@ -754,48 +806,13 @@ async fn commit_branch(
     request: FullReportRequest<'_>,
     outcome: BranchOutcome,
 ) -> Result<(), TurnRunFailure> {
+    account_branch(progress, state, &outcome);
     let BranchOutcome {
         kind_id,
         verdict,
-        receipts,
-        tool_uses,
         records,
         ..
     } = outcome;
-
-    // Receipts first, whatever the verdict: a branch that failed on its third
-    // repair round still spent three billed calls.
-    progress.tool_uses = progress.tool_uses.saturating_add(tool_uses);
-    for receipt in receipts {
-        state.call_number = state.call_number.saturating_add(1);
-        let call_number = state.call_number;
-        request.emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
-        match &receipt.usage {
-            Some(usage) => merge_usage(&mut progress.usage, usage, call_number == 1),
-            None => progress.usage_complete = false,
-        }
-        progress.converse_calls = call_number;
-        persist_call_usage(
-            s3,
-            bucket,
-            &call_usage_record(
-                progress,
-                call_number,
-                receipt.usage,
-                receipt.stop_reason,
-                receipt.latency_ms,
-                request.limits.writer_max_output_tokens(),
-            ),
-        )
-        .await
-        .map_err(|error| {
-            TurnRunFailure::new(
-                ReportFailureCode::UsagePersistence,
-                "Claria could not record usage for a completed Bedrock call, so the draft was stopped.",
-            )
-            .with_internal(error)
-        })?;
-    }
 
     let now = jiff::Timestamp::now();
     match verdict {
@@ -839,6 +856,7 @@ async fn commit_branch(
             .await?;
         }
         BranchVerdict::Stopped => state.stopped = true,
+        BranchVerdict::ReceiptFailed(failure) => return Err(failure),
         BranchVerdict::Errored(failure) => {
             let message = failure.message().to_string();
             if state.first_failure.is_none() {
@@ -859,6 +877,21 @@ async fn commit_branch(
         }
     }
     Ok(())
+}
+
+/// Also used while draining a fatal fan-out: retain all known usage without
+/// granting any more section or title effects.
+fn account_branch(progress: &mut AttemptProgress, state: &mut MergeState, outcome: &BranchOutcome) {
+    progress.tool_uses = progress.tool_uses.saturating_add(outcome.tool_uses);
+    progress.usage_complete &= outcome.usage_complete;
+    for receipt in &outcome.receipts {
+        state.call_number = state.call_number.saturating_add(1);
+        match &receipt.usage {
+            Some(usage) => merge_usage(&mut progress.usage, usage, state.call_number == 1),
+            None => progress.usage_complete = false,
+        }
+        progress.converse_calls = state.call_number;
+    }
 }
 
 /// Record a branch that produced nothing usable.
@@ -1130,38 +1163,26 @@ async fn run_branch(
         BranchKind::Section { assignment } => Some(assignment.entry.section_id),
         BranchKind::Title => None,
     };
-    // The restricted record block this branch sends instead of the shared one,
-    // if its plan row carries a restriction. The title branch never has one:
-    // it names the document, which is not a claim about any record.
     let curated = kind_id.and_then(|section_id| context.curated.get(&section_id));
-    // What the run will record this section as having been written from. The
-    // curated branch reports the filenames that actually reached it, not the
-    // ones its plan row named: a curated file the client no longer has never
-    // made it into the request, and the run is the audit record for what was
-    // sent.
+    // Record the files that actually reached this branch, including when a
+    // file named by the approved plan is no longer in the client's records.
     let records = kind_id.map(|_| match curated {
         Some(curated) => RunSectionRecords::Curated {
             filenames: curated.citable_filenames.clone(),
         },
         None => RunSectionRecords::SharedCorpus,
     });
-    let mut receipts = Vec::new();
-    let mut tool_uses = 0_u32;
-    let finished = |verdict, receipts, tool_uses, verified| BranchOutcome {
-        kind_id,
-        verdict,
-        receipts,
-        tool_uses,
-        verified,
-        curated: curated.is_some(),
-        records: records.clone(),
-    };
-
-    // Checked before the first call, not only between rounds: a branch still
-    // waiting its turn in the queue must never open a billed conversation the
-    // reader has already cancelled.
-    if context.stop.is_stopped() {
-        return finished(BranchVerdict::Stopped, receipts, tool_uses, None);
+    if context.cancellation.is_stopped() {
+        return BranchOutcome {
+            kind_id,
+            verdict: BranchVerdict::Stopped,
+            receipts: Vec::new(),
+            usage_complete: true,
+            tool_uses: 0,
+            verified: None,
+            curated: curated.is_some(),
+            records,
+        };
     }
 
     let kickoff = match &kind {
@@ -1175,9 +1196,8 @@ async fn run_branch(
         }
         BranchKind::Title => title_kickoff_instruction(context.guidance, context.base),
     };
-    // Only block 0 moves: the template and the plan are the document's, not
-    // this section's, so a curated branch's checkpoints still sit where every
-    // other branch's do and its own second attempt reads what its first wrote.
+    // Only the record block moves. Template and plan checkpoint positions
+    // remain identical, including on repair rounds of a curated branch.
     let mut content = context.prefix.to_vec();
     if let Some(curated) = curated {
         content[RECORD_CONTEXT_BLOCK] = ReportProtocolBlock::Text {
@@ -1185,17 +1205,15 @@ async fn run_branch(
         };
     }
     content.push(ReportProtocolBlock::Text { text: kickoff });
-    let mut messages = vec![ReportProtocolMessage {
+    let messages = vec![ReportProtocolMessage {
         role: ReportProtocolRole::User,
         content,
         created_at: jiff::Timestamp::now(),
     }];
-
-    // A seed is a count taken against the shared prefix. This branch does not
-    // send the shared prefix, so the seed describes a request it never made
-    // and estimating forward from it would under-count every call it bills.
+    // A curated prefix must pay for its own exact count; a shared-prefix
+    // seed describes bytes that branch did not send.
     let seed = if curated.is_some() { None } else { seed };
-    let budget = tokio::sync::Mutex::new(match seed {
+    let budget = match seed {
         Some((tokens, chars)) => report::ReportInputBudget::seeded(
             context.model_id,
             context.limits.writer_max_output_tokens(),
@@ -1206,165 +1224,172 @@ async fn run_branch(
             context.model_id,
             context.limits.writer_max_output_tokens(),
         ),
-    });
-    let mut strikes = 0_u32;
-    let mut corrective_used = false;
-    let mut last_rejection: Option<ToolRejection> = None;
+    };
+    let mut session = BranchSession {
+        context,
+        kind,
+        messages,
+        budget,
+        receipts: Vec::new(),
+        usage_complete: true,
+        tool_uses: 0,
+        call_number: 0,
+        retry_delays: Vec::new(),
+        strikes: 0,
+        corrective_used: false,
+        last_rejection: None,
+        response_admitted: false,
+    };
+    let limits = DriveLimits {
+        model_calls: NonZeroU32::MIN.saturating_add(MAX_BRANCH_CONVERSE_CALLS - 1),
+        attempts_per_call: NonZeroU32::MIN.saturating_add(MAX_ATTEMPTS - 1),
+    };
+    let verdict = match agent::drive(&mut session, &context.cancellation, limits).await {
+        Ok(verdict) | Err(verdict) => verdict,
+    };
+    BranchOutcome {
+        kind_id,
+        verdict,
+        verified: session.budget.verified(),
+        receipts: session.receipts,
+        usage_complete: session.usage_complete,
+        tool_uses: session.tool_uses,
+        curated: curated.is_some(),
+        records,
+    }
+}
 
-    for _ in 0..MAX_BRANCH_CONVERSE_CALLS {
-        let call_number = match context.reserve_call() {
-            Ok(call_number) => call_number,
-            Err(message) => {
-                return finished(
-                    BranchVerdict::SectionFailed {
-                        code: "writer_call_limit",
-                        message,
-                    },
-                    receipts,
-                    tool_uses,
-                    verified(&budget).await,
-                );
-            }
-        };
-        let started = tokio::time::Instant::now();
-        // One Bedrock call, with the shared backoff underneath: a fan-out that
-        // invented its own retry schedule would hammer a throttled account.
-        // A failed attempt commits nothing — `messages` still holds only
-        // completed messages — so re-sending the identical request is safe.
-        // The reserved number, not the coordinator's: a branch cannot know
-        // what commit order will call this, and the reader needs the retry
-        // named while it is happening rather than after the merge.
-        // The retry wrapper knows how many attempts it made; the failure
-        // message has to say so, or a call that was re-sent three times
-        // reports itself as one and the reader reads a five-minute wait as a
-        // single slow request.
-        let attempts_made = std::sync::atomic::AtomicU32::new(1);
-        let on_retry = |attempt, delay| {
-            attempts_made.store(attempt, std::sync::atomic::Ordering::Release);
-            context.emit(ReportTurnProgress::retrying(
-                call_number,
-                attempt,
-                MAX_ATTEMPTS,
-                delay,
-            ));
-        };
-        let attempt = with_throttle_retry_observed(OPERATION, Some(&on_retry), || {
-            let messages = &messages;
-            let budget = &budget;
-            async move {
-                report::converse_full_report_with_tool_limit(
-                    context.sdk_config,
-                    context.model_id,
-                    context.system_prompt,
-                    messages,
-                    context.max_tool_uses_per_response,
-                    &mut *budget.lock().await,
-                    context.tuning,
-                    context.cache_plan.clone(),
-                    context.limits.stream_bounds(),
-                    context.stop,
-                )
-                .await
-            }
-        })
-        .await;
-        let output = match attempt {
-            Ok(output) => output,
-            // A stopped call is the reader's decision, never a transient
-            // fault: retrying it would re-issue what they just cancelled.
-            Err(BedrockError::Stopped) => {
-                return finished(
-                    BranchVerdict::Stopped,
-                    receipts,
-                    tool_uses,
-                    verified(&budget).await,
-                );
-            }
-            Err(error) => {
-                let failure = map_bedrock_failure(
-                    error,
-                    FailedReportCall {
-                        number: call_number,
-                        ceiling: context.limits.max_converse_calls(),
-                        model_id: context.model_id,
-                        first_frame_secs: context.limits.writer_first_frame_timeout_secs(),
-                        idle_secs: context.limits.writer_idle_timeout_secs(),
-                    },
-                    attempts_made.load(std::sync::atomic::Ordering::Acquire),
-                    started.elapsed(),
-                );
-                return finished(
-                    BranchVerdict::Errored(failure),
-                    receipts,
-                    tool_uses,
-                    verified(&budget).await,
-                );
-            }
-        };
-        receipts.push(BranchCallReceipt {
-            usage: output.usage.clone(),
-            stop_reason: output.stop_reason,
-            latency_ms: output.latency_ms,
+/// Claria owns the branch's domain protocol, evidence scope and receipts;
+/// the embedded driver owns bounded calls, retries and cancellation waits.
+/// Model retries never see messages or effects from an incomplete response.
+struct BranchSession<'a, 'context> {
+    context: &'a DraftBranchContext<'context>,
+    kind: BranchKind,
+    messages: Vec<ReportProtocolMessage>,
+    budget: report::ReportInputBudget,
+    receipts: Vec<BranchCallReceipt>,
+    usage_complete: bool,
+    tool_uses: u32,
+    call_number: u32,
+    retry_delays: Vec<Duration>,
+    strikes: u32,
+    corrective_used: bool,
+    last_rejection: Option<ToolRejection>,
+    /// A completed response already admitted by this branch is classified
+    /// even if Stop arrives while its usage receipt is being persisted.
+    response_admitted: bool,
+}
+
+impl Session for BranchSession<'_, '_> {
+    type Response = report::ReportConverseOutput;
+    type ModelError = BedrockError;
+    type Error = BranchVerdict;
+    type Outcome = BranchVerdict;
+
+    fn start_call(&mut self, _index: u32) -> Result<(), Self::Error> {
+        self.call_number =
+            self.context
+                .reserve_call()
+                .map_err(|message| BranchVerdict::SectionFailed {
+                    code: "writer_call_limit",
+                    message,
+                })?;
+        self.retry_delays = retry_delays().collect();
+        Ok(())
+    }
+
+    async fn generate(&mut self) -> Result<Self::Response, Self::ModelError> {
+        self.context.emit(ReportTurnProgress::ModelCallStarted {
+            call_number: self.call_number,
         });
-        tool_uses = tool_uses.saturating_add(output.tool_calls.len() as u32);
-        messages.push(output.message.clone());
+        report::converse_full_report_with_tool_limit(
+            self.context.sdk_config,
+            self.context.model_id,
+            self.context.system_prompt,
+            &self.messages,
+            self.context.max_tool_uses_per_response,
+            &mut self.budget,
+            self.context.tuning,
+            self.context.cache_plan.clone(),
+            self.context.limits.stream_bounds(),
+            self.context.cancellation.reader,
+        )
+        .await
+    }
 
-        // Filtered, guardrailed, malformed, over the context window: the same
-        // terminal set the serial loop refuses, and refused here for the same
-        // reason — a branch cannot repair its way out of any of them, and a
-        // tool call beside one is not work anybody should trust.
+    async fn record(&mut self, output: &Self::Response) -> Result<(), Self::Error> {
+        self.response_admitted = true;
+        self.usage_complete &= output.usage_complete && output.usage.is_some();
+        self.tool_uses = self
+            .tool_uses
+            .saturating_add(output.tool_calls.len() as u32);
+        self.receipts.push(BranchCallReceipt {
+            usage: output.usage.clone(),
+        });
+        // reserve_call assigns a unique ID before inference. Persist here,
+        // before classification or another repair call, rather than waiting
+        // for the whole branch to hand its verdict to the coordinator.
+        persist_call_usage(
+            self.context.s3,
+            self.context.bucket,
+            &call_usage_record(
+                &self.context.receipt_metadata,
+                self.call_number,
+                output,
+                self.context.limits.writer_max_output_tokens(),
+            ),
+        )
+        .await
+        .map_err(|error| {
+            BranchVerdict::ReceiptFailed(
+                TurnRunFailure::new(
+                    ReportFailureCode::UsagePersistence,
+                    "Claria could not record usage for a completed Bedrock call, so the draft was stopped.",
+                )
+                .with_internal(error),
+            )
+        })
+    }
+
+    async fn apply(
+        &mut self,
+        output: Self::Response,
+    ) -> Result<ControlFlow<Self::Outcome>, Self::Error> {
+        self.messages.push(output.message.clone());
         if !matches!(
             output.stop_reason,
             ReportStopReason::EndTurn | ReportStopReason::ToolUse | ReportStopReason::MaxTokens
         ) {
-            return finished(
-                BranchVerdict::Errored(terminal_stop_failure(output.stop_reason)),
-                receipts,
-                tool_uses,
-                verified(&budget).await,
-            );
+            return Err(BranchVerdict::Errored(terminal_stop_failure(
+                output.stop_reason,
+            )));
         }
         if output.tool_calls.is_empty() {
-            // A response that ran out of output tokens before it produced its
-            // one tool call has nothing salvageable in it either.
             if matches!(output.stop_reason, ReportStopReason::MaxTokens) {
-                return finished(
-                    BranchVerdict::Errored(terminal_stop_failure(output.stop_reason)),
-                    receipts,
-                    tool_uses,
-                    verified(&budget).await,
-                );
+                return Err(BranchVerdict::Errored(terminal_stop_failure(
+                    output.stop_reason,
+                )));
             }
-            // A response that ended in prose, or one whose stop reason claimed
-            // a tool call it never made. Either way the branch has nothing to
-            // hand back, and one reminder is worth more than a failure.
-            if corrective_used {
-                return finished(
-                    BranchVerdict::SectionFailed {
-                        code: "no_tool_call",
-                        message: "The writer answered in prose twice instead of calling the tool it was assigned.".to_string(),
-                    },
-                    receipts,
-                    tool_uses,
-                    verified(&budget).await,
-                );
+            if self.corrective_used {
+                return Ok(ControlFlow::Break(BranchVerdict::SectionFailed {
+                    code: "no_tool_call",
+                    message: "The writer answered in prose twice instead of calling the tool it was assigned.".to_string(),
+                }));
             }
-            corrective_used = true;
-            messages.push(reminder_message(&kind));
-            continue;
+            self.corrective_used = true;
+            self.messages.push(reminder_message(&self.kind));
+            self.response_admitted = false;
+            return Ok(ControlFlow::Continue(()));
         }
 
         let mut results = Vec::with_capacity(output.tool_calls.len());
         let mut rejected = None;
         for call in &output.tool_calls {
-            match classify(context, &kind, call) {
-                // A valid write ends the branch here, without sending the
-                // success tool_result back: the conversation is over, and
-                // returning it would buy one more billed call per section for
-                // an answer nobody reads.
-                Ok(verdict) => {
-                    return finished(verdict, receipts, tool_uses, verified(&budget).await);
-                }
+            match classify(self.context, &self.kind, call) {
+                // A validated write ends this transient conversation. The
+                // coordinator persists it; no extra model call is purchased
+                // just to acknowledge the tool's success.
+                Ok(verdict) => return Ok(ControlFlow::Break(verdict)),
                 Err(rejection) => {
                     results.push(ReportProtocolBlock::ToolResult {
                         tool_use_id: call.tool_use_id.clone(),
@@ -1379,39 +1404,91 @@ async fn run_branch(
             }
         }
         if let Some(rejection) = rejected {
-            strikes = strikes.saturating_add(1);
-            let exhausted = strikes >= MAX_SECTION_WRITE_ATTEMPTS;
-            last_rejection = Some(rejection);
-            if exhausted {
-                break;
+            self.strikes = self.strikes.saturating_add(1);
+            self.last_rejection = Some(rejection);
+            if self.strikes >= MAX_SECTION_WRITE_ATTEMPTS {
+                return Err(self.call_limit());
             }
         }
-        messages.push(ReportProtocolMessage {
+        self.messages.push(ReportProtocolMessage {
             role: ReportProtocolRole::User,
             content: results,
             created_at: jiff::Timestamp::now(),
         });
+        self.response_admitted = false;
+        Ok(ControlFlow::Continue(()))
     }
 
-    let (code, message) = last_rejection.map_or(
-        (
-            "branch_exhausted",
-            format!(
-                "The writer used all {MAX_BRANCH_CONVERSE_CALLS} of this section's model calls without producing it."
-            ),
-        ),
-        |rejection| (rejection.code, rejection.message),
-    );
-    finished(
-        BranchVerdict::SectionFailed { code, message },
-        receipts,
-        tool_uses,
-        verified(&budget).await,
-    )
-}
+    fn retry_delay(
+        &self,
+        error: &Self::ModelError,
+        attempt: u32,
+        elapsed: Duration,
+    ) -> Option<Duration> {
+        if !should_retry(error, elapsed) {
+            return None;
+        }
+        let delay = *self.retry_delays.get(attempt.saturating_sub(1) as usize)?;
+        let next_attempt = attempt.saturating_add(1);
+        tracing::warn!(
+            operation = OPERATION,
+            attempt = next_attempt,
+            max_attempts = MAX_ATTEMPTS,
+            ?delay,
+            "Bedrock call will be retried"
+        );
+        self.context.emit(ReportTurnProgress::retrying(
+            self.call_number,
+            next_attempt,
+            MAX_ATTEMPTS,
+            delay,
+        ));
+        Some(delay)
+    }
 
-async fn verified(budget: &tokio::sync::Mutex<report::ReportInputBudget>) -> Option<(u32, u64)> {
-    budget.lock().await.verified()
+    fn model_failed(&mut self, error: &Self::ModelError) {
+        self.usage_complete &= !model_error_usage_is_uncertain(error);
+    }
+
+    fn failed(&mut self, error: Self::ModelError, attempt: u32, elapsed: Duration) -> Self::Error {
+        if matches!(error, BedrockError::Stopped) {
+            return BranchVerdict::Stopped;
+        }
+        BranchVerdict::Errored(map_bedrock_failure(
+            error,
+            FailedReportCall {
+                number: self.call_number,
+                ceiling: self.context.limits.max_converse_calls(),
+                model_id: self.context.model_id,
+                first_frame_secs: self.context.limits.writer_first_frame_timeout_secs(),
+                idle_secs: self.context.limits.writer_idle_timeout_secs(),
+            },
+            attempt,
+            elapsed,
+        ))
+    }
+
+    fn stopped(&mut self, in_flight: bool) -> Self::Error {
+        self.usage_complete &= !in_flight;
+        BranchVerdict::Stopped
+    }
+
+    fn call_limit(&mut self) -> Self::Error {
+        let (code, message) = self.last_rejection.take().map_or(
+            (
+                "branch_exhausted",
+                format!(
+                    "The writer used all {MAX_BRANCH_CONVERSE_CALLS} of this section's model calls without producing it."
+                ),
+            ),
+            |rejection| (rejection.code, rejection.message),
+        );
+        BranchVerdict::SectionFailed { code, message }
+    }
+
+    fn cancellation_deferred(&self) -> bool {
+        self.response_admitted
+    }
 }
 
 fn cache_write_tokens(outcome: &BranchOutcome) -> u64 {

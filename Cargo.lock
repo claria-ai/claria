@@ -1255,6 +1255,7 @@ dependencies = [
  "claria-mock-aws",
  "claria-report-store",
  "claria-storage",
+ "dekopon-embedded",
  "futures",
  "jiff",
  "lru 0.18.0",

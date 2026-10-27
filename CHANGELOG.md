@@ -6,6 +6,9 @@ All notable changes to Claria are documented here.
 
 - The writer can be stopped while waiting for its model call to begin
 - Writer streaming uses the isolated Dekopon Bedrock backend
+- Writer retries and interruption use a shared bounded harness while preserving saved sections and revisions
+- Parallel drafting records each completed model call before attempting a repair
+- Interrupted and retried model calls retain unknown usage instead of reporting it as fully accounted for
 
 - The writer reasons before it drafts a section, on every model that supports it
 - Reasoning is turned on when you upgrade, including on installs that never opened the setting — reports drafted until now were written with it off

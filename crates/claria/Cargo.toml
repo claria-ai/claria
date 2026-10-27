@@ -18,6 +18,7 @@ claria-bedrock.workspace = true
 claria-core.workspace = true
 claria-report-store.workspace = true
 claria-storage.workspace = true
+dekopon-embedded.workspace = true
 futures.workspace = true
 jiff.workspace = true
 lru.workspace = true

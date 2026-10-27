@@ -717,6 +717,16 @@ impl StopSignal {
     }
 }
 
+impl dekopon_embedded::agent::Cancellation for StopSignal {
+    fn is_stopped(&self) -> bool {
+        StopSignal::is_stopped(self)
+    }
+
+    async fn stopped(&self) {
+        StopSignal::stopped(self).await;
+    }
+}
+
 /// Send a `ConverseStream` request and wait for the service to start
 /// answering, bounded by [`StreamBounds::first_frame`].
 ///

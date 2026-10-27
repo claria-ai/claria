@@ -22,13 +22,17 @@ use. It has two modes that share one loop:
   the exception: it keeps the session, because it is the state the report is
   picked back up from.
 
-Crates: `claria` owns the turn loop, budgets, and prompt
+Crates: `claria` owns domain turn handling, budgets, and prompt
 composition; `claria-report-store` owns everything durable — workspaces and
 their ETag protocol, revisions, drafting runs, attempt and usage receipts,
 and the writer prompt and template libraries; `claria-bedrock` owns the exact Converse wire
 shape, tool schemas, and stop-reason handling; `claria-docx` owns template
 import and export; `claria-desktop` wires commands, preferences, and audit
-events.
+events. The isolated `dekopon-embedded` package owns the Bedrock stream collector
+and one bounded call/retry driver. Both the sequential Writer and each planned
+section branch implement its `Session` interface; Claria retains tool execution,
+receipts and document persistence. See [the embedding contract](writer-dekopon.md)
+for cancellation boundaries, usage accounting and current validation limits.
 
 **`drafting-runs.md` is the companion to this document.** This file covers the
 two writing modes and the loop they share; that one covers the durable
@@ -228,12 +232,12 @@ request would sit idle long enough to risk an HTTP timeout while the model
 generates, so the connection carries frames throughout instead.
 
 Two waits bound one round's silence: how long Bedrock may take to produce
-the first frame (90s by default) and how long it may then go quiet (60s).
+the first frame and how long it may then go quiet (600s each by default).
 Both are Preferences settings, as is the output reserve. They exist for the
 case the defaults were sized against and then outgrown — a template long
 enough that a cold prompt cache spends minutes re-reading the request before
 the first token, which the default wait reads as a request that never
-landed. The planner and reviewer carry their own pair (120s/90s), set from
+landed. The planner and reviewer carry their own pair (also 600s each), set from
 the same section.
 
 A round whose request never completes — the stream never starts, goes
@@ -245,7 +249,18 @@ re-reads the prompt cache the previous completed round wrote. When all
 three attempts go unanswered, the turn fails with the attempt count and how
 long Bedrock went without responding; usage from completed calls is
 retained. Refused requests (throttled, denied, invalid) are answered, not
-interrupted, and still fail the turn immediately.
+interrupted, and still fail the sequential turn immediately after the SDK's own
+configured retries. Planned parallel branches retain their separate four-attempt
+jittered policy. The embedded driver owns both application policies' waits and
+bounds; the host's SDK retry configuration still applies within each invocation.
+
+Each complete response gets an immutable usage receipt before tools or another
+repair call. Stop does not drop that write or an accepted tool batch. An observed
+failed inference attempt makes usage incomplete even if a retry succeeds; known
+usage from completed calls is retained. Planned branches record independently
+under unique reserved call IDs and the coordinator merges totals. Fatal storage
+failure cancels remaining inference and drains accepted receipts/accounting before
+settling the attempt, without applying further document changes.
 
 Targeted turns can also legitimately reach double digits: a turn that
 consults the records costs `list_record_files` (1) plus one
