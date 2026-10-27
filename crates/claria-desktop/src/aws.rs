@@ -99,7 +99,7 @@ pub async fn build_aws_config(region: &str, creds: &CredentialSource) -> aws_con
 
     let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(aws_config::Region::new(region.to_string()))
-        .http_client(http_client)
+        .http_client(http_client.clone())
         .timeout_config(timeout_config())
         .stalled_stream_protection(stalled_stream_protection());
 
@@ -118,7 +118,29 @@ pub async fn build_aws_config(region: &str, creds: &CredentialSource) -> aws_con
             ));
         }
         CredentialSource::Profile { profile_name } => {
-            builder = builder.profile_name(profile_name);
+            // An explicit profile is an identity choice: environment or
+            // instance credentials must not replace a missing selected profile.
+            // Keep the SDK's profile provider so SSO, credential_process, and
+            // source_profile/assume-role configurations continue to work.
+            let retries = aws_config::default_provider::retry_config::default_provider()
+                .profile_name(profile_name)
+                .retry_config()
+                .await;
+            let provider_config = aws_config::provider_config::ProviderConfig::default()
+                .with_region(Some(aws_config::Region::new(region.to_string())))
+                .with_http_client(http_client)
+                .with_timeout_config(timeout_config())
+                .with_retry_config(retries);
+            let provider = aws_config::profile::ProfileFileCredentialsProvider::builder()
+                .configure(&provider_config)
+                .profile_name(profile_name)
+                .build();
+            builder = builder
+                .profile_name(profile_name)
+                .credentials_provider(provider)
+                // Bedrock's ambient bearer token must not override this
+                // explicit profile's identity or bypass its credential errors.
+                .auth_scheme_preference(["sigv4".into()]);
         }
         CredentialSource::DefaultChain => {}
     }

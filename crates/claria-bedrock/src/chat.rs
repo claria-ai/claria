@@ -483,7 +483,7 @@ where
     )
     .await?;
 
-    let mut stream = response.stream;
+    let mut stream = response;
     let mut collector = StreamCollector::new();
     let mut pacer = DeltaPacer::new(options.pacing);
     let stopped = loop {

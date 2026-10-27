@@ -512,8 +512,7 @@ async fn a_stream_that_goes_silent_fails_instead_of_hanging() {
 
 /// A request the service accepts and never begins has to fail too, and the
 /// SDK bounds it nowhere: the read timeout is satisfied by the response
-/// headers, and `send` itself is what waits for the first frame. Left alone
-/// it hangs for as long as the socket stays open.
+/// headers, so Claria must keep the first-frame deadline active afterward.
 ///
 /// The failure also has to say what happened — nothing was generated, so
 /// nothing was lost mid-response. That is the difference between a caller
@@ -770,6 +769,10 @@ const PLAN_OUTPUT_TOKENS: u32 = 16_384;
 /// One planner-shaped forced-tool call: the production request shape, so the
 /// bounds and the label under test are the ones a real plan pass runs with.
 async fn planner_call(endpoint: &str) -> BedrockError {
+    planner_call_with_bounds(endpoint, StreamBounds::analysis()).await
+}
+
+async fn planner_call_with_bounds(endpoint: &str, bounds: StreamBounds) -> BedrockError {
     let tools = analysis_tool_configuration().expect("analysis tools");
     let stop = StopSignal::new();
     let mut budget = AnalysisInputBudget::new(MODEL_ID, PLANNER_OPERATION, PLAN_OUTPUT_TOKENS);
@@ -791,7 +794,7 @@ async fn planner_call(endpoint: &str) -> BedrockError {
             forced_tool: SUBMIT_SECTION_PLAN_TOOL,
             max_tokens: PLAN_OUTPUT_TOKENS,
             cache_plan: CachePlan::analysis(ModelCapabilities::for_id(MODEL_ID)),
-            stream_bounds: StreamBounds::analysis(),
+            stream_bounds: bounds,
             stop: &stop,
             on_partial_tool_input: None,
             operation: PLANNER_OPERATION,
@@ -800,6 +803,31 @@ async fn planner_call(endpoint: &str) -> BedrockError {
     )
     .await
     .expect_err("the stream was scripted to fail")
+}
+
+#[tokio::test]
+async fn headers_without_a_frame_keep_the_configured_first_frame_deadline() {
+    let server = MockServer::spawn().await;
+    server.state.write().await.bedrock_stream_silences = 1;
+    pause_the_clock_in(std::time::Duration::from_millis(750));
+
+    let started = tokio::time::Instant::now();
+    let error = planner_call_with_bounds(&server.endpoint, StreamBounds::structured(3, 30)).await;
+
+    assert!(matches!(
+        error,
+        BedrockError::StreamInterrupted {
+            operation: PLANNER_OPERATION,
+            kind: StreamInterruption::NeverStarted,
+            ..
+        }
+    ));
+    assert_waited(
+        started.elapsed(),
+        std::time::Duration::from_secs(3),
+        "the configured first-frame bound",
+    );
+    assert_eq!(server.state.read().await.bedrock_stream_silences, 0);
 }
 
 /// The planner's request is the biggest one Claria sends, and the model

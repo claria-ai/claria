@@ -1,5 +1,5 @@
 //! A bounded, local-only gate in front of the existing mock S3 service.
-//! Holds one selected PUT before forwarding it; storage semantics stay in the mock.
+//! Holds one selected PUT or its response; storage semantics stay in the mock.
 
 use std::sync::{Arc, Mutex};
 
@@ -17,10 +17,33 @@ pub struct S3Gate {
     server: JoinHandle<()>,
 }
 
+#[derive(Clone, Copy)]
+enum GatePoint {
+    BeforeWrite,
+    AfterWrite { drop_reply: bool },
+}
+
 impl S3Gate {
     pub async fn spawn(
         endpoint: &str,
         matches: impl Fn(&str, &[u8]) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        Self::spawn_at(endpoint, matches, GatePoint::BeforeWrite).await
+    }
+
+    #[allow(dead_code)] // This shared helper is also compiled by the before-write fixtures.
+    pub async fn after_write(
+        endpoint: &str,
+        matches: impl Fn(&str, &[u8]) -> bool + Send + Sync + 'static,
+        drop_reply: bool,
+    ) -> Self {
+        Self::spawn_at(endpoint, matches, GatePoint::AfterWrite { drop_reply }).await
+    }
+
+    async fn spawn_at(
+        endpoint: &str,
+        matches: impl Fn(&str, &[u8]) -> bool + Send + Sync + 'static,
+        point: GatePoint,
     ) -> Self {
         let backend = endpoint
             .strip_prefix("http://")
@@ -44,13 +67,14 @@ impl S3Gate {
                         let matches = matches.clone();
                         connections.spawn(async move {
                             let (mut stream, headers, body, method, path) = request(stream).await;
-                            let selected = if method == "PUT" && matches(&path, &body) {
+                            let mut selected = if method == "PUT" && matches(&path, &body) {
                                 gate.lock().expect("gate mutex").take()
                             } else {
                                 None
                             };
-                            if let Some((reached, release)) = selected {
-                                reached.send(path).expect("test waits for held PUT");
+                            if matches!(point, GatePoint::BeforeWrite)
+                                && let Some((reached, release)) = selected.take() {
+                                reached.send(path.clone()).expect("test waits for held PUT");
                                 if release.await.is_err() {
                                     return;
                                 }
@@ -58,6 +82,18 @@ impl S3Gate {
                             let mut upstream = TcpStream::connect(backend).await.expect("mock S3");
                             upstream.write_all(headers.as_bytes()).await.expect("forward headers");
                             upstream.write_all(&body).await.expect("forward body");
+                            if let Some((reached, release)) = selected {
+                                let mut response = Vec::new();
+                                (&mut upstream).take(2 * 1024 * 1024 + 1)
+                                    .read_to_end(&mut response).await.expect("held mock response");
+                                assert!(response.len() <= 2 * 1024 * 1024, "fixture response bound");
+                                assert!(response.starts_with(b"HTTP/1.1 200"), "selected PUT committed");
+                                reached.send(path).expect("test waits for committed PUT");
+                                if release.await.is_ok() && matches!(point, GatePoint::AfterWrite { drop_reply: false }) {
+                                    stream.write_all(&response).await.expect("release committed response");
+                                }
+                                return;
+                            }
                             // Closing each upstream connection ensures every SDK request
                             // crosses the gate instead of reusing an uninspected socket.
                             let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;

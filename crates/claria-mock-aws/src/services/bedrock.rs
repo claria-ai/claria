@@ -939,11 +939,6 @@ fn dropped_converse_stream() -> Result<Response, aws_smithy_eventstream::error::
 /// on the wire, so the client is waiting on the first frame and not on
 /// headers, which is a different failure the SDK's read timeout already
 /// covers.
-///
-/// The shape the SDK is least equipped for. `ConverseStream::send` resolves
-/// only once the first frame arrives — it has to look at that frame to rule
-/// out an `initial-response` — so the wait lands inside the send, where
-/// nothing in the SDK bounds it.
 fn silent_converse_stream() -> Response {
     use futures::StreamExt;
 

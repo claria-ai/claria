@@ -397,6 +397,44 @@ test("sections land while the draft runs, and Stop keeps the ones already saved"
   // Starting back up asks the plan's question again, this time about a
   // section that already landed.
   await banner.getByRole("button", { name: "Start back up" }).click();
+  await expect(
+    page.getByRole("button", { name: "Start back up (1 remaining)" }),
+  ).toBeInViewport();
+  await test.info().attach("resume-plan-with-history", {
+    body: await page.screenshot({
+      path: test.info().outputPath("resume-plan-with-history.png"),
+    }),
+    contentType: "image/png",
+  });
+  // Existing review findings share the pane with history. Neither may
+  // cover the plan controls, including at the minimum desktop height.
+  await page.getByRole("button", { name: "Review draft", exact: true }).click();
+  await page
+    .getByTestId("review-pass-preflight")
+    .getByRole("button", { name: "Run all checks" })
+    .click();
+  await expect(page.getByTestId("finding-card")).toHaveCount(2);
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await test.info().attach("resume-plan-with-history-and-findings", {
+    body: await page.screenshot({
+      path: test.info().outputPath("resume-plan-with-history-and-findings.png"),
+    }),
+    contentType: "image/png",
+  });
+  // Findings remain reachable in their scroll area while the resume plan
+  // stays available above them. Trial clicks preserve both findings.
+  await page
+    .getByTestId("finding-card")
+    .last()
+    .getByRole("button", { name: "Dismiss", exact: true })
+    .click({ trial: true });
+  await test.info().attach("resume-plan-findings-scrolled", {
+    body: await page.screenshot({
+      path: test.info().outputPath("resume-plan-findings-scrolled.png"),
+    }),
+    contentType: "image/png",
+  });
+  // The clicks below intentionally use no force.
   const referral = page
     .getByTestId("draft-plan-card")
     .filter({ hasText: "Reason for Referral" });

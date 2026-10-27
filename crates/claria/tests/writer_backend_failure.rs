@@ -111,6 +111,7 @@ async fn request_path(stream: &mut TcpStream) -> RecordedRequest {
 enum StreamScenario {
     FailedTrailer,
     RecoverableException,
+    RecoverableFirstEvent,
     RecoverableProposal,
     SdkRetry,
     CompleteText,
@@ -149,6 +150,11 @@ fn response_frames(scenario: &StreamScenario, call: usize) -> Vec<u8> {
             append_retryable_failure(&mut frames);
             frames
         }
+        StreamScenario::RecoverableFirstEvent if call == 1 => {
+            let mut frames = Vec::new();
+            append_retryable_failure(&mut frames);
+            frames
+        }
         StreamScenario::RecoverableProposal if call <= 2 => {
             let mut frames = proposal_frames();
             if call == 1 {
@@ -169,6 +175,7 @@ fn response_frames(scenario: &StreamScenario, call: usize) -> Vec<u8> {
         }
         StreamScenario::StopPartialProposal(_) => proposal_frames(),
         StreamScenario::RecoverableException
+        | StreamScenario::RecoverableFirstEvent
         | StreamScenario::RecoverableProposal
         | StreamScenario::SdkRetry
         | StreamScenario::CompleteText => {
@@ -315,6 +322,7 @@ async fn serve_streams(
                 // The valid messageStop precedes a truncated HTTP chunk, so usage never arrives.
                 StreamScenario::FailedTrailer => b"\r\n4\r\nx".as_slice(),
                 StreamScenario::RecoverableException
+                | StreamScenario::RecoverableFirstEvent
                 | StreamScenario::RecoverableProposal
                 | StreamScenario::SdkRetry
                 | StreamScenario::CompleteText => b"\r\n0\r\n\r\n".as_slice(),
@@ -542,6 +550,31 @@ async fn exercise_streams(
     })
     .await
     .expect("bounded local writer scenario")
+}
+
+#[tokio::test]
+async fn a_transient_exception_as_the_first_event_is_retried_without_losing_its_classification() {
+    let (_storage, s3, client_id) = setup().await;
+    let (requests, result) = exercise_streams(
+        &s3,
+        client_id,
+        StreamScenario::RecoverableFirstEvent,
+        ReportMessageRequest::new("Answer using this synthetic fixture."),
+    )
+    .await;
+    let outcome = result.expect("the first event's transient exception remains retryable");
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].path.ends_with("/count-tokens"));
+    assert!(requests[1].path.ends_with("/converse-stream"));
+    assert!(requests[2].path.ends_with("/converse-stream"));
+    assert_eq!(requests[1].body, requests[2].body);
+    assert_eq!(outcome.assistant_text, "Synthetic recovered answer.");
+    assert_eq!(outcome.attempt.converse_calls, 1);
+    assert!(!outcome.attempt.usage_complete);
+    let after = claria_report_store::load_report_workspace(&s3, BUCKET, client_id)
+        .await
+        .expect("completed workspace");
+    assert_eq!(after.session, outcome.workspace.session);
 }
 
 #[tokio::test]

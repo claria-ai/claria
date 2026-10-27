@@ -4,15 +4,18 @@ This is a local Writer harness integration with synthetic validation, not shippi
 The starting Claria `main` was `bdd3731491b71f3ef87a530c19d220a324567230`.
 The inspected Dekopon `main` was `0d4f4276071cf41fa36808eea0cd9b8d2d13bf5f`.
 The first embedded-package checkpoint is `94acc810f6e96cb6f48ec10065fdab5f0c8a788d`.
-The current paired embedded commit is `c752363b56eee6eb202302a3aabf574eb72980ab`.
+The current paired embedded commit is `6dfae22e7c20a78a485c3e0e9e8f880777551625`.
 The separate extraction-model/error-sidecar release is outside this work.
 
 ## Boundary
 
 Claria calls Amazon Bedrock Runtime `ConverseStream` through the AWS Rust SDK.
 `claria-desktop/src/aws.rs` owns credential selection and builds `SdkConfig`;
-libraries receive that configuration. This work introduces no credential lookup,
-service proxy, IAM change, AWS resource, or live-model test.
+libraries receive that configuration. Explicit profile selection now uses the
+SDK's profile provider directly, as approved by the owner; ambient credentials
+cannot replace that selection. Default-chain and inline credential behavior stay
+unchanged. This work introduces no service proxy, IAM change, AWS resource, or
+live-model test.
 
 The proposed dependency is the Claria fork's isolated `dekopon-embedded` package.
 It adapts Dekopon's async inference, bounded turn loop, complete-message replay,
@@ -44,7 +47,7 @@ tool arguments or credentials. Claria's S3 durability remains Claria's responsib
 | `claria/src/run.rs` | Interrupted-run resume, partial finalize, abandon, run ownership and completion save even when Stop races finalization |
 | `claria/src/gate.rs`, `review.rs` | Citation filename/quote checks, review/fix/undo/dismiss and completion findings |
 | `claria-bedrock` | Context/output budget coupling, CountTokens reuse/fallback, model capability/tuning, cache placement, raw usage pricing and retry advice |
-| `useReportWorkspace.ts`, `draftRun.ts`, `Writing.tsx` | Existing IPC channel, activity/progress, manual edits, proposal diff, usage, templates and DOCX export; no UI changes |
+| `useReportWorkspace.ts`, `draftRun.ts`, `Writing.tsx` | Existing IPC channel, activity/progress, manual edits, proposal diff, usage, templates and DOCX export; bounded history/findings keep resume controls reachable |
 
 The sequential Writer and planned section branches now implement the embedded
 `Session` interface. One `drive` owns bounded model calls, inference invocations,
@@ -73,6 +76,16 @@ retaining landed sections and rejecting incompatible user revisions or proposals
 No status database, raw transcript persistence or new ownership model was added.
 These mechanics do not demonstrate better real-model writing.
 
+Failure cleanup now reloads durable sections before stamping failure, rather than
+replaying an in-memory section PUT that storage refused. It captures the workspace
+ETag before publishing `Failed`, and a conflicting run write or newer workspace
+claim fences cleanup. Lost workspace-claim replies reconcile by exact durable
+body; an uncommitted claim rolls back only through its own run ETag. Completion
+healing requires this run's section authorship at its expected revision cut,
+rather than treating an unrelated later edit as proof of completion. These repair
+inherited persistence hazards exposed by crash/fault fixtures; they add no format
+or database.
+
 ## Validation plan
 
 Run the unchanged `claria-bedrock` and `claria` suites before integration, then run
@@ -87,9 +100,11 @@ malformed known events, bounds, absent usage, terminal-state errors and unknown
 events. The generic tool-host scenarios cover evidence use, recoverable tool
 failure, revision staging, bounded work and output fidelity.
 
-No frontend files are changed in this slice. Any later UI change requires browser
-screenshots and owner approval before a separate adversarial UI review.
-Non-UI correctness review proceeds independently.
+The only application UI change bounds the existing history/findings area while a
+draft plan is open. Existing components, styles and controls are reused. Browser
+fixtures use the real React page with mocked Tauri commands, not a native desktop.
+Screenshots require owner approval before independent adversarial UI review;
+non-UI correctness review proceeds independently.
 
 ## Checkpoint limits
 
@@ -106,12 +121,14 @@ The owner will provide test access later. Parent accepted the first protocol sli
 and authorized this bounded-kernel migration; merge/release/deployment remain out
 of scope.
 
-The separate package's dependency audit currently fails: Claria's existing exact
-Tokio 1.52.3 pin is affected by RUSTSEC-2026-0386, and the native Dekopon duplicate
-crate policy rejects the AWS SDK's `http`/`http-body` generations. No exception or
-uncoordinated dependency bump was added. The isolated passing option and exact
-advisory sources are recorded in [dependency options](writer-dependency-options.md).
-Adopting the coherent AWS cohort requires coordination with the active release.
+The separate package now passes the unchanged native Dekopon dependency policy
+with Tokio 1.53.3 and the coherent September AWS SDK cohort. Claria's matching
+service pins and active transport fixes are isolated to this Writer branch.
+Fifteen inherited diagnostics remain in a broader Claria advisory scan; no policy
+exception was added. Exact versions, advisory sources and compatible options are
+recorded in [dependency options](writer-dependency-options.md). Integrating this
+branch still requires coordination with the separate release; that branch was
+not modified.
 
 The stopped-attempt and recovered-retry paths now retain unknown usage when an
 in-flight request has no trustworthy receipt. Post-terminal failures remain
@@ -128,8 +145,14 @@ An inherited process-death gap remains: `load_resumable_draft_run` returns the
 workspace's active run, but `resume_draft_run` accepts only `Stopped` or `Failed`.
 A process killed while the run is `Drafting` can therefore leave a visible run
 that cannot be resumed directly. Automatically reclaiming it could race another
-window or machine. A takeover/lease decision is required; this slice does not
-silently change that ownership contract.
+window or machine. Actual future-abort fixtures verify that implicit resume and
+partial finalization refuse that state without making inference calls. Explicit
+abandon fences stale writes and permits a fresh run. Automatic same-run takeover
+would require an explicit ownership decision and is not added. A lost first run
+claim reply or unavailable claim readback can retain this guarded state. Erased
+section authorship prevents automatic completion healing rather than inventing
+proof; recovering an old partial-finalization flag also remains outside the
+existing data format.
 
 ## Observed evidence
 
@@ -140,36 +163,65 @@ On Linux with Rust 1.98.1:
   Its four new cases cover exact
   streamed reasoning/tool replay, first-frame cancellation, a post-terminal broken
   trailer with durable unknown usage, and retry of a typed stream exception.
-- The current `cargo test -p claria-bedrock -p claria --locked --no-fail-fast`
-  passed 280 tests, with six existing live tests ignored. Receipt/tool-write gates,
+- The bounded-kernel checkpoint passed 280 Claria/Bedrock tests, with six existing
+  live tests ignored. Receipt/tool-write gates,
   partial streams, interrupted retries, SDK retries, batch draining and reload/resume
   are exercised against loopback AWS fixtures. `/tmp/writer-final-tests.log` records
   the exact run; `CARGO_TARGET_DIR=/workspace/writer-target` and
   `CARGO_PROFILE_DEV_DEBUG=0` were used.
-- `cargo clippy -p claria-bedrock -p claria --all-targets --locked -- -D warnings`
-  passed on the final integration (`/tmp/writer-final-clippy.log`). A pre-existing late-initialization warning was fixed
+- All-target Clippy with warnings denied passed on the kernel checkpoint
+  (`/tmp/writer-final-clippy.log`). A pre-existing late-initialization warning was fixed
   in the touched writer context initializer without changing its values.
-- The separate embedded package now passes 33 tests (19 kernel/lifecycle,
-  13 collector fixtures, one typed-exception unit test), all-target Clippy with
-  warnings denied, nightly formatting and rustdoc with warnings denied.
+- The dependency-upgraded embedded kernel passed 35 tests (19 kernel/lifecycle,
+  13 collector fixtures, one typed-exception unit test and two transport tests),
+  all-target Clippy and rustdoc with warnings denied, and the unchanged dependency
+  policy. Wire fixtures cover the SDK's changed first-frame boundary; final
+  receipts accompany the paired patches.
 - The `claria-bedrock` dependency tree contains only `dekopon-embedded` from Dekopon;
   it adds no gateway, broker, Wasmtime, shell, OpenTelemetry, reqwest or ureq.
 - Independent non-UI review verified completion-phase usage, typed exceptions,
   cache replay, reused tool IDs, receipt/effect ordering, fatal sibling accounting
   drain and per-invocation SDK attempt counters. No blocking source finding remains.
-- No frontend, layout, stylesheet, generated binding or desktop command changed.
-  No browser/UI review was performed.
+- The upgraded workspace passed 737 tests across all 13 non-desktop packages,
+  with seven existing tests ignored: 326 service tests in
+  `/tmp/writer-upgraded-services-tests.log` and 411 remaining-package tests in
+  `/tmp/writer-final-v3-verified-tests.log`. The latter includes the first-frame fix,
+  seven cleanup/claim fault cases, six process-death/completion-proof cases and
+  a raw first-event transient-exception recovery case.
+  Native transcription dependencies used local CMake 3.31.10. The failure receipt
+  before the first-frame correction is retained separately.
+- Actual-source credential tests passed 13 test entries, including 12 isolated
+  subprocess scenarios, and all-target Clippy. Independent source review verified
+  explicit-profile signing, no HTTP for a missing profile, and preserved default
+  and inline behavior. See [dependency notes](writer-dependency-options.md).
+- The React Writing page passed 11 browser flows, 56 component tests, build and
+  lint. A new 600-pixel-window regression exercises review findings, real
+  Keep/Rewrite clicks and resume. An independent reviewer found a second layout
+  obstruction when findings and history coexist; the correction and revised
+  screenshots await owner approval before re-review. No stylesheet, framework,
+  generated binding, desktop command or `lib/tauri.ts` change was made.
+
+All 13 non-desktop packages also passed all-target Clippy with warnings denied
+(`/tmp/writer-final-v3-verified-clippy.log`). Nightly formatting passes all 27
+changed Rust files across the pair. The full Claria formatting check reports six
+files unchanged since the recorded baseline: `claria/src/lib.rs`,
+`claria/tests/planning.rs`, `claria-desktop/src/config.rs`, and the eval package's `src/grade.rs`, `tests/config.rs` and `tests/grade.rs`. They were left outside
+this isolated work; `/tmp/writer-final-v3-fmt.log` records that existing gate failure.
 
 These checks do not cover the whole native desktop workspace, remote CI or a
 released artifact. The inherited native Dekopon workspace was not rebuilt: its
 source, manifest, lockfile and contracts are unchanged.
 
 The new Claria fixtures are in `tests/stop.rs`, `tests/parallel_draft.rs`,
-`tests/writer_backend_failure.rs` and `tests/writer_durability.rs` under
+`tests/writer_backend_failure.rs`, `tests/writer_durability.rs`,
+`tests/writer_crash.rs` and `tests/crash_boundary.rs` under
 `crates/claria`. They check known/unknown accounting, exact Unicode content and
 proposal effects, byte-identical retry inputs, durable receipts before repair,
 accepted batch completion, no next call after Stop, and resume from stored sections.
 The fatal-drain fixture directly covers an in-flight sibling repair and a receipt
 failure; genuinely queued branches and a ready successful sibling after a fatal
-error are source-reviewed, not separately fixture-tested. The dependency probe
-uses the older 23-test checkpoint and is not a full-workspace upgrade validation.
+error are source-reviewed, not separately fixture-tested. The historical dependency
+probe used the older 23-test checkpoint; current upgrade receipts are separate.
+Chat and structured-analysis startup cancellation and their broad classification
+of first-frame exceptions retain their inherited behavior. Writer calls use the
+embedded cancellation boundary and typed stream errors.
