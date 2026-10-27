@@ -6,6 +6,7 @@ All notable changes to Claria are documented here.
 
 - Browser checks cover repeated sock drops, keyboard controls, navigation cleanup, and uninterrupted writing
 - Deterministic tests cover Lucia's timed reactions, seated gaze, pending requests, and five-dekopon feeding limit
+- Lucia's activity tracking follows real writer and chat requests through completion, cancellation, and failure
 - The writer reasons before it drafts a section, on every model that supports it
 - Reasoning is turned on when you upgrade, including on installs that never opened the setting — reports drafted until now were written with it off
 - A record set too large for your writing model is refused while planning, instead of being planned, billed for, and then refused when drafting starts
