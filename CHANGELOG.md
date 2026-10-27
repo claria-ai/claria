@@ -4,6 +4,9 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- The writer can be stopped while waiting for its model call to begin
+- Writer streaming uses the isolated Dekopon Bedrock backend
+
 - The writer reasons before it drafts a section, on every model that supports it
 - Reasoning is turned on when you upgrade, including on installs that never opened the setting — reports drafted until now were written with it off
 - A record set too large for your writing model is refused while planning, instead of being planned, billed for, and then refused when drafting starts

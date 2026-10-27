@@ -32,5 +32,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
 aws-credential-types.workspace = true
+aws-smithy-eventstream.workspace = true
+aws-smithy-types.workspace = true
 claria-mock-aws.workspace = true
 tokio = { workspace = true, features = ["full"] }

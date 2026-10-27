@@ -617,18 +617,20 @@ async fn converse_report_with_tool_set(
         .system(system.clone())
         .tool_config(tools.clone())
         .build();
-    budget
-        .inner
-        .ensure_within(
-            protocol_chars(system_prompt, messages),
-            || count_report_tokens(config, &client, model_id, token_request),
-            |input_tokens, input_token_budget| BedrockError::ContextBudgetExceeded {
-                model_id: model_id.to_string(),
-                input_tokens,
-                input_token_budget,
-            },
-        )
-        .await?;
+    let budget_check = budget.inner.ensure_within(
+        protocol_chars(system_prompt, messages),
+        || count_report_tokens(config, &client, model_id, token_request),
+        |input_tokens, input_token_budget| BedrockError::ContextBudgetExceeded {
+            model_id: model_id.to_string(),
+            input_tokens,
+            input_token_budget,
+        },
+    );
+    tokio::select! {
+        biased;
+        () = stop.stopped() => return Err(BedrockError::Stopped),
+        result = budget_check => result?,
+    }
 
     // Prompt caching, exactly where the caller's plan says: each point makes
     // the prefix ahead of it readable from cache on the next call in the
@@ -655,52 +657,47 @@ async fn converse_report_with_tool_set(
         vec![system]
     };
 
-    // Streamed, not unary: the writer's output ceiling is far above the
-    // point where a non-streaming Converse call risks an HTTP timeout while
-    // the model generates. Nothing is forwarded incrementally — the loop
-    // needs a whole message before it can execute tool calls — but the
-    // connection carries frames throughout instead of idling.
     let operation = tool_set.operation();
-    let started = std::time::Instant::now();
-    let response = converse::start_converse_stream(
-        operation,
-        stream_bounds,
-        client
-            .converse_stream()
-            .model_id(model_id)
-            .set_system(Some(system_blocks))
-            .set_messages(Some(converse_messages))
-            .tool_config(tools)
-            .inference_config(
-                InferenceConfiguration::builder()
-                    .max_tokens(output_token_reserve as i32)
-                    .set_temperature(tuning.temperature)
-                    .build(),
-            )
-            .set_additional_model_request_fields(converse::additional_request_fields(tuning)?)
-            .send(),
-    )
-    .await?;
-
-    let mut stream = response.stream;
-    let mut collector = ReportStreamCollector::default();
-    loop {
-        let event = tokio::select! {
-            biased;
-            () = stop.stopped() => {
-                // Dropping the stream closes the connection, so the model
-                // stops generating a response nobody is going to read.
-                drop(stream);
-                tracing::info!(model_id, "report stream stopped by the reader");
-                return Err(BedrockError::Stopped);
-            }
-            event = converse::recv_stream_event(operation, stream_bounds, &mut stream) => event?,
-        };
-        let Some(event) = event else { break };
-        collector.absorb(event);
-    }
-    let (streamed_content, streamed_stop_reason, streamed_usage) = collector.finish()?;
-    let latency_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    let backend = dekopon_embedded::bedrock::BedrockClient::from_client(client);
+    let request = dekopon_embedded::bedrock::BedrockRequest {
+        model_id,
+        system: system_blocks,
+        messages: converse_messages,
+        tools: Some(tools),
+        inference: InferenceConfiguration::builder()
+            .max_tokens(output_token_reserve as i32)
+            .set_temperature(tuning.temperature)
+            .build(),
+        additional_fields: converse::additional_request_fields(tuning)?,
+        limits: dekopon_embedded::bedrock::StreamLimits::new(
+            stream_bounds.first_frame,
+            stream_bounds.idle,
+            8 * 1024 * 1024,
+            1024,
+            max_tool_uses_per_response,
+        )
+        .map_err(|error| embedded_error(operation, error))?,
+    };
+    let mut observe = |_: &str| std::ops::ControlFlow::Continue(());
+    // The host executes tools only after a complete response; stopping drops send and receive alike.
+    let response = tokio::select! {
+        biased;
+        () = stop.stopped() => return Err(BedrockError::Stopped),
+        result = backend.converse(request, &mut observe) => {
+            result.map_err(|error| match error {
+                dekopon_embedded::bedrock::BedrockError::Protocol(
+                    dekopon_embedded::bedrock::ProtocolFailure::TooManyTools,
+                ) => BedrockError::ResponseParse(format!(
+                    "report response exceeded its tool-use limit; configured maximum is {max_tool_uses_per_response}"
+                )),
+                error => embedded_error(operation, error),
+            })?
+        }
+    };
+    let streamed_content = response.message.content();
+    let streamed_stop_reason = response.stop_reason;
+    let streamed_usage = response.usage;
+    let latency_ms = Some(response.latency_ms);
 
     let mut content = Vec::with_capacity(streamed_content.len());
     let mut tool_calls = Vec::new();
@@ -712,7 +709,7 @@ async fn converse_report_with_tool_set(
             _ => None,
         })
         .collect();
-    for block in &streamed_content {
+    for block in streamed_content {
         match block {
             // Bedrock can emit an empty text block next to a valid tool use.
             // It carries no semantic content and cannot be sent back because
@@ -823,6 +820,81 @@ async fn converse_report_with_tool_set(
         usage,
         latency_ms,
     })
+}
+
+fn embedded_error(
+    operation: &'static str,
+    error: dekopon_embedded::bedrock::BedrockError,
+) -> BedrockError {
+    use dekopon_embedded::bedrock::{
+        BedrockError as EmbeddedError, FailurePhase, InterruptionKind,
+    };
+
+    let message = error.to_string();
+    match error {
+        EmbeddedError::Cancelled => BedrockError::Stopped,
+        EmbeddedError::Interrupted {
+            phase: FailurePhase::AfterTerminal,
+            ..
+        }
+        | EmbeddedError::Service {
+            phase: FailurePhase::AfterTerminal,
+            ..
+        } => BedrockError::CompletedStreamFailed(message),
+        EmbeddedError::Interrupted { phase, kind } => {
+            let kind = match (phase, kind) {
+                (FailurePhase::AwaitingResponse, InterruptionKind::Timeout) => {
+                    crate::error::StreamInterruption::NeverStarted
+                }
+                (FailurePhase::Streaming, InterruptionKind::Timeout) => {
+                    crate::error::StreamInterruption::WentSilent
+                }
+                (_, InterruptionKind::Transport) => crate::error::StreamInterruption::Dropped,
+                (FailurePhase::AfterTerminal, InterruptionKind::Timeout) => {
+                    return BedrockError::CompletedStreamFailed(message);
+                }
+            };
+            BedrockError::StreamInterrupted {
+                operation,
+                kind,
+                message,
+            }
+        }
+        EmbeddedError::Service {
+            phase: FailurePhase::Streaming,
+            ref code,
+            ..
+        } if matches!(
+            code.as_str(),
+            "ModelStreamErrorException"
+                | "InternalServerException"
+                | "ServiceUnavailableException"
+                | "ThrottlingException"
+        ) =>
+        {
+            BedrockError::StreamInterrupted {
+                operation,
+                kind: crate::error::StreamInterruption::Dropped,
+                message,
+            }
+        }
+        EmbeddedError::Service {
+            code,
+            status,
+            request_id,
+            ..
+        } => BedrockError::Service {
+            operation,
+            code,
+            status,
+            request_id,
+            message,
+        },
+        EmbeddedError::Protocol(_) => BedrockError::ResponseParse(message),
+        EmbeddedError::InvalidRequest | EmbeddedError::InvalidLimits => {
+            BedrockError::SchemaViolation(message)
+        }
+    }
 }
 
 /// True only for Claude model IDs whose Bedrock families support Converse

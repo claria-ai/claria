@@ -1075,9 +1075,7 @@ async fn run_turn(
         })?;
 
     let mut inventory = Vec::new();
-    let protocol_content;
-    let persisted_instruction;
-    match request.kind {
+    let (protocol_content, persisted_instruction) = match request.kind {
         TurnRunKind::Targeted {
             instruction,
             references,
@@ -1095,7 +1093,7 @@ async fn run_turn(
                 build_untrusted_context(&loaded.workspace, references).map_err(|message| {
                     TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message)
                 })?;
-            protocol_content = vec![
+            let protocol_content = vec![
                 ReportProtocolBlock::Text {
                     text: report_context,
                 },
@@ -1103,7 +1101,8 @@ async fn run_turn(
                     text: format!("User instruction:\n{instruction}"),
                 },
             ];
-            persisted_instruction = instruction.to_string();
+            let persisted_instruction = instruction.to_string();
+            (protocol_content, persisted_instruction)
         }
         TurnRunKind::FullDraft {
             guidance,
@@ -1135,7 +1134,7 @@ async fn run_turn(
             let plan = plan_context(run.run.plan.as_ref()).map_err(|message| {
                 TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message)
             })?;
-            protocol_content = vec![
+            let protocol_content = vec![
                 ReportProtocolBlock::Text {
                     text: record_context.prompt.clone(),
                 },
@@ -1145,15 +1144,16 @@ async fn run_turn(
                     text: kickoff_instruction(turn_kind, guidance, &run.run, base),
                 },
             ];
-            persisted_instruction = if guidance.is_empty() {
+            let persisted_instruction = if guidance.is_empty() {
                 "Fill the complete report from all readable client records.".to_string()
             } else {
                 format!(
                     "Fill the complete report from all readable client records.\n\nGuidance: {guidance}"
                 )
             };
+            (protocol_content, persisted_instruction)
         }
-    }
+    };
     let protocol_user_message = ReportProtocolMessage {
         role: ReportProtocolRole::User,
         content: protocol_content,
@@ -1984,7 +1984,7 @@ pub(crate) fn map_bedrock_failure(
                     "The model did not respond in time. Retry, or fill the report a section at a time if it keeps happening.".to_string()
                 }
                 "ValidationException" => format!(
-                    "Bedrock rejected the request as invalid for {model_id}. The Claria Console log holds the service's reason."
+                    "Bedrock rejected the request as invalid for {model_id}. The Claria Console log holds the service code and request ID."
                 ),
                 // Every non-service SDK failure lands here — connect, dispatch,
                 // and timeout alike — so the wording must not pin the blame on

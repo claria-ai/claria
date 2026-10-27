@@ -42,6 +42,9 @@ pub enum BedrockError {
     #[error("response parsing failed: {0}")]
     ResponseParse(String),
 
+    #[error("the model completed, but its stream did not finish: {0}")]
+    CompletedStreamFailed(String),
+
     #[error("response did not conform to expected schema: {0}")]
     SchemaViolation(String),
 

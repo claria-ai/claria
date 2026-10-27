@@ -1248,6 +1248,8 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
+ "aws-smithy-eventstream",
+ "aws-smithy-types",
  "claria-bedrock",
  "claria-core",
  "claria-mock-aws",
@@ -1279,6 +1281,7 @@ dependencies = [
  "claria-billing",
  "claria-core",
  "claria-mock-aws",
+ "dekopon-embedded",
  "jiff",
  "serde",
  "serde_json",
@@ -1893,6 +1896,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
 dependencies = [
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "dekopon-embedded"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-bedrockruntime",
+ "aws-smithy-types",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
