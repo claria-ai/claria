@@ -110,10 +110,15 @@ non-UI correctness review proceeds independently.
 
 The GitHub integration denied creation of `claria-ai/dekopon` with HTTP 403
 (`Resource not accessible by integration`) after repository lookup and an
-organization-wide repository listing confirmed no existing fork. No fork was
-created, and the denied operation has not been retried. The local dependency path
-is temporary; a reproducible fork commit pin and paired draft PRs require the fork
-to exist and be writable. No upstream changes, merge, release or deployment occur.
+organization-wide repository listing confirmed no existing fork. After the owner
+changed installation access on 2026-10-27, Claria permission checks succeeded;
+one authorized retry of the fork endpoint still returned the same HTTP 403.
+No fork was created, and that operation is stopped. The preserved Claria branch
+is published as [draft PR 148](https://github.com/claria-ai/claria/pull/148), based
+on the unchanged remote `main` recorded above. Its temporary sibling path prevents
+clean-checkout Rust CI from building until the fork exists and an exact writable
+fork commit can be pinned. Publication is not test or shipping approval. No
+upstream changes, merge, release or deployment occur.
 
 Live AWS/model access, real tool-generation quality, real Bedrock reasoning/cache
 behavior, production latency/cost and native desktop behavior remain unvalidated.
