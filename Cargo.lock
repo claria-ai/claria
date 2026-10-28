@@ -1900,6 +1900,7 @@ dependencies = [
 [[package]]
 name = "dekopon-embedded"
 version = "0.1.0"
+source = "git+https://github.com/claria-ai/dekopon.git?rev=6dfae22e7c20a78a485c3e0e9e8f880777551625#6dfae22e7c20a78a485c3e0e9e8f880777551625"
 dependencies = [
  "aws-config",
  "aws-sdk-bedrockruntime",

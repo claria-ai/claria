@@ -5,7 +5,7 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - The writer can be stopped while waiting for its model call to begin
-- Writer streaming uses the isolated Dekopon Bedrock backend
+- Writer streaming uses the isolated Dekopon Bedrock backend pinned from the Claria fork
 - Writer retries and interruption use a shared bounded harness while preserving saved sections and revisions
 - Parallel drafting records each completed model call before attempting a repair
 - Interrupted and retried model calls retain unknown usage instead of reporting it as fully accounted for

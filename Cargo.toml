@@ -39,7 +39,7 @@ claria-report-store = { path = "crates/claria-report-store", version = "0.34.1" 
 claria-storage = { path = "crates/claria-storage", version = "0.34.1" }
 claria-transcribe = { path = "crates/claria-transcribe", version = "0.34.1" }
 
-dekopon-embedded = { path = "../dekopon-writer/embedded", version = "=0.1.0" }
+dekopon-embedded = { git = "https://github.com/claria-ai/dekopon.git", rev = "6dfae22e7c20a78a485c3e0e9e8f880777551625", version = "=0.1.0" }
 
 # Shared external pins — versions live here only; crates add features they need
 #

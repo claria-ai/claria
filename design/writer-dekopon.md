@@ -17,7 +17,7 @@ cannot replace that selection. Default-chain and inline credential behavior stay
 unchanged. This work introduces no service proxy, IAM change, AWS resource, or
 live-model test.
 
-The proposed dependency is the Claria fork's isolated `dekopon-embedded` package.
+The dependency is the Claria fork's isolated `dekopon-embedded` package.
 It adapts Dekopon's async inference, bounded turn loop, complete-message replay,
 explicit tool authority and cancellation patterns to native Bedrock content.
 SDK messages retain ordered reasoning/signatures, tool-result status, stop reasons,
@@ -108,17 +108,22 @@ non-UI correctness review proceeds independently.
 
 ## Checkpoint limits
 
-The GitHub integration denied creation of `claria-ai/dekopon` with HTTP 403
-(`Resource not accessible by integration`) after repository lookup and an
-organization-wide repository listing confirmed no existing fork. After the owner
-changed installation access on 2026-10-27, Claria permission checks succeeded;
-one authorized retry of the fork endpoint still returned the same HTTP 403.
-No fork was created, and that operation is stopped. The preserved Claria branch
-is published as [draft PR 148](https://github.com/claria-ai/claria/pull/148), based
-on the unchanged remote `main` recorded above. Its temporary sibling path prevents
-clean-checkout Rust CI from building until the fork exists and an exact writable
-fork commit can be pinned. Publication is not test or shipping approval. No
-upstream changes, merge, release or deployment occur.
+The owner created the public `claria-ai/dekopon` fork on 2026-10-28. Its parent,
+source and common ancestry were verified against `dekopon-agents/dekopon`; the
+fork's `main` remains `27e70cfed743b8db98bc72393e5295edd8019e16`. The preserved
+embedded branch is published as [draft PR 1](https://github.com/claria-ai/dekopon/pull/1)
+at `6dfae22e7c20a78a485c3e0e9e8f880777551625`, with only `embedded/` changes.
+Claria [draft PR 148](https://github.com/claria-ai/claria/pull/148) now uses that
+exact Git revision rather than a sibling path. The lock update changes only the
+embedded package's source; it does not refresh the dependency cohort. Remote
+check results belong to each PR's exact head. Publication is not test or shipping
+approval. No upstream changes, merge, release or deployment occur.
+
+Registry publication is a separate release gate. Claria's tag workflow runs
+`cargo publish --workspace`; Cargo packaging replaces a Git dependency with its
+registry version, while `dekopon-embedded` is currently `publish = false`. An
+approved distribution plan for that package is required before a registry
+release. This draft does not publish a crate or change Claria's release policy.
 
 Live AWS/model access, real tool-generation quality, real Bedrock reasoning/cache
 behavior, production latency/cost and native desktop behavior remain unvalidated.
