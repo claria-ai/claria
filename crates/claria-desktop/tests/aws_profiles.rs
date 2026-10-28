@@ -143,6 +143,13 @@ fn run_isolated(case: &str, environment_credentials: bool, expected_container_re
         .env("AWS_EC2_METADATA_DISABLED", "true")
         .env("AWS_CONTAINER_CREDENTIALS_FULL_URI", container.url())
         .env("CLARIA_PROFILE_PROCESS_MARKER", &process_marker);
+    // Winsock needs the system directory to load its provider in the child.
+    // Preserve only that OS setting; AWS and user-profile state stay isolated.
+    #[cfg(windows)]
+    command.env(
+        "SystemRoot",
+        std::env::var_os("SystemRoot").expect("Windows system directory"),
+    );
     if case.ends_with("-bearer") {
         command
             .env("AWS_BEARER_TOKEN_BEDROCK", "synthetic-bearer-token")
