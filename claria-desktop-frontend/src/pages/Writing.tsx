@@ -832,52 +832,58 @@ export default function Writing({
                 onCancelPlan={() => void discardRun()}
               />
             )}
-            {runHistory && runHistory.runs.length > 0 && (
-              <div className="min-h-0 shrink-0 overflow-y-auto bg-gray-50 px-5 py-3">
-                <DraftRunHistory
-                  history={runHistory}
+            <div
+              className={draftPane ? "max-h-[50%] shrink-0 overflow-y-auto" : "contents"}
+            >
+              {runHistory && runHistory.runs.length > 0 && (
+                <div
+                  className={`min-h-0 shrink-0 overflow-y-auto bg-gray-50 px-5 py-3 ${draftPane ? "max-h-48" : ""}`}
+                >
+                  <DraftRunHistory
+                    history={runHistory}
+                    draftRevision={workspace.draft.revision}
+                    // Only a run this page is driving is in flight; anything
+                    // else in `drafting` was killed mid-pass.
+                    liveRunId={
+                      draftPane?.mode === "running"
+                        ? (draftPane.run?.run_id ?? null)
+                        : null
+                    }
+                    defaultRunId={defaultExpandedRun(
+                      runHistory,
+                      workspace.draft.revision
+                    )}
+                  />
+                </div>
+              )}
+              <div
+                className={
+                  draftPane || runRows.length > 0
+                    ? "flex max-h-80 min-h-0 shrink-0 flex-col"
+                    : "flex min-h-0 flex-1 flex-col"
+                }
+              >
+                <FindingsPanel
+                  findings={findingRows}
+                  coverage={coverageRows}
+                  content={workspace.draft.content}
                   draftRevision={workspace.draft.revision}
-                  // Only a run this page is driving is in flight; anything
-                  // else in `drafting` was killed mid-pass.
-                  liveRunId={
-                    draftPane?.mode === "running"
-                      ? (draftPane.run?.run_id ?? null)
-                      : null
-                  }
-                  defaultRunId={defaultExpandedRun(
-                    runHistory,
-                    workspace.draft.revision
-                  )}
+                  completion={completion}
+                  busy={controlsBusy}
+                  reviewing={busy === "reviewing"}
+                  reviewCompleted={run.reviewCompleted}
+                  reviewTotal={run.reviewTotal}
+                  canReview={canReviewDraft}
+                  resolvingId={resolvingFindingId}
+                  onReview={() => setReviewPreflightOpen(true)}
+                  onApply={(id) => void applyFinding(id)}
+                  onUndo={(id) => void undoFinding(id)}
+                  onDismiss={(id) => void dismissFinding(id)}
+                  onReference={handleReferenceFinding}
+                  onPreviewRecord={setPreviewFilename}
+                  registerSection={registerFindingSection}
                 />
               </div>
-            )}
-            <div
-              className={
-                draftPane || runRows.length > 0
-                  ? "flex max-h-80 min-h-0 shrink-0 flex-col"
-                  : "flex min-h-0 flex-1 flex-col"
-              }
-            >
-              <FindingsPanel
-                findings={findingRows}
-                coverage={coverageRows}
-                content={workspace.draft.content}
-                draftRevision={workspace.draft.revision}
-                completion={completion}
-                busy={controlsBusy}
-                reviewing={busy === "reviewing"}
-                reviewCompleted={run.reviewCompleted}
-                reviewTotal={run.reviewTotal}
-                canReview={canReviewDraft}
-                resolvingId={resolvingFindingId}
-                onReview={() => setReviewPreflightOpen(true)}
-                onApply={(id) => void applyFinding(id)}
-                onUndo={(id) => void undoFinding(id)}
-                onDismiss={(id) => void dismissFinding(id)}
-                onReference={handleReferenceFinding}
-                onPreviewRecord={setPreviewFilename}
-                registerSection={registerFindingSection}
-              />
             </div>
           </div>
         )}

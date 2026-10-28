@@ -23,6 +23,9 @@ use claria_report_store as store;
 use claria_storage::client;
 use uuid::Uuid;
 
+#[path = "support/s3_gate.rs"]
+mod s3_gate;
+
 const BUCKET: &str = "claria-parallel-draft-test";
 const MODEL_ID: &str = "us.anthropic.claude-sonnet-test";
 
@@ -1068,6 +1071,277 @@ async fn a_write_naming_another_branchs_section_is_refused() {
 }
 
 // ── Stopping, resuming, and the ways a run ends ─────────────────────────────
+
+#[tokio::test]
+async fn a_receipt_failure_drains_sibling_usage_without_committing_more_sections() {
+    let (server, _sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let run_id = seed_gated_run(&s3, client_id, report_id, all_draft()).await;
+    // Only two branches follow the warm section. Keeping the existing title
+    // also proves a fatal drain does not accidentally invoke that branch.
+    let mut run = only_run(&s3, client_id, report_id).await;
+    run.title = Some(TITLE.to_string());
+    put_run(&s3, &run).await;
+    script_clean_fan_out(&server).await;
+    {
+        let mut state = server.state.write().await;
+        state.bedrock_tool_responses_by_marker.insert(
+            section_marker(BACKGROUND_ID),
+            vec![
+                tool_round(vec![write_call_citing_nothing(BACKGROUND_ID, "Background")]),
+                tool_round(vec![write_call(
+                    BACKGROUND_ID,
+                    "Background",
+                    BACKGROUND_TEXT,
+                )]),
+            ],
+        );
+        // The two first branch responses complete; the background repair
+        // stalls after its earlier response has been durably receipted.
+        state.bedrock_stream_stalls_after = Some(3);
+    }
+    let mut background_gate = s3_gate::S3Gate::spawn(&server.endpoint, |_, body| {
+        serde_json::from_slice::<store::ReportCallUsageRecord>(body)
+            .is_ok_and(|receipt| receipt.call_number == 2)
+    })
+    .await;
+    let mut summary_gate = s3_gate::S3Gate::spawn(&background_gate.endpoint, |_, body| {
+        serde_json::from_slice::<store::ReportCallUsageRecord>(body)
+            .is_ok_and(|receipt| receipt.call_number == 3)
+    })
+    .await;
+    let gated_sdk = sdk_config(&summary_gate.endpoint);
+    let gated_s3 = client::from_config(&gated_sdk);
+    let stop = StopSignal::new();
+    let reader_stop = stop.clone();
+    let turn = tokio::spawn(async move {
+        pipeline::start_draft_run(
+            &gated_sdk,
+            &gated_s3,
+            BUCKET,
+            client_id,
+            report_id,
+            run_id,
+            MODEL_ID,
+            pipeline::FullReportRequest::new("").with_stop(&reader_stop),
+        )
+        .await
+    });
+    let bound = std::time::Duration::from_secs(10);
+    tokio::time::timeout(bound, background_gate.held())
+        .await
+        .expect("background completed response reaches its receipt");
+    let summary_path = tokio::time::timeout(bound, summary_gate.held())
+        .await
+        .expect("summary completed response reaches its receipt");
+    // Both initial responses have arrived, so the next request is certainly
+    // the repair, regardless of HTTP arrival order between the branches.
+    background_gate.release();
+    tokio::time::timeout(bound, async {
+        loop {
+            if server.state.read().await.bedrock_stream_request_count >= 4 {
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    })
+    .await
+    .expect("background repair entered its stalled stream");
+    let summary_key = summary_path
+        .split('?')
+        .next()
+        .expect("request path")
+        .strip_prefix(&format!("/{BUCKET}/"))
+        .expect("path-style receipt key")
+        .to_string();
+    server
+        .state
+        .write()
+        .await
+        .s3_precondition_failures_remaining
+        .insert(summary_key.clone(), 1);
+    summary_gate.release();
+    tokio::time::timeout(bound, async {
+        loop {
+            if server
+                .state
+                .read()
+                .await
+                .s3_precondition_failures_remaining
+                .get(&summary_key)
+                == Some(&0)
+            {
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    })
+    .await
+    .expect("the selected receipt encounters its injected failure");
+    let error = tokio::time::timeout(bound, turn)
+        .await
+        .expect("fatal receipt failure drains the stalled sibling")
+        .expect("writer task")
+        .expect_err("receipt failure aborts the draft");
+    assert_eq!(
+        error.failure_code(),
+        Some(store::ReportFailureCode::UsagePersistence)
+    );
+    assert!(
+        !stop.is_stopped(),
+        "internal failure must not press the reader's Stop"
+    );
+    let attempt = error.attempt().expect("aborted attempt");
+    // All three completed responses are known, including the response whose
+    // receipt failed. The interrupted fourth request has unknown usage.
+    assert_eq!(attempt.converse_calls, 3);
+    assert_eq!(attempt.usage.input_tokens, 1500);
+    assert_eq!(attempt.usage.output_tokens, 120);
+    assert!(!attempt.usage_complete);
+    let receipts = {
+        let state = server.state.read().await;
+        state
+            .objects
+            .values()
+            .filter_map(|versions| versions.last())
+            .filter_map(|version| {
+                serde_json::from_slice::<store::ReportCallUsageRecord>(&version.body).ok()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        receipts.len(),
+        2,
+        "warm and repair receipts survive the fatal sibling"
+    );
+    assert!(receipts.iter().any(|receipt| receipt.call_number == 2));
+    assert_eq!(
+        requests(&server).await.len(),
+        4,
+        "fatal cleanup must open no new calls"
+    );
+    let run = only_run(&s3, client_id, report_id).await;
+    assert_eq!(run.status, DraftRunStatus::Failed);
+    assert_eq!(
+        section_of(&run, REFERRAL_ID).state,
+        RunSectionState::Drafted
+    );
+    assert_eq!(
+        section_of(&run, BACKGROUND_ID).state,
+        RunSectionState::Pending
+    );
+    assert_eq!(section_of(&run, SUMMARY_ID).state, RunSectionState::Pending);
+    assert_eq!(run.title.as_deref(), Some(TITLE));
+    let workspace = store::load_report_workspace_by_id(&s3, BUCKET, client_id, report_id)
+        .await
+        .expect("unchanged accepted document");
+    assert_eq!(workspace.draft.revision, 1);
+    assert_eq!(workspace.active_run_id, None);
+}
+
+#[tokio::test]
+async fn a_completed_call_is_receipted_before_its_branch_finishes_repairing() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let run_id = seed_gated_run(&s3, client_id, report_id, all_draft()).await;
+    script_section(
+        &server,
+        REFERRAL_ID,
+        vec![
+            tool_round(vec![write_call_citing_nothing(
+                REFERRAL_ID,
+                "Reason for Referral",
+            )]),
+            tool_round(vec![write_call(
+                REFERRAL_ID,
+                "Reason for Referral",
+                REFERRAL_TEXT,
+            )]),
+        ],
+    )
+    .await;
+    server.state.write().await.bedrock_stream_stalls_after = Some(1);
+    let stop = StopSignal::new();
+    let inspect = {
+        let state = server.state.clone();
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            loop {
+                let state = state.read().await;
+                if state.bedrock_stream_request_count >= 2 {
+                    let receipts = state
+                        .objects
+                        .values()
+                        .filter_map(|versions| versions.last())
+                        .filter_map(|version| {
+                            serde_json::from_slice::<store::ReportCallUsageRecord>(&version.body)
+                                .ok()
+                        })
+                        .collect::<Vec<_>>();
+                    // Stop only after examining storage while the branch is
+                    // still waiting for its second model response.
+                    stop.stop();
+                    return receipts;
+                }
+                drop(state);
+                tokio::time::sleep(POLL).await;
+            }
+        })
+    };
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        pipeline::start_draft_run(
+            &sdk,
+            &s3,
+            BUCKET,
+            client_id,
+            report_id,
+            run_id,
+            MODEL_ID,
+            pipeline::FullReportRequest::new("").with_stop(&stop),
+        ),
+    )
+    .await
+    .expect("the stopped repair drains")
+    .expect_err("the repair was interrupted");
+    assert!(error.is_stopped());
+    let receipts = inspect.await.expect("receipt inspection");
+    assert_eq!(
+        receipts.len(),
+        1,
+        "usage was buffered until branch completion"
+    );
+    assert_eq!(receipts[0].call_number, 1);
+    assert_eq!(
+        receipts[0]
+            .usage
+            .as_ref()
+            .expect("known usage")
+            .input_tokens,
+        500
+    );
+    let attempt = error.attempt().expect("stopped attempt");
+    assert_eq!(attempt.converse_calls, 1);
+    assert_eq!(attempt.usage.input_tokens, 500);
+    assert!(
+        !attempt.usage_complete,
+        "the interrupted repair has unknown usage"
+    );
+    assert_eq!(
+        requests(&server).await.len(),
+        2,
+        "queued branches must not start"
+    );
+    let run = only_run(&s3, client_id, report_id).await;
+    assert_eq!(run.status, DraftRunStatus::Stopped);
+    assert!(
+        run.sections
+            .iter()
+            .all(|section| section.state == RunSectionState::Pending)
+    );
+}
 
 #[tokio::test]
 async fn a_stop_mid_fan_out_keeps_landed_sections_and_parks_the_run() {

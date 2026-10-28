@@ -35,7 +35,7 @@ argon2 = "=0.5.3"
 aws-config.workspace = true
 aws-sdk-s3.workspace = true
 aws-sdk-sts.workspace = true
-aws-smithy-http-client = { version = "=1.1.13", features = ["rustls-aws-lc"] }
+aws-smithy-http-client = { version = "=1.4.2", features = ["rustls-aws-lc"] }
 base64 = "=0.22.1"
 color-eyre = "=0.6.5"
 dirs.workspace = true
@@ -64,7 +64,7 @@ tracing.workspace = true
 tracing-appender.workspace = true
 # rustls is only here so the ureq agent can reuse the aws-lc crypto provider
 # the AWS clients already link (see src/http.rs).
-rustls = { version = "=0.23.41", default-features = false, features = ["aws_lc_rs", "std"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "std"] }
 ureq = { version = "=3.3.0", default-features = false, features = ["platform-verifier", "rustls-no-provider"] }
 tracing-subscriber = { workspace = true, features = ["json"] }
 uuid = { workspace = true, features = ["v4"] }

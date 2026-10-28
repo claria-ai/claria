@@ -153,11 +153,9 @@ pub(crate) async fn create_run_for_workspace(
 
 /// Give the workspace back after a failed or aborted whole-report turn.
 ///
-/// Sections that landed stay durable in the run object for later salvage; the
-/// workspace pointer is cleared unconditionally so retrying, editing, and
-/// saving all keep working exactly as they did before runs existed. The
-/// workspace is re-read rather than saved from the caller's copy: a failed turn
-/// may have mutated that copy in memory, and none of it may reach S3.
+/// Cleanup starts from durable state: a rejected tool write must not be replayed
+/// while stamping failure. The workspace ETag is captured before publishing
+/// `Failed`, so a concurrent resume of this same run fences the old cleanup.
 pub(crate) async fn release_failed_run(
     s3: &S3Client,
     bucket: &str,
@@ -165,6 +163,36 @@ pub(crate) async fn release_failed_run(
     report_id: Uuid,
     run: &mut LoadedRun,
 ) {
+    let run_id = run.run.run_id;
+    let cleanup = async {
+        let loaded = load_for_report(s3, bucket, client_id, report_id).await?;
+        let durable = load_draft_run(s3, bucket, client_id, report_id, run_id).await?;
+        // An exact body match reconciles a conditional PUT whose response was
+        // lost after it landed. Any different newer body belongs to another
+        // operation; cleanup must not claim it merely because the ID is equal.
+        if loaded.workspace.active_run_id != Some(run_id)
+            || (durable.etag != run.etag && durable.run != run.run)
+            || !matches!(
+                durable.run.status,
+                DraftRunStatus::Planning
+                    | DraftRunStatus::AwaitingApproval
+                    | DraftRunStatus::Drafting
+            )
+        {
+            return Ok::<_, ReportPipelineError>(None);
+        }
+        Ok(Some((loaded, durable)))
+    }
+    .await;
+    let (mut loaded, durable) = match cleanup {
+        Ok(Some(state)) => state,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(run_id = %run_id, error = %error, "could not verify failed drafting run ownership");
+            return;
+        }
+    };
+    *run = durable;
     let now = jiff::Timestamp::now();
     run.run.demote_interrupted_sections(now);
     run.run.status = DraftRunStatus::Failed;
@@ -177,8 +205,17 @@ pub(crate) async fn release_failed_run(
             error = %error,
             "could not stamp the failed drafting run"
         );
+        if matches!(error, claria_report_store::ReportStoreError::Conflict) {
+            // Plan edits can change the run without changing the workspace.
+            // Its ETag alone cannot release an owner whose run CAS we lost.
+            return;
+        }
     }
-    if let Err(error) = clear_active_run(s3, bucket, client_id, report_id, run.run.run_id).await {
+    // Do not reload after Failed becomes visible. A resume can already have
+    // claimed this run ID with a newer workspace ETag, even on another machine.
+    loaded.workspace.active_run_id = None;
+    loaded.workspace.updated_at = now;
+    if let Err(error) = save_loaded(s3, bucket, &mut loaded).await {
         tracing::warn!(
             run_id = %run.run.run_id,
             error = %error,
@@ -204,8 +241,9 @@ pub(crate) async fn park_stopped_run(s3: &S3Client, bucket: &str, run: &mut Load
     run.run.status = DraftRunStatus::Stopped;
     if let Err(error) = save_draft_run(s3, bucket, run).await {
         // The reader's Stop already took effect — the model is no longer
-        // running. Losing the status stamp costs the run its "resumable"
-        // label, which the next load heals from the workspace pointer.
+        // running. If this write did not land, reload still sees Drafting:
+        // the pointer alone cannot distinguish a dead process from a live owner.
+        // Keep the pointer; reclaiming that state needs an explicit owner decision.
         tracing::warn!(
             run_id = %run.run.run_id,
             error = %error,
@@ -234,10 +272,12 @@ async fn clear_active_run(
 }
 
 /// Stamp a run whose revision cut succeeded but whose own completion write was
-/// lost — the workspace is saved first, so that gap is the one crash window the
-/// two-object protocol leaves open. The evidence is entirely in the workspace:
-/// it has moved past the revision the run built on and no longer points at it.
+/// lost. The workspace is saved first; healing requires its accepted authorship
+/// to corroborate this run's drafted section at the expected revision cut.
 pub(crate) fn heal_run(run: &mut DraftRun, workspace: &ReportWorkspace) -> bool {
+    let Some(revision) = run.base_revision.checked_add(1) else {
+        return false;
+    };
     let unfinished = run.finalized_revision.is_none()
         && matches!(
             run.status,
@@ -245,12 +285,27 @@ pub(crate) fn heal_run(run: &mut DraftRun, workspace: &ReportWorkspace) -> bool 
         );
     if !unfinished
         || workspace.active_run_id == Some(run.run_id)
-        || workspace.draft.revision <= run.base_revision
+        || workspace.draft.revision < revision
     {
         return false;
     }
+    // A later revision alone might be an unrelated edit or another run's
+    // work. The accepted document must still carry this run's authorship
+    // stamp on a section it actually drafted at its own revision cut.
+    let authored = workspace.draft.content.sections.iter().any(|section| {
+        section.authorship.as_ref().is_some_and(|authorship| {
+            authorship.run_id == Some(run.run_id)
+                && authorship.revision == revision
+                && run.sections.iter().any(|written| {
+                    written.section_id == section.id && written.state == RunSectionState::Drafted
+                })
+        })
+    });
+    if !authored {
+        return false;
+    }
     run.status = DraftRunStatus::Completed;
-    run.finalized_revision = Some(workspace.draft.revision);
+    run.finalized_revision = Some(revision);
     true
 }
 
@@ -349,6 +404,7 @@ pub async fn resume_draft_run(
         ));
     }
 
+    let prior_run = run.run.clone();
     let now = jiff::Timestamp::now();
     run.run.demote_interrupted_sections(now);
     if !guidance.is_empty() {
@@ -361,7 +417,30 @@ pub async fn resume_draft_run(
     save_draft_run(s3, bucket, &mut run).await?;
     loaded.workspace.active_run_id = Some(run_id);
     loaded.workspace.updated_at = now;
-    save_loaded(s3, bucket, &mut loaded).await?;
+    if let Err(error) = save_loaded(s3, bucket, &mut loaded).await {
+        match load_for_report(s3, bucket, client_id, report_id).await {
+            Ok(saved) if saved.workspace == loaded.workspace => {
+                // The claim landed but its response was lost. Adopt the durable
+                // ETag instead of issuing another claim or repeating inference.
+                loaded = saved;
+            }
+            Ok(_) => {
+                // Only our claimed run ETag can restore the prior resumable state.
+                // A competing run write makes this compensation conflict safely.
+                run.run = prior_run;
+                if let Err(rollback) = save_draft_run(s3, bucket, &mut run).await {
+                    tracing::warn!(run_id = %run_id, error = %rollback, "could not undo unclaimed drafting resume");
+                }
+                return Err(error.into());
+            }
+            Err(readback) => {
+                // An unavailable read cannot prove whether the workspace claim
+                // landed. Do not roll back a possibly committed live claim.
+                tracing::warn!(run_id = %run_id, error = %readback, "could not verify drafting resume claim");
+                return Err(error.into());
+            }
+        }
+    }
 
     // Which executor picks the run back up follows the run's own plan, not a
     // setting: a run that was planned and approved resumes in parallel over

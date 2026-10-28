@@ -1,6 +1,8 @@
 //! One report-writing request: the Bedrock tool loop shared by targeted
 //! editing and whole-document generation, and its failure mapping.
 
+use std::{num::NonZeroU32, ops::ControlFlow, time::Duration};
+
 use aws_sdk_s3::Client as S3Client;
 use claria_bedrock::{
     converse::StopSignal,
@@ -21,6 +23,7 @@ use claria_report_store::{
     load_or_create, mark_template_current, persist_attempt, persist_call_usage, save_draft_run,
     save_loaded,
 };
+use dekopon_embedded::agent::{DriveLimits, Session, drive};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -891,6 +894,7 @@ impl<'a> TurnRunRequest<'a> {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct AttemptProgress {
     pub(crate) attempt_id: Uuid,
     pub(crate) report_id: Uuid,
@@ -957,9 +961,7 @@ impl AttemptProgress {
 pub(crate) fn call_usage_record(
     progress: &AttemptProgress,
     call_number: u32,
-    usage: Option<TurnUsage>,
-    stop_reason: ReportStopReason,
-    latency_ms: Option<u64>,
+    output: &report::ReportConverseOutput,
     max_output_tokens: u32,
 ) -> ReportCallUsageRecord {
     ReportCallUsageRecord {
@@ -969,11 +971,11 @@ pub(crate) fn call_usage_record(
         client_id: progress.client_id,
         model_id: progress.model_id.clone(),
         call_number,
-        usage_complete: usage.is_some(),
-        usage,
+        usage_complete: output.usage_complete && output.usage.is_some(),
+        usage: output.usage.clone(),
         recorded_at: jiff::Timestamp::now(),
-        stop_reason: Some(stop_reason.as_str().to_string()),
-        latency_ms,
+        stop_reason: Some(output.stop_reason.as_str().to_string()),
+        latency_ms: output.latency_ms,
         max_output_tokens,
         system_prompt_sha256: progress.system_prompt_sha256.clone(),
         // Workspace crates version in lockstep with the desktop binary.
@@ -1023,11 +1025,6 @@ impl TurnRunFailure {
             source: None,
         }
     }
-
-    pub(crate) fn uncertain_usage(mut self) -> Self {
-        self.usage_may_be_incomplete = true;
-        self
-    }
 }
 
 // The run is threaded alongside the workspace rather than inside the request
@@ -1075,9 +1072,7 @@ async fn run_turn(
         })?;
 
     let mut inventory = Vec::new();
-    let protocol_content;
-    let persisted_instruction;
-    match request.kind {
+    let (protocol_content, persisted_instruction) = match request.kind {
         TurnRunKind::Targeted {
             instruction,
             references,
@@ -1095,7 +1090,7 @@ async fn run_turn(
                 build_untrusted_context(&loaded.workspace, references).map_err(|message| {
                     TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message)
                 })?;
-            protocol_content = vec![
+            let protocol_content = vec![
                 ReportProtocolBlock::Text {
                     text: report_context,
                 },
@@ -1103,7 +1098,8 @@ async fn run_turn(
                     text: format!("User instruction:\n{instruction}"),
                 },
             ];
-            persisted_instruction = instruction.to_string();
+            let persisted_instruction = instruction.to_string();
+            (protocol_content, persisted_instruction)
         }
         TurnRunKind::FullDraft {
             guidance,
@@ -1135,7 +1131,7 @@ async fn run_turn(
             let plan = plan_context(run.run.plan.as_ref()).map_err(|message| {
                 TurnRunFailure::new(ReportFailureCode::InvalidProtocol, message)
             })?;
-            protocol_content = vec![
+            let protocol_content = vec![
                 ReportProtocolBlock::Text {
                     text: record_context.prompt.clone(),
                 },
@@ -1145,15 +1141,16 @@ async fn run_turn(
                     text: kickoff_instruction(turn_kind, guidance, &run.run, base),
                 },
             ];
-            persisted_instruction = if guidance.is_empty() {
+            let persisted_instruction = if guidance.is_empty() {
                 "Fill the complete report from all readable client records.".to_string()
             } else {
                 format!(
                     "Fill the complete report from all readable client records.\n\nGuidance: {guidance}"
                 )
             };
+            (protocol_content, persisted_instruction)
         }
-    }
+    };
     let protocol_user_message = ReportProtocolMessage {
         role: ReportProtocolRole::User,
         content: protocol_content,
@@ -1191,9 +1188,6 @@ async fn run_turn(
     };
     protocol.push(protocol_user_message);
 
-    let mut rounds = 0_u32;
-    let mut corrective_round_used = false;
-    let mut completion_reminder_used = false;
     // Compose the effective system prompt once per turn: the (possibly
     // user-customized) body plus the fixed trust rules.
     let system_prompt = if request.is_full_draft() {
@@ -1212,20 +1206,18 @@ async fn run_turn(
         }
         TurnRunKind::Targeted { .. } => &[],
     };
+    // Keep model identity independent of the mutable attempt accounting.
+    let model_id = progress.model_id.clone();
     let mut tool_context = ToolExecutionContext::new(
         s3,
         bucket,
         &inventory,
         &loaded.workspace,
-        &progress.model_id,
+        &model_id,
         run.as_deref_mut().filter(|_| request.is_full_draft()),
         citable_filenames,
         request.progress,
     );
-    let terminal_text: String;
-    // Named once for the failure messages: `progress` is borrowed mutably
-    // across the loop body, and the model is fixed for the whole attempt.
-    let model_id = progress.model_id.clone();
 
     // Where this turn's `cachePoint` blocks go. Fixed for the attempt
     // because the model is: a plan built per call could drift mid-loop and
@@ -1248,393 +1240,38 @@ async fn run_turn(
     // waits are the clinician's setting, not something a call may narrow.
     let stream_bounds = limits.stream_bounds();
 
-    loop {
-        // Past the cut, Stop is deliberately a no-op: `finish_full_draft` has
-        // already succeeded, so all that is left is one closing call and the
-        // revision it authorizes. Honouring a Stop here would throw away a
-        // draft the writer finished, which is the opposite of what the reader
-        // asked for.
-        let past_the_cut = tool_context.full_draft_is_finalized();
-        let stop = if past_the_cut {
-            never_stopped()
-        } else {
-            request.stop
-        };
-        // Second of the two between-round checks: a Stop that landed while
-        // the previous round's sections were being written to S3 must not be
-        // answered by opening one more billed conversation.
-        if stop.is_stopped() {
-            return Err(TurnInterruption::Stopped);
-        }
-        if progress.converse_calls >= limits.max_converse_calls {
-            return Err(limit_exhausted_failure(
-                ExhaustedWriterLimit::ConverseCalls,
-                rounds,
-                progress.converse_calls,
-                limits,
-            )
-            .into());
-        }
-        let call_number = progress.converse_calls.saturating_add(1);
-        // One Bedrock call, with bounded retries when its response stream
-        // stalls or drops. A failed attempt commits nothing — `protocol`
-        // still holds only completed messages — so re-sending the identical
-        // request is safe, and a quick retry re-reads the prompt cache the
-        // previous completed call wrote moments earlier.
-        let call_started = tokio::time::Instant::now();
-        let mut interruptions = 0_u32;
-        let output = loop {
-            // Announced per attempt, not per call: a re-sent request is a
-            // new stream, and saying so is what retires the retry line the
-            // interruption arm below put on screen.
-            request.emit_progress(ReportTurnProgress::ModelCallStarted { call_number });
-            let attempt = if request.is_full_draft() {
-                report::converse_full_report_with_tool_limit(
-                    sdk_config,
-                    &progress.model_id,
-                    &system_prompt,
-                    &protocol,
-                    limits.max_tool_uses_per_response as usize,
-                    &mut input_budget,
-                    request.model_tuning,
-                    cache_plan.clone(),
-                    stream_bounds,
-                    stop,
-                )
-                .await
-            } else {
-                report::converse_report_with_tool_limit(
-                    sdk_config,
-                    &progress.model_id,
-                    &system_prompt,
-                    &protocol,
-                    limits.max_tool_uses_per_response as usize,
-                    &mut input_budget,
-                    request.model_tuning,
-                    cache_plan.clone(),
-                    stream_bounds,
-                    stop,
-                )
-                .await
-            };
-            match attempt {
-                Ok(output) => break output,
-                // A stopped call is the reader's decision, never a
-                // transient fault: retrying it would re-issue the exact
-                // request they just cancelled.
-                Err(BedrockError::Stopped) => return Err(TurnInterruption::Stopped),
-                Err(error)
-                    if error.is_interrupted_before_completion()
-                        && interruptions < STREAM_INTERRUPTION_RETRIES =>
-                {
-                    interruptions += 1;
-                    tracing::warn!(
-                        call_number,
-                        failed_attempts = interruptions,
-                        error = %error,
-                        "Bedrock stream interrupted; retrying the call"
-                    );
-                    request.emit_progress(ReportTurnProgress::retrying(
-                        call_number,
-                        interruptions.saturating_add(1),
-                        STREAM_INTERRUPTION_RETRIES.saturating_add(1),
-                        STREAM_INTERRUPTION_RETRY_DELAY,
-                    ));
-                    tokio::time::sleep(STREAM_INTERRUPTION_RETRY_DELAY).await;
-                }
-                Err(error) => {
-                    return Err(map_bedrock_failure(
-                        error,
-                        FailedReportCall {
-                            number: call_number,
-                            ceiling: limits.max_converse_calls,
-                            model_id: &model_id,
-                            first_frame_secs: limits.writer_first_frame_timeout_secs(),
-                            idle_secs: limits.writer_idle_timeout_secs(),
-                        },
-                        interruptions.saturating_add(1),
-                        call_started.elapsed(),
-                    )
-                    .into());
-                }
-            }
-        };
-        progress.converse_calls = call_number;
-        if let Some(usage) = &output.usage {
-            merge_usage(&mut progress.usage, usage, call_number == 1);
-        } else {
-            progress.usage_complete = false;
-        }
-        persist_call_usage(
+    let model_calls = NonZeroU32::new(limits.max_converse_calls).ok_or_else(|| {
+        limit_exhausted_failure(ExhaustedWriterLimit::ConverseCalls, 0, 0, limits)
+    })?;
+    let terminal_text = drive(
+        &mut WriterSession {
+            sdk_config,
             s3,
             bucket,
-            &call_usage_record(
-                progress,
-                call_number,
-                output.usage.clone(),
-                output.stop_reason,
-                output.latency_ms,
-                limits.writer_max_output_tokens(),
-            ),
-        )
-        .await
-        .map_err(|error| {
-            TurnRunFailure::new(
-                ReportFailureCode::UsagePersistence,
-                "Claria could not record usage for a completed Bedrock call, so the turn was stopped.",
-            )
-            .with_internal(error)
-        })?;
-
-        let response_text = output
-            .message
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                ReportProtocolBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        let stop_tool_mismatch = output.stop_tool_mismatch();
-        protocol.push(output.message.clone());
-        turn_messages.push(output.message);
-
-        // Stop-reason/tool-presence mismatch: attempt one corrective round
-        // telling the model its response ended inconsistently, instead of
-        // discarding the whole turn on a transient provider glitch. The
-        // allowance is per streak, not per turn — a long multi-round turn
-        // only fails on two mismatches in a row, and any well-formed
-        // response in between re-arms it.
-        if stop_tool_mismatch {
-            if corrective_round_used {
-                return Err(TurnRunFailure::new(
-                    ReportFailureCode::InvalidProtocol,
-                    "Bedrock repeatedly returned an inconsistent report stop reason. Nothing from this turn was applied.",
-                )
-                .into());
-            }
-            corrective_round_used = true;
-            // The mismatched tool calls stay in the persisted protocol, so
-            // they count as (unexecuted) tool uses for the attempt record.
-            progress.tool_uses = progress
-                .tool_uses
-                .saturating_add(output.tool_calls.len() as u32);
-            let content = if output.tool_calls.is_empty() {
-                vec![ReportProtocolBlock::Text {
-                    text: "Your previous response ended inconsistently: it signaled tool use \
-                           without issuing a tool call. Re-issue the tool call, or answer in text."
-                        .to_string(),
-                }]
-            } else {
-                output
-                    .tool_calls
-                    .iter()
-                    .map(|call| ReportProtocolBlock::ToolResult {
-                        tool_use_id: call.tool_use_id.clone(),
-                        status: ReportToolResultStatus::Error,
-                        content: serde_json::json!({"error": {
-                            "code": "inconsistent_stop_reason",
-                            "message": "Your response ended inconsistently: it contained this tool call but did not stop for tool use. Re-issue the tool call in a well-formed response."
-                        }}),
-                    })
-                    .collect()
-            };
-            let corrective_message = ReportProtocolMessage {
-                role: ReportProtocolRole::User,
-                content,
-                created_at: jiff::Timestamp::now(),
-            };
-            protocol.push(corrective_message.clone());
-            turn_messages.push(corrective_message);
-            continue;
-        }
-        corrective_round_used = false;
-
-        match output.stop_reason {
-            // `max_tokens` beside complete tool calls is truncation, not a
-            // protocol inconsistency: the calls that made it out are valid
-            // work. Execute them like a normal tool round and tell the model
-            // its response was cut off so it continues instead of re-paying
-            // for everything it already produced.
-            ReportStopReason::ToolUse | ReportStopReason::MaxTokens
-                if !output.tool_calls.is_empty() =>
-            {
-                if rounds >= limits.max_tool_rounds
-                    || progress.converse_calls >= limits.max_converse_calls
-                {
-                    let exhausted = if rounds >= limits.max_tool_rounds {
-                        ExhaustedWriterLimit::ToolRounds
-                    } else {
-                        ExhaustedWriterLimit::ConverseCalls
-                    };
-                    return Err(limit_exhausted_failure(
-                        exhausted,
-                        rounds,
-                        progress.converse_calls,
-                        limits,
-                    )
-                    .into());
-                }
-                rounds += 1;
-                progress.tool_uses = progress
-                    .tool_uses
-                    .checked_add(output.tool_calls.len() as u32)
-                    .ok_or_else(|| {
-                        TurnRunFailure::new(
-                            ReportFailureCode::InvalidProtocol,
-                            "The report assistant returned too many tool requests.",
-                        )
-                    })?;
-
-                let mut result_blocks = Vec::with_capacity(output.tool_calls.len());
-                for call in &output.tool_calls {
-                    let context = match call.name.as_str() {
-                        claria_bedrock::report::LIST_RECORD_FILES_TOOL => {
-                            Some("Record file list".to_string())
-                        }
-                        claria_bedrock::report::READ_RECORD_FILE_TOOL => call
-                            .input
-                            .get("filename")
-                            .and_then(serde_json::Value::as_str)
-                            .map(ToString::to_string),
-                        claria_bedrock::report::READ_REPORT_SECTION_TOOL => {
-                            Some("Report section".to_string())
-                        }
-                        claria_bedrock::report::SET_FULL_DRAFT_TITLE_TOOL => {
-                            Some("Complete report title".to_string())
-                        }
-                        claria_bedrock::report::WRITE_FULL_DRAFT_SECTION_TOOL => {
-                            Some("Complete report section".to_string())
-                        }
-                        claria_bedrock::report::SKIP_FULL_DRAFT_SECTION_TOOL => {
-                            Some("Deferred report section".to_string())
-                        }
-                        claria_bedrock::report::MARK_SECTION_FAILED_TOOL => {
-                            Some("Failed report section".to_string())
-                        }
-                        claria_bedrock::report::FINISH_FULL_DRAFT_TOOL => {
-                            Some("Complete working draft".to_string())
-                        }
-                        _ => None,
-                    };
-                    request.emit_progress(ReportTurnProgress::ToolStarted {
-                        name: call.name.clone(),
-                        context: context.clone(),
-                    });
-                    let result = tool_context.execute(call).await?;
-                    request.emit_progress(ReportTurnProgress::ToolFinished {
-                        name: call.name.clone(),
-                        context,
-                        status: result.status,
-                    });
-                    result_blocks.push(ReportProtocolBlock::ToolResult {
-                        tool_use_id: call.tool_use_id.clone(),
-                        status: result.status,
-                        content: result.content,
-                    });
-                }
-                // The protocol requires a correlated result message to hold
-                // only results, so the truncation notice rides inside the
-                // last result's JSON instead of a separate text block.
-                if matches!(output.stop_reason, ReportStopReason::MaxTokens)
-                    && let Some(ReportProtocolBlock::ToolResult { content, .. }) =
-                        result_blocks.last_mut()
-                    && let Some(object) = content.as_object_mut()
-                {
-                    object.insert(
-                        "response_truncated".to_string(),
-                        serde_json::Value::String(
-                            "Your previous response hit the per-response output-token limit \
-                             after this tool call, so anything you were still generating was \
-                             cut off. Continue the remaining work in your next response."
-                                .to_string(),
-                        ),
-                    );
-                }
-                let result_message = ReportProtocolMessage {
-                    role: ReportProtocolRole::User,
-                    content: result_blocks,
-                    created_at: jiff::Timestamp::now(),
-                };
-                protocol.push(result_message.clone());
-                turn_messages.push(result_message);
-                // First of the two between-round checks. Executing a batch
-                // means S3 writes, and a Stop pressed during them belongs to
-                // this round: the sections it just made durable stand, and
-                // the round that would have followed never starts. A batch
-                // that carried the finish tool is past the cut and keeps
-                // going, for the reason given at the top of the loop.
-                if !tool_context.full_draft_is_finalized() && request.stop.is_stopped() {
-                    return Err(TurnInterruption::Stopped);
-                }
-            }
-            ReportStopReason::EndTurn => {
-                if request.is_full_draft() && !tool_context.full_draft_is_finalized() {
-                    if completion_reminder_used {
-                        return Err(TurnRunFailure::new(
-                            ReportFailureCode::InvalidProtocol,
-                            "The writer stopped twice without finalizing the complete draft. Nothing was saved.",
-                        )
-                        .into());
-                    }
-                    completion_reminder_used = true;
-                    // Name the sections that are actually outstanding. "Every
-                    // required section" left the model to re-derive the set
-                    // from a plan it had already worked through once.
-                    let undecided = tool_context.undecided_plan_sections();
-                    let outstanding = if undecided.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            " The plan still requires: {}.",
-                            undecided
-                                .iter()
-                                .map(|(id, heading)| format!("{id} ({heading})"))
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        )
-                    };
-                    let reminder = ReportProtocolMessage {
-                        role: ReportProtocolRole::User,
-                        content: vec![ReportProtocolBlock::Text {
-                            text: format!(
-                                "The full draft is not finalized. Write, skip, or mark failed every \
-                                 planned section, then call finish_full_draft. Do not end with prose \
-                                 before that tool succeeds.{outstanding}"
-                            ),
-                        }],
-                        created_at: jiff::Timestamp::now(),
-                    };
-                    protocol.push(reminder.clone());
-                    turn_messages.push(reminder);
-                    continue;
-                }
-                terminal_text = response_text;
-                break;
-            }
-            // A cut-off final explanation cannot invalidate structured work
-            // that was already staged/finalized by a successful tool call.
-            ReportStopReason::MaxTokens if tool_context.staged_proposal.is_some() => {
-                terminal_text = if response_text.is_empty() {
-                    REPORT_TRUNCATED_NOTICE.to_string()
-                } else {
-                    format!("{response_text}\n\n{REPORT_TRUNCATED_NOTICE}")
-                };
-                break;
-            }
-            ReportStopReason::MaxTokens if tool_context.full_draft_is_finalized() => {
-                let notice = "Claria note: the complete working draft was finalized, but the assistant's closing summary was cut short.";
-                terminal_text = if response_text.is_empty() {
-                    notice.to_string()
-                } else {
-                    format!("{response_text}\n\n{notice}")
-                };
-                break;
-            }
-            reason => return Err(terminal_stop_failure(reason).into()),
-        }
-    }
+            request,
+            limits,
+            model_id: &model_id,
+            system_prompt: &system_prompt,
+            cache_plan,
+            stream_bounds,
+            protocol: &mut protocol,
+            turn_messages: &mut turn_messages,
+            input_budget: &mut input_budget,
+            tool_context: &mut tool_context,
+            progress,
+            call_number: 0,
+            rounds: 0,
+            corrective_round_used: false,
+            completion_reminder_used: false,
+            response_admitted: false,
+        },
+        request.stop,
+        DriveLimits {
+            model_calls,
+            attempts_per_call: NonZeroU32::MIN.saturating_add(STREAM_INTERRUPTION_RETRIES),
+        },
+    )
+    .await?;
 
     let staged_proposal = tool_context.staged_proposal.take();
     let finalized_full_draft = tool_context.take_finalized_full_draft();
@@ -1767,6 +1404,459 @@ async fn run_turn(
         // Replaced after the append-only final attempt record succeeds.
         attempt: progress.metadata(ReportAttemptStatus::Completed, None),
     })
+}
+
+/// Claria owns its report protocol and durable effects; the embedded driver
+/// owns only the bounded model-call and retry lifecycle.
+struct WriterSession<'a, 'context> {
+    sdk_config: &'a aws_config::SdkConfig,
+    s3: &'a S3Client,
+    bucket: &'a str,
+    request: TurnRunRequest<'a>,
+    limits: ReportTurnLimits,
+    model_id: &'a str,
+    system_prompt: &'a str,
+    cache_plan: claria_bedrock::converse::CachePlan,
+    stream_bounds: claria_bedrock::converse::StreamBounds,
+    protocol: &'a mut Vec<ReportProtocolMessage>,
+    turn_messages: &'a mut Vec<ReportProtocolMessage>,
+    input_budget: &'a mut report::ReportInputBudget,
+    tool_context: &'a mut ToolExecutionContext<'context>,
+    progress: &'a mut AttemptProgress,
+    call_number: u32,
+    rounds: u32,
+    corrective_round_used: bool,
+    completion_reminder_used: bool,
+    response_admitted: bool,
+}
+
+impl Session for WriterSession<'_, '_> {
+    type Response = report::ReportConverseOutput;
+    type ModelError = BedrockError;
+    type Error = TurnInterruption;
+    type Outcome = String;
+
+    fn start_call(&mut self, index: u32) -> Result<(), Self::Error> {
+        self.call_number = index;
+        Ok(())
+    }
+
+    async fn generate(&mut self) -> Result<Self::Response, Self::ModelError> {
+        // Announced per attempt: a re-sent request retires the retry line.
+        self.request
+            .emit_progress(ReportTurnProgress::ModelCallStarted {
+                call_number: self.call_number,
+            });
+        let stop = if self.tool_context.full_draft_is_finalized() {
+            never_stopped()
+        } else {
+            self.request.stop
+        };
+        if self.request.is_full_draft() {
+            report::converse_full_report_with_tool_limit(
+                self.sdk_config,
+                self.model_id,
+                self.system_prompt,
+                self.protocol,
+                self.limits.max_tool_uses_per_response as usize,
+                self.input_budget,
+                self.request.model_tuning,
+                self.cache_plan.clone(),
+                self.stream_bounds,
+                stop,
+            )
+            .await
+        } else {
+            report::converse_report_with_tool_limit(
+                self.sdk_config,
+                self.model_id,
+                self.system_prompt,
+                self.protocol,
+                self.limits.max_tool_uses_per_response as usize,
+                self.input_budget,
+                self.request.model_tuning,
+                self.cache_plan.clone(),
+                self.stream_bounds,
+                stop,
+            )
+            .await
+        }
+    }
+
+    async fn record(&mut self, output: &Self::Response) -> Result<(), Self::Error> {
+        // A complete response admits its batch. Stop may not drop the receipt
+        // write or any following admitted tool write, even while S3 is slow.
+        self.response_admitted = true;
+        self.progress.converse_calls = self.call_number;
+        self.progress.usage_complete &= output.usage_complete;
+        if let Some(usage) = &output.usage {
+            merge_usage(&mut self.progress.usage, usage, self.call_number == 1);
+        } else {
+            self.progress.usage_complete = false;
+        }
+        persist_call_usage(
+            self.s3,
+            self.bucket,
+            &call_usage_record(
+                self.progress,
+                self.call_number,
+                output,
+                self.limits.writer_max_output_tokens(),
+            ),
+        )
+        .await
+        .map_err(|error| {
+            TurnRunFailure::new(
+                ReportFailureCode::UsagePersistence,
+                "Claria could not record usage for a completed Bedrock call, so the turn was stopped.",
+            )
+            .with_internal(error)
+            .into()
+        })
+    }
+
+    async fn apply(
+        &mut self,
+        output: Self::Response,
+    ) -> Result<ControlFlow<Self::Outcome>, Self::Error> {
+        let applied = self.apply_response(output).await;
+        self.response_admitted = false;
+        applied
+    }
+
+    fn retry_delay(
+        &self,
+        error: &Self::ModelError,
+        attempt: u32,
+        _elapsed: Duration,
+    ) -> Option<Duration> {
+        if !error.is_interrupted_before_completion() {
+            return None;
+        }
+        tracing::warn!(
+            call_number = self.call_number,
+            failed_attempts = attempt,
+            "Bedrock stream interrupted; retrying the call"
+        );
+        self.request.emit_progress(ReportTurnProgress::retrying(
+            self.call_number,
+            attempt.saturating_add(1),
+            STREAM_INTERRUPTION_RETRIES.saturating_add(1),
+            STREAM_INTERRUPTION_RETRY_DELAY,
+        ));
+        Some(STREAM_INTERRUPTION_RETRY_DELAY)
+    }
+
+    fn model_failed(&mut self, error: &Self::ModelError) {
+        if model_error_usage_is_uncertain(error) {
+            self.progress.usage_complete = false;
+        }
+    }
+
+    fn failed(&mut self, error: Self::ModelError, attempt: u32, elapsed: Duration) -> Self::Error {
+        if matches!(error, BedrockError::Stopped) {
+            return TurnInterruption::Stopped;
+        }
+        map_bedrock_failure(
+            error,
+            FailedReportCall {
+                number: self.call_number,
+                ceiling: self.limits.max_converse_calls,
+                model_id: self.model_id,
+                first_frame_secs: self.limits.writer_first_frame_timeout_secs(),
+                idle_secs: self.limits.writer_idle_timeout_secs(),
+            },
+            attempt,
+            elapsed,
+        )
+        .into()
+    }
+
+    fn stopped(&mut self, in_flight: bool) -> Self::Error {
+        if in_flight {
+            self.progress.usage_complete = false;
+        }
+        TurnInterruption::Stopped
+    }
+
+    fn call_limit(&mut self) -> Self::Error {
+        limit_exhausted_failure(
+            ExhaustedWriterLimit::ConverseCalls,
+            self.rounds,
+            self.progress.converse_calls,
+            self.limits,
+        )
+        .into()
+    }
+
+    fn cancellation_deferred(&self) -> bool {
+        // A successful finish must still cut the revision and obtain its
+        // closing response; Stop cannot discard a draft already finalized.
+        self.response_admitted || self.tool_context.full_draft_is_finalized()
+    }
+}
+
+impl WriterSession<'_, '_> {
+    async fn apply_response(
+        &mut self,
+        output: report::ReportConverseOutput,
+    ) -> Result<ControlFlow<String>, TurnInterruption> {
+        let request = self.request;
+        let limits = self.limits;
+        let progress = &mut *self.progress;
+        let protocol = &mut *self.protocol;
+        let turn_messages = &mut *self.turn_messages;
+        let tool_context = &mut *self.tool_context;
+        let response_text = output
+            .message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ReportProtocolBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let stop_tool_mismatch = output.stop_tool_mismatch();
+        protocol.push(output.message.clone());
+        turn_messages.push(output.message);
+
+        // Stop-reason/tool-presence mismatch: attempt one corrective round
+        // telling the model its response ended inconsistently, instead of
+        // discarding the whole turn on a transient provider glitch. The
+        // allowance is per streak, not per turn — a long multi-round turn
+        // only fails on two mismatches in a row, and any well-formed
+        // response in between re-arms it.
+        if stop_tool_mismatch {
+            if self.corrective_round_used {
+                return Err(TurnRunFailure::new(
+                    ReportFailureCode::InvalidProtocol,
+                    "Bedrock repeatedly returned an inconsistent report stop reason. Nothing from this turn was applied.",
+                )
+                .into());
+            }
+            self.corrective_round_used = true;
+            // The mismatched tool calls stay in the persisted protocol, so
+            // they count as (unexecuted) tool uses for the attempt record.
+            progress.tool_uses = progress
+                .tool_uses
+                .saturating_add(output.tool_calls.len() as u32);
+            let content = if output.tool_calls.is_empty() {
+                vec![ReportProtocolBlock::Text {
+                    text: "Your previous response ended inconsistently: it signaled tool use \
+                           without issuing a tool call. Re-issue the tool call, or answer in text."
+                        .to_string(),
+                }]
+            } else {
+                output
+                    .tool_calls
+                    .iter()
+                    .map(|call| ReportProtocolBlock::ToolResult {
+                        tool_use_id: call.tool_use_id.clone(),
+                        status: ReportToolResultStatus::Error,
+                        content: serde_json::json!({"error": {
+                            "code": "inconsistent_stop_reason",
+                            "message": "Your response ended inconsistently: it contained this tool call but did not stop for tool use. Re-issue the tool call in a well-formed response."
+                        }}),
+                    })
+                    .collect()
+            };
+            let corrective_message = ReportProtocolMessage {
+                role: ReportProtocolRole::User,
+                content,
+                created_at: jiff::Timestamp::now(),
+            };
+            protocol.push(corrective_message.clone());
+            turn_messages.push(corrective_message);
+            return Ok(ControlFlow::Continue(()));
+        }
+        self.corrective_round_used = false;
+
+        match output.stop_reason {
+            // `max_tokens` beside complete tool calls is truncation, not a
+            // protocol inconsistency: the calls that made it out are valid
+            // work. Execute them like a normal tool round and tell the model
+            // its response was cut off so it continues instead of re-paying
+            // for everything it already produced.
+            ReportStopReason::ToolUse | ReportStopReason::MaxTokens
+                if !output.tool_calls.is_empty() =>
+            {
+                if self.rounds >= limits.max_tool_rounds
+                    || progress.converse_calls >= limits.max_converse_calls
+                {
+                    let exhausted = if self.rounds >= limits.max_tool_rounds {
+                        ExhaustedWriterLimit::ToolRounds
+                    } else {
+                        ExhaustedWriterLimit::ConverseCalls
+                    };
+                    return Err(limit_exhausted_failure(
+                        exhausted,
+                        self.rounds,
+                        progress.converse_calls,
+                        limits,
+                    )
+                    .into());
+                }
+                self.rounds += 1;
+                progress.tool_uses = progress
+                    .tool_uses
+                    .checked_add(output.tool_calls.len() as u32)
+                    .ok_or_else(|| {
+                        TurnRunFailure::new(
+                            ReportFailureCode::InvalidProtocol,
+                            "The report assistant returned too many tool requests.",
+                        )
+                    })?;
+
+                let mut result_blocks = Vec::with_capacity(output.tool_calls.len());
+                for call in &output.tool_calls {
+                    let context = match call.name.as_str() {
+                        claria_bedrock::report::LIST_RECORD_FILES_TOOL => {
+                            Some("Record file list".to_string())
+                        }
+                        claria_bedrock::report::READ_RECORD_FILE_TOOL => call
+                            .input
+                            .get("filename")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToString::to_string),
+                        claria_bedrock::report::READ_REPORT_SECTION_TOOL => {
+                            Some("Report section".to_string())
+                        }
+                        claria_bedrock::report::SET_FULL_DRAFT_TITLE_TOOL => {
+                            Some("Complete report title".to_string())
+                        }
+                        claria_bedrock::report::WRITE_FULL_DRAFT_SECTION_TOOL => {
+                            Some("Complete report section".to_string())
+                        }
+                        claria_bedrock::report::SKIP_FULL_DRAFT_SECTION_TOOL => {
+                            Some("Deferred report section".to_string())
+                        }
+                        claria_bedrock::report::MARK_SECTION_FAILED_TOOL => {
+                            Some("Failed report section".to_string())
+                        }
+                        claria_bedrock::report::FINISH_FULL_DRAFT_TOOL => {
+                            Some("Complete working draft".to_string())
+                        }
+                        _ => None,
+                    };
+                    request.emit_progress(ReportTurnProgress::ToolStarted {
+                        name: call.name.clone(),
+                        context: context.clone(),
+                    });
+                    let result = tool_context.execute(call).await?;
+                    request.emit_progress(ReportTurnProgress::ToolFinished {
+                        name: call.name.clone(),
+                        context,
+                        status: result.status,
+                    });
+                    result_blocks.push(ReportProtocolBlock::ToolResult {
+                        tool_use_id: call.tool_use_id.clone(),
+                        status: result.status,
+                        content: result.content,
+                    });
+                }
+                // The protocol requires a correlated result message to hold
+                // only results, so the truncation notice rides inside the
+                // last result's JSON instead of a separate text block.
+                if matches!(output.stop_reason, ReportStopReason::MaxTokens)
+                    && let Some(ReportProtocolBlock::ToolResult { content, .. }) =
+                        result_blocks.last_mut()
+                    && let Some(object) = content.as_object_mut()
+                {
+                    object.insert(
+                        "response_truncated".to_string(),
+                        serde_json::Value::String(
+                            "Your previous response hit the per-response output-token limit \
+                             after this tool call, so anything you were still generating was \
+                             cut off. Continue the remaining work in your next response."
+                                .to_string(),
+                        ),
+                    );
+                }
+                let result_message = ReportProtocolMessage {
+                    role: ReportProtocolRole::User,
+                    content: result_blocks,
+                    created_at: jiff::Timestamp::now(),
+                };
+                protocol.push(result_message.clone());
+                turn_messages.push(result_message);
+                // First of the two between-round checks. Executing a batch
+                // means S3 writes, and a Stop pressed during them belongs to
+                // this round: the sections it just made durable stand, and
+                // the round that would have followed never starts. A batch
+                // that carried the finish tool is past the cut and keeps
+                // going so the completed draft still cuts its revision.
+                if !tool_context.full_draft_is_finalized() && request.stop.is_stopped() {
+                    return Err(TurnInterruption::Stopped);
+                }
+            }
+            ReportStopReason::EndTurn => {
+                if request.is_full_draft() && !tool_context.full_draft_is_finalized() {
+                    if self.completion_reminder_used {
+                        return Err(TurnRunFailure::new(
+                            ReportFailureCode::InvalidProtocol,
+                            "The writer stopped twice without finalizing the complete draft. Nothing was saved.",
+                        )
+                        .into());
+                    }
+                    self.completion_reminder_used = true;
+                    // Name the sections that are actually outstanding. "Every
+                    // required section" left the model to re-derive the set
+                    // from a plan it had already worked through once.
+                    let undecided = tool_context.undecided_plan_sections();
+                    let outstanding = if undecided.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " The plan still requires: {}.",
+                            undecided
+                                .iter()
+                                .map(|(id, heading)| format!("{id} ({heading})"))
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        )
+                    };
+                    let reminder = ReportProtocolMessage {
+                        role: ReportProtocolRole::User,
+                        content: vec![ReportProtocolBlock::Text {
+                            text: format!(
+                                "The full draft is not finalized. Write, skip, or mark failed every \
+                                 planned section, then call finish_full_draft. Do not end with prose \
+                                 before that tool succeeds.{outstanding}"
+                            ),
+                        }],
+                        created_at: jiff::Timestamp::now(),
+                    };
+                    protocol.push(reminder.clone());
+                    turn_messages.push(reminder);
+                    return Ok(ControlFlow::Continue(()));
+                }
+                return Ok(ControlFlow::Break(response_text));
+            }
+            // A cut-off final explanation cannot invalidate structured work
+            // that was already staged/finalized by a successful tool call.
+            ReportStopReason::MaxTokens if tool_context.staged_proposal.is_some() => {
+                let terminal_text = if response_text.is_empty() {
+                    REPORT_TRUNCATED_NOTICE.to_string()
+                } else {
+                    format!("{response_text}\n\n{REPORT_TRUNCATED_NOTICE}")
+                };
+                return Ok(ControlFlow::Break(terminal_text));
+            }
+            ReportStopReason::MaxTokens if tool_context.full_draft_is_finalized() => {
+                let notice = "Claria note: the complete working draft was finalized, but the assistant's closing summary was cut short.";
+                let terminal_text = if response_text.is_empty() {
+                    notice.to_string()
+                } else {
+                    format!("{response_text}\n\n{notice}")
+                };
+                return Ok(ControlFlow::Break(terminal_text));
+            }
+            reason => return Err(terminal_stop_failure(reason).into()),
+        }
+
+        Ok(ControlFlow::Continue(()))
+    }
 }
 
 /// Which configured guardrail ended the turn.
@@ -1909,12 +1999,27 @@ pub fn interruption_advice(
     }
 }
 
+/// Failed inference attempts have no trustworthy receipt. Keep that uncertainty
+/// even when a later retry succeeds; local preflight failures incurred no inference.
+pub(crate) fn model_error_usage_is_uncertain(error: &BedrockError) -> bool {
+    match error {
+        BedrockError::UnsupportedModel(_)
+        | BedrockError::ContextBudgetExceeded { .. }
+        | BedrockError::Serialization(_)
+        | BedrockError::Config(_)
+        | BedrockError::Agreement(_) => false,
+        BedrockError::Service { operation, .. } if *operation == "CountTokens" => false,
+        _ => true,
+    }
+}
+
 pub(crate) fn map_bedrock_failure(
     error: BedrockError,
     call: FailedReportCall<'_>,
     attempts: u32,
     elapsed: std::time::Duration,
 ) -> TurnRunFailure {
+    let usage_may_be_incomplete = model_error_usage_is_uncertain(&error);
     if matches!(
         &error,
         BedrockError::SchemaViolation(_) | BedrockError::ResponseParse(_)
@@ -1930,7 +2035,7 @@ pub(crate) fn map_bedrock_failure(
         first_frame_secs,
         idle_secs,
     } = call;
-    let failure = match &error {
+    let mut failure = match &error {
         BedrockError::ContextBudgetExceeded { .. } => TurnRunFailure::new(
             ReportFailureCode::ContextBudget,
             "The report and conversation exceed this model's safe token budget. Shorten the report or start a new report workspace before retrying.",
@@ -1957,8 +2062,7 @@ pub(crate) fn map_bedrock_failure(
                 elapsed_phrase(elapsed),
                 interruption_advice(error.stream_interruption(), first_frame_secs, idle_secs),
             ),
-        )
-        .uncertain_usage(),
+        ),
         // These reached AWS and came back refused. The service code is the
         // only thing separating "retry", "pick another model", and "call
         // support", so it decides the message instead of collapsing into one
@@ -1984,7 +2088,7 @@ pub(crate) fn map_bedrock_failure(
                     "The model did not respond in time. Retry, or fill the report a section at a time if it keeps happening.".to_string()
                 }
                 "ValidationException" => format!(
-                    "Bedrock rejected the request as invalid for {model_id}. The Claria Console log holds the service's reason."
+                    "Bedrock rejected the request as invalid for {model_id}. The Claria Console log holds the service code and request ID."
                 ),
                 // Every non-service SDK failure lands here — connect, dispatch,
                 // and timeout alike — so the wording must not pin the blame on
@@ -2004,16 +2108,15 @@ pub(crate) fn map_bedrock_failure(
                     "Bedrock call {number} of {ceiling} failed. {cause} Usage for the calls that completed was retained."
                 ),
             )
-            .uncertain_usage()
         }
         _ => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
             format!(
                 "Bedrock call {number} of {ceiling} could not be completed. Usage for the calls that completed was retained. The Claria Console log holds the underlying error."
             ),
-        )
-        .uncertain_usage(),
+        ),
     };
+    failure.usage_may_be_incomplete = usage_may_be_incomplete;
     failure.with_internal(error)
 }
 

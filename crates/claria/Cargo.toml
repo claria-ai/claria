@@ -18,6 +18,7 @@ claria-bedrock.workspace = true
 claria-core.workspace = true
 claria-report-store.workspace = true
 claria-storage.workspace = true
+dekopon-embedded.workspace = true
 futures.workspace = true
 jiff.workspace = true
 lru.workspace = true
@@ -32,5 +33,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
 aws-credential-types.workspace = true
+aws-smithy-eventstream.workspace = true
+aws-smithy-types.workspace = true
 claria-mock-aws.workspace = true
 tokio = { workspace = true, features = ["full"] }

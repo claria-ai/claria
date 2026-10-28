@@ -1437,7 +1437,7 @@ export function buildInitScript(
             return REVIEW_PROPERTIES.map(([pass, property]) => ({
               property,
               pass,
-              instructions: "Check, for every section:\n1. " + property.replaceAll("_", " ") + ".",
+              instructions: "Check, for every section:\\n1. " + property.replaceAll("_", " ") + ".",
             }));
           }
           if (cmd === "run_review_sweeps") {

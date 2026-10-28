@@ -12,7 +12,10 @@ use claria_core::models::{
     report::{ReportBlock, ReportContent, ReportSection},
     report_run::{DraftRun, DraftRunStatus, RunSectionState},
 };
-use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
+use claria_mock_aws::{
+    state::{FoundationModel, ModelLifecycle, ScriptedBedrockResponse},
+    testing::MockServer,
+};
 use claria_report_store as store;
 use claria_storage::client;
 use uuid::Uuid;
@@ -311,6 +314,10 @@ async fn a_run_stopped_mid_stream_keeps_its_sections_and_stays_resumable() {
     assert!(workspace.session.turns.is_empty());
 
     let attempt = error.attempt().expect("a stopped turn still has a receipt");
+    assert!(
+        !attempt.usage_complete,
+        "an interrupted inference has unknown usage"
+    );
     assert_eq!(
         stored_attempt(&s3, client_id, attempt.attempt_id)
             .await
@@ -454,6 +461,224 @@ async fn a_stop_between_rounds_never_opens_another_call() {
     assert_eq!(workspace.draft.revision, 1);
 }
 
+/// A completed response has already admitted its tool batch. Stop at the
+/// first tool's entry cannot discard its siblings or open the following call.
+#[tokio::test]
+async fn a_stop_at_tool_start_drains_the_batch_and_resumes_exact_saved_sections() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let referral = "Attention concerns — “quoted” text, café, and literal <tag>.";
+    let background = "First line of history.\nSecond line preserves the source wording.";
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Synthetic Evaluation"),
+                write_call("section-1", REFERRAL_ID, 0, "Reason for Referral", referral),
+                write_call("section-2", BACKGROUND_ID, 1, "Background", background),
+            ]),
+            tool_round(vec![write_call(
+                "section-3",
+                SUMMARY_ID,
+                2,
+                "Summary and Clinical Interpretation",
+                "The remaining summary was written after reload.",
+            )]),
+            tool_round(vec![finish_call("finish-1", "Completed after resume.")]),
+            closing_text("All three sections are complete."),
+        ],
+    )
+    .await;
+
+    let stop = StopSignal::new();
+    let stopper = stop.clone();
+    let completed_tools = Mutex::new(Vec::new());
+    let progress = |event: pipeline::ReportTurnProgress| match event {
+        pipeline::ReportTurnProgress::ToolStarted { .. } => stopper.stop(),
+        pipeline::ReportTurnProgress::ToolFinished { name, status, .. } => {
+            assert_eq!(
+                status,
+                claria_core::models::report::ReportToolResultStatus::Success
+            );
+            completed_tools.lock().expect("tool events").push(name);
+        }
+        _ => {}
+    };
+    let error = pipeline::generate_full_report_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Write the synthetic evaluation.")
+            .with_stop(&stop)
+            .with_progress(&progress),
+    )
+    .await
+    .expect_err("Stop parks the run after its admitted batch");
+    assert!(error.is_stopped(), "unexpected failure: {error}");
+    assert_eq!(completed_tools.lock().expect("tool events").len(), 3);
+    {
+        let state = server.state.read().await;
+        assert_eq!(state.bedrock_tool_requests.len(), 1);
+        assert_eq!(state.bedrock_tool_responses.len(), 3);
+    }
+
+    let attempt = error.attempt().expect("stopped attempt");
+    assert_eq!(attempt.converse_calls, 1);
+    assert_eq!(attempt.tool_uses, 3);
+    assert!(
+        attempt.usage_complete,
+        "Stop after a complete response is fully metered"
+    );
+    assert_eq!(attempt.usage.input_tokens, 5);
+    assert_eq!(attempt.usage.output_tokens, 20);
+    assert_eq!(
+        stored_attempt(&s3, client_id, attempt.attempt_id).await,
+        *attempt
+    );
+    let key = claria_core::s3_keys::report_call_usage(client_id, attempt.attempt_id, 1);
+    let (receipt, _): (store::ReportCallUsageRecord, String) =
+        claria_storage::state::load_state(&s3, BUCKET, &key)
+            .await
+            .expect("completed call was recorded before its tools");
+    assert!(receipt.usage_complete);
+    assert_eq!(
+        receipt.usage.as_ref().expect("known usage").output_tokens,
+        20
+    );
+    assert_eq!(
+        server.state.read().await.objects[&(BUCKET.to_string(), key)].len(),
+        1
+    );
+
+    let run = pipeline::load_resumable_draft_run(&s3, BUCKET, client_id, report_id)
+        .await
+        .expect("reload durable run")
+        .expect("stopped run remains resumable");
+    assert_eq!(run.status, DraftRunStatus::Stopped);
+    assert_eq!(run.title.as_deref(), Some("Synthetic Evaluation"));
+    assert_eq!(
+        sections_in(&run, RunSectionState::Drafted),
+        vec!["Reason for Referral", "Background"]
+    );
+    assert_eq!(
+        sections_in(&run, RunSectionState::Pending),
+        vec!["Summary and Clinical Interpretation"]
+    );
+    let workspace = store::load_report_workspace_by_id(&s3, BUCKET, client_id, report_id)
+        .await
+        .expect("reload workspace");
+    assert_eq!(workspace.active_run_id, Some(run.run_id));
+    assert_eq!(workspace.draft.revision, 1);
+    assert_eq!(workspace.draft.content.sections[0].blocks, boilerplate());
+    assert!(workspace.session.turns.is_empty());
+
+    let outcome = pipeline::resume_draft_run(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        run.run_id,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Finish the remaining summary."),
+    )
+    .await
+    .expect("reload resumes only unfinished work");
+    assert_eq!(outcome.workspace.draft.revision, 2);
+    assert_eq!(outcome.workspace.active_run_id, None);
+    assert_eq!(
+        outcome.workspace.draft.content.title,
+        "Synthetic Evaluation"
+    );
+    assert_eq!(
+        outcome.workspace.draft.content.sections[0].blocks,
+        vec![paragraph(referral)]
+    );
+    assert_eq!(
+        outcome.workspace.draft.content.sections[1].blocks,
+        vec![paragraph(background)]
+    );
+    let completed = only_run(&s3, client_id, report_id).await;
+    assert_eq!(completed.status, DraftRunStatus::Completed);
+    assert_eq!(
+        &completed.sections[..2],
+        &run.sections[..2],
+        "resume rewrote landed state"
+    );
+    assert_eq!(server.state.read().await.bedrock_tool_requests.len(), 4);
+}
+
+/// The finish cut is part of the admitted batch even when Stop preceded every
+/// tool effect. Its closing response and final revision must still land.
+#[tokio::test]
+async fn a_stop_at_tool_start_preserves_a_finish_in_the_same_batch() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    script(
+        &server,
+        vec![
+            tool_round(vec![
+                title_call("title-1", "Synthetic Evaluation"),
+                write_call(
+                    "section-1",
+                    REFERRAL_ID,
+                    0,
+                    "Reason for Referral",
+                    "Referral.",
+                ),
+                write_call("section-2", BACKGROUND_ID, 1, "Background", "History."),
+                write_call(
+                    "section-3",
+                    SUMMARY_ID,
+                    2,
+                    "Summary and Clinical Interpretation",
+                    "Summary.",
+                ),
+                finish_call("finish-1", "Finished in one admitted batch."),
+            ]),
+            closing_text("The complete draft is saved."),
+        ],
+    )
+    .await;
+    let stop = StopSignal::new();
+    let stopper = stop.clone();
+    let progress = |event: pipeline::ReportTurnProgress| {
+        if matches!(event, pipeline::ReportTurnProgress::ToolStarted { .. }) {
+            stopper.stop();
+        }
+    };
+    let outcome = pipeline::generate_full_report_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        MODEL_ID,
+        pipeline::FullReportRequest::new("Write all three sections.")
+            .with_stop(&stop)
+            .with_progress(&progress),
+    )
+    .await
+    .expect("an admitted finish cuts the revision despite Stop");
+    assert_eq!(outcome.workspace.draft.revision, 2);
+    assert_eq!(outcome.workspace.active_run_id, None);
+    assert_eq!(outcome.attempt.converse_calls, 2);
+    assert_eq!(outcome.attempt.tool_uses, 5);
+    assert!(outcome.attempt.usage_complete);
+    assert_eq!(
+        only_run(&s3, client_id, report_id).await.status,
+        DraftRunStatus::Completed
+    );
+    assert_eq!(server.state.read().await.bedrock_tool_requests.len(), 2);
+}
+
 /// Once `finish_full_draft` has succeeded the run is past its cut, and a Stop
 /// pressed in the seconds it takes the writer to say so must not throw the
 /// finished draft away.
@@ -576,6 +801,10 @@ async fn a_stopped_targeted_turn_leaves_the_session_untouched() {
     assert_eq!(workspace.active_run_id, None);
 
     let attempt = error.attempt().expect("a stopped turn still has a receipt");
+    assert!(
+        !attempt.usage_complete,
+        "an interrupted inference has unknown usage"
+    );
     assert_eq!(
         stored_attempt(&s3, client_id, attempt.attempt_id)
             .await
@@ -661,9 +890,64 @@ async fn one_stop_signal_ends_only_its_own_turn() {
     .await
     .expect_err("a turn stopped before it started has no outcome");
     assert!(error.is_stopped(), "unexpected failure: {error}");
+    let attempt = error.attempt().expect("pre-stopped attempt");
+    assert!(attempt.usage_complete);
+    assert_eq!(attempt.converse_calls, 0);
+    assert_eq!(attempt.usage.total_input_tokens(), 0);
+    assert_eq!(attempt.usage.output_tokens, 0);
     assert_eq!(
         server.state.read().await.bedrock_tool_requests.len(),
         before,
         "a turn stopped before its first call still opened one"
     );
+}
+
+#[tokio::test]
+async fn a_failed_token_count_preserves_known_zero_inference_usage() {
+    let (server, sdk, s3) = setup().await;
+    let client_id = Uuid::new_v4();
+    let report_id = seed_templated_report(&s3, client_id).await;
+    let bare_model = "anthropic.claude-haiku-4-5-20251001-v1:0";
+    {
+        let mut state = server.state.write().await;
+        state.foundation_models.push(FoundationModel {
+            model_id: bare_model.to_string(),
+            model_name: "Claude Haiku 4.5".to_string(),
+            provider_name: "Anthropic".to_string(),
+            model_lifecycle: ModelLifecycle {
+                status: "ACTIVE".to_string(),
+            },
+        });
+        state
+            .bedrock_count_tokens_unsupported_models
+            .insert(bare_model.to_string());
+    }
+    let error = pipeline::send_report_message_for_report(
+        &sdk,
+        &s3,
+        BUCKET,
+        client_id,
+        report_id,
+        1,
+        &format!("us.{bare_model}"),
+        pipeline::ReportMessageRequest::new("Review the report."),
+    )
+    .await
+    .expect_err("CountTokens fails before an inference request");
+    let attempt = error.attempt().expect("failed attempt receipt");
+    assert!(
+        attempt.usage_complete,
+        "failed preflight must not invent uncertain inference usage"
+    );
+    assert_eq!(attempt.converse_calls, 0);
+    assert_eq!(attempt.usage.total_input_tokens(), 0);
+    assert_eq!(attempt.usage.output_tokens, 0);
+    assert_eq!(
+        stored_attempt(&s3, client_id, attempt.attempt_id).await,
+        *attempt
+    );
+    let state = server.state.read().await;
+    assert_eq!(state.bedrock_count_token_requests.len(), 1);
+    assert_eq!(state.bedrock_stream_request_count, 0);
+    assert!(state.bedrock_tool_requests.is_empty());
 }

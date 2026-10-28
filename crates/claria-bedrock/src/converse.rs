@@ -717,33 +717,59 @@ impl StopSignal {
     }
 }
 
-/// Send a `ConverseStream` request and wait for the service to start
-/// answering, bounded by [`StreamBounds::first_frame`].
-///
-/// The first-frame wait belongs here rather than in the stream loop,
-/// because that is where the SDK spends it: the generated `send` resolves
-/// only once the first event frame has arrived, since it has to look at
-/// that frame to decide whether it is an `initial-response`. Nothing else
-/// bounds the wait — the read timeout is satisfied by the response headers,
-/// which arrive long before the first token — so a request the service
-/// accepted and never began otherwise hangs for as long as the socket
-/// stays open.
-///
-/// A request that produced no frame is one the model never started, so the
-/// failure says that instead of claiming a connection lost mid-response,
-/// and it is [`BedrockError::StreamInterrupted`] like the mid-stream case:
-/// nothing was generated, so re-sending it is safe.
-pub(crate) async fn start_converse_stream<T, E>(
+impl dekopon_embedded::agent::Cancellation for StopSignal {
+    fn is_stopped(&self) -> bool {
+        StopSignal::is_stopped(self)
+    }
+
+    async fn stopped(&self) {
+        StopSignal::stopped(self).await;
+    }
+}
+
+pub(crate) struct ConverseStream {
+    receiver: aws_sdk_bedrockruntime::primitives::event_stream::EventReceiver<
+        ConverseStreamOutput,
+        aws_sdk_bedrockruntime::types::error::ConverseStreamOutputError,
+    >,
+    first_event: Option<ConverseStreamOutput>,
+}
+
+// The SDK may return after headers; one deadline must cover both send and the first frame.
+pub(crate) async fn start_converse_stream(
     operation: &'static str,
     bounds: StreamBounds,
-    send: impl std::future::Future<Output = Result<T, SdkError<E>>>,
-) -> Result<T, BedrockError>
-where
-    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
-{
-    match tokio::time::timeout(bounds.first_frame, send).await {
-        Ok(Ok(response)) => Ok(response),
-        Ok(Err(error)) => Err(classify_error(operation, error)),
+    send: impl std::future::Future<
+        Output = Result<
+            aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamOutput,
+            SdkError<aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamError>,
+        >,
+    >,
+) -> Result<ConverseStream, BedrockError> {
+    let first_frame = async {
+        let mut response = send
+            .await
+            .map_err(|error| classify_error(operation, error))?;
+        let first_event =
+            response
+                .stream
+                .recv()
+                .await
+                .map_err(|error| BedrockError::StreamInterrupted {
+                    operation,
+                    kind: crate::error::StreamInterruption::Dropped,
+                    message: format!(
+                        "{operation} failed before the response completed: {}",
+                        DisplayErrorContext(&error)
+                    ),
+                })?;
+        Ok(ConverseStream {
+            receiver: response.stream,
+            first_event,
+        })
+    };
+    match tokio::time::timeout(bounds.first_frame, first_frame).await {
+        Ok(result) => result,
         Err(_elapsed) => {
             let seconds = bounds.first_frame.as_secs();
             tracing::error!(operation, seconds, "Bedrock never started responding");
@@ -772,12 +798,12 @@ where
 pub(crate) async fn recv_stream_event(
     operation: &'static str,
     bounds: StreamBounds,
-    stream: &mut aws_sdk_bedrockruntime::primitives::event_stream::EventReceiver<
-        ConverseStreamOutput,
-        aws_sdk_bedrockruntime::types::error::ConverseStreamOutputError,
-    >,
+    stream: &mut ConverseStream,
 ) -> Result<Option<ConverseStreamOutput>, BedrockError> {
-    match tokio::time::timeout(bounds.idle, stream.recv()).await {
+    if let Some(event) = stream.first_event.take() {
+        return Ok(Some(event));
+    }
+    match tokio::time::timeout(bounds.idle, stream.receiver.recv()).await {
         Ok(Ok(event)) => Ok(event),
         Ok(Err(error)) => {
             tracing::error!(operation, "Bedrock stream failed");

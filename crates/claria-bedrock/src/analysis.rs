@@ -463,7 +463,7 @@ pub async fn converse_structured(
         .await?;
         first_token_ms = Some(elapsed_ms(started));
 
-        let mut stream = response.stream;
+        let mut stream = response;
         let mut collector = report::ReportStreamCollector::default();
         let stopped = loop {
             let event = tokio::select! {
