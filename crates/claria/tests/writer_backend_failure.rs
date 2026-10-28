@@ -314,7 +314,6 @@ async fn serve_streams(
                 (&mut stop)
                     .await
                     .expect("stop fixture after interrupted turn");
-                stream.shutdown().await.expect("close interrupted fixture");
                 requests.push(request);
                 break;
             }

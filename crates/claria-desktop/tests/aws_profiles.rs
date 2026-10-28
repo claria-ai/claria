@@ -105,7 +105,10 @@ fn run_isolated(case: &str, environment_credentials: bool, expected_container_re
     let config_path = fixture.path().join("config");
     let credentials_path = fixture.path().join("credentials");
     let process_marker = fixture.path().join("process-called");
+    #[cfg(unix)]
     let mut config = CONFIG.to_string();
+    #[cfg(not(unix))]
+    let config = CONFIG.to_string();
 
     #[cfg(unix)]
     if case == "process" {
