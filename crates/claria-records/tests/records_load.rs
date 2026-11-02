@@ -398,14 +398,24 @@ async fn search_record_contents_matches_text_case_insensitively() {
         b"Patient reports MIGRAINE symptoms".to_vec(),
     )
     .await;
-    put(&s3, &format!("{prefix}intake.pdf"), b"%PDF binary".to_vec()).await;
+    put(
+        &s3,
+        &format!("{prefix}intake.pdf"),
+        b"%PDF-1.7\nbinary".to_vec(),
+    )
+    .await;
     put(
         &s3,
         &format!("{prefix}intake.pdf.text"),
         b"History of migraine and tension headache".to_vec(),
     )
     .await;
-    put(&s3, &format!("{prefix}scan.pdf"), b"%PDF binary".to_vec()).await;
+    put(
+        &s3,
+        &format!("{prefix}scan.pdf"),
+        b"%PDF-1.7\nbinary".to_vec(),
+    )
+    .await;
     put(
         &s3,
         &format!("{prefix}scan.pdf.text"),
