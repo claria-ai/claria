@@ -33,6 +33,7 @@ const runtime = {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   hidden = false;
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
   reducedMotion = false;
   runtime.random.mockClear();
   vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
@@ -153,6 +154,20 @@ describe("useLuciaBehavior", () => {
     fireEvent(document, new Event("visibilitychange"));
     expect(result.current.state.behavior).toBe("tailwag");
     expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it("suspends on window blur and starts fresh on focus", () => {
+    const { result } = renderHook(() => useLuciaBehavior(config, "fixture-client", runtime));
+    act(() => result.current.setMode("feeding"));
+    act(() => result.current.feed());
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    fireEvent(window, new Event("blur"));
+    expect(result.current.state).toMatchObject({ behavior: "inactive", fedCount: 0 });
+    expect(vi.getTimerCount()).toBe(0);
+    advance(600_000);
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    fireEvent(window, new Event("focus"));
+    expect(result.current.state).toMatchObject({ behavior: "feeding-idle", fedCount: 0 });
   });
 
   it("honors initial and changed reduced-motion preferences", () => {

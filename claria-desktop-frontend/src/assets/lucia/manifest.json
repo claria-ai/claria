@@ -1,0 +1,472 @@
+{
+  "style": "approved synthetic-v3",
+  "cell_width": 192,
+  "cell_height": 208,
+  "core_image": "spritesheet-extended.png",
+  "gaze_rows": [
+    9,
+    10
+  ],
+  "gaze_degrees": [
+    0.0,
+    22.5,
+    45.0,
+    67.5,
+    90.0,
+    112.5,
+    135.0,
+    157.5,
+    180.0,
+    202.5,
+    225.0,
+    247.5,
+    270.0,
+    292.5,
+    315.0,
+    337.5
+  ],
+  "head_anchor": [
+    80,
+    66
+  ],
+  "assets": {
+    "spritesheet-extended.png": {
+      "width": 1536,
+      "height": 2288,
+      "sha256": "17d0119d21744c3a6dcb5bc5b31ee7d15cd299209565e147c781e662a956d23d"
+    },
+    "extras/sock/pickup/strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "3f057242a977beafd282984161d794571c8f6f2be27fe2d192d45f209cd126f2"
+    },
+    "extras/sock/carry-right/strip.png": {
+      "width": 1536,
+      "height": 208,
+      "sha256": "9a69404c30fdff38bfa1896ea77f02cd6f7430eb99dce67ff8119ea1b023ccd1"
+    },
+    "extras/play/entrance-wag/strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "fd1e8bc0a874e196f2d7aadf66424adfb7e4b7dea27ff4977c6c26e18da89693"
+    },
+    "extras/play/stretch/strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "f3013ce80a3a829706d6ae6920c534a4141b3ba9c2c89eba5cebea36fa7ff2e3"
+    },
+    "extras/play/skateboard-left/strip.png": {
+      "width": 1536,
+      "height": 208,
+      "sha256": "cf549149bfa1422811188660ffb799a48c0c905d1cfc2e925df0539959695770"
+    },
+    "extras/play/twirl/strip.png": {
+      "width": 1536,
+      "height": 208,
+      "sha256": "970df6961acf474ce24f4fc9d11b52509f09fff21da57a1c6003238a82d4c460"
+    },
+    "extras/bored/bored-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "2c1a4f7b410da62843554ae9dc9655ab623b39b7a5fc8418ef3e59b1dbee69d9"
+    },
+    "extras/ears-perk/ears-perk-strip.png": {
+      "width": 768,
+      "height": 208,
+      "sha256": "058c357f9316f4e816d455d2319624d4b51853322bfaf3c6bd6a226fe7c7ebe8"
+    },
+    "extras/bark/bark-strip.png": {
+      "width": 768,
+      "height": 208,
+      "sha256": "29838487a9c2409ccc6d64c39fc428e459872d7964112393c2d8bf6d7e480dc6"
+    },
+    "extras/newspaper/enter/enter-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "c1d092ccbd87c4a05c55a2b21408181572575a0e6a142b74410144c96c8bb97e"
+    },
+    "extras/newspaper/exit/exit-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "d0518a876284dd77b8ee2dc288a8c94574187d87640b5a2eac26a3bda5ddf12b"
+    },
+    "extras/newspaper/loop/loop-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "ce2133966d5b28f51904609d576c32c1655c7898f03f1daaa0fcab65087fb598"
+    },
+    "extras/dekopon/feeding/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "f9e751a0d0adfe75e9b2fae578ede99a517a3751a28c36c23d69de65aa1eab10"
+    },
+    "extras/dekopon/full/full-strip.png": {
+      "width": 768,
+      "height": 208,
+      "sha256": "50346aaf17396c89d17590c9c23b42cd3be80760e4fb64e57b3f7d1460c9ffa2"
+    },
+    "extras/dekopon/stages/stages-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "c7ef46eb6a89edb30df94cc9a87e38ede3d376ad7fed9143bd4b1fd30a7c4cf6"
+    },
+    "extras/dekopon/fruit.png": {
+      "width": 128,
+      "height": 128,
+      "sha256": "4d64c4014587ce040b026d664d54c1c0a57abb5462c3cbc539ad13e2a9a1e57a"
+    },
+    "extras/sock/sock.png": {
+      "width": 56,
+      "height": 48,
+      "sha256": "cc070bdcb986fd37de2ba670f885f700b56110a7adc8a42ac51f6128519408ae"
+    }
+  },
+  "clips": {
+    "idle": {
+      "image": "spritesheet-extended.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        280,
+        110,
+        110,
+        140,
+        140,
+        320
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": true,
+      "ground_y": 201
+    },
+    "running-right": {
+      "image": "spritesheet-extended.png",
+      "row": 1,
+      "first_column": 0,
+      "frame_durations_ms": [
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        220
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": true,
+      "ground_y": 181
+    },
+    "pickup": {
+      "image": "extras/sock/pickup/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        160,
+        160,
+        180,
+        180,
+        180,
+        320
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "carry-away": {
+      "image": "extras/sock/carry-right/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": true,
+      "ground_y": 201
+    },
+    "tailwag": {
+      "image": "extras/play/entrance-wag/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        140,
+        140,
+        140,
+        140,
+        140,
+        140
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": false,
+      "ground_y": 200
+    },
+    "stretch": {
+      "image": "extras/play/stretch/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        220,
+        180,
+        240,
+        400,
+        180,
+        260
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "skateboard": {
+      "image": "extras/play/skateboard-left/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        140,
+        140,
+        140,
+        140,
+        140,
+        140,
+        140,
+        140
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": true,
+      "ground_y": 200
+    },
+    "twirl": {
+      "image": "extras/play/twirl/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        180,
+        140,
+        140,
+        140,
+        140,
+        140,
+        140,
+        240
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "bored": {
+      "image": "extras/bored/bored-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": true,
+      "ground_y": 161
+    },
+    "ear-perk": {
+      "image": "extras/ears-perk/ears-perk-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 197
+    },
+    "bark": {
+      "image": "extras/bark/bark-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "reading-enter": {
+      "image": "extras/newspaper/enter/enter-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "reading-exit": {
+      "image": "extras/newspaper/exit/exit-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "reading": {
+      "image": "extras/newspaper/loop/loop-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": true,
+      "ground_y": 201
+    },
+    "feeding": {
+      "image": "extras/dekopon/feeding/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "full": {
+      "image": "extras/dekopon/full/full-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 197
+    }
+  },
+  "stages": {
+    "image": "extras/dekopon/stages/stages-strip.png",
+    "counts": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "anchor": [
+      96,
+      202
+    ],
+    "ground_y_by_count": [
+      192,
+      192,
+      193,
+      194,
+      195,
+      195
+    ]
+  },
+  "first_feed_from_counts": [
+    0
+  ],
+  "max_fruit_count": 5,
+  "source_manifests": {
+    "lucia-core-manifest.json": "db47b2789756d11deece14dfdd43628a2c2f872766262f9f62a3290a1728e136",
+    "lucia-extras-manifest.json": "ad99ef26ee0ddee5374145831fc27984ad0fe9d936b809347521c8262c1039de",
+    "extras/dekopon/manifest.json": "c430207f28c9c67aa7d5547e0502c662646404326c9b539bc04e48ea9ea9a8d7"
+  },
+  "gaze_anchor": [
+    96,
+    202
+  ],
+  "registration": {
+    "alpha_threshold": 128,
+    "method": "Ground line is the pixel boundary below the deepest opaque contact in each clip; airborne stride offsets are retained. Static citrus stages are registered individually. Source anchors are preserved for provenance."
+  }
+}

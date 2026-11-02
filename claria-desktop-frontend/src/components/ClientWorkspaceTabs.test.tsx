@@ -5,12 +5,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ClientWorkspaceTabs, {
   type ClientWorkspaceView,
 } from "./ClientWorkspaceTabs";
+import { loadLuciaArtwork } from "../lib/luciaArtwork";
 import { setDistractionModeEnabled } from "../lib/distractionMode";
+
+vi.mock("../lib/luciaArtwork", async (original) => ({
+  ...await original<typeof import("../lib/luciaArtwork")>(),
+  loadLuciaArtwork: vi.fn(async () => true),
+}));
 
 function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
   const [active, setActive] = useState<ClientWorkspaceView>("record");
   return (
     <ClientWorkspaceTabs
+      clientId="fixture-client"
       clientName="Ada Lovelace"
       activeView={active}
       onSelect={(tab) => {
@@ -30,6 +37,8 @@ function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
 
 beforeEach(() => {
   setDistractionModeEnabled(false);
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.mocked(loadLuciaArtwork).mockResolvedValue(true);
 });
 
 describe("client workspace tabs", () => {
@@ -105,15 +114,15 @@ describe("client workspace tabs", () => {
     setDistractionModeEnabled(true);
     render(<Harness />);
 
-    const button = screen.getByRole("button", {
+    const button = await screen.findByRole("button", {
       name: "Drop a sock for Lucia",
     });
     const heading = screen.getByRole("heading", { name: "Ada Lovelace" });
-    expect(button.nextElementSibling).toBe(heading);
+    expect(button.parentElement).toBe(heading.parentElement);
     expect(button.className).not.toContain("border");
 
     await userEvent.click(button);
-    expect(screen.getByTestId("sock-drop")).toBeDefined();
+    expect(screen.getByTestId("lucia-scene").dataset.behavior).toBe("chase");
     expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 

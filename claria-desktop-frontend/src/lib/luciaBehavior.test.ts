@@ -339,16 +339,45 @@ describe("Lucia feeding session", () => {
     for (let count = 1; count <= 5; count++) {
       const now = (count - 1) * 200 + 10;
       const feeding = step(state, { type: "feed" }, now);
-      expect(feeding).toMatchObject({ behavior: "feeding", fedCount: count });
+      expect(feeding).toMatchObject({ behavior: "feeding", fedCount: count - 1 });
       expect(step(feeding, { type: "feed" }, now + 1)).toBe(feeding);
       state = wake(feeding);
+      if (count === 5) {
+        expect(state).toMatchObject({ behavior: "full", fedCount: 5 });
+        state = wake(state);
+      }
       expect(state).toMatchObject({ behavior: "feeding-idle", fedCount: count, nextWakeAt: null });
     }
-    const full = step(state, { type: "feed" }, 1_010);
-    expect(full).toMatchObject({ behavior: "full", fedCount: 5 });
-    expect(step(full, { type: "feed" }, 1_011)).toBe(full);
-    state = wake(full);
-    expect(step(state, { type: "feed" }, 1_200)).toMatchObject({ behavior: "full", fedCount: 5 });
+    expect(step(state, { type: "feed" }, 1_010)).toBe(state);
+    expect(step(state, { type: "wake" }, 1_200)).toBe(state);
+  });
+
+  it.each([
+    { type: "reset" },
+    { ...ENVIRONMENT, visible: false },
+    { ...ENVIRONMENT, active: false },
+    { type: "mode", mode: "gaze" },
+  ] satisfies LuciaBehaviorEvent[])("cancels an uncompleted feed without increment: %j", (event) => {
+    const feeding = step(active("feeding"), { type: "feed" }, 10);
+    const interrupted = step(feeding, event, 11);
+    expect(interrupted.fedCount).toBe(0);
+    expect(step(interrupted, { type: "wake" }, 130).fedCount).toBe(0);
+  });
+
+  it("inference interruption cannot commit a fruit or replay it after reading", () => {
+    const feeding = step(active("feeding"), { type: "feed" }, 0, 0.5, {
+      durationsMs: { ...CONFIG.durationsMs, feeding: 500 },
+    });
+    const pending = step(feeding, { type: "inference", pending: true }, 1);
+    const interrupted = wake(pending, 201);
+    expect(interrupted).toMatchObject({ behavior: "reading-enter", fedCount: 0 });
+    const done = step(wake(interrupted), { type: "inference", pending: false }, 400);
+    expect(wake(done)).toMatchObject({ behavior: "feeding-idle", fedCount: 0 });
+  });
+
+  it("rejects feeds even during the inference debounce", () => {
+    const pending = step(active("feeding"), { type: "inference", pending: true }, 1);
+    expect(step(pending, { type: "feed" }, 100)).toBe(pending);
   });
 
   it("suppresses socks, barking, typing reactions, and ambient timers", () => {
@@ -395,7 +424,7 @@ describe("Lucia feeding session", () => {
     const hidden = step(state, { ...ENVIRONMENT, visible: false }, 1_200);
     const resumed = step(hidden, ENVIRONMENT, 1_000_000);
     expect(resumed).toMatchObject({ behavior: "feeding-idle", fedCount: 5, nextWakeAt: null });
-    expect(step(resumed, { type: "feed" }, 1_000_001)).toMatchObject({ behavior: "full", fedCount: 5 });
+    expect(step(resumed, { type: "feed" }, 1_000_001)).toBe(resumed);
   });
 
   it("allows a reset during reading without cancelling the live request", () => {
@@ -443,7 +472,8 @@ describe("Lucia visibility, activation, and reduced motion", () => {
   it("preserves accepted fruit and bark cooldown while hidden, then restores the stage", () => {
     const bark = step(idle(), { type: "bark" }, 10);
     const feeding = step(step(bark, { type: "mode", mode: "feeding" }, 11), { type: "feed" }, 12);
-    const hidden = step(feeding, { ...ENVIRONMENT, visible: false }, 13);
+    const completed = wake(feeding);
+    const hidden = step(completed, { ...ENVIRONMENT, visible: false }, 200);
     expect(hidden).toMatchObject({ mode: "feeding", fedCount: 1, nextBarkAt: 3_010 });
     const resumed = step(hidden, ENVIRONMENT, 1_000_000);
     expect(resumed).toMatchObject({ behavior: "feeding-idle", fedCount: 1, nextWakeAt: null });

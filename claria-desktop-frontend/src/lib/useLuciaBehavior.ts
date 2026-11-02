@@ -59,7 +59,7 @@ export function useLuciaBehavior(
         {
           type: "environment",
           active: true,
-          visible: !document.hidden,
+          visible: !document.hidden && document.hasFocus(),
           reducedMotion: motionPreference.matches,
         },
         now,
@@ -90,7 +90,7 @@ export function useLuciaBehavior(
       send({
         type: "environment",
         active: true,
-        visible: !document.hidden,
+        visible: !document.hidden && document.hasFocus(),
         reducedMotion: motionPreference.matches,
       });
     const onInput = (event: Event) => {
@@ -98,10 +98,14 @@ export function useLuciaBehavior(
     };
     document.addEventListener("input", onInput, true);
     document.addEventListener("visibilitychange", updateEnvironment);
+    window.addEventListener("focus", updateEnvironment);
+    window.addEventListener("blur", updateEnvironment);
     motionPreference.addEventListener("change", updateEnvironment);
     return () => {
       document.removeEventListener("input", onInput, true);
       document.removeEventListener("visibilitychange", updateEnvironment);
+      window.removeEventListener("focus", updateEnvironment);
+      window.removeEventListener("blur", updateEnvironment);
       motionPreference.removeEventListener("change", updateEnvironment);
     };
   }, [motionPreference, send]);

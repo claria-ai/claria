@@ -61,6 +61,7 @@ export type LuciaBehaviorEvent =
 export type LuciaBehaviorState = Readonly<{
   behavior: LuciaBehavior;
   mode: LuciaMode;
+  /** Completed fruits only; interruption cancels an uncommitted feed. */
   fedCount: LuciaFedCount;
   startedAt: number;
   endsAt: number | null;
@@ -311,10 +312,8 @@ export function reduceLuciaBehavior(
       if (state.mode === "feeding" || state.behavior === "bark" || now < state.nextBarkAt) return state;
       return begin({ ...state, nextBarkAt: now + LUCIA_BARK_COOLDOWN_MS }, "bark", now, config);
     }
-    if (state.mode !== "feeding" || state.behavior !== "feeding-idle") return state;
-    return state.fedCount === 5
-      ? begin(state, "full", now, config)
-      : begin({ ...state, fedCount: (state.fedCount + 1) as LuciaFedCount }, "feeding", now, config);
+    if (state.mode !== "feeding" || state.behavior !== "feeding-idle" || state.inferencePending) return state;
+    return state.fedCount === 5 ? state : begin(state, "feeding", now, config);
   }
 
   if (state.nextWakeAt === null || now < state.nextWakeAt) return state;
@@ -333,11 +332,14 @@ export function reduceLuciaBehavior(
     case "ear-perk":
     case "bark":
     case "reading-exit":
-    case "feeding":
     case "full":
     case "twirl":
     case "skateboard":
       return settle(state, now, config);
+    case "feeding": {
+      const next = { ...state, fedCount: Math.min(5, state.fedCount + 1) as LuciaFedCount };
+      return next.fedCount === 5 ? begin(next, "full", now, config) : settle(next, now, config);
+    }
     case "idle":
       return begin(state, "stretch", now, config);
     case "stretch":

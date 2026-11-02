@@ -4,6 +4,9 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Distraction mode adds synthetic Lucia artwork, seated gaze, and five-stage dekopon feeding
+- Lucia's poses share a measured ground line, including her lying-down rest
+- A local fixture demo opens the workspace without AWS setup or model connections
 - Browser checks cover repeated sock drops, keyboard controls, navigation cleanup, and uninterrupted writing
 - Deterministic tests cover Lucia's timed reactions, seated gaze, pending requests, and five-dekopon feeding limit
 - Lucia's activity tracking follows real writer and chat requests through completion, cancellation, and failure
