@@ -114,10 +114,8 @@ export function selectLuciaPose(state: LuciaBehaviorState, elapsedMs: number, ga
       : state.behavior === "feeding" ? feedingClip : state.behavior;
   const metadata = luciaClip(name);
   const source = manifest.clips[name];
-  // The supplied idle cells narrow from 170 to 158 opaque pixels. Hold the original
-  // first pose rather than loop that silhouette jump or rescale individual frames.
-  const animated = !state.reducedMotion && state.behavior !== "idle"
-    && state.behavior !== "inactive" && state.behavior !== "gaze";
+  // Gaze frames come from the pointer, not the clock.
+  const animated = !state.reducedMotion && state.behavior !== "inactive" && state.behavior !== "gaze";
   const playback = { playback: source.loop ? "loop" : "once", reducedMotion: !animated } as const;
   const frame = state.behavior === "gaze" && gaze && !state.reducedMotion
     ? gaze

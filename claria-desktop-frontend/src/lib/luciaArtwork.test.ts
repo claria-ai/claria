@@ -122,13 +122,15 @@ describe("Lucia imported synthetic artwork", () => {
 });
 
 describe("Lucia policy-to-art mapping", () => {
-  it("holds original idle cell zero at a fixed anchor instead of looping source width changes", () => {
-    const original = selectLuciaPose(state({}), 0);
-    expect(original).toMatchObject({ image: manifest.core_image, frame: { row: 0, column: 0 }, anchor: [96, 201], animated: false });
-    for (const elapsed of [279, 280, 390, 500, 640, 780, 1100, 30_000]) {
-      expect(selectLuciaPose(state({}), elapsed)).toEqual(original);
+  it("loops idle in place on one anchor now that its cells keep a steady silhouette", () => {
+    const columns = [[0, 0], [279, 0], [280, 1], [390, 2], [500, 3], [640, 4], [780, 5], [1099, 5], [1100, 0]];
+    for (const [elapsed, column] of columns) {
+      expect(selectLuciaPose(state({}), elapsed)).toMatchObject({
+        image: manifest.core_image, frame: { row: 0, column }, anchor: [96, 201], animated: true,
+      });
       expect(luciaPosition(state({}), elapsed, 1280)).toBe(90);
     }
+    expect(selectLuciaPose(state({ reducedMotion: true }), 500)).toMatchObject({ frame: { column: 0 }, animated: false });
   });
 
   it("maps every current feeding count to its own non-looping six-frame strip", () => {
@@ -152,7 +154,7 @@ describe("Lucia policy-to-art mapping", () => {
     expect(selectLuciaPose(state({ behavior: "full", fedCount: 5 }), 0).image).toContain("full-strip");
   });
 
-  it("keeps later feeding silhouettes at least as wide as their starting stage with fixed contact", () => {
+  it("never shrinks a later feed below its starting stage, with fixed contact", () => {
     const stages = rgbaPixels(manifest.stages.image);
     const width = (image: ReturnType<typeof rgbaPixels>, column: number) => {
       const occupied: number[] = [];
@@ -171,7 +173,8 @@ describe("Lucia policy-to-art mapping", () => {
       const image = rgbaPixels(source.image);
       for (let frame = 0; frame < 6; frame++) {
         expect(opaqueBottom(image, 0, frame)).toBe(source.ground_y);
-        expect(width(image, frame)).toBeGreaterThanOrEqual(width(stages, count));
+        // Paws and fruit move mid-feed; 2px matches the regeneration brief's tolerance.
+        expect(width(image, frame)).toBeGreaterThanOrEqual(width(stages, count) - 2);
       }
       expect(width(image, 5)).toBeLessThanOrEqual(width(stages, count + 1));
     }
@@ -181,7 +184,7 @@ describe("Lucia policy-to-art mapping", () => {
     const gazeState = state({ behavior: "gaze", mode: "gaze" });
     for (const angle of manifest.gaze_degrees) {
       const frame = selectPetsV2LookFrame(angle);
-      expect(selectLuciaPose(gazeState, 50_000, frame)).toMatchObject({ frame, anchor: [96, 202], animated: false });
+      expect(selectLuciaPose(gazeState, 50_000, frame)).toMatchObject({ frame, anchor: manifest.gaze_anchor, animated: false });
       expect(luciaPosition(gazeState, 50_000, 1000)).toBe(90);
     }
   });
@@ -254,10 +257,8 @@ function opaqueBox(image: ReturnType<typeof rgbaPixels>, row: number, column: nu
 }
 
 describe("Lucia sprite scale acceptance (the regeneration brief)", () => {
-  // KNOWN DEFECT in the supplied art: stages, feeding-size-N, gaze and ears-perk are drawn at
-  // ~90–95% of idle's scale, so Lucia resizes at every strip switch. `it.fails` keeps CI green
-  // while documenting it; when regenerated art lands this starts failing — delete `.fails`.
-  it.fails("draws every seated, front-facing pose at idle cell 0's scale, on one ground line", () => {
+  // Guards the fixed-camera pack: a strip at another scale makes Lucia resize at every switch.
+  it("draws every seated, front-facing pose at idle cell 0's scale, on one ground line", () => {
     const reference = opaqueBox(rgbaPixels(manifest.core_image), 0, 0);
     const problems: string[] = [];
     const seated: Array<[string, number, number, number, number]> = [

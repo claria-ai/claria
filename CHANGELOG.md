@@ -4,6 +4,8 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Lucia stays the same size across every animation, including feeding and seated gaze
+- Lucia's idle animation plays again, without the sideways stretch
 - Lucia's controls sit beside her in the rail, leaving the client header clean
 - Clicking Lucia feeds her in feeding mode and pets her otherwise
 - Lucia's modes are one-click buttons instead of a menu
@@ -16,7 +18,6 @@ All notable changes to Claria are documented here.
 - Clicking Lucia again right after a bark works
 - Lucia lifts and eats each dekopon with the matching body-size animation
 
-- Lucia holds a steady companion pose between actions
 - Lucia switches animation strips without blank frames
 - The local Lucia demo offers explicit animation previews
 - Distraction mode adds synthetic Lucia artwork, seated gaze, and five-stage dekopon feeding

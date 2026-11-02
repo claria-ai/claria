@@ -87,14 +87,15 @@ test("natural Companion quiet and play deadlines reach their mapped strips with 
   await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", /skateboard-left/);
 });
 
-test("decoded canvas stays nonblank across every sampled sock-switch frame and keeps idle registration fixed", async ({ page }) => {
+test("decoded canvas stays nonblank across every sampled sock-switch frame and idle loops on a fixed registration", async ({ page }) => {
   await page.goto(`${BASE_URL}/lucia-demo.html`);
   await expect(page.getByTestId("lucia-scene")).toHaveAttribute("data-behavior", "idle");
   const initial = await page.getByTestId("lucia-sprite").boundingBox();
   const idlePixels = await page.locator('[data-testid="lucia-sprite"] canvas').evaluate((canvas) => (canvas as HTMLCanvasElement).toDataURL());
   await page.waitForTimeout(1200);
   expect(await page.getByTestId("lucia-sprite").boundingBox()).toEqual(initial);
-  expect(await page.locator('[data-testid="lucia-sprite"] canvas').evaluate((canvas) => (canvas as HTMLCanvasElement).toDataURL())).toBe(idlePixels);
+  // Idle animates in place now that its cells keep one silhouette; only the pixels change.
+  expect(await page.locator('[data-testid="lucia-sprite"] canvas').evaluate((canvas) => (canvas as HTMLCanvasElement).toDataURL())).not.toBe(idlePixels);
   await page.evaluate(() => {
     type Sample = { behavior: string | undefined; frame: string | undefined; opaque: number; nativeWidth: number; nativeHeight: number; width: number; height: number; sock: boolean };
     const state = window as typeof window & { luciaSwitchSamples: Sample[]; stopLuciaSampling: boolean };
@@ -185,7 +186,8 @@ test("every-size feeding stays decoded, grounded and count-correct through all f
     const before = samples.find((sample) => sample.behavior === "feeding-idle" && sample.count === count)!;
     const feeding = samples.filter((sample) => sample.behavior === "feeding" && sample.count === count);
     expect([...new Set(feeding.map((sample) => sample.frame))]).toEqual(["0:0", "0:1", "0:2", "0:3", "0:4", "0:5"]);
-    expect(Math.min(...feeding.map((sample) => sample.width))).toBeGreaterThanOrEqual(before.width);
+    // Paws and fruit move mid-feed: within 2 source pixels (1.3 CSS px) of the starting stage.
+    expect(Math.min(...feeding.map((sample) => sample.width))).toBeGreaterThanOrEqual(before.width - 2 * 0.65);
     const after = samples.find((sample) => sample.behavior === "feeding-idle" && sample.count === count + 1)!;
     expect(feeding.at(-1)!.width).toBeLessThanOrEqual(after.width);
   }

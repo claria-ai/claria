@@ -137,9 +137,8 @@ test("all sixteen gaze directions keep the seated body at one ground anchor", as
     expect(box).toEqual(directional);
     await screenshot(page, `gaze-${direction}`);
   }
-  // Neutral is idle cell 0, whose measured ground sits one source pixel above the gaze rows'.
-  expect(bounds.x).toBe(directional!.x);
-  expect(bounds.y - directional!.y).toBeCloseTo((202 - 201) * 0.65, 1);
+  // Neutral (idle cell 0) and every gaze cell share one measured ground line.
+  expect(directional).toEqual(bounds);
 });
 
 test("real hidden browser tab drops transient work and resumes without a missed-action backlog", async ({ page, context }, testInfo) => {

@@ -76,17 +76,22 @@ describe("LuciaCompanion", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("holds the baseline idle cell without scheduling redraws or changing registration", async () => {
+  it("loops idle in place, drawing only when the cell changes and never moving its registration", async () => {
     await mount();
     advance(config.durationsMs.tailwag);
     const context = sprite().querySelector("canvas")!.getContext("2d")!;
     const calls = vi.mocked(context.drawImage).mock.calls.length;
     const registration = [sprite().style.left, sprite().style.bottom];
-    advance(5000);
+    const seen = new Set<string>();
+    for (let step = 0; step < 50; step++) {
+      advance(110);
+      seen.add(sprite().dataset.frame!);
+      expect([sprite().style.left, sprite().style.bottom]).toEqual(registration);
+    }
     expect(scene().dataset.behavior).toBe("idle");
-    expect(sprite().dataset.frame).toBe("0:0");
-    expect(vi.mocked(context.drawImage).mock.calls.length).toBe(calls);
-    expect([sprite().style.left, sprite().style.bottom]).toEqual(registration);
+    expect([...seen].sort()).toEqual(["0:0", "0:1", "0:2", "0:3", "0:4", "0:5"]);
+    // 5.5s is five 1100ms cycles: six cell changes each, not one draw per display frame.
+    expect(vi.mocked(context.drawImage).mock.calls.length - calls).toBeLessThanOrEqual(31);
     expect(screen.queryByLabelText("Preview Lucia action")).toBeNull();
   });
 
