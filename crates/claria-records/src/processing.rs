@@ -8,6 +8,13 @@ pub struct ObservedError {
     occupied: bool,
 }
 
+impl ObservedError {
+    /// Ordinary user files cannot be replaced by processing metadata.
+    pub fn conflicts_with_user_file(&self) -> bool {
+        self.occupied && self.marker.is_none()
+    }
+}
+
 pub async fn observe_error(
     s3: &aws_sdk_s3::Client,
     bucket: &str,

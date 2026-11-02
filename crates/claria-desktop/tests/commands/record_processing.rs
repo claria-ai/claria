@@ -154,3 +154,110 @@ async fn account_scope_is_checked_before_processing() {
     assert!(check_processing_scope(&ctx, Some("another-account:us-east-1:test")).is_err());
     assert!(check_processing_scope(&ctx, Some("123456789012:us-east-1:test")).is_ok());
 }
+
+#[tokio::test]
+async fn ordinary_error_collision_prevents_retry_and_upload_before_mutation() {
+    let (mock, ctx) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client_record_file(id, "synthetic.pdf");
+    for (key, body) in [
+        (key.clone(), b"%PDF-1.7 original".to_vec()),
+        (format!("{key}.text"), b"prior extraction".to_vec()),
+        (format!("{key}.error"), b"ordinary user notes".to_vec()),
+    ] {
+        claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, body, None)
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        process_record(
+            &ctx,
+            id,
+            "synthetic.pdf",
+            "pdf",
+            &key,
+            Some(b"%PDF-1.7 original"),
+            None
+        )
+        .await
+        .unwrap(),
+        ProcessingStatus::Failed {
+            code: ProcessingFailureCode::ErrorFileConflict,
+            ..
+        }
+    ));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("synthetic.pdf");
+    tokio::fs::write(&path, b"%PDF-1.7 replacement")
+        .await
+        .unwrap();
+    assert!(
+        upload_record_file_inner(&ctx, &id.to_string(), path.to_str().unwrap(), None, false)
+            .await
+            .is_err()
+    );
+    assert!(
+        mock.state
+            .read()
+            .await
+            .bedrock_converse_model_ids
+            .is_empty()
+    );
+    for (key, expected) in [
+        (key.clone(), b"%PDF-1.7 original".as_slice()),
+        (format!("{key}.text"), b"prior extraction".as_slice()),
+        (format!("{key}.error"), b"ordinary user notes".as_slice()),
+    ] {
+        assert_eq!(
+            claria_storage::objects::get_object(&ctx.s3, &ctx.bucket, &key)
+                .await
+                .unwrap()
+                .body,
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn printable_upload_ignores_user_error_collision_and_old_extraction() {
+    let (_mock, ctx) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client_record_file(id, "synthetic.pdf");
+    for (key, body) in [
+        (format!("{key}.text"), b"old extraction".to_vec()),
+        (format!("{key}.error"), b"ordinary user note".to_vec()),
+    ] {
+        claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, body, None)
+            .await
+            .unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("synthetic.pdf");
+    tokio::fs::write(&path, b"current printable original")
+        .await
+        .unwrap();
+    let file = upload_record_file_inner(&ctx, &id.to_string(), path.to_str().unwrap(), None, false)
+        .await
+        .unwrap();
+    assert_eq!(file.processing_status, Some(ProcessingStatus::Ready));
+    assert_eq!(
+        claria_records::fetch_record_text(
+            &ctx.s3,
+            &ctx.bucket,
+            id,
+            "synthetic.pdf",
+            &claria_records::RecordCache::new()
+        )
+        .await
+        .unwrap()
+        .as_deref(),
+        Some("current printable original")
+    );
+    assert_eq!(
+        claria_storage::objects::get_object(&ctx.s3, &ctx.bucket, &format!("{key}.error"))
+            .await
+            .unwrap()
+            .body,
+        b"ordinary user note"
+    );
+}

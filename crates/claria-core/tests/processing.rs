@@ -31,7 +31,8 @@ fn only_validated_errors_hide_and_supersede_text() {
     ];
     let errors = HashSet::from(["p/a.pdf.error".to_string()]);
     let usable = HashSet::from(["p/a.pdf.text".to_string()]);
-    let visible = visible_record_files_with_errors("p/", &keys, &errors, &usable);
+    let visible =
+        visible_record_files_with_errors("p/", &keys, &errors, &usable, &Default::default());
     assert_eq!(
         visible
             .iter()

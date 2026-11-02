@@ -297,6 +297,31 @@ async fn upload_record_file_inner(
 
     // Upload the original file, streaming its body from disk.
     let key = claria_core::s3_keys::client_record_file(id, filename);
+    // Only binary processing needs the outcome path. Printable originals and
+    // unsupported raw uploads must remain usable beside ordinary user files.
+    let supports_processing =
+        is_document || claria_transcribe::media_format_for_extension(&extension).is_some();
+    if supports_processing
+        && claria_records::processing::observe_error(&ctx.s3, &ctx.bucket, &key)
+            .await?
+            .conflicts_with_user_file()
+    {
+        let printable = if let Some(bytes) = document_bytes.as_deref() {
+            usable_text(bytes).is_some()
+        } else if metadata.len() <= claria_core::record_text::MAX_RECORD_TEXT_BYTES {
+            let bytes = tokio::fs::read(path)
+                .await
+                .map_err(|e| CommandError::Msg(format!("Failed to read file: {e}")))?;
+            usable_text(&bytes).is_some()
+        } else {
+            false
+        };
+        if !printable {
+            return Err(CommandError::Msg(
+                ProcessingFailureCode::ErrorFileConflict.reason().into(),
+            ));
+        }
+    }
     claria_storage::objects::put_object_from_path(&ctx.s3, &ctx.bucket, &key, path, content_type)
         .await?;
 
@@ -862,8 +887,14 @@ async fn process_record(
     let printable = if let Some(bytes) = bytes {
         usable_text(bytes).is_some()
     } else {
-        match claria_storage::objects::get_object_bounded(&ctx.s3, &ctx.bucket, key,
-            claria_core::record_text::MAX_RECORD_TEXT_BYTES).await {
+        match claria_storage::objects::get_object_bounded(
+            &ctx.s3,
+            &ctx.bucket,
+            key,
+            claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+        )
+        .await
+        {
             Ok(output) => usable_text(&output.body).is_some(),
             Err(claria_storage::error::StorageError::ObjectTooLarge { .. }) => false,
             Err(error) => return Err(error.into()),
@@ -878,6 +909,13 @@ async fn process_record(
         return record_processing_status(ctx, id, filename).await;
     }
     let observed = claria_records::processing::observe_error(&ctx.s3, &ctx.bucket, key).await?;
+    if observed.conflicts_with_user_file() {
+        let code = ProcessingFailureCode::ErrorFileConflict;
+        return Ok(ProcessingStatus::Failed {
+            code,
+            reason: code.reason().into(),
+        });
+    }
     let result = generate_upload_sidecar(ctx, id, filename, extension, key, bytes, overrides).await;
     match result {
         Ok(()) => {

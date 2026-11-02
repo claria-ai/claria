@@ -710,3 +710,26 @@ async fn retry_cleanup_preserves_newer_error_revision_and_user_files() {
         b"user owned"
     );
 }
+
+#[tokio::test]
+async fn printable_replacement_supersedes_prior_extraction_without_deleting_it() {
+    let (_mock, s3) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client_record_file(id, "report.pdf");
+    put(&s3, &key, b"current printable original".to_vec()).await;
+    put(&s3, &format!("{key}.text"), b"old extraction".to_vec()).await;
+    assert_eq!(
+        fetch_record_text(&s3, BUCKET, id, "report.pdf", &RecordCache::new())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("current printable original")
+    );
+    assert_eq!(
+        claria_storage::objects::get_object(&s3, BUCKET, &format!("{key}.text"))
+            .await
+            .unwrap()
+            .body,
+        b"old extraction"
+    );
+}

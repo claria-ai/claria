@@ -50,3 +50,19 @@ test("historical unknown, batch failures, partial retry and completion",async ({
   await page.getByRole("button",{name:"Done",exact:true}).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
+
+test("later failures preserve modal focus and dismissal restores it", async ({ page }) => {
+  await page.goto(url);
+  await page.getByRole("button", { name: "Client Files" }).click();
+  await page.getByText("Jane Doe", { exact: true }).click();
+  await page.locator('[aria-label="Record files"]').focus();
+  await page.evaluate(() => (window as any).__dropExtractionFiles(["/synthetic/first.pdf"]));
+  await expect(page.getByText("1 file failed to process. Review the reasons below.")).toBeVisible();
+  const done = page.getByRole("button", { name: "Done", exact: true });
+  await done.focus();
+  await page.evaluate(() => (window as any).__dropExtractionFiles(["/synthetic/second.pdf"]));
+  await expect(page.getByText("2 files failed to process. Review the reasons below.")).toBeVisible();
+  await expect(done).toBeFocused();
+  await done.click();
+  await expect(page.locator('[aria-label="Record files"]')).toBeFocused();
+});

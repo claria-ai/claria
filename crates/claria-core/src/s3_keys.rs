@@ -318,6 +318,7 @@ pub fn visible_record_files_with_errors(
     keys: &[&str],
     errors: &std::collections::HashSet<String>,
     usable_sidecars: &std::collections::HashSet<String>,
+    readable_originals: &std::collections::HashSet<String>,
 ) -> Vec<VisibleRecordFile> {
     visible_record_files(prefix, keys)
         .into_iter()
@@ -326,7 +327,8 @@ pub fn visible_record_files_with_errors(
             if errors.contains(base) {
                 return None;
             }
-            if errors.contains(&format!("{base}.error"))
+            if readable_originals.contains(base)
+                || errors.contains(&format!("{base}.error"))
                 || (file.source_index != file.base_index
                     && !usable_sidecars.contains(keys[file.source_index]))
             {

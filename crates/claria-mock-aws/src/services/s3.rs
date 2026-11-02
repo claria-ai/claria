@@ -721,6 +721,39 @@ async fn put_object(
     state: SharedState,
     body: Bytes,
 ) -> Response {
+    // The SDK wraps streamed file uploads in AWS signed chunks. S3 stores the
+    // decoded payload, not the wire signatures/checksum trailers.
+    let aws_chunked = headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| value.split(',').any(|part| part.trim() == "aws-chunked"))
+        || headers
+            .get("x-amz-content-sha256")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|value| value.starts_with("STREAMING-"));
+    let body = if aws_chunked {
+        let Some(decoded) = decode_aws_chunks(&body) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                xml::error_xml("InvalidRequest", "Malformed AWS chunks"),
+            )
+                .into_response();
+        };
+        if let Some(expected) = headers
+            .get("x-amz-decoded-content-length")
+            .and_then(|v| v.to_str().ok())
+            && expected.parse::<usize>().ok() != Some(decoded.len())
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                xml::error_xml("InvalidRequest", "Decoded length mismatch"),
+            )
+                .into_response();
+        }
+        decoded
+    } else {
+        body
+    };
     let content_type = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
@@ -965,4 +998,53 @@ fn md5_hash(data: &[u8]) -> u128 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+/// Decode framing only. The mock does not authenticate AWS request signatures.
+fn decode_aws_chunks(mut input: &[u8]) -> Option<Bytes> {
+    let mut decoded = Vec::new();
+    loop {
+        let end = input.windows(2).position(|pair| pair == b"\r\n")?;
+        let line = std::str::from_utf8(&input[..end]).ok()?;
+        let length = usize::from_str_radix(line.split(';').next()?, 16).ok()?;
+        input = &input[end + 2..];
+        if length == 0 {
+            // A zero chunk is followed by optional checksum/signature trailers.
+            loop {
+                let end = input.windows(2).position(|pair| pair == b"\r\n")?;
+                if end == 0 {
+                    return (input.len() == 2).then(|| Bytes::from(decoded));
+                }
+                if !input[..end].contains(&b':') {
+                    return None;
+                }
+                input = &input[end + 2..];
+            }
+        }
+        let chunk = input.get(..length)?;
+        decoded.extend_from_slice(chunk);
+        input = input.get(length..)?;
+        if !input.starts_with(b"\r\n") {
+            return None;
+        }
+        input = &input[2..];
+    }
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::decode_aws_chunks;
+
+    #[test]
+    fn signed_chunks_preserve_payload_and_ignore_trailers() {
+        let body = b"3;chunk-signature=abc\r\nabc\r\n2;chunk-signature=def\r\nde\r\n0;chunk-signature=ghi\r\nx-amz-checksum-crc32:test\r\nx-amz-trailer-signature:test\r\n\r\n";
+        assert_eq!(decode_aws_chunks(body).unwrap().as_ref(), b"abcde");
+    }
+
+    #[test]
+    fn malformed_chunks_are_rejected() {
+        assert!(decode_aws_chunks(b"a\r\nshort\r\n0\r\n\r\n").is_none());
+        assert!(decode_aws_chunks(b"3\r\nabc0\r\n\r\n").is_none());
+        assert!(decode_aws_chunks(b"0\r\ninvalid trailer\r\n\r\n").is_none());
+    }
 }

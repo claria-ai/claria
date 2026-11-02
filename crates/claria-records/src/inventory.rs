@@ -74,12 +74,30 @@ pub async fn record_inventory(
     .await
     .map_err(|source| storage("validating record text", source))?;
     let usable_sidecars = usable_sidecars.into_keys().collect();
+    // A readable original is authoritative even if an old extraction remains.
+    let original_keys: Vec<String> = sidecar_keys
+        .iter()
+        .filter_map(|key| key.strip_suffix(".text"))
+        .filter(|key| keys.contains(key))
+        .map(str::to_owned)
+        .collect();
+    let readable_originals = claria_storage::objects::recognized_objects(
+        s3,
+        bucket,
+        &original_keys,
+        claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+        |bytes| claria_core::processing::usable_text(bytes).map(|_| ()),
+    )
+    .await
+    .map_err(|source| storage("validating original text", source))?;
+    let readable_originals = readable_originals.into_keys().collect();
 
     Ok(claria_core::s3_keys::visible_record_files_with_errors(
         &prefix,
         &keys,
         &error_keys,
         &usable_sidecars,
+        &readable_originals,
     )
     .into_iter()
     .map(|file| {
@@ -98,8 +116,8 @@ pub async fn record_inventory(
 /// Filenames of record files whose readable text contains `query`,
 /// case-insensitively. An empty or whitespace query matches nothing.
 ///
-/// Goes through the same read-through cache as chat context, so repeating a
-/// search over unchanged records costs one listing and zero GETs.
+/// Uses the same read-through content cache as chat context. Processing
+/// sidecars are validated on each inventory load to avoid stale outcomes.
 pub async fn search_record_contents(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
@@ -125,8 +143,8 @@ pub async fn search_record_contents(
 }
 
 /// Fetch readable text for every record file under a client, in listing
-/// order. Generated `.text` sidecars take precedence; otherwise the original
-/// object is used when its bytes are printable UTF-8, regardless of extension.
+/// order. Printable originals are authoritative; binary originals use a usable
+/// `.text` sidecar only when no recognized processing error supersedes it.
 /// Chat-history entries are skipped. `None` means the file is binary, too
 /// large, missing, or has no readable extraction.
 pub async fn fetch_record_texts(
@@ -158,8 +176,8 @@ pub async fn fetch_record_texts(
 
 /// Fetch one record file's readable representation.
 ///
-/// A generated extraction/transcript sidecar wins when present. Files without
-/// sidecars are read directly and accepted based on their bytes, which keeps
+/// Readable originals win over old extractions. Binary files use validated
+/// sidecars unless an error supersedes them. Content-based decoding keeps
 /// JSON, Markdown, CSV, and extensionless text in their original formats.
 /// `filename` must name a user-visible file; a hidden sidecar or chat-history
 /// entry resolves to `None`.

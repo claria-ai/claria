@@ -42,3 +42,5 @@ whose original was not confirmed. Only the former offers retry. Unknown historic
 outcomes offer extraction. Retry completion updates the file list and retains a
 keyboard focus target. Screenshots use synthetic fixtures and mocked Tauri calls;
 they do not qualify native WebView behavior or live AWS inference.
+
+A readable original takes precedence over an older extraction, without deleting either object. An ordinary user `.error` collision blocks processing before inference and blocks upload before overwriting an original. If storage becomes unavailable while saving a failure marker, the UI explicitly reports that the outcome was not saved; durable suppression of a prior extraction cannot be guaranteed without that marker. No timestamp or hidden persistence is used to guess freshness.

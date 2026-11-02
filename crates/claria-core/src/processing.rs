@@ -15,6 +15,7 @@ pub enum ProcessingFailureCode {
     Truncated,
     InvalidText,
     StorageUnavailable,
+    ErrorFileConflict,
 }
 impl ProcessingFailureCode {
     pub fn reason(self) -> &'static str {
@@ -37,6 +38,9 @@ impl ProcessingFailureCode {
             }
             Self::InvalidText => {
                 "Processing returned no usable text. Choose another extraction model, then retry."
+            }
+            Self::ErrorFileConflict => {
+                "Processing did not start because a user .error file occupies the outcome path. Rename that file before retrying."
             }
             Self::StorageUnavailable => {
                 "Processed text could not be saved. Check storage access and your connection, then retry."
