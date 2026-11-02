@@ -2388,7 +2388,7 @@ export type PreferencesPatch = {
  * `None` leaves it unchanged.
  */
 preferred_model_id?: string | null; extraction_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null; draft_pipeline?: DraftPipelinePreferences | null }
-export type ProcessingFailureCode = "model_not_configured" | "provider_unavailable" | "access_denied" | "model_unavailable" | "throttled" | "truncated" | "invalid_text" | "storage_unavailable" | "error_file_conflict"
+export type ProcessingFailureCode = "model_not_configured" | "provider_unavailable" | "access_denied" | "model_unavailable" | "throttled" | "truncated" | "invalid_text" | "storage_unavailable"
 export type ProcessingStatus = { status: "ready" } | { status: "not_supported" } | { status: "unknown" } | { status: "failed"; code: ProcessingFailureCode; reason: string }
 /**
  * What `provision_apply` did.
