@@ -53,9 +53,7 @@ async fn upload_and_reextract_use_explicit_model_selection_and_preserve_original
     let key = claria_core::s3_keys::client_record_file(id, &file.filename);
     ctx.cfg.extraction_model_id = Some("retry-model".into());
     assert_eq!(
-        process_record(&ctx, id, &file.filename, "pdf", &key, Some(original), None)
-            .await
-            .unwrap(),
+        process_record(&ctx, id, &file.filename, "pdf", &key, Some(original), None).await,
         ProcessingStatus::Ready
     );
     assert_eq!(
@@ -99,9 +97,7 @@ async fn provider_failure_returns_saved_original_and_actionable_reason_then_retr
             .contains("private upstream")
     );
     assert_eq!(
-        process_record(&ctx, id, &file.filename, "pdf", &key, Some(original), None)
-            .await
-            .unwrap(),
+        process_record(&ctx, id, &file.filename, "pdf", &key, Some(original), None).await,
         ProcessingStatus::Ready
     );
     assert!(
@@ -124,6 +120,7 @@ async fn provider_failure_returns_saved_original_and_actionable_reason_then_retr
 async fn unconfigured_model_retains_original_and_does_not_invoke_provider() {
     let (mock, mut ctx) = setup().await;
     ctx.cfg.extraction_model_id = None;
+    ctx.cfg.preferred_model_id = None;
     let id = uuid::Uuid::new_v4();
     let key = claria_core::s3_keys::client_record_file(id, "synthetic.pdf");
     let original = b"%PDF-1.7\nsynthetic";
@@ -131,9 +128,7 @@ async fn unconfigured_model_retains_original_and_does_not_invoke_provider() {
         .await
         .unwrap();
     assert!(matches!(
-        process_record(&ctx, id, "synthetic.pdf", "pdf", &key, Some(original), None)
-            .await
-            .unwrap(),
+        process_record(&ctx, id, "synthetic.pdf", "pdf", &key, Some(original), None).await,
         ProcessingStatus::Failed {
             code: ProcessingFailureCode::ModelNotConfigured,
             ..
@@ -146,6 +141,79 @@ async fn unconfigured_model_retains_original_and_does_not_invoke_provider() {
             .bedrock_converse_model_ids
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn unset_extraction_model_falls_back_to_the_preferred_model() {
+    let (mock, mut ctx) = setup().await;
+    ctx.cfg.extraction_model_id = None;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client_record_file(id, "synthetic.pdf");
+    let original = b"%PDF-1.7\nsynthetic";
+    claria_storage::objects::put_object(&ctx.s3, &ctx.bucket, &key, original.to_vec(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        process_record(&ctx, id, "synthetic.pdf", "pdf", &key, Some(original), None).await,
+        ProcessingStatus::Ready
+    );
+    assert_eq!(
+        mock.state.read().await.bedrock_converse_model_ids,
+        ["chat-model"]
+    );
+}
+
+#[tokio::test]
+async fn storage_failure_after_upload_is_a_retryable_status_not_an_error() {
+    let (_mock, mut ctx) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client_record_file(id, "synthetic.pdf");
+    // A bucket that does not exist fails every storage step after the upload.
+    ctx.bucket = "missing-bucket".into();
+    assert!(matches!(
+        process_record(
+            &ctx,
+            id,
+            "synthetic.pdf",
+            "pdf",
+            &key,
+            Some(b"%PDF-1.7"),
+            None
+        )
+        .await,
+        ProcessingStatus::Failed {
+            code: ProcessingFailureCode::StorageUnavailable,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn listed_status_needs_no_object_reads() {
+    let errors = std::collections::HashMap::from([(
+        "p/failed.pdf.error".to_string(),
+        claria_core::processing::ProcessingError::new(ProcessingFailureCode::Throttled),
+    )]);
+    let sizes =
+        std::collections::HashMap::from([("p/done.pdf.text", 12_i64), ("p/blank.pdf.text", 0_i64)]);
+    let status = |key: &str, name: &str| listed_processing_status(key, name, &errors, &sizes);
+    assert_eq!(status("p/done.pdf", "done.pdf"), ProcessingStatus::Ready);
+    assert_eq!(
+        status("p/blank.pdf", "blank.pdf"),
+        ProcessingStatus::Unknown
+    );
+    assert_eq!(status("p/old.docx", "old.docx"), ProcessingStatus::Unknown);
+    assert_eq!(
+        status("p/notes.md", "notes.md"),
+        ProcessingStatus::NotSupported
+    );
+    assert!(matches!(
+        status("p/failed.pdf", "failed.pdf"),
+        ProcessingStatus::Failed {
+            code: ProcessingFailureCode::Throttled,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]

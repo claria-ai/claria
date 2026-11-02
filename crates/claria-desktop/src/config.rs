@@ -48,6 +48,9 @@ pub struct ClariaConfig {
     /// The clinician's preferred chat model ID. Added in v2.
     #[serde(default)]
     pub preferred_model_id: Option<String>,
+    /// Model used to extract text from uploaded documents. `None` means the
+    /// preferred chat model, see [`ClariaConfig::effective_extraction_model_id`].
+    /// Added in v17.
     #[serde(default)]
     pub extraction_model_id: Option<String>,
     /// Whether the user has completed Cost Explorer onboarding. Added in v3.
@@ -86,6 +89,19 @@ pub struct ClariaConfig {
     /// sitting in the bucket it protects.
     #[serde(default)]
     pub security: SecuritySettings,
+}
+
+impl ClariaConfig {
+    /// The model document extraction runs on: the chosen extraction model,
+    /// else the preferred chat model, which this account already runs.
+    /// `None` only when neither is set.
+    pub fn effective_extraction_model_id(&self) -> Option<&str> {
+        [&self.extraction_model_id, &self.preferred_model_id]
+            .into_iter()
+            .flatten()
+            .map(|id| id.trim())
+            .find(|id| !id.is_empty())
+    }
 }
 
 fn default_auto_lock_timeout_minutes() -> u32 {

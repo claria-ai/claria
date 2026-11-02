@@ -1,7 +1,6 @@
 //! Record file commands — files attached to a client record.
 
 use claria_core::processing::{ProcessingFailureCode, ProcessingStatus, usable_text};
-use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -76,17 +75,17 @@ pub async fn list_record_files(
             None => records_prefix.clone(),
         };
 
-        let objects = claria_storage::objects::list_objects_with_metadata(
-            &ctx.s3,
-            &ctx.bucket,
-            &records_prefix,
-        )
-        .await?;
+        let objects =
+            claria_storage::objects::list_objects_with_metadata(&ctx.s3, &ctx.bucket, &list_prefix)
+                .await?;
 
         // Collect all keys into a set so we can check for base files when filtering sidecars.
         let all_keys: std::collections::HashSet<&str> =
             objects.iter().map(|o| o.key.as_str()).collect();
+        let sizes: std::collections::HashMap<&str, i64> =
+            objects.iter().map(|o| (o.key.as_str(), o.size)).collect();
 
+        // Only `.error` candidates are read; everything else comes from the listing.
         let candidates: Vec<String> = objects
             .iter()
             .filter(|object| object.key.ends_with(".error"))
@@ -102,7 +101,7 @@ pub async fn list_record_files(
         .await?;
         let files: Vec<RecordFile> = objects
             .iter()
-            .filter(|obj| obj.key.starts_with(&list_prefix) && !errors.contains_key(&obj.key))
+            .filter(|obj| !errors.contains_key(&obj.key))
             .filter(|obj| !claria_core::s3_keys::is_hidden_sidecar(&obj.key, &all_keys))
             .filter_map(|obj| {
                 // Strip the records prefix to get just the filename.
@@ -110,30 +109,16 @@ pub async fn list_record_files(
                 if filename.is_empty() {
                     return None;
                 }
+                let processing_status = (!filename.starts_with("chat-history/"))
+                    .then(|| listed_processing_status(&obj.key, filename, &errors, &sizes));
                 Some(RecordFile {
                     filename: filename.to_string(),
                     size: obj.size as i32,
                     uploaded_at: obj.last_modified.clone(),
-                    processing_status: None,
+                    processing_status,
                 })
             })
             .collect();
-
-        let files: Vec<RecordFile> = futures::stream::iter(files.into_iter().map(|mut file| {
-            let ctx = &ctx;
-            async move {
-                if !file.filename.starts_with("chat-history/") {
-                    file.processing_status =
-                        Some(record_processing_status(ctx, id, &file.filename).await?);
-                }
-                Ok::<_, CommandError>(file)
-            }
-        }))
-        .buffered(claria_storage::objects::S3_FETCH_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<_, _>>()?;
         tracing::Span::current().record("count", files.len() as u64);
 
         Ok(files)
@@ -321,7 +306,7 @@ async fn upload_record_file_inner(
         document_bytes.as_deref(),
         overrides,
     )
-    .await?;
+    .await;
     if sidecar_failure_fatal && let ProcessingStatus::Failed { ref reason, .. } = processing_status
     {
         return Err(CommandError::Msg(format!("Original saved. {reason}")));
@@ -348,22 +333,14 @@ async fn generate_upload_sidecar(
     overrides: Option<TranscribeOptionsOverrides>,
 ) -> Result<(), CommandError> {
     let sidecar_key = format!("{key}.text");
-    if document_bytes.is_some_and(|bytes| usable_text(bytes).is_some()) {
-        return Ok(());
-    }
 
     if let Some(format) = claria_bedrock::extract::document_format_for_extension(extension) {
         let bytes = document_bytes.ok_or_else(|| {
             CommandError::Msg("document bytes were not read before extraction".to_string())
         })?;
-        let model_id = ctx
-            .cfg
-            .extraction_model_id
-            .as_deref()
-            .filter(|id| !id.trim().is_empty())
-            .ok_or_else(|| {
-                CommandError::Msg(ProcessingFailureCode::ModelNotConfigured.reason().into())
-            })?;
+        let model_id = ctx.cfg.effective_extraction_model_id().ok_or_else(|| {
+            CommandError::Msg(ProcessingFailureCode::ModelNotConfigured.reason().into())
+        })?;
         let extraction_prompt = load_prompt(&ctx.s3, &ctx.bucket, "pdf-extraction").await?;
         let (text, usage) = claria_bedrock::extract::extract_document_text(
             &ctx.sdk_config,
@@ -718,6 +695,8 @@ pub async fn extract_record_file(
             .unwrap_or("")
             .to_lowercase();
 
+        // Documents go to Bedrock as bytes; audio is transcribed from S3 and
+        // other files are read directly, so neither needs a download here.
         let bytes = if claria_bedrock::extract::document_format_for_extension(&extension).is_some()
         {
             Some(
@@ -726,18 +705,7 @@ pub async fn extract_record_file(
                     .body,
             )
         } else {
-            match claria_storage::objects::get_object_bounded(
-                &ctx.s3,
-                &ctx.bucket,
-                &key,
-                claria_core::record_text::MAX_RECORD_TEXT_BYTES,
-            )
-            .await
-            {
-                Ok(output) => Some(output.body),
-                Err(claria_storage::error::StorageError::ObjectTooLarge { .. }) => None,
-                Err(error) => return Err(error.into()),
-            }
+            None
         };
         let status = process_record(
             &ctx,
@@ -748,7 +716,7 @@ pub async fn extract_record_file(
             bytes.as_deref(),
             None,
         )
-        .await?;
+        .await;
         if let ProcessingStatus::Failed { reason, .. } = status {
             return Err(CommandError::Msg(reason));
         }
@@ -797,59 +765,45 @@ fn validated_extraction(text: &str) -> Result<&str, CommandError> {
         .ok_or_else(|| CommandError::Msg(ProcessingFailureCode::InvalidText.reason().into()))
 }
 
-async fn record_processing_status(
-    ctx: &CommandContext,
-    id: uuid::Uuid,
+/// A record file's processing status, read from the listing alone: only
+/// recognized `.error` markers are ever fetched, never originals or sidecars.
+fn listed_processing_status(
+    key: &str,
     filename: &str,
-) -> Result<ProcessingStatus, CommandError> {
-    let key = claria_core::s3_keys::client_record_file(id, filename);
-    match claria_storage::objects::get_object_bounded(
-        &ctx.s3,
-        &ctx.bucket,
-        &key,
-        claria_core::record_text::MAX_RECORD_TEXT_BYTES,
-    )
-    .await
-    {
-        Ok(output) if usable_text(&output.body).is_some() => return Ok(ProcessingStatus::Ready),
-        Ok(_) | Err(claria_storage::error::StorageError::ObjectTooLarge { .. }) => {}
-        Err(error) => return Err(error.into()),
+    errors: &std::collections::HashMap<String, claria_core::processing::ProcessingError>,
+    sizes: &std::collections::HashMap<&str, i64>,
+) -> ProcessingStatus {
+    if !is_processed_type(&file_extension(std::path::Path::new(filename))) {
+        return ProcessingStatus::NotSupported;
     }
-    let observed = claria_records::processing::observe_error(&ctx.s3, &ctx.bucket, &key).await?;
-    if let Some(error) = observed.marker {
-        return Ok(ProcessingStatus::Failed {
+    if let Some(error) = errors.get(&format!("{key}.error")) {
+        return ProcessingStatus::Failed {
             code: error.code,
-            reason: error.reason,
-        });
+            reason: error.reason.clone(),
+        };
     }
-    let sidecar = claria_storage::objects::get_object_bounded(
-        &ctx.s3,
-        &ctx.bucket,
-        &format!("{key}.text"),
-        claria_core::record_text::MAX_RECORD_TEXT_BYTES,
-    )
-    .await;
-    match sidecar {
-        Ok(output) if usable_text(&output.body).is_some() => return Ok(ProcessingStatus::Ready),
-        Ok(_)
-        | Err(
-            claria_storage::error::StorageError::NotFound { .. }
-            | claria_storage::error::StorageError::ObjectTooLarge { .. },
-        ) => {}
-        Err(error) => return Err(error.into()),
+    let sidecar_bytes = sizes
+        .get(format!("{key}.text").as_str())
+        .and_then(|size| u64::try_from(*size).ok());
+    if sidecar_bytes
+        .is_some_and(|bytes| (1..=claria_core::record_text::MAX_RECORD_TEXT_BYTES).contains(&bytes))
+    {
+        ProcessingStatus::Ready
+    } else {
+        ProcessingStatus::Unknown
     }
-    let extension = file_extension(std::path::Path::new(filename));
-    Ok(
-        if claria_bedrock::extract::document_format_for_extension(&extension).is_some()
-            || claria_transcribe::media_format_for_extension(&extension).is_some()
-        {
-            ProcessingStatus::Unknown
-        } else {
-            ProcessingStatus::NotSupported
-        },
-    )
 }
 
+/// Documents (Bedrock extraction) and media (Transcribe) get a `.text`
+/// sidecar; every other file is read as-is.
+fn is_processed_type(extension: &str) -> bool {
+    claria_bedrock::extract::document_format_for_extension(extension).is_some()
+        || claria_transcribe::media_format_for_extension(extension).is_some()
+}
+
+/// Produce a record file's `.text` sidecar and report the outcome. Never
+/// fails: by the time this runs the original is saved, so every problem
+/// (including storage) is a [`ProcessingStatus::Failed`] the user can retry.
 async fn process_record(
     ctx: &CommandContext,
     id: uuid::Uuid,
@@ -858,67 +812,46 @@ async fn process_record(
     key: &str,
     bytes: Option<&[u8]>,
     overrides: Option<TranscribeOptionsOverrides>,
-) -> Result<ProcessingStatus, CommandError> {
-    let printable = if let Some(bytes) = bytes {
-        usable_text(bytes).is_some()
-    } else {
-        match claria_storage::objects::get_object_bounded(&ctx.s3, &ctx.bucket, key,
-            claria_core::record_text::MAX_RECORD_TEXT_BYTES).await {
-            Ok(output) => usable_text(&output.body).is_some(),
-            Err(claria_storage::error::StorageError::ObjectTooLarge { .. }) => false,
-            Err(error) => return Err(error.into()),
+) -> ProcessingStatus {
+    if !is_processed_type(extension) {
+        return ProcessingStatus::NotSupported;
+    }
+    if bytes.is_some_and(|bytes| usable_text(bytes).is_some()) {
+        return ProcessingStatus::Ready;
+    }
+    let storage_failure = |error: &dyn std::fmt::Display| {
+        tracing::warn!(client_id = %id, error = %error, "record processing storage step failed; original retained");
+        ProcessingStatus::Failed {
+            code: ProcessingFailureCode::StorageUnavailable,
+            reason: ProcessingFailureCode::StorageUnavailable
+                .reason()
+                .to_string(),
         }
     };
-    if printable {
-        return Ok(ProcessingStatus::Ready);
-    }
-    let supported = claria_bedrock::extract::document_format_for_extension(extension).is_some()
-        || claria_transcribe::media_format_for_extension(extension).is_some();
-    if !supported {
-        return record_processing_status(ctx, id, filename).await;
-    }
-    let observed = claria_records::processing::observe_error(&ctx.s3, &ctx.bucket, key).await?;
+    let observed = match claria_records::processing::observe_error(&ctx.s3, &ctx.bucket, key).await
+    {
+        Ok(observed) => observed,
+        Err(error) => return storage_failure(&error),
+    };
     let result = generate_upload_sidecar(ctx, id, filename, extension, key, bytes, overrides).await;
     match result {
         Ok(()) => {
-            claria_records::processing::clear_observed_error(&ctx.s3, &ctx.bucket, key, &observed)
-                .await?;
-            record_processing_status(ctx, id, filename).await
+            // The new text is saved, but a marker left behind would still
+            // supersede it for every reader — so a failed clear is a failure.
+            match claria_records::processing::clear_observed_error(
+                &ctx.s3,
+                &ctx.bucket,
+                key,
+                &observed,
+            )
+            .await
+            {
+                Ok(()) => ProcessingStatus::Ready,
+                Err(error) => storage_failure(&error),
+            }
         }
         Err(error) => {
-            let code = match &error {
-                CommandError::Bedrock(claria_bedrock::error::BedrockError::ResponseTruncated {
-                    ..
-                }) => ProcessingFailureCode::Truncated,
-                CommandError::Bedrock(claria_bedrock::error::BedrockError::Service {
-                    code,
-                    ..
-                }) if code == "AccessDeniedException" => ProcessingFailureCode::AccessDenied,
-                CommandError::Bedrock(claria_bedrock::error::BedrockError::Service {
-                    code,
-                    ..
-                }) if code == "ResourceNotFoundException" || code == "ValidationException" => {
-                    ProcessingFailureCode::ModelUnavailable
-                }
-                CommandError::Bedrock(claria_bedrock::error::BedrockError::Service {
-                    code,
-                    ..
-                }) if code == "ThrottlingException" || code == "ServiceQuotaExceededException" => {
-                    ProcessingFailureCode::Throttled
-                }
-                CommandError::Storage(_) => ProcessingFailureCode::StorageUnavailable,
-                CommandError::Msg(message)
-                    if message == ProcessingFailureCode::ModelNotConfigured.reason() =>
-                {
-                    ProcessingFailureCode::ModelNotConfigured
-                }
-                CommandError::Msg(message)
-                    if message == ProcessingFailureCode::InvalidText.reason() =>
-                {
-                    ProcessingFailureCode::InvalidText
-                }
-                _ => ProcessingFailureCode::ProviderUnavailable,
-            };
+            let code = failure_code(&error);
             // Persist only canonical prose, never the provider diagnostic.
             let saved =
                 claria_records::processing::save_error(&ctx.s3, &ctx.bucket, key, &observed, code)
@@ -932,8 +865,42 @@ async fn process_record(
                 ),
             };
             tracing::warn!(client_id = %id, ?code, "record processing failed; original retained");
-            Ok(ProcessingStatus::Failed { code, reason })
+            ProcessingStatus::Failed { code, reason }
         }
+    }
+}
+
+fn failure_code(error: &CommandError) -> ProcessingFailureCode {
+    use claria_bedrock::error::BedrockError;
+    match error {
+        CommandError::Bedrock(BedrockError::ResponseTruncated { .. }) => {
+            ProcessingFailureCode::Truncated
+        }
+        CommandError::Bedrock(BedrockError::Service { code, .. })
+            if code == "AccessDeniedException" =>
+        {
+            ProcessingFailureCode::AccessDenied
+        }
+        CommandError::Bedrock(BedrockError::Service { code, .. })
+            if code == "ResourceNotFoundException" || code == "ValidationException" =>
+        {
+            ProcessingFailureCode::ModelUnavailable
+        }
+        CommandError::Bedrock(BedrockError::Service { code, .. })
+            if code == "ThrottlingException" || code == "ServiceQuotaExceededException" =>
+        {
+            ProcessingFailureCode::Throttled
+        }
+        CommandError::Storage(_) => ProcessingFailureCode::StorageUnavailable,
+        CommandError::Msg(message)
+            if message == ProcessingFailureCode::ModelNotConfigured.reason() =>
+        {
+            ProcessingFailureCode::ModelNotConfigured
+        }
+        CommandError::Msg(message) if message == ProcessingFailureCode::InvalidText.reason() => {
+            ProcessingFailureCode::InvalidText
+        }
+        _ => ProcessingFailureCode::ProviderUnavailable,
     }
 }
 
