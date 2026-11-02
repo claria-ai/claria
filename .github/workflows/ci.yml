@@ -217,6 +217,13 @@ jobs:
         timeout-minutes: 10
         uses: ./.github/actions/rust-setup
 
+      # Compile and run as separate steps so the job's timing shows which one
+      # moved. The second step reuses every artifact the first built.
+      - name: Build tests (workspace)
+        env:
+          CLARIA_SKIP_FRONTEND_BUILD: '1'
+        run: cargo test --workspace --no-run
+
       - name: Test (workspace)
         env:
           CLARIA_SKIP_FRONTEND_BUILD: '1'
