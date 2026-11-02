@@ -41,6 +41,7 @@ export default function ClientRecord({
         />
       ) : workspace.activeView === "record" ? (
         <RecordTab
+          key={clientId}
           clientId={clientId}
           onResumeChat={workspace.openChat}
           onResumeWriting={workspace.openWriting}
