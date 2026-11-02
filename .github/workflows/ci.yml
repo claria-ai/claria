@@ -24,7 +24,7 @@ permissions:
 #
 #   Step level   every dependency-acquisition step — checkout, toolchain setup,
 #                package installs — is bounded at 5 minutes (10 for rust-setup,
-#                which restores the large cargo and sccache archives). These are
+#                which restores the large cargo cache archive). These are
 #                pure network and finish in seconds, so a wedged one is caught in
 #                minutes rather than burning the job's whole compile allowance.
 #
@@ -117,7 +117,7 @@ jobs:
         working-directory: claria-desktop-frontend
         run: npm run build
 
-      - name: Rust setup (toolchain, sccache, caches, mold)
+      - name: Rust setup (toolchain, cache, mold)
         timeout-minutes: 10
         uses: ./.github/actions/rust-setup
         with:
@@ -170,7 +170,7 @@ jobs:
         working-directory: claria-desktop-frontend
         run: npm run build
 
-      - name: Rust setup (toolchain, sccache, caches, mold)
+      - name: Rust setup (toolchain, cache, mold)
         timeout-minutes: 10
         uses: ./.github/actions/rust-setup
 
@@ -178,10 +178,6 @@ jobs:
         env:
           CLARIA_SKIP_FRONTEND_BUILD: '1'
         run: cargo test --workspace
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   # Not matrixed: the payload here is the xvfb smoke test, which exists to catch
   # a Tauri Rust/JS API mismatch killing the WebView on launch. That needs a
@@ -224,7 +220,7 @@ jobs:
         working-directory: claria-desktop-frontend
         run: npm run build
 
-      - name: Rust setup (toolchain, sccache, caches, mold)
+      - name: Rust setup (toolchain, cache, mold)
         timeout-minutes: 10
         uses: ./.github/actions/rust-setup
 

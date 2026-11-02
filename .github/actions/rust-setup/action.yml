@@ -1,12 +1,10 @@
 name: rust-setup
 description: >
-  Install the Rust toolchain and wire the build caches, configured identically across CI and
-  release. Two complementary layers, no real overlap:
-    - sccache (mozilla-actions/sccache-action, GitHub Actions cache backend) caches rustc
-      invocations. The wrapper is injected via CI env only (RUSTC_WRAPPER) — never via the repo's
-      .cargo/config.toml — so local builds are unaffected.
-    - Swatinem/rust-cache caches the cargo home (registry index + crate sources) and dependency
-      build-script outputs, which sccache does not cover.
+  Install the Rust toolchain and wire the build cache, configured identically across CI and
+  release. Swatinem/rust-cache caches the cargo home (registry index + crate sources) and the
+  target directory's dependency artifacts. There is no rustc-wrapper: sccache was removed after
+  it hit 0 of 13 workspace compiles on warm runs while its thousands of tiny cache entries pushed
+  the repository past GitHub's 10 GB cache limit, where they compete with rust-cache's archives.
   On Linux runners this also writes the mold-linker .cargo/config.toml that the CI jobs
   previously duplicated inline; macOS/Windows release jobs skip that step.
 
@@ -41,23 +39,12 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
-    - name: Install sccache
-      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      with:
-        version: "v0.15.0"
-
-    - name: Enable sccache (GHA backend) for cargo
+    - name: Disable incremental compilation
       shell: bash
       run: |
-        # SCCACHE_GHA_ENABLED routes sccache's store to the GitHub Actions cache (not ephemeral
-        # local disk). RUSTC_WRAPPER comes via CI env only — never the repo's .cargo/config.toml —
-        # so coworkers' local builds are unaffected. CARGO_INCREMENTAL=0 because sccache cannot
-        # cache incremental builds and silently bypasses otherwise.
-        {
-          echo "SCCACHE_GHA_ENABLED=true"
-          echo "RUSTC_WRAPPER=sccache"
-          echo "CARGO_INCREMENTAL=0"
-        } >> "$GITHUB_ENV"
+        # CI builds from a clean checkout once per job, so incremental state is pure overhead:
+        # extra writes, and a larger target directory for rust-cache to archive.
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
 
     - name: Rust cache (cargo home + dependency build-script outputs)
       uses: swatinem/rust-cache@v2
