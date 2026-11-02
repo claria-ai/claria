@@ -176,7 +176,6 @@ export default function RecordTab({
               entries={visibleChatHistories}
               onResume={onResumeChat}
               onDelete={fileDialog.openDelete}
-              onReviewProcessing={review}
               onError={setError}
             />
           )}
