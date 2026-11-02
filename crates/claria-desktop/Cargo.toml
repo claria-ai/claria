@@ -12,11 +12,8 @@ repository.workspace = true
 # `cargo install` target.
 publish = false
 
-# main.rs holds no tests; they live in tests/. Left on, `cargo test` builds a
-# second, test-harness copy of main.rs, and both copies expand
-# generate_context!, which writes its assets into the shared OUT_DIR. The two
-# race: the slower write lands after the other copy has recorded the file, so
-# the next cargo invocation recompiles claria-desktop (13-59 s per CI job).
+# main.rs holds no tests; they live in tests/. Without this, `cargo test` and
+# `clippy --all-targets` compile an empty test-harness copy of main.rs too.
 [[bin]]
 name = "claria-desktop"
 path = "src/main.rs"
