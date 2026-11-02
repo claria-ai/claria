@@ -9,7 +9,6 @@ All notable changes to Claria are documented here.
 - A missing extraction model sends you to Preferences instead of offering a retry that cannot work
 - Recognized processing errors prevent outdated extracted text reaching record readers
 - Opening a record no longer downloads its files to work out their processing status
-
 - The writer reasons before it drafts a section, on every model that supports it
 - Reasoning is turned on when you upgrade, including on installs that never opened the setting — reports drafted until now were written with it off
 - A record set too large for your writing model is refused while planning, instead of being planned, billed for, and then refused when drafting starts
