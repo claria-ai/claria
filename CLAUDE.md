@@ -610,6 +610,14 @@ Test files have their own TypeScript project (`tsconfig.test.json`) so they can 
 
 `fixtures/transcript-body/` holds `.txt` bodies plus a language-neutral expected parse. Both `crates/claria-transcribe/tests/body_format.rs` and `claria-desktop-frontend/src/lib/transcript.test.ts` read the same files, which is what stops the two implementations of the transcript body grammar drifting. Add a case by writing the pair; both suites glob the directory.
 
+### UI consistency review
+
+Capture representative screenshots using synthetic fixtures for UI changes.
+Have the owner approve screenshots before a separate adversarial UI consistency
+review. Review against the criterion “like it was always there”: reuse existing
+components, spacing, typography, colors, and interaction conventions. Approval
+of an earlier design does not approve materially changed visuals.
+
 ## Screenshots & Demos
 
 Marketing screenshots and videos are generated in this repo, not the docs site:

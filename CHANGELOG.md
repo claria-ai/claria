@@ -4,9 +4,11 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
-- Document extraction uses an independently configurable model.
-- Failed processing retains originals and offers explicit retries with actionable reasons.
-- Recognized processing errors prevent outdated extracted text reaching record readers.
+- Document extraction uses an independently configurable model, and your preferred model until you choose one
+- Failed processing retains originals and offers explicit retries with actionable reasons
+- A missing extraction model sends you to Preferences instead of offering a retry that cannot work
+- Recognized processing errors prevent outdated extracted text reaching record readers
+- Opening a record no longer downloads its files to work out their processing status
 
 - The writer reasons before it drafts a section, on every model that supports it
 - Reasoning is turned on when you upgrade, including on installs that never opened the setting — reports drafted until now were written with it off
