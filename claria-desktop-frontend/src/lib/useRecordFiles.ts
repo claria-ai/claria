@@ -8,7 +8,7 @@ import {
   type RecordFile,
 } from "./tauri";
 import { useAsyncLoad } from "./useAsyncLoad";
-import { beginProcessing, finishProcessing, processingSnapshot, reviewProcessing, subscribeProcessing } from "./fileProcessing";
+import { beginProcessing, finishProcessing, processingSnapshot, reviewProcessing, subscribeProcessing, type ProcessingFile } from "./fileProcessing";
 import { basename } from "./recordFiles";
 
 /**
@@ -24,7 +24,7 @@ export function useRecordFiles(
   clientId: string,
   onError: (message: string | null) => void,
 ) {
-  const scope = useAsyncLoad(async () => { const config = await loadConfig(); return `${config.account_id}:${config.region}:${config.system_name}`; }, [clientId]);
+  const scope = useAsyncLoad(accountScope, [clientId]);
   const processingScope = `${scope.data ?? "pending"}:${clientId}`;
   const processing = useSyncExternalStore(useCallback((listener) => subscribeProcessing(processingScope, listener), [processingScope]), () => processingSnapshot(processingScope));
   const failures = processing.failures;
@@ -59,21 +59,23 @@ export function useRecordFiles(
 
   async function upload(paths: string[]) {
     const request = generation.current;
-    const expectedScope = scope.data;
-    if (!expectedScope) { onErrorRef.current(scope.error ?? "Wait for the account to finish loading before uploading."); return; }
+    // A drop that lands before the account loads waits for it rather than
+    // being discarded; if it cannot load, the backend skips the scope check.
+    const expectedScope = scope.data ?? (await accountScope().catch(() => null));
+    const uploadScope = `${expectedScope ?? "pending"}:${clientId}`;
     for (const path of paths) {
       if (request !== generation.current) return;
       const filename = basename(path);
-      if (!beginProcessing(processingScope, filename)) continue;
+      if (!beginProcessing(uploadScope, filename)) continue;
       setUploading((prev) => [...prev, filename]);
       try {
-          const file = await uploadRecordFile(clientId, path, expectedScope);
-        finishProcessing(processingScope, filename, file);
+        const file = await uploadRecordFile(clientId, path, expectedScope);
+        finishProcessing(uploadScope, filename, file);
         if (request === generation.current && file.processing_status?.status === "failed") {
           setProcessingOpen(true);
         }
       } catch (e) {
-        finishProcessing(processingScope, filename, { filename, size: 0, uploaded_at: null, originalSaved: false,
+        finishProcessing(uploadScope, filename, { filename, size: 0, uploaded_at: null, originalSaved: false,
           processing_status: { status: "failed", code: "storage_unavailable", reason: String(e) } });
         if (request !== generation.current) return;
         setProcessingOpen(true);
@@ -105,10 +107,26 @@ export function useRecordFiles(
       if (request !== generation.current) return;
       await refresh();
     } catch (reason) {
-      const file = failures.find((entry) => entry.filename === filename);
-      finishProcessing(processingScope, filename, file ? { ...file, processing_status: { status: "failed", code: "provider_unavailable", reason: String(reason) } } : undefined);
-      if (request !== generation.current) return;
-      onErrorRef.current(String(reason));
+      // The backend saved the outcome as an `.error` marker: read it back so
+      // the dialog shows the real code and reason instead of a guess.
+      const previous = failures.find((entry) => entry.filename === filename);
+      const listed = await listRecordFiles(clientId).catch(() => null);
+      if (listed && request === generation.current) setFiles(listed);
+      const saved = listed?.find((entry) => entry.filename === filename);
+      const status = saved?.processing_status;
+      const file: ProcessingFile = saved && status?.status === "failed"
+        ? { ...saved, processing_status: status }
+        : {
+            ...(previous ?? { filename, size: 0, uploaded_at: null }),
+            processing_status: {
+              status: "failed",
+              code: previous?.processing_status?.status === "failed"
+                ? previous.processing_status.code
+                : "provider_unavailable",
+              reason: String(reason),
+            },
+          };
+      finishProcessing(processingScope, filename, file);
     } finally { if (request === generation.current) setRetrying(null); }
   }
   function review(file: RecordFile) {
@@ -119,4 +137,10 @@ export function useRecordFiles(
     openProcessing: () => setProcessingOpen(true),
     dismissProcessing: () => setProcessingOpen(false), retrying, retry, review };
 
+}
+
+/** The account, region and system the record view was loaded for. */
+async function accountScope(): Promise<string> {
+  const config = await loadConfig();
+  return `${config.account_id}:${config.region}:${config.system_name}`;
 }

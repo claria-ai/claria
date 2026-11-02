@@ -16,7 +16,7 @@ test.beforeEach(async ({ page }) => {
       if(cmd === "save_preferences_patch") {configured=!!args.patch.extraction_model_id; return {...await original("load_config",{}),model_tuning:{reasoning_enabled:true,effort:null,temperature:null},draft_pipeline:{},chat_streaming:"paragraph",extraction_model_id:args.patch.extraction_model_id};}
       if(cmd === "list_record_files") return rows;
       if(cmd === "list_chat_histories" || cmd === "list_report_sessions") return [];
-      if(cmd === "upload_record_file") {const file={filename:args.filePath.split('/').pop(),size:12800,uploaded_at:null,processing_status:{status:"failed",code:"model_not_configured",reason:"Choose a document extraction model in Preferences, then retry."}}; rows.push(file); return file;}
+      if(cmd === "upload_record_file") {const file={filename:args.filePath.split('/').pop(),size:12800,uploaded_at:null,processing_status:{status:"failed",code:"throttled",reason:"AWS limited this processing request. Wait briefly, then retry."}}; rows.push(file); return file;}
       if(cmd === "extract_record_file") {const file=rows.find(file=>file.filename===args.filename);if(file)file.processing_status={status:"ready"};return {filename:args.filename,text:"Synthetic extracted assessment."};}
       return original(cmd,args);
     };
@@ -25,17 +25,18 @@ test.beforeEach(async ({ page }) => {
 test("independent model setting and unconfigured state", async ({page}) => {
   await page.goto(url);
   await page.getByRole("button",{name:"Preferences",exact:true}).click();
+  await page.getByText("Document Extraction",{exact:true}).click();
   await page.getByLabel("Document extraction model",{exact:true}).scrollIntoViewIfNeeded();
   await page.screenshot({path:`${output}/extraction-model-unconfigured.png`});
   await page.getByLabel("Document extraction model",{exact:true}).selectOption({index:1});
-  await expect(page.getByText("Saved. Other computers pick this up on restart.",{exact:true})).toBeVisible();
+  await expect(page.getByLabel("Document extraction model",{exact:true})).toBeEnabled();
   await page.screenshot({path:`${output}/extraction-model-settings.png`});
 });
 test("historical unknown, batch failures, partial retry and completion",async ({page}) => {
   await page.goto(url);
   await page.getByRole("button",{name:"Client Files"}).click();
   await page.getByText("Jane Doe",{exact:true}).click();
-  await expect(page.getByText("Text unavailable · previous outcome unknown")).toBeVisible();
+  await expect(page.getByText("No extracted text")).toBeVisible();
   await page.screenshot({path:`${output}/extraction-historical-missing-text.png`});
   await page.evaluate(() => (window as any).__dropExtractionFiles(["/synthetic/intake.pdf","/synthetic/referral.docx"]));
   await expect(page.getByText("2 files failed to process. Review the reasons below.")).toBeVisible();

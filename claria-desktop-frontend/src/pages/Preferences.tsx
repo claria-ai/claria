@@ -59,7 +59,6 @@ import {
   type WriterTemplateView,
 } from "../lib/tauri";
 import { logFrontendEvent } from "../lib/logBridge";
-import { extractionModelUnavailable } from "../lib/extractionModel";
 import { useChatModels } from "../lib/chatModels";
 import { costErrorMessage } from "../lib/costErrors";
 import { useDistractionMode } from "../lib/distractionMode";
@@ -77,7 +76,7 @@ import {
   paneSpec,
   searchPreferencesNav,
   PREFERENCES_NAV,
-  WRITER_FOCUS_PANES,
+  PREFERENCES_FOCUS_PANES,
   type CategoryId,
   type CategorySpec,
   type PaneId,
@@ -107,7 +106,7 @@ import {
 import Spinner from "../components/Spinner";
 import { ErrorBanner, LoadingCard } from "../components/StateCards";
 import VersionHistoryModal from "../components/VersionHistoryModal";
-import type { Page, PreferencesWriterSection } from "../App";
+import type { Page, PreferencesFocusSection } from "../App";
 
 // ---------------------------------------------------------------------------
 // Pane plumbing: category → pane components, open state, search reveal
@@ -251,10 +250,10 @@ export default function Preferences({
   backPage = "start",
 }: {
   navigate: (page: Page) => void;
-  focusSection?: PreferencesWriterSection | null;
+  focusSection?: PreferencesFocusSection | null;
   backPage?: Page;
 }) {
-  const focusPane = focusSection ? WRITER_FOCUS_PANES[focusSection] : null;
+  const focusPane = focusSection ? PREFERENCES_FOCUS_PANES[focusSection] : null;
 
   const [activeCategory, setActiveCategory] = useState<CategoryId>(
     focusPane ? categoryOf(focusPane) : PREFERENCES_NAV[0].id
@@ -762,44 +761,73 @@ function ExtractionModelSection() {
 }
 
 function ExtractionModelBody({ initial }: { initial: string | null }) {
-  const catalog = useChatModels();
+  const { models, loading, error, preferredModelId } = useChatModels();
   const [modelId, setModelId] = useState(initial);
-  const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const unavailable = extractionModelUnavailable(modelId, catalog.models, catalog.loading, catalog.error);
-  async function save(value: string) {
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function handleModelChange(value: string) {
     setSaving(true);
-    setError(null);
+    setSaveError(null);
     try {
       const updated = await savePreferencesPatch({ extraction_model_id: value });
       setModelId(updated.extraction_model_id ?? null);
-      setSaved(true);
-    } catch (reason) {
-      setError(String(reason));
-      logFrontendEvent("error", `extraction model save failed: ${reason}`);
-    } finally { setSaving(false); }
+    } catch (e) {
+      setSaveError(String(e));
+    } finally {
+      setSaving(false);
+    }
   }
-  return <NavPane paneId="claude.extraction-model">
-    <div data-pref-anchor="extraction_model" className="space-y-3">
-      <label className="block text-sm font-medium text-gray-700" htmlFor="extraction-model">Document extraction model</label>
-      <p className="text-sm text-gray-500">Used for new document uploads and retries. Your chat model stays separate.</p>
-      <select id="extraction-model" value={modelId ?? ""} onChange={(event) => void save(event.target.value)}
-        disabled={saving || catalog.loading}
-        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50">
-        <option value="">Not configured — choose a model</option>
-        {modelId && !catalog.models.some((model) => model.model_id === modelId) && <option value={modelId}>{modelId}</option>}
-        {catalog.models.map((model) => <option key={model.model_id} value={model.model_id}>{model.name}</option>)}
-      </select>
-      <button type="button" onClick={catalog.retry} disabled={catalog.loading} className="text-sm text-blue-600 hover:text-blue-800 disabled:opacity-50">Refresh models</button>
-      <p className="text-xs text-gray-500">Models are discovered for the active AWS account and region. Processing is billed by AWS at the selected model’s rates.</p>
-      {saved && <p className="text-xs text-green-600">Saved. Other computers pick this up on restart.</p>}
-      {!modelId && <p className="text-sm text-amber-700">Choose a model before processing documents. Originals are saved even when text processing cannot finish.</p>}
-      {unavailable && <p className="text-sm text-amber-700">The saved model is not in the current catalog. Choose an available model before retrying.</p>}
-      {catalog.error && <ErrorBanner message={catalog.error} />}
-      {error && <ErrorBanner message={error} />}
-    </div>
-  </NavPane>;
+
+  const nameOf = (id: string) =>
+    models.find((m) => m.model_id === id)?.name ?? id;
+
+  return (
+    <NavPane
+      paneId="claude.extraction-model"
+      summary={
+        modelId && models.length > 0 ? (
+          <span className="text-xs text-gray-400">{nameOf(modelId)}</span>
+        ) : undefined
+      }
+    >
+      {loading ? (
+        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+          <Spinner />
+          <span>Loading models...</span>
+        </div>
+      ) : error ? (
+        <ErrorBanner message={error} className="" />
+      ) : (
+        <>
+          <div data-pref-anchor="extraction_model">
+            <select
+              aria-label="Document extraction model"
+              value={modelId ?? ""}
+              onChange={(e) => handleModelChange(e.target.value)}
+              disabled={saving}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
+            >
+              <option value="">
+                {preferredModelId
+                  ? `Same as preferred model (${nameOf(preferredModelId)})`
+                  : "Same as preferred model"}
+              </option>
+              {modelId && !models.some((m) => m.model_id === modelId) && (
+                <option value={modelId}>{modelId}</option>
+              )}
+              {models.map((m) => (
+                <option key={m.model_id} value={m.model_id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          {saveError && <ErrorBanner message={saveError} className="mt-3" />}
+        </>
+      )}
+    </NavPane>
+  );
 }
 
 /**

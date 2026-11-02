@@ -95,7 +95,6 @@ export const PREFERENCES_NAV: CategorySpec[] = [
     icon: "sparkle",
     tint: "bg-violet-500",
     panes: [
-
       {
         id: "claude.preferred-model",
         title: "Preferred Model",
@@ -111,9 +110,20 @@ export const PREFERENCES_NAV: CategorySpec[] = [
           },
         ],
       },
-      { id: "claude.extraction-model", title: "Document Extraction",
-        blurb: "Choose the model used for document uploads and retries.", defaultOpen: true,
-        fields: [{ anchor: "extraction_model", label: "Document extraction model", terms: ["PDF", "DOCX", "processing", "retry"] }] },
+      {
+        id: "claude.extraction-model",
+        title: "Document Extraction",
+        blurb:
+          "The model that turns uploaded PDF and Word documents into text. Uses your preferred model unless you pick another.",
+        terms: ["pdf", "docx", "extract", "processing", "retry"],
+        fields: [
+          {
+            anchor: "extraction_model",
+            label: "Document extraction model",
+            terms: ["model list"],
+          },
+        ],
+      },
       {
         id: "claude.chat-streaming",
         title: "Chat Streaming",
@@ -545,10 +555,11 @@ export const PREFERENCES_NAV: CategorySpec[] = [
   },
 ];
 
-/** The Preferences panes a "Manage …" jump from the Writing tab opens. */
-export const WRITER_FOCUS_PANES = {
+/** The Preferences panes a jump from a client record opens. */
+export const PREFERENCES_FOCUS_PANES = {
   "writer-templates": "writer.templates",
   "writer-prompts": "writer.prompt-library",
+  "extraction-model": "claude.extraction-model",
 } as const satisfies Record<string, PaneId>;
 
 const PANES_BY_ID = new Map<PaneId, { pane: PaneSpec; category: CategorySpec }>(

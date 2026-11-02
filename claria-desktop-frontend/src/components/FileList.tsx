@@ -1,5 +1,5 @@
 import FileIcon from "./FileIcon";
-import { TrashIcon } from "./icons";
+import { RetryIcon, TrashIcon } from "./icons";
 import { formatFileSize } from "../lib/format";
 import { searchMatches } from "../lib/search";
 import type { RecordFile } from "../lib/tauri";
@@ -54,14 +54,30 @@ export default function FileList({
                   </span>
                 )}
             </div>
-            <p className="text-xs text-gray-400">{formatFileSize(file.size)}</p>
-            {file.processing_status?.status === "failed" && <p className="text-xs text-red-700 mt-1">{file.processing_status.reason}</p>}
-            {file.processing_status?.status === "unknown" && <p className="text-xs text-amber-700 mt-1">Text unavailable · previous outcome unknown</p>}
+            <p className="text-xs text-gray-400">
+              {formatFileSize(file.size)}
+              {needsText(file) && (
+                <span className="text-amber-700">
+                  {" · "}
+                  {file.processing_status?.status === "failed"
+                    ? "Text processing failed"
+                    : "No extracted text"}
+                </span>
+              )}
+            </p>
           </div>
           <div className="flex gap-1">
-            {(file.processing_status?.status === "failed" || file.processing_status?.status === "unknown") && onReviewProcessing && (
-              <button onClick={() => onReviewProcessing(file)} className="px-2 py-1 text-xs text-amber-700 hover:bg-amber-50 rounded">
-                {file.processing_status.status === "failed" ? "Retry processing" : "Extract text"}
+            {needsText(file) && onReviewProcessing && (
+              <button
+                onClick={() => onReviewProcessing(file)}
+                title={
+                  file.processing_status?.status === "failed"
+                    ? "Retry text processing"
+                    : "Extract text"
+                }
+                className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+              >
+                <RetryIcon />
               </button>
             )}
             {showVersions && (
@@ -144,4 +160,10 @@ export default function FileList({
       ))}
     </div>
   );
+}
+
+/** A processed file (document or audio) whose text readers cannot use. */
+function needsText(file: RecordFile): boolean {
+  const status = file.processing_status?.status;
+  return status === "failed" || status === "unknown";
 }
