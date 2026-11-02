@@ -27,16 +27,21 @@ fn ensure_frontend_built() {
     let lockfile = frontend_dir.join("package-lock.json");
     let dist_index = frontend_dir.join("dist").join("index.html");
 
-    println!("cargo:rerun-if-changed={}", lockfile.display());
-    println!("cargo:rerun-if-changed={}", dist_index.display());
     println!("cargo:rerun-if-env-changed=CI");
     println!("cargo:rerun-if-env-changed=CLARIA_SKIP_FRONTEND_BUILD");
     println!("cargo:rerun-if-env-changed=TAURI_ENV_PLATFORM");
 
+    // Watch the files only when they can trigger a rebuild. Cargo treats a
+    // watched path that does not exist as changed on every build, so CI's
+    // Clippy and Test jobs, which have no dist/, recompiled claria-desktop
+    // on each cargo invocation.
     if std::env::var_os("CI").is_some() || std::env::var_os("CLARIA_SKIP_FRONTEND_BUILD").is_some()
     {
         return;
     }
+
+    println!("cargo:rerun-if-changed={}", lockfile.display());
+    println!("cargo:rerun-if-changed={}", dist_index.display());
 
     if !needs_rebuild(&lockfile, &dist_index) {
         return;
