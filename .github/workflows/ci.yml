@@ -33,11 +33,74 @@ permissions:
 # after it as skipped.
 
 jobs:
+  # Decides which lanes a pull request needs. Fail-open throughout: a push to
+  # main runs everything, an unrecognised path runs everything, an empty or
+  # failed diff runs everything, and the jobs below test `!= 'false'`, so a
+  # missing output (this job failed or was skipped) also runs everything.
+  #
+  # The diff is the PR merge commit against its first parent, the base branch
+  # tip it was merged onto, which is exactly what the PR changes; fetch-depth 2
+  # is enough to see it.
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_rust: ${{ steps.classify.outputs.run_rust }}
+      run_frontend: ${{ steps.classify.outputs.run_frontend }}
+
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+        with:
+          fetch-depth: 2
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          run_all() {
+            echo "run_rust=true" >> "$GITHUB_OUTPUT"
+            echo "run_frontend=true" >> "$GITHUB_OUTPUT"
+            echo "$1: running every lane"
+            exit 0
+          }
+          [ "$EVENT_NAME" = pull_request ] || run_all "$EVENT_NAME event"
+          paths=$(git diff --name-only --no-renames HEAD^1 HEAD) || run_all "git diff failed"
+          [ -n "$paths" ] || run_all "empty diff"
+
+          run_rust=false
+          run_frontend=false
+          while IFS= read -r path; do
+            case "$path" in
+              crates/*|Cargo.toml|Cargo.lock|rustfmt.toml|rust-toolchain*|.cargo/*)
+                run_rust=true ;;
+              claria-desktop-frontend/*|e2e/*|screenshots/*|package.json|package-lock.json)
+                run_frontend=true ;;
+              *.md|design/*|plans/*|LICENSE)
+                ;;
+              *)
+                # .github/** and anything not listed above (fixtures/ feeds
+                # Rust tests, for one): run both.
+                run_rust=true
+                run_frontend=true ;;
+            esac
+          done <<< "$paths"
+
+          echo "run_rust=$run_rust" >> "$GITHUB_OUTPUT"
+          echo "run_frontend=$run_frontend" >> "$GITHUB_OUTPUT"
+          echo "run_rust=$run_rust run_frontend=$run_frontend"
+          echo "$paths"
+
   # Not matrixed: this job compiles no Rust and touches no platform API. The
   # bundle it produces is byte-identical everywhere, so a second run would only
   # re-prove Node's portability.
   frontend:
     name: Frontend (lint + test + build)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run_frontend != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -77,6 +140,8 @@ jobs:
   # in each list — macos-latest being the obvious next one.
   clippy:
     name: Clippy
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run_rust != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -118,6 +183,8 @@ jobs:
 
   test:
     name: Test
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run_rust != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -161,6 +228,8 @@ jobs:
   # Rust code itself is compiled on every matrix platform by the jobs above.
   tauri-build:
     name: Tauri build
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.run_rust != 'false' || needs.changes.outputs.run_frontend != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
