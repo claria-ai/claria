@@ -125,7 +125,7 @@ async fn dispatch_object(
         Method::HEAD => head_object(bucket, &key, query, state).await,
         Method::GET => get_object(bucket, &key, query, state).await,
         Method::PUT => put_object(bucket, &key, headers, state, body).await,
-        Method::DELETE => delete_object(bucket, &key, query, state).await,
+        Method::DELETE => delete_object(bucket, &key, query, headers, state).await,
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
     }
 }
@@ -849,13 +849,33 @@ async fn put_object(
     builder.body(Body::empty()).unwrap()
 }
 
-async fn delete_object(bucket: &str, key: &str, query: &str, state: SharedState) -> Response {
+async fn delete_object(
+    bucket: &str,
+    key: &str,
+    query: &str,
+    headers: &HeaderMap,
+    state: SharedState,
+) -> Response {
     let mut st = state.write().await;
 
     let versioning = match st.buckets.get(bucket) {
         Some(b) => b.versioning.clone(),
         None => return StatusCode::NO_CONTENT.into_response(),
     };
+
+    if let Some(expected) = headers
+        .get("if-match")
+        .and_then(|value| value.to_str().ok())
+    {
+        let current = st
+            .objects
+            .get(&(bucket.to_string(), key.to_string()))
+            .and_then(|versions| versions.last())
+            .filter(|object| !object.is_delete_marker);
+        if current.is_none_or(|object| format!("\"{}\"", object.etag) != expected) {
+            return StatusCode::PRECONDITION_FAILED.into_response();
+        }
+    }
 
     // A versioned delete removes that exact version rather than stacking a
     // delete marker on top of it.

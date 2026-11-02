@@ -432,6 +432,14 @@ async fn create_model_agreement(body: Value, state: SharedState) -> Response {
 }
 
 async fn converse(path: &str, body: Value, state: SharedState) -> Response {
+    let model_id = path
+        .trim_start_matches("/model/")
+        .trim_end_matches("/converse");
+    state.write().await.bedrock_converse_model_ids.push(
+        percent_encoding::percent_decode_str(model_id)
+            .decode_utf8_lossy()
+            .to_string(),
+    );
     // Forced-tool calls (`toolChoice.tool`) — currently the translation flow —
     // are honored separately from the report protocol: the mock responds with
     // a toolUse block for the forced tool, synthesizing a translation

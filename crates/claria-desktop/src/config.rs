@@ -13,7 +13,7 @@ use specta::Type;
 
 /// Current config version. Bump this when adding fields or changing shape.
 /// Each bump requires a corresponding entry in [`migrate`].
-pub const CURRENT_VERSION: u32 = 16;
+pub const CURRENT_VERSION: u32 = 17;
 
 /// What the user is told when there is no config on disk at all.
 ///
@@ -26,7 +26,7 @@ pub const SETUP_REQUIRED: &str = "No config loaded. Complete setup first.";
 /// Synced-preferences schema version. Independent of [`CURRENT_VERSION`]
 /// because the synced subset lives in S3 and may be read by other machines'
 /// builds.
-pub const PREFERENCES_VERSION: u32 = 6;
+pub const PREFERENCES_VERSION: u32 = 7;
 
 fn default_prompt_caching_enabled() -> bool {
     true
@@ -48,6 +48,8 @@ pub struct ClariaConfig {
     /// The clinician's preferred chat model ID. Added in v2.
     #[serde(default)]
     pub preferred_model_id: Option<String>,
+    #[serde(default)]
+    pub extraction_model_id: Option<String>,
     /// Whether the user has completed Cost Explorer onboarding. Added in v3.
     #[serde(default)]
     pub cost_explorer_enabled: bool,
@@ -451,6 +453,8 @@ pub struct SyncedPreferences {
     #[serde(default)]
     pub preferred_model_id: Option<String>,
     #[serde(default)]
+    pub extraction_model_id: Option<String>,
+    #[serde(default)]
     pub cost_explorer_enabled: bool,
     #[serde(default)]
     pub hourly_cost_data: bool,
@@ -493,6 +497,7 @@ impl SyncedPreferences {
         Self {
             preferences_version: PREFERENCES_VERSION,
             preferred_model_id: config.preferred_model_id.clone(),
+            extraction_model_id: config.extraction_model_id.clone(),
             cost_explorer_enabled: config.cost_explorer_enabled,
             hourly_cost_data: config.hourly_cost_data,
             prompt_caching_enabled: config.prompt_caching_enabled,
@@ -508,6 +513,7 @@ impl SyncedPreferences {
     /// left untouched.
     pub fn apply_to_config(&self, config: &mut ClariaConfig) {
         config.preferred_model_id = self.preferred_model_id.clone();
+        config.extraction_model_id = self.extraction_model_id.clone();
         config.cost_explorer_enabled = self.cost_explorer_enabled;
         config.hourly_cost_data = self.hourly_cost_data;
         config.prompt_caching_enabled = self.prompt_caching_enabled;
@@ -545,6 +551,8 @@ pub struct ConfigInfo {
     pub profile_name: Option<String>,
     pub access_key_hint: Option<String>,
     pub preferred_model_id: Option<String>,
+    #[serde(default)]
+    pub extraction_model_id: Option<String>,
     pub cost_explorer_enabled: bool,
     pub hourly_cost_data: bool,
     pub prompt_caching_enabled: bool,
@@ -989,7 +997,10 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         if let Some(serde_json::Value::Object(model_tuning)) = obj.get_mut("model_tuning")
             && model_tuning.get("reasoning_enabled") == Some(&serde_json::Value::Bool(false))
         {
-            model_tuning.insert("reasoning_enabled".to_string(), serde_json::Value::Bool(true));
+            model_tuning.insert(
+                "reasoning_enabled".to_string(),
+                serde_json::Value::Bool(true),
+            );
         }
         obj.insert(
             "config_version".to_string(),
@@ -998,6 +1009,14 @@ fn migrate(mut json: serde_json::Value, from_version: u32) -> eyre::Result<serde
         tracing::info!("migrated config v15 → v16 (turned adaptive reasoning on for the writer)");
     }
 
+    if from_version < 17 {
+        let obj = json
+            .as_object_mut()
+            .ok_or_else(|| eyre::eyre!("config is not a JSON object"))?;
+        obj.entry("extraction_model_id")
+            .or_insert(serde_json::Value::Null);
+        obj.insert("config_version".into(), serde_json::json!(17));
+    }
     Ok(json)
 }
 
@@ -1151,6 +1170,7 @@ pub fn config_info(config: &ClariaConfig) -> ConfigInfo {
         profile_name,
         access_key_hint,
         preferred_model_id: config.preferred_model_id.clone(),
+        extraction_model_id: config.extraction_model_id.clone(),
         cost_explorer_enabled: config.cost_explorer_enabled,
         hourly_cost_data: config.hourly_cost_data,
         prompt_caching_enabled: config.prompt_caching_enabled,

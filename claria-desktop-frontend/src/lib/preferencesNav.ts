@@ -23,6 +23,7 @@ export type CategoryId =
 
 export type PaneId =
   | "claude.preferred-model"
+  | "claude.extraction-model"
   | "claude.chat-streaming"
   | "claude.model-tuning"
   | "prompts.chat-system"
@@ -94,6 +95,7 @@ export const PREFERENCES_NAV: CategorySpec[] = [
     icon: "sparkle",
     tint: "bg-violet-500",
     panes: [
+
       {
         id: "claude.preferred-model",
         title: "Preferred Model",
@@ -109,6 +111,9 @@ export const PREFERENCES_NAV: CategorySpec[] = [
           },
         ],
       },
+      { id: "claude.extraction-model", title: "Document Extraction",
+        blurb: "Choose the model used for document uploads and retries.", defaultOpen: true,
+        fields: [{ anchor: "extraction_model", label: "Document extraction model", terms: ["PDF", "DOCX", "processing", "retry"] }] },
       {
         id: "claude.chat-streaming",
         title: "Chat Streaming",
