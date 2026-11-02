@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.35.0] — 2026-11-02
 
 - Document extraction uses an independently configurable model, and your preferred model until you choose one
 - Failed processing retains originals and offers explicit retries with actionable reasons
