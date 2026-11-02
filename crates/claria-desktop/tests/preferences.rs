@@ -15,6 +15,7 @@ fn sample_config() -> ClariaConfig {
         created_at: jiff::Timestamp::UNIX_EPOCH,
         credentials: CredentialSource::DefaultChain,
         preferred_model_id: Some("anthropic.claude-opus-4-7".into()),
+        extraction_model_id: None,
         cost_explorer_enabled: true,
         hourly_cost_data: false,
         prompt_caching_enabled: true,
@@ -62,6 +63,7 @@ fn apply_to_config_leaves_machine_local_fields_alone() {
     let synced = SyncedPreferences {
         preferences_version: 1,
         preferred_model_id: Some("anthropic.claude-sonnet-4-6".into()),
+        extraction_model_id: None,
         cost_explorer_enabled: false,
         hourly_cost_data: true,
         prompt_caching_enabled: false,
@@ -224,4 +226,20 @@ fn debug_printing_the_config_does_not_print_the_pin_hash() {
 
     assert!(!rendered.contains("argon2"), "{rendered}");
     assert!(rendered.contains("[redacted]"), "{rendered}");
+}
+
+#[test]
+fn extraction_model_is_separate_and_round_trips_through_synced_preferences() {
+    let mut cfg = sample_config();
+    let chat = cfg.preferred_model_id.clone();
+    cfg.extraction_model_id = Some("chosen-extraction-model".into());
+    let encoded = serde_json::to_vec(&SyncedPreferences::from_config(&cfg)).unwrap();
+    let synced: SyncedPreferences = serde_json::from_slice(&encoded).unwrap();
+    cfg.extraction_model_id = None;
+    synced.apply_to_config(&mut cfg);
+    assert_eq!(
+        cfg.extraction_model_id.as_deref(),
+        Some("chosen-extraction-model")
+    );
+    assert_eq!(cfg.preferred_model_id, chat);
 }

@@ -44,26 +44,80 @@ pub async fn record_inventory(
         .map_err(|source| storage("listing record files", source))?;
     let keys: Vec<&str> = objects.iter().map(|object| object.key.as_str()).collect();
 
-    Ok(claria_core::s3_keys::visible_record_files(&prefix, &keys)
-        .into_iter()
-        .map(|file| {
-            let source = &objects[file.source_index];
-            RecordInventoryEntry {
-                filename: file.filename,
-                base_key: objects[file.base_index].key.clone(),
-                source_key: source.key.clone(),
-                source_etag: source.etag.clone().unwrap_or_default(),
-                source_size: u64::try_from(source.size).unwrap_or(u64::MAX),
-            }
-        })
-        .collect())
+    let candidates: Vec<String> = objects
+        .iter()
+        .filter(|object| object.key.ends_with(".error"))
+        .map(|object| object.key.clone())
+        .collect();
+    let errors = claria_storage::objects::recognized_objects(
+        s3,
+        bucket,
+        &candidates,
+        claria_core::processing::MAX_ERROR_BYTES,
+        claria_core::processing::ProcessingError::parse,
+    )
+    .await
+    .map_err(|source| storage("reading processing outcomes", source))?;
+    let error_keys = errors.into_keys().collect();
+    let sidecar_keys: Vec<String> = objects
+        .iter()
+        .filter(|object| object.key.ends_with(".text"))
+        .map(|object| object.key.clone())
+        .collect();
+    let usable_sidecars = claria_storage::objects::recognized_objects(
+        s3,
+        bucket,
+        &sidecar_keys,
+        claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+        |bytes| claria_core::processing::usable_text(bytes).map(|_| ()),
+    )
+    .await
+    .map_err(|source| storage("validating record text", source))?;
+    let usable_sidecars = usable_sidecars.into_keys().collect();
+    // A readable original is authoritative even if an old extraction remains.
+    let original_keys: Vec<String> = sidecar_keys
+        .iter()
+        .filter_map(|key| key.strip_suffix(".text"))
+        .filter(|key| keys.contains(key))
+        .map(str::to_owned)
+        .collect();
+    let readable_originals = claria_storage::objects::recognized_objects(
+        s3,
+        bucket,
+        &original_keys,
+        claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+        |bytes| claria_core::processing::usable_text(bytes).map(|_| ()),
+    )
+    .await
+    .map_err(|source| storage("validating original text", source))?;
+    let readable_originals = readable_originals.into_keys().collect();
+
+    Ok(claria_core::s3_keys::visible_record_files_with_errors(
+        &prefix,
+        &keys,
+        &error_keys,
+        &usable_sidecars,
+        &readable_originals,
+    )
+    .into_iter()
+    .map(|file| {
+        let source = &objects[file.source_index];
+        RecordInventoryEntry {
+            filename: file.filename,
+            base_key: objects[file.base_index].key.clone(),
+            source_key: source.key.clone(),
+            source_etag: source.etag.clone().unwrap_or_default(),
+            source_size: u64::try_from(source.size).unwrap_or(u64::MAX),
+        }
+    })
+    .collect())
 }
 
 /// Filenames of record files whose readable text contains `query`,
 /// case-insensitively. An empty or whitespace query matches nothing.
 ///
-/// Goes through the same read-through cache as chat context, so repeating a
-/// search over unchanged records costs one listing and zero GETs.
+/// Uses the same read-through content cache as chat context. Processing
+/// sidecars are validated on each inventory load to avoid stale outcomes.
 pub async fn search_record_contents(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
@@ -89,8 +143,8 @@ pub async fn search_record_contents(
 }
 
 /// Fetch readable text for every record file under a client, in listing
-/// order. Generated `.text` sidecars take precedence; otherwise the original
-/// object is used when its bytes are printable UTF-8, regardless of extension.
+/// order. Printable originals are authoritative; binary originals use a usable
+/// `.text` sidecar only when no recognized processing error supersedes it.
 /// Chat-history entries are skipped. `None` means the file is binary, too
 /// large, missing, or has no readable extraction.
 pub async fn fetch_record_texts(
@@ -122,8 +176,8 @@ pub async fn fetch_record_texts(
 
 /// Fetch one record file's readable representation.
 ///
-/// A generated extraction/transcript sidecar wins when present. Files without
-/// sidecars are read directly and accepted based on their bytes, which keeps
+/// Readable originals win over old extractions. Binary files use validated
+/// sidecars unless an error supersedes them. Content-based decoding keeps
 /// JSON, Markdown, CSV, and extensionless text in their original formats.
 /// `filename` must name a user-visible file; a hidden sidecar or chat-history
 /// entry resolves to `None`.
@@ -163,5 +217,5 @@ async fn fetch_entry_text(
     {
         return Ok(None);
     }
-    Ok(claria_core::record_text::decode_record_text(body.as_ref()).map(ToString::to_string))
+    Ok(claria_core::processing::usable_text(body.as_ref()).map(ToString::to_string))
 }

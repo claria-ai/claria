@@ -38,17 +38,68 @@ pub(crate) async fn load_record_inventory(
     let objects = claria_storage::objects::list_objects_with_metadata(s3, bucket, &prefix).await?;
     let keys: Vec<&str> = objects.iter().map(|object| object.key.as_str()).collect();
 
-    Ok(claria_core::s3_keys::visible_record_files(&prefix, &keys)
-        .into_iter()
-        .map(|file| {
-            let source = &objects[file.source_index];
-            RecordInventoryEntry {
-                filename: file.filename,
-                read_key: source.key.clone(),
-                source_bytes: u64::try_from(source.size).unwrap_or(u64::MAX),
-            }
-        })
-        .collect())
+    let candidates: Vec<String> = objects
+        .iter()
+        .filter(|object| object.key.ends_with(".error"))
+        .map(|object| object.key.clone())
+        .collect();
+    let errors = claria_storage::objects::recognized_objects(
+        s3,
+        bucket,
+        &candidates,
+        claria_core::processing::MAX_ERROR_BYTES,
+        claria_core::processing::ProcessingError::parse,
+    )
+    .await?;
+    let error_keys = errors.into_keys().collect();
+    let sidecar_keys: Vec<String> = objects
+        .iter()
+        .filter(|object| object.key.ends_with(".text"))
+        .map(|object| object.key.clone())
+        .collect();
+    let usable_sidecars = claria_storage::objects::recognized_objects(
+        s3,
+        bucket,
+        &sidecar_keys,
+        claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+        |bytes| claria_core::processing::usable_text(bytes).map(|_| ()),
+    )
+    .await?;
+    let usable_sidecars = usable_sidecars.into_keys().collect();
+    // A readable original is authoritative even if an old extraction remains.
+    let original_keys: Vec<String> = sidecar_keys
+        .iter()
+        .filter_map(|key| key.strip_suffix(".text"))
+        .filter(|key| keys.contains(key))
+        .map(str::to_owned)
+        .collect();
+    let readable_originals = claria_storage::objects::recognized_objects(
+        s3,
+        bucket,
+        &original_keys,
+        claria_core::record_text::MAX_RECORD_TEXT_BYTES,
+        |bytes| claria_core::processing::usable_text(bytes).map(|_| ()),
+    )
+    .await?;
+    let readable_originals = readable_originals.into_keys().collect();
+
+    Ok(claria_core::s3_keys::visible_record_files_with_errors(
+        &prefix,
+        &keys,
+        &error_keys,
+        &usable_sidecars,
+        &readable_originals,
+    )
+    .into_iter()
+    .map(|file| {
+        let source = &objects[file.source_index];
+        RecordInventoryEntry {
+            filename: file.filename,
+            read_key: source.key.clone(),
+            source_bytes: u64::try_from(source.size).unwrap_or(u64::MAX),
+        }
+    })
+    .collect())
 }
 
 /// One model the record corpus has to fit inside, named for the error
@@ -324,7 +375,7 @@ pub(crate) async fn load_full_record_context(
             claria_core::record_text::MAX_RECORD_TEXT_BYTES,
         )
         .await?;
-        let Some(text) = claria_core::record_text::decode_record_text(&output.body) else {
+        let Some(text) = claria_core::processing::usable_text(&output.body) else {
             return Ok(LoadedFullRecord::Unavailable {
                 filename: entry.filename.clone(),
                 reason: "text_extraction_unavailable",
@@ -461,4 +512,58 @@ pub(crate) async fn load_full_record_context(
         citable_filenames,
         normalized_texts,
     })
+}
+
+#[cfg(test)]
+mod processing_tests {
+    use super::*;
+    use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
+
+    #[tokio::test]
+    async fn writer_inventory_uses_original_and_excludes_failed_extraction() {
+        let mock = claria_mock_aws::testing::MockServer::spawn().await;
+        let sdk = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-east-1"))
+            .credentials_provider(SharedCredentialsProvider::new(Credentials::new(
+                "test", "test", None, None, "test",
+            )))
+            .endpoint_url(&mock.endpoint)
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let s3 = claria_storage::client::from_config(&sdk);
+        let bucket = "writer-processing-test";
+        s3.create_bucket().bucket(bucket).send().await.unwrap();
+        let id = Uuid::new_v4();
+        let prefix = claria_core::s3_keys::client_records_prefix(id);
+        let marker = claria_core::processing::ProcessingError::new(
+            claria_core::processing::ProcessingFailureCode::ProviderUnavailable,
+        );
+        for (name, body) in [
+            ("readable.pdf", b"current original".to_vec()),
+            ("readable.pdf.text", b"old extraction".to_vec()),
+            ("failed.pdf", b"%PDF-1.7 binary".to_vec()),
+            ("failed.pdf.text", b"failed stale extraction".to_vec()),
+            ("failed.pdf.error", serde_json::to_vec(&marker).unwrap()),
+            ("user.error", b"ordinary user note".to_vec()),
+        ] {
+            claria_storage::objects::put_object(
+                &s3,
+                bucket,
+                &format!("{prefix}{name}"),
+                body,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let inventory = load_record_inventory(&s3, bucket, id).await.unwrap();
+        assert_eq!(inventory.len(), 3);
+        for name in ["readable.pdf", "failed.pdf", "user.error"] {
+            let file = inventory
+                .iter()
+                .find(|entry| entry.filename == name)
+                .unwrap();
+            assert_eq!(file.read_key, format!("{prefix}{name}"));
+        }
+    }
 }

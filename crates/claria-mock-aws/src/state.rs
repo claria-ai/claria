@@ -54,6 +54,7 @@ pub struct MockState {
     pub trail_logging: HashMap<String, bool>,
 
     // Bedrock
+    pub bedrock_converse_model_ids: Vec<String>,
     pub foundation_models: Vec<FoundationModel>,
     pub model_agreements: HashSet<String>,
     pub inference_profiles: Vec<InferenceProfile>,

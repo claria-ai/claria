@@ -309,3 +309,40 @@ pub fn audit_event(timestamp: jiff::Timestamp, event_id: Uuid) -> String {
         nanos = dt.subsec_nanosecond(),
     )
 }
+
+/// Apply validated processing errors to the ordinary sidecar inventory.
+/// An error supersedes extracted text; the original remains eligible for
+/// content-based decoding. User-authored `.error` files are never hidden.
+pub fn visible_record_files_with_errors(
+    prefix: &str,
+    keys: &[&str],
+    errors: &std::collections::HashSet<String>,
+    usable_sidecars: &std::collections::HashSet<String>,
+    readable_originals: &std::collections::HashSet<String>,
+) -> Vec<VisibleRecordFile> {
+    visible_record_files(prefix, keys)
+        .into_iter()
+        .filter_map(|mut file| {
+            let base = keys[file.base_index];
+            if errors.contains(base) {
+                return None;
+            }
+            if readable_originals.contains(base)
+                || errors.contains(&format!("{base}.error"))
+                || (file.source_index != file.base_index
+                    && !usable_sidecars.contains(keys[file.source_index]))
+            {
+                file.source_index = file.base_index;
+            }
+            // An orphaned extraction with a recognized error must not become a
+            // separate readable record when its original disappears.
+            if base
+                .strip_suffix(".text")
+                .is_some_and(|key| errors.contains(&format!("{key}.error")))
+            {
+                return None;
+            }
+            Some(file)
+        })
+        .collect()
+}

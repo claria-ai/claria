@@ -9,3 +9,5 @@ pub mod models;
 pub mod record_text;
 pub mod s3_keys;
 pub mod sensitive;
+
+pub mod processing;

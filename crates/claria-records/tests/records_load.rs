@@ -398,14 +398,24 @@ async fn search_record_contents_matches_text_case_insensitively() {
         b"Patient reports MIGRAINE symptoms".to_vec(),
     )
     .await;
-    put(&s3, &format!("{prefix}intake.pdf"), b"%PDF binary".to_vec()).await;
+    put(
+        &s3,
+        &format!("{prefix}intake.pdf"),
+        b"%PDF-1.7\nbinary".to_vec(),
+    )
+    .await;
     put(
         &s3,
         &format!("{prefix}intake.pdf.text"),
         b"History of migraine and tension headache".to_vec(),
     )
     .await;
-    put(&s3, &format!("{prefix}scan.pdf"), b"%PDF binary".to_vec()).await;
+    put(
+        &s3,
+        &format!("{prefix}scan.pdf"),
+        b"%PDF-1.7\nbinary".to_vec(),
+    )
+    .await;
     put(
         &s3,
         &format!("{prefix}scan.pdf.text"),
@@ -575,5 +585,161 @@ async fn get_or_fetch_serves_cached_bytes_when_etag_matches() {
             .get_or_fetch(&s3, BUCKET, &key, "\"different\"")
             .await
             .is_err()
+    );
+}
+
+#[tokio::test]
+async fn failed_extraction_hides_stale_text_and_preserves_user_error_files() {
+    use claria_core::processing::{ProcessingError, ProcessingFailureCode};
+    let (_mock, s3) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client_record_file(id, "test.pdf");
+    put(&s3, &key, b"%PDF-1.7 binary".to_vec()).await;
+    put(
+        &s3,
+        &format!("{key}.text"),
+        b"obsolete clinical evidence".to_vec(),
+    )
+    .await;
+    put(
+        &s3,
+        &format!("{key}.error"),
+        serde_json::to_vec(&ProcessingError::new(
+            ProcessingFailureCode::ProviderUnavailable,
+        ))
+        .unwrap(),
+    )
+    .await;
+    let user_key = claria_core::s3_keys::client_record_file(id, "user.error");
+    put(&s3, &user_key, b"ordinary notes".to_vec()).await;
+    let cache = RecordCache::new();
+    assert_eq!(
+        fetch_record_text(&s3, BUCKET, id, "test.pdf", &cache)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        fetch_record_text(&s3, BUCKET, id, "test.pdf.error", &cache)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(
+        search_record_contents(&s3, BUCKET, id, &cache, "obsolete")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fetch_record_text(&s3, BUCKET, id, "user.error", &cache)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("ordinary notes")
+    );
+}
+
+#[tokio::test]
+async fn unusable_sidecar_falls_back_to_printable_original() {
+    let (_mock, s3) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client_record_file(id, "note.json");
+    put(&s3, &key, b"{\"note\":\"original\"}".to_vec()).await;
+    put(&s3, &format!("{key}.text"), b" \n ".to_vec()).await;
+    assert_eq!(
+        fetch_record_text(&s3, BUCKET, id, "note.json", &RecordCache::new())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("{\"note\":\"original\"}")
+    );
+}
+
+#[tokio::test]
+async fn retry_cleanup_preserves_newer_error_revision_and_user_files() {
+    use claria_core::processing::ProcessingFailureCode;
+    use claria_records::processing::{clear_observed_error, observe_error, save_error};
+    let (_mock, s3) = setup().await;
+    let key = "records/test/original.pdf";
+    let absent = observe_error(&s3, BUCKET, key).await.unwrap();
+    assert!(
+        save_error(
+            &s3,
+            BUCKET,
+            key,
+            &absent,
+            ProcessingFailureCode::ProviderUnavailable
+        )
+        .await
+        .unwrap()
+    );
+    let first = observe_error(&s3, BUCKET, key).await.unwrap();
+    assert!(
+        save_error(&s3, BUCKET, key, &first, ProcessingFailureCode::InvalidText)
+            .await
+            .unwrap()
+    );
+    clear_observed_error(&s3, BUCKET, key, &first)
+        .await
+        .unwrap();
+    let newer = observe_error(&s3, BUCKET, key).await.unwrap();
+    assert_eq!(
+        newer.marker.as_ref().unwrap().code,
+        ProcessingFailureCode::InvalidText
+    );
+    clear_observed_error(&s3, BUCKET, key, &newer)
+        .await
+        .unwrap();
+    assert!(
+        observe_error(&s3, BUCKET, key)
+            .await
+            .unwrap()
+            .marker
+            .is_none()
+    );
+    put(&s3, &format!("{key}.error"), b"user owned".to_vec()).await;
+    let user = observe_error(&s3, BUCKET, key).await.unwrap();
+    assert!(
+        !save_error(
+            &s3,
+            BUCKET,
+            key,
+            &user,
+            ProcessingFailureCode::ProviderUnavailable
+        )
+        .await
+        .unwrap()
+    );
+    clear_observed_error(&s3, BUCKET, key, &user).await.unwrap();
+    assert_eq!(
+        claria_storage::objects::get_object(&s3, BUCKET, &format!("{key}.error"))
+            .await
+            .unwrap()
+            .body,
+        b"user owned"
+    );
+}
+
+#[tokio::test]
+async fn printable_replacement_supersedes_prior_extraction_without_deleting_it() {
+    let (_mock, s3) = setup().await;
+    let id = uuid::Uuid::new_v4();
+    let key = claria_core::s3_keys::client_record_file(id, "report.pdf");
+    put(&s3, &key, b"current printable original".to_vec()).await;
+    put(&s3, &format!("{key}.text"), b"old extraction".to_vec()).await;
+    assert_eq!(
+        fetch_record_text(&s3, BUCKET, id, "report.pdf", &RecordCache::new())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("current printable original")
+    );
+    assert_eq!(
+        claria_storage::objects::get_object(&s3, BUCKET, &format!("{key}.text"))
+            .await
+            .unwrap()
+            .body,
+        b"old extraction"
     );
 }

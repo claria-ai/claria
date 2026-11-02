@@ -133,6 +133,9 @@ pub struct PreferencesPatch {
     pub preferred_model_id: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
+    pub extraction_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub cost_explorer_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
@@ -159,6 +162,10 @@ pub struct PreferencesPatch {
 
 impl PreferencesPatch {
     fn apply_to(&self, synced: &mut SyncedPreferences) {
+        if let Some(model_id) = &self.extraction_model_id {
+            synced.extraction_model_id =
+                (!model_id.trim().is_empty()).then(|| model_id.trim().to_string());
+        }
         if let Some(preferred_model_id) = &self.preferred_model_id {
             synced.preferred_model_id = preferred_model_id.clone();
         }
@@ -343,6 +350,7 @@ pub async fn save_config(
             created_at: jiff::Timestamp::now(),
             credentials,
             preferred_model_id: None,
+            extraction_model_id: None,
             cost_explorer_enabled: false,
             hourly_cost_data: false,
             prompt_caching_enabled: true,
@@ -441,6 +449,7 @@ fn parse_preferences_file(bytes: &[u8]) -> Result<SyncedPreferences, CommandErro
 fn full_preferences_patch(synced: &SyncedPreferences) -> PreferencesPatch {
     PreferencesPatch {
         preferred_model_id: Some(synced.preferred_model_id.clone()),
+        extraction_model_id: Some(synced.extraction_model_id.clone().unwrap_or_default()),
         cost_explorer_enabled: Some(synced.cost_explorer_enabled),
         hourly_cost_data: Some(synced.hourly_cost_data),
         prompt_caching_enabled: Some(synced.prompt_caching_enabled),

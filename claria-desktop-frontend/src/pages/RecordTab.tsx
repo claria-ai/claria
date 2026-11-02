@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   listChatHistories,
   listDeletedFiles,
@@ -11,6 +11,7 @@ import DeletedSection from "../components/DeletedSection";
 import DropZoneHint from "../components/DropZoneHint";
 import EditorHistoryFolder from "../components/EditorHistoryFolder";
 import FileIcon from "../components/FileIcon";
+import ProcessingFailuresModal from "../components/ProcessingFailuresModal";
 import FileList from "../components/FileList";
 import FilesPanelHeader from "../components/FilesPanelHeader";
 import MemoRecorderBar from "../components/MemoRecorderBar";
@@ -47,8 +48,10 @@ export default function RecordTab({
   onResumeChat: (detail: ChatHistoryDetail) => void;
   onResumeWriting: (reportId: string) => void;
 }) {
+  const recordPanel = useRef<HTMLDivElement>(null);
+  const [needsTextOnly, setNeedsTextOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { files, loading, uploading, refresh, upload, remove } = useRecordFiles(
+  const { files, loading, uploading, refresh, upload, remove, failures, processingOpen, openProcessing, dismissProcessing, retrying, retry, review } = useRecordFiles(
     clientId,
     setError,
   );
@@ -106,6 +109,7 @@ export default function RecordTab({
   const regularFiles = files.filter(
     (f) =>
       !isChatHistory(f.filename) &&
+      (!needsTextOnly || f.processing_status?.status === "failed" || f.processing_status?.status === "unknown") &&
       (searchMatches(f.filename, search.query) ||
         search.contentMatches.has(f.filename)),
   );
@@ -115,8 +119,18 @@ export default function RecordTab({
       <div className="max-w-2xl mx-auto p-8">
         {bannerError && <ErrorBanner message={bannerError} />}
 
+        {files.some((file) => file.processing_status?.status === "unknown" || file.processing_status?.status === "failed") && (
+          <div className="mb-4 p-4 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-900">
+            <p>Some files do not have usable text. For older files, the previous processing outcome is unknown.</p>
+            <label className="flex items-center gap-2 mt-3"><input type="checkbox" checked={needsTextOnly} onChange={(event) => setNeedsTextOnly(event.target.checked)} />Show only files needing text</label>
+          </div>
+        )}
+        {failures.length > 0 && !processingOpen && <button onClick={openProcessing} className="mb-4 text-sm text-red-700 hover:underline">Review {failures.length} processing failures</button>}
         {/* File list / drop zone */}
         <div
+          ref={recordPanel}
+          tabIndex={-1}
+          aria-label="Record files"
           className={`border-2 rounded-lg transition-colors ${
             dragging ? "border-blue-400 bg-blue-50" : "border-gray-200 bg-white"
           }`}
@@ -183,6 +197,7 @@ export default function RecordTab({
               onEdit={fileDialog.openEdit}
               onPreview={fileDialog.openPreview}
               onDelete={fileDialog.openDelete}
+              onReviewProcessing={review}
             />
           )}
 
@@ -205,6 +220,13 @@ export default function RecordTab({
           )}
         </div>
       </div>
+
+      {processingOpen && <ProcessingFailuresModal files={failures} retrying={retrying} onRetry={retry} onClose={() => {
+        dismissProcessing();
+        requestAnimationFrame(() => {
+          if (!document.activeElement || document.activeElement === document.body) recordPanel.current?.focus();
+        });
+      }} />}
 
       <RecordFileDialogs
         clientId={clientId}

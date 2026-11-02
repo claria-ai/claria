@@ -634,3 +634,18 @@ fn migrating_a_synced_copy_is_idempotent() {
 
     assert_eq!(once, synced);
 }
+
+#[test]
+fn v16_migration_does_not_inherit_the_chat_model_for_extraction() {
+    let old = serde_json::json!({
+        "config_version":16, "region":"us-east-1", "system_name":"test", "account_id":"123456789012",
+        "created_at":"2026-01-01T00:00:00Z", "credentials":{"type":"default_chain"},
+        "preferred_model_id":"chat-only"
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_config(&dir, &old.to_string());
+    let cfg = config::load_config_at(&path).unwrap();
+    assert_eq!(cfg.extraction_model_id, None);
+    assert_eq!(cfg.preferred_model_id.as_deref(), Some("chat-only"));
+    assert_eq!(cfg.config_version, CURRENT_VERSION);
+}

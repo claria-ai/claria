@@ -21,6 +21,7 @@ export default function FileList({
   onEdit,
   onPreview,
   onDelete,
+  onReviewProcessing,
 }: {
   files: RecordFile[];
   /** Current search text, used to explain why a row matched. */
@@ -33,6 +34,7 @@ export default function FileList({
   onEdit: (filename: string) => void;
   onPreview: (filename: string) => void;
   onDelete: (filename: string) => void;
+  onReviewProcessing?: (file: RecordFile) => void;
 }) {
   return (
     <div className="divide-y divide-gray-100">
@@ -53,8 +55,15 @@ export default function FileList({
                 )}
             </div>
             <p className="text-xs text-gray-400">{formatFileSize(file.size)}</p>
+            {file.processing_status?.status === "failed" && <p className="text-xs text-red-700 mt-1">{file.processing_status.reason}</p>}
+            {file.processing_status?.status === "unknown" && <p className="text-xs text-amber-700 mt-1">Text unavailable · previous outcome unknown</p>}
           </div>
           <div className="flex gap-1">
+            {(file.processing_status?.status === "failed" || file.processing_status?.status === "unknown") && onReviewProcessing && (
+              <button onClick={() => onReviewProcessing(file)} className="px-2 py-1 text-xs text-amber-700 hover:bg-amber-50 rounded">
+                {file.processing_status.status === "failed" ? "Retry processing" : "Extract text"}
+              </button>
+            )}
             {showVersions && (
               <button
                 onClick={() => onOpenVersions(file.filename)}
