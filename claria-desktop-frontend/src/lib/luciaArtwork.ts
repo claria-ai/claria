@@ -37,7 +37,6 @@ export type LuciaClipName = keyof typeof manifest.clips;
 export const LUCIA_SCALE = 0.65;
 export const LUCIA_HEAD_ANCHOR = { x: manifest.head_anchor[0], y: manifest.head_anchor[1] };
 export const LUCIA_SOCK_IMAGE = "extras/sock/sock.png";
-export const LUCIA_FRUIT_IMAGE = "extras/dekopon/fruit.png";
 
 export function luciaClip(name: LuciaClipName): SpriteStripMetadata {
   const clip = manifest.clips[name];
@@ -83,7 +82,9 @@ export interface LuciaPose {
 
 /** Counts are committed by policy, not by the renderer or an animation callback. */
 export function selectLuciaPose(state: LuciaBehaviorState, elapsedMs: number, gaze?: SpriteFrame): LuciaPose {
-  if (state.behavior === "feeding-idle" || (state.behavior === "feeding" && (state.fedCount > 0 || state.reducedMotion))) {
+  const feedingClip = manifest.feeding_by_count[state.fedCount] as LuciaClipName;
+  if (state.behavior === "feeding" && !feedingClip) throw new RangeError("Lucia cannot feed beyond five fruits");
+  if (state.behavior === "feeding-idle" || (state.behavior === "feeding" && state.reducedMotion)) {
     return {
       image: manifest.stages.image,
       frame: { row: 0, column: state.fedCount, frameIndex: state.fedCount },
@@ -92,7 +93,8 @@ export function selectLuciaPose(state: LuciaBehaviorState, elapsedMs: number, ga
     };
   }
   const name: LuciaClipName = state.behavior === "inactive" || state.behavior === "gaze"
-    ? "idle" : state.behavior === "chase" ? "running-right" : state.behavior;
+    ? "idle" : state.behavior === "chase" ? "running-right"
+      : state.behavior === "feeding" ? feedingClip : state.behavior;
   const metadata = luciaClip(name);
   const source = manifest.clips[name];
   // The supplied idle cells narrow from 170 to 158 opaque pixels. Hold the original

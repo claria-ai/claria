@@ -110,15 +110,30 @@
       "height": 208,
       "sha256": "c7ef46eb6a89edb30df94cc9a87e38ede3d376ad7fed9143bd4b1fd30a7c4cf6"
     },
-    "extras/dekopon/fruit.png": {
-      "width": 128,
-      "height": 128,
-      "sha256": "4d64c4014587ce040b026d664d54c1c0a57abb5462c3cbc539ad13e2a9a1e57a"
-    },
     "extras/sock/sock.png": {
       "width": 56,
       "height": 48,
       "sha256": "cc070bdcb986fd37de2ba670f885f700b56110a7adc8a42ac51f6128519408ae"
+    },
+    "extras/dekopon/feeding-size-1/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "d1bfd48efc4bbfadc6f67fcc6f2dfd8556760d714517ddcb3db779ebf66e56f9"
+    },
+    "extras/dekopon/feeding-size-2/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "028f08b0db028efa0534fcae141cbeab21307475a464b6f2bd9f6a216bd9ef54"
+    },
+    "extras/dekopon/feeding-size-3/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "fbee6d85a66812bc387e9cbcaeadac8ed060d4e61689cd25e8fe2944996a39c0"
+    },
+    "extras/dekopon/feeding-size-4/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "aacd526c6b9bf0b6d687c7ba7e57cee5fe84c54315e0d019986fdd1bded5e570"
     }
   },
   "clips": {
@@ -427,6 +442,82 @@
       ],
       "loop": false,
       "ground_y": 197
+    },
+    "feeding-size-1": {
+      "image": "extras/dekopon/feeding-size-1/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 195
+    },
+    "feeding-size-2": {
+      "image": "extras/dekopon/feeding-size-2/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 196
+    },
+    "feeding-size-3": {
+      "image": "extras/dekopon/feeding-size-3/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 197
+    },
+    "feeding-size-4": {
+      "image": "extras/dekopon/feeding-size-4/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 197
     }
   },
   "stages": {
@@ -452,14 +543,11 @@
       195
     ]
   },
-  "first_feed_from_counts": [
-    0
-  ],
   "max_fruit_count": 5,
   "source_manifests": {
     "lucia-core-manifest.json": "db47b2789756d11deece14dfdd43628a2c2f872766262f9f62a3290a1728e136",
     "lucia-extras-manifest.json": "ad99ef26ee0ddee5374145831fc27984ad0fe9d936b809347521c8262c1039de",
-    "extras/dekopon/manifest.json": "c430207f28c9c67aa7d5547e0502c662646404326c9b539bc04e48ea9ea9a8d7"
+    "extras/dekopon/manifest.json": "7f6e8136378276116f416ef3f07deda58895e5c585c0a5453bb58daab1606f29"
   },
   "gaze_anchor": [
     96,
@@ -468,5 +556,12 @@
   "registration": {
     "alpha_threshold": 128,
     "method": "Ground line is the pixel boundary below the deepest opaque contact in each clip; airborne stride offsets are retained. Static citrus stages are registered individually. Source anchors are preserved for provenance."
-  }
+  },
+  "feeding_by_count": [
+    "feeding",
+    "feeding-size-1",
+    "feeding-size-2",
+    "feeding-size-3",
+    "feeding-size-4"
+  ]
 }

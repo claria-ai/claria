@@ -6,12 +6,10 @@ const output = "../screenshots/review/extraction-processing";
 test.beforeEach(async ({ page }) => {
   await page.addInitScript({ content: buildInitScript({ configured: true }) + `(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
-    const listeners = {};
     let configured = false;
     const rows = [{filename:"assessment.pdf",size:12800,uploaded_at:null,processing_status:{status:"unknown"}}];
-    window.__dropExtractionFiles = (paths) => { for (const callback of listeners["tauri://drag-drop"] || []) window["_" + callback]({event:"tauri://drag-drop",payload:{paths,position:{x:200,y:200}}}); };
+    window.__dropExtractionFiles = (paths) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {event:"tauri://drag-drop",payload:{paths,position:{x:200,y:200}}});
     window.__TAURI_INTERNALS__.invoke = async (cmd,args) => {
-      if(cmd === "plugin:event|listen") (listeners[args.event] ||= []).push(args.handler);
       if(cmd === "load_config" || cmd === "fetch_cloud_preferences") return {...await original("load_config",{}),model_tuning:{reasoning_enabled:true,effort:null,temperature:null},draft_pipeline:{},chat_streaming:"paragraph",extraction_model_id:configured ? "us.anthropic.claude-sonnet-4-20250514-v1:0":null};
       if(cmd === "save_preferences_patch") {configured=!!args.patch.extraction_model_id; return {...await original("load_config",{}),model_tuning:{reasoning_enabled:true,effort:null,temperature:null},draft_pipeline:{},chat_streaming:"paragraph",extraction_model_id:args.patch.extraction_model_id};}
       if(cmd === "list_record_files") return rows;

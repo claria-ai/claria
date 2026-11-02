@@ -199,7 +199,7 @@ test("synthetic visibility lifecycle removes the scene and resumes without a mis
   await expect(page.getByTestId("lucia-scene")).toHaveAttribute("data-behavior", "idle");
 });
 
-test("feeding preserves later bodies, reaches five exactly and resets explicitly", async ({ page }) => {
+test("feeding animates each matching starting body, reaches five exactly and resets explicitly", async ({ page }) => {
   await openClient(page);
   await controls(page);
   await page.getByLabel("Lucia mode").selectOption("feeding");
@@ -209,8 +209,13 @@ test("feeding preserves later bodies, reaches five exactly and resets explicitly
     await feed.click();
     await expect(feed).toBeDisabled();
     await expect(page.getByTestId("lucia-scene")).toHaveAttribute("data-fed-count", String(count));
-    if (count > 0) await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-frame", `0:${count}`);
-    await page.clock.runFor(duration("feeding"));
+    await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", `extras/dekopon/${count === 0 ? "feeding" : `feeding-size-${count}`}/feeding-strip.png`);
+    await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-frame", "0:0");
+    await expect(page.getByTestId("lucia-fruit")).toHaveCount(0);
+    await page.clock.runFor(800);
+    await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-frame", "0:5");
+    await expect(page.getByTestId("lucia-scene")).toHaveAttribute("data-fed-count", String(count));
+    await page.clock.runFor(duration("feeding") - 800);
     await expect(page.getByTestId("lucia-scene")).toHaveAttribute("data-fed-count", String(count + 1));
   }
   await expect(page.getByTestId("lucia-scene")).toHaveAttribute("data-behavior", "full");
@@ -257,6 +262,18 @@ test("reduced motion freezes frames and suppresses travel; failed images stop th
   await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-frame", "0:0");
   expect(await page.getByTestId("lucia-sprite").boundingBox()).toEqual(bounds);
   await screenshot(page, "reduced-motion");
+  await controls(page);
+  await page.getByLabel("Lucia mode").selectOption("feeding");
+  for (let count = 0; count < 5; count++) {
+    await page.getByRole("button", { name: "Feed a dekopon" }).click();
+    await page.clock.runFor(800);
+    await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", manifest.stages.image);
+    await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-frame", `0:${count}`);
+    await page.clock.runFor(duration("feeding") - 800);
+    await expect(page.getByTestId("lucia-scene")).toHaveAttribute("data-fed-count", String(count + 1));
+  }
+  await page.clock.runFor(duration("full"));
+  await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-frame", "0:5");
   // Vite also serves PNG URL imports as JavaScript modules; fail the image,
   // not the application's module graph on reload.
   await page.route("**/assets/lucia/**/*.png*", (route) =>

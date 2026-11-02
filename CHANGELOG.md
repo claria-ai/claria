@@ -4,6 +4,8 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Lucia lifts and eats each dekopon with the matching body-size animation
+
 - Lucia holds a steady companion pose between actions
 - Lucia switches animation strips without blank frames
 - The local Lucia demo offers explicit animation previews

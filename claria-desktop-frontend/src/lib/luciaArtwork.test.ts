@@ -131,19 +131,50 @@ describe("Lucia policy-to-art mapping", () => {
     }
   });
 
-  it("uses the baseline feeding strip only for the first fruit", () => {
-    expect(manifest.first_feed_from_counts).toEqual([0]);
+  it("maps every current feeding count to its own non-looping six-frame strip", () => {
+    expect(manifest.feeding_by_count).toEqual(["feeding", "feeding-size-1", "feeding-size-2", "feeding-size-3", "feeding-size-4"]);
     expect(manifest.stages.counts).toEqual([0, 1, 2, 3, 4, 5]);
-    expect(selectLuciaPose(state({ behavior: "feeding", fedCount: 0 }), 400).image).toContain("feeding-strip");
-    for (const fedCount of [1, 2, 3, 4] as const) {
-      for (const elapsed of [0, 400, 1049]) {
+    for (const fedCount of [0, 1, 2, 3, 4] as const) {
+      const name = manifest.feeding_by_count[fedCount] as LuciaClipName;
+      const image = `extras/dekopon/${fedCount === 0 ? "feeding" : `feeding-size-${fedCount}`}/feeding-strip.png`;
+      expect(spriteClipDurationMs(luciaClip(name).clip)).toBe(LUCIA_BEHAVIOR_CONFIG.durationsMs.feeding);
+      for (const [elapsed, column] of [[0, 0], [149, 0], [150, 1], [300, 2], [450, 3], [600, 4], [750, 5], [1049, 5], [1050, 5], [20_000, 5]]) {
         expect(selectLuciaPose(state({ behavior: "feeding", fedCount }), elapsed)).toMatchObject({
+          image, frame: { row: 0, column }, anchor: [96, manifest.clips[name].ground_y], animated: true,
+        });
+        expect(selectLuciaPose(state({ behavior: "feeding", fedCount, reducedMotion: true }), elapsed)).toMatchObject({
           image: manifest.stages.image, frame: { column: fedCount }, animated: false,
         });
       }
       expect(selectLuciaPose(state({ behavior: "feeding-idle", fedCount }), 0).frame.column).toBe(fedCount);
     }
+    expect(() => selectLuciaPose(state({ behavior: "feeding", fedCount: 5 }), 0)).toThrow("beyond five");
     expect(selectLuciaPose(state({ behavior: "full", fedCount: 5 }), 0).image).toContain("full-strip");
+  });
+
+  it("keeps later feeding silhouettes at least as wide as their starting stage with fixed contact", () => {
+    const stages = rgbaPixels(manifest.stages.image);
+    const width = (image: ReturnType<typeof rgbaPixels>, column: number) => {
+      const occupied: number[] = [];
+      for (let x = 0; x < 192; x++) {
+        for (let y = 0; y < 208; y++) {
+          if (image.pixels[(y * image.width + column * 192 + x) * 4 + 3] >= manifest.registration.alpha_threshold) {
+            occupied.push(x);
+            break;
+          }
+        }
+      }
+      return occupied.at(-1)! - occupied[0] + 1;
+    };
+    for (const count of [1, 2, 3, 4]) {
+      const source = manifest.clips[manifest.feeding_by_count[count] as LuciaClipName];
+      const image = rgbaPixels(source.image);
+      for (let frame = 0; frame < 6; frame++) {
+        expect(opaqueBottom(image, 0, frame)).toBe(source.ground_y);
+        expect(width(image, frame)).toBeGreaterThanOrEqual(width(stages, count));
+      }
+      expect(width(image, 5)).toBeLessThanOrEqual(width(stages, count + 1));
+    }
   });
 
   it("anchors every gaze direction and has no pointer-driven travel", () => {

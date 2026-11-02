@@ -132,3 +132,89 @@ test("decoded canvas stays nonblank across every sampled sock-switch frame and k
     expect(samples.find((sample) => sample.behavior === behavior)?.frame).toBe("0:0");
   }
 });
+
+
+test("every-size feeding stays decoded, grounded and count-correct through all five completions", async ({ page }) => {
+  await page.goto(`${BASE_URL}/lucia-demo.html`);
+  await page.getByLabel("Lucia mode", { exact: true }).selectOption("feeding");
+  const scene = page.getByTestId("lucia-scene");
+  const feed = page.getByRole("button", { name: "Feed a dekopon", exact: true });
+  await page.evaluate(() => {
+    const samples: Array<{ behavior: string; count: number; image: string; frame: string; opaque: number; width: number; gap: number; duplicateFruit: boolean }> = [];
+    const sample = () => {
+      const sprite = document.querySelector<HTMLElement>('[data-testid="lucia-sprite"]')!;
+      const scene = document.querySelector<HTMLElement>('[data-testid="lucia-scene"]')!;
+      const pixels = sprite.querySelector("canvas")!.getContext("2d")!.getImageData(0, 0, 192, 208).data;
+      let minX = 192, maxX = -1, bottom = -1, opaque = 0;
+      for (let y = 0; y < 208; y++) for (let x = 0; x < 192; x++) {
+        if (pixels[(y * 192 + x) * 4 + 3] >= 128) {
+          minX = Math.min(minX, x); maxX = Math.max(maxX, x); bottom = y; opaque++;
+        }
+      }
+      const box = sprite.getBoundingClientRect();
+      const rail = document.querySelector('[data-testid="lucia-rail"]')!.getBoundingClientRect();
+      samples.push({ behavior: scene.dataset.behavior!, count: Number(scene.dataset.fedCount), image: sprite.dataset.image!, frame: sprite.dataset.frame!, opaque, width: maxX - minX + 1, gap: rail.bottom - (box.y + (bottom + 1) * box.height / 208), duplicateFruit: !!document.querySelector('[data-testid="lucia-fruit"]') });
+      if (scene.dataset.behavior !== "feeding-idle" || scene.dataset.fedCount !== "5") requestAnimationFrame(sample);
+    };
+    Object.assign(window, { luciaFeedingSamples: samples });
+    requestAnimationFrame(sample);
+  });
+  for (let count = 0; count < 5; count++) {
+    await feed.click();
+    await expect(feed).toBeDisabled();
+    await feed.evaluate((button) => (button as HTMLButtonElement).click());
+    await expect(scene).toHaveAttribute("data-fed-count", String(count));
+    await expect(scene).toHaveAttribute("data-fed-count", String(count + 1));
+    if (count < 4) await page.waitForTimeout(50); // Let the sampler observe the completed static stage before the next click.
+  }
+  await expect(scene).toHaveAttribute("data-behavior", "feeding-idle");
+  await expect(feed).toBeDisabled();
+  await page.waitForTimeout(50);
+  const samples = await page.evaluate(() => (window as typeof window & { luciaFeedingSamples: Array<{ behavior: string; count: number; image: string; frame: string; opaque: number; width: number; gap: number; duplicateFruit: boolean }> }).luciaFeedingSamples);
+  expect(samples.length).toBeGreaterThan(100);
+  expect([...new Set(samples.map((sample) => sample.count))]).toEqual([0, 1, 2, 3, 4, 5]);
+  for (const sample of samples) {
+    expect(sample.opaque).toBeGreaterThan(10_000);
+    expect(sample.duplicateFruit).toBe(false);
+    if (["feeding", "feeding-idle"].includes(sample.behavior)) expect(sample.gap).toBeCloseTo(6, 1);
+    if (sample.behavior === "feeding") {
+      expect(sample.image).toBe(`extras/dekopon/${sample.count === 0 ? "feeding" : `feeding-size-${sample.count}`}/feeding-strip.png`);
+    }
+  }
+  for (const count of [1, 2, 3, 4]) {
+    const before = samples.find((sample) => sample.behavior === "feeding-idle" && sample.count === count)!;
+    const feeding = samples.filter((sample) => sample.behavior === "feeding" && sample.count === count);
+    expect([...new Set(feeding.map((sample) => sample.frame))]).toEqual(["0:0", "0:1", "0:2", "0:3", "0:4", "0:5"]);
+    expect(Math.min(...feeding.map((sample) => sample.width))).toBeGreaterThanOrEqual(before.width);
+    const after = samples.find((sample) => sample.behavior === "feeding-idle" && sample.count === count + 1)!;
+    expect(feeding.at(-1)!.width).toBeLessThanOrEqual(after.width);
+  }
+});
+
+test("a failed later-size strip prevents scene startup and recovers after retry", async ({ page }) => {
+  await page.route("**/feeding-size-3/feeding-strip.png*", (route) => route.request().resourceType() === "image" ? route.abort() : route.continue());
+  await page.goto(`${BASE_URL}/lucia-demo.html`);
+  await expect(page.getByRole("alert")).toContainText("artwork could not be loaded");
+  await expect(page.getByTestId("lucia-scene")).toHaveCount(0);
+  await page.unroute("**/feeding-size-3/feeding-strip.png*");
+  await page.getByRole("button", { name: "Hide Lucia", exact: true }).click();
+  await page.getByRole("button", { name: "Show Lucia", exact: true }).click();
+  await expect(page.getByTestId("lucia-scene")).toBeVisible();
+});
+
+test("inference interrupts a later-size feed without awarding its fruit", async ({ page }) => {
+  await page.goto(`${BASE_URL}/lucia-demo.html`);
+  await page.getByLabel("Lucia mode", { exact: true }).selectOption("feeding");
+  const scene = page.getByTestId("lucia-scene");
+  const feed = page.getByRole("button", { name: "Feed a dekopon", exact: true });
+  await feed.click();
+  await expect(scene).toHaveAttribute("data-fed-count", "1");
+  await feed.click();
+  await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", /feeding-size-1/);
+  await page.getByRole("button", { name: "Simulate inference", exact: true }).click();
+  await expect(scene).toHaveAttribute("data-behavior", "reading-enter");
+  await expect(scene).toHaveAttribute("data-fed-count", "1");
+  await expect(scene).toHaveAttribute("data-behavior", "feeding-idle", { timeout: 10_000 });
+  await expect(scene).toHaveAttribute("data-fed-count", "1");
+  await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-frame", "0:1");
+});

@@ -9,7 +9,7 @@ import type { LuciaBehaviorState, LuciaMode, LuciaPreviewBehavior } from "../lib
 import type { SpriteFrame } from "../lib/luciaSprite";
 import {
   type LuciaArtwork, loadLuciaArtwork, luciaImageUrl, luciaPosition, selectLuciaPose,
-  LUCIA_BEHAVIOR_CONFIG, LUCIA_FRUIT_IMAGE, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SOCK_IMAGE,
+  LUCIA_BEHAVIOR_CONFIG, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SOCK_IMAGE,
 } from "../lib/luciaArtwork";
 
 // Match the standalone 56×48 sock to pickup's embedded blue bounds (105,171)–(161,201).
@@ -111,7 +111,6 @@ function LuciaSprite({ state, rail, bark, artwork, gaze, spriteRef: gazeRef }: S
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const spriteRef = gazeRef ?? ownRef;
   const sockRef = useRef<HTMLImageElement>(null);
-  const fruitRef = useRef<HTMLImageElement>(null);
 
   // Commit the new pose/registration before paint, together with sock visibility.
   useLayoutEffect(() => {
@@ -151,9 +150,6 @@ function LuciaSprite({ state, rail, bark, artwork, gaze, spriteRef: gazeRef }: S
         const pickupX = state.reducedMotion ? Math.min(90, width / 2) : width / 2;
         sockRef.current.style.left = `${pickupX + (133 - 96) * LUCIA_SCALE - SOCK_WIDTH / 2}px`;
       }
-      if (fruitRef.current) {
-        fruitRef.current.style.left = `${Math.min(90, width / 2) + 50}px`;
-      }
       return pose.animated || (!state.reducedMotion && ["chase", "carry-away", "skateboard"].includes(state.behavior));
     };
     const tick = () => {
@@ -180,7 +176,5 @@ function LuciaSprite({ state, rail, bark, artwork, gaze, spriteRef: gazeRef }: S
     </button>
     {state.behavior === "chase" && <img ref={sockRef} src={luciaImageUrl(LUCIA_SOCK_IMAGE)} alt=""
       data-testid="lucia-sock" className="absolute" style={{ width: SOCK_WIDTH, height: SOCK_HEIGHT, bottom: 0, transform: "rotate(-60deg)" }} />}
-    {state.behavior === "feeding" && state.fedCount > 0 && <img ref={fruitRef} src={luciaImageUrl(LUCIA_FRUIT_IMAGE)} alt=""
-      data-testid="lucia-fruit" className="absolute bottom-2" width="28" height="28" />}
   </>;
 }

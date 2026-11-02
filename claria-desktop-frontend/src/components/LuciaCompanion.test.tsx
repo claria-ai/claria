@@ -115,7 +115,7 @@ describe("LuciaCompanion", () => {
     expect(sprite().querySelector("canvas")).not.toBeNull();
   });
 
-  it("retains the current static body on later feeds and commits once, never a sixth fruit", async () => {
+  it("animates the matching current body for every feed and commits once, never a sixth fruit", async () => {
     await mount();
     mode("feeding");
     const feed = screen.getByRole("button", { name: "Feed a dekopon", hidden: true });
@@ -123,9 +123,13 @@ describe("LuciaCompanion", () => {
       fireEvent.click(feed);
       fireEvent.click(feed);
       expect(scene().dataset.fedCount).toBe(String(count));
-      expect(sprite().dataset.image).toContain(count === 0 ? "feeding-strip" : "stages-strip");
-      if (count > 0) expect(sprite().dataset.frame).toBe(`0:${count}`);
-      advance(config.durationsMs.feeding);
+      expect(sprite().dataset.image).toBe(`extras/dekopon/${count === 0 ? "feeding" : `feeding-size-${count}`}/feeding-strip.png`);
+      expect(sprite().dataset.frame).toBe("0:0");
+      expect(screen.queryByTestId("lucia-fruit")).toBeNull();
+      advance(800);
+      expect(sprite().dataset.frame).toBe("0:5");
+      expect(scene().dataset.fedCount).toBe(String(count));
+      advance(config.durationsMs.feeding - 800);
       expect(scene().dataset.fedCount).toBe(String(count + 1));
     }
     expect(scene().dataset.behavior).toBe("full");
@@ -137,6 +141,27 @@ describe("LuciaCompanion", () => {
     expect(scene().dataset.fedCount).toBe("5");
     fireEvent.click(screen.getByRole("button", { name: "Reset feeding", hidden: true }));
     expect(scene().dataset.fedCount).toBe("0");
+  });
+
+  it.each([1, 2, 3, 4])("cancels size %i feeding on hide without committing another fruit", async (count) => {
+    await mount();
+    mode("feeding");
+    const feed = screen.getByRole("button", { name: "Feed a dekopon", hidden: true });
+    for (let completed = 0; completed < count; completed++) {
+      fireEvent.click(feed);
+      advance(config.durationsMs.feeding);
+    }
+    fireEvent.click(feed);
+    advance(300);
+    hidden = true;
+    fireEvent(document, new Event("visibilitychange"));
+    advance(config.durationsMs.feeding * 2);
+    expect(screen.queryByTestId("lucia-scene")).toBeNull();
+    hidden = false;
+    fireEvent(document, new Event("visibilitychange"));
+    expect(scene().dataset.fedCount).toBe(String(count));
+    expect(sprite().dataset.image).toBe(manifest.stages.image);
+    expect(sprite().dataset.frame).toBe(`0:${count}`);
   });
 
   it("keeps reading for overlapping jobs and exits after failure/cancellation settlement", async () => {
@@ -194,10 +219,15 @@ describe("LuciaCompanion", () => {
     mode("gaze");
     expect(vi.getTimerCount()).toBe(0);
     mode("feeding");
-    fireEvent.click(screen.getByRole("button", { name: "Feed a dekopon", hidden: true }));
-    expect(sprite().dataset.image).toContain("stages-strip");
-    advance(config.durationsMs.feeding);
-    expect(sprite().dataset.frame).toBe("0:1");
+    for (let count = 0; count < 5; count++) {
+      fireEvent.click(screen.getByRole("button", { name: "Feed a dekopon", hidden: true }));
+      expect(sprite().dataset.image).toBe(manifest.stages.image);
+      expect(sprite().dataset.frame).toBe(`0:${count}`);
+      advance(config.durationsMs.feeding);
+      expect(scene().dataset.fedCount).toBe(String(count + 1));
+    }
+    advance(config.durationsMs.full);
+    expect(sprite().dataset.frame).toBe("0:5");
     unmount();
     expect(vi.getTimerCount()).toBe(0);
   });

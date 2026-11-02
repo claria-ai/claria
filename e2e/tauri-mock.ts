@@ -535,6 +535,7 @@ export function buildInitScript(
             return args.handler;
           }
           if (cmd === "plugin:event|unlisten") return;
+          if (cmd === "plugin:event|emit") return emitEvent(args.event, args.payload);
           if (cmd === "plugin:webview|get_all_webviews") {
             return [{ label: "main", url: "http://localhost:1420" }];
           }
