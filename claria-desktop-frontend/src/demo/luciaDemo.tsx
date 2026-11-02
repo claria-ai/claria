@@ -26,7 +26,7 @@ const demoFixtures: Record<string, unknown> = {
   get_local_transcription_status: { ...(fixtures.get_local_transcription_status as LocalTranscriptionStatus), models: [] },
   chat_message: {
     chat_id: "demo-chat", chat_name: "Simulated conversation", usage: null,
-    content: "This is a simulated local response. No model was called and nothing was saved. Try Lucia’s seated gaze, drop a sock, or feed up to five dekopon using her header controls.",
+    content: "This is a simulated local response. No model was called and nothing was saved. Try Lucia’s seated gaze, drop a sock, or feed up to five dekopon using the controls beside her.",
   },
 };
 
@@ -69,7 +69,7 @@ export default function LuciaDemo() {
         {notice && <span role="status">{notice}</span>}
       </div>
       <div className="lucia-demo-workspace flex-1 min-h-0">
-        <ClientRecord clientId={CLIENT_ID} clientName="Jane Doe — synthetic demo" luciaControlsInitiallyOpen luciaPreviewsEnabled
+        <ClientRecord clientId={CLIENT_ID} clientName="Jane Doe — synthetic demo" luciaPreviewsEnabled
           navigate={() => setNotice("Stay in this demo workspace: Record, Chat and Writing are available above.")}
           onClientNameChanged={() => {}} onManageWriterSection={() => setNotice("Template management is unavailable in this local demo.")} />
       </div>

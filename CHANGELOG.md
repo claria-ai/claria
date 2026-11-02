@@ -4,6 +4,11 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Lucia's controls sit beside her in the rail, leaving the client header clean
+- Clicking Lucia feeds her in feeding mode and pets her otherwise
+- Lucia's modes are one-click buttons instead of a menu
+- An × beside Lucia hides her and says where to turn her back on
+- A drawing failure shows an error beside Lucia instead of a blank rail
 - Lucia keeps her play schedule when you switch windows, so twirls and skateboarding actually happen
 - A feed in progress still counts when the reduced-motion setting changes
 - Lucia's artwork decodes once per session instead of on every client switch

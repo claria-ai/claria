@@ -24,7 +24,6 @@ export default function ClientWorkspaceTabs({
   onSettings,
   onBack,
   children,
-  luciaControlsInitiallyOpen = false,
   luciaPreviewsEnabled = false,
 }: {
   clientId: string;
@@ -34,7 +33,6 @@ export default function ClientWorkspaceTabs({
   onSettings: () => boolean;
   onBack: () => void;
   children: ReactNode;
-  luciaControlsInitiallyOpen?: boolean;
   luciaPreviewsEnabled?: boolean;
 }) {
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -100,7 +98,6 @@ export default function ClientWorkspaceTabs({
         >
           <GearIcon />
         </button>
-        {distractionMode && <LuciaCompanion key={clientId} clientId={clientId} rail={luciaRail} controlsInitiallyOpen={luciaControlsInitiallyOpen} previewsEnabled={luciaPreviewsEnabled} />}
         <h2 className="text-lg font-semibold flex-1">{clientName}</h2>
         <div
           role="tablist"
@@ -146,8 +143,12 @@ export default function ClientWorkspaceTabs({
       >
         {children}
       </div>
-      {distractionMode && <div ref={setLuciaRail} data-testid="lucia-rail"
-        className="relative shrink-0 h-[142px] overflow-hidden border-t border-gray-100 bg-gray-50/40" />}
+      {distractionMode && (
+        <div ref={setLuciaRail} data-testid="lucia-rail"
+          className="relative shrink-0 h-[142px] overflow-hidden border-t border-gray-100 bg-gray-50/40">
+          <LuciaCompanion key={clientId} clientId={clientId} rail={luciaRail} previewsEnabled={luciaPreviewsEnabled} />
+        </div>
+      )}
     </div>
   );
 }

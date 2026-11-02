@@ -1,11 +1,12 @@
-import { useLayoutEffect, useRef, type RefObject } from "react";
-import { createPortal } from "react-dom";
+import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import manifest from "../assets/lucia/manifest.json";
 import { useAsyncLoad } from "../lib/useAsyncLoad";
+import { logFrontendEvent } from "../lib/logBridge";
+import { CloseIcon } from "./icons";
 import { setDistractionModeEnabled } from "../lib/distractionMode";
 import { useLuciaBehavior } from "../lib/useLuciaBehavior";
 import { useLuciaGaze } from "../lib/useLuciaGaze";
-import type { LuciaBehaviorState, LuciaMode, LuciaPreviewBehavior } from "../lib/luciaBehavior";
+import { isReading, ownsSock, type LuciaBehavior, type LuciaBehaviorState, type LuciaMode, type LuciaPreviewBehavior } from "../lib/luciaBehavior";
 import type { SpriteFrame } from "../lib/luciaSprite";
 import {
   type LuciaArtwork, loadLuciaArtwork, luciaImageUrl, luciaPosition, selectLuciaPose,
@@ -16,79 +17,106 @@ import {
 const SOCK_SCALE = LUCIA_SCALE * 1.15;
 const SOCK_WIDTH = manifest.assets[LUCIA_SOCK_IMAGE].width * SOCK_SCALE;
 const SOCK_HEIGHT = manifest.assets[LUCIA_SOCK_IMAGE].height * SOCK_SCALE;
+const TRAVELLING: ReadonlySet<LuciaBehavior> = new Set(["chase", "carry-away", "skateboard"]);
 
-type CompanionProps = { clientId: string; rail: HTMLDivElement | null; controlsInitiallyOpen?: boolean; previewsEnabled?: boolean };
+type CompanionProps = { clientId: string; rail: HTMLDivElement | null; previewsEnabled?: boolean };
 
-/** The existing machine-local preference owns this mount, including every timer and input listener. */
-export default function LuciaCompanion({ clientId, rail, controlsInitiallyOpen = false, previewsEnabled = false }: CompanionProps) {
+const MODES: ReadonlyArray<{ id: LuciaMode; label: string; title: string }> = [
+  { id: "companion", label: "Companion", title: "Lucia keeps you company" },
+  { id: "gaze", label: "Watch", title: "Lucia sits and watches your pointer" },
+  { id: "feeding", label: "Feed", title: "Feed Lucia up to five dekopon" },
+];
+
+/** Rendered inside the workspace's Lucia rail; the existing machine-local preference owns this mount. */
+export default function LuciaCompanion({ clientId, rail, previewsEnabled = false }: CompanionProps) {
   const artwork = useAsyncLoad(loadLuciaArtwork, []);
-  if (artwork.data && rail) return <LuciaScene clientId={clientId} rail={rail} controlsInitiallyOpen={controlsInitiallyOpen} previewsEnabled={previewsEnabled} artwork={artwork.data} />;
+  if (artwork.data && rail) return <LuciaScene clientId={clientId} rail={rail} previewsEnabled={previewsEnabled} artwork={artwork.data} />;
   return (
-    <div className="flex items-center gap-2 text-xs text-gray-500">
+    <div className="absolute inset-0 flex items-center gap-3 px-6 text-xs text-gray-500">
       <span role={artwork.error ? "alert" : "status"}>{artwork.error ?? "Loading Lucia…"}</span>
-      <button type="button" onClick={() => setDistractionModeEnabled(false)}>Hide Lucia</button>
+      <HideButton />
     </div>
   );
 }
 
-function LuciaScene({ clientId, rail, controlsInitiallyOpen, previewsEnabled, artwork }: CompanionProps & { rail: HTMLDivElement; artwork: LuciaArtwork }) {
+function HideButton() {
+  return (
+    <button type="button" onClick={() => setDistractionModeEnabled(false)}
+      title="Hide Lucia (turn her back on in Preferences → Distraction mode)" aria-label="Hide Lucia"
+      className="absolute right-3 top-2 p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100">
+      <CloseIcon className="w-4 h-4" />
+    </button>
+  );
+}
+
+function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps & { rail: HTMLDivElement; artwork: LuciaArtwork }) {
   const { state, dropSock, setMode, bark, feed, reset, preview } = useLuciaBehavior(LUCIA_BEHAVIOR_CONFIG, clientId);
-  const sockBusy = ["chase", "pickup", "carry-away"].includes(state.behavior);
+  const [paintError, setPaintError] = useState<string | null>(null);
+  const sockBusy = ownsSock(state.behavior);
   const available = state.active && state.visible;
-  const disabled = !available || state.mode === "feeding" || sockBusy;
+  const canFeed = available && state.mode === "feeding" && state.behavior === "feeding-idle"
+    && state.fedCount < 5 && !state.inferencePending;
+  if (paintError) {
+    return (
+      <div className="absolute inset-0 flex items-center gap-3 px-6 text-xs text-gray-500">
+        <span role="alert">{paintError}</span>
+        <HideButton />
+      </div>
+    );
+  }
   return (
     <>
-      <button type="button" onClick={dropSock} disabled={disabled}
-        title="Drop a sock for Lucia" aria-label="Drop a sock for Lucia"
-        className="-ml-1 p-1.5 rounded-md hover:bg-gray-100 disabled:opacity-40">
-        <img src={luciaImageUrl(LUCIA_SOCK_IMAGE)} alt="" width="20" height="20" />
-      </button>
-      <details open={controlsInitiallyOpen || undefined} className="relative text-xs text-gray-600">
-        <summary className="cursor-pointer rounded p-1.5 hover:bg-gray-100">Lucia</summary>
-        <div className="absolute left-0 top-full z-20 mt-2 w-56 rounded-lg border border-gray-200 bg-white p-3 shadow-lg space-y-3">
-          <label className="block">Lucia mode
-            <select aria-label="Lucia mode" value={state.mode}
-              onChange={(event) => setMode(event.target.value as LuciaMode)}
-              className="mt-1 w-full rounded border border-gray-300 p-1">
-              <option value="companion">Companion</option>
-              <option value="gaze">Seated gaze</option>
-              <option value="feeding">Dekopon feeding</option>
-            </select>
-          </label>
-          {state.mode === "feeding" && <>
-            <p>Dekopon: {state.fedCount}/5</p>
-            <button type="button" onClick={feed}
-              disabled={!available || state.behavior !== "feeding-idle" || state.fedCount === 5 || state.inferencePending}
-              className="rounded border border-gray-300 px-2 py-1 disabled:opacity-40">Feed a dekopon</button>
-            <button type="button" onClick={reset} className="ml-2 underline">Reset feeding</button>
-            <p>Reset, leaving feeding mode or hiding Lucia clears the count. Switching away from this client also resets it.</p>
-          </>}
-          {import.meta.env.DEV && previewsEnabled && <label className="block">Preview Lucia action (local demo)
-            <select aria-label="Preview Lucia action" value=""
-              disabled={!available || state.mode !== "companion" || state.reducedMotion || state.inferencePending || sockBusy || state.behavior === "bark" || state.behavior === "reading-exit"}
-              onChange={(event) => preview(event.target.value as LuciaPreviewBehavior)}
-              className="mt-1 w-full rounded border border-gray-300 p-1">
-              <option value="" disabled>Choose an action…</option>
-              <option value="tailwag">Entrance wag</option>
-              <option value="stretch">Stretch then lie down</option>
-              <option value="ear-perk">Ears perk</option>
-              <option value="twirl">Twirl in place</option>
-              <option value="skateboard">Skateboard crossing</option>
-            </select>
-            <span className="mt-1 block">Preview only. Natural rest follows 30s without typing; play has a 25% chance per 2min twirl opportunity and 10% per 10min skateboard opportunity. Keep this window focused.</span>
-          </label>}
-          <p>Silent companion. Reduced motion follows your system setting.</p>
-          <button type="button" onClick={() => setDistractionModeEnabled(false)} className="underline">Hide Lucia</button>
-        </div>
-      </details>
-      {createPortal(available ? (
+      {available && (
         <div data-testid="lucia-scene" data-behavior={state.behavior} data-fed-count={state.fedCount}
-          data-reduced-motion={state.reducedMotion} className="absolute inset-0 pointer-events-none">
+          data-reduced-motion={state.reducedMotion} className="absolute inset-0 z-10 pointer-events-none">
           {state.mode === "gaze"
-            ? <GazeSprite state={state} rail={rail} bark={bark} artwork={artwork} />
-            : <LuciaSprite state={state} rail={rail} bark={bark} artwork={artwork} />}
+            ? <GazeSprite state={state} rail={rail} bark={bark} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />
+            : <LuciaSprite state={state} rail={rail} bark={bark} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />}
         </div>
-      ) : null, rail)}
+      )}
+      <div role="group" aria-label="Lucia controls"
+        className="absolute left-44 bottom-4 flex flex-wrap items-center gap-2 text-xs text-gray-600">
+        <div className="flex border border-gray-200 rounded-lg overflow-hidden bg-white">
+          {MODES.map((mode) => {
+            const selected = state.mode === mode.id;
+            return (
+              <button key={mode.id} type="button" aria-pressed={selected} title={mode.title}
+                onClick={() => setMode(mode.id)} disabled={!available}
+                className={`px-3 py-1 font-medium transition-colors disabled:opacity-40 ${
+                  selected ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+                }`}>
+                {mode.label}
+              </button>
+            );
+          })}
+        </div>
+        {state.mode === "feeding" ? <>
+          <span aria-live="polite">{state.fedCount === 5 ? "Full! 5/5 dekopon" : `${state.fedCount}/5 dekopon`}</span>
+          <button type="button" onClick={feed} disabled={!canFeed}
+            className="rounded border border-gray-300 bg-white px-2 py-1 hover:bg-gray-50 disabled:opacity-40">Feed a dekopon</button>
+          {state.fedCount > 0 && <button type="button" onClick={reset} className="underline">Start over</button>}
+        </> : (
+          <button type="button" onClick={dropSock} disabled={!available || sockBusy}
+            title="Drop a sock for Lucia" aria-label="Drop a sock for Lucia"
+            className="p-1 rounded-md border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40">
+            <img src={luciaImageUrl(LUCIA_SOCK_IMAGE)} alt="" width="20" height="20" />
+          </button>
+        )}
+        {import.meta.env.DEV && previewsEnabled && (
+          <select aria-label="Preview Lucia action" value=""
+            disabled={!available || state.mode !== "companion" || state.reducedMotion || state.inferencePending || sockBusy || state.behavior === "bark" || isReading(state.behavior)}
+            onChange={(event) => preview(event.target.value as LuciaPreviewBehavior)}
+            className="rounded border border-gray-300 bg-white p-1 disabled:opacity-40">
+            <option value="" disabled>Preview an action (demo)…</option>
+            <option value="tailwag">Entrance wag</option>
+            <option value="stretch">Stretch then lie down</option>
+            <option value="ear-perk">Ears perk</option>
+            <option value="twirl">Twirl in place</option>
+            <option value="skateboard">Skateboard crossing</option>
+          </select>
+        )}
+      </div>
+      <HideButton />
     </>
   );
 }
@@ -102,15 +130,19 @@ function GazeSprite(props: SpriteProps) {
   return <LuciaSprite {...props} spriteRef={spriteRef} gaze={gaze} />;
 }
 
-type SpriteProps = { state: LuciaBehaviorState; rail: HTMLDivElement; bark: () => void; artwork: LuciaArtwork };
+type SpriteProps = {
+  state: LuciaBehaviorState; rail: HTMLDivElement; bark: () => void; feed: () => void; canFeed: boolean;
+  artwork: LuciaArtwork; onPaintError: (message: string) => void;
+};
 
-function LuciaSprite({ state, rail, bark, artwork, gaze, spriteRef: gazeRef }: SpriteProps & {
+function LuciaSprite({ state, rail, bark, feed, canFeed, artwork, onPaintError, gaze, spriteRef: gazeRef }: SpriteProps & {
   gaze?: SpriteFrame; spriteRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const ownRef = useRef<HTMLButtonElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const spriteRef = gazeRef ?? ownRef;
   const sockRef = useRef<HTMLImageElement>(null);
+  const feeding = state.mode === "feeding";
 
   // Commit the new pose/registration before paint, together with sock visibility.
   useLayoutEffect(() => {
@@ -120,12 +152,13 @@ function LuciaSprite({ state, rail, bark, artwork, gaze, spriteRef: gazeRef }: S
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Lucia’s drawing surface is unavailable.");
     let frame: number | null = null;
+    let sleep: number | null = null;
     let width = rail.clientWidth;
     let previousImage = "";
     let previousFrame = "";
     let previousLeft = "";
     let previousBottom = "";
-    const paint = () => {
+    const paint = (): number | null => {
       const elapsed = Math.max(0, performance.now() - state.startedAt);
       const pose = selectLuciaPose(state, elapsed, gaze);
       const frameKey = `${pose.frame.row}:${pose.frame.column}`;
@@ -150,25 +183,45 @@ function LuciaSprite({ state, rail, bark, artwork, gaze, spriteRef: gazeRef }: S
         const pickupX = state.reducedMotion ? Math.min(90, width / 2) : width / 2;
         sockRef.current.style.left = `${pickupX + (133 - 96) * LUCIA_SCALE - SOCK_WIDTH / 2}px`;
       }
-      return pose.animated || (!state.reducedMotion && ["chase", "carry-away", "skateboard"].includes(state.behavior));
+      // Travel moves every display frame; an in-place animation only needs its next cell.
+      if (!state.reducedMotion && TRAVELLING.has(state.behavior)) return 0;
+      return pose.nextFrameInMs;
+    };
+    // A paint failure inside rAF would escape React entirely; surface it in the rail instead.
+    const safePaint = (): number | null => {
+      try {
+        return paint();
+      } catch (error) {
+        logFrontendEvent("error", "Lucia could not draw a frame; companion stopped");
+        onPaintError(error instanceof Error ? error.message : "Lucia could not be drawn.");
+        return null;
+      }
     };
     const tick = () => {
       frame = null;
-      if (paint()) frame = requestAnimationFrame(tick);
+      sleep = null;
+      const next = safePaint();
+      if (next === null) return;
+      if (next === 0) frame = requestAnimationFrame(tick);
+      else sleep = window.setTimeout(() => { sleep = null; frame = requestAnimationFrame(tick); }, next);
     };
-    const observer = new ResizeObserver(() => { width = rail.clientWidth; paint(); });
+    const observer = new ResizeObserver(() => { width = rail.clientWidth; safePaint(); });
     observer.observe(rail);
     tick();
     return () => {
       observer.disconnect();
       if (frame !== null) cancelAnimationFrame(frame);
+      if (sleep !== null) window.clearTimeout(sleep);
     };
-  }, [artwork, gaze, rail, spriteRef, state]);
+  }, [artwork, gaze, onPaintError, rail, spriteRef, state]);
 
   return <>
-    <button ref={spriteRef} type="button" onClick={bark} aria-label="Lucia — bark (silent)"
-      disabled={state.mode === "feeding" || state.inferencePending || ["chase", "pickup", "carry-away", "bark"].includes(state.behavior)}
-      className="absolute pointer-events-auto rounded-lg focus-visible:outline-2 focus-visible:outline-blue-600"
+    {/* Clicking Lucia does what the mode is for: feed while feeding, otherwise a (silent) bark. */}
+    <button ref={spriteRef} type="button" onClick={feeding ? feed : bark}
+      aria-label={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia (silent bark)"}
+      title={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia"}
+      disabled={feeding ? !canFeed : state.inferencePending || ownsSock(state.behavior) || state.behavior === "bark"}
+      className="absolute pointer-events-auto rounded-lg cursor-pointer disabled:cursor-default focus-visible:outline-2 focus-visible:outline-blue-600"
       style={{ width: manifest.cell_width * LUCIA_SCALE, height: manifest.cell_height * LUCIA_SCALE }}
       data-testid="lucia-sprite">
       <canvas ref={canvasRef} width={manifest.cell_width} height={manifest.cell_height}

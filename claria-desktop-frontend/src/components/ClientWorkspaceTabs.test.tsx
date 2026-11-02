@@ -112,20 +112,24 @@ describe("client workspace tabs", () => {
     );
   });
 
-  it("places the opt-in sock control quietly beside the client name", async () => {
+  it("keeps Lucia and her controls together in the rail, leaving the header clean", async () => {
     setDistractionModeEnabled(true);
     render(<Harness />);
 
     const button = await screen.findByRole("button", {
       name: "Drop a sock for Lucia",
     });
+    const rail = screen.getByTestId("lucia-rail");
     const heading = screen.getByRole("heading", { name: "Ada Lovelace" });
-    expect(button.parentElement).toBe(heading.parentElement);
-    expect(button.className).not.toContain("border");
+    expect(rail.contains(button)).toBe(true);
+    expect(heading.parentElement?.textContent).not.toContain("Lucia");
 
     await userEvent.click(button);
     expect(screen.getByTestId("lucia-scene").dataset.behavior).toBe("chase");
     expect((button as HTMLButtonElement).disabled).toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: "Hide Lucia" }));
+    expect(screen.queryByTestId("lucia-rail")).toBeNull();
   });
 
   it("routes the back control through the parent guard", async () => {

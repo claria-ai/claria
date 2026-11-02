@@ -16,7 +16,7 @@ test("local demo opens the real workspace and visible Lucia controls without AWS
   await expect(page.getByRole("region", { name: "Local demo" })).toContainText("simulated activity");
   await expect(page.getByRole("heading", { name: "Jane Doe — synthetic demo" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Record", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByLabel("Lucia mode")).toBeVisible();
+  await expect(page.getByRole("group", { name: "Lucia controls" })).toBeVisible();
   await expect(page.getByTestId("lucia-scene")).toBeVisible();
   await expect(page.getByTitle("AWS configuration", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create New System" })).toHaveCount(0);
@@ -56,9 +56,9 @@ test("local previews expose real Companion actions without changing modes or nat
     await expect(scene).toHaveAttribute("data-behavior", behavior === "stretch" ? "bored" : "idle", { timeout: 6000 });
   }
   await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", /bored-strip/);
-  await page.getByLabel("Lucia mode", { exact: true }).selectOption("gaze");
+  await page.getByRole("group", { name: "Lucia controls" }).getByRole("button", { name: "Watch", exact: true }).click();
   await expect(preview).toBeDisabled();
-  await page.getByLabel("Lucia mode", { exact: true }).selectOption("companion");
+  await page.getByRole("group", { name: "Lucia controls" }).getByRole("button", { name: "Companion", exact: true }).click();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect(preview).toBeDisabled();
 });
@@ -136,7 +136,7 @@ test("decoded canvas stays nonblank across every sampled sock-switch frame and k
 
 test("every-size feeding stays decoded, grounded and count-correct through all five completions", async ({ page }) => {
   await page.goto(`${BASE_URL}/lucia-demo.html`);
-  await page.getByLabel("Lucia mode", { exact: true }).selectOption("feeding");
+  await page.getByRole("group", { name: "Lucia controls" }).getByRole("button", { name: "Feed", exact: true }).click();
   const scene = page.getByTestId("lucia-scene");
   const feed = page.getByRole("button", { name: "Feed a dekopon", exact: true });
   await page.evaluate(() => {
@@ -204,7 +204,7 @@ test("a failed later-size strip prevents scene startup and recovers after retry"
 
 test("inference interrupts a later-size feed without awarding its fruit", async ({ page }) => {
   await page.goto(`${BASE_URL}/lucia-demo.html`);
-  await page.getByLabel("Lucia mode", { exact: true }).selectOption("feeding");
+  await page.getByRole("group", { name: "Lucia controls" }).getByRole("button", { name: "Feed", exact: true }).click();
   const scene = page.getByTestId("lucia-scene");
   const feed = page.getByRole("button", { name: "Feed a dekopon", exact: true });
   await feed.click();

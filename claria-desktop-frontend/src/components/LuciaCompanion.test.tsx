@@ -42,7 +42,8 @@ async function mount(previewsEnabled = false) {
   await act(async () => { result = render(<LuciaCompanion clientId="fixture" rail={rail} previewsEnabled={previewsEnabled} />); });
   return result;
 }
-function mode(value: string) { fireEvent.change(screen.getByLabelText("Lucia mode"), { target: { value } }); }
+const MODE_LABELS: Record<string, string> = { companion: "Companion", gaze: "Watch", feeding: "Feed" };
+function mode(value: string) { fireEvent.click(screen.getByRole("button", { name: MODE_LABELS[value], pressed: false })); }
 function scene() { return screen.getByTestId("lucia-scene"); }
 function sprite() { return screen.getByTestId("lucia-sprite"); }
 
@@ -139,7 +140,7 @@ describe("LuciaCompanion", () => {
     fireEvent.click(feed);
     advance(2000);
     expect(scene().dataset.fedCount).toBe("5");
-    fireEvent.click(screen.getByRole("button", { name: "Reset feeding", hidden: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Start over", hidden: true }));
     expect(scene().dataset.fedCount).toBe("0");
   });
 
@@ -240,5 +241,45 @@ describe("LuciaCompanion", () => {
     expect(screen.queryByRole("button", { name: "Drop a sock for Lucia" })).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
     unmount();
+  });
+
+  it("feeds when Lucia herself is clicked in feeding mode, and never offers a dead click", async () => {
+    await mount();
+    expect(sprite().getAttribute("aria-label")).toBe("Pet Lucia (silent bark)");
+    mode("feeding");
+    expect(sprite().getAttribute("aria-label")).toBe("Feed Lucia a dekopon");
+    for (let count = 0; count < 5; count++) {
+      fireEvent.click(sprite());
+      expect(scene().dataset.behavior).toBe("feeding");
+      advance(config.durationsMs.feeding);
+    }
+    expect(scene().dataset.fedCount).toBe("5");
+    advance(config.durationsMs.full);
+    expect(sprite().getAttribute("aria-label")).toBe("Lucia is full");
+    expect((sprite() as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows a paint failure in the rail instead of throwing from the animation frame", async () => {
+    const partial = new Map(Object.keys(manifest.assets)
+      .filter((path) => path !== manifest.stages.image).map((path) => [path, new Image()]));
+    vi.mocked(loadLuciaArtwork).mockResolvedValue(partial);
+    await mount();
+    mode("feeding");
+    expect(screen.getByRole("alert").textContent).toContain("Lucia artwork was not decoded");
+    expect(screen.queryByTestId("lucia-scene")).toBeNull();
+    expect(screen.getByRole("button", { name: "Hide Lucia" })).toBeDefined();
+  });
+
+  it("sleeps between frames while resting instead of running a display-rate loop", async () => {
+    await mount();
+    advance(config.durationsMs.tailwag);
+    advance(30_000);
+    advance(config.durationsMs.stretch);
+    expect(scene().dataset.behavior).toBe("bored");
+    const frames = vi.spyOn(window, "requestAnimationFrame");
+    advance(1_000);
+    // The bored strip changes cell about every 150ms; a display-rate loop would ask ~60 times.
+    expect(frames.mock.calls.length).toBeLessThanOrEqual(10);
+    expect(frames.mock.calls.length).toBeGreaterThan(0);
   });
 });

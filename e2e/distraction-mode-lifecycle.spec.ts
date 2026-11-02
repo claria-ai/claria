@@ -53,7 +53,8 @@ async function finishDrop(page: Page) {
   await expect(page.getByTestId("lucia-scene")).toHaveAttribute("data-behavior", "idle");
   await expect(page.getByRole("button", { name: SOCK_BUTTON })).toBeEnabled();
 }
-async function controls(page: Page) { await page.locator("summary").filter({ hasText: /^Lucia$/ }).click(); }
+// Lucia's controls are always visible in her rail; nothing to open.
+async function controls(page: Page) { await page.getByRole("group", { name: "Lucia controls" }).waitFor(); }
 async function screenshot(page: Page, name: string) {
   if (process.env.CLARIA_LUCIA_ARTIFACT_DIR) {
     await page.screenshot({ path: `${process.env.CLARIA_LUCIA_ARTIFACT_DIR}/${name}.png` });
@@ -119,19 +120,26 @@ for (const phase of ["chase", "pickup", "carry-away"] as const) {
 test("all sixteen gaze directions keep the seated body at one ground anchor", async ({ page }) => {
   await openClient(page);
   await controls(page);
-  await page.getByLabel("Lucia mode").selectOption("gaze");
+  await page.getByRole("group", { name: "Lucia controls" }).getByRole("button", { name: "Watch", exact: true }).click();
   await controls(page);
   const sprite = page.getByTestId("lucia-sprite");
   const bounds = await sprite.boundingBox();
   if (!bounds) throw new Error("Lucia has no bounds");
+  let directional: typeof bounds | null = null;
   for (let direction = 0; direction < 16; direction++) {
     const radians = direction * Math.PI / 8;
     await page.mouse.move(bounds.x + 80 * 0.65 + Math.sin(radians) * 50, bounds.y + 66 * 0.65 - Math.cos(radians) * 50);
     await page.clock.runFor(20);
     await expect(sprite).toHaveAttribute("data-frame", `${9 + Math.floor(direction / 8)}:${direction % 8}`);
-    expect(await sprite.boundingBox()).toEqual(bounds);
+    const box = await sprite.boundingBox();
+    if (!box) throw new Error("Lucia has no bounds");
+    directional ??= box;
+    expect(box).toEqual(directional);
     await screenshot(page, `gaze-${direction}`);
   }
+  // Neutral is idle cell 0, whose measured ground sits one source pixel above the gaze rows'.
+  expect(bounds.x).toBe(directional!.x);
+  expect(bounds.y - directional!.y).toBeCloseTo((202 - 201) * 0.65, 1);
 });
 
 test("real hidden browser tab drops transient work and resumes without a missed-action backlog", async ({ page, context }, testInfo) => {
@@ -202,7 +210,7 @@ test("synthetic visibility lifecycle removes the scene and resumes without a mis
 test("feeding animates each matching starting body, reaches five exactly and resets explicitly", async ({ page }) => {
   await openClient(page);
   await controls(page);
-  await page.getByLabel("Lucia mode").selectOption("feeding");
+  await page.getByRole("group", { name: "Lucia controls" }).getByRole("button", { name: "Feed", exact: true }).click();
   await screenshot(page, "feeding-0");
   const feed = page.getByRole("button", { name: "Feed a dekopon" });
   for (let count = 0; count < 5; count++) {
@@ -222,7 +230,7 @@ test("feeding animates each matching starting body, reaches five exactly and res
   await page.clock.runFor(duration("full"));
   await screenshot(page, "feeding-5");
   await expect(feed).toBeDisabled();
-  await page.getByRole("button", { name: "Reset feeding" }).click();
+  await page.getByRole("button", { name: "Start over" }).click();
   await expect(page.getByTestId("lucia-scene")).toHaveAttribute("data-fed-count", "0");
 });
 
@@ -263,7 +271,7 @@ test("reduced motion freezes frames and suppresses travel; failed images stop th
   expect(await page.getByTestId("lucia-sprite").boundingBox()).toEqual(bounds);
   await screenshot(page, "reduced-motion");
   await controls(page);
-  await page.getByLabel("Lucia mode").selectOption("feeding");
+  await page.getByRole("group", { name: "Lucia controls" }).getByRole("button", { name: "Feed", exact: true }).click();
   for (let count = 0; count < 5; count++) {
     await page.getByRole("button", { name: "Feed a dekopon" }).click();
     await page.clock.runFor(800);
