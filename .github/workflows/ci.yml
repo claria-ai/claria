@@ -202,10 +202,15 @@ jobs:
 
       # `ci-release` is `release` without fat LTO and with 16 codegen units
       # (root Cargo.toml). The shipped binaries still build with `release`.
+      #
+      # tauri/custom-protocol is what `tauri build` turns on. Without it the
+      # binary embeds no frontend and points the WebView at devUrl
+      # (localhost:1420, nothing listening), so the smoke test below would
+      # never load the bundle whose Rust/JS API match it exists to check.
       - name: Build Tauri app
         env:
           CLARIA_SKIP_FRONTEND_BUILD: '1'
-        run: cargo build --profile ci-release -p claria-desktop
+        run: cargo build --profile ci-release -p claria-desktop --features tauri/custom-protocol
 
       - name: Smoke test (WebView loads without crashing)
         timeout-minutes: 5
