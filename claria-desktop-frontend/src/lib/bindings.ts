@@ -829,9 +829,9 @@ async searchRecordContents(clientId: string, query: string) : Promise<Result<str
  * Bedrock; audio files receive a transcript sidecar. Sidecar generation
  * failure degrades to a warning — the original upload has already succeeded.
  */
-async uploadRecordFile(clientId: string, filePath: string) : Promise<Result<RecordFile, string>> {
+async uploadRecordFile(clientId: string, filePath: string, expectedScope: string | null) : Promise<Result<RecordFile, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("upload_record_file", { clientId, filePath }) };
+    return { status: "ok", data: await TAURI_INVOKE("upload_record_file", { clientId, filePath, expectedScope }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -910,9 +910,9 @@ async listRecordContext(clientId: string) : Promise<Result<RecordContext[], stri
  * PDF and DOCX files are re-extracted through Bedrock, audio is
  * retranscribed, and printable UTF-8 originals are returned unchanged.
  */
-async extractRecordFile(clientId: string, filename: string) : Promise<Result<RecordContext, string>> {
+async extractRecordFile(clientId: string, filename: string, expectedScope: string | null) : Promise<Result<RecordContext, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("extract_record_file", { clientId, filename }) };
+    return { status: "ok", data: await TAURI_INVOKE("extract_record_file", { clientId, filename, expectedScope }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1815,7 +1815,7 @@ evaluated_revision: number; evaluated_at: string }
 /**
  * Redacted config info safe to send to the frontend.
  */
-export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences; chat_streaming: ChatStreamMode; draft_pipeline: DraftPipelinePreferences }
+export type ConfigInfo = { region: string; system_name: string; account_id: string; created_at: string; credential_type: string; profile_name: string | null; access_key_hint: string | null; preferred_model_id: string | null; extraction_model_id?: string | null; cost_explorer_enabled: boolean; hourly_cost_data: boolean; prompt_caching_enabled: boolean; transcription: TranscriptionPreferences; report_authoring: ReportAuthoringPreferences; model_tuning: ModelTuningPreferences; chat_streaming: ChatStreamMode; draft_pipeline: DraftPipelinePreferences }
 /**
  * The passage a finding conflicts with.
  */
@@ -2387,7 +2387,9 @@ export type PreferencesPatch = {
  * (only expressible in-process — over IPC use `set_preferred_model`),
  * `None` leaves it unchanged.
  */
-preferred_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null; draft_pipeline?: DraftPipelinePreferences | null }
+preferred_model_id?: string | null; extraction_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null; draft_pipeline?: DraftPipelinePreferences | null }
+export type ProcessingFailureCode = "model_not_configured" | "provider_unavailable" | "access_denied" | "model_unavailable" | "throttled" | "truncated" | "invalid_text" | "storage_unavailable"
+export type ProcessingStatus = { status: "ready" } | { status: "not_supported" } | { status: "unknown" } | { status: "failed"; code: ProcessingFailureCode; reason: string }
 /**
  * What `provision_apply` did.
  * 
@@ -2435,7 +2437,7 @@ export type RecordContext = { filename: string; text: string }
 /**
  * A file in a client's record (S3 object metadata).
  */
-export type RecordFile = { filename: string; size: number; uploaded_at: string | null }
+export type RecordFile = { filename: string; size: number; uploaded_at: string | null; processing_status?: ProcessingStatus | null }
 /**
  * Per-clinician guardrails for agentic document writing. These values sync
  * across machines. The report-pipeline crate validates the

@@ -76,7 +76,7 @@ import {
   paneSpec,
   searchPreferencesNav,
   PREFERENCES_NAV,
-  WRITER_FOCUS_PANES,
+  PREFERENCES_FOCUS_PANES,
   type CategoryId,
   type CategorySpec,
   type PaneId,
@@ -106,7 +106,7 @@ import {
 import Spinner from "../components/Spinner";
 import { ErrorBanner, LoadingCard } from "../components/StateCards";
 import VersionHistoryModal from "../components/VersionHistoryModal";
-import type { Page, PreferencesWriterSection } from "../App";
+import type { Page, PreferencesFocusSection } from "../App";
 
 // ---------------------------------------------------------------------------
 // Pane plumbing: category → pane components, open state, search reveal
@@ -250,10 +250,10 @@ export default function Preferences({
   backPage = "start",
 }: {
   navigate: (page: Page) => void;
-  focusSection?: PreferencesWriterSection | null;
+  focusSection?: PreferencesFocusSection | null;
   backPage?: Page;
 }) {
-  const focusPane = focusSection ? WRITER_FOCUS_PANES[focusSection] : null;
+  const focusPane = focusSection ? PREFERENCES_FOCUS_PANES[focusSection] : null;
 
   const [activeCategory, setActiveCategory] = useState<CategoryId>(
     focusPane ? categoryOf(focusPane) : PREFERENCES_NAV[0].id
@@ -746,6 +746,84 @@ function PreferredModelSection() {
             </select>
           </div>
           {modelError && <ErrorBanner message={modelError} className="mt-3" />}
+        </>
+      )}
+    </NavPane>
+  );
+}
+
+function ExtractionModelSection() {
+  const { data } = useSyncedPreferences();
+  return data ? <ExtractionModelBody initial={data.extraction_model_id ?? null} /> : (
+    <PendingSyncedPane paneId="claude.extraction-model" loadingLabel="Loading extraction model..."
+      errorMessage="Could not load the extraction model setting." contentClassName="p-4" />
+  );
+}
+
+function ExtractionModelBody({ initial }: { initial: string | null }) {
+  const { models, loading, error, preferredModelId } = useChatModels();
+  const [modelId, setModelId] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function handleModelChange(value: string) {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const updated = await savePreferencesPatch({ extraction_model_id: value });
+      setModelId(updated.extraction_model_id ?? null);
+    } catch (e) {
+      setSaveError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const nameOf = (id: string) =>
+    models.find((m) => m.model_id === id)?.name ?? id;
+
+  return (
+    <NavPane
+      paneId="claude.extraction-model"
+      summary={
+        modelId && models.length > 0 ? (
+          <span className="text-xs text-gray-400">{nameOf(modelId)}</span>
+        ) : undefined
+      }
+    >
+      {loading ? (
+        <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+          <Spinner />
+          <span>Loading models...</span>
+        </div>
+      ) : error ? (
+        <ErrorBanner message={error} className="" />
+      ) : (
+        <>
+          <div data-pref-anchor="extraction_model">
+            <select
+              aria-label="Document extraction model"
+              value={modelId ?? ""}
+              onChange={(e) => handleModelChange(e.target.value)}
+              disabled={saving}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50"
+            >
+              <option value="">
+                {preferredModelId
+                  ? `Same as preferred model (${nameOf(preferredModelId)})`
+                  : "Same as preferred model"}
+              </option>
+              {modelId && !models.some((m) => m.model_id === modelId) && (
+                <option value={modelId}>{modelId}</option>
+              )}
+              {models.map((m) => (
+                <option key={m.model_id} value={m.model_id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          {saveError && <ErrorBanner message={saveError} className="mt-3" />}
         </>
       )}
     </NavPane>
@@ -3468,6 +3546,7 @@ function DraftRunsBody({ initial }: { initial: DraftPipelinePreferences }) {
 
 const PANE_COMPONENTS: Record<PaneId, ComponentType> = {
   "claude.preferred-model": PreferredModelSection,
+  "claude.extraction-model": ExtractionModelSection,
   "claude.chat-streaming": ChatStreamingSection,
   "claude.model-tuning": ModelTuningSection,
   "prompts.chat-system": ChatSystemPromptSection,

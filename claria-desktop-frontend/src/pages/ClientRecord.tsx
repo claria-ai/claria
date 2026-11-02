@@ -4,7 +4,7 @@ import ClientChat from "./ClientChat";
 import ClientRecordSettings from "./ClientRecordSettings";
 import RecordTab from "./RecordTab";
 import Writing from "./Writing";
-import type { Page, PreferencesWriterSection } from "../App";
+import type { Page, PreferencesFocusSection } from "../App";
 
 /** Compose one client's Record, Chat, and Writing workspaces. */
 export default function ClientRecord({
@@ -20,7 +20,7 @@ export default function ClientRecord({
   clientId: string;
   clientName: string;
   onClientNameChanged: (name: string) => void;
-  onManageWriterSection: (section: PreferencesWriterSection) => void;
+  onManageWriterSection: (section: PreferencesFocusSection) => void;
   luciaControlsInitiallyOpen?: boolean;
   luciaPreviewsEnabled?: boolean;
 }) {
@@ -48,9 +48,11 @@ export default function ClientRecord({
         />
       ) : workspace.activeView === "record" ? (
         <RecordTab
+          key={clientId}
           clientId={clientId}
           onResumeChat={workspace.openChat}
           onResumeWriting={workspace.openWriting}
+          onChooseExtractionModel={() => workspace.manageWriterSection("extraction-model")}
         />
       ) : workspace.activeView === "chat" ? (
         <ClientChat

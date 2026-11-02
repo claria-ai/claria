@@ -911,8 +911,8 @@ export async function searchRecordContents(clientId: string, query: string): Pro
   return unwrap(await commands.searchRecordContents(clientId, query));
 }
 
-export async function uploadRecordFile(clientId: string, filePath: string): Promise<RecordFile> {
-  return unwrap(await commands.uploadRecordFile(clientId, filePath));
+export async function uploadRecordFile(clientId: string, filePath: string, expectedScope: string | null = null): Promise<RecordFile> {
+  return unwrap(await commands.uploadRecordFile(clientId, filePath, expectedScope));
 }
 
 export async function deleteRecordFile(clientId: string, filename: string): Promise<void> {
@@ -935,8 +935,8 @@ export async function listRecordContext(clientId: string): Promise<RecordContext
   return unwrap(await commands.listRecordContext(clientId));
 }
 
-export async function extractRecordFile(clientId: string, filename: string): Promise<RecordContext> {
-  return unwrap(await commands.extractRecordFile(clientId, filename));
+export async function extractRecordFile(clientId: string, filename: string, expectedScope: string | null = null): Promise<RecordContext> {
+  return unwrap(await commands.extractRecordFile(clientId, filename, expectedScope));
 }
 
 // ---------------------------------------------------------------------------

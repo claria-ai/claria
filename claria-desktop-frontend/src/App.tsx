@@ -28,8 +28,11 @@ export type Page =
   | "preferences"
   | "about";
 
-/** Preferences accordion a "Manage …" jump from the Writing tab opens. */
-export type PreferencesWriterSection = "writer-templates" | "writer-prompts";
+/** Preferences accordion a jump from a client record opens. */
+export type PreferencesFocusSection =
+  | "writer-templates"
+  | "writer-prompts"
+  | "extraction-model";
 
 export default function App() {
   const [page, setPage] = useState<Page>("loading");
@@ -37,7 +40,7 @@ export default function App() {
   const [activeClientId, setActiveClientId] = useState<string | null>(null);
   const [activeClientName, setActiveClientName] = useState<string | null>(null);
   const [preferencesFocus, setPreferencesFocus] =
-    useState<PreferencesWriterSection | null>(null);
+    useState<PreferencesFocusSection | null>(null);
   const [preferencesReturnPage, setPreferencesReturnPage] =
     useState<Page>("start");
 

@@ -309,3 +309,46 @@ pub fn audit_event(timestamp: jiff::Timestamp, event_id: Uuid) -> String {
         nanos = dt.subsec_nanosecond(),
     )
 }
+
+/// Apply validated processing errors to the ordinary sidecar inventory.
+/// An error supersedes extracted text; the original remains eligible for
+/// content-based decoding. User-authored `.error` files are never hidden.
+///
+/// `sizes[i]` is the listed size of `keys[i]`. A sidecar that is empty or
+/// larger than [`MAX_RECORD_TEXT_BYTES`](crate::record_text::MAX_RECORD_TEXT_BYTES)
+/// can never be read, so the original is used instead. Eligibility comes from
+/// the listing alone: readers validate content when they read it, and the
+/// inventory never downloads sidecars just to decide visibility.
+pub fn visible_record_files_with_errors(
+    prefix: &str,
+    keys: &[&str],
+    sizes: &[u64],
+    errors: &std::collections::HashSet<String>,
+) -> Vec<VisibleRecordFile> {
+    debug_assert_eq!(keys.len(), sizes.len());
+    let readable =
+        |index: usize| (1..=crate::record_text::MAX_RECORD_TEXT_BYTES).contains(&sizes[index]);
+    visible_record_files(prefix, keys)
+        .into_iter()
+        .filter_map(|mut file| {
+            let base = keys[file.base_index];
+            if errors.contains(base) {
+                return None;
+            }
+            if errors.contains(&format!("{base}.error"))
+                || (file.source_index != file.base_index && !readable(file.source_index))
+            {
+                file.source_index = file.base_index;
+            }
+            // An orphaned extraction with a recognized error must not become a
+            // separate readable record when its original disappears.
+            if base
+                .strip_suffix(".text")
+                .is_some_and(|key| errors.contains(&format!("{key}.error")))
+            {
+                return None;
+            }
+            Some(file)
+        })
+        .collect()
+}
