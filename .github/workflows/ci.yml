@@ -217,16 +217,11 @@ jobs:
         timeout-minutes: 10
         uses: ./.github/actions/rust-setup
 
-      # Compile and run as separate steps so the job's timing shows which one
-      # moved. The run step still recompiles claria-desktop once (~20-30 s):
-      # generate_context! writes its icon and Info.plist into OUT_DIR during
-      # compilation, after the start time cargo stamps on the unit, so the
-      # next invocation sees them as changed. The one after that is fresh.
-      - name: Build tests (workspace)
-        env:
-          CLARIA_SKIP_FRONTEND_BUILD: '1'
-        run: cargo test --workspace --no-run
-
+      # One cargo invocation, not a `--no-run` step followed by a run step: a
+      # second invocation recompiles claria-desktop (~20-30 s) because
+      # generate_context! writes its icon and Info.plist into OUT_DIR after the
+      # start time cargo stamps on the unit. Cargo's `Finished` line already
+      # reports the compile time.
       - name: Test (workspace)
         env:
           CLARIA_SKIP_FRONTEND_BUILD: '1'
