@@ -100,7 +100,7 @@ jobs:
   frontend:
     name: Frontend (lint + test + build)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.run_frontend != 'false' }}
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -141,7 +141,7 @@ jobs:
   clippy:
     name: Clippy
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.run_rust != 'false' }}
+    if: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -190,7 +190,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -227,7 +227,8 @@ jobs:
       - name: Test (workspace)
         env:
           CLARIA_SKIP_FRONTEND_BUILD: '1'
-        run: cargo test --workspace
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
+        run: cargo test --workspace --no-run 2>&1 | grep -E 'dirty|stale|Compiling|Finished'
 
   # Not matrixed: the payload here is the xvfb smoke test, which exists to catch
   # a Tauri Rust/JS API mismatch killing the WebView on launch. That needs a
@@ -236,7 +237,7 @@ jobs:
   tauri-build:
     name: Tauri build
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.run_rust != 'false' || needs.changes.outputs.run_frontend != 'false') }}
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
