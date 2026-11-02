@@ -295,4 +295,29 @@ describe("Lucia sprite scale acceptance (the regeneration brief)", () => {
     });
     expect(problems).toEqual([]);
   });
+
+  // KNOWN DEFECT: bark, entrance wag, twirl and the newspaper strips were drawn against the old
+  // idle, so she pops ~13px wider when one hands back to idle. `it.fails` documents it until
+  // the endpoint brief's strips land; then delete `.fails`.
+  it.fails("starts and ends every idle-adjacent strip on idle cell 0", () => {
+    const idle = opaqueBox(rgbaPixels(manifest.core_image), 0, 0);
+    const touches: Array<[LuciaClipName, "first" | "last" | "both"]> = [
+      ["bark", "last"], ["tailwag", "last"], ["twirl", "both"], ["reading-enter", "first"], ["reading-exit", "last"],
+      ["ear-perk", "both"], ["stretch", "first"],
+    ];
+    const problems: string[] = [];
+    for (const [name, end] of touches) {
+      const clip = manifest.clips[name];
+      const pixels = rgbaPixels(clip.image);
+      const last = clip.first_column + clip.frame_durations_ms.length - 1;
+      const cells = end === "first" ? [clip.first_column] : end === "last" ? [last] : [clip.first_column, last];
+      for (const column of cells) {
+        const box = opaqueBox(pixels, clip.row, column);
+        if (Math.abs(box.width - idle.width) > 2 || Math.abs(box.height - idle.height) > 2 || box.ground !== idle.ground) {
+          problems.push(`${name} cell ${column} ${box.width}×${box.height} ground ${box.ground} vs idle ${idle.width}×${idle.height} ground ${idle.ground}`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
 });
