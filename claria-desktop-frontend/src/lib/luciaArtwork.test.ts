@@ -239,3 +239,59 @@ describe("Lucia decoded artwork lifetime", () => {
     expect([...artwork.keys()]).toEqual(Object.keys(manifest.assets));
   });
 });
+
+/** Opaque box of one cell, in cell pixels (inclusive). */
+function opaqueBox(image: ReturnType<typeof rgbaPixels>, row: number, column: number) {
+  let left = 192, right = -1, top = 208, bottom = -1;
+  for (let y = 0; y < 208; y++) {
+    for (let x = 0; x < 192; x++) {
+      if (image.pixels[((row * 208 + y) * image.width + column * 192 + x) * 4 + 3] >= manifest.registration.alpha_threshold) {
+        left = Math.min(left, x); right = Math.max(right, x); top = Math.min(top, y); bottom = Math.max(bottom, y);
+      }
+    }
+  }
+  return { width: right - left + 1, height: bottom - top + 1, ground: bottom + 1 };
+}
+
+describe("Lucia sprite scale acceptance (the regeneration brief)", () => {
+  // KNOWN DEFECT in the supplied art: stages, feeding-size-N, gaze and ears-perk are drawn at
+  // ~90–95% of idle's scale, so Lucia resizes at every strip switch. `it.fails` keeps CI green
+  // while documenting it; when regenerated art lands this starts failing — delete `.fails`.
+  it.fails("draws every seated, front-facing pose at idle cell 0's scale, on one ground line", () => {
+    const reference = opaqueBox(rgbaPixels(manifest.core_image), 0, 0);
+    const problems: string[] = [];
+    const seated: Array<[string, number, number, number, number]> = [
+      // [image, row, first column, cells, height tolerance]
+      [manifest.core_image, 0, 0, 6, 2],
+      [manifest.stages.image, 0, 0, 6, 2],
+      [manifest.clips.feeding.image, 0, 0, 6, 2],
+      ...[1, 2, 3, 4].map((n) => [manifest.clips[`feeding-size-${n}` as LuciaClipName].image, 0, 0, 6, 2] as [string, number, number, number, number]),
+      [manifest.clips["ear-perk"].image, 0, 0, 4, 2],
+      // Gaze turns the head, so height may move a little more with the look angle.
+      [manifest.core_image, 9, 0, 8, 8],
+      [manifest.core_image, 10, 0, 8, 8],
+    ];
+    for (const [image, row, first, cells, tolerance] of seated) {
+      const pixels = rgbaPixels(image);
+      for (let column = first; column < first + cells; column++) {
+        const box = opaqueBox(pixels, row, column);
+        if (Math.abs(box.height - reference.height) > tolerance) problems.push(`${image} ${row}:${column} height ${box.height} vs ${reference.height}`);
+        if (box.ground !== reference.ground) problems.push(`${image} ${row}:${column} ground ${box.ground} vs ${reference.ground}`);
+      }
+    }
+    const idle = rgbaPixels(manifest.core_image);
+    const idleWidths = [0, 1, 2, 3, 4, 5].map((column) => opaqueBox(idle, 0, column).width);
+    if (Math.max(...idleWidths) - Math.min(...idleWidths) > 4) problems.push(`idle widths drift ${idleWidths.join("/")}`);
+    const stages = rgbaPixels(manifest.stages.image);
+    manifest.feeding_by_count.forEach((name, count) => {
+      const strip = rgbaPixels(manifest.clips[name as LuciaClipName].image);
+      for (const [cell, stage] of [[0, count], [5, count + 1]]) {
+        const a = opaqueBox(strip, 0, cell), b = opaqueBox(stages, 0, stage);
+        if (Math.abs(a.width - b.width) > 2 || Math.abs(a.height - b.height) > 2) {
+          problems.push(`${name} cell ${cell} ${a.width}×${a.height} vs stage ${stage} ${b.width}×${b.height}`);
+        }
+      }
+    });
+    expect(problems).toEqual([]);
+  });
+});

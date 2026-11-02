@@ -15,6 +15,9 @@ export interface LuciaBehaviorRuntime {
   random: () => number;
 }
 
+/** At most one typing event per second reaches policy; its quiet window is 30s. */
+export const LUCIA_TYPING_THROTTLE_MS = 1_000;
+
 const browserRuntime: LuciaBehaviorRuntime = {
   now: () => performance.now(),
   random: () => Math.random(),
@@ -94,8 +97,14 @@ export function useLuciaBehavior(
         visible: !document.hidden && document.hasFocus(),
         reducedMotion: motionPreference.matches,
       });
+    // Policy only needs coarse activity (a 30s quiet window), not every keystroke.
+    let lastTypingSent = -Infinity;
     const onInput = (event: Event) => {
-      if (isWritingTarget(event.target)) send({ type: "typing" });
+      if (!isWritingTarget(event.target)) return;
+      const now = runtime.now();
+      if (now - lastTypingSent < LUCIA_TYPING_THROTTLE_MS) return;
+      lastTypingSent = now;
+      send({ type: "typing" });
     };
     document.addEventListener("input", onInput, true);
     document.addEventListener("visibilitychange", updateEnvironment);
@@ -109,7 +118,7 @@ export function useLuciaBehavior(
       window.removeEventListener("blur", updateEnvironment);
       motionPreference.removeEventListener("change", updateEnvironment);
     };
-  }, [motionPreference, send]);
+  }, [motionPreference, runtime, send]);
 
   useEffect(() => {
     const updateInference = () =>

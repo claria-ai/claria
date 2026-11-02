@@ -4,6 +4,11 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Lucia keeps her play schedule when you switch windows, so twirls and skateboarding actually happen
+- A feed in progress still counts when the reduced-motion setting changes
+- Lucia's artwork decodes once per session instead of on every client switch
+- Lucia sleeps between animation frames while resting instead of redrawing at display rate
+- Clicking Lucia again right after a bark works
 - Lucia lifts and eats each dekopon with the matching body-size animation
 
 - Lucia holds a steady companion pose between actions

@@ -1,6 +1,6 @@
 import manifest from "../assets/lucia/manifest.json";
 import type { LuciaBehaviorConfig, LuciaBehaviorState } from "./luciaBehavior";
-import { selectSpriteFrame, spriteClipDurationMs, type SpriteFrame, type SpriteStripMetadata } from "./luciaSprite";
+import { selectSpriteFrame, spriteClipDurationMs, spriteFrameRemainingMs, type SpriteFrame, type SpriteStripMetadata } from "./luciaSprite";
 import { logFrontendEvent } from "./logBridge";
 
 const images = import.meta.glob<string>("../assets/lucia/**/*.png", {
@@ -15,8 +15,22 @@ export function luciaImageUrl(path: string): string {
 
 export type LuciaArtwork = ReadonlyMap<string, HTMLImageElement>;
 
-/** Keep decoded sources alive with the scene; changing CSS URLs can still paint a blank frame. */
-export async function loadLuciaArtwork(): Promise<LuciaArtwork> {
+let artworkLoad: Promise<LuciaArtwork> | null = null;
+
+/**
+ * Keep decoded sources alive; changing CSS URLs can still paint a blank frame.
+ * Decoded once per app session (switching clients remounts the scene); a failed
+ * load is forgotten so re-enabling distraction mode retries it.
+ */
+export function loadLuciaArtwork(): Promise<LuciaArtwork> {
+  artworkLoad ??= decodeLuciaArtwork().catch((error: unknown) => {
+    artworkLoad = null;
+    throw error;
+  });
+  return artworkLoad;
+}
+
+async function decodeLuciaArtwork(): Promise<LuciaArtwork> {
   try {
     return new Map(await Promise.all(Object.entries(manifest.assets).map(async ([path, asset]) => {
       const image = new Image();
@@ -78,6 +92,8 @@ export interface LuciaPose {
   frame: SpriteFrame;
   anchor: readonly number[];
   animated: boolean;
+  /** When the frame next changes; null if it holds. Lets the renderer sleep between frames. */
+  nextFrameInMs: number | null;
 }
 
 /** Counts are committed by policy, not by the renderer or an animation callback. */
@@ -90,6 +106,7 @@ export function selectLuciaPose(state: LuciaBehaviorState, elapsedMs: number, ga
       frame: { row: 0, column: state.fedCount, frameIndex: state.fedCount },
       anchor: [manifest.stages.anchor[0], manifest.stages.ground_y_by_count[state.fedCount]],
       animated: false,
+      nextFrameInMs: null,
     };
   }
   const name: LuciaClipName = state.behavior === "inactive" || state.behavior === "gaze"
@@ -101,15 +118,19 @@ export function selectLuciaPose(state: LuciaBehaviorState, elapsedMs: number, ga
   // first pose rather than loop that silhouette jump or rescale individual frames.
   const animated = !state.reducedMotion && state.behavior !== "idle"
     && state.behavior !== "inactive" && state.behavior !== "gaze";
+  const playback = { playback: source.loop ? "loop" : "once", reducedMotion: !animated } as const;
+  const frame = state.behavior === "gaze" && gaze && !state.reducedMotion
+    ? gaze
+    : selectSpriteFrame(metadata.atlas, metadata.clip, elapsedMs, playback);
+  // Gaze's neutral pose is idle cell 0: register it on idle's measured ground, not the gaze rows'.
+  const anchor = state.behavior === "gaze" && frame.row !== manifest.clips.idle.row
+    ? manifest.gaze_anchor : [source.anchor[0], source.ground_y];
   return {
     image: source.image,
-    frame: state.behavior === "gaze" && gaze && !state.reducedMotion
-      ? gaze
-      : selectSpriteFrame(metadata.atlas, metadata.clip, elapsedMs, {
-        playback: source.loop ? "loop" : "once", reducedMotion: !animated,
-      }),
-    anchor: state.behavior === "gaze" ? manifest.gaze_anchor : [source.anchor[0], source.ground_y],
+    frame,
+    anchor,
     animated,
+    nextFrameInMs: animated ? spriteFrameRemainingMs(metadata.clip, elapsedMs, playback) : null,
   };
 }
 

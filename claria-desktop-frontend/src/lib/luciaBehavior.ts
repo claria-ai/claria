@@ -6,7 +6,8 @@
 export const LUCIA_QUIET_MS = 30_000;
 export const LUCIA_TWIRL_COOLDOWN_MS = 120_000;
 export const LUCIA_SKATEBOARD_COOLDOWN_MS = 600_000;
-export const LUCIA_BARK_COOLDOWN_MS = 3_000;
+// Just longer than the 730ms bark strip, so a click after she finishes is never silently ignored.
+export const LUCIA_BARK_COOLDOWN_MS = 1_000;
 export const LUCIA_READING_DEBOUNCE_MS = 200;
 
 export type LuciaMode = "companion" | "gaze" | "feeding";
@@ -103,11 +104,12 @@ export function createLuciaBehavior(now: number): LuciaBehaviorState {
   };
 }
 
-function ownsSock(behavior: LuciaBehavior): boolean {
+/** The sock run owns Lucia from chase through carry-away; the UI and policy share this test. */
+export function ownsSock(behavior: LuciaBehavior): boolean {
   return behavior === "chase" || behavior === "pickup" || behavior === "carry-away";
 }
 
-function isReading(behavior: LuciaBehavior): boolean {
+export function isReading(behavior: LuciaBehavior): boolean {
   return behavior === "reading" || behavior === "reading-enter" || behavior === "reading-exit";
 }
 
@@ -234,21 +236,32 @@ export function reduceLuciaBehavior(
         fedCount: event.active ? state.fedCount : 0,
         inferencePending: state.inferencePending,
         nextBarkAt: state.nextBarkAt,
+        // Play deadlines survive a blur, or frequent window switching would postpone them forever.
+        nextTwirlAt: state.nextTwirlAt,
+        nextSkateboardAt: state.nextSkateboardAt,
       };
     }
     const resumed = !state.active || !state.visible;
+    // Keep an existing deadline; one that lapsed while away comes up after the next quiet spell.
+    const deadline = (current: number | null, cooldownMs: number) => event.reducedMotion
+      ? null
+      : current === null ? now + cooldownMs : current <= now ? now + LUCIA_QUIET_MS : current;
     const fresh = {
       ...state,
       ...environment,
       lastTypingAt: now,
-      nextTwirlAt: event.reducedMotion ? null : now + LUCIA_TWIRL_COOLDOWN_MS,
-      nextSkateboardAt: event.reducedMotion ? null : now + LUCIA_SKATEBOARD_COOLDOWN_MS,
+      nextTwirlAt: deadline(state.nextTwirlAt, LUCIA_TWIRL_COOLDOWN_MS),
+      nextSkateboardAt: deadline(state.nextSkateboardAt, LUCIA_SKATEBOARD_COOLDOWN_MS),
       readingReadyAt: resumed && state.inferencePending ? now + LUCIA_READING_DEBOUNCE_MS : state.readingReadyAt,
     };
     if (!resumed && ownsSock(state.behavior)) return schedule(fresh);
     if (!resumed && isReading(state.behavior) && state.inferencePending) {
       return rest({ ...fresh, readingReadyAt: null }, "reading", now);
     }
+    // A motion-preference change lets a deliberate action finish (a feed in progress still
+    // counts); turning reduced motion on still stops unsolicited cosmetics at once.
+    const deliberate = state.behavior === "feeding" || state.behavior === "full" || state.behavior === "bark";
+    if (!resumed && state.endsAt !== null && (deliberate || !event.reducedMotion)) return schedule(fresh);
     return resumed && !event.reducedMotion && state.mode !== "feeding"
       ? begin(fresh, "tailwag", now, config)
       : settle(fresh, now, config);

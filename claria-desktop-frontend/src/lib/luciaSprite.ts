@@ -126,6 +126,27 @@ export function selectSpriteFrame(
 }
 
 /**
+ * Milliseconds until the frame chosen by selectSpriteFrame would next change, or
+ * null when it never will (a finished one-shot, or reduced motion).
+ */
+export function spriteFrameRemainingMs(
+  clip: SpriteClip,
+  elapsedMs: number,
+  { playback = "loop", reducedMotion = false }: SpritePlaybackOptions = {},
+): number | null {
+  if (reducedMotion) return null;
+  const durationMs = spriteClipDurationMs(clip);
+  const elapsed = Math.max(0, elapsedMs);
+  if (playback === "once" && elapsed >= durationMs - clip.frameDurationsMs[clip.frameDurationsMs.length - 1]) return null;
+  let remainingMs = playback === "loop" ? elapsed % durationMs : elapsed;
+  for (const duration of clip.frameDurationsMs) {
+    if (remainingMs < duration) return duration - remainingMs;
+    remainingMs -= duration;
+  }
+  return null;
+}
+
+/**
  * Clockwise from up: 0° up, 90° right, 180° down, 270° left. Snap to the nearest
  * 22.5° pose, with exact half-steps choosing clockwise. `null` explicitly means
  * the neutral pointer deadzone and plays idle. Reduced motion always uses idle's

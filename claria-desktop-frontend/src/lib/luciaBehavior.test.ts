@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  LUCIA_BARK_COOLDOWN_MS,
   createLuciaBehavior,
   reduceLuciaBehavior,
   type LuciaBehaviorConfig,
@@ -242,12 +243,12 @@ describe("Lucia sock ownership and explicit barking", () => {
 
   it("plays a visual bark once, respects its cooldown, and resumes gaze", () => {
     const bark = step(active("gaze"), { type: "bark" }, 10);
-    expect(bark).toMatchObject({ behavior: "bark", nextWakeAt: 100, nextBarkAt: 3_010 });
+    expect(bark).toMatchObject({ behavior: "bark", nextWakeAt: 100, nextBarkAt: 10 + LUCIA_BARK_COOLDOWN_MS });
     expect(step(bark, { type: "bark" }, 11)).toBe(bark);
     const returned = wake(bark);
     expect(returned.behavior).toBe("gaze");
-    expect(step(returned, { type: "bark" }, 3_009)).toBe(returned);
-    expect(step(returned, { type: "bark" }, 3_010).behavior).toBe("bark");
+    expect(step(returned, { type: "bark" }, 9 + LUCIA_BARK_COOLDOWN_MS)).toBe(returned);
+    expect(step(returned, { type: "bark" }, 10 + LUCIA_BARK_COOLDOWN_MS).behavior).toBe("bark");
   });
 
   it("cannot restart a bark even when its clip outlasts the cooldown", () => {
@@ -442,14 +443,31 @@ describe("Lucia visibility, activation, and reduced motion", () => {
   it.each([
     { active: true, visible: false },
     { active: false, visible: true },
-  ])("resets transient behavior when unavailable: %j", (environment) => {
+  ])("resets transient behavior but keeps play deadlines when unavailable: %j", (environment) => {
     const chase = step(bored(), { type: "sock" }, 40_000);
     const suspended = step(chase, { ...ENVIRONMENT, ...environment }, 40_001);
-    expect(suspended).toMatchObject({ behavior: "inactive", nextWakeAt: null, nextTwirlAt: null, nextSkateboardAt: null });
+    expect(suspended).toMatchObject({ behavior: "inactive", nextWakeAt: null, nextTwirlAt: 120_000, nextSkateboardAt: 600_000 });
     expect(step(suspended, { type: "wake" }, 1_000_000, 0)).toBe(suspended);
     const resumed = step(suspended, ENVIRONMENT, 1_000_000, 0);
-    expect(resumed).toMatchObject({ behavior: "tailwag", nextWakeAt: 1_000_010, nextTwirlAt: 1_120_000, lastTypingAt: 1_000_000 });
+    // Lapsed while away: due after the next quiet spell, not a fresh full cooldown.
+    expect(resumed).toMatchObject({ behavior: "tailwag", nextWakeAt: 1_000_010, nextTwirlAt: 1_030_000, nextSkateboardAt: 1_030_000, lastTypingAt: 1_000_000 });
     expect(wake(resumed)).toMatchObject({ behavior: "idle", nextWakeAt: 1_030_000 });
+  });
+
+  it("does not postpone play when the window keeps losing and regaining focus", () => {
+    let state = bored();
+    const twirlAt = state.nextTwirlAt!;
+    for (let now = 41_000; now < twirlAt; now += 20_000) {
+      state = step(step(state, { ...ENVIRONMENT, visible: false }, now), ENVIRONMENT, now + 1_000);
+    }
+    expect(state.nextTwirlAt).toBe(twirlAt);
+  });
+
+  it("lets a feed in progress finish when the motion preference changes", () => {
+    const feeding = step(active("feeding"), { type: "feed" }, 10);
+    const changed = step(feeding, { ...ENVIRONMENT, reducedMotion: true }, 20);
+    expect(changed).toMatchObject({ behavior: "feeding", endsAt: feeding.endsAt });
+    expect(wake(changed)).toMatchObject({ behavior: "feeding-idle", fedCount: 1 });
   });
 
   it("resumes a still-pending request with a fresh debounce, without hidden backlog", () => {
@@ -474,7 +492,7 @@ describe("Lucia visibility, activation, and reduced motion", () => {
     const feeding = step(step(bark, { type: "mode", mode: "feeding" }, 11), { type: "feed" }, 12);
     const completed = wake(feeding);
     const hidden = step(completed, { ...ENVIRONMENT, visible: false }, 200);
-    expect(hidden).toMatchObject({ mode: "feeding", fedCount: 1, nextBarkAt: 3_010 });
+    expect(hidden).toMatchObject({ mode: "feeding", fedCount: 1, nextBarkAt: 10 + LUCIA_BARK_COOLDOWN_MS });
     const resumed = step(hidden, ENVIRONMENT, 1_000_000);
     expect(resumed).toMatchObject({ behavior: "feeding-idle", fedCount: 1, nextWakeAt: null });
     const deactivated = step(resumed, { ...ENVIRONMENT, active: false }, 1_000_001);
