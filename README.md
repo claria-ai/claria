@@ -84,3 +84,4 @@ cd claria-desktop-frontend && npm run lint  # frontend lint
 ## License
 
 UNLICENSED — proprietary.
+
