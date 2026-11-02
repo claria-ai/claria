@@ -21,6 +21,10 @@ pub struct RecordInventoryEntry {
     pub filename: String,
     /// Key of the file itself.
     pub base_key: String,
+    /// Listed ETag of the file itself.
+    pub base_etag: String,
+    /// Listed size of the file itself in bytes.
+    pub base_size: u64,
     /// Key of the object holding the file's readable text: the `.text`
     /// sidecar when one exists, otherwise the file itself.
     pub source_key: String,
@@ -44,19 +48,43 @@ pub async fn record_inventory(
         .map_err(|source| storage("listing record files", source))?;
     let keys: Vec<&str> = objects.iter().map(|object| object.key.as_str()).collect();
 
-    Ok(claria_core::s3_keys::visible_record_files(&prefix, &keys)
-        .into_iter()
-        .map(|file| {
-            let source = &objects[file.source_index];
-            RecordInventoryEntry {
-                filename: file.filename,
-                base_key: objects[file.base_index].key.clone(),
-                source_key: source.key.clone(),
-                source_etag: source.etag.clone().unwrap_or_default(),
-                source_size: u64::try_from(source.size).unwrap_or(u64::MAX),
-            }
-        })
-        .collect())
+    let candidates: Vec<String> = objects
+        .iter()
+        .filter(|object| object.key.ends_with(".error"))
+        .map(|object| object.key.clone())
+        .collect();
+    let errors = claria_storage::objects::recognized_objects(
+        s3,
+        bucket,
+        &candidates,
+        claria_core::processing::MAX_ERROR_BYTES,
+        claria_core::processing::ProcessingError::parse,
+    )
+    .await
+    .map_err(|source| storage("reading processing outcomes", source))?;
+    let error_keys = errors.into_keys().collect();
+    let sizes: Vec<u64> = objects
+        .iter()
+        .map(|object| u64::try_from(object.size).unwrap_or(u64::MAX))
+        .collect();
+
+    Ok(
+        claria_core::s3_keys::visible_record_files_with_errors(&prefix, &keys, &sizes, &error_keys)
+            .into_iter()
+            .map(|file| {
+                let source = &objects[file.source_index];
+                RecordInventoryEntry {
+                    filename: file.filename,
+                    base_key: objects[file.base_index].key.clone(),
+                    base_etag: objects[file.base_index].etag.clone().unwrap_or_default(),
+                    base_size: u64::try_from(objects[file.base_index].size).unwrap_or(u64::MAX),
+                    source_key: source.key.clone(),
+                    source_etag: source.etag.clone().unwrap_or_default(),
+                    source_size: u64::try_from(source.size).unwrap_or(u64::MAX),
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Filenames of record files whose readable text contains `query`,
@@ -163,5 +191,18 @@ async fn fetch_entry_text(
     {
         return Ok(None);
     }
-    Ok(claria_core::record_text::decode_record_text(body.as_ref()).map(ToString::to_string))
+    if let Some(text) = claria_core::processing::usable_text(body.as_ref()) {
+        return Ok(Some(text.to_string()));
+    }
+    // A sidecar that turned out blank or binary falls back to the original,
+    // which is read only when it can be printable text at all.
+    if entry.source_key == entry.base_key
+        || entry.base_size > claria_core::record_text::MAX_RECORD_TEXT_BYTES
+    {
+        return Ok(None);
+    }
+    let base = cache
+        .get_or_fetch(s3, bucket, &entry.base_key, &entry.base_etag)
+        .await?;
+    Ok(claria_core::processing::usable_text(base.as_ref()).map(ToString::to_string))
 }

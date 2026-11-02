@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   listChatHistories,
   listDeletedFiles,
@@ -11,6 +11,7 @@ import DeletedSection from "../components/DeletedSection";
 import DropZoneHint from "../components/DropZoneHint";
 import EditorHistoryFolder from "../components/EditorHistoryFolder";
 import FileIcon from "../components/FileIcon";
+import ProcessingFailuresModal from "../components/ProcessingFailuresModal";
 import FileList from "../components/FileList";
 import FilesPanelHeader from "../components/FilesPanelHeader";
 import MemoRecorderBar from "../components/MemoRecorderBar";
@@ -42,13 +43,17 @@ export default function RecordTab({
   clientId,
   onResumeChat,
   onResumeWriting,
+  onChooseExtractionModel,
 }: {
   clientId: string;
   onResumeChat: (detail: ChatHistoryDetail) => void;
   onResumeWriting: (reportId: string) => void;
+  /** Open Preferences at the document extraction model. */
+  onChooseExtractionModel: () => void;
 }) {
+  const recordPanel = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
-  const { files, loading, uploading, refresh, upload, remove } = useRecordFiles(
+  const { files, loading, uploading, refresh, upload, remove, failures, processingOpen, openProcessing, dismissProcessing, retrying, retry, review } = useRecordFiles(
     clientId,
     setError,
   );
@@ -115,8 +120,21 @@ export default function RecordTab({
       <div className="max-w-2xl mx-auto p-8">
         {bannerError && <ErrorBanner message={bannerError} />}
 
+        {failures.length > 0 && !processingOpen && (
+          <button
+            onClick={openProcessing}
+            className="mb-4 text-sm text-blue-600 hover:text-blue-800"
+          >
+            {failures.length === 1
+              ? "1 file needs attention"
+              : `${failures.length} files need attention`}
+          </button>
+        )}
         {/* File list / drop zone */}
         <div
+          ref={recordPanel}
+          tabIndex={-1}
+          aria-label="Record files"
           className={`border-2 rounded-lg transition-colors ${
             dragging ? "border-blue-400 bg-blue-50" : "border-gray-200 bg-white"
           }`}
@@ -183,6 +201,7 @@ export default function RecordTab({
               onEdit={fileDialog.openEdit}
               onPreview={fileDialog.openPreview}
               onDelete={fileDialog.openDelete}
+              onReviewProcessing={review}
             />
           )}
 
@@ -205,6 +224,14 @@ export default function RecordTab({
           )}
         </div>
       </div>
+
+      {processingOpen && <ProcessingFailuresModal files={failures} retrying={retrying} onRetry={retry}
+        onChooseModel={() => { dismissProcessing(); onChooseExtractionModel(); }} onClose={() => {
+        dismissProcessing();
+        requestAnimationFrame(() => {
+          if (!document.activeElement || document.activeElement === document.body) recordPanel.current?.focus();
+        });
+      }} />}
 
       <RecordFileDialogs
         clientId={clientId}

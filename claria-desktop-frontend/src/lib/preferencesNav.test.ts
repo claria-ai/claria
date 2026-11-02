@@ -5,7 +5,7 @@ import {
   paneSpec,
   searchPreferencesNav,
   PREFERENCES_NAV,
-  WRITER_FOCUS_PANES,
+  PREFERENCES_FOCUS_PANES,
 } from "./preferencesNav";
 
 describe("PREFERENCES_NAV integrity", () => {
@@ -46,8 +46,8 @@ describe("PREFERENCES_NAV integrity", () => {
   });
 
   it("the Writing-tab jump targets exist", () => {
-    expect(categoryOf(WRITER_FOCUS_PANES["writer-templates"])).toBe("writer");
-    expect(categoryOf(WRITER_FOCUS_PANES["writer-prompts"])).toBe("writer");
+    expect(categoryOf(PREFERENCES_FOCUS_PANES["writer-templates"])).toBe("writer");
+    expect(categoryOf(PREFERENCES_FOCUS_PANES["writer-prompts"])).toBe("writer");
   });
 
   it("each category starts with at least one open pane", () => {

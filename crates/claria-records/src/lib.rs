@@ -28,3 +28,5 @@ pub use inventory::{
     search_record_contents,
 };
 pub use lifecycle::{ClientDeletionOutcome, ClientRestoreOutcome, delete_client, restore_client};
+
+pub mod processing;

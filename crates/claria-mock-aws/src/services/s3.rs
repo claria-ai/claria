@@ -125,7 +125,7 @@ async fn dispatch_object(
         Method::HEAD => head_object(bucket, &key, query, state).await,
         Method::GET => get_object(bucket, &key, query, state).await,
         Method::PUT => put_object(bucket, &key, headers, state, body).await,
-        Method::DELETE => delete_object(bucket, &key, query, state).await,
+        Method::DELETE => delete_object(bucket, &key, query, headers, state).await,
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
     }
 }
@@ -714,6 +714,35 @@ async fn get_object(bucket: &str, key: &str, query: &str, state: SharedState) ->
     }
 }
 
+fn is_aws_chunked(headers: &HeaderMap) -> bool {
+    let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
+    header("content-encoding").is_some_and(|value| value.contains("aws-chunked"))
+        || header("x-amz-content-sha256").is_some_and(|value| value.starts_with("STREAMING-"))
+}
+
+/// Strip `aws-chunked` framing (`<hex size>[;chunk-signature=…]\r\n<data>\r\n`
+/// repeated, ending in a zero-size chunk and optional trailers). `None` when
+/// the framing is malformed.
+fn decode_aws_chunked(body: &[u8]) -> Option<Vec<u8>> {
+    let mut decoded = Vec::with_capacity(body.len());
+    let mut rest = body;
+    loop {
+        let line_end = rest.windows(2).position(|pair| pair == b"\r\n")?;
+        let header = std::str::from_utf8(&rest[..line_end]).ok()?;
+        let size = usize::from_str_radix(header.split(';').next()?.trim(), 16).ok()?;
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            return Some(decoded);
+        }
+        let chunk = rest.get(..size)?;
+        if rest.get(size..size + 2)? != b"\r\n" {
+            return None;
+        }
+        decoded.extend_from_slice(chunk);
+        rest = &rest[size + 2..];
+    }
+}
+
 async fn put_object(
     bucket: &str,
     key: &str,
@@ -726,6 +755,23 @@ async fn put_object(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
+
+    // Streaming uploads (`put_object_from_path`) arrive in `aws-chunked`
+    // framing; S3 stores the decoded payload, so the mock must too.
+    let body = if is_aws_chunked(headers) {
+        match decode_aws_chunked(&body) {
+            Some(decoded) => Bytes::from(decoded),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    xml::error_xml("IncompleteBody", "Malformed aws-chunked body"),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        body
+    };
 
     let etag = format!("{:x}", md5_hash(&body));
     let now = jiff::Timestamp::now().to_string();
@@ -849,13 +895,33 @@ async fn put_object(
     builder.body(Body::empty()).unwrap()
 }
 
-async fn delete_object(bucket: &str, key: &str, query: &str, state: SharedState) -> Response {
+async fn delete_object(
+    bucket: &str,
+    key: &str,
+    query: &str,
+    headers: &HeaderMap,
+    state: SharedState,
+) -> Response {
     let mut st = state.write().await;
 
     let versioning = match st.buckets.get(bucket) {
         Some(b) => b.versioning.clone(),
         None => return StatusCode::NO_CONTENT.into_response(),
     };
+
+    if let Some(expected) = headers
+        .get("if-match")
+        .and_then(|value| value.to_str().ok())
+    {
+        let current = st
+            .objects
+            .get(&(bucket.to_string(), key.to_string()))
+            .and_then(|versions| versions.last())
+            .filter(|object| !object.is_delete_marker);
+        if current.is_none_or(|object| format!("\"{}\"", object.etag) != expected) {
+            return StatusCode::PRECONDITION_FAILED.into_response();
+        }
+    }
 
     // A versioned delete removes that exact version rather than stacking a
     // delete marker on top of it.

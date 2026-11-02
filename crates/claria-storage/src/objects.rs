@@ -858,3 +858,59 @@ pub async fn get_object_version(
         content_type,
     })
 }
+
+/// Remove only the object revision observed by the caller. A concurrent write
+/// wins; never turn a failed precondition into an unconditional delete.
+pub async fn delete_object_if_match(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    etag: &str,
+) -> Result<(), StorageError> {
+    client
+        .delete_object()
+        .bucket(bucket)
+        .key(key)
+        .if_match(etag)
+        .send()
+        .await
+        .map_err(|error| {
+            if error
+                .raw_response()
+                .is_some_and(|response| response.status().as_u16() == 412)
+            {
+                StorageError::PreconditionFailed { key: key.into() }
+            } else {
+                StorageError::DeleteObject(sdk_error_message(&error))
+            }
+        })?;
+    Ok(())
+}
+
+/// Bounded concurrent reads of candidate objects. The caller owns recognition;
+/// missing or oversized candidates cannot be recognized as internal artifacts.
+pub async fn recognized_objects<T, F>(
+    client: &Client,
+    bucket: &str,
+    keys: &[String],
+    max_bytes: u64,
+    recognize: F,
+) -> Result<std::collections::HashMap<String, T>, StorageError>
+where
+    T: Send,
+    F: Fn(&[u8]) -> Option<T> + Copy + Send + Sync,
+{
+    futures::stream::iter(keys.iter().cloned().map(|key| async move {
+        match get_object_bounded(client, bucket, &key, max_bytes).await {
+            Ok(output) => Ok(recognize(&output.body).map(|value| (key.clone(), value))),
+            Err(StorageError::NotFound { .. } | StorageError::ObjectTooLarge { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }))
+    .buffered(S3_FETCH_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await
+    .into_iter()
+    .filter_map(Result::transpose)
+    .collect()
+}

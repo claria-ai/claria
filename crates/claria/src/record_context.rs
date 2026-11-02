@@ -38,17 +38,38 @@ pub(crate) async fn load_record_inventory(
     let objects = claria_storage::objects::list_objects_with_metadata(s3, bucket, &prefix).await?;
     let keys: Vec<&str> = objects.iter().map(|object| object.key.as_str()).collect();
 
-    Ok(claria_core::s3_keys::visible_record_files(&prefix, &keys)
-        .into_iter()
-        .map(|file| {
-            let source = &objects[file.source_index];
-            RecordInventoryEntry {
-                filename: file.filename,
-                read_key: source.key.clone(),
-                source_bytes: u64::try_from(source.size).unwrap_or(u64::MAX),
-            }
-        })
-        .collect())
+    let candidates: Vec<String> = objects
+        .iter()
+        .filter(|object| object.key.ends_with(".error"))
+        .map(|object| object.key.clone())
+        .collect();
+    let errors = claria_storage::objects::recognized_objects(
+        s3,
+        bucket,
+        &candidates,
+        claria_core::processing::MAX_ERROR_BYTES,
+        claria_core::processing::ProcessingError::parse,
+    )
+    .await?;
+    let error_keys = errors.into_keys().collect();
+    let sizes: Vec<u64> = objects
+        .iter()
+        .map(|object| u64::try_from(object.size).unwrap_or(u64::MAX))
+        .collect();
+
+    Ok(
+        claria_core::s3_keys::visible_record_files_with_errors(&prefix, &keys, &sizes, &error_keys)
+            .into_iter()
+            .map(|file| {
+                let source = &objects[file.source_index];
+                RecordInventoryEntry {
+                    filename: file.filename,
+                    read_key: source.key.clone(),
+                    source_bytes: u64::try_from(source.size).unwrap_or(u64::MAX),
+                }
+            })
+            .collect(),
+    )
 }
 
 /// One model the record corpus has to fit inside, named for the error
@@ -324,7 +345,7 @@ pub(crate) async fn load_full_record_context(
             claria_core::record_text::MAX_RECORD_TEXT_BYTES,
         )
         .await?;
-        let Some(text) = claria_core::record_text::decode_record_text(&output.body) else {
+        let Some(text) = claria_core::processing::usable_text(&output.body) else {
             return Ok(LoadedFullRecord::Unavailable {
                 filename: entry.filename.clone(),
                 reason: "text_extraction_unavailable",

@@ -1,5 +1,5 @@
 import FileIcon from "./FileIcon";
-import { TrashIcon } from "./icons";
+import { RetryIcon, TrashIcon } from "./icons";
 import { formatFileSize } from "../lib/format";
 import { searchMatches } from "../lib/search";
 import type { RecordFile } from "../lib/tauri";
@@ -21,6 +21,7 @@ export default function FileList({
   onEdit,
   onPreview,
   onDelete,
+  onReviewProcessing,
 }: {
   files: RecordFile[];
   /** Current search text, used to explain why a row matched. */
@@ -33,6 +34,7 @@ export default function FileList({
   onEdit: (filename: string) => void;
   onPreview: (filename: string) => void;
   onDelete: (filename: string) => void;
+  onReviewProcessing?: (file: RecordFile) => void;
 }) {
   return (
     <div className="divide-y divide-gray-100">
@@ -52,9 +54,32 @@ export default function FileList({
                   </span>
                 )}
             </div>
-            <p className="text-xs text-gray-400">{formatFileSize(file.size)}</p>
+            <p className="text-xs text-gray-400">
+              {formatFileSize(file.size)}
+              {needsText(file) && (
+                <span className="text-amber-700">
+                  {" · "}
+                  {file.processing_status?.status === "failed"
+                    ? "Text processing failed"
+                    : "No extracted text"}
+                </span>
+              )}
+            </p>
           </div>
           <div className="flex gap-1">
+            {needsText(file) && onReviewProcessing && (
+              <button
+                onClick={() => onReviewProcessing(file)}
+                title={
+                  file.processing_status?.status === "failed"
+                    ? "Retry text processing"
+                    : "Extract text"
+                }
+                className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+              >
+                <RetryIcon />
+              </button>
+            )}
             {showVersions && (
               <button
                 onClick={() => onOpenVersions(file.filename)}
@@ -135,4 +160,10 @@ export default function FileList({
       ))}
     </div>
   );
+}
+
+/** A processed file (document or audio) whose text readers cannot use. */
+function needsText(file: RecordFile): boolean {
+  const status = file.processing_status?.status;
+  return status === "failed" || status === "unknown";
 }

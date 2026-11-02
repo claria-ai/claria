@@ -4,7 +4,7 @@ import {
   type ClientWorkspaceTab,
   type ClientWorkspaceView,
 } from "../components/ClientWorkspaceTabs";
-import { type PreferencesWriterSection } from "../App";
+import { type PreferencesFocusSection } from "../App";
 import { type ResumeChat } from "../pages/ClientChat";
 import { type WritingLeaveState } from "../pages/Writing";
 import { type ChatHistoryDetail } from "./tauri";
@@ -35,7 +35,7 @@ function busyLeaveMessage(state: WritingLeaveState): string {
  */
 export function useClientWorkspace(
   onBack: () => void,
-  onManageWriterSection: (section: PreferencesWriterSection) => void
+  onManageWriterSection: (section: PreferencesFocusSection) => void
 ) {
   const [activeView, setActiveView] =
     useState<ClientWorkspaceView>("record");
@@ -110,7 +110,7 @@ export function useClientWorkspace(
     if (mayLeaveWriting()) onBack();
   }
 
-  function manageWriterSection(section: PreferencesWriterSection) {
+  function manageWriterSection(section: PreferencesFocusSection) {
     if (mayLeaveWriting()) onManageWriterSection(section);
   }
 
