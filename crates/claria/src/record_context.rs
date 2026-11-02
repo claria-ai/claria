@@ -52,37 +52,24 @@ pub(crate) async fn load_record_inventory(
     )
     .await?;
     let error_keys = errors.into_keys().collect();
-    let sidecar_keys: Vec<String> = objects
+    let sizes: Vec<u64> = objects
         .iter()
-        .filter(|object| object.key.ends_with(".text"))
-        .map(|object| object.key.clone())
+        .map(|object| u64::try_from(object.size).unwrap_or(u64::MAX))
         .collect();
-    let usable_sidecars = claria_storage::objects::recognized_objects(
-        s3,
-        bucket,
-        &sidecar_keys,
-        claria_core::record_text::MAX_RECORD_TEXT_BYTES,
-        |bytes| claria_core::processing::usable_text(bytes).map(|_| ()),
-    )
-    .await?;
-    let usable_sidecars = usable_sidecars.into_keys().collect();
 
-    Ok(claria_core::s3_keys::visible_record_files_with_errors(
-        &prefix,
-        &keys,
-        &error_keys,
-        &usable_sidecars,
+    Ok(
+        claria_core::s3_keys::visible_record_files_with_errors(&prefix, &keys, &sizes, &error_keys)
+            .into_iter()
+            .map(|file| {
+                let source = &objects[file.source_index];
+                RecordInventoryEntry {
+                    filename: file.filename,
+                    read_key: source.key.clone(),
+                    source_bytes: u64::try_from(source.size).unwrap_or(u64::MAX),
+                }
+            })
+            .collect(),
     )
-    .into_iter()
-    .map(|file| {
-        let source = &objects[file.source_index];
-        RecordInventoryEntry {
-            filename: file.filename,
-            read_key: source.key.clone(),
-            source_bytes: u64::try_from(source.size).unwrap_or(u64::MAX),
-        }
-    })
-    .collect())
 }
 
 /// One model the record corpus has to fit inside, named for the error

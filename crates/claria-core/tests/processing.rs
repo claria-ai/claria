@@ -29,9 +29,9 @@ fn only_validated_errors_hide_and_supersede_text() {
         "p/note",
         "p/note.text",
     ];
+    let sizes = [10, 10, 10, 10, 10, 0];
     let errors = HashSet::from(["p/a.pdf.error".to_string()]);
-    let usable = HashSet::from(["p/a.pdf.text".to_string()]);
-    let visible = visible_record_files_with_errors("p/", &keys, &errors, &usable);
+    let visible = visible_record_files_with_errors("p/", &keys, &sizes, &errors);
     assert_eq!(
         visible
             .iter()
@@ -40,7 +40,7 @@ fn only_validated_errors_hide_and_supersede_text() {
         ["a.pdf", "user.error", "note"]
     );
     assert_eq!(visible[0].source_index, 0);
-    assert_eq!(visible[2].source_index, 4); // unusable text falls back to original
+    assert_eq!(visible[2].source_index, 4); // empty text falls back to original
 }
 
 #[test]
