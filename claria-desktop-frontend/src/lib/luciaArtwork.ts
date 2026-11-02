@@ -13,17 +13,20 @@ export function luciaImageUrl(path: string): string {
   return url;
 }
 
-export async function loadLuciaArtwork(): Promise<boolean> {
+export type LuciaArtwork = ReadonlyMap<string, HTMLImageElement>;
+
+/** Keep decoded sources alive with the scene; changing CSS URLs can still paint a blank frame. */
+export async function loadLuciaArtwork(): Promise<LuciaArtwork> {
   try {
-    await Promise.all(Object.entries(manifest.assets).map(async ([path, asset]) => {
+    return new Map(await Promise.all(Object.entries(manifest.assets).map(async ([path, asset]) => {
       const image = new Image();
       image.src = luciaImageUrl(path);
       await image.decode();
       if (image.naturalWidth !== asset.width || image.naturalHeight !== asset.height) {
         throw new Error("Lucia artwork dimensions do not match the manifest");
       }
-    }));
-    return true;
+      return [path, image] as const;
+    })));
   } catch {
     logFrontendEvent("error", "Lucia artwork could not be loaded; companion stopped");
     throw new Error("Lucia’s artwork could not be loaded. Disable and re-enable distraction mode to retry.");
@@ -92,15 +95,19 @@ export function selectLuciaPose(state: LuciaBehaviorState, elapsedMs: number, ga
     ? "idle" : state.behavior === "chase" ? "running-right" : state.behavior;
   const metadata = luciaClip(name);
   const source = manifest.clips[name];
+  // The supplied idle cells narrow from 170 to 158 opaque pixels. Hold the original
+  // first pose rather than loop that silhouette jump or rescale individual frames.
+  const animated = !state.reducedMotion && state.behavior !== "idle"
+    && state.behavior !== "inactive" && state.behavior !== "gaze";
   return {
     image: source.image,
     frame: state.behavior === "gaze" && gaze && !state.reducedMotion
       ? gaze
       : selectSpriteFrame(metadata.atlas, metadata.clip, elapsedMs, {
-        playback: source.loop ? "loop" : "once", reducedMotion: state.reducedMotion,
+        playback: source.loop ? "loop" : "once", reducedMotion: !animated,
       }),
     anchor: state.behavior === "gaze" ? manifest.gaze_anchor : [source.anchor[0], source.ground_y],
-    animated: state.behavior !== "inactive" && state.behavior !== "gaze" && !state.reducedMotion,
+    animated,
   };
 }
 

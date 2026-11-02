@@ -69,7 +69,7 @@ export default function LuciaDemo() {
         {notice && <span role="status">{notice}</span>}
       </div>
       <div className="lucia-demo-workspace flex-1 min-h-0">
-        <ClientRecord clientId={CLIENT_ID} clientName="Jane Doe — synthetic demo" luciaControlsInitiallyOpen
+        <ClientRecord clientId={CLIENT_ID} clientName="Jane Doe — synthetic demo" luciaControlsInitiallyOpen luciaPreviewsEnabled
           navigate={() => setNotice("Stay in this demo workspace: Record, Chat and Writing are available above.")}
           onClientNameChanged={() => {}} onManageWriterSection={() => setNotice("Template management is unavailable in this local demo.")} />
       </div>

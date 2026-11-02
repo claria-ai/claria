@@ -6,6 +6,7 @@ import {
   type LuciaBehaviorEvent,
   type LuciaBehaviorState,
   type LuciaMode,
+  type LuciaPreviewBehavior,
 } from "./luciaBehavior";
 import { getLuciaInferenceCount, subscribeLuciaInference } from "./luciaInference";
 
@@ -141,5 +142,6 @@ export function useLuciaBehavior(
   const bark = useCallback(() => send({ type: "bark" }), [send]);
   const feed = useCallback(() => send({ type: "feed" }), [send]);
   const reset = useCallback(() => send({ type: "reset" }), [send]);
-  return { state, dropSock, setMode, bark, feed, reset };
+  const preview = useCallback((behavior: LuciaPreviewBehavior) => send({ type: "preview", behavior }), [send]);
+  return { state, dropSock, setMode, bark, feed, reset, preview };
 }

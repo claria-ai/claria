@@ -4,6 +4,10 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
+- Lucia holds a steady companion pose between actions
+- Lucia switches animation strips without blank frames
+- The local Lucia demo offers explicit animation previews
+
 - Distraction mode adds synthetic Lucia artwork, seated gaze, and five-stage dekopon feeding
 - Lucia's poses share a measured ground line, including her lying-down rest
 - A local fixture demo opens the workspace without AWS setup or model connections

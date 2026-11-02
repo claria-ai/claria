@@ -3,10 +3,10 @@ import { inflateSync } from "node:zlib";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import manifest from "../assets/lucia/manifest.json";
 import { createLuciaBehavior, type LuciaBehaviorState } from "./luciaBehavior";
-import { LUCIA_BEHAVIOR_CONFIG, luciaClip, luciaPosition, selectLuciaPose, type LuciaClipName } from "./luciaArtwork";
+import { LUCIA_BEHAVIOR_CONFIG, loadLuciaArtwork, luciaClip, luciaPosition, selectLuciaPose, type LuciaClipName } from "./luciaArtwork";
 import { PETS_V2_ATLAS, PETS_V2_CLIPS, selectPetsV2LookFrame, selectSpriteFrame, spriteClipDurationMs } from "./luciaSprite";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../assets/lucia");
@@ -122,6 +122,15 @@ describe("Lucia imported synthetic artwork", () => {
 });
 
 describe("Lucia policy-to-art mapping", () => {
+  it("holds original idle cell zero at a fixed anchor instead of looping source width changes", () => {
+    const original = selectLuciaPose(state({}), 0);
+    expect(original).toMatchObject({ image: manifest.core_image, frame: { row: 0, column: 0 }, anchor: [96, 201], animated: false });
+    for (const elapsed of [279, 280, 390, 500, 640, 780, 1100, 30_000]) {
+      expect(selectLuciaPose(state({}), elapsed)).toEqual(original);
+      expect(luciaPosition(state({}), elapsed, 1280)).toBe(90);
+    }
+  });
+
   it("uses the baseline feeding strip only for the first fruit", () => {
     expect(manifest.first_feed_from_counts).toEqual([0]);
     expect(manifest.stages.counts).toEqual([0, 1, 2, 3, 4, 5]);
@@ -163,5 +172,39 @@ describe("Lucia policy-to-art mapping", () => {
       expect(selectLuciaPose(reduced, 900).animated).toBe(false);
       expect(selectLuciaPose(reduced, 900).frame.column).toBe(0);
     }
+  });
+});
+
+
+describe("Lucia decoded artwork lifetime", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("returns every retained source only after all images decode", async () => {
+    const assets = Object.values(manifest.assets);
+    const images: ImageStub[] = [];
+    const finish: Array<() => void> = [];
+    class ImageStub {
+      src = "";
+      naturalWidth: number;
+      naturalHeight: number;
+      constructor() {
+        const asset = assets[images.length];
+        this.naturalWidth = asset.width;
+        this.naturalHeight = asset.height;
+        images.push(this);
+      }
+      decode() { return new Promise<void>((resolve) => finish.push(resolve)); }
+    }
+    vi.stubGlobal("Image", ImageStub);
+    let ready = false;
+    const loading = loadLuciaArtwork().then((artwork) => { ready = true; return artwork; });
+    expect(images).toHaveLength(assets.length);
+    for (const resolve of finish.slice(0, -1)) resolve();
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    finish.at(-1)!();
+    const artwork = await loading;
+    expect([...artwork.values()]).toEqual(images);
+    expect([...artwork.keys()]).toEqual(Object.keys(manifest.assets));
   });
 });

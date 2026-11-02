@@ -531,3 +531,21 @@ describe("Lucia metadata durations", () => {
     expect(() => step(createLuciaBehavior(0), ENVIRONMENT, 0, 0, config)).toThrow(RangeError);
   });
 });
+
+
+describe("Lucia explicit local-demo previews", () => {
+  it.each(["tailwag", "stretch", "ear-perk", "twirl", "skateboard"] as const)("uses the existing %s duration and wake path without changing play cadence", (behavior) => {
+    const previous = idle();
+    const preview = step(previous, { type: "preview", behavior }, 1000);
+    expect(preview).toMatchObject({ behavior, endsAt: 1000 + CONFIG.durationsMs[behavior], nextTwirlAt: previous.nextTwirlAt, nextSkateboardAt: previous.nextSkateboardAt });
+    expect(wake(preview).behavior).toBe(behavior === "stretch" ? "bored" : "idle");
+  });
+
+  it("cannot interrupt owned work or bypass mode, environment and motion guards", () => {
+    const pending = step(idle(), { type: "inference", pending: true }, 100);
+    const states = [createLuciaBehavior(0), active("companion", true), active("feeding"), active("gaze"),
+      step(idle(), { ...ENVIRONMENT, visible: false }, 100), pending, reading(),
+      step(idle(), { type: "sock" }, 100), step(idle(), { type: "bark" }, 100)];
+    for (const state of states) expect(step(state, { type: "preview", behavior: "twirl" }, 101)).toBe(state);
+  });
+});

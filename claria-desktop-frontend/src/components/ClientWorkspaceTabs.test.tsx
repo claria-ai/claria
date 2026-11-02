@@ -1,3 +1,4 @@
+import manifest from "../assets/lucia/manifest.json";
 import { useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -10,7 +11,7 @@ import { setDistractionModeEnabled } from "../lib/distractionMode";
 
 vi.mock("../lib/luciaArtwork", async (original) => ({
   ...await original<typeof import("../lib/luciaArtwork")>(),
-  loadLuciaArtwork: vi.fn(async () => true),
+  loadLuciaArtwork: vi.fn(),
 }));
 
 function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
@@ -38,7 +39,8 @@ function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
 beforeEach(() => {
   setDistractionModeEnabled(false);
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
-  vi.mocked(loadLuciaArtwork).mockResolvedValue(true);
+  vi.mocked(loadLuciaArtwork).mockResolvedValue(new Map(Object.keys(manifest.assets).map((path) => [path, new Image()])));
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
 });
 
 describe("client workspace tabs", () => {

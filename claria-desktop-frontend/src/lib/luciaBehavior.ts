@@ -26,6 +26,9 @@ export type LuciaTimedBehavior =
   | "feeding"
   | "full";
 
+/** Explicit local-demo requests use the same action ownership and completion path. */
+export type LuciaPreviewBehavior = "tailwag" | "stretch" | "ear-perk" | "twirl" | "skateboard";
+
 export type LuciaBehavior =
   | "inactive"
   | "idle"
@@ -56,6 +59,7 @@ export type LuciaBehaviorEvent =
   | { type: "bark" }
   | { type: "feed" }
   | { type: "reset" }
+  | { type: "preview"; behavior: LuciaPreviewBehavior }
   | { type: "wake" };
 
 export type LuciaBehaviorState = Readonly<{
@@ -282,6 +286,14 @@ export function reduceLuciaBehavior(
     if (state.mode !== "feeding") return state;
     const next = { ...state, fedCount: 0 as const };
     return isReading(state.behavior) ? next : settle(next, now, config);
+  }
+
+  if (event.type === "preview") {
+    if (state.mode !== "companion" || state.reducedMotion || state.inferencePending
+      || ownsSock(state.behavior) || isReading(state.behavior) || state.behavior === "bark") return state;
+    // Previewing a typing reaction has the same quiet reset as actual typing.
+    const next = event.behavior === "ear-perk" ? { ...state, lastTypingAt: now } : state;
+    return begin(next, event.behavior, now, config);
   }
 
   if (event.type === "sock") {

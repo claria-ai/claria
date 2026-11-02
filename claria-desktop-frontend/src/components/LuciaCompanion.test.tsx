@@ -1,3 +1,4 @@
+import manifest from "../assets/lucia/manifest.json";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import LuciaCompanion from "./LuciaCompanion";
@@ -6,7 +7,7 @@ import { withLuciaInference } from "../lib/luciaInference";
 
 vi.mock("../lib/luciaArtwork", async (original) => ({
   ...await original<typeof import("../lib/luciaArtwork")>(),
-  loadLuciaArtwork: vi.fn(async () => true),
+  loadLuciaArtwork: vi.fn(),
 }));
 
 let rail: HTMLDivElement;
@@ -24,7 +25,8 @@ beforeEach(() => {
   media = Object.assign(new EventTarget(), { media: "(prefers-reduced-motion: reduce)", onchange: null }) as MediaQueryList;
   Object.defineProperty(media, "matches", { get: () => reduced });
   vi.stubGlobal("matchMedia", () => media);
-  vi.mocked(loadLuciaArtwork).mockResolvedValue(true);
+  vi.mocked(loadLuciaArtwork).mockResolvedValue(new Map(Object.keys(manifest.assets).map((path) => [path, new Image()])));
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
   rail = document.createElement("div");
   Object.defineProperty(rail, "clientWidth", { value: 1000 });
   document.body.append(rail);
@@ -35,9 +37,9 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
-async function mount() {
+async function mount(previewsEnabled = false) {
   let result!: ReturnType<typeof render>;
-  await act(async () => { result = render(<LuciaCompanion clientId="fixture" rail={rail} />); });
+  await act(async () => { result = render(<LuciaCompanion clientId="fixture" rail={rail} previewsEnabled={previewsEnabled} />); });
   return result;
 }
 function mode(value: string) { fireEvent.change(screen.getByLabelText("Lucia mode"), { target: { value } }); }
@@ -47,18 +49,70 @@ function sprite() { return screen.getByTestId("lucia-sprite"); }
 describe("LuciaCompanion", () => {
   it("hides the standalone sock at pickup START, with no duplicate during carry", async () => {
     const { unmount } = await mount();
+    const canvas = sprite().querySelector("canvas")!;
+    const context = canvas.getContext("2d")!;
+    const sources = await vi.mocked(loadLuciaArtwork).mock.results[0].value;
     fireEvent.click(screen.getByRole("button", { name: "Drop a sock for Lucia" }));
+    expect(context.drawImage).toHaveBeenLastCalledWith(sources.get(manifest.core_image), 0, 208, 192, 208, 0, 0, 192, 208);
     expect(scene().dataset.behavior).toBe("chase");
     expect(screen.getByTestId("lucia-sock")).toBeDefined();
     advance(config.durationsMs.chase);
     expect(scene().dataset.behavior).toBe("pickup");
     expect(screen.queryByTestId("lucia-sock")).toBeNull();
     expect(sprite().dataset.image).toContain("pickup");
+    expect(sprite().querySelector("canvas")).toBe(canvas);
+    expect(context.drawImage).toHaveBeenLastCalledWith(sources.get(manifest.clips.pickup.image), 0, 0, 192, 208, 0, 0, 192, 208);
+    expect(sprite().dataset.frame).toBe("0:0");
     advance(config.durationsMs.pickup);
     expect(sprite().dataset.image).toContain("carry-right");
+    expect(sprite().querySelector("canvas")).toBe(canvas);
+    expect(context.drawImage).toHaveBeenLastCalledWith(sources.get(manifest.clips["carry-away"].image), 0, 0, 192, 208, 0, 0, 192, 208);
+    expect(sprite().dataset.frame).toBe("0:0");
+    expect(sprite().style.width).toBe("124.8px");
+    expect(parseFloat(sprite().style.height)).toBeCloseTo(135.2);
     expect(screen.queryByTestId("lucia-sock")).toBeNull();
     unmount();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("holds the baseline idle cell without scheduling redraws or changing registration", async () => {
+    await mount();
+    advance(config.durationsMs.tailwag);
+    const context = sprite().querySelector("canvas")!.getContext("2d")!;
+    const calls = vi.mocked(context.drawImage).mock.calls.length;
+    const registration = [sprite().style.left, sprite().style.bottom];
+    advance(5000);
+    expect(scene().dataset.behavior).toBe("idle");
+    expect(sprite().dataset.frame).toBe("0:0");
+    expect(vi.mocked(context.drawImage).mock.calls.length).toBe(calls);
+    expect([sprite().style.left, sprite().style.bottom]).toEqual(registration);
+    expect(screen.queryByLabelText("Preview Lucia action")).toBeNull();
+  });
+
+  it("offers explicit local previews only when opted in and respects action ownership", async () => {
+    await mount(true);
+    const preview = screen.getByLabelText("Preview Lucia action") as HTMLSelectElement;
+    fireEvent.change(preview, { target: { value: "stretch" } });
+    expect(scene().dataset.behavior).toBe("stretch");
+    advance(config.durationsMs.stretch);
+    expect(scene().dataset.behavior).toBe("bored");
+    fireEvent.change(preview, { target: { value: "twirl" } });
+    expect(scene().dataset.behavior).toBe("twirl");
+    expect(sprite().dataset.image).toContain("twirl");
+    fireEvent.click(screen.getByRole("button", { name: "Drop a sock for Lucia" }));
+    expect(preview.disabled).toBe(true);
+    fireEvent.change(preview, { target: { value: "stretch" } });
+    expect(scene().dataset.behavior).toBe("chase");
+  });
+
+  it("does not mount a drawing surface or scene until decoding finishes", async () => {
+    let finish!: (artwork: Awaited<ReturnType<typeof loadLuciaArtwork>>) => void;
+    vi.mocked(loadLuciaArtwork).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    await mount();
+    expect(screen.queryByTestId("lucia-scene")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("Loading");
+    await act(async () => { finish(new Map(Object.keys(manifest.assets).map((path) => [path, new Image()]))); });
+    expect(sprite().querySelector("canvas")).not.toBeNull();
   });
 
   it("retains the current static body on later feeds and commits once, never a sixth fruit", async () => {
@@ -86,7 +140,8 @@ describe("LuciaCompanion", () => {
   });
 
   it("keeps reading for overlapping jobs and exits after failure/cancellation settlement", async () => {
-    await mount();
+    await mount(true);
+    const preview = screen.getByLabelText("Preview Lucia action") as HTMLSelectElement;
     let finish!: () => void;
     let fail!: (reason: Error) => void;
     let one!: Promise<void>;
@@ -102,8 +157,10 @@ describe("LuciaCompanion", () => {
     expect(scene().dataset.behavior).toBe("reading");
     await act(async () => { fail(new Error("fixture cancellation")); await expect(two).rejects.toThrow("fixture cancellation"); });
     expect(scene().dataset.behavior).toBe("reading-exit");
+    expect(preview.disabled).toBe(true);
     advance(config.durationsMs["reading-exit"]);
     expect(scene().dataset.behavior).toBe("idle");
+    expect(preview.disabled).toBe(false);
   });
 
   it("cleans input, gaze and animation on hidden window and repeated unmounts", async () => {
