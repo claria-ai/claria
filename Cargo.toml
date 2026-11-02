@@ -116,3 +116,11 @@ lto = true
 codegen-units = 1
 opt-level = "z"
 panic = "abort"
+
+# CI's `Tauri build` job only proves the app compiles optimized and launches; Linux never ships.
+# Fat LTO and a single codegen unit cost minutes there and change nothing it checks. Tags and
+# release.yml build the shipped binaries with `release` above.
+[profile.ci-release]
+inherits = "release"
+lto = false
+codegen-units = 16
