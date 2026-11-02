@@ -50,6 +50,11 @@ runs:
       uses: swatinem/rust-cache@v2
       with:
         shared-key: ${{ inputs.shared-key }}
+        # Only main writes. A cache saved from a PR is visible to that PR alone, while every PR
+        # can read main's, so PR saves bought nothing and evicted main's archives under the
+        # repository's 10 GB cap. Callers that save: ci.yml and release.yml's warm build on push
+        # to main. Tag builds (release.yml, publish.yml) restore only.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
 
     - name: Configure mold linker
       if: runner.os == 'Linux'
