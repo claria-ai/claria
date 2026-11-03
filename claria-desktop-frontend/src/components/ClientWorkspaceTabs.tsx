@@ -76,8 +76,8 @@ export default function ClientWorkspaceTabs({
     : `client-workspace-tab-${activeView}`;
 
   return (
-    <div className="flex flex-col h-screen">
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
+    <div className="flex flex-col h-screen overflow-hidden">
+      <div className="flex shrink-0 items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
         <BackButton onClick={onBack} />
         <button
           ref={settingsButtonRef}

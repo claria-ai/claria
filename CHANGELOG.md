@@ -2,6 +2,10 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Long chats scroll inside the conversation, keeping the composer and Lucia's rail on screen
+
 ## [0.36.0] — 2026-11-03
 
 - Lucia stays the same size across every animation, including feeding and seated gaze
