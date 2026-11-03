@@ -150,9 +150,9 @@ export default function InfraChat({
   ) : null;
 
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex flex-col h-screen overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
+      <div className="flex shrink-0 items-center gap-3 px-6 py-4 border-b border-gray-200 bg-white">
         <BackButton onClick={() => navigate("start")} />
         <div className="flex-1">
           <h2 className="text-lg font-semibold">Infrastructure</h2>

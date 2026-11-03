@@ -253,6 +253,13 @@ describe("LuciaCompanion", () => {
     expect(screen.queryByRole("button", { name: "Give Lucia her skateboard" })).toBeNull();
   });
 
+  it("leaves the skateboard button out under reduced motion", async () => {
+    reduced = true;
+    await mount();
+    expect(screen.getByRole("button", { name: "Drop a sock for Lucia" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Give Lucia her skateboard" })).toBeNull();
+  });
+
   it("ignores clicks on Lucia while a pet reaction plays", async () => {
     await mount();
     advance(config.durationsMs.tailwag);

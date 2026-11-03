@@ -22,6 +22,7 @@ export default function ChatComposer({
   ariaLabel = "Chat message",
   composerRef,
   rows = 3,
+  capHeight = false,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -43,6 +44,8 @@ export default function ChatComposer({
   ariaLabel?: string;
   composerRef?: Ref<HTMLTextAreaElement>;
   rows?: number;
+  /** Stops the drag handle at a fifth of the window, for surfaces with a rail below them. */
+  capHeight?: boolean;
 }) {
   return (
     <div className="flex gap-3">
@@ -60,7 +63,7 @@ export default function ChatComposer({
         placeholder={placeholder}
         disabled={disabled}
         rows={rows}
-        className="flex-1 max-h-[20vh] px-4 py-2.5 text-sm border border-gray-300 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-500"
+        className={`flex-1 ${capHeight ? "max-h-[20vh] " : ""}px-4 py-2.5 text-sm border border-gray-300 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-500`}
       />
       <div className="self-end flex flex-col gap-2">
         <button

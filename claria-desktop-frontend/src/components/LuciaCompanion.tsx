@@ -101,11 +101,14 @@ function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps
             className="p-1 rounded-md border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40">
             <img src={luciaImageUrl(LUCIA_SOCK_IMAGE)} alt="" width="20" height="20" />
           </button>
-          <button type="button" onClick={skate} disabled={!available || !canSkate(state)}
-            title="Give Lucia her skateboard" aria-label="Give Lucia her skateboard"
-            className="p-1 rounded-md border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40">
-            <img src={luciaImageUrl(LUCIA_SKATEBOARD_IMAGE)} alt="" className="h-5 w-7 object-contain" />
-          </button>
+          {/* The ride is all motion, so reduced motion keeps the toolbar as it was. */}
+          {!state.reducedMotion && (
+            <button type="button" onClick={skate} disabled={!available || !canSkate(state)}
+              title="Give Lucia her skateboard" aria-label="Give Lucia her skateboard"
+              className="p-1 rounded-md border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40">
+              <img src={luciaImageUrl(LUCIA_SKATEBOARD_IMAGE)} alt="" width="28" height="20" className="object-contain" />
+            </button>
+          )}
         </>}
         {import.meta.env.DEV && previewsEnabled && (
           <select aria-label="Preview Lucia action" value=""

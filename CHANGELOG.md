@@ -5,7 +5,7 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Long chats scroll inside the conversation, keeping the composer and Lucia's rail on screen
-- The chat composer can be dragged up to a fifth of the window height
+- Dragging the chat composer taller stops at a fifth of the window height
 - Lucia reads the newspaper in cow-print glasses, holding it with both forepaws
 - Clicking Lucia barks twice, then each further click plays one of her animations at random
 - Lucia can read the newspaper when clicked, not only while a request runs
