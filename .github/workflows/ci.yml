@@ -24,7 +24,7 @@ permissions:
 #
 #   Step level   every dependency-acquisition step — checkout, toolchain setup,
 #                package installs — is bounded at 5 minutes (10 for rust-setup,
-#                which restores the large cargo and sccache archives). These are
+#                which restores the large cargo cache archive). These are
 #                pure network and finish in seconds, so a wedged one is caught in
 #                minutes rather than burning the job's whole compile allowance.
 #
@@ -33,11 +33,74 @@ permissions:
 # after it as skipped.
 
 jobs:
+  # Decides which lanes a pull request needs. Fail-open throughout: a push to
+  # main runs everything, an unrecognised path runs everything, an empty or
+  # failed diff runs everything, and the jobs below test `!= 'false'`, so a
+  # missing output (this job failed or was skipped) also runs everything.
+  #
+  # The diff is the PR merge commit against its first parent, the base branch
+  # tip it was merged onto, which is exactly what the PR changes; fetch-depth 2
+  # is enough to see it.
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_rust: ${{ steps.classify.outputs.run_rust }}
+      run_frontend: ${{ steps.classify.outputs.run_frontend }}
+
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+        with:
+          fetch-depth: 2
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          run_all() {
+            echo "run_rust=true" >> "$GITHUB_OUTPUT"
+            echo "run_frontend=true" >> "$GITHUB_OUTPUT"
+            echo "$1: running every lane"
+            exit 0
+          }
+          [ "$EVENT_NAME" = pull_request ] || run_all "$EVENT_NAME event"
+          paths=$(git diff --name-only --no-renames HEAD^1 HEAD) || run_all "git diff failed"
+          [ -n "$paths" ] || run_all "empty diff"
+
+          run_rust=false
+          run_frontend=false
+          while IFS= read -r path; do
+            case "$path" in
+              crates/*|Cargo.toml|Cargo.lock|rustfmt.toml|rust-toolchain*|.cargo/*)
+                run_rust=true ;;
+              claria-desktop-frontend/*|e2e/*|screenshots/*|package.json|package-lock.json)
+                run_frontend=true ;;
+              *.md|design/*|plans/*|LICENSE)
+                ;;
+              *)
+                # .github/** and anything not listed above (fixtures/ feeds
+                # Rust tests, for one): run both.
+                run_rust=true
+                run_frontend=true ;;
+            esac
+          done <<< "$paths"
+
+          echo "run_rust=$run_rust" >> "$GITHUB_OUTPUT"
+          echo "run_frontend=$run_frontend" >> "$GITHUB_OUTPUT"
+          echo "run_rust=$run_rust run_frontend=$run_frontend"
+          echo "$paths"
+
   # Not matrixed: this job compiles no Rust and touches no platform API. The
   # bundle it produces is byte-identical everywhere, so a second run would only
   # re-prove Node's portability.
   frontend:
     name: Frontend (lint + test + build)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run_frontend != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -77,6 +140,8 @@ jobs:
   # in each list — macos-latest being the obvious next one.
   clippy:
     name: Clippy
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run_rust != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -100,24 +165,12 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev mold clang cmake
 
-      - name: Setup Node.js
-        timeout-minutes: 5
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: npm
-          cache-dependency-path: claria-desktop-frontend/package-lock.json
+      # No frontend build: without tauri's custom-protocol feature,
+      # generate_context! embeds no assets and points the WebView at devUrl, so
+      # this job never reads claria-desktop-frontend/dist. CI=true already
+      # stops build.rs from running npm.
 
-      - name: Install frontend dependencies
-        timeout-minutes: 5
-        working-directory: claria-desktop-frontend
-        run: npm ci --no-fund
-
-      - name: Build frontend
-        working-directory: claria-desktop-frontend
-        run: npm run build
-
-      - name: Rust setup (toolchain, sccache, caches, mold)
+      - name: Rust setup (toolchain, cache, mold)
         timeout-minutes: 10
         uses: ./.github/actions/rust-setup
         with:
@@ -130,6 +183,8 @@ jobs:
 
   test:
     name: Test
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run_rust != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -153,35 +208,24 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev mold clang cmake
 
-      - name: Setup Node.js
-        timeout-minutes: 5
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: npm
-          cache-dependency-path: claria-desktop-frontend/package-lock.json
+      # No frontend build: without tauri's custom-protocol feature,
+      # generate_context! embeds no assets and points the WebView at devUrl, so
+      # this job never reads claria-desktop-frontend/dist. CI=true already
+      # stops build.rs from running npm.
 
-      - name: Install frontend dependencies
-        timeout-minutes: 5
-        working-directory: claria-desktop-frontend
-        run: npm ci --no-fund
-
-      - name: Build frontend
-        working-directory: claria-desktop-frontend
-        run: npm run build
-
-      - name: Rust setup (toolchain, sccache, caches, mold)
+      - name: Rust setup (toolchain, cache, mold)
         timeout-minutes: 10
         uses: ./.github/actions/rust-setup
 
+      # One cargo invocation, not a `--no-run` step followed by a run step: a
+      # second invocation recompiles claria-desktop (~20-30 s) because
+      # generate_context! writes its icon and Info.plist into OUT_DIR after the
+      # start time cargo stamps on the unit. Cargo's `Finished` line already
+      # reports the compile time.
       - name: Test (workspace)
         env:
           CLARIA_SKIP_FRONTEND_BUILD: '1'
         run: cargo test --workspace
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   # Not matrixed: the payload here is the xvfb smoke test, which exists to catch
   # a Tauri Rust/JS API mismatch killing the WebView on launch. That needs a
@@ -189,6 +233,8 @@ jobs:
   # Rust code itself is compiled on every matrix platform by the jobs above.
   tauri-build:
     name: Tauri build
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.run_rust != 'false' || needs.changes.outputs.run_frontend != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -224,14 +270,21 @@ jobs:
         working-directory: claria-desktop-frontend
         run: npm run build
 
-      - name: Rust setup (toolchain, sccache, caches, mold)
+      - name: Rust setup (toolchain, cache, mold)
         timeout-minutes: 10
         uses: ./.github/actions/rust-setup
 
+      # `ci-release` is `release` without fat LTO and with 16 codegen units
+      # (root Cargo.toml). The shipped binaries still build with `release`.
+      #
+      # tauri/custom-protocol is what `tauri build` turns on. Without it the
+      # binary embeds no frontend and points the WebView at devUrl
+      # (localhost:1420, nothing listening), so the smoke test below would
+      # never load the bundle whose Rust/JS API match it exists to check.
       - name: Build Tauri app
         env:
           CLARIA_SKIP_FRONTEND_BUILD: '1'
-        run: cargo build --release -p claria-desktop
+        run: cargo build --profile ci-release -p claria-desktop --features tauri/custom-protocol
 
       - name: Smoke test (WebView loads without crashing)
         timeout-minutes: 5
@@ -243,7 +296,7 @@ jobs:
           set -u
           mkdir -p "$HOME/.config/claria"
           xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' \
-            ./target/release/claria-desktop > smoke.log 2>&1 &
+            ./target/ci-release/claria-desktop > smoke.log 2>&1 &
           PID=$!
           # Give the WebView time to initialize and crash if it's going to.
           sleep 15
