@@ -1,0 +1,567 @@
+{
+  "style": "approved synthetic-v3",
+  "cell_width": 192,
+  "cell_height": 208,
+  "core_image": "spritesheet-extended.png",
+  "gaze_rows": [
+    9,
+    10
+  ],
+  "gaze_degrees": [
+    0,
+    22.5,
+    45,
+    67.5,
+    90,
+    112.5,
+    135,
+    157.5,
+    180,
+    202.5,
+    225,
+    247.5,
+    270,
+    292.5,
+    315,
+    337.5
+  ],
+  "head_anchor": [
+    80,
+    66
+  ],
+  "assets": {
+    "spritesheet-extended.png": {
+      "width": 1536,
+      "height": 2288,
+      "sha256": "134602d27d5381ec55398fea66c42bb20f8eba4f3cc4aae3bf6d587fd0bf2d55"
+    },
+    "extras/sock/pickup/strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "3f057242a977beafd282984161d794571c8f6f2be27fe2d192d45f209cd126f2"
+    },
+    "extras/sock/carry-right/strip.png": {
+      "width": 1536,
+      "height": 208,
+      "sha256": "9a69404c30fdff38bfa1896ea77f02cd6f7430eb99dce67ff8119ea1b023ccd1"
+    },
+    "extras/play/entrance-wag/strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "a38f613398b8594e096da8f8817e014042dcfae8ee252d5dad3cef2d78885c49"
+    },
+    "extras/play/stretch/strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "c3de7f52143e763e7827803b3c00cef703bdaac2056127cb61706df514f5640f"
+    },
+    "extras/play/skateboard-left/strip.png": {
+      "width": 1536,
+      "height": 208,
+      "sha256": "cf549149bfa1422811188660ffb799a48c0c905d1cfc2e925df0539959695770"
+    },
+    "extras/play/twirl/strip.png": {
+      "width": 1536,
+      "height": 208,
+      "sha256": "2484353b4f287be986764d349a0b9a3254301c69f3fa58c2fe3c7a478dea333f"
+    },
+    "extras/bored/bored-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "2c1a4f7b410da62843554ae9dc9655ab623b39b7a5fc8418ef3e59b1dbee69d9"
+    },
+    "extras/ears-perk/ears-perk-strip.png": {
+      "width": 768,
+      "height": 208,
+      "sha256": "43cde1f4345d6ed47425611316c7f221711fc80cc9c8ce1988456b357860a7ec"
+    },
+    "extras/bark/bark-strip.png": {
+      "width": 768,
+      "height": 208,
+      "sha256": "1a9fee218c585948dea72321357107474ba5fc062b51352389ae6826580d86d3"
+    },
+    "extras/newspaper/enter/enter-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "c916f40436fc344fd86dc306fdf04d41c6d3ae8bb7457d16ddadbae2185d68f9"
+    },
+    "extras/newspaper/exit/exit-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "a57548ab6307cc226bff2c846e8f27a95fa6eaff9c15d65d146ed2e6803368ed"
+    },
+    "extras/newspaper/loop/loop-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "a6fbe3402d7aed0ced4deba54e75eea68fc945e5d1f6b1e33e644f351a14dcc8"
+    },
+    "extras/dekopon/feeding/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "670241946de33c9fee44c9e41df67efb8b3386fe1b2a37531f3218bf84a31363"
+    },
+    "extras/dekopon/full/full-strip.png": {
+      "width": 768,
+      "height": 208,
+      "sha256": "fd8796422b34b2874df4e198b25aa89672c1b6ea84b64624e94fb02aa5534eb4"
+    },
+    "extras/dekopon/stages/stages-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "b1a8cf3a1805245ac93128f03c0bbbb2c3008f49083a1179d902c252e2f32555"
+    },
+    "extras/sock/sock.png": {
+      "width": 56,
+      "height": 48,
+      "sha256": "cc070bdcb986fd37de2ba670f885f700b56110a7adc8a42ac51f6128519408ae"
+    },
+    "extras/dekopon/feeding-size-1/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "831f71d99991f3e9f296e625dcf302b03c22510e8eae42f24a29be74a890c544"
+    },
+    "extras/dekopon/feeding-size-2/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "a7f0cc9c32ada8cbcbe6c96fa1ba2f404c74c2f0ef1b8fd3291a250415f3b5c5"
+    },
+    "extras/dekopon/feeding-size-3/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "ca8cd849ce2ca567150f6ca6a7628d4064b97dee916df585905da2c871a4c2f9"
+    },
+    "extras/dekopon/feeding-size-4/feeding-strip.png": {
+      "width": 1152,
+      "height": 208,
+      "sha256": "ece2a57fada575511e8afe53f36d0b30294b3739b3a8e7496020213ec9a99bfd"
+    }
+  },
+  "clips": {
+    "idle": {
+      "image": "spritesheet-extended.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        280,
+        110,
+        110,
+        140,
+        140,
+        320
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": true,
+      "ground_y": 201
+    },
+    "running-right": {
+      "image": "spritesheet-extended.png",
+      "row": 1,
+      "first_column": 0,
+      "frame_durations_ms": [
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        220
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": true,
+      "ground_y": 181
+    },
+    "pickup": {
+      "image": "extras/sock/pickup/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        160,
+        160,
+        180,
+        180,
+        180,
+        320
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "carry-away": {
+      "image": "extras/sock/carry-right/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": true,
+      "ground_y": 201
+    },
+    "tailwag": {
+      "image": "extras/play/entrance-wag/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        140,
+        140,
+        140,
+        140,
+        140,
+        140
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "stretch": {
+      "image": "extras/play/stretch/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        220,
+        180,
+        240,
+        400,
+        180,
+        260
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "skateboard": {
+      "image": "extras/play/skateboard-left/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        140,
+        140,
+        140,
+        140,
+        140,
+        140,
+        140,
+        140
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": true,
+      "ground_y": 200
+    },
+    "twirl": {
+      "image": "extras/play/twirl/strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        180,
+        140,
+        140,
+        140,
+        140,
+        140,
+        140,
+        240
+      ],
+      "anchor": [
+        96,
+        200
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "bored": {
+      "image": "extras/bored/bored-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": true,
+      "ground_y": 161
+    },
+    "ear-perk": {
+      "image": "extras/ears-perk/ears-perk-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "bark": {
+      "image": "extras/bark/bark-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "reading-enter": {
+      "image": "extras/newspaper/enter/enter-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "reading-exit": {
+      "image": "extras/newspaper/exit/exit-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "reading": {
+      "image": "extras/newspaper/loop/loop-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        280
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": true,
+      "ground_y": 201
+    },
+    "feeding": {
+      "image": "extras/dekopon/feeding/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "full": {
+      "image": "extras/dekopon/full/full-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "feeding-size-1": {
+      "image": "extras/dekopon/feeding-size-1/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "feeding-size-2": {
+      "image": "extras/dekopon/feeding-size-2/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "feeding-size-3": {
+      "image": "extras/dekopon/feeding-size-3/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    },
+    "feeding-size-4": {
+      "image": "extras/dekopon/feeding-size-4/feeding-strip.png",
+      "row": 0,
+      "first_column": 0,
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        300
+      ],
+      "anchor": [
+        96,
+        202
+      ],
+      "loop": false,
+      "ground_y": 201
+    }
+  },
+  "stages": {
+    "image": "extras/dekopon/stages/stages-strip.png",
+    "counts": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "anchor": [
+      96,
+      202
+    ],
+    "ground_y_by_count": [
+      201,
+      201,
+      201,
+      201,
+      201,
+      201
+    ]
+  },
+  "max_fruit_count": 5,
+  "source_manifests": {
+    "lucia-core-manifest.json": "e3c41dabe3887f44aebac45c461034d4072ef8d56becdcde4d69962c2b8930f0",
+    "lucia-extras-manifest.json": "7190884672e586ac88f171af3a93de5d50f9d84e130f3209265ce88b56a8f5bf",
+    "extras/dekopon/manifest.json": "7f6e8136378276116f416ef3f07deda58895e5c585c0a5453bb58daab1606f29"
+  },
+  "gaze_anchor": [
+    96,
+    201
+  ],
+  "registration": {
+    "alpha_threshold": 128,
+    "method": "Ground line is the pixel boundary below the deepest opaque contact in each clip; airborne stride offsets are retained. Static citrus stages are registered individually. Source anchors are preserved for provenance."
+  },
+  "feeding_by_count": [
+    "feeding",
+    "feeding-size-1",
+    "feeding-size-2",
+    "feeding-size-3",
+    "feeding-size-4"
+  ]
+}

@@ -15,6 +15,7 @@ Key files:
 | `scenarios/01-bootstrap.spec.ts` | Fresh AWS account → provision all resources |
 | `scenarios/02-sync.spec.ts` | Existing account with drift → reconciliation |
 | `scenarios/03-record-chat.spec.ts` | Create a client, add intake notes, chat with AI |
+| `lucia/` | Lucia's distraction-mode videos for the site's `fun.html`: a standalone recorder with its own [README](lucia/README.md) |
 | `playwright.config.ts` | Viewport (1024×768 @2x), fake media device flags, Vite webServer config |
 | `output/test-results/` | Per-test Playwright artefacts (each `video.webm` lives in its directory) |
 | `convert.sh` | WebM → MP4 conversion for the docs site |

@@ -1,3 +1,4 @@
+import manifest from "../assets/lucia/manifest.json";
 import { useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -5,12 +6,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ClientWorkspaceTabs, {
   type ClientWorkspaceView,
 } from "./ClientWorkspaceTabs";
+import { loadLuciaArtwork } from "../lib/luciaArtwork";
 import { setDistractionModeEnabled } from "../lib/distractionMode";
+
+vi.mock("../lib/luciaArtwork", async (original) => ({
+  ...await original<typeof import("../lib/luciaArtwork")>(),
+  loadLuciaArtwork: vi.fn(),
+}));
 
 function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
   const [active, setActive] = useState<ClientWorkspaceView>("record");
   return (
     <ClientWorkspaceTabs
+      clientId="fixture-client"
       clientName="Ada Lovelace"
       activeView={active}
       onSelect={(tab) => {
@@ -30,6 +38,9 @@ function Harness({ onBack = vi.fn() }: { onBack?: () => void }) {
 
 beforeEach(() => {
   setDistractionModeEnabled(false);
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.mocked(loadLuciaArtwork).mockResolvedValue(new Map(Object.keys(manifest.assets).map((path) => [path, new Image()])));
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
 });
 
 describe("client workspace tabs", () => {
@@ -101,20 +112,24 @@ describe("client workspace tabs", () => {
     );
   });
 
-  it("places the opt-in sock control quietly beside the client name", async () => {
+  it("keeps Lucia and her controls together in the rail, leaving the header clean", async () => {
     setDistractionModeEnabled(true);
     render(<Harness />);
 
-    const button = screen.getByRole("button", {
+    const button = await screen.findByRole("button", {
       name: "Drop a sock for Lucia",
     });
+    const rail = screen.getByTestId("lucia-rail");
     const heading = screen.getByRole("heading", { name: "Ada Lovelace" });
-    expect(button.nextElementSibling).toBe(heading);
-    expect(button.className).not.toContain("border");
+    expect(rail.contains(button)).toBe(true);
+    expect(heading.parentElement?.textContent).not.toContain("Lucia");
 
     await userEvent.click(button);
-    expect(screen.getByTestId("sock-drop")).toBeDefined();
+    expect(screen.getByTestId("lucia-scene").dataset.behavior).toBe("chase");
     expect((button as HTMLButtonElement).disabled).toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: "Hide Lucia" }));
+    expect(screen.queryByTestId("lucia-rail")).toBeNull();
   });
 
   it("routes the back control through the parent guard", async () => {

@@ -1,7 +1,7 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useDistractionMode } from "../lib/distractionMode";
 import { BackButton, GearIcon } from "./icons";
-import SockDrop, { SockIcon } from "./SockDrop";
+import LuciaCompanion from "./LuciaCompanion";
 
 export type ClientWorkspaceTab = "record" | "chat" | "writing";
 export type ClientWorkspaceView = ClientWorkspaceTab | "settings";
@@ -17,24 +17,28 @@ const tabs: Array<{
 ];
 
 export default function ClientWorkspaceTabs({
+  clientId,
   clientName,
   activeView,
   onSelect,
   onSettings,
   onBack,
   children,
+  luciaPreviewsEnabled = false,
 }: {
+  clientId: string;
   clientName: string;
   activeView: ClientWorkspaceView;
   onSelect: (tab: ClientWorkspaceTab) => boolean;
   onSettings: () => boolean;
   onBack: () => void;
   children: ReactNode;
+  luciaPreviewsEnabled?: boolean;
 }) {
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const [distractionMode] = useDistractionMode();
-  const [sockDropping, setSockDropping] = useState(false);
+  const [luciaRail, setLuciaRail] = useState<HTMLDivElement | null>(null);
 
   function restoreActiveFocus() {
     const activeIndex = tabs.findIndex((tab) => tab.id === activeView);
@@ -94,18 +98,6 @@ export default function ClientWorkspaceTabs({
         >
           <GearIcon />
         </button>
-        {distractionMode && (
-          <button
-            type="button"
-            onClick={() => setSockDropping(true)}
-            disabled={sockDropping}
-            title="Drop a sock for Lucia"
-            aria-label="Drop a sock for Lucia"
-            className="group -ml-1 p-1.5 rounded-md hover:bg-gray-100 transition-colors disabled:opacity-40"
-          >
-            <SockIcon className="w-4 h-4 opacity-60 transition-opacity group-hover:opacity-100" />
-          </button>
-        )}
         <h2 className="text-lg font-semibold flex-1">{clientName}</h2>
         <div
           role="tablist"
@@ -151,7 +143,12 @@ export default function ClientWorkspaceTabs({
       >
         {children}
       </div>
-      {sockDropping && <SockDrop onDone={() => setSockDropping(false)} />}
+      {distractionMode && (
+        <div ref={setLuciaRail} data-testid="lucia-rail"
+          className="relative shrink-0 h-[142px] overflow-hidden border-t border-gray-100 bg-gray-50/40">
+          <LuciaCompanion key={clientId} clientId={clientId} rail={luciaRail} previewsEnabled={luciaPreviewsEnabled} />
+        </div>
+      )}
     </div>
   );
 }

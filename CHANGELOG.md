@@ -2,6 +2,31 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Lucia stays the same size across every animation, including feeding and seated gaze
+- Lucia lowers her head when she looks down instead of puffing up her crown
+- Lucia's idle animation plays again, without the sideways stretch
+- Lucia's controls sit beside her in the rail, leaving the client header clean
+- Clicking Lucia feeds her in feeding mode and pets her otherwise
+- Lucia's modes are one-click buttons instead of a menu
+- An × beside Lucia hides her and says where to turn her back on
+- A drawing failure shows an error beside Lucia instead of a blank rail
+- Lucia keeps her play schedule when you switch windows, so twirls and skateboarding actually happen
+- A feed in progress still counts when the reduced-motion setting changes
+- Lucia's artwork decodes once per session instead of on every client switch
+- Lucia sleeps between animation frames while resting instead of redrawing at display rate
+- Clicking Lucia again right after a bark works
+- Lucia lifts and eats each dekopon with the matching body-size animation
+- Lucia switches animation strips without blank frames
+- The local Lucia demo offers explicit animation previews
+- Distraction mode adds synthetic Lucia artwork, seated gaze, and five-stage dekopon feeding
+- Lucia's poses share a measured ground line, including her lying-down rest
+- A local fixture demo opens the workspace without AWS setup or model connections
+- Browser checks cover repeated sock drops, keyboard controls, navigation cleanup, and uninterrupted writing
+- Deterministic tests cover Lucia's timed reactions, seated gaze, pending requests, and five-dekopon feeding limit
+- Lucia's activity tracking follows real writer and chat requests through completion, cancellation, and failure
+
 ## [0.35.0] — 2026-11-02
 
 - Document extraction uses an independently configurable model, and your preferred model until you choose one

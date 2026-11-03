@@ -13,12 +13,14 @@ export default function ClientRecord({
   clientName,
   onClientNameChanged,
   onManageWriterSection,
+  luciaPreviewsEnabled = false,
 }: {
   navigate: (page: Page) => void;
   clientId: string;
   clientName: string;
   onClientNameChanged: (name: string) => void;
   onManageWriterSection: (section: PreferencesFocusSection) => void;
+  luciaPreviewsEnabled?: boolean;
 }) {
   const workspace = useClientWorkspace(
     () => navigate("clients"),
@@ -27,6 +29,8 @@ export default function ClientRecord({
 
   return (
     <ClientWorkspaceTabs
+      clientId={clientId}
+      luciaPreviewsEnabled={luciaPreviewsEnabled}
       clientName={clientName}
       activeView={workspace.activeView}
       onSelect={workspace.selectTab}

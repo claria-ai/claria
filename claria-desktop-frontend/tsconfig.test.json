@@ -7,7 +7,7 @@
     "module": "ESNext",
     /* Tests read the shared transcript fixtures off disk, so they get Node's
        types. The app project deliberately does not. */
-    "types": ["node"],
+    "types": ["node", "vite/client"],
     "skipLibCheck": true,
 
     /* Bundler mode */

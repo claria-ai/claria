@@ -10,6 +10,7 @@
 
 import { Channel } from "@tauri-apps/api/core";
 import { commands, events } from "./bindings";
+import { withLuciaInference } from "./luciaInference";
 import type {
   ChatHistoryDetail,
   DraftRunHistoryView,
@@ -624,7 +625,7 @@ export async function generateFullReport(
   const channel = new Channel<ReportTurnProgressView>();
   if (onProgress) channel.onmessage = onProgress;
   return unwrap(
-    await commands.generateFullReport(
+    await withLuciaInference(clientId, () => commands.generateFullReport(
       clientId,
       reportId,
       expectedRevision,
@@ -632,7 +633,7 @@ export async function generateFullReport(
       guidance,
       streamId,
       channel
-    )
+    ))
   );
 }
 
@@ -704,14 +705,14 @@ export async function generateDraftPlan(
   const channel = new Channel<ReportTurnProgressView>();
   if (onProgress) channel.onmessage = onProgress;
   return unwrap(
-    await commands.generateDraftPlan(
+    await withLuciaInference(clientId, () => commands.generateDraftPlan(
       clientId,
       reportId,
       expectedRevision,
       instructions,
       streamId,
       channel
-    )
+    ))
   );
 }
 
@@ -743,14 +744,14 @@ export async function startDraftRun(
   const channel = new Channel<ReportTurnProgressView>();
   if (onProgress) channel.onmessage = onProgress;
   return unwrap(
-    await commands.startDraftRun(
+    await withLuciaInference(clientId, () => commands.startDraftRun(
       clientId,
       reportId,
       runId,
       modelId,
       streamId,
       channel
-    )
+    ))
   );
 }
 
@@ -773,7 +774,7 @@ export async function resumeDraftRun(
   const channel = new Channel<ReportTurnProgressView>();
   if (onProgress) channel.onmessage = onProgress;
   return unwrap(
-    await commands.resumeDraftRun(
+    await withLuciaInference(clientId, () => commands.resumeDraftRun(
       clientId,
       reportId,
       runId,
@@ -781,7 +782,7 @@ export async function resumeDraftRun(
       modelId,
       streamId,
       channel
-    )
+    ))
   );
 }
 
@@ -803,7 +804,7 @@ export async function sendReportMessage(
   const channel = new Channel<ReportTurnProgressView>();
   if (onProgress) channel.onmessage = onProgress;
   return unwrap(
-    await commands.sendReportMessage(
+    await withLuciaInference(clientId, () => commands.sendReportMessage(
       clientId,
       reportId,
       expectedRevision,
@@ -812,7 +813,7 @@ export async function sendReportMessage(
       references,
       streamId,
       channel
-    )
+    ))
   );
 }
 
@@ -853,7 +854,9 @@ export async function runReviewSweeps(
   const channel = new Channel<ReportTurnProgressView>();
   if (onProgress) channel.onmessage = onProgress;
   return unwrap(
-    await commands.runReviewSweeps(clientId, reportId, revision, passes, channel)
+    await withLuciaInference(clientId, () =>
+      commands.runReviewSweeps(clientId, reportId, revision, passes, channel)
+    )
   );
 }
 
@@ -970,7 +973,7 @@ export async function chatMessage(
   onEvent?: (event: ChatStreamEvent) => void
 ) {
   return unwrap(
-    await commands.chatMessage(
+    await withLuciaInference(clientId, () => commands.chatMessage(
       clientId,
       modelId,
       messages,
@@ -979,7 +982,7 @@ export async function chatMessage(
       contextFilenames ?? [],
       streamId,
       chatStreamChannel(onEvent)
-    )
+    ))
   );
 }
 

@@ -9,6 +9,8 @@ export default defineConfig({
   timeout: 120_000,
   workers: 1,
   use: {
+    // Opt into an installed browser locally; CI/default still uses bundled Chromium.
+    channel: process.env.CLARIA_TEST_BROWSER_CHANNEL,
     viewport: { width: 1024, height: 768 },
     deviceScaleFactor: 2,
     // Trace on first retry for debugging failures.

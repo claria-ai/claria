@@ -1553,7 +1553,7 @@ function TimeoutField({
 }
 
 // ---------------------------------------------------------------------------
-// Distraction mode: the sock drop
+// Distraction mode: Lucia
 // ---------------------------------------------------------------------------
 
 function DistractionModeSection() {
@@ -1579,9 +1579,9 @@ function DistractionModeSection() {
         <div className="flex-1">
           <span className="text-sm text-gray-900">Enable distraction mode</span>
           <p className="text-xs text-gray-400 mt-0.5">
-            Adds a quiet sock button beside each client name. Pressing it drops
-            a sock for Lucia, the Claria mascot, who trots in, gives it a good
-            shake, and carries it away.
+            Adds Lucia, the Claria mascot, to a strip below each client
+            workspace. Click her, drop her a sock, or feed her dekopon. Silent,
+            local to this machine, and hidden with the × beside her.
           </p>
         </div>
       </label>
