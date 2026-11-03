@@ -5,6 +5,7 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Long chats scroll inside the conversation, keeping the composer and Lucia's rail on screen
+- Lucia reads the newspaper in cow-print glasses, holding it with both forepaws
 
 ## [0.36.0] — 2026-11-03
 

@@ -83,17 +83,17 @@
     "extras/newspaper/enter/enter-strip.png": {
       "width": 1152,
       "height": 208,
-      "sha256": "c916f40436fc344fd86dc306fdf04d41c6d3ae8bb7457d16ddadbae2185d68f9"
+      "sha256": "d0ba5c518061e4fc7a2e894597152bfb10fa441f473586517425392a2810f0c5"
     },
     "extras/newspaper/exit/exit-strip.png": {
       "width": 1152,
       "height": 208,
-      "sha256": "a57548ab6307cc226bff2c846e8f27a95fa6eaff9c15d65d146ed2e6803368ed"
+      "sha256": "eace539c42a77238c8f19ed7eea28a366cfbd5c74c1fd28a0b49a429f6aa3318"
     },
     "extras/newspaper/loop/loop-strip.png": {
       "width": 1152,
       "height": 208,
-      "sha256": "a6fbe3402d7aed0ced4deba54e75eea68fc945e5d1f6b1e33e644f351a14dcc8"
+      "sha256": "aee1e69c3a9363a8788fec9f1da20ddb2d9a44573a78b536aafb24af0347cee2"
     },
     "extras/dekopon/feeding/feeding-strip.png": {
       "width": 1152,
