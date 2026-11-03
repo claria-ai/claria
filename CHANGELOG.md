@@ -5,6 +5,7 @@ All notable changes to Claria are documented here.
 ## [Unreleased]
 
 - Lucia stays the same size across every animation, including feeding and seated gaze
+- Lucia lowers her head when she looks down instead of puffing up her crown
 - Lucia's idle animation plays again, without the sideways stretch
 - Lucia's controls sit beside her in the rail, leaving the client header clean
 - Clicking Lucia feeds her in feeding mode and pets her otherwise
