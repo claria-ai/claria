@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from "react";
 import { recordActivity } from "../lib/tauri";
 import { logFrontendEvent } from "../lib/logBridge";
 import { useLockState } from "../lib/useLockState";
+import { SessionLockedContext } from "../lib/sessionLockContext";
 import LockScreen from "./LockScreen";
 
 /**
@@ -58,9 +59,9 @@ export default function LockGate({ children }: { children: ReactNode }) {
   if (lockState === null) return null;
 
   return (
-    <>
+    <SessionLockedContext.Provider value={lockState.locked}>
       {children}
       {lockState.locked && <LockScreen state={lockState} />}
-    </>
+    </SessionLockedContext.Provider>
   );
 }

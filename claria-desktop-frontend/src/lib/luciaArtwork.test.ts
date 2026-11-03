@@ -190,7 +190,7 @@ describe("Lucia policy-to-art mapping", () => {
   });
 
   it("uses actual newspaper strips, not inherited core waiting labels", () => {
-    for (const behavior of ["reading-enter", "reading", "reading-exit"] as const) {
+    for (const behavior of ["reading-enter", "reading", "reading-play", "reading-exit"] as const) {
       expect(selectLuciaPose(state({ behavior }), 0).image).toContain("newspaper/");
     }
   });
@@ -200,7 +200,7 @@ describe("Lucia policy-to-art mapping", () => {
     expect(luciaPosition(chase, 0, 1000)).toBe(90);
     expect(luciaPosition(chase, 1000, 1000)).toBe(500);
     expect(luciaPosition(state({ behavior: "pickup" }), 0, 1000)).toBe(500);
-    for (const behavior of ["chase", "pickup", "carry-away", "skateboard", "reading", "feeding", "bark"] as const) {
+    for (const behavior of ["chase", "pickup", "carry-away", "skateboard", "reading", "reading-play", "feeding", "bark"] as const) {
       const reduced = state({ behavior, reducedMotion: true, endsAt: 1000 });
       expect(luciaPosition(reduced, 900, 1000)).toBe(90);
       expect(selectLuciaPose(reduced, 900).animated).toBe(false);
@@ -209,6 +209,18 @@ describe("Lucia policy-to-art mapping", () => {
   });
 });
 
+
+describe("Lucia requested play", () => {
+  it("plays a requested read on the newspaper loop strip", () => {
+    expect(selectLuciaPose(state({ behavior: "reading-play" }), 0).image).toBe(manifest.clips.reading.image);
+  });
+
+  it("rides the skateboard across the whole rail, in from off the right edge and out past the left", () => {
+    const ride = state({ behavior: "skateboard", startedAt: 0, endsAt: 1000 });
+    expect(luciaPosition(ride, 0, 1000)).toBe(1080);
+    expect(luciaPosition(ride, 1000, 1000)).toBe(-80);
+  });
+});
 
 describe("Lucia decoded artwork lifetime", () => {
   afterEach(() => vi.unstubAllGlobals());

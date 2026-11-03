@@ -5,10 +5,15 @@
  */
 export const LUCIA_QUIET_MS = 30_000;
 export const LUCIA_TWIRL_COOLDOWN_MS = 120_000;
-export const LUCIA_SKATEBOARD_COOLDOWN_MS = 600_000;
-// Just longer than the 730ms bark strip, so a click after she finishes is never silently ignored.
-export const LUCIA_BARK_COOLDOWN_MS = 1_000;
+// Under the shortest common auto-lock (5 minutes), so a skate attempt comes up while she is on screen.
+export const LUCIA_SKATEBOARD_COOLDOWN_MS = 180_000;
+export const LUCIA_SKATEBOARD_CHANCE = 0.5;
+export const LUCIA_TWIRL_CHANCE = 0.25;
 export const LUCIA_READING_DEBOUNCE_MS = 200;
+/** Petting: the first two clicks bark; a further click within the window plays a random fun animation. */
+export const LUCIA_PET_BARKS = 2;
+export const LUCIA_PET_BARK_WINDOW_MS = 5_000;
+export const LUCIA_PET_FUN_WINDOW_MS = 30_000;
 
 export type LuciaMode = "companion" | "gaze" | "feeding";
 export type LuciaFedCount = 0 | 1 | 2 | 3 | 4 | 5;
@@ -23,12 +28,17 @@ export type LuciaTimedBehavior =
   | "carry-away"
   | "bark"
   | "reading-enter"
+  | "reading-play"
   | "reading-exit"
   | "feeding"
   | "full";
 
 /** Explicit local-demo requests use the same action ownership and completion path. */
 export type LuciaPreviewBehavior = "tailwag" | "stretch" | "ear-perk" | "twirl" | "skateboard";
+
+/** What a pet past the barks can start; reading begins with the paper coming up. */
+export const LUCIA_FUN_POOL = ["twirl", "skateboard", "reading", "tailwag", "ear-perk", "stretch"] as const;
+export type LuciaFunBehavior = (typeof LUCIA_FUN_POOL)[number];
 
 export type LuciaBehavior =
   | "inactive"
@@ -57,7 +67,8 @@ export type LuciaBehaviorEvent =
   | { type: "inference"; pending: boolean }
   | { type: "mode"; mode: LuciaMode }
   | { type: "sock" }
-  | { type: "bark" }
+  | { type: "skate" }
+  | { type: "pet" }
   | { type: "feed" }
   | { type: "reset" }
   | { type: "preview"; behavior: LuciaPreviewBehavior }
@@ -74,11 +85,16 @@ export type LuciaBehaviorState = Readonly<{
   active: boolean;
   visible: boolean;
   reducedMotion: boolean;
-  /** Coarse baseline, reset on scene resume and after a sock run. */
+  /** Coarse baseline of the last activity: typing, a pet, a sock run, a mode change, or scene resume. */
   lastTypingAt: number;
   nextTwirlAt: number | null;
   nextSkateboardAt: number | null;
-  nextBarkAt: number;
+  /** Clicks so far in the current pet chain; 0 when there is none. */
+  petStep: number;
+  /** When the next pet stops continuing the chain; null while a pet reaction plays or with no chain. */
+  petWindowEndsAt: number | null;
+  /** A pet reaction is playing; clicks are ignored until she is back at rest. */
+  petReacting: boolean;
   inferencePending: boolean;
   /** null while reading, when suspended, or when no inference is pending. */
   readingReadyAt: number | null;
@@ -98,7 +114,9 @@ export function createLuciaBehavior(now: number): LuciaBehaviorState {
     lastTypingAt: now,
     nextTwirlAt: null,
     nextSkateboardAt: null,
-    nextBarkAt: now,
+    petStep: 0,
+    petWindowEndsAt: null,
+    petReacting: false,
     inferencePending: false,
     readingReadyAt: null,
   };
@@ -110,7 +128,17 @@ export function ownsSock(behavior: LuciaBehavior): boolean {
 }
 
 export function isReading(behavior: LuciaBehavior): boolean {
-  return behavior === "reading" || behavior === "reading-enter" || behavior === "reading-exit";
+  return behavior === "reading" || behavior === "reading-enter" || behavior === "reading-play" || behavior === "reading-exit";
+}
+
+/** Whether the board button can send her across the rail; the UI and policy share this test. */
+export function canSkate(state: LuciaBehaviorState): boolean {
+  return state.mode !== "feeding" && !state.reducedMotion && !state.inferencePending
+    && !ownsSock(state.behavior) && !isReading(state.behavior) && state.behavior !== "skateboard";
+}
+
+function endPetChain(state: LuciaBehaviorState): LuciaBehaviorState {
+  return state.petStep === 0 && !state.petReacting ? state : { ...state, petStep: 0, petWindowEndsAt: null, petReacting: false };
 }
 
 function shouldRead(state: LuciaBehaviorState, now: number): boolean {
@@ -177,8 +205,16 @@ function rest(
   behavior: "idle" | "bored" | "gaze" | "reading" | "feeding-idle",
   now: number
 ): LuciaBehaviorState {
+  // A pet reaction is over once she is back at rest; only then does the next click's window open.
+  const settled = state.petReacting && behavior !== "reading"
+    ? {
+        ...state,
+        petReacting: false,
+        petWindowEndsAt: now + (state.petStep === 1 ? LUCIA_PET_BARK_WINDOW_MS : LUCIA_PET_FUN_WINDOW_MS),
+      }
+    : state;
   return schedule({
-    ...discardMissedCosmetics(state, now),
+    ...discardMissedCosmetics(settled, now),
     behavior,
     startedAt: now,
     endsAt: null,
@@ -186,7 +222,7 @@ function rest(
 }
 
 function read(state: LuciaBehaviorState, now: number, config: LuciaBehaviorConfig): LuciaBehaviorState {
-  const next = { ...state, readingReadyAt: null };
+  const next = { ...endPetChain(state), readingReadyAt: null };
   return state.reducedMotion ? rest(next, "reading", now) : begin(next, "reading-enter", now, config);
 }
 
@@ -199,6 +235,13 @@ function settle(state: LuciaBehaviorState, now: number, config: LuciaBehaviorCon
     : rest(state, "idle", now);
 }
 
+/** Start an explicitly requested animation; multi-phase ones begin with their first phase. */
+function play(state: LuciaBehaviorState, behavior: LuciaFunBehavior, now: number, config: LuciaBehaviorConfig): LuciaBehaviorState {
+  if (behavior === "reading") return begin(state, "reading-enter", now, config);
+  // Playing a typing reaction has the same quiet reset as actual typing.
+  return begin(behavior === "ear-perk" ? { ...state, lastTypingAt: now } : state, behavior, now, config);
+}
+
 /**
  * Priority: sock ownership, real inference, explicit interactions, ambient
  * motion. Reading waits for an owned sock; a new explicit sock may interrupt
@@ -207,8 +250,10 @@ function settle(state: LuciaBehaviorState, now: number, config: LuciaBehaviorCon
  *
  * Reduced motion uses static reading, feeding, bark and sock poses; the renderer
  * must suppress their animation. All unsolicited motion and its deadlines stop.
- * roll is in [0, 1). Only quiet attempt deadlines consult it: <0.1 chooses a due
- * skateboard, otherwise <0.25 a due twirl. Misses consume the attempt too.
+ * roll is in [0, 1). Quiet attempt deadlines consult it: <LUCIA_SKATEBOARD_CHANCE
+ * chooses a due skateboard, and the rescaled remainder <LUCIA_TWIRL_CHANCE a due
+ * twirl. Misses consume the attempt too. A pet past the barks uses it to pick
+ * from LUCIA_FUN_POOL.
  */
 export function reduceLuciaBehavior(
   state: LuciaBehaviorState,
@@ -235,14 +280,14 @@ export function reduceLuciaBehavior(
         mode: state.mode,
         fedCount: event.active ? state.fedCount : 0,
         inferencePending: state.inferencePending,
-        nextBarkAt: state.nextBarkAt,
         // Play deadlines survive a blur, or frequent window switching would postpone them forever.
         nextTwirlAt: state.nextTwirlAt,
         nextSkateboardAt: state.nextSkateboardAt,
       };
     }
     const resumed = !state.active || !state.visible;
-    // Keep an existing deadline; one that lapsed while away comes up after the next quiet spell.
+    // Keep an existing deadline. One that lapsed while away is moved to the end of the next quiet
+    // spell, where the stretch that begins then discards it to a fresh cooldown, so it never fires on return.
     const deadline = (current: number | null, cooldownMs: number) => event.reducedMotion
       ? null
       : current === null ? now + cooldownMs : current <= now ? now + LUCIA_QUIET_MS : current;
@@ -276,8 +321,9 @@ export function reduceLuciaBehavior(
       readingReadyAt: event.pending && state.active && state.visible ? now + LUCIA_READING_DEBOUNCE_MS : null,
     };
     if (!state.active || !state.visible) return next;
-    if (event.pending && state.behavior === "reading-exit") {
-      return rest({ ...next, readingReadyAt: null }, "reading", now);
+    // Real inference takes over a requested read, or one that is putting the paper away.
+    if (event.pending && (state.behavior === "reading-exit" || state.behavior === "reading-play")) {
+      return rest({ ...endPetChain(next), readingReadyAt: null }, "reading", now);
     }
     if (!event.pending && isReading(state.behavior)) {
       return state.reducedMotion ? settle(next, now, config) : begin(next, "reading-exit", now, config);
@@ -287,7 +333,7 @@ export function reduceLuciaBehavior(
 
   if (event.type === "mode") {
     if (event.mode === state.mode) return state;
-    const next = { ...state, mode: event.mode, fedCount: 0 as const, lastTypingAt: now };
+    const next = { ...endPetChain(state), mode: event.mode, fedCount: 0 as const, lastTypingAt: now };
     if (!state.active || !state.visible || isReading(state.behavior)) return next;
     if (ownsSock(state.behavior) && event.mode !== "feeding") return next;
     return settle(next, now, config);
@@ -303,21 +349,31 @@ export function reduceLuciaBehavior(
 
   if (event.type === "preview") {
     if (state.mode !== "companion" || state.reducedMotion || state.inferencePending
-      || ownsSock(state.behavior) || isReading(state.behavior) || state.behavior === "bark") return state;
-    // Previewing a typing reaction has the same quiet reset as actual typing.
-    const next = event.behavior === "ear-perk" ? { ...state, lastTypingAt: now } : state;
-    return begin(next, event.behavior, now, config);
+      || ownsSock(state.behavior) || isReading(state.behavior) || state.petReacting) return state;
+    return play(endPetChain(state), event.behavior, now, config);
   }
 
   if (event.type === "sock") {
     return state.mode === "feeding" || ownsSock(state.behavior)
       ? state
-      : begin({ ...state, lastTypingAt: now }, "chase", now, config);
+      : begin({ ...endPetChain(state), lastTypingAt: now }, "chase", now, config);
+  }
+
+  if (event.type === "skate") {
+    if (!canSkate(state)) return state;
+    // Like a sock: deliberate play that counts as activity, and it stands in for the next ambient skate.
+    const next = { ...endPetChain(state), lastTypingAt: now, nextSkateboardAt: now + LUCIA_SKATEBOARD_COOLDOWN_MS };
+    return begin(next, "skateboard", now, config);
   }
 
   if (event.type === "typing") {
     const wasQuiet = now - state.lastTypingAt >= LUCIA_QUIET_MS;
+    // Typing interrupts a reaction but keeps the pet chain; only a lapsed window starts it over.
     const next = { ...state, lastTypingAt: now };
+    // A requested read is put away when she is typed at; real inference keeps the paper up.
+    if ((state.behavior === "reading-play" || state.behavior === "reading-enter") && !state.inferencePending) {
+      return begin(next, "reading-exit", now, config);
+    }
     // Suppression consumes this activity: ear perks never replay after a task.
     if (ownsSock(state.behavior) || isReading(state.behavior)) return schedule(next);
     if (shouldRead(next, now)) return read(next, now, config);
@@ -330,12 +386,18 @@ export function reduceLuciaBehavior(
     return schedule(next);
   }
 
-  if (event.type === "bark" || event.type === "feed") {
+  if (event.type === "pet" || event.type === "feed") {
     if (ownsSock(state.behavior) || isReading(state.behavior)) return state;
     if (shouldRead(state, now)) return read(state, now, config);
-    if (event.type === "bark") {
-      if (state.mode === "feeding" || state.behavior === "bark" || now < state.nextBarkAt) return state;
-      return begin({ ...state, nextBarkAt: now + LUCIA_BARK_COOLDOWN_MS }, "bark", now, config);
+    if (event.type === "pet") {
+      if (state.mode === "feeding" || state.petReacting) return state;
+      const continues = state.petWindowEndsAt !== null && now <= state.petWindowEndsAt;
+      const petStep = continues ? Math.min(state.petStep + 1, LUCIA_PET_BARKS + 1) : 1;
+      // Petting counts as activity, so finishing a reaction rests instead of starting a stretch.
+      const next = { ...state, petStep, petWindowEndsAt: null, petReacting: true, lastTypingAt: now };
+      if (petStep <= LUCIA_PET_BARKS || state.reducedMotion) return begin(next, "bark", now, config);
+      const fun = LUCIA_FUN_POOL[Math.min(LUCIA_FUN_POOL.length - 1, Math.floor(roll * LUCIA_FUN_POOL.length))];
+      return play(next, fun, now, config);
     }
     if (state.mode !== "feeding" || state.behavior !== "feeding-idle" || state.inferencePending) return state;
     return state.fedCount === 5 ? state : begin(state, "feeding", now, config);
@@ -361,6 +423,8 @@ export function reduceLuciaBehavior(
     case "twirl":
     case "skateboard":
       return settle(state, now, config);
+    case "reading-play":
+      return state.inferencePending ? rest(state, "reading", now) : begin(state, "reading-exit", now, config);
     case "feeding": {
       const next = { ...state, fedCount: Math.min(5, state.fedCount + 1) as LuciaFedCount };
       return next.fedCount === 5 ? begin(next, "full", now, config) : settle(next, now, config);
@@ -368,19 +432,25 @@ export function reduceLuciaBehavior(
     case "idle":
       return begin(state, "stretch", now, config);
     case "stretch":
-      return rest(state, "bored", now);
+      // Watch mode only stretches when petted; she sits back up to keep watching.
+      return rest(state, state.mode === "gaze" ? "gaze" : "bored", now);
     case "reading-enter":
-      return rest(state, "reading", now);
+      // Inference holds the paper up until it finishes; a requested read turns a few pages.
+      return state.inferencePending
+        ? rest({ ...endPetChain(state), readingReadyAt: null }, "reading", now)
+        : begin(state, "reading-play", now, config);
     case "bored":
     case "gaze": {
       const skateboardDue = state.mode === "companion" && state.nextSkateboardAt !== null && now >= state.nextSkateboardAt;
       const twirlDue = state.nextTwirlAt !== null && now >= state.nextTwirlAt;
       const next = discardMissedCosmetics(state, now);
-      if (skateboardDue && roll < 0.1) {
+      if (skateboardDue && roll < LUCIA_SKATEBOARD_CHANCE) {
         // Keep a twirl well away from this larger surprise traversal.
-        return begin({ ...next, nextTwirlAt: now + LUCIA_TWIRL_COOLDOWN_MS }, "skateboard", now, config);
+        return play({ ...next, nextTwirlAt: now + LUCIA_TWIRL_COOLDOWN_MS }, "skateboard", now, config);
       }
-      if (twirlDue && roll < 0.25) return begin(next, "twirl", now, config);
+      // A missed skate roll is rescaled, so a due twirl keeps its own chance.
+      const twirlRoll = skateboardDue ? (roll - LUCIA_SKATEBOARD_CHANCE) / (1 - LUCIA_SKATEBOARD_CHANCE) : roll;
+      if (twirlDue && twirlRoll < LUCIA_TWIRL_CHANCE) return begin(next, "twirl", now, config);
       return schedule(next);
     }
     case "inactive":

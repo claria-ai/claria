@@ -52,7 +52,7 @@ test("local previews expose real Companion actions without changing modes or nat
   await expect(scene).toHaveAttribute("data-behavior", "idle");
   for (const behavior of ["tailwag", "ear-perk", "twirl", "skateboard", "stretch"]) {
     await preview.selectOption(behavior);
-    await expect(scene).toHaveAttribute("data-behavior", behavior);
+    await expect(scene).toHaveAttribute("data-behavior", behavior, { timeout: 6000 });
     await expect(scene).toHaveAttribute("data-behavior", behavior === "stretch" ? "bored" : "idle", { timeout: 6000 });
   }
   await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", /bored-strip/);
@@ -82,7 +82,8 @@ test("natural Companion quiet and play deadlines reach their mapped strips with 
   await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", /twirl/);
   await page.clock.runFor(duration("twirl") + duration("stretch"));
   await expect(scene).toHaveAttribute("data-behavior", "bored");
-  await page.clock.fastForward(600_000);
+  // The skate deadline is three minutes after mount.
+  await page.clock.fastForward(60_000);
   await expect(scene).toHaveAttribute("data-behavior", "skateboard");
   await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", /skateboard-left/);
 });

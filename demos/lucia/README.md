@@ -6,7 +6,7 @@ home page footer). Re-record them whenever her sprites or behavior change.
 
 | Name | Length | Shows |
 |---|---|---|
-| `lucia-meet` | ~85 s | Real app: Preferences → General → Distraction mode, open a client, woof ×3, sock chase/pickup/carry, the Companion / Watch / Feed buttons, × hides her, Preferences brings her back |
+| `lucia-meet` | ~85 s | Real app: Preferences → General → Distraction mode, open a client, woof ×2 then a pet-twirl, the skateboard button, sock chase/pickup/carry, the Companion / Watch / Feed buttons, × hides her, Preferences brings her back |
 | `lucia-watch-and-feed` | ~57 s | Watch: gaze follows the pointer around her head. Feed: dekopon 0→5 by clicking her and the button, "Full! 5/5", Start over |
 | `lucia-a-day` | ~83 s | Real app on a fake clock that skips only idle waits: stretch, lie down, twirl, typing perks her up, newspaper while chat thinks, skateboard; then every "Preview Lucia action" on the demo page |
 
@@ -51,5 +51,5 @@ Then in the site checkout run `uv run build.py`, check `fun.html` locally and co
   `record.mjs`, with a `caption(…)`, the action, and `waitBehavior(…)`. Preview actions are
   listed in `video3`.
 - **Changed controls or labels:** the script finds them by accessible name (`Lucia controls`,
-  `Companion` / `Watch` / `Feed`, `Drop a sock for Lucia`, `Feed a dekopon`, `Start over`,
+  `Companion` / `Watch` / `Feed`, `Drop a sock for Lucia`, `Give Lucia her skateboard`, `Feed a dekopon`, `Start over`,
   `Hide Lucia`, `Enable distraction mode`), the same as the e2e specs. Update both together.

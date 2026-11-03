@@ -51,6 +51,8 @@ export type LuciaClipName = keyof typeof manifest.clips;
 export const LUCIA_SCALE = 0.65;
 export const LUCIA_HEAD_ANCHOR = { x: manifest.head_anchor[0], y: manifest.head_anchor[1] };
 export const LUCIA_SOCK_IMAGE = "extras/sock/sock.png";
+/** The board button's icon, cropped from the same board drawn in skateboard-left frame 0. */
+export const LUCIA_SKATEBOARD_IMAGE = "extras/play/skateboard/board.png";
 
 export function luciaClip(name: LuciaClipName): SpriteStripMetadata {
   const clip = manifest.clips[name];
@@ -81,6 +83,7 @@ export const LUCIA_BEHAVIOR_CONFIG: LuciaBehaviorConfig = {
     "carry-away": duration("carry-away") * 3,
     bark: duration("bark"),
     "reading-enter": duration("reading-enter"),
+    "reading-play": duration("reading") * 3,
     "reading-exit": duration("reading-exit"),
     feeding: duration("feeding"),
     full: duration("full"),
@@ -111,7 +114,8 @@ export function selectLuciaPose(state: LuciaBehaviorState, elapsedMs: number, ga
   }
   const name: LuciaClipName = state.behavior === "inactive" || state.behavior === "gaze"
     ? "idle" : state.behavior === "chase" ? "running-right"
-      : state.behavior === "feeding" ? feedingClip : state.behavior;
+      : state.behavior === "reading-play" ? "reading"
+        : state.behavior === "feeding" ? feedingClip : state.behavior;
   const metadata = luciaClip(name);
   const source = manifest.clips[name];
   // Gaze frames come from the pointer, not the clock.
@@ -132,12 +136,16 @@ export function selectLuciaPose(state: LuciaBehaviorState, elapsedMs: number, ga
   };
 }
 
+function behaviorProgress(state: LuciaBehaviorState, elapsedMs: number): number {
+  return state.endsAt === null ? 0 : Math.min(1, Math.max(0, elapsedMs / (state.endsAt - state.startedAt)));
+}
+
 /** The pointer never enters this geometry. Travel belongs only to deliberate socks or skating. */
 export function luciaPosition(state: LuciaBehaviorState, elapsedMs: number, width: number): number {
   const home = Math.min(90, width / 2);
   if (state.reducedMotion) return home;
   const pickup = width / 2;
-  const progress = state.endsAt === null ? 0 : Math.min(1, Math.max(0, elapsedMs / (state.endsAt - state.startedAt)));
+  const progress = behaviorProgress(state, elapsedMs);
   switch (state.behavior) {
     case "chase": return home + (pickup - home) * progress;
     case "pickup": return pickup;

@@ -68,7 +68,7 @@ export default function LuciaDemo() {
         <button type="button" className="underline" onClick={() => setDistractionModeEnabled(true)}>Show Lucia</button>
         {notice && <span role="status">{notice}</span>}
       </div>
-      <div className="lucia-demo-workspace flex-1 min-h-0">
+      <div className="lucia-demo-workspace flex-1 min-h-0 overflow-hidden">
         <ClientRecord clientId={CLIENT_ID} clientName="Jane Doe — synthetic demo" luciaPreviewsEnabled
           navigate={() => setNotice("Stay in this demo workspace: Record, Chat and Writing are available above.")}
           onClientNameChanged={() => {}} onManageWriterSection={() => setNotice("Template management is unavailable in this local demo.")} />

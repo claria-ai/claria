@@ -6,11 +6,11 @@ import { CloseIcon } from "./icons";
 import { setDistractionModeEnabled } from "../lib/distractionMode";
 import { useLuciaBehavior } from "../lib/useLuciaBehavior";
 import { useLuciaGaze } from "../lib/useLuciaGaze";
-import { isReading, ownsSock, type LuciaBehavior, type LuciaBehaviorState, type LuciaMode, type LuciaPreviewBehavior } from "../lib/luciaBehavior";
+import { canSkate, isReading, ownsSock, type LuciaBehavior, type LuciaBehaviorState, type LuciaMode, type LuciaPreviewBehavior } from "../lib/luciaBehavior";
 import type { SpriteFrame } from "../lib/luciaSprite";
 import {
   type LuciaArtwork, loadLuciaArtwork, luciaImageUrl, luciaPosition, selectLuciaPose,
-  LUCIA_BEHAVIOR_CONFIG, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SOCK_IMAGE,
+  LUCIA_BEHAVIOR_CONFIG, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SKATEBOARD_IMAGE, LUCIA_SOCK_IMAGE,
 } from "../lib/luciaArtwork";
 
 // Match the standalone 56×48 sock to pickup's embedded blue bounds (105,171)–(161,201).
@@ -50,7 +50,7 @@ function HideButton() {
 }
 
 function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps & { rail: HTMLDivElement; artwork: LuciaArtwork }) {
-  const { state, dropSock, setMode, bark, feed, reset, preview } = useLuciaBehavior(LUCIA_BEHAVIOR_CONFIG, clientId);
+  const { state, dropSock, skate, setMode, pet, feed, reset, preview } = useLuciaBehavior(LUCIA_BEHAVIOR_CONFIG, clientId);
   const [paintError, setPaintError] = useState<string | null>(null);
   const sockBusy = ownsSock(state.behavior);
   const available = state.active && state.visible;
@@ -70,8 +70,8 @@ function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps
         <div data-testid="lucia-scene" data-behavior={state.behavior} data-fed-count={state.fedCount}
           data-reduced-motion={state.reducedMotion} className="absolute inset-0 z-10 pointer-events-none">
           {state.mode === "gaze"
-            ? <GazeSprite state={state} rail={rail} bark={bark} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />
-            : <LuciaSprite state={state} rail={rail} bark={bark} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />}
+            ? <GazeSprite state={state} rail={rail} pet={pet} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />
+            : <LuciaSprite state={state} rail={rail} pet={pet} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />}
         </div>
       )}
       <div role="group" aria-label="Lucia controls"
@@ -95,16 +95,24 @@ function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps
           <button type="button" onClick={feed} disabled={!canFeed}
             className="rounded border border-gray-300 bg-white px-2 py-1 hover:bg-gray-50 disabled:opacity-40">Feed a dekopon</button>
           {state.fedCount > 0 && <button type="button" onClick={reset} className="underline">Start over</button>}
-        </> : (
+        </> : <>
           <button type="button" onClick={dropSock} disabled={!available || sockBusy}
             title="Drop a sock for Lucia" aria-label="Drop a sock for Lucia"
             className="p-1 rounded-md border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40">
             <img src={luciaImageUrl(LUCIA_SOCK_IMAGE)} alt="" width="20" height="20" />
           </button>
-        )}
+          {/* The ride is all motion, so reduced motion keeps the toolbar as it was. */}
+          {!state.reducedMotion && (
+            <button type="button" onClick={skate} disabled={!available || !canSkate(state)}
+              title="Give Lucia her skateboard" aria-label="Give Lucia her skateboard"
+              className="p-1 rounded-md border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40">
+              <img src={luciaImageUrl(LUCIA_SKATEBOARD_IMAGE)} alt="" width="28" height="20" className="object-contain" />
+            </button>
+          )}
+        </>}
         {import.meta.env.DEV && previewsEnabled && (
           <select aria-label="Preview Lucia action" value=""
-            disabled={!available || state.mode !== "companion" || state.reducedMotion || state.inferencePending || sockBusy || state.behavior === "bark" || isReading(state.behavior)}
+            disabled={!available || state.mode !== "companion" || state.reducedMotion || state.inferencePending || sockBusy || state.petReacting || isReading(state.behavior)}
             onChange={(event) => preview(event.target.value as LuciaPreviewBehavior)}
             className="rounded border border-gray-300 bg-white p-1 disabled:opacity-40">
             <option value="" disabled>Preview an action (demo)…</option>
@@ -131,11 +139,11 @@ function GazeSprite(props: SpriteProps) {
 }
 
 type SpriteProps = {
-  state: LuciaBehaviorState; rail: HTMLDivElement; bark: () => void; feed: () => void; canFeed: boolean;
+  state: LuciaBehaviorState; rail: HTMLDivElement; pet: () => void; feed: () => void; canFeed: boolean;
   artwork: LuciaArtwork; onPaintError: (message: string) => void;
 };
 
-function LuciaSprite({ state, rail, bark, feed, canFeed, artwork, onPaintError, gaze, spriteRef: gazeRef }: SpriteProps & {
+function LuciaSprite({ state, rail, pet, feed, canFeed, artwork, onPaintError, gaze, spriteRef: gazeRef }: SpriteProps & {
   gaze?: SpriteFrame; spriteRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const ownRef = useRef<HTMLButtonElement>(null);
@@ -216,11 +224,11 @@ function LuciaSprite({ state, rail, bark, feed, canFeed, artwork, onPaintError, 
   }, [artwork, gaze, onPaintError, rail, spriteRef, state]);
 
   return <>
-    {/* Clicking Lucia does what the mode is for: feed while feeding, otherwise a (silent) bark. */}
-    <button ref={spriteRef} type="button" onClick={feeding ? feed : bark}
-      aria-label={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia (silent bark)"}
+    {/* Clicking Lucia does what the mode is for: feed while feeding, otherwise pet her (barks, then play). */}
+    <button ref={spriteRef} type="button" onClick={feeding ? feed : pet}
+      aria-label={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia"}
       title={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia"}
-      disabled={feeding ? !canFeed : state.inferencePending || ownsSock(state.behavior) || state.behavior === "bark"}
+      disabled={feeding ? !canFeed : state.inferencePending || ownsSock(state.behavior) || state.petReacting}
       className="absolute pointer-events-auto rounded-lg cursor-pointer disabled:cursor-default focus-visible:outline-2 focus-visible:outline-blue-600"
       style={{ width: manifest.cell_width * LUCIA_SCALE, height: manifest.cell_height * LUCIA_SCALE }}
       data-testid="lucia-sprite">

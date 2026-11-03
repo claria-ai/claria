@@ -355,3 +355,119 @@ test("Lucia preserves unsent writing, local document edits, and typing focus", a
   ).toHaveAttribute("aria-selected", "true");
   expect(await commands()).toEqual(before);
 });
+
+test("petting barks twice, then plays a random animation, and starts over after a pause", async ({ page }) => {
+  // 0.2 lands on the skateboard in the fun pool.
+  await page.addInitScript(() => { Math.random = () => 0.2; });
+  await openClient(page);
+  const scene = page.getByTestId("lucia-scene");
+  const lucia = page.getByTestId("lucia-sprite");
+  await page.clock.runFor(duration("tailwag"));
+  await expect(scene).toHaveAttribute("data-behavior", "idle");
+  for (let bark = 0; bark < 2; bark++) {
+    await lucia.click();
+    await expect(scene).toHaveAttribute("data-behavior", "bark");
+    await expect(lucia).toBeDisabled();
+    await page.clock.runFor(duration("bark"));
+    await expect(scene).toHaveAttribute("data-behavior", "idle");
+  }
+  await lucia.click();
+  await expect(scene).toHaveAttribute("data-behavior", "skateboard");
+  await page.clock.runFor(duration("skateboard") * 4);
+  await expect(scene).toHaveAttribute("data-behavior", "idle");
+  await page.clock.runFor(31_000);
+  await lucia.click();
+  await expect(scene).toHaveAttribute("data-behavior", "bark");
+});
+
+test("the skateboard button sends Lucia across the rail", async ({ page }) => {
+  await openClient(page);
+  const scene = page.getByTestId("lucia-scene");
+  const board = page.getByRole("button", { name: "Give Lucia her skateboard" });
+  await page.clock.runFor(duration("tailwag"));
+  await expect(scene).toHaveAttribute("data-behavior", "idle");
+  await screenshot(page, "board-button");
+  await board.click();
+  await expect(scene).toHaveAttribute("data-behavior", "skateboard");
+  await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", /skateboard-left/);
+  await expect(board).toBeDisabled();
+  await page.clock.runFor(duration("skateboard") * 2);
+  await screenshot(page, "board-ride");
+  await page.clock.runFor(duration("skateboard") * 2);
+  await expect(scene).toHaveAttribute("data-behavior", "idle");
+  await expect(board).toBeEnabled();
+});
+
+async function expectRailInView(page: Page) {
+  const layout = await page.evaluate(() => {
+    const rail = document.querySelector("[data-testid=lucia-rail]")!.getBoundingClientRect();
+    return {
+      documentHeight: document.scrollingElement!.scrollHeight,
+      viewportHeight: window.innerHeight,
+      railTop: rail.top,
+      railBottom: rail.bottom,
+    };
+  });
+  expect(layout.documentHeight).toBeLessThanOrEqual(layout.viewportHeight);
+  expect(layout.railTop).toBeGreaterThanOrEqual(0);
+  expect(layout.railBottom).toBeLessThanOrEqual(layout.viewportHeight);
+}
+
+for (const height of [768, 560]) {
+  test(`a long chat scrolls its own messages and keeps Lucia's rail on screen at ${height}px`, async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height });
+    await page.addInitScript(() => {
+      const mock = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (cmd: string, args: unknown) => Promise<unknown> };
+      };
+      // The fixture bridge is installed first; stretch its saved chat into a long history.
+      const invoke = mock.__TAURI_INTERNALS__.invoke;
+      mock.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
+        const result = await invoke(cmd, args);
+        if (cmd !== "load_chat_history") return result;
+        const messages = Array.from({ length: 80 }, (_, index) => ({
+          role: index % 2 === 0 ? "user" : "assistant",
+          content: `Synthetic message ${index + 1}. `.repeat(index % 2 === 0 ? 2 : 12),
+          timestamp: "2026-08-01T11:59:00Z",
+          usage: null,
+        }));
+        return { ...(result as object), messages };
+      };
+    });
+    await openClient(page);
+    await expectRailInView(page);
+    await page.getByText("Chat History", { exact: true }).click();
+    await page.getByTitle("Resume conversation").click();
+    await expect(page.getByRole("tab", { name: "Chat", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByText("Synthetic message 80.").first()).toBeAttached();
+    await expectRailInView(page);
+    const composer = page.getByRole("textbox");
+    await expect(composer).toBeInViewport();
+    const scroller = page.locator("#chat-session-panel-conversation .overflow-y-auto").first();
+    expect(await scroller.evaluate((element) => element.clientHeight > 0 && element.scrollHeight > element.clientHeight)).toBe(true);
+
+    // Dragging the composer tall (what its resize handle does) takes room from the messages, never from the rail.
+    await composer.fill(Array.from({ length: 12 }, (_, index) => `Draft line ${index + 1}`).join("\n"));
+    await composer.evaluate((element) => { (element as HTMLTextAreaElement).style.height = "320px"; });
+    await expectRailInView(page);
+    const [composerBox, sendBox, railBox] = await Promise.all([
+      composer.boundingBox(),
+      page.getByRole("button", { name: "Send", exact: true }).boundingBox(),
+      page.getByTestId("lucia-rail").boundingBox(),
+    ]);
+    expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(railBox!.y);
+    expect(sendBox!.y + sendBox!.height).toBeLessThanOrEqual(railBox!.y);
+    expect(await scroller.evaluate((element) => element.clientHeight > 0)).toBe(true);
+    await page.getByText("Synthetic message 80.").first().scrollIntoViewIfNeeded();
+    await expect(page.getByText("Synthetic message 80.").first()).toBeInViewport();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByText("Unchanged Chat response")).toBeAttached();
+    await expectRailInView(page);
+    await screenshot(page, `long-chat-${height}`);
+
+    for (const tab of ["Record", "Writing"]) {
+      await page.getByRole("tab", { name: tab, exact: true }).click();
+      await expectRailInView(page);
+    }
+  });
+}

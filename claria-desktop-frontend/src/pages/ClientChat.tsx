@@ -288,7 +288,7 @@ export default function ClientChat({
   );
 
   return (
-    <div className="flex flex-col flex-1">
+    <div className="flex min-h-0 flex-1 flex-col">
       <ChatWidget
         onSend={handleSend}
         initialMessages={initialMessages}

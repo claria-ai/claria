@@ -476,8 +476,9 @@ export default function ChatWidget({
             </div>
           )}
 
-          <div className="border-t border-gray-200 bg-white px-6 py-4">
+          <div className="shrink-0 border-t border-gray-200 bg-white px-6 py-4">
             <ChatComposer
+              capHeight
               value={input}
               onChange={setInput}
               onSend={() => void handleSend()}

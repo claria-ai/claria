@@ -2,6 +2,17 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Long chats scroll inside the conversation, keeping the composer and Lucia's rail on screen
+- Dragging the chat composer taller stops at a fifth of the window height
+- Lucia reads the newspaper in cow-print glasses, holding it with both forepaws
+- Clicking Lucia barks twice, then each further click plays one of her animations at random
+- Lucia can read the newspaper when clicked, not only while a request runs
+- A skateboard button next to the sock sends Lucia riding across the rail
+- Lucia pauses behind the lock screen and wags hello when Claria unlocks
+- Lucia gets a chance to skate every three minutes while she rests
+
 ## [0.36.0] — 2026-11-03
 
 - Lucia stays the same size across every animation, including feeding and seated gaze
