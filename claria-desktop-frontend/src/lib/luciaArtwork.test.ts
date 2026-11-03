@@ -6,7 +6,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import manifest from "../assets/lucia/manifest.json";
 import { createLuciaBehavior, type LuciaBehaviorState } from "./luciaBehavior";
-import { LUCIA_BEHAVIOR_CONFIG, loadLuciaArtwork, luciaClip, luciaPosition, selectLuciaPose, type LuciaClipName } from "./luciaArtwork";
+import {
+  LUCIA_BEHAVIOR_CONFIG, LUCIA_BOARD_CHASE_RUN_START, LUCIA_BOARD_LEAD, LUCIA_BOARD_WIDTH,
+  loadLuciaArtwork, luciaBoardPosition, luciaClip, luciaPosition, selectLuciaPose, type LuciaClipName,
+} from "./luciaArtwork";
 import { PETS_V2_ATLAS, PETS_V2_CLIPS, selectPetsV2LookFrame, selectSpriteFrame, spriteClipDurationMs } from "./luciaSprite";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../assets/lucia");
@@ -190,7 +193,7 @@ describe("Lucia policy-to-art mapping", () => {
   });
 
   it("uses actual newspaper strips, not inherited core waiting labels", () => {
-    for (const behavior of ["reading-enter", "reading", "reading-exit"] as const) {
+    for (const behavior of ["reading-enter", "reading", "reading-play", "reading-exit"] as const) {
       expect(selectLuciaPose(state({ behavior }), 0).image).toContain("newspaper/");
     }
   });
@@ -200,7 +203,7 @@ describe("Lucia policy-to-art mapping", () => {
     expect(luciaPosition(chase, 0, 1000)).toBe(90);
     expect(luciaPosition(chase, 1000, 1000)).toBe(500);
     expect(luciaPosition(state({ behavior: "pickup" }), 0, 1000)).toBe(500);
-    for (const behavior of ["chase", "pickup", "carry-away", "skateboard", "reading", "feeding", "bark"] as const) {
+    for (const behavior of ["chase", "pickup", "carry-away", "board-chase", "skateboard", "reading", "reading-play", "feeding", "bark"] as const) {
       const reduced = state({ behavior, reducedMotion: true, endsAt: 1000 });
       expect(luciaPosition(reduced, 900, 1000)).toBe(90);
       expect(selectLuciaPose(reduced, 900).animated).toBe(false);
@@ -209,6 +212,40 @@ describe("Lucia policy-to-art mapping", () => {
   });
 });
 
+
+describe("Lucia board chase", () => {
+  const duration = LUCIA_BEHAVIOR_CONFIG.durationsMs["board-chase"];
+  const chase = state({ behavior: "board-chase", startedAt: 0, endsAt: duration });
+  const runStart = duration * LUCIA_BOARD_CHASE_RUN_START;
+
+  it("plays a requested read on the newspaper loop strip", () => {
+    expect(selectLuciaPose(state({ behavior: "reading-play" }), 0).image).toBe(manifest.clips.reading.image);
+  });
+
+  it("watches from home until the board reaches her, then runs from the run strip's first frame", () => {
+    expect(selectLuciaPose(chase, runStart - 1).image).toBe(manifest.clips.idle.image);
+    expect(selectLuciaPose(chase, runStart - 1).frame.row).toBe(manifest.clips.idle.row);
+    expect(luciaPosition(chase, runStart - 1, 1000)).toBe(90);
+    const running = selectLuciaPose(chase, runStart);
+    expect(running.frame).toMatchObject({ row: manifest.clips["running-right"].row, column: 0 });
+    expect(running.anchor).toEqual([manifest.clips["running-right"].anchor[0], manifest.clips["running-right"].ground_y]);
+    expect(running.nextFrameInMs).toBe(manifest.clips["running-right"].frame_durations_ms[0]);
+    expect(luciaPosition(chase, duration, 1000)).toBe(1080);
+  });
+
+  it("rolls the board in from off the left edge and keeps it ahead of her until both are off the right", () => {
+    expect(luciaBoardPosition(chase, 0, 1000)).toBe(-LUCIA_BOARD_WIDTH / 2);
+    // Continuous at the hand-off: the roll-in ends exactly where the lead begins.
+    expect(luciaBoardPosition(chase, runStart - 0.001, 1000)).toBeCloseTo(90 + LUCIA_BOARD_LEAD, 1);
+    expect(luciaBoardPosition(chase, runStart, 1000)).toBe(90 + LUCIA_BOARD_LEAD);
+    for (const elapsed of [runStart, duration * 0.6, duration]) {
+      expect(luciaBoardPosition(chase, elapsed, 1000) - luciaPosition(chase, elapsed, 1000)).toBe(LUCIA_BOARD_LEAD);
+    }
+    expect(luciaBoardPosition(chase, duration, 1000) - LUCIA_BOARD_WIDTH / 2).toBeGreaterThan(1000);
+    // The ride back starts where the chase left her.
+    expect(luciaPosition(state({ behavior: "skateboard", endsAt: 1000 }), 0, 1000)).toBe(luciaPosition(chase, duration, 1000));
+  });
+});
 
 describe("Lucia decoded artwork lifetime", () => {
   afterEach(() => vi.unstubAllGlobals());

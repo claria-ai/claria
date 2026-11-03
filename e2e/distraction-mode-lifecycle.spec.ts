@@ -432,12 +432,22 @@ for (const height of [768, 560]) {
     const composer = page.getByRole("textbox");
     await expect(composer).toBeInViewport();
     const scroller = page.locator("#chat-session-panel-conversation .overflow-y-auto").first();
-    expect(await scroller.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    expect(await scroller.evaluate((element) => element.clientHeight > 0 && element.scrollHeight > element.clientHeight)).toBe(true);
 
-    // A multi-line draft grows the composer; the message list gives up the room, not the rail.
+    // Dragging the composer tall (what its resize handle does) takes room from the messages, never from the rail.
     await composer.fill(Array.from({ length: 12 }, (_, index) => `Draft line ${index + 1}`).join("\n"));
+    await composer.evaluate((element) => { (element as HTMLTextAreaElement).style.height = "320px"; });
     await expectRailInView(page);
-    await expect(composer).toBeInViewport();
+    const [composerBox, sendBox, railBox] = await Promise.all([
+      composer.boundingBox(),
+      page.getByRole("button", { name: "Send", exact: true }).boundingBox(),
+      page.getByTestId("lucia-rail").boundingBox(),
+    ]);
+    expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(railBox!.y);
+    expect(sendBox!.y + sendBox!.height).toBeLessThanOrEqual(railBox!.y);
+    expect(await scroller.evaluate((element) => element.clientHeight > 0)).toBe(true);
+    await page.getByText("Synthetic message 80.").first().scrollIntoViewIfNeeded();
+    await expect(page.getByText("Synthetic message 80.").first()).toBeInViewport();
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.getByText("Unchanged Chat response")).toBeAttached();
     await expectRailInView(page);

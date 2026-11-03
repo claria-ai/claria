@@ -10,15 +10,13 @@ import { isReading, ownsSock, type LuciaBehavior, type LuciaBehaviorState, type 
 import type { SpriteFrame } from "../lib/luciaSprite";
 import {
   type LuciaArtwork, loadLuciaArtwork, luciaBoardPosition, luciaImageUrl, luciaPosition, selectLuciaPose,
-  LUCIA_BEHAVIOR_CONFIG, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SKATEBOARD_IMAGE, LUCIA_SOCK_IMAGE,
+  LUCIA_BEHAVIOR_CONFIG, LUCIA_BOARD_HEIGHT, LUCIA_BOARD_WIDTH, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SKATEBOARD_IMAGE, LUCIA_SOCK_IMAGE,
 } from "../lib/luciaArtwork";
 
 // Match the standalone 56×48 sock to pickup's embedded blue bounds (105,171)–(161,201).
 const SOCK_SCALE = LUCIA_SCALE * 1.15;
 const SOCK_WIDTH = manifest.assets[LUCIA_SOCK_IMAGE].width * SOCK_SCALE;
 const SOCK_HEIGHT = manifest.assets[LUCIA_SOCK_IMAGE].height * SOCK_SCALE;
-const BOARD_WIDTH = manifest.assets[LUCIA_SKATEBOARD_IMAGE].width * LUCIA_SCALE;
-const BOARD_HEIGHT = manifest.assets[LUCIA_SKATEBOARD_IMAGE].height * LUCIA_SCALE;
 const TRAVELLING: ReadonlySet<LuciaBehavior> = new Set(["chase", "carry-away", "board-chase", "skateboard"]);
 
 type CompanionProps = { clientId: string; rail: HTMLDivElement | null; previewsEnabled?: boolean };
@@ -106,7 +104,7 @@ function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps
         )}
         {import.meta.env.DEV && previewsEnabled && (
           <select aria-label="Preview Lucia action" value=""
-            disabled={!available || state.mode !== "companion" || state.reducedMotion || state.inferencePending || sockBusy || state.behavior === "bark" || isReading(state.behavior)}
+            disabled={!available || state.mode !== "companion" || state.reducedMotion || state.inferencePending || sockBusy || state.petReacting || isReading(state.behavior)}
             onChange={(event) => preview(event.target.value as LuciaPreviewBehavior)}
             className="rounded border border-gray-300 bg-white p-1 disabled:opacity-40">
             <option value="" disabled>Preview an action (demo)…</option>
@@ -186,7 +184,7 @@ function LuciaSprite({ state, rail, pet, feed, canFeed, artwork, onPaintError, g
         const pickupX = state.reducedMotion ? Math.min(90, width / 2) : width / 2;
         sockRef.current.style.left = `${pickupX + (133 - 96) * LUCIA_SCALE - SOCK_WIDTH / 2}px`;
       }
-      if (boardRef.current) boardRef.current.style.left = `${luciaBoardPosition(state, elapsed, width) - BOARD_WIDTH / 2}px`;
+      if (boardRef.current) boardRef.current.style.left = `${luciaBoardPosition(state, elapsed, width) - LUCIA_BOARD_WIDTH / 2}px`;
       // Travel moves every display frame; an in-place animation only needs its next cell.
       if (!state.reducedMotion && TRAVELLING.has(state.behavior)) return 0;
       return pose.nextFrameInMs;
@@ -222,7 +220,7 @@ function LuciaSprite({ state, rail, pet, feed, canFeed, artwork, onPaintError, g
   return <>
     {/* Behind Lucia: the board rolls past her wheels-down on her ground line. */}
     {state.behavior === "board-chase" && <img ref={boardRef} src={luciaImageUrl(LUCIA_SKATEBOARD_IMAGE)} alt=""
-      data-testid="lucia-board" className="absolute pointer-events-none" style={{ width: BOARD_WIDTH, height: BOARD_HEIGHT, bottom: 6 }} />}
+      data-testid="lucia-board" className="absolute pointer-events-none" style={{ width: LUCIA_BOARD_WIDTH, height: LUCIA_BOARD_HEIGHT, bottom: 6 }} />}
     {/* Clicking Lucia does what the mode is for: feed while feeding, otherwise pet her (barks, then play). */}
     <button ref={spriteRef} type="button" onClick={feeding ? feed : pet}
       aria-label={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia"}

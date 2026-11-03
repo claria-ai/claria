@@ -85,7 +85,7 @@ export type LuciaBehaviorState = Readonly<{
   active: boolean;
   visible: boolean;
   reducedMotion: boolean;
-  /** Coarse baseline, reset on scene resume and after a sock run. */
+  /** Coarse baseline of the last activity: typing, a pet, a sock run, a mode change, or scene resume. */
   lastTypingAt: number;
   nextTwirlAt: number | null;
   nextSkateboardAt: number | null;
@@ -281,7 +281,8 @@ export function reduceLuciaBehavior(
       };
     }
     const resumed = !state.active || !state.visible;
-    // Keep an existing deadline; one that lapsed while away comes up after the next quiet spell.
+    // Keep an existing deadline. One that lapsed while away is moved to the end of the next quiet
+    // spell, where the stretch that begins then discards it to a fresh cooldown, so it never fires on return.
     const deadline = (current: number | null, cooldownMs: number) => event.reducedMotion
       ? null
       : current === null ? now + cooldownMs : current <= now ? now + LUCIA_QUIET_MS : current;
@@ -343,7 +344,7 @@ export function reduceLuciaBehavior(
 
   if (event.type === "preview") {
     if (state.mode !== "companion" || state.reducedMotion || state.inferencePending
-      || ownsSock(state.behavior) || isReading(state.behavior) || state.behavior === "bark") return state;
+      || ownsSock(state.behavior) || isReading(state.behavior) || state.petReacting) return state;
     return play(endPetChain(state), event.behavior, now, config);
   }
 
@@ -355,7 +356,8 @@ export function reduceLuciaBehavior(
 
   if (event.type === "typing") {
     const wasQuiet = now - state.lastTypingAt >= LUCIA_QUIET_MS;
-    const next = { ...endPetChain(state), lastTypingAt: now };
+    // Typing interrupts a reaction but keeps the pet chain; only a lapsed window starts it over.
+    const next = { ...state, lastTypingAt: now };
     // A requested read is put away when she is typed at; real inference keeps the paper up.
     if ((state.behavior === "reading-play" || state.behavior === "reading-enter") && !state.inferencePending) {
       return begin(next, "reading-exit", now, config);
@@ -420,10 +422,13 @@ export function reduceLuciaBehavior(
     case "idle":
       return begin(state, "stretch", now, config);
     case "stretch":
-      return rest(state, "bored", now);
+      // Watch mode only stretches when petted; she sits back up to keep watching.
+      return rest(state, state.mode === "gaze" ? "gaze" : "bored", now);
     case "reading-enter":
       // Inference holds the paper up until it finishes; a requested read turns a few pages.
-      return state.inferencePending ? rest(state, "reading", now) : begin(state, "reading-play", now, config);
+      return state.inferencePending
+        ? rest({ ...endPetChain(state), readingReadyAt: null }, "reading", now)
+        : begin(state, "reading-play", now, config);
     case "bored":
     case "gaze": {
       const skateboardDue = state.mode === "companion" && state.nextSkateboardAt !== null && now >= state.nextSkateboardAt;

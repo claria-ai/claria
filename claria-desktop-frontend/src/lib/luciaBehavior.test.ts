@@ -332,7 +332,6 @@ describe("Lucia pet chain", () => {
   });
 
   it.each([
-    ["typing", { type: "typing" }],
     ["a sock", { type: "sock" }],
     ["a mode change", { type: "mode", mode: "gaze" }],
     ["hiding", { ...ENVIRONMENT, visible: false }],
@@ -347,6 +346,27 @@ describe("Lucia pet chain", () => {
     expect(wake(pending)).toMatchObject({ behavior: "reading-enter", petStep: 0, petReacting: false });
   });
 
+  it("ends the chain when real inference takes over a requested read while the paper comes up", () => {
+    const ready = funReady();
+    const entering = step(ready, { type: "pet" }, ready.startedAt + 1, 0.4);
+    expect(entering.behavior).toBe("reading-enter");
+    const live = wake(step(entering, { type: "inference", pending: true }, entering.startedAt + 10));
+    expect(live).toMatchObject({ behavior: "reading", petStep: 0, petReacting: false, readingReadyAt: null, nextWakeAt: null });
+  });
+
+  it("lets typing interrupt a reaction without ending the chain", () => {
+    const ready = funReady();
+    const twirl = step(ready, { type: "pet" }, ready.startedAt + 1, 0);
+    const typed = step(twirl, { type: "typing" }, twirl.startedAt + 1);
+    expect(typed).toMatchObject({ behavior: "idle", petStep: 3, petReacting: false, petWindowEndsAt: twirl.startedAt + 1 + LUCIA_PET_FUN_WINDOW_MS });
+    expect(step(typed, { type: "pet" }, typed.startedAt + 1, 0).behavior).toBe("twirl");
+  });
+
+  it("blocks a demo preview while a pet reaction plays", () => {
+    const twirl = step(funReady(), { type: "pet" }, 20_000, 0);
+    expect(step(twirl, { type: "preview", behavior: "tailwag" }, 20_001)).toBe(twirl);
+  });
+
   it("only barks, statically, with reduced motion", () => {
     const ready = funReady("companion", true);
     const bark = step(ready, { type: "pet" }, ready.startedAt + 1, 0);
@@ -357,6 +377,10 @@ describe("Lucia pet chain", () => {
   it("works in Watch mode and is ignored in Feed mode", () => {
     const ready = funReady("gaze");
     expect(step(ready, { type: "pet" }, ready.startedAt + 1, 0).behavior).toBe("twirl");
+    // A petted stretch sits back up to keep watching instead of lying down for good.
+    const stretch = step(ready, { type: "pet" }, ready.startedAt + 1, 0.99);
+    expect(stretch.behavior).toBe("stretch");
+    expect(wake(stretch)).toMatchObject({ behavior: "gaze", petReacting: false });
     const feeding = active("feeding");
     expect(step(feeding, { type: "pet" }, 10)).toBe(feeding);
   });
@@ -366,7 +390,8 @@ describe("Lucia pet chain", () => {
     const turning = wake(step(ready, { type: "pet" }, ready.startedAt + 1, 0.4));
     expect(turning.behavior).toBe("reading-play");
     const typed = step(turning, { type: "typing" }, turning.startedAt + 1);
-    expect(typed).toMatchObject({ behavior: "reading-exit", petStep: 0 });
+    expect(typed).toMatchObject({ behavior: "reading-exit", petStep: 3, petReacting: true });
+    expect(wake(typed)).toMatchObject({ behavior: "idle", petReacting: false });
     const live = step(turning, { type: "inference", pending: true }, turning.startedAt + 1);
     expect(live).toMatchObject({ behavior: "reading", nextWakeAt: null, petStep: 0, petReacting: false });
     expect(step(live, { type: "inference", pending: false }, turning.startedAt + 2).behavior).toBe("reading-exit");
@@ -566,7 +591,10 @@ describe("Lucia visibility, activation, and reduced motion", () => {
     const resumed = step(suspended, ENVIRONMENT, 1_000_000, 0);
     // Lapsed while away: due after the next quiet spell, not a fresh full cooldown.
     expect(resumed).toMatchObject({ behavior: "tailwag", nextWakeAt: 1_000_010, nextTwirlAt: 1_030_000, nextSkateboardAt: 1_030_000, lastTypingAt: 1_000_000 });
-    expect(wake(resumed)).toMatchObject({ behavior: "idle", nextWakeAt: 1_030_000 });
+    const settled = wake(resumed);
+    expect(settled).toMatchObject({ behavior: "idle", nextWakeAt: 1_030_000 });
+    // The stretch that starts then discards the lapsed deadlines to a fresh cooldown.
+    expect(wake(settled)).toMatchObject({ behavior: "stretch", nextTwirlAt: 1_150_000, nextSkateboardAt: 1_210_000 });
   });
 
   it("does not postpone play when the window keeps losing and regaining focus", () => {

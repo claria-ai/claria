@@ -151,7 +151,10 @@ function behaviorProgress(state: LuciaBehaviorState, elapsedMs: number): number 
   return state.endsAt === null ? 0 : Math.min(1, Math.max(0, elapsedMs / (state.endsAt - state.startedAt)));
 }
 
-const BOARD_HALF_WIDTH = (manifest.assets[LUCIA_SKATEBOARD_IMAGE].width * LUCIA_SCALE) / 2;
+/** The board prop's rendered size: drawn at Lucia's scale so it matches the strip's own board. */
+export const LUCIA_BOARD_WIDTH = manifest.assets[LUCIA_SKATEBOARD_IMAGE].width * LUCIA_SCALE;
+export const LUCIA_BOARD_HEIGHT = manifest.assets[LUCIA_SKATEBOARD_IMAGE].height * LUCIA_SCALE;
+const BOARD_HALF_WIDTH = LUCIA_BOARD_WIDTH / 2;
 
 /** The pointer never enters this geometry. Travel belongs only to deliberate socks or skating. */
 export function luciaPosition(state: LuciaBehaviorState, elapsedMs: number, width: number): number {
@@ -171,15 +174,15 @@ export function luciaPosition(state: LuciaBehaviorState, elapsedMs: number, widt
 }
 
 /** How far ahead of Lucia's centre the board's centre rolls once she is chasing it. */
-const BOARD_LEAD = 70;
+export const LUCIA_BOARD_LEAD = 70;
 
 /**
  * The board's centre during a board chase: it rolls in from the left edge past
- * Lucia, and once she starts running it stays BOARD_LEAD ahead of her, off the right edge.
+ * Lucia, and once she starts running it stays LUCIA_BOARD_LEAD ahead of her, off the right edge.
  */
 export function luciaBoardPosition(state: LuciaBehaviorState, elapsedMs: number, width: number): number {
   const home = Math.min(90, width / 2);
   const progress = behaviorProgress(state, elapsedMs);
-  if (progress >= LUCIA_BOARD_CHASE_RUN_START) return luciaPosition(state, elapsedMs, width) + BOARD_LEAD;
-  return -BOARD_HALF_WIDTH + (home + BOARD_LEAD + BOARD_HALF_WIDTH) * (progress / LUCIA_BOARD_CHASE_RUN_START);
+  if (progress >= LUCIA_BOARD_CHASE_RUN_START) return luciaPosition(state, elapsedMs, width) + LUCIA_BOARD_LEAD;
+  return -BOARD_HALF_WIDTH + (home + LUCIA_BOARD_LEAD + BOARD_HALF_WIDTH) * (progress / LUCIA_BOARD_CHASE_RUN_START);
 }

@@ -60,7 +60,7 @@ export default function ChatComposer({
         placeholder={placeholder}
         disabled={disabled}
         rows={rows}
-        className="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-500"
+        className="flex-1 max-h-[20vh] px-4 py-2.5 text-sm border border-gray-300 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-500"
       />
       <div className="self-end flex flex-col gap-2">
         <button
