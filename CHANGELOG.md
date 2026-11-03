@@ -18,7 +18,6 @@ All notable changes to Claria are documented here.
 - Lucia sleeps between animation frames while resting instead of redrawing at display rate
 - Clicking Lucia again right after a bark works
 - Lucia lifts and eats each dekopon with the matching body-size animation
-
 - Lucia switches animation strips without blank frames
 - The local Lucia demo offers explicit animation previews
 - Distraction mode adds synthetic Lucia artwork, seated gaze, and five-stage dekopon feeding
