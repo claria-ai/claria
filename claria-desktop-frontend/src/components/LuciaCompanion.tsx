@@ -9,15 +9,17 @@ import { useLuciaGaze } from "../lib/useLuciaGaze";
 import { isReading, ownsSock, type LuciaBehavior, type LuciaBehaviorState, type LuciaMode, type LuciaPreviewBehavior } from "../lib/luciaBehavior";
 import type { SpriteFrame } from "../lib/luciaSprite";
 import {
-  type LuciaArtwork, loadLuciaArtwork, luciaImageUrl, luciaPosition, selectLuciaPose,
-  LUCIA_BEHAVIOR_CONFIG, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SOCK_IMAGE,
+  type LuciaArtwork, loadLuciaArtwork, luciaBoardPosition, luciaImageUrl, luciaPosition, selectLuciaPose,
+  LUCIA_BEHAVIOR_CONFIG, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SKATEBOARD_IMAGE, LUCIA_SOCK_IMAGE,
 } from "../lib/luciaArtwork";
 
 // Match the standalone 56×48 sock to pickup's embedded blue bounds (105,171)–(161,201).
 const SOCK_SCALE = LUCIA_SCALE * 1.15;
 const SOCK_WIDTH = manifest.assets[LUCIA_SOCK_IMAGE].width * SOCK_SCALE;
 const SOCK_HEIGHT = manifest.assets[LUCIA_SOCK_IMAGE].height * SOCK_SCALE;
-const TRAVELLING: ReadonlySet<LuciaBehavior> = new Set(["chase", "carry-away", "skateboard"]);
+const BOARD_WIDTH = manifest.assets[LUCIA_SKATEBOARD_IMAGE].width * LUCIA_SCALE;
+const BOARD_HEIGHT = manifest.assets[LUCIA_SKATEBOARD_IMAGE].height * LUCIA_SCALE;
+const TRAVELLING: ReadonlySet<LuciaBehavior> = new Set(["chase", "carry-away", "board-chase", "skateboard"]);
 
 type CompanionProps = { clientId: string; rail: HTMLDivElement | null; previewsEnabled?: boolean };
 
@@ -50,7 +52,7 @@ function HideButton() {
 }
 
 function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps & { rail: HTMLDivElement; artwork: LuciaArtwork }) {
-  const { state, dropSock, setMode, bark, feed, reset, preview } = useLuciaBehavior(LUCIA_BEHAVIOR_CONFIG, clientId);
+  const { state, dropSock, setMode, pet, feed, reset, preview } = useLuciaBehavior(LUCIA_BEHAVIOR_CONFIG, clientId);
   const [paintError, setPaintError] = useState<string | null>(null);
   const sockBusy = ownsSock(state.behavior);
   const available = state.active && state.visible;
@@ -70,8 +72,8 @@ function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps
         <div data-testid="lucia-scene" data-behavior={state.behavior} data-fed-count={state.fedCount}
           data-reduced-motion={state.reducedMotion} className="absolute inset-0 z-10 pointer-events-none">
           {state.mode === "gaze"
-            ? <GazeSprite state={state} rail={rail} bark={bark} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />
-            : <LuciaSprite state={state} rail={rail} bark={bark} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />}
+            ? <GazeSprite state={state} rail={rail} pet={pet} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />
+            : <LuciaSprite state={state} rail={rail} pet={pet} feed={feed} canFeed={canFeed} artwork={artwork} onPaintError={setPaintError} />}
         </div>
       )}
       <div role="group" aria-label="Lucia controls"
@@ -131,17 +133,18 @@ function GazeSprite(props: SpriteProps) {
 }
 
 type SpriteProps = {
-  state: LuciaBehaviorState; rail: HTMLDivElement; bark: () => void; feed: () => void; canFeed: boolean;
+  state: LuciaBehaviorState; rail: HTMLDivElement; pet: () => void; feed: () => void; canFeed: boolean;
   artwork: LuciaArtwork; onPaintError: (message: string) => void;
 };
 
-function LuciaSprite({ state, rail, bark, feed, canFeed, artwork, onPaintError, gaze, spriteRef: gazeRef }: SpriteProps & {
+function LuciaSprite({ state, rail, pet, feed, canFeed, artwork, onPaintError, gaze, spriteRef: gazeRef }: SpriteProps & {
   gaze?: SpriteFrame; spriteRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const ownRef = useRef<HTMLButtonElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const spriteRef = gazeRef ?? ownRef;
   const sockRef = useRef<HTMLImageElement>(null);
+  const boardRef = useRef<HTMLImageElement>(null);
   const feeding = state.mode === "feeding";
 
   // Commit the new pose/registration before paint, together with sock visibility.
@@ -183,6 +186,7 @@ function LuciaSprite({ state, rail, bark, feed, canFeed, artwork, onPaintError, 
         const pickupX = state.reducedMotion ? Math.min(90, width / 2) : width / 2;
         sockRef.current.style.left = `${pickupX + (133 - 96) * LUCIA_SCALE - SOCK_WIDTH / 2}px`;
       }
+      if (boardRef.current) boardRef.current.style.left = `${luciaBoardPosition(state, elapsed, width) - BOARD_WIDTH / 2}px`;
       // Travel moves every display frame; an in-place animation only needs its next cell.
       if (!state.reducedMotion && TRAVELLING.has(state.behavior)) return 0;
       return pose.nextFrameInMs;
@@ -216,11 +220,14 @@ function LuciaSprite({ state, rail, bark, feed, canFeed, artwork, onPaintError, 
   }, [artwork, gaze, onPaintError, rail, spriteRef, state]);
 
   return <>
-    {/* Clicking Lucia does what the mode is for: feed while feeding, otherwise a (silent) bark. */}
-    <button ref={spriteRef} type="button" onClick={feeding ? feed : bark}
-      aria-label={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia (silent bark)"}
+    {/* Behind Lucia: the board rolls past her wheels-down on her ground line. */}
+    {state.behavior === "board-chase" && <img ref={boardRef} src={luciaImageUrl(LUCIA_SKATEBOARD_IMAGE)} alt=""
+      data-testid="lucia-board" className="absolute pointer-events-none" style={{ width: BOARD_WIDTH, height: BOARD_HEIGHT, bottom: 6 }} />}
+    {/* Clicking Lucia does what the mode is for: feed while feeding, otherwise pet her (barks, then play). */}
+    <button ref={spriteRef} type="button" onClick={feeding ? feed : pet}
+      aria-label={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia"}
       title={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia"}
-      disabled={feeding ? !canFeed : state.inferencePending || ownsSock(state.behavior) || state.behavior === "bark"}
+      disabled={feeding ? !canFeed : state.inferencePending || ownsSock(state.behavior) || state.petReacting}
       className="absolute pointer-events-auto rounded-lg cursor-pointer disabled:cursor-default focus-visible:outline-2 focus-visible:outline-blue-600"
       style={{ width: manifest.cell_width * LUCIA_SCALE, height: manifest.cell_height * LUCIA_SCALE }}
       data-testid="lucia-sprite">

@@ -356,6 +356,36 @@ test("Lucia preserves unsent writing, local document edits, and typing focus", a
   expect(await commands()).toEqual(before);
 });
 
+test("petting barks twice, then plays a random animation, and starts over after a pause", async ({ page }) => {
+  // 0.2 lands on the skateboard in the fun pool.
+  await page.addInitScript(() => { Math.random = () => 0.2; });
+  await openClient(page);
+  const scene = page.getByTestId("lucia-scene");
+  const lucia = page.getByTestId("lucia-sprite");
+  await page.clock.runFor(duration("tailwag"));
+  await expect(scene).toHaveAttribute("data-behavior", "idle");
+  for (let bark = 0; bark < 2; bark++) {
+    await lucia.click();
+    await expect(scene).toHaveAttribute("data-behavior", "bark");
+    await expect(lucia).toBeDisabled();
+    await page.clock.runFor(duration("bark"));
+    await expect(scene).toHaveAttribute("data-behavior", "idle");
+  }
+  await lucia.click();
+  await expect(scene).toHaveAttribute("data-behavior", "board-chase");
+  await expect(page.getByTestId("lucia-board")).toBeVisible();
+  await page.clock.runFor(duration("running-right") * 4 * 0.6);
+  await screenshot(page, "board-chase");
+  await page.clock.runFor(duration("running-right") * 4 * 0.4);
+  await expect(scene).toHaveAttribute("data-behavior", "skateboard");
+  await expect(page.getByTestId("lucia-board")).toHaveCount(0);
+  await page.clock.runFor(duration("skateboard") * 4);
+  await expect(scene).toHaveAttribute("data-behavior", "idle");
+  await page.clock.runFor(31_000);
+  await lucia.click();
+  await expect(scene).toHaveAttribute("data-behavior", "bark");
+});
+
 async function expectRailInView(page: Page) {
   const layout = await page.evaluate(() => {
     const rail = document.querySelector("[data-testid=lucia-rail]")!.getBoundingClientRect();

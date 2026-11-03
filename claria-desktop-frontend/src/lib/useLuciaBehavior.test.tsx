@@ -1,8 +1,10 @@
 import { act, cleanup, fireEvent, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LuciaBehaviorConfig } from "./luciaBehavior";
 import { useLuciaBehavior } from "./useLuciaBehavior";
 import { getLuciaInferenceCount, withLuciaInference } from "./luciaInference";
+import { SessionLockedContext } from "./sessionLockContext";
 
 const config: LuciaBehaviorConfig = {
   durationsMs: {
@@ -19,6 +21,8 @@ const config: LuciaBehaviorConfig = {
     "reading-exit": 100,
     feeding: 100,
     full: 100,
+    "board-chase": 100,
+    "reading-play": 100,
   },
 };
 
@@ -92,6 +96,33 @@ describe("useLuciaBehavior", () => {
     runtime.random.mockClear();
     advance(600_000);
     expect(runtime.random).not.toHaveBeenCalled();
+  });
+
+  it("samples the roll for a pet, so a pet past the barks picks a random animation", () => {
+    const { result } = renderHook(() => useLuciaBehavior(config, "fixture-client", runtime));
+    advance(100);
+    runtime.random.mockClear();
+    act(() => result.current.pet());
+    expect(runtime.random).toHaveBeenCalledTimes(1);
+    expect(result.current.state.behavior).toBe("bark");
+  });
+
+  it("suspends behind the session lock and wags on unlock", () => {
+    let locked = false;
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(SessionLockedContext.Provider, { value: locked }, children);
+    const { result, rerender } = renderHook(() => useLuciaBehavior(config, "fixture-client", runtime), { wrapper });
+    advance(100);
+    expect(result.current.state.behavior).toBe("idle");
+    locked = true;
+    rerender();
+    expect(result.current.state).toMatchObject({ behavior: "inactive", visible: false, nextWakeAt: null });
+    runtime.random.mockClear();
+    advance(600_000);
+    expect(runtime.random).not.toHaveBeenCalled();
+    locked = false;
+    rerender();
+    expect(result.current.state).toMatchObject({ behavior: "tailwag", visible: true });
   });
 
   it("reacts to editing activity without handling navigation keys or changing focus", () => {

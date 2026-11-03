@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useContext, useEffect, useReducer, useState } from "react";
 import {
   createLuciaBehavior,
   reduceLuciaBehavior,
@@ -9,6 +9,7 @@ import {
   type LuciaPreviewBehavior,
 } from "./luciaBehavior";
 import { getLuciaInferenceCount, subscribeLuciaInference } from "./luciaInference";
+import { SessionLockedContext } from "./sessionLockContext";
 
 export interface LuciaBehaviorRuntime {
   now: () => number;
@@ -52,6 +53,8 @@ export function useLuciaBehavior(
   const [motionPreference] = useState(() =>
     window.matchMedia("(prefers-reduced-motion: reduce)"),
   );
+  // Behind the lock screen nobody can see her: suspend, so no play attempt is spent unseen.
+  const locked = useContext(SessionLockedContext);
   const [state, dispatch] = useReducer(
     (previous: LuciaBehaviorState, action: TimedEvent) =>
       reduceLuciaBehavior(previous, action.event, action.now, config, action.roll),
@@ -63,7 +66,7 @@ export function useLuciaBehavior(
         {
           type: "environment",
           active: true,
-          visible: !document.hidden && document.hasFocus(),
+          visible: !document.hidden && document.hasFocus() && !locked,
           reducedMotion: motionPreference.matches,
         },
         now,
@@ -82,8 +85,8 @@ export function useLuciaBehavior(
       dispatch({
         event,
         now: runtime.now(),
-        // Randomness is sampled outside the reducer, once per scheduled wake.
-        roll: event.type === "wake" ? runtime.random() : 0.5,
+        // Randomness is sampled outside the reducer, once per scheduled wake or pet.
+        roll: event.type === "wake" || event.type === "pet" ? runtime.random() : 0.5,
       });
     },
     [runtime],
@@ -94,9 +97,11 @@ export function useLuciaBehavior(
       send({
         type: "environment",
         active: true,
-        visible: !document.hidden && document.hasFocus(),
+        visible: !document.hidden && document.hasFocus() && !locked,
         reducedMotion: motionPreference.matches,
       });
+    // A lock or unlock re-runs this effect; an unchanged environment is a no-op in policy.
+    updateEnvironment();
     // Policy only needs coarse activity (a 30s quiet window), not every keystroke.
     let lastTypingSent = -Infinity;
     const onInput = (event: Event) => {
@@ -118,7 +123,7 @@ export function useLuciaBehavior(
       window.removeEventListener("blur", updateEnvironment);
       motionPreference.removeEventListener("change", updateEnvironment);
     };
-  }, [motionPreference, runtime, send]);
+  }, [locked, motionPreference, runtime, send]);
 
   useEffect(() => {
     const updateInference = () =>
@@ -148,9 +153,9 @@ export function useLuciaBehavior(
 
   const dropSock = useCallback(() => send({ type: "sock" }), [send]);
   const setMode = useCallback((mode: LuciaMode) => send({ type: "mode", mode }), [send]);
-  const bark = useCallback(() => send({ type: "bark" }), [send]);
+  const pet = useCallback(() => send({ type: "pet" }), [send]);
   const feed = useCallback(() => send({ type: "feed" }), [send]);
   const reset = useCallback(() => send({ type: "reset" }), [send]);
   const preview = useCallback((behavior: LuciaPreviewBehavior) => send({ type: "preview", behavior }), [send]);
-  return { state, dropSock, setMode, bark, feed, reset, preview };
+  return { state, dropSock, setMode, pet, feed, reset, preview };
 }

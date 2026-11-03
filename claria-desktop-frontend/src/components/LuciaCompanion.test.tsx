@@ -238,6 +238,34 @@ describe("LuciaCompanion", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("rolls the board in behind Lucia only during the board chase, then rides it back", async () => {
+    await mount(true);
+    advance(config.durationsMs.tailwag);
+    expect(screen.queryByTestId("lucia-board")).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "Preview Lucia action" }), { target: { value: "skateboard" } });
+    expect(scene().dataset.behavior).toBe("board-chase");
+    const board = screen.getByTestId("lucia-board") as HTMLImageElement;
+    // Behind her in paint order, wheels on her ground line.
+    expect(board.compareDocumentPosition(sprite()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(board.style.bottom).toBe("6px");
+    const entering = parseFloat(board.style.left);
+    advance(config.durationsMs["board-chase"] / 2);
+    expect(parseFloat(board.style.left)).toBeGreaterThan(entering);
+    advance(config.durationsMs["board-chase"] / 2);
+    expect(scene().dataset.behavior).toBe("skateboard");
+    expect(screen.queryByTestId("lucia-board")).toBeNull();
+  });
+
+  it("ignores clicks on Lucia while a pet reaction plays", async () => {
+    await mount();
+    advance(config.durationsMs.tailwag);
+    fireEvent.click(sprite());
+    expect(scene().dataset.behavior).toBe("bark");
+    expect((sprite() as HTMLButtonElement).disabled).toBe(true);
+    advance(config.durationsMs.bark);
+    expect((sprite() as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("exposes failed image load without mounting listeners, animation or click interception", async () => {
     vi.mocked(loadLuciaArtwork).mockRejectedValue(new Error("Lucia artwork unavailable"));
     const { unmount } = await mount();
@@ -250,7 +278,7 @@ describe("LuciaCompanion", () => {
 
   it("feeds when Lucia herself is clicked in feeding mode, and never offers a dead click", async () => {
     await mount();
-    expect(sprite().getAttribute("aria-label")).toBe("Pet Lucia (silent bark)");
+    expect(sprite().getAttribute("aria-label")).toBe("Pet Lucia");
     mode("feeding");
     expect(sprite().getAttribute("aria-label")).toBe("Feed Lucia a dekopon");
     for (let count = 0; count < 5; count++) {

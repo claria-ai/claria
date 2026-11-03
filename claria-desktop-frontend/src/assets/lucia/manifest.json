@@ -115,6 +115,11 @@
       "height": 48,
       "sha256": "cc070bdcb986fd37de2ba670f885f700b56110a7adc8a42ac51f6128519408ae"
     },
+    "extras/play/skateboard/board.png": {
+      "width": 146,
+      "height": 40,
+      "sha256": "869fc7c99849ce6aa7266d8fce7c330955a8c0ca8c5ab9082d4f26aba86cb8b6"
+    },
     "extras/dekopon/feeding-size-1/feeding-strip.png": {
       "width": 1152,
       "height": 208,

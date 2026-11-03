@@ -200,7 +200,7 @@ async function video1() {
   await caption("Click her → a (silent) woof");
   await sleep(1200);
   const h0 = await head();
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     await click(sprite(), { label: `bark ${i + 1}` });
     await waitBehavior("bark", 3000);
     await moveTo(h0.x + 150, h0.y - 45, 400); // step aside so the woof is unobstructed
@@ -208,7 +208,17 @@ async function video1() {
     await waitBehavior("idle", 5000);
     await sleep(1500);
   }
-  await caption("Every woof settles back to idle");
+  await caption("Keep clicking → she plays something at random");
+  await sleep(1200);
+  // Pin the roll for a repeatable take: 0.2 lands on the skateboard in the fun pool.
+  await page.evaluate(() => { window.__luciaRandom = Math.random; Math.random = () => 0.2; });
+  await click(sprite(), { label: "pet 3" });
+  await waitBehavior("board-chase", 3000);
+  await sleep(600);
+  await checkpoint("board-chase");
+  await waitBehavior("skateboard", 10_000);
+  await waitBehavior("idle", 15_000);
+  await page.evaluate(() => { Math.random = window.__luciaRandom; });
   await sleep(1800);
 
   await caption("Drop a sock…");
@@ -448,11 +458,13 @@ async function video3() {
   await waitBehavior("bored");
   await sleep(1800);
   // A play deadline only fires if she is lying down when it comes due (missed ones never queue).
-  await caption("Skip ahead: ten minutes into her nap…");
+  await caption("Skip ahead: three minutes into her nap…");
   await sleep(1400);
   const sinceMount2 = (await page.evaluate(() => performance.now())) - mountAt;
-  await page.clock.fastForward(Math.max(1000, 600_000 - sinceMount2 + 500));
-  await waitBehavior("skateboard", 4000);
+  await page.clock.fastForward(Math.max(1000, 180_000 - sinceMount2 + 500));
+  await waitBehavior("board-chase", 4000);
+  await caption("…there goes her board…");
+  await waitBehavior("skateboard", 8000);
   await caption("…skateboard!");
   await sleep(900);
   await checkpoint("skateboard");
@@ -480,7 +492,9 @@ async function video3() {
     await moveTo(x, y);
     await ring(x, y);
     await select.selectOption(value);
-    await waitBehavior(value, 3000);
+    // A skate starts with the board rolling in; she rides back after it.
+    if (value === "skateboard") await waitBehavior("board-chase", 3000);
+    await waitBehavior(value, value === "skateboard" ? 8000 : 3000);
     await sleep(value === "skateboard" ? 1400 : 350);
     await checkpoint(`preview-${value}`);
     if (after) await waitBehavior(after, 8000);
