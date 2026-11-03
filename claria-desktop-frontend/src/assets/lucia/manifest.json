@@ -48,7 +48,7 @@
     "extras/play/entrance-wag/strip.png": {
       "width": 1152,
       "height": 208,
-      "sha256": "fd1e8bc0a874e196f2d7aadf66424adfb7e4b7dea27ff4977c6c26e18da89693"
+      "sha256": "a38f613398b8594e096da8f8817e014042dcfae8ee252d5dad3cef2d78885c49"
     },
     "extras/play/stretch/strip.png": {
       "width": 1152,
@@ -63,7 +63,7 @@
     "extras/play/twirl/strip.png": {
       "width": 1536,
       "height": 208,
-      "sha256": "970df6961acf474ce24f4fc9d11b52509f09fff21da57a1c6003238a82d4c460"
+      "sha256": "2484353b4f287be986764d349a0b9a3254301c69f3fa58c2fe3c7a478dea333f"
     },
     "extras/bored/bored-strip.png": {
       "width": 1152,
@@ -78,22 +78,22 @@
     "extras/bark/bark-strip.png": {
       "width": 768,
       "height": 208,
-      "sha256": "29838487a9c2409ccc6d64c39fc428e459872d7964112393c2d8bf6d7e480dc6"
+      "sha256": "1a9fee218c585948dea72321357107474ba5fc062b51352389ae6826580d86d3"
     },
     "extras/newspaper/enter/enter-strip.png": {
       "width": 1152,
       "height": 208,
-      "sha256": "c1d092ccbd87c4a05c55a2b21408181572575a0e6a142b74410144c96c8bb97e"
+      "sha256": "c916f40436fc344fd86dc306fdf04d41c6d3ae8bb7457d16ddadbae2185d68f9"
     },
     "extras/newspaper/exit/exit-strip.png": {
       "width": 1152,
       "height": 208,
-      "sha256": "d0518a876284dd77b8ee2dc288a8c94574187d87640b5a2eac26a3bda5ddf12b"
+      "sha256": "a57548ab6307cc226bff2c846e8f27a95fa6eaff9c15d65d146ed2e6803368ed"
     },
     "extras/newspaper/loop/loop-strip.png": {
       "width": 1152,
       "height": 208,
-      "sha256": "ce2133966d5b28f51904609d576c32c1655c7898f03f1daaa0fcab65087fb598"
+      "sha256": "a6fbe3402d7aed0ced4deba54e75eea68fc945e5d1f6b1e33e644f351a14dcc8"
     },
     "extras/dekopon/feeding/feeding-strip.png": {
       "width": 1152,
@@ -234,7 +234,7 @@
         200
       ],
       "loop": false,
-      "ground_y": 200
+      "ground_y": 201
     },
     "stretch": {
       "image": "extras/play/stretch/strip.png",

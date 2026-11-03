@@ -296,10 +296,7 @@ describe("Lucia sprite scale acceptance (the regeneration brief)", () => {
     expect(problems).toEqual([]);
   });
 
-  // KNOWN DEFECT: bark, entrance wag, twirl and the newspaper strips were drawn against the old
-  // idle, so she pops ~13px wider when one hands back to idle. `it.fails` documents it until
-  // the endpoint brief's strips land; then delete `.fails`.
-  it.fails("starts and ends every idle-adjacent strip on idle cell 0", () => {
+  it("starts and ends every idle-adjacent strip on idle cell 0", () => {
     const idle = opaqueBox(rgbaPixels(manifest.core_image), 0, 0);
     const touches: Array<[LuciaClipName, "first" | "last" | "both"]> = [
       ["bark", "last"], ["tailwag", "last"], ["twirl", "both"], ["reading-enter", "first"], ["reading-exit", "last"],
