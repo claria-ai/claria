@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.36.1] — 2026-11-03
 
 - Long chats scroll inside the conversation, keeping the composer and Lucia's rail on screen
 - Dragging the chat composer taller stops at a fifth of the window height
