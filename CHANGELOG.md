@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.36.0] — 2026-11-03
 
 - Lucia stays the same size across every animation, including feeding and seated gaze
 - Lucia lowers her head when she looks down instead of puffing up her crown
