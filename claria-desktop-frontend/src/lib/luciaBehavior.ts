@@ -22,7 +22,6 @@ export type LuciaTimedBehavior =
   | "ear-perk"
   | "twirl"
   | "stretch"
-  | "board-chase"
   | "skateboard"
   | "chase"
   | "pickup"
@@ -37,7 +36,7 @@ export type LuciaTimedBehavior =
 /** Explicit local-demo requests use the same action ownership and completion path. */
 export type LuciaPreviewBehavior = "tailwag" | "stretch" | "ear-perk" | "twirl" | "skateboard";
 
-/** What a pet past the barks can start; a skate begins with the board rolling in, reading with the paper. */
+/** What a pet past the barks can start; reading begins with the paper coming up. */
 export const LUCIA_FUN_POOL = ["twirl", "skateboard", "reading", "tailwag", "ear-perk", "stretch"] as const;
 export type LuciaFunBehavior = (typeof LUCIA_FUN_POOL)[number];
 
@@ -68,6 +67,7 @@ export type LuciaBehaviorEvent =
   | { type: "inference"; pending: boolean }
   | { type: "mode"; mode: LuciaMode }
   | { type: "sock" }
+  | { type: "skate" }
   | { type: "pet" }
   | { type: "feed" }
   | { type: "reset" }
@@ -129,6 +129,12 @@ export function ownsSock(behavior: LuciaBehavior): boolean {
 
 export function isReading(behavior: LuciaBehavior): boolean {
   return behavior === "reading" || behavior === "reading-enter" || behavior === "reading-play" || behavior === "reading-exit";
+}
+
+/** Whether the board button can send her across the rail; the UI and policy share this test. */
+export function canSkate(state: LuciaBehaviorState): boolean {
+  return state.mode !== "feeding" && !state.reducedMotion && !state.inferencePending
+    && !ownsSock(state.behavior) && !isReading(state.behavior) && state.behavior !== "skateboard";
 }
 
 function endPetChain(state: LuciaBehaviorState): LuciaBehaviorState {
@@ -231,7 +237,6 @@ function settle(state: LuciaBehaviorState, now: number, config: LuciaBehaviorCon
 
 /** Start an explicitly requested animation; multi-phase ones begin with their first phase. */
 function play(state: LuciaBehaviorState, behavior: LuciaFunBehavior, now: number, config: LuciaBehaviorConfig): LuciaBehaviorState {
-  if (behavior === "skateboard") return begin(state, "board-chase", now, config);
   if (behavior === "reading") return begin(state, "reading-enter", now, config);
   // Playing a typing reaction has the same quiet reset as actual typing.
   return begin(behavior === "ear-perk" ? { ...state, lastTypingAt: now } : state, behavior, now, config);
@@ -354,6 +359,13 @@ export function reduceLuciaBehavior(
       : begin({ ...endPetChain(state), lastTypingAt: now }, "chase", now, config);
   }
 
+  if (event.type === "skate") {
+    if (!canSkate(state)) return state;
+    // Like a sock: deliberate play that counts as activity, and it stands in for the next ambient skate.
+    const next = { ...endPetChain(state), lastTypingAt: now, nextSkateboardAt: now + LUCIA_SKATEBOARD_COOLDOWN_MS };
+    return begin(next, "skateboard", now, config);
+  }
+
   if (event.type === "typing") {
     const wasQuiet = now - state.lastTypingAt >= LUCIA_QUIET_MS;
     // Typing interrupts a reaction but keeps the pet chain; only a lapsed window starts it over.
@@ -369,7 +381,7 @@ export function reduceLuciaBehavior(
     if (wasQuiet && state.behavior !== "ear-perk") return begin(next, "ear-perk", now, config);
     if (
       state.behavior === "bored" || state.behavior === "stretch" ||
-      state.behavior === "twirl" || state.behavior === "board-chase" || state.behavior === "skateboard"
+      state.behavior === "twirl" || state.behavior === "skateboard"
     ) return settle(next, now, config);
     return schedule(next);
   }
@@ -411,8 +423,6 @@ export function reduceLuciaBehavior(
     case "twirl":
     case "skateboard":
       return settle(state, now, config);
-    case "board-chase":
-      return begin(state, "skateboard", now, config);
     case "reading-play":
       return state.inferencePending ? rest(state, "reading", now) : begin(state, "reading-exit", now, config);
     case "feeding": {

@@ -3,6 +3,7 @@ import {
   LUCIA_FUN_POOL,
   LUCIA_PET_BARK_WINDOW_MS,
   LUCIA_PET_FUN_WINDOW_MS,
+  canSkate,
   createLuciaBehavior,
   reduceLuciaBehavior,
   type LuciaBehaviorConfig,
@@ -27,7 +28,6 @@ const CONFIG: LuciaBehaviorConfig = {
     "reading-exit": 110,
     feeding: 120,
     full: 130,
-    "board-chase": 140,
     "reading-play": 150,
   },
 };
@@ -164,23 +164,21 @@ describe("Lucia ambient choices and anchored gaze", () => {
     expect(wake(skateMiss, 240_000, 0).behavior).toBe("twirl");
   });
 
-  it("skates at a three-minute deadline, rolling the board in first, and spaces the next twirl", () => {
-    const chase = wake(bored(), 180_000, 0);
-    expect(chase).toMatchObject({
-      behavior: "board-chase",
+  it("skates at a three-minute deadline and spaces the next twirl", () => {
+    const skateboard = wake(bored(), 180_000, 0);
+    expect(skateboard).toMatchObject({
+      behavior: "skateboard",
       nextSkateboardAt: 360_000,
       nextTwirlAt: 300_000,
-      nextWakeAt: 180_140,
+      nextWakeAt: 180_050,
     });
-    const skateboard = wake(chase);
-    expect(skateboard).toMatchObject({ behavior: "skateboard", nextWakeAt: 180_190 });
     const resting = wake(wake(skateboard));
     expect(resting).toMatchObject({ behavior: "bored", nextWakeAt: 300_000 });
-    expect(wake(resting, 180_230, 0)).toBe(resting);
+    expect(wake(resting, 180_090, 0)).toBe(resting);
   });
 
   it.each([
-    [0.49, "board-chase"],
+    [0.49, "skateboard"],
     [0.5, "twirl"],
     [0.62, "twirl"],
     [0.63, "bored"],
@@ -220,8 +218,7 @@ describe("Lucia sock ownership and explicit barking", () => {
     ["stretch", () => wake(idle())],
     ["ear-perk", () => step(idle(), { type: "typing" }, 30_000)],
     ["twirl", () => wake(bored(), 120_000, 0)],
-    ["board-chase", () => wake(bored(), 180_000, 0)],
-    ["skateboard", () => wake(wake(bored(), 180_000, 0))],
+    ["skateboard", () => wake(bored(), 180_000, 0)],
     ["bark", () => step(idle(), { type: "pet" }, 20)],
   ] as const)("preempts %s with one sock sequence", (_behavior, makeState) => {
     const from = makeState();
@@ -312,12 +309,11 @@ describe("Lucia pet chain", () => {
   it.each(LUCIA_FUN_POOL.map((fun, index) => [fun, index] as const))("rolls %s from the fun pool", (fun, index) => {
     const ready = funReady();
     const roll = (index + 0.5) / LUCIA_FUN_POOL.length;
-    const started = { skateboard: "board-chase", reading: "reading-enter" }[fun as string] ?? fun;
+    const started = { reading: "reading-enter" }[fun as string] ?? fun;
     expect(step(ready, { type: "pet" }, ready.startedAt + 1, roll).behavior).toBe(started);
   });
 
   it.each([
-    ["skateboard", 0.2, ["board-chase", "skateboard"]],
     ["reading", 0.4, ["reading-enter", "reading-play", "reading-exit"]],
     ["stretch", 0.99, ["stretch"]],
   ] as const)("opens the next window only once a multi-phase %s is over", (_fun, roll, phases) => {
@@ -652,7 +648,7 @@ describe("Lucia visibility, activation, and reduced motion", () => {
 
   it.each([
     [120_000, "twirl"],
-    [180_000, "board-chase"],
+    [180_000, "skateboard"],
   ])("cancels %s ms %s immediately when reduced motion is enabled", (now, behavior) => {
     const motion = wake(bored(), now, 0);
     expect(motion.behavior).toBe(behavior);
@@ -694,6 +690,44 @@ describe("Lucia metadata durations", () => {
 });
 
 
+describe("Lucia's skateboard button", () => {
+  it("sends her across the rail, counts as activity, and stands in for the next ambient skate", () => {
+    const ride = step(bored(), { type: "skate" }, 100_000);
+    expect(ride).toMatchObject({ behavior: "skateboard", lastTypingAt: 100_000, nextSkateboardAt: 280_000, nextWakeAt: 100_050 });
+    expect(step(ride, { type: "skate" }, 100_001)).toBe(ride);
+    expect(wake(ride)).toMatchObject({ behavior: "idle", nextWakeAt: 130_000 });
+  });
+
+  it("ends a pet chain and interrupts a pet reaction", () => {
+    const bark = step(idle(), { type: "pet" }, 1_000);
+    expect(step(bark, { type: "skate" }, 1_001)).toMatchObject({ behavior: "skateboard", petStep: 0, petReacting: false });
+  });
+
+  it("works in Watch mode and returns her to watching", () => {
+    const ride = step(active("gaze"), { type: "skate" }, 1_000);
+    expect(ride.behavior).toBe("skateboard");
+    expect(wake(ride).behavior).toBe("gaze");
+  });
+
+  it.each([
+    ["Feed mode", () => active("feeding")],
+    ["reduced motion", () => active("companion", true)],
+    ["a pending request", () => step(idle(), { type: "inference", pending: true }, 100)],
+    ["reading", () => reading()],
+    ["a sock run", () => step(idle(), { type: "sock" }, 100)],
+    ["hidden", () => step(idle(), { ...ENVIRONMENT, visible: false }, 100)],
+  ] as const)("is ignored during %s", (_case, makeState) => {
+    const state = makeState();
+    expect(step(state, { type: "skate" }, 101)).toBe(state);
+  });
+
+  it("shares its gate with the button", () => {
+    expect(canSkate(idle())).toBe(true);
+    expect(canSkate(wake(bored(), 180_000, 0))).toBe(false);
+    expect(canSkate(active("feeding"))).toBe(false);
+  });
+});
+
 describe("Lucia explicit local-demo previews", () => {
   it.each(["tailwag", "stretch", "ear-perk", "twirl"] as const)("uses the existing %s duration and wake path without changing play cadence", (behavior) => {
     const previous = idle();
@@ -702,12 +736,11 @@ describe("Lucia explicit local-demo previews", () => {
     expect(wake(preview).behavior).toBe(behavior === "stretch" ? "bored" : "idle");
   });
 
-  it("previews a skate as the board chase, then the ride back", () => {
+  it("previews a skate without moving the ambient skate deadline", () => {
     const previous = idle();
     const preview = step(previous, { type: "preview", behavior: "skateboard" }, 1000);
-    expect(preview).toMatchObject({ behavior: "board-chase", endsAt: 1140, nextSkateboardAt: previous.nextSkateboardAt });
-    expect(wake(preview).behavior).toBe("skateboard");
-    expect(wake(wake(preview)).behavior).toBe("idle");
+    expect(preview).toMatchObject({ behavior: "skateboard", endsAt: 1050, nextSkateboardAt: previous.nextSkateboardAt });
+    expect(wake(preview).behavior).toBe("idle");
   });
 
   it("cannot interrupt owned work or bypass mode, environment and motion guards", () => {

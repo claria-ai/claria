@@ -210,16 +210,25 @@ async function video1() {
   }
   await caption("Keep clicking → she plays something at random");
   await sleep(1200);
-  // Pin the roll for a repeatable take: 0.2 lands on the skateboard in the fun pool.
-  await page.evaluate(() => { window.__luciaRandom = Math.random; Math.random = () => 0.2; });
+  // Pin the roll for a repeatable take: 0 lands on the twirl in the fun pool.
+  await page.evaluate(() => { window.__luciaRandom = Math.random; Math.random = () => 0; });
   await click(sprite(), { label: "pet 3" });
-  await waitBehavior("board-chase", 3000);
-  await sleep(600);
-  await checkpoint("board-chase");
-  await waitBehavior("skateboard", 10_000);
-  await waitBehavior("idle", 15_000);
+  await waitBehavior("twirl", 3000);
+  await sleep(300);
+  await checkpoint("pet-twirl");
+  await waitBehavior("idle", 8000);
   await page.evaluate(() => { Math.random = window.__luciaRandom; });
-  await sleep(1800);
+  await sleep(1500);
+
+  await caption("Hand her the skateboard…");
+  await sleep(900);
+  await click(page.getByRole("button", { name: "Give Lucia her skateboard" }), { label: "board" });
+  await waitBehavior("skateboard", 3000);
+  await caption("…and she rides across");
+  await sleep(1200);
+  await checkpoint("board-ride");
+  await waitBehavior("idle", 15_000);
+  await sleep(1500);
 
   await caption("Drop a sock…");
   await sleep(900);
@@ -462,9 +471,7 @@ async function video3() {
   await sleep(1400);
   const sinceMount2 = (await page.evaluate(() => performance.now())) - mountAt;
   await page.clock.fastForward(Math.max(1000, 180_000 - sinceMount2 + 500));
-  await waitBehavior("board-chase", 4000);
-  await caption("…there goes her board…");
-  await waitBehavior("skateboard", 8000);
+  await waitBehavior("skateboard", 4000);
   await caption("…skateboard!");
   await sleep(900);
   await checkpoint("skateboard");
@@ -492,8 +499,6 @@ async function video3() {
     await moveTo(x, y);
     await ring(x, y);
     await select.selectOption(value);
-    // A skate starts with the board rolling in; she rides back after it.
-    if (value === "skateboard") await waitBehavior("board-chase", 3000);
     await waitBehavior(value, value === "skateboard" ? 8000 : 3000);
     await sleep(value === "skateboard" ? 1400 : 350);
     await checkpoint(`preview-${value}`);

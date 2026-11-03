@@ -21,7 +21,6 @@ const config: LuciaBehaviorConfig = {
     "reading-exit": 100,
     feeding: 100,
     full: 100,
-    "board-chase": 100,
     "reading-play": 100,
   },
 };

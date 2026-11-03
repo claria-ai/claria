@@ -372,18 +372,30 @@ test("petting barks twice, then plays a random animation, and starts over after 
     await expect(scene).toHaveAttribute("data-behavior", "idle");
   }
   await lucia.click();
-  await expect(scene).toHaveAttribute("data-behavior", "board-chase");
-  await expect(page.getByTestId("lucia-board")).toBeVisible();
-  await page.clock.runFor(duration("running-right") * 4 * 0.6);
-  await screenshot(page, "board-chase");
-  await page.clock.runFor(duration("running-right") * 4 * 0.4);
   await expect(scene).toHaveAttribute("data-behavior", "skateboard");
-  await expect(page.getByTestId("lucia-board")).toHaveCount(0);
   await page.clock.runFor(duration("skateboard") * 4);
   await expect(scene).toHaveAttribute("data-behavior", "idle");
   await page.clock.runFor(31_000);
   await lucia.click();
   await expect(scene).toHaveAttribute("data-behavior", "bark");
+});
+
+test("the skateboard button sends Lucia across the rail", async ({ page }) => {
+  await openClient(page);
+  const scene = page.getByTestId("lucia-scene");
+  const board = page.getByRole("button", { name: "Give Lucia her skateboard" });
+  await page.clock.runFor(duration("tailwag"));
+  await expect(scene).toHaveAttribute("data-behavior", "idle");
+  await screenshot(page, "board-button");
+  await board.click();
+  await expect(scene).toHaveAttribute("data-behavior", "skateboard");
+  await expect(page.getByTestId("lucia-sprite")).toHaveAttribute("data-image", /skateboard-left/);
+  await expect(board).toBeDisabled();
+  await page.clock.runFor(duration("skateboard") * 2);
+  await screenshot(page, "board-ride");
+  await page.clock.runFor(duration("skateboard") * 2);
+  await expect(scene).toHaveAttribute("data-behavior", "idle");
+  await expect(board).toBeEnabled();
 });
 
 async function expectRailInView(page: Page) {

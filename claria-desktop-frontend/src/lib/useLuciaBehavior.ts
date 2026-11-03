@@ -152,10 +152,11 @@ export function useLuciaBehavior(
   }, [runtime, send, state.nextWakeAt]);
 
   const dropSock = useCallback(() => send({ type: "sock" }), [send]);
+  const skate = useCallback(() => send({ type: "skate" }), [send]);
   const setMode = useCallback((mode: LuciaMode) => send({ type: "mode", mode }), [send]);
   const pet = useCallback(() => send({ type: "pet" }), [send]);
   const feed = useCallback(() => send({ type: "feed" }), [send]);
   const reset = useCallback(() => send({ type: "reset" }), [send]);
   const preview = useCallback((behavior: LuciaPreviewBehavior) => send({ type: "preview", behavior }), [send]);
-  return { state, dropSock, setMode, pet, feed, reset, preview };
+  return { state, dropSock, skate, setMode, pet, feed, reset, preview };
 }

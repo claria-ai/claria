@@ -6,18 +6,18 @@ import { CloseIcon } from "./icons";
 import { setDistractionModeEnabled } from "../lib/distractionMode";
 import { useLuciaBehavior } from "../lib/useLuciaBehavior";
 import { useLuciaGaze } from "../lib/useLuciaGaze";
-import { isReading, ownsSock, type LuciaBehavior, type LuciaBehaviorState, type LuciaMode, type LuciaPreviewBehavior } from "../lib/luciaBehavior";
+import { canSkate, isReading, ownsSock, type LuciaBehavior, type LuciaBehaviorState, type LuciaMode, type LuciaPreviewBehavior } from "../lib/luciaBehavior";
 import type { SpriteFrame } from "../lib/luciaSprite";
 import {
-  type LuciaArtwork, loadLuciaArtwork, luciaBoardPosition, luciaImageUrl, luciaPosition, selectLuciaPose,
-  LUCIA_BEHAVIOR_CONFIG, LUCIA_BOARD_HEIGHT, LUCIA_BOARD_WIDTH, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SKATEBOARD_IMAGE, LUCIA_SOCK_IMAGE,
+  type LuciaArtwork, loadLuciaArtwork, luciaImageUrl, luciaPosition, selectLuciaPose,
+  LUCIA_BEHAVIOR_CONFIG, LUCIA_HEAD_ANCHOR, LUCIA_SCALE, LUCIA_SKATEBOARD_IMAGE, LUCIA_SOCK_IMAGE,
 } from "../lib/luciaArtwork";
 
 // Match the standalone 56×48 sock to pickup's embedded blue bounds (105,171)–(161,201).
 const SOCK_SCALE = LUCIA_SCALE * 1.15;
 const SOCK_WIDTH = manifest.assets[LUCIA_SOCK_IMAGE].width * SOCK_SCALE;
 const SOCK_HEIGHT = manifest.assets[LUCIA_SOCK_IMAGE].height * SOCK_SCALE;
-const TRAVELLING: ReadonlySet<LuciaBehavior> = new Set(["chase", "carry-away", "board-chase", "skateboard"]);
+const TRAVELLING: ReadonlySet<LuciaBehavior> = new Set(["chase", "carry-away", "skateboard"]);
 
 type CompanionProps = { clientId: string; rail: HTMLDivElement | null; previewsEnabled?: boolean };
 
@@ -50,7 +50,7 @@ function HideButton() {
 }
 
 function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps & { rail: HTMLDivElement; artwork: LuciaArtwork }) {
-  const { state, dropSock, setMode, pet, feed, reset, preview } = useLuciaBehavior(LUCIA_BEHAVIOR_CONFIG, clientId);
+  const { state, dropSock, skate, setMode, pet, feed, reset, preview } = useLuciaBehavior(LUCIA_BEHAVIOR_CONFIG, clientId);
   const [paintError, setPaintError] = useState<string | null>(null);
   const sockBusy = ownsSock(state.behavior);
   const available = state.active && state.visible;
@@ -95,13 +95,18 @@ function LuciaScene({ clientId, rail, previewsEnabled, artwork }: CompanionProps
           <button type="button" onClick={feed} disabled={!canFeed}
             className="rounded border border-gray-300 bg-white px-2 py-1 hover:bg-gray-50 disabled:opacity-40">Feed a dekopon</button>
           {state.fedCount > 0 && <button type="button" onClick={reset} className="underline">Start over</button>}
-        </> : (
+        </> : <>
           <button type="button" onClick={dropSock} disabled={!available || sockBusy}
             title="Drop a sock for Lucia" aria-label="Drop a sock for Lucia"
             className="p-1 rounded-md border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40">
             <img src={luciaImageUrl(LUCIA_SOCK_IMAGE)} alt="" width="20" height="20" />
           </button>
-        )}
+          <button type="button" onClick={skate} disabled={!available || !canSkate(state)}
+            title="Give Lucia her skateboard" aria-label="Give Lucia her skateboard"
+            className="p-1 rounded-md border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40">
+            <img src={luciaImageUrl(LUCIA_SKATEBOARD_IMAGE)} alt="" className="h-5 w-7 object-contain" />
+          </button>
+        </>}
         {import.meta.env.DEV && previewsEnabled && (
           <select aria-label="Preview Lucia action" value=""
             disabled={!available || state.mode !== "companion" || state.reducedMotion || state.inferencePending || sockBusy || state.petReacting || isReading(state.behavior)}
@@ -142,7 +147,6 @@ function LuciaSprite({ state, rail, pet, feed, canFeed, artwork, onPaintError, g
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const spriteRef = gazeRef ?? ownRef;
   const sockRef = useRef<HTMLImageElement>(null);
-  const boardRef = useRef<HTMLImageElement>(null);
   const feeding = state.mode === "feeding";
 
   // Commit the new pose/registration before paint, together with sock visibility.
@@ -184,7 +188,6 @@ function LuciaSprite({ state, rail, pet, feed, canFeed, artwork, onPaintError, g
         const pickupX = state.reducedMotion ? Math.min(90, width / 2) : width / 2;
         sockRef.current.style.left = `${pickupX + (133 - 96) * LUCIA_SCALE - SOCK_WIDTH / 2}px`;
       }
-      if (boardRef.current) boardRef.current.style.left = `${luciaBoardPosition(state, elapsed, width) - LUCIA_BOARD_WIDTH / 2}px`;
       // Travel moves every display frame; an in-place animation only needs its next cell.
       if (!state.reducedMotion && TRAVELLING.has(state.behavior)) return 0;
       return pose.nextFrameInMs;
@@ -218,9 +221,6 @@ function LuciaSprite({ state, rail, pet, feed, canFeed, artwork, onPaintError, g
   }, [artwork, gaze, onPaintError, rail, spriteRef, state]);
 
   return <>
-    {/* Behind Lucia: the board rolls past her wheels-down on her ground line. */}
-    {state.behavior === "board-chase" && <img ref={boardRef} src={luciaImageUrl(LUCIA_SKATEBOARD_IMAGE)} alt=""
-      data-testid="lucia-board" className="absolute pointer-events-none" style={{ width: LUCIA_BOARD_WIDTH, height: LUCIA_BOARD_HEIGHT, bottom: 6 }} />}
     {/* Clicking Lucia does what the mode is for: feed while feeding, otherwise pet her (barks, then play). */}
     <button ref={spriteRef} type="button" onClick={feeding ? feed : pet}
       aria-label={feeding ? (state.fedCount === 5 ? "Lucia is full" : "Feed Lucia a dekopon") : "Pet Lucia"}

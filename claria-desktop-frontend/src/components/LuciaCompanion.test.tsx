@@ -238,22 +238,19 @@ describe("LuciaCompanion", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("rolls the board in behind Lucia only during the board chase, then rides it back", async () => {
-    await mount(true);
+  it("sends Lucia across the rail on her skateboard from the board button", async () => {
+    await mount();
     advance(config.durationsMs.tailwag);
-    expect(screen.queryByTestId("lucia-board")).toBeNull();
-    fireEvent.change(screen.getByRole("combobox", { name: "Preview Lucia action" }), { target: { value: "skateboard" } });
-    expect(scene().dataset.behavior).toBe("board-chase");
-    const board = screen.getByTestId("lucia-board") as HTMLImageElement;
-    // Behind her in paint order, wheels on her ground line.
-    expect(board.compareDocumentPosition(sprite()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(board.style.bottom).toBe("6px");
-    const entering = parseFloat(board.style.left);
-    advance(config.durationsMs["board-chase"] / 2);
-    expect(parseFloat(board.style.left)).toBeGreaterThan(entering);
-    advance(config.durationsMs["board-chase"] / 2);
+    const board = screen.getByRole("button", { name: "Give Lucia her skateboard" }) as HTMLButtonElement;
+    fireEvent.click(board);
     expect(scene().dataset.behavior).toBe("skateboard");
-    expect(screen.queryByTestId("lucia-board")).toBeNull();
+    expect(sprite().dataset.image).toBe(manifest.clips.skateboard.image);
+    expect(board.disabled).toBe(true);
+    advance(config.durationsMs.skateboard);
+    expect(scene().dataset.behavior).toBe("idle");
+    expect(board.disabled).toBe(false);
+    mode("feeding");
+    expect(screen.queryByRole("button", { name: "Give Lucia her skateboard" })).toBeNull();
   });
 
   it("ignores clicks on Lucia while a pet reaction plays", async () => {

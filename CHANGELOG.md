@@ -9,7 +9,7 @@ All notable changes to Claria are documented here.
 - Lucia reads the newspaper in cow-print glasses, holding it with both forepaws
 - Clicking Lucia barks twice, then each further click plays one of her animations at random
 - Lucia can read the newspaper when clicked, not only while a request runs
-- Lucia's skateboard rolls in first and she runs after it before riding back
+- A skateboard button next to the sock sends Lucia riding across the rail
 - Lucia pauses behind the lock screen and wags hello when Claria unlocks
 - Lucia gets a chance to skate every three minutes while she rests
 
