@@ -12,6 +12,13 @@ repository.workspace = true
 # `cargo install` target.
 publish = false
 
+# main.rs holds no tests; they live in tests/. Without this, `cargo test` and
+# `clippy --all-targets` compile an empty test-harness copy of main.rs too.
+[[bin]]
+name = "claria-desktop"
+path = "src/main.rs"
+test = false
+
 [features]
 default = []
 metal = ["claria-transcribe/metal"]

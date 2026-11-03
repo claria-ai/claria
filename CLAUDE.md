@@ -433,8 +433,10 @@ the workspace root — they rewrite `tauri.conf.json` and the CHANGELOG's
 so a **new crate must be created with the current workspace version** or the
 release warns and bumps it out of step.
 
-Wait for `main`'s CI before tagging: the tag starts the artifact build, and CI
-runs ~13 min with the Release job ~18 min (Windows tests are the long pole).
+Wait for `main`'s CI before tagging: the tag starts the artifact build. CI
+takes 12–14 min from a cold cache and less once `main` has saved one (Windows
+tests are the long pole); Release's `main` build takes ~7 min warm, ~19 min
+cold. A docs-only PR runs no Rust jobs.
 Merging a second PR cancels the first's in-flight run — a `cancelled` status on
 the older merge is normal, not a failure.
 
@@ -582,7 +584,7 @@ anywhere creates it.
 
 Machine-local, configured in the user-level `~/.cargo/config.toml` — not committed, and CI does its own setup (`.github/workflows/ci.yml`). A fresh machine hits both of these from zero.
 
-- **sccache** is expected as the `rustc-wrapper` locally. Workspace crates reported as "non-cacheable, reason: incremental" in `sccache --show-stats` are healthy — sccache caches dependencies, not your own crates. Don't chase it.
+- **kache** is the `rustc-wrapper` locally, set in `~/.cargo/config.toml`. Run plain `cargo`; don't set `RUSTC_WRAPPER` or bypass it. CI has no wrapper: it relies on `rust-cache`, which only `main` saves.
 - **transcribe.cpp toolchain**: local transcription is compiled from C/C++ source by Cargo and requires CMake plus a C++17 compiler. Metal is compiled only when the desktop's `metal` feature is enabled.
 - Remove your worktree once its PR merges: `git worktree remove <path>` then `git worktree prune`. Never bare `rm -rf` — it strands the admin entry in `.git/worktrees/`.
 - Don't `cargo clean` before switching worktrees. Each worktree owns its `target/` and cargo's fingerprinting handles staleness.

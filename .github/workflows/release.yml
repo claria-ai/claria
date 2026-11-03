@@ -55,7 +55,7 @@ jobs:
         run: npm run build
 
       # --- Rust ---
-      - name: Rust setup (toolchain, sccache, caches)
+      - name: Rust setup (toolchain, cache)
         timeout-minutes: 10
         uses: ./.github/actions/rust-setup
         with:
