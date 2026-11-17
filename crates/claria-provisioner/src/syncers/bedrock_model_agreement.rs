@@ -41,7 +41,11 @@ impl BedrockModelAgreementSyncer {
             .await
             .map_err(|e| {
                 let msg = DisplayErrorContext(&e).to_string();
-                tracing::error!(error = %msg, "ListFoundationModels failed");
+                tracing::error!(
+                    provider_reason = claria_core::provider_diagnostic::message_reason(&msg),
+                    error_sha256 = %claria_core::provider_diagnostic::message_sha256(&msg),
+                    "ListFoundationModels failed"
+                );
                 ProvisionerError::Aws(msg)
             })?;
 
@@ -91,7 +95,7 @@ impl BedrockModelAgreementSyncer {
                     let msg = DisplayErrorContext(&e).to_string();
                     tracing::warn!(
                         model_id,
-                        error = %msg,
+                        provider_reason = claria_core::provider_diagnostic::message_reason(&msg), error_sha256 = %claria_core::provider_diagnostic::message_sha256(&msg),
                         "GetFoundationModelAvailability failed"
                     );
                     blocked.push(BlockedModel {
@@ -122,7 +126,7 @@ impl BedrockModelAgreementSyncer {
                 Ok(resp) => resp,
                 Err(e) => {
                     let msg = DisplayErrorContext(&e).to_string();
-                    tracing::warn!(model_id, error = %msg, "failed to list agreement offers");
+                    tracing::warn!(model_id, provider_reason = claria_core::provider_diagnostic::message_reason(&msg), error_sha256 = %claria_core::provider_diagnostic::message_sha256(&msg), "failed to list agreement offers");
                     failures.push(format!("{model_id}: {msg}"));
                     continue;
                 }
@@ -150,7 +154,7 @@ impl BedrockModelAgreementSyncer {
                     if msg.contains("already exists") {
                         tracing::debug!(model_id, "model agreement already accepted");
                     } else {
-                        tracing::warn!(model_id, error = %msg, "failed to accept model agreement");
+                        tracing::warn!(model_id, provider_reason = claria_core::provider_diagnostic::message_reason(&msg), error_sha256 = %claria_core::provider_diagnostic::message_sha256(&msg), "failed to accept model agreement");
                         failures.push(format!("{model_id}: {msg}"));
                     }
                 }

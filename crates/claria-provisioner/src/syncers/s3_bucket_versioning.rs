@@ -48,7 +48,7 @@ impl ResourceSyncer for S3BucketVersioningSyncer {
                 Err(e) => {
                     tracing::warn!(
                         bucket = %self.bucket_name(),
-                        error = %e,
+                        error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()),
                         "get_bucket_versioning failed during read — treating as absent"
                     );
                     Ok(None)

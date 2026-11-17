@@ -2,6 +2,13 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Bedrock, Transcribe, Cost Explorer, and S3 failures retain safe provider reasons and message fingerprints in diagnostics
+- Command and provider logs no longer print free-form service errors or Transcribe failure reasons
+- Frontend events reach support logs as fixed families, sizes, and fingerprints instead of arbitrary webview text
+- Transcribe cleanup failures leave a safe diagnostic in the log
+
 ## [0.36.1] — 2026-11-03
 
 - Long chats scroll inside the conversation, keeping the composer and Lucia's rail on screen

@@ -528,7 +528,7 @@ pub async fn chat_message(
                     tracing::warn!(
                         chat_id = %chat_uuid,
                         client_id = %client_uuid,
-                        error = %e,
+                        error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()),
                         "failed to persist chat history"
                     );
                 } else {
@@ -542,7 +542,7 @@ pub async fn chat_message(
             Err(e) => {
                 tracing::warn!(
                     chat_id = %chat_uuid,
-                    error = %e,
+                    error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()),
                     "failed to serialize chat history"
                 );
             }

@@ -1081,12 +1081,11 @@ pub(crate) fn map_bedrock_error(
             ))
         }
         _ => {
-            // Structural, PHI-free: service codes, request IDs, protocol
-            // shapes. The user-facing sentence below deliberately carries none
-            // of it.
-            tracing::error!(error = %error, pass, "the analysis call failed");
+            // The Bedrock call site logs a PHI-safe provider diagnostic. The
+            // error prose can include provider-supplied document text.
+            tracing::error!(pass, "the analysis call failed");
             ReportPipelineError::InvalidInput(format!(
-                "Claria could not reach the {model}. Nothing was saved. The Claria Console log holds the underlying error."
+                "Claria could not reach the {model}. Nothing was saved. The Claria Console log holds a safe provider diagnostic."
             ))
         }
     }

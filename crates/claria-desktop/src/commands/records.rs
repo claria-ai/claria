@@ -475,7 +475,7 @@ pub async fn delete_record_file(
                 {
                     tracing::warn!(
                         client_id = %id,
-                        %error,
+                        error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
                         "failed to delete record text sidecar"
                     );
                 }
@@ -484,7 +484,7 @@ pub async fn delete_record_file(
             Err(error) => {
                 tracing::warn!(
                     client_id = %id,
-                    %error,
+                    error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
                     "failed to discover record text sidecar during delete"
                 );
             }
@@ -820,7 +820,7 @@ async fn process_record(
         return ProcessingStatus::Ready;
     }
     let storage_failure = |error: &dyn std::fmt::Display| {
-        tracing::warn!(client_id = %id, error = %error, "record processing storage step failed; original retained");
+        tracing::warn!(client_id = %id, error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()), "record processing storage step failed; original retained");
         ProcessingStatus::Failed {
             code: ProcessingFailureCode::StorageUnavailable,
             reason: ProcessingFailureCode::StorageUnavailable

@@ -24,7 +24,7 @@ use aws_sdk_bedrockruntime::{
     },
 };
 use aws_smithy_types::{Document, Number};
-use claria_core::{model_id::CacheTtlChoice, models::turn_usage::TurnUsage};
+use claria_core::{model_id::CacheTtlChoice, models::turn_usage::TurnUsage, provider_diagnostic};
 
 use crate::{error::BedrockError, tokens};
 
@@ -66,7 +66,18 @@ where
             DisplayErrorContext(&error).to_string(),
         ),
     };
-    tracing::error!(operation, ?status, code, ?request_id, "Bedrock call failed");
+    tracing::error!(
+        operation,
+        ?status,
+        code = provider_diagnostic::safe_service_code(&code),
+        request_id = request_id
+            .as_deref()
+            .map(provider_diagnostic::safe_request_id),
+        provider_reason = provider_diagnostic::message_reason(&message),
+        provider_field = provider_diagnostic::message_field(&message),
+        message_sha256 = provider_diagnostic::message_sha256(&message),
+        "Bedrock call failed"
+    );
     BedrockError::Service {
         operation,
         status,

@@ -2,8 +2,8 @@
 //!
 //! Every command follows the same shape: a thin `#[tauri::command]` wrapper
 //! whose body runs inside [`run`], which flattens the rich [`CommandError`]
-//! exactly once at the boundary — logging the full chain, then prefixing the
-//! operation name onto the string the frontend receives.
+//! exactly once at the boundary — logging only a safe error category, then
+//! prefixing the operation name onto the string the frontend receives.
 
 pub mod billing;
 pub mod chat;
@@ -105,9 +105,8 @@ impl From<eyre::Report> for CommandError {
 
 /// Flatten a command body's error at the Tauri boundary.
 ///
-/// This is the single place a command's rich error is logged (the full chain,
-/// with the operation name) and the single place it is stringified for the
-/// frontend, prefixed with the same operation name.
+/// This is the single place a command error category is logged and the error
+/// is stringified for the frontend, prefixed with the operation name.
 pub(crate) async fn run<T, F>(operation: &'static str, command: F) -> Result<T, String>
 where
     F: Future<Output = Result<T, CommandError>>,
@@ -121,7 +120,24 @@ pub(crate) fn flatten<T>(
     result: Result<T, CommandError>,
 ) -> Result<T, String> {
     result.map_err(|error| {
-        tracing::error!(operation, error = ?error, "command failed");
+        // Command errors can contain provider messages or local filenames.
+        // The provider call site logs safe structured diagnostics; this
+        // boundary records only the variant before returning prose to the UI.
+        let error_kind = match &error {
+            CommandError::Storage(_) => "storage",
+            CommandError::Bedrock(_) => "bedrock",
+            CommandError::Records(_) => "records",
+            CommandError::Provisioner(_) => "provisioner",
+            CommandError::ReportPipeline(_) => "report_pipeline",
+            CommandError::ReportStore(_) => "report_store",
+            CommandError::Transcribe(_) => "transcribe",
+            CommandError::Billing(_) => "billing",
+            CommandError::Docx(_) => "docx",
+            CommandError::Uuid(_) => "uuid",
+            CommandError::Json(_) => "json",
+            CommandError::Msg(_) => "message",
+        };
+        tracing::error!(operation, error_kind, "command failed");
         format!("{operation}: {error}")
     })
 }

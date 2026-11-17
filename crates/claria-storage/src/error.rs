@@ -5,12 +5,10 @@ use thiserror::Error;
 /// An S3 object key that renders through [`log_safe_key`] in both `Display`
 /// and `Debug`.
 ///
-/// Every `StorageError` reaches the console ring buffer and the rolling
-/// on-disk logs through the desktop command boundary's `error = ?error`, and a
-/// `records/{uuid}/{filename}` key carries a client-chosen filename — PHI in a
-/// HIPAA app. Redacting inside the key type means no log site has to remember
-/// to scrub, and no future `%error` sink can reintroduce the leak. Code that
-/// needs the real key reads [`LogSafeKey::as_str`].
+/// A `records/{uuid}/{filename}` key carries a client-chosen filename — PHI
+/// in a HIPAA app. Redacting inside the key type means no log site has to
+/// remember to scrub it, and no future `%error` sink can reintroduce the
+/// leak. Code that needs the real key reads [`LogSafeKey::as_str`].
 ///
 /// Deliberately not `Serialize`: serializing would hand out the raw key and
 /// undo the redaction the type exists to guarantee.

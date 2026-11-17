@@ -45,7 +45,7 @@ impl ResourceSyncer for CloudTrailTrailLoggingSyncer {
                 Err(e) => {
                     tracing::warn!(
                         trail = %self.trail_name(),
-                        error = %e,
+                        error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()),
                         "get_trail_status failed during read — treating as absent"
                     );
                     Ok(None)

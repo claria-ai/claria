@@ -13,6 +13,30 @@ use tracing::{
 };
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
+/// Metadata safe to export for an arbitrary webview log string. The browser
+/// may be forwarding a provider error that echoes clinical content.
+pub fn frontend_event_fields(message: &str) -> (&'static str, usize, String) {
+    let event_family = if message.starts_with("Writer ") {
+        "writer"
+    } else if message.starts_with("Pricing ") {
+        "pricing"
+    } else if message.starts_with("Local transcription ") {
+        "transcription"
+    } else if message.starts_with("Webview console.")
+        || message.starts_with("Uncaught webview ")
+        || message.starts_with("Unhandled webview ")
+    {
+        "webview"
+    } else {
+        "other"
+    };
+    (
+        event_family,
+        message.len(),
+        claria_core::provider_diagnostic::message_sha256(message),
+    )
+}
+
 /// Maximum approximate byte size of the ring buffer (10 MB).
 const MAX_BYTES: usize = 10 * 1024 * 1024;
 

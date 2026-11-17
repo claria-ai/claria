@@ -775,7 +775,7 @@ pub(crate) async fn settle_attempt(
             if let Err(error) = persist_attempt(s3, bucket, &metadata).await {
                 tracing::warn!(
                     attempt_id = %metadata.attempt_id,
-                    error = %error,
+                    error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
                     "the stopped writer attempt could not record its receipt"
                 );
             }
@@ -1331,7 +1331,7 @@ async fn run_turn(
                     tracing::warn!(
                         call_number,
                         failed_attempts = interruptions,
-                        error = %error,
+                        error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
                         "Bedrock stream interrupted; retrying the call"
                     );
                     request.emit_progress(ReportTurnProgress::retrying(
@@ -1736,7 +1736,7 @@ async fn run_turn(
         if let Err(error) = save_draft_run(s3, bucket, run).await {
             tracing::warn!(
                 run_id = %run.run.run_id,
-                error = %error,
+                error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
                 "the drafting run completed but could not record its own finish"
             );
         }
@@ -1921,7 +1921,7 @@ pub(crate) fn map_bedrock_failure(
     ) {
         // These messages describe protocol structure, never report or record
         // text, and make otherwise opaque provider regressions diagnosable.
-        tracing::error!(error = %error, "invalid Bedrock report protocol");
+        tracing::error!("invalid Bedrock report protocol");
     }
     let FailedReportCall {
         number,
@@ -2009,7 +2009,7 @@ pub(crate) fn map_bedrock_failure(
         _ => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
             format!(
-                "Bedrock call {number} of {ceiling} could not be completed. Usage for the calls that completed was retained. The Claria Console log holds the underlying error."
+                "Bedrock call {number} of {ceiling} could not be completed. Usage for the calls that completed was retained. The Claria Console log holds a safe provider diagnostic."
             ),
         )
         .uncertain_usage(),

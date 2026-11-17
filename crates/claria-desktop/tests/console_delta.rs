@@ -4,7 +4,17 @@
 
 use tracing_subscriber::prelude::*;
 
-use claria_desktop::console::{ConsoleBuffer, ConsoleLayer};
+use claria_desktop::console::{ConsoleBuffer, ConsoleLayer, frontend_event_fields};
+
+#[test]
+fn frontend_event_fields_never_include_provider_text() {
+    let raw = "Writer draft planning failed: ValidationException for Jane Doe intake.docx";
+    let (family, bytes, fingerprint) = frontend_event_fields(raw);
+    assert_eq!(family, "writer");
+    assert_eq!(bytes, raw.len());
+    assert_eq!(fingerprint.len(), 64);
+    assert!(!fingerprint.contains("Jane"));
+}
 
 fn scoped_buffer() -> (ConsoleBuffer, impl tracing::Subscriber) {
     let buffer = ConsoleBuffer::new();

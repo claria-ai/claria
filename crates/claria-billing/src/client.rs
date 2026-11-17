@@ -1,5 +1,6 @@
-use aws_sdk_costexplorer::types::{
-    DateInterval, Granularity, GroupDefinition, GroupDefinitionType,
+use aws_sdk_costexplorer::{
+    operation::RequestId,
+    types::{DateInterval, Granularity, GroupDefinition, GroupDefinitionType},
 };
 
 use crate::{
@@ -98,35 +99,33 @@ fn classify_sdk_error(
     use aws_sdk_costexplorer::operation::get_cost_and_usage::GetCostAndUsageError;
     use aws_smithy_runtime_api::client::result::SdkError;
 
-    // Try structured matching first (most reliable).
     if let SdkError::ServiceError(ref service_err) = err {
         let inner = service_err.err();
-
-        // DataUnavailableException is a modeled variant.
-        if matches!(inner, GetCostAndUsageError::DataUnavailableException(_)) {
-            return BillingError::CostExplorerNotEnabled;
-        }
-
-        // AccessDeniedException is NOT modeled — it arrives as Unhandled.
-        // Check the error code from the metadata.
-        if let Some(code) = aws_smithy_types::error::metadata::ProvideErrorMetadata::code(inner) {
-            tracing::debug!(error_code = code, "Cost Explorer service error code");
-            if code == "AccessDeniedException" {
-                return BillingError::AccessDenied;
-            }
-        }
-
-        // Extract the HTTP response body for better diagnostics.
+        // Classify using the structured metadata first. The raw body is used
+        // only for older unmodeled responses, never copied into a log.
         let raw = service_err.raw();
         let body =
             std::str::from_utf8(raw.body().bytes().unwrap_or_default()).unwrap_or("<non-utf8>");
         let status = raw.status().as_u16();
+        let metadata = aws_smithy_types::error::metadata::ProvideErrorMetadata::meta(inner);
+        let code = metadata.code().unwrap_or("UnknownServiceError");
+        let request_id = metadata.request_id();
         tracing::warn!(
             status,
-            body,
-            inner_debug = ?inner,
-            "Cost Explorer service error — unclassified"
+            code = claria_core::provider_diagnostic::safe_service_code(code),
+            request_id = request_id.map(claria_core::provider_diagnostic::safe_request_id),
+            provider_reason = claria_core::provider_diagnostic::message_reason(body),
+            provider_field = claria_core::provider_diagnostic::message_field(body),
+            message_sha256 = claria_core::provider_diagnostic::message_sha256(body),
+            "Cost Explorer service error"
         );
+
+        if matches!(inner, GetCostAndUsageError::DataUnavailableException(_)) {
+            return BillingError::CostExplorerNotEnabled;
+        }
+        if code == "AccessDeniedException" {
+            return BillingError::AccessDenied;
+        }
 
         // Match on HTTP body as last resort for service errors.
         if body.contains("AccessDenied") || body.contains("is not authorized") {
@@ -136,11 +135,17 @@ fn classify_sdk_error(
             return BillingError::CostExplorerNotEnabled;
         }
 
-        return BillingError::ApiError(body.to_string());
+        return BillingError::ApiError(format!(
+            "Cost Explorer returned {code} (HTTP {status}, request ID {})",
+            request_id.unwrap_or("unavailable")
+        ));
     }
 
     // Non-service errors (dispatch failure, timeout, etc.)
     let msg = format!("{err:#}");
-    tracing::warn!(error = %msg, "Cost Explorer non-service error");
-    BillingError::ApiError(msg)
+    tracing::warn!(
+        message_sha256 = claria_core::provider_diagnostic::message_sha256(&msg),
+        "Cost Explorer non-service error"
+    );
+    BillingError::ApiError("Cost Explorer transport error".to_string())
 }

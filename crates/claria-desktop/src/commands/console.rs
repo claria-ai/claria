@@ -7,9 +7,6 @@ use claria_desktop::console::{ConsoleBuffer, ConsoleDelta};
 
 use super::{CommandError, flatten};
 
-/// Longest frontend-reported message accepted; anything beyond is truncated.
-const MAX_FRONTEND_LOG_CHARS: usize = 2_000;
-
 /// Severity levels the frontend logging bridge may report.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
@@ -23,31 +20,23 @@ pub enum FrontendLogLevel {
 ///
 /// The `claria_desktop::frontend` target is admitted by the console and file
 /// layers via the shared crate-list filter, so webview failures land in the
-/// ring buffer and the rolling on-disk logs. Messages are length-capped and
-/// stripped of control characters so one event cannot flood the buffer or
-/// forge multi-line log records. Callers report operation names and error
-/// strings — never document content or client names.
+/// ring buffer and the rolling on-disk logs. The webview can pass arbitrary
+/// error text (including a provider echo of PHI); only a fixed event family,
+/// byte count, and fingerprint enter the logs.
 #[tauri::command]
 #[specta::specta]
 pub fn log_frontend_event(level: FrontendLogLevel, message: String) {
-    let truncated = message.chars().count() > MAX_FRONTEND_LOG_CHARS;
-    let mut sanitized: String = message
-        .chars()
-        .take(MAX_FRONTEND_LOG_CHARS)
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    if truncated {
-        sanitized.push_str(" …[truncated]");
-    }
+    let (event_family, bytes, message_sha256) =
+        claria_desktop::console::frontend_event_fields(&message);
     match level {
         FrontendLogLevel::Error => {
-            tracing::error!(target: "claria_desktop::frontend", "{sanitized}");
+            tracing::error!(target: "claria_desktop::frontend", event_family, bytes, message_sha256, "frontend event");
         }
         FrontendLogLevel::Warn => {
-            tracing::warn!(target: "claria_desktop::frontend", "{sanitized}");
+            tracing::warn!(target: "claria_desktop::frontend", event_family, bytes, message_sha256, "frontend event");
         }
         FrontendLogLevel::Info => {
-            tracing::info!(target: "claria_desktop::frontend", "{sanitized}");
+            tracing::info!(target: "claria_desktop::frontend", event_family, bytes, message_sha256, "frontend event");
         }
     }
 }

@@ -478,18 +478,19 @@ async fn stopped_run_details(
     report_id: uuid::Uuid,
     run_id: Option<uuid::Uuid>,
 ) -> serde_json::Value {
-    let run =
-        match claria::load_resumable_draft_run(&ctx.s3, &ctx.bucket, client_id, report_id).await {
-            Ok(run) => run,
-            Err(error) => {
-                tracing::warn!(
-                    report_id = %report_id,
-                    error = %error,
-                    "could not read the stopped drafting run for its audit event"
-                );
-                None
-            }
-        };
+    let run = match claria::load_resumable_draft_run(&ctx.s3, &ctx.bucket, client_id, report_id)
+        .await
+    {
+        Ok(run) => run,
+        Err(error) => {
+            tracing::warn!(
+                report_id = %report_id,
+                error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+                "could not read the stopped drafting run for its audit event"
+            );
+            None
+        }
+    };
     let count = |state: RunSectionState| {
         run.as_ref().map_or(0, |run| {
             run.sections
