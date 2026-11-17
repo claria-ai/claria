@@ -1,9 +1,16 @@
+use claria_core::provider_diagnostic::ProviderMessage;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum TranscribeError {
     #[error("transcription job failed: {0}")]
-    JobFailed(String),
+    JobFailed(ProviderMessage),
+
+    #[error("Transcribe {operation} failed: {message}")]
+    ProviderApi {
+        operation: &'static str,
+        message: ProviderMessage,
+    },
 
     #[error("transcription API error: {0}")]
     Api(String),

@@ -1,66 +1,91 @@
 use claria_core::provider_diagnostic::{
-    message_field, message_reason, message_sha256, safe_request_id, safe_service_code,
+    ProviderMessage, message_field, message_reason, safe_request_id, safe_service_code,
 };
 
 #[test]
-fn recognizes_validation_reasons_without_echoing_patient_data() {
+fn real_bedrock_validation_wording_has_actionable_safe_reasons() {
     let cases = [
         (
-            "Unsupported document format in Jane Doe intake.docx",
-            "unsupported_document_format",
+            "Invocation of model ID anthropic.claude-opus-4-6-v1 with on-demand throughput isn’t supported. Retry your request with the ID or ARN of an inference profile that contains this model.",
+            "requires_inference_profile",
+            "model_id",
         ),
         (
-            "Document name Jane Doe intake.docx exceeds the allowed length",
-            "invalid_document_name",
-        ),
-        (
-            "messages.0.content.1.document.name: Jane Doe intake.docx is invalid",
-            "invalid_document_name",
-        ),
-        (
-            "The document named Jane Doe intake.docx is not valid",
-            "invalid_document",
-        ),
-        (
-            "Model access is not authorized for Jane Doe",
+            "You don't have access to the model with the specified model ID.",
             "access_denied",
+            "model_id",
         ),
-        ("Unexpected provider response for Jane Doe", "unrecognized"),
+        (
+            "The provided model identifier is invalid.",
+            "invalid_model_identifier",
+            "model_id",
+        ),
+        (
+            "Input is too long for requested model.",
+            "input_too_long",
+            "unknown",
+        ),
+        (
+            "Too many tokens, please wait before trying again.",
+            "token_rate_limited",
+            "unknown",
+        ),
+        (
+            "A conversation must start with a user message.",
+            "invalid_conversation_role",
+            "unknown",
+        ),
+        (
+            "The format of the value at messages.0.content.1.document.name is invalid. Jane Doe intake.docx",
+            "invalid_document_name",
+            "document.name",
+        ),
     ];
-    for (message, expected) in cases {
-        let reason = message_reason(message);
-        assert_eq!(reason, expected);
-        assert!(!reason.contains("Jane"));
-        assert!(!reason.contains("Doe"));
-        let hash = message_sha256(message);
-        assert_eq!(hash.len(), 64);
-        assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert!(!hash.contains("Jane"));
+    for (raw, reason, field) in cases {
+        assert_eq!(message_reason(raw), reason, "{raw}");
+        assert_eq!(message_field(raw), field, "{raw}");
+        let safe = ProviderMessage::new(raw);
+        assert!(!safe.to_string().contains("Jane Doe"));
+        assert!(!format!("{safe:?}").contains("Jane Doe"));
+        assert_eq!(safe.reason(), reason);
     }
 }
 
 #[test]
-fn only_known_codes_and_request_ids_can_enter_provider_log_fields() {
+fn unknown_provider_prose_never_reaches_standard_formatters() {
+    let message = ProviderMessage::new("Jane Doe's report says XYZ");
+    assert_eq!(message.raw(), "Jane Doe's report says XYZ");
     assert_eq!(
-        safe_service_code("ValidationException"),
-        "ValidationException"
+        message.to_string(),
+        "the provider rejected the request (reason unclassified)"
     );
-    assert_eq!(safe_service_code("AccessDenied"), "AccessDenied");
     assert_eq!(
-        safe_request_id("fff43026-69a2-4747-b46b-a9dca5ea3c04"),
-        "fff43026-69a2-4747-b46b-a9dca5ea3c04"
+        format!("{message:?}"),
+        "ProviderMessage { reason: \"unclassified\", field: \"unknown\" }"
     );
-    assert_eq!(safe_service_code("JaneDoeException"), "withheld");
-    assert_eq!(safe_request_id("Jane Doe"), "withheld");
-    assert_eq!(safe_request_id("patient-record.docx"), "withheld");
-    assert_eq!(safe_request_id(&"a".repeat(129)), "withheld");
 }
 
 #[test]
-fn extracts_only_known_field_names() {
+fn metadata_shape_checks_accept_aws_codes_and_s3_request_ids() {
+    for code in [
+        "ValidationException",
+        "ModelTimeoutException",
+        "RequestTimeTooSkewed",
+        "InternalFailureException",
+        "InvalidClientTokenId",
+    ] {
+        assert_eq!(safe_service_code(code), code);
+    }
+    for request_id in [
+        "TJB5XE1VNSK6BA8D",
+        "318BC8BC148832E5",
+        "fff43026-69a2-4747-b46b-a9dca5ea3c04",
+    ] {
+        assert_eq!(safe_request_id(request_id), request_id);
+    }
     assert_eq!(
-        message_field("messages.0.content.1.document.source.bytes: Jane Doe is invalid"),
-        "document.source.bytes"
+        safe_service_code("ValidationException\npatient=Jane"),
+        "withheld"
     );
-    assert_eq!(message_field("Unknown field for Jane Doe"), "unknown");
+    assert_eq!(safe_request_id("Jane Doe intake.docx"), "withheld");
 }

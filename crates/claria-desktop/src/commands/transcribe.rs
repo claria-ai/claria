@@ -139,8 +139,8 @@ pub(crate) async fn maybe_translate(
             )
             .await;
         }
-        Err(_) => {
-            tracing::warn!("translation failed; sidecar will be written without translations");
+        Err(e) => {
+            tracing::warn!(error = %e, "translation failed; sidecar will be written without translations");
         }
     }
 }

@@ -1285,6 +1285,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -1312,7 +1313,6 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "specta",
  "thiserror 2.0.18",
  "tracing",

@@ -44,7 +44,7 @@ impl StatePersistence {
                 // Log but don't fail — local write succeeded, S3 is best-effort here.
                 // Next load() will pick up the local copy.
                 tracing::warn!(
-                    error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()),
+                    error = %e,
                     "failed to upload state to S3 (local copy is safe)"
                 );
             }
@@ -72,7 +72,7 @@ impl StatePersistence {
                 )));
             }
             Err(LoadError::Other(msg)) => {
-                tracing::warn!(error_sha256 = %claria_core::provider_diagnostic::message_sha256(&msg.to_string()), "failed to load state from S3, trying local");
+                tracing::warn!(error = %msg, "failed to load state from S3, trying local");
             }
         }
 
@@ -87,7 +87,7 @@ impl StatePersistence {
                 )));
             }
             Err(LoadError::Other(msg)) => {
-                tracing::warn!(error_sha256 = %claria_core::provider_diagnostic::message_sha256(&msg.to_string()), "failed to load local state");
+                tracing::warn!(error = %msg, "failed to load local state");
             }
         }
 
@@ -147,7 +147,7 @@ impl StatePersistence {
                 return Ok(state);
             }
             Err(direct_err) => {
-                tracing::debug!(error_sha256 = %claria_core::provider_diagnostic::message_sha256(&direct_err.to_string()), "direct S3 state deserialization failed, trying migration");
+                tracing::debug!(error = %direct_err, "direct S3 state deserialization failed, trying migration");
             }
         }
 
@@ -160,7 +160,7 @@ impl StatePersistence {
 
         tracing::info!("migrated S3 state from v1 to v2, flushing back");
         if let Err(e) = self.flush(&state).await {
-            tracing::warn!(error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()), "failed to flush migrated state (will retry next load)");
+            tracing::warn!(error = %e, "failed to flush migrated state (will retry next load)");
         }
 
         Ok(state)
@@ -183,7 +183,7 @@ impl StatePersistence {
                 return Ok(state);
             }
             Err(direct_err) => {
-                tracing::debug!(error_sha256 = %claria_core::provider_diagnostic::message_sha256(&direct_err.to_string()), "direct local state deserialization failed, trying migration");
+                tracing::debug!(error = %direct_err, "direct local state deserialization failed, trying migration");
             }
         }
 

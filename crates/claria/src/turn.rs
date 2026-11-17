@@ -775,7 +775,7 @@ pub(crate) async fn settle_attempt(
             if let Err(error) = persist_attempt(s3, bucket, &metadata).await {
                 tracing::warn!(
                     attempt_id = %metadata.attempt_id,
-                    error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+                    error = %error,
                     "the stopped writer attempt could not record its receipt"
                 );
             }
@@ -1331,7 +1331,7 @@ async fn run_turn(
                     tracing::warn!(
                         call_number,
                         failed_attempts = interruptions,
-                        error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+                        error = %error,
                         "Bedrock stream interrupted; retrying the call"
                     );
                     request.emit_progress(ReportTurnProgress::retrying(
@@ -1736,7 +1736,7 @@ async fn run_turn(
         if let Err(error) = save_draft_run(s3, bucket, run).await {
             tracing::warn!(
                 run_id = %run.run.run_id,
-                error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+                error = %error,
                 "the drafting run completed but could not record its own finish"
             );
         }
@@ -1919,9 +1919,12 @@ pub(crate) fn map_bedrock_failure(
         &error,
         BedrockError::SchemaViolation(_) | BedrockError::ResponseParse(_)
     ) {
-        // These messages describe protocol structure, never report or record
-        // text, and make otherwise opaque provider regressions diagnosable.
-        tracing::error!("invalid Bedrock report protocol");
+        // The detail can include model output (for example an unknown tool
+        // name), so log a fixed protocol kind instead.
+        tracing::error!(
+            kind = error.protocol_failure_kind(),
+            "invalid Bedrock report protocol"
+        );
     }
     let FailedReportCall {
         number,
@@ -1948,8 +1951,7 @@ pub(crate) fn map_bedrock_failure(
         // Every attempt at this call went out and got no complete response
         // back — the stream stalled or dropped, or the request never got a
         // response at all — so retrying now is unlikely to help and the
-        // wait is the actionable fact. Must precede the `Service` arm,
-        // which would otherwise claim the DispatchFailure-coded shape.
+        // wait is the actionable fact. Must precede the `Service` arm.
         _ if error.is_interrupted_before_completion() => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
             format!(
@@ -1964,7 +1966,7 @@ pub(crate) fn map_bedrock_failure(
         // support", so it decides the message instead of collapsing into one
         // unactionable sentence.
         BedrockError::Service {
-            code, request_id, ..
+            code, request_id, message, ..
         } => {
             let cause = match code.as_str() {
                 "AccessDeniedException" => format!(
@@ -1984,15 +1986,8 @@ pub(crate) fn map_bedrock_failure(
                     "The model did not respond in time. Retry, or fill the report a section at a time if it keeps happening.".to_string()
                 }
                 "ValidationException" => format!(
-                    "Bedrock rejected the request as invalid for {model_id}. The Claria Console log holds the service's reason."
+                    "Bedrock rejected the request as invalid for {model_id}: {message}."
                 ),
-                // Every non-service SDK failure lands here — connect, dispatch,
-                // and timeout alike — so the wording must not pin the blame on
-                // the network when a long generation simply ran out of time.
-                "DispatchFailure" => {
-                    "Claria could not complete the call to Bedrock: the connection failed or the request timed out. Check the network and retry."
-                        .to_string()
-                }
                 other => {
                     let request_id = request_id.as_deref().unwrap_or("not reported");
                     format!("Bedrock returned {other} (request ID {request_id}).")
@@ -2009,7 +2004,7 @@ pub(crate) fn map_bedrock_failure(
         _ => TurnRunFailure::new(
             ReportFailureCode::Bedrock,
             format!(
-                "Bedrock call {number} of {ceiling} could not be completed. Usage for the calls that completed was retained. The Claria Console log holds a safe provider diagnostic."
+                "Bedrock call {number} of {ceiling} could not be completed. Usage for the calls that completed was retained. Check the Claria Console for the failure type."
             ),
         )
         .uncertain_usage(),

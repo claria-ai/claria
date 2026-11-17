@@ -4,10 +4,10 @@ All notable changes to Claria are documented here.
 
 ## [Unreleased]
 
-- Bedrock, Transcribe, Cost Explorer, and S3 failures retain safe provider reasons and message fingerprints in diagnostics
-- Command and provider logs no longer print free-form service errors or Transcribe failure reasons
-- Frontend events reach support logs as fixed families, sizes, and fingerprints instead of arbitrary webview text
-- Transcribe cleanup failures leave a safe diagnostic in the log
+- Bedrock, Transcribe, and S3 failures retain service codes, request IDs, and readable PHI-safe reasons in diagnostics
+- Document-shaped Bedrock validation failures identify the document instead of incorrectly blaming the model
+- Frontend events reach support logs as specific fixed breadcrumbs instead of arbitrary webview error text
+- Transcribe cleanup failures leave a warn-level diagnostic without replacing the original result
 
 ## [0.36.1] — 2026-11-03
 

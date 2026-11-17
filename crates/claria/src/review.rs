@@ -785,7 +785,7 @@ async fn curated_section_records(
             Err(error) => {
                 tracing::warn!(
                     %run_id,
-                    error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+                    error = %error,
                     "the review could not read a drafting run; its sections are reviewed without \
                      their record restriction"
                 );

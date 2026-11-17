@@ -9,11 +9,26 @@ use claria_desktop::console::{ConsoleBuffer, ConsoleLayer, frontend_event_fields
 #[test]
 fn frontend_event_fields_never_include_provider_text() {
     let raw = "Writer draft planning failed: ValidationException for Jane Doe intake.docx";
-    let (family, bytes, fingerprint) = frontend_event_fields(raw);
-    assert_eq!(family, "writer");
+    let (event, bytes) = frontend_event_fields(raw);
+    assert_eq!(event, "Writer draft planning failed");
     assert_eq!(bytes, raw.len());
-    assert_eq!(fingerprint.len(), 64);
-    assert!(!fingerprint.contains("Jane"));
+    assert!(!event.contains("Jane Doe"));
+    assert_eq!(
+        frontend_event_fields("PIN unlock failed: bad PIN").0,
+        "PIN unlock failed"
+    );
+    assert_eq!(
+        frontend_event_fields("React render crash: Jane Doe").0,
+        "React render crash"
+    );
+    assert_eq!(
+        frontend_event_fields("hasConfig failed: Jane Doe").0,
+        "hasConfig failed"
+    );
+    assert_eq!(
+        frontend_event_fields("Failed to register drag-drop listener: Jane Doe").0,
+        "Failed to register drag-drop listener"
+    );
 }
 
 fn scoped_buffer() -> (ConsoleBuffer, impl tracing::Subscriber) {

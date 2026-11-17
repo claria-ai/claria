@@ -1057,7 +1057,7 @@ async fn finish_run(
     if let Err(error) = save_draft_run(s3, bucket, run).await {
         tracing::warn!(
             run_id = %run.run.run_id,
-            error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+            error = %error,
             "the drafting run completed but could not record its own finish"
         );
     }

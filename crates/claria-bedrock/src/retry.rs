@@ -130,13 +130,14 @@ where
                     operation = label,
                     ?elapsed,
                     budget = ?MAX_RETRY_ELAPSED,
+                    diagnostic = %error.log_diagnostic(),
                     "Bedrock call is out of retry budget, surfacing the failure"
                 );
                 return false;
             }
             true
         })
-        .notify(|_error: &BedrockError, delay| {
+        .notify(|error: &BedrockError, delay| {
             attempts_made = attempts_made.saturating_add(1);
             let attempt = attempts_made;
             tracing::warn!(
@@ -144,6 +145,7 @@ where
                 attempt,
                 max_attempts = MAX_ATTEMPTS,
                 ?delay,
+                diagnostic = %error.log_diagnostic(),
                 "Bedrock call will be retried"
             );
             if let Some(on_retry) = on_retry {

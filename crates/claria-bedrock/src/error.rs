@@ -1,3 +1,4 @@
+use claria_core::provider_diagnostic::ProviderMessage;
 use thiserror::Error;
 
 /// Which of a streamed call's two waits ended it.
@@ -59,6 +60,14 @@ pub enum BedrockError {
         status: Option<u16>,
         code: String,
         request_id: Option<String>,
+        message: ProviderMessage,
+    },
+
+    /// No service response was received. This SDK chain contains transport
+    /// diagnostics rather than provider prose or document content.
+    #[error("The Bedrock {operation} request could not reach the service: {message}")]
+    Transport {
+        operation: &'static str,
         message: String,
     },
 
@@ -84,9 +93,6 @@ pub enum BedrockError {
     #[error("AWS config error: {0}")]
     Config(String),
 
-    #[error("model agreement error: {0}")]
-    Agreement(String),
-
     /// The reader pressed Stop while the request was in flight. Not a
     /// failure — the caller decides what its partial work is worth: a stopped
     /// chat turn keeps the partial text as the answer, while a stopped
@@ -97,11 +103,48 @@ pub enum BedrockError {
 }
 
 impl BedrockError {
+    /// Diagnostic text safe for support logs. Provider prose is rendered by
+    /// `ProviderMessage`; protocol and builder errors can contain model or
+    /// document text, so those use fixed labels.
+    pub fn log_diagnostic(&self) -> String {
+        match self {
+            Self::Service { .. }
+            | Self::Transport { .. }
+            | Self::StreamInterrupted { .. }
+            | Self::ContextBudgetExceeded { .. }
+            | Self::ResponseTruncated { .. }
+            | Self::ContextWindowExceeded
+            | Self::Stopped => self.to_string(),
+            Self::SchemaViolation(_) | Self::ResponseParse(_) => {
+                format!("Bedrock protocol failure: {}", self.protocol_failure_kind())
+            }
+            _ => "Bedrock request construction or configuration failed".to_string(),
+        }
+    }
+
+    /// A fixed log label for protocol failures that may include model output
+    /// in their detailed error string.
+    pub fn protocol_failure_kind(&self) -> &'static str {
+        match self {
+            Self::ResponseParse(_) => "response_parse",
+            Self::SchemaViolation(message) if message.starts_with("unknown report tool:") => {
+                "unknown_tool"
+            }
+            Self::SchemaViolation(message) if message.contains("duplicate") => "duplicate_tool",
+            Self::SchemaViolation(message) if message.contains("tool-use limit") => {
+                "tool_use_limit"
+            }
+            Self::SchemaViolation(message) if message.contains("cache plan") => "cache_plan",
+            Self::SchemaViolation(_) => "schema_violation",
+            _ => "other",
+        }
+    }
+
     /// True for failures where the request is known not to have completed:
     /// the response stream broke before `messageStop`, or the request never
     /// received a response at all (connect, dispatch, and client-timeout
-    /// failures, which [`classify_error`](crate::converse) labels
-    /// `DispatchFailure`). Nothing from such a call is committed, so
+    /// failures, which [`classify_error`](crate::converse) labels as transport
+    /// failures). Nothing from such a call is committed, so
     /// re-sending the identical request is safe.
     /// Which wait ran out, when one did. `None` for interruptions that are
     /// not a timeout at all.
@@ -113,11 +156,10 @@ impl BedrockError {
     }
 
     pub fn is_interrupted_before_completion(&self) -> bool {
-        match self {
-            Self::StreamInterrupted { .. } => true,
-            Self::Service { code, .. } => code == "DispatchFailure",
-            _ => false,
-        }
+        matches!(
+            self,
+            Self::StreamInterrupted { .. } | Self::Transport { .. }
+        )
     }
 
     /// True when Bedrock is asking the caller to slow down or come back,

@@ -73,7 +73,7 @@ async fn upload_and_reextract_use_explicit_model_selection_and_preserve_original
 async fn provider_failure_returns_saved_original_and_actionable_reason_then_retry_recovers() {
     let (mock, ctx) = setup().await;
     mock.state.write().await.bedrock_text_responses.push(ScriptedBedrockResponse {
-        status: 400, body: serde_json::json!({"__type":"ValidationException", "message":"private upstream detail"}),
+        status: 400, body: serde_json::json!({"__type":"ValidationException", "message":"The format of the value at messages.0.content.1.document.name is invalid: Jane Doe.docx"}),
     });
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("synthetic.pdf");
@@ -85,17 +85,16 @@ async fn provider_failure_returns_saved_original_and_actionable_reason_then_retr
         .unwrap();
     assert!(matches!(
         file.processing_status,
-        Some(ProcessingStatus::Failed { .. })
+        Some(ProcessingStatus::Failed {
+            code: ProcessingFailureCode::InvalidDocument,
+            ..
+        })
     ));
     let key = claria_core::s3_keys::client_record_file(id, &file.filename);
     let marker = claria_storage::objects::get_object(&ctx.s3, &ctx.bucket, &format!("{key}.error"))
         .await
         .unwrap();
-    assert!(
-        !String::from_utf8(marker.body)
-            .unwrap()
-            .contains("private upstream")
-    );
+    assert!(!String::from_utf8(marker.body).unwrap().contains("Jane Doe"));
     assert_eq!(
         process_record(&ctx, id, &file.filename, "pdf", &key, Some(original), None).await,
         ProcessingStatus::Ready

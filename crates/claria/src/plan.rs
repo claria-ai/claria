@@ -1081,11 +1081,15 @@ pub(crate) fn map_bedrock_error(
             ))
         }
         _ => {
-            // The Bedrock call site logs a PHI-safe provider diagnostic. The
-            // error prose can include provider-supplied document text.
-            tracing::error!(pass, "the analysis call failed");
+            // Provider prose can contain document text. Keep the failure
+            // type visible without forwarding the raw error.
+            tracing::error!(
+                pass,
+                failure_kind = error.protocol_failure_kind(),
+                "the analysis call failed"
+            );
             ReportPipelineError::InvalidInput(format!(
-                "Claria could not reach the {model}. Nothing was saved. The Claria Console log holds a safe provider diagnostic."
+                "The {model} could not complete this request. Nothing was saved. Check the Claria Console for the failure type."
             ))
         }
     }

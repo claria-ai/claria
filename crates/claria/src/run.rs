@@ -174,14 +174,14 @@ pub(crate) async fn release_failed_run(
         // "resumable" label, so it must not replace that reason.
         tracing::warn!(
             run_id = %run.run.run_id,
-            error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+            error = %error,
             "could not stamp the failed drafting run"
         );
     }
     if let Err(error) = clear_active_run(s3, bucket, client_id, report_id, run.run.run_id).await {
         tracing::warn!(
             run_id = %run.run.run_id,
-            error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+            error = %error,
             "could not release the workspace from its drafting run"
         );
     }
@@ -208,7 +208,7 @@ pub(crate) async fn park_stopped_run(s3: &S3Client, bucket: &str, run: &mut Load
         // label, which the next load heals from the workspace pointer.
         tracing::warn!(
             run_id = %run.run.run_id,
-            error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+            error = %error,
             "could not stamp the stopped drafting run"
         );
     }
@@ -561,7 +561,7 @@ pub async fn finalize_partial_draft(
     if let Err(error) = save_draft_run(s3, bucket, &mut run).await {
         tracing::warn!(
             run_id = %run_id,
-            error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+            error = %error,
             "the drafting run was finalized but could not record its own finish"
         );
     }

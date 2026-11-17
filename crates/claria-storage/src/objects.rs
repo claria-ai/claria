@@ -25,7 +25,7 @@ where
         Some(service_error) => {
             let message = service_error.meta().message().unwrap_or_default();
             format!(
-                "code={} request_id={} reason={} field={} message_sha256={}",
+                "code={} request_id={} reason={} field={} summary={}",
                 provider_diagnostic::safe_service_code(
                     service_error.meta().code().unwrap_or("UnknownServiceError")
                 ),
@@ -36,13 +36,10 @@ where
                     .unwrap_or("unavailable"),
                 provider_diagnostic::message_reason(message),
                 provider_diagnostic::message_field(message),
-                provider_diagnostic::message_sha256(message),
+                provider_diagnostic::message_summary(message),
             )
         }
-        None => format!(
-            "dispatch_failure message_sha256={}",
-            provider_diagnostic::message_sha256(&DisplayErrorContext(error).to_string())
-        ),
+        None => DisplayErrorContext(error).to_string(),
     }
 }
 
@@ -122,12 +119,7 @@ async fn get_object_with_limit(
         .body
         .collect()
         .await
-        .map_err(|e| {
-            StorageError::GetObject(format!(
-                "response body read failed; message_sha256={}",
-                provider_diagnostic::message_sha256(&e.to_string())
-            ))
-        })?
+        .map_err(|e| StorageError::GetObject(e.to_string()))?
         .into_bytes()
         .to_vec();
 
@@ -191,12 +183,9 @@ pub async fn put_object_from_path(
     path: &std::path::Path,
     content_type: Option<&str>,
 ) -> Result<String, StorageError> {
-    let body = ByteStream::from_path(path).await.map_err(|e| {
-        StorageError::PutObject(format!(
-            "failed to open upload file; message_sha256={}",
-            provider_diagnostic::message_sha256(&e.to_string())
-        ))
-    })?;
+    let body = ByteStream::from_path(path)
+        .await
+        .map_err(|_| StorageError::PutObject("failed to open upload file".into()))?;
     if let Ok(metadata) = tokio::fs::metadata(path).await {
         tracing::Span::current().record("bytes", metadata.len());
     }
@@ -407,21 +396,15 @@ pub async fn delete_objects(
             if let Some(version_id) = &target.version_id {
                 id = id.version_id(version_id);
             }
-            let id = id.build().map_err(|e| {
-                StorageError::DeleteObject(format!(
-                    "invalid delete target; message_sha256={}",
-                    provider_diagnostic::message_sha256(&e.to_string())
-                ))
-            })?;
+            let id = id
+                .build()
+                .map_err(|_| StorageError::DeleteObject("invalid delete target".into()))?;
             delete = delete.objects(id);
         }
 
-        let delete = delete.build().map_err(|e| {
-            StorageError::DeleteObject(format!(
-                "invalid delete batch; message_sha256={}",
-                provider_diagnostic::message_sha256(&e.to_string())
-            ))
-        })?;
+        let delete = delete
+            .build()
+            .map_err(|_| StorageError::DeleteObject("invalid delete batch".into()))?;
 
         let resp = client
             .delete_objects()
@@ -443,7 +426,7 @@ pub async fn delete_objects(
                         provider_diagnostic::safe_service_code(
                             e.code().unwrap_or("UnknownServiceError")
                         ),
-                        provider_diagnostic::message_sha256(e.message().unwrap_or_default()),
+                        provider_diagnostic::message_summary(e.message().unwrap_or_default()),
                     )
                 })
                 .collect();
@@ -882,12 +865,7 @@ pub async fn get_object_version(
         .body
         .collect()
         .await
-        .map_err(|e| {
-            StorageError::GetObject(format!(
-                "response body read failed; message_sha256={}",
-                provider_diagnostic::message_sha256(&e.to_string())
-            ))
-        })?
+        .map_err(|e| StorageError::GetObject(e.to_string()))?
         .into_bytes()
         .to_vec();
 

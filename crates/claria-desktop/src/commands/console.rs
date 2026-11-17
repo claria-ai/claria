@@ -21,22 +21,21 @@ pub enum FrontendLogLevel {
 /// The `claria_desktop::frontend` target is admitted by the console and file
 /// layers via the shared crate-list filter, so webview failures land in the
 /// ring buffer and the rolling on-disk logs. The webview can pass arbitrary
-/// error text (including a provider echo of PHI); only a fixed event family,
-/// byte count, and fingerprint enter the logs.
+/// error text (including a provider echo of PHI); only a readable fixed
+/// breadcrumb and byte count enter the logs.
 #[tauri::command]
 #[specta::specta]
 pub fn log_frontend_event(level: FrontendLogLevel, message: String) {
-    let (event_family, bytes, message_sha256) =
-        claria_desktop::console::frontend_event_fields(&message);
+    let (event, bytes) = claria_desktop::console::frontend_event_fields(&message);
     match level {
         FrontendLogLevel::Error => {
-            tracing::error!(target: "claria_desktop::frontend", event_family, bytes, message_sha256, "frontend event");
+            tracing::error!(target: "claria_desktop::frontend", event, bytes, "frontend event");
         }
         FrontendLogLevel::Warn => {
-            tracing::warn!(target: "claria_desktop::frontend", event_family, bytes, message_sha256, "frontend event");
+            tracing::warn!(target: "claria_desktop::frontend", event, bytes, "frontend event");
         }
         FrontendLogLevel::Info => {
-            tracing::info!(target: "claria_desktop::frontend", event_family, bytes, message_sha256, "frontend event");
+            tracing::info!(target: "claria_desktop::frontend", event, bytes, "frontend event");
         }
     }
 }
@@ -78,5 +77,28 @@ fn save_console_logs_inner(console: &ConsoleBuffer) -> Result<bool, CommandError
             Ok(true)
         }
         None => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::prelude::*;
+
+    #[test]
+    fn frontend_sink_keeps_the_breadcrumb_without_provider_prose() {
+        let buffer = ConsoleBuffer::new();
+        let subscriber = tracing_subscriber::registry()
+            .with(claria_desktop::console::ConsoleLayer::new(buffer.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            log_frontend_event(
+                FrontendLogLevel::Error,
+                "Writer draft planning failed: ValidationException for Jane Doe.docx".into(),
+            );
+        });
+        let log = buffer.to_text();
+        assert!(log.contains("Writer draft planning failed"), "{log}");
+        assert!(!log.contains("Jane Doe"), "{log}");
+        assert!(!log.contains("ValidationException for"), "{log}");
     }
 }

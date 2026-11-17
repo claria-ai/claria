@@ -11,6 +11,7 @@ pub enum ProcessingFailureCode {
     ProviderUnavailable,
     AccessDenied,
     ModelUnavailable,
+    InvalidDocument,
     Throttled,
     Truncated,
     InvalidText,
@@ -27,6 +28,9 @@ impl ProcessingFailureCode {
             }
             Self::ModelUnavailable => {
                 "The extraction model is unavailable. Choose an available model in Preferences, then retry."
+            }
+            Self::InvalidDocument => {
+                "AWS rejected this document. Check its filename, format, or size, then retry."
             }
             Self::Throttled => "AWS limited this processing request. Wait briefly, then retry.",
             Self::Truncated => {

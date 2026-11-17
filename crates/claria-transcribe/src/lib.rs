@@ -39,42 +39,49 @@ fn api_error<E>(operation: &'static str, error: SdkError<E>) -> TranscribeError
 where
     E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
 {
+    api_error_with_severity(operation, error, false)
+}
+
+fn api_error_with_severity<E>(
+    operation: &'static str,
+    error: SdkError<E>,
+    cleanup: bool,
+) -> TranscribeError
+where
+    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
+{
     let status = error
         .raw_response()
         .map(|response| response.status().as_u16());
-    let (code, request_id, message) = match error.as_service_error() {
-        Some(service) => (
-            service
+    match error.as_service_error() {
+        Some(service) => {
+            let code = provider_diagnostic::safe_service_code(
+                service.meta().code().unwrap_or("UnknownServiceError"),
+            );
+            let request_id = service
                 .meta()
-                .code()
-                .unwrap_or("UnknownServiceError")
-                .to_string(),
-            service.meta().request_id().map(ToString::to_string),
-            service
-                .meta()
-                .message()
-                .unwrap_or("no service message")
-                .to_string(),
-        ),
-        None => (
-            "DispatchFailure".to_string(),
-            None,
-            DisplayErrorContext(&error).to_string(),
-        ),
-    };
-    tracing::error!(
-        operation,
-        ?status,
-        code = provider_diagnostic::safe_service_code(&code),
-        request_id = request_id
-            .as_deref()
-            .map(provider_diagnostic::safe_request_id),
-        provider_reason = provider_diagnostic::message_reason(&message),
-        provider_field = provider_diagnostic::message_field(&message),
-        message_sha256 = provider_diagnostic::message_sha256(&message),
-        "Transcribe API call failed"
-    );
-    TranscribeError::Api(format!("{operation}: {message}"))
+                .request_id()
+                .map(provider_diagnostic::safe_request_id);
+            let message = provider_diagnostic::ProviderMessage::new(
+                service.meta().message().unwrap_or_default(),
+            );
+            if cleanup {
+                tracing::warn!(operation, ?status, code, ?request_id, provider_reason = message.reason(), provider_field = message.field(), provider_summary = %message, "Transcribe cleanup failed");
+            } else {
+                tracing::error!(operation, ?status, code, ?request_id, provider_reason = message.reason(), provider_field = message.field(), provider_summary = %message, "Transcribe API call failed");
+            }
+            TranscribeError::ProviderApi { operation, message }
+        }
+        None => {
+            let message = DisplayErrorContext(&error).to_string();
+            if cleanup {
+                tracing::warn!(operation, ?status, error = %message, "Transcribe cleanup transport failed");
+            } else {
+                tracing::error!(operation, ?status, error = %message, "Transcribe transport failed");
+            }
+            TranscribeError::Api(format!("{operation}: {message}"))
+        }
+    }
 }
 
 /// Version of the linked transcribe.cpp runtime used by Record Memo.
@@ -397,9 +404,9 @@ async fn finish_poll(
             tracing::error!(
                 job_name,
                 engine = ?engine,
-                provider_reason = provider_diagnostic::message_reason(&reason),
-                provider_field = provider_diagnostic::message_field(&reason),
-                message_sha256 = provider_diagnostic::message_sha256(&reason),
+                provider_reason = reason.reason(),
+                provider_field = reason.field(),
+                provider_summary = %reason,
                 "transcription job failed"
             );
             TranscribeError::JobFailed(reason)
@@ -434,7 +441,7 @@ async fn delete_job(
                 .send()
                 .await
             {
-                let _ = api_error("DeleteTranscriptionJob", error);
+                let _ = api_error_with_severity("DeleteTranscriptionJob", error, true);
             }
         }
         TranscriptionEngine::Medical => {
@@ -444,7 +451,7 @@ async fn delete_job(
                 .send()
                 .await
             {
-                let _ = api_error("DeleteMedicalTranscriptionJob", error);
+                let _ = api_error_with_severity("DeleteMedicalTranscriptionJob", error, true);
             }
         }
     }
@@ -539,7 +546,7 @@ async fn poll_standard_job(
         match job.transcription_job_status() {
             Some(TranscriptionJobStatus::Completed) => Ok(()),
             Some(TranscriptionJobStatus::Failed) => Err(PollError::Fatal(
-                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").to_string()),
+                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").into()),
             )),
             _ => Err(PollError::Pending),
         }
@@ -640,7 +647,7 @@ async fn poll_medical_job(
         match job.transcription_job_status() {
             Some(TranscriptionJobStatus::Completed) => Ok(()),
             Some(TranscriptionJobStatus::Failed) => Err(PollError::Fatal(
-                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").to_string()),
+                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").into()),
             )),
             _ => Err(PollError::Pending),
         }

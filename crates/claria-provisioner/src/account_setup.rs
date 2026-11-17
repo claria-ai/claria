@@ -211,7 +211,7 @@ pub async fn assume_role(
         .send()
         .await
         .map_err(|e| {
-            tracing::error!(role_arn = %role_arn, session = %session, error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()), "STS AssumeRole failed");
+            tracing::error!(role_arn = %role_arn, session = %session, error = %e, "STS AssumeRole failed");
             ProvisionerError::Aws(format!(
                 "STS AssumeRole failed: {}",
                 DisplayErrorContext(&e)
@@ -559,10 +559,7 @@ pub async fn bootstrap_account(
                      manually in the IAM console. Error: {e}"
                 )),
             );
-            tracing::warn!(
-                error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()),
-                "failed to delete root access key"
-            );
+            tracing::warn!("failed to delete root access key: {e}");
         } else {
             set_step_status(&mut steps, "delete_source_key", StepStatus::Succeeded, None);
         }
@@ -667,7 +664,7 @@ pub async fn list_user_access_keys(
             Err(e) => {
                 tracing::warn!(
                     access_key_id = %key_id,
-                    error_sha256 = %claria_core::provider_diagnostic::message_sha256(&DisplayErrorContext(&e).to_string()),
+                    error = %DisplayErrorContext(&e),
                     "iam:GetAccessKeyLastUsed failed — last-used will show as unknown"
                 );
                 (None, None)
@@ -852,7 +849,7 @@ pub async fn get_caller_identity(
 ) -> Result<CallerIdentity, ProvisionerError> {
     let sts = aws_sdk_sts::Client::new(config);
     let resp = sts.get_caller_identity().send().await.map_err(|e| {
-        tracing::error!(error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()), "STS GetCallerIdentity failed — credentials may be invalid");
+        tracing::error!(error = %e, "STS GetCallerIdentity failed — credentials may be invalid");
         ProvisionerError::Aws(format!(
             "STS GetCallerIdentity failed: {}",
             DisplayErrorContext(&e)
@@ -1241,11 +1238,7 @@ pub async fn validate_new_credentials(
     (|| async { sts.get_caller_identity().send().await })
         .retry(backoff)
         .notify(|e, delay| {
-            tracing::debug!(
-                ?delay,
-                error_sha256 = %claria_core::provider_diagnostic::message_sha256(&e.to_string()),
-                "new IAM credentials not yet active"
-            );
+            tracing::debug!(?delay, "new IAM credentials not yet active: {e}");
         })
         .await
         .map_err(|e| ProvisionerError::Timeout {

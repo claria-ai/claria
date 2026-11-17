@@ -1386,10 +1386,9 @@ async saveConsoleLogs() : Promise<Result<boolean, string>> {
  * 
  * The `claria_desktop::frontend` target is admitted by the console and file
  * layers via the shared crate-list filter, so webview failures land in the
- * ring buffer and the rolling on-disk logs. Messages are length-capped and
- * stripped of control characters so one event cannot flood the buffer or
- * forge multi-line log records. Callers report operation names and error
- * strings — never document content or client names.
+ * ring buffer and the rolling on-disk logs. The webview can pass arbitrary
+ * error text (including a provider echo of PHI); only a readable fixed
+ * breadcrumb and byte count enter the logs.
  */
 async logFrontendEvent(level: FrontendLogLevel, message: string) : Promise<void> {
     await TAURI_INVOKE("log_frontend_event", { level, message });
@@ -2388,7 +2387,7 @@ export type PreferencesPatch = {
  * `None` leaves it unchanged.
  */
 preferred_model_id?: string | null; extraction_model_id?: string | null; cost_explorer_enabled?: boolean | null; hourly_cost_data?: boolean | null; prompt_caching_enabled?: boolean | null; transcription?: TranscriptionPreferences | null; report_authoring?: ReportAuthoringPreferences | null; model_tuning?: ModelTuningPreferences | null; chat_streaming?: ChatStreamMode | null; draft_pipeline?: DraftPipelinePreferences | null }
-export type ProcessingFailureCode = "model_not_configured" | "provider_unavailable" | "access_denied" | "model_unavailable" | "throttled" | "truncated" | "invalid_text" | "storage_unavailable"
+export type ProcessingFailureCode = "model_not_configured" | "provider_unavailable" | "access_denied" | "model_unavailable" | "invalid_document" | "throttled" | "truncated" | "invalid_text" | "storage_unavailable"
 export type ProcessingStatus = { status: "ready" } | { status: "not_supported" } | { status: "unknown" } | { status: "failed"; code: ProcessingFailureCode; reason: string }
 /**
  * What `provision_apply` did.

@@ -13,28 +13,113 @@ use tracing::{
 };
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
-/// Metadata safe to export for an arbitrary webview log string. The browser
-/// may be forwarding a provider error that echoes clinical content.
-pub fn frontend_event_fields(message: &str) -> (&'static str, usize, String) {
-    let event_family = if message.starts_with("Writer ") {
-        "writer"
-    } else if message.starts_with("Pricing ") {
-        "pricing"
-    } else if message.starts_with("Local transcription ") {
-        "transcription"
-    } else if message.starts_with("Webview console.")
-        || message.starts_with("Uncaught webview ")
-        || message.starts_with("Unhandled webview ")
-    {
-        "webview"
-    } else {
-        "other"
-    };
-    (
-        event_family,
-        message.len(),
-        claria_core::provider_diagnostic::message_sha256(message),
-    )
+/// A readable, fixed UI breadcrumb for an arbitrary webview string. The
+/// webview can forward a provider echo of PHI, so only Claria-owned labels
+/// cross into the exported console. Earlier entries take precedence.
+pub fn frontend_event_fields(message: &str) -> (&'static str, usize) {
+    const EVENTS: &[(&str, &str)] = &[
+        (
+            "Writer whole-report generation requested",
+            "Writer whole-report generation requested",
+        ),
+        (
+            "Writer whole-report generation failed",
+            "Writer whole-report generation failed",
+        ),
+        (
+            "Writer planned drafting run requested",
+            "Writer planned drafting run requested",
+        ),
+        (
+            "Writer plan-gate preference unavailable",
+            "Writer plan-gate preference unavailable",
+        ),
+        (
+            "Writer drafting-run lookup failed",
+            "Writer drafting-run lookup failed",
+        ),
+        (
+            "Writer drafting-run history lookup failed",
+            "Writer drafting-run history lookup failed",
+        ),
+        (
+            "Writer findings lookup failed",
+            "Writer findings lookup failed",
+        ),
+        (
+            "Writer completion check unavailable",
+            "Writer completion check unavailable",
+        ),
+        ("Writer draft plan requested", "Writer draft plan requested"),
+        (
+            "Writer draft planning failed",
+            "Writer draft planning failed",
+        ),
+        ("Writer review sweep failed", "Writer review sweep failed"),
+        (
+            "Writer review sweep requested",
+            "Writer review sweep requested",
+        ),
+        ("Writer run stop requested", "Writer run stop requested"),
+        ("Writer run stop failed", "Writer run stop failed"),
+        (
+            "Writer drafting run resume requested",
+            "Writer drafting run resume requested",
+        ),
+        ("React render crash", "React render crash"),
+        ("PIN unlock failed", "PIN unlock failed"),
+        ("hasConfig failed", "hasConfig failed"),
+        (
+            "Failed to register drag-drop listener",
+            "Failed to register drag-drop listener",
+        ),
+        (
+            "Draft plan record listing failed",
+            "Draft plan record listing failed",
+        ),
+        (
+            "config reload after preferences restore failed",
+            "Preferences reload failed",
+        ),
+        (
+            "chat streaming save failed",
+            "Chat streaming preference save failed",
+        ),
+        (
+            "transcription preferences save failed",
+            "Transcription preference save failed",
+        ),
+        (
+            "draft run preferences save failed",
+            "Draft preference save failed",
+        ),
+        ("auto-lock command failed", "Auto-lock command failed"),
+        ("Local transcription ", "Local transcription failed"),
+        ("Pricing ", "Pricing lookup failed"),
+        ("Lucia could not draw a frame", "Lucia drawing failed"),
+        (
+            "Lucia artwork could not be loaded",
+            "Lucia artwork failed to load",
+        ),
+        ("Uncaught webview error", "Uncaught webview error"),
+        (
+            "Unhandled webview promise rejection",
+            "Unhandled webview rejection",
+        ),
+        ("Webview console.error", "Webview console error"),
+        ("Webview console.warn", "Webview console warning"),
+    ];
+    let event = EVENTS
+        .iter()
+        .find_map(|(prefix, label)| message.starts_with(prefix).then_some(*label))
+        .unwrap_or_else(|| {
+            if message.starts_with("Writer ") {
+                "Writer event"
+            } else {
+                "Unclassified frontend event"
+            }
+        });
+    (event, message.len())
 }
 
 /// Maximum approximate byte size of the ring buffer (10 MB).

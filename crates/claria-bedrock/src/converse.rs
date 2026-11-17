@@ -46,44 +46,43 @@ where
     let status = error
         .raw_response()
         .map(|response| response.status().as_u16());
-    let (code, request_id, message) = match error.as_service_error() {
-        Some(service_error) => (
-            service_error
+    match error.as_service_error() {
+        Some(service_error) => {
+            let code = provider_diagnostic::safe_service_code(
+                service_error.meta().code().unwrap_or("UnknownServiceError"),
+            )
+            .to_string();
+            let request_id = service_error
                 .meta()
-                .code()
-                .unwrap_or("UnknownServiceError")
-                .to_string(),
-            service_error.meta().request_id().map(ToString::to_string),
-            service_error
-                .meta()
-                .message()
-                .unwrap_or("the service returned no error message")
-                .to_string(),
-        ),
-        None => (
-            "DispatchFailure".to_string(),
-            None,
-            DisplayErrorContext(&error).to_string(),
-        ),
-    };
-    tracing::error!(
-        operation,
-        ?status,
-        code = provider_diagnostic::safe_service_code(&code),
-        request_id = request_id
-            .as_deref()
-            .map(provider_diagnostic::safe_request_id),
-        provider_reason = provider_diagnostic::message_reason(&message),
-        provider_field = provider_diagnostic::message_field(&message),
-        message_sha256 = provider_diagnostic::message_sha256(&message),
-        "Bedrock call failed"
-    );
-    BedrockError::Service {
-        operation,
-        status,
-        code,
-        request_id,
-        message,
+                .request_id()
+                .map(provider_diagnostic::safe_request_id)
+                .map(ToString::to_string);
+            let message = provider_diagnostic::ProviderMessage::new(
+                service_error.meta().message().unwrap_or_default(),
+            );
+            tracing::error!(
+                operation,
+                ?status,
+                code,
+                ?request_id,
+                provider_reason = message.reason(),
+                provider_field = message.field(),
+                provider_summary = %message,
+                "Bedrock call failed"
+            );
+            BedrockError::Service {
+                operation,
+                status,
+                code,
+                request_id,
+                message,
+            }
+        }
+        None => {
+            let message = DisplayErrorContext(&error).to_string();
+            tracing::error!(operation, ?status, error = %message, "Bedrock transport failed");
+            BedrockError::Transport { operation, message }
+        }
     }
 }
 
@@ -776,10 +775,8 @@ where
 ///
 /// Shared by the chat, analysis, and writer stream loops so their mid-stream
 /// error shape cannot drift; the bound itself is the caller's, because what
-/// counts as a silence differs per request family. Mid-stream failures carry
-/// a raw event frame rather than an HTTP response, so the full
-/// [`DisplayErrorContext`] chain is preserved instead of collapsing to
-/// "unhandled error".
+/// counts as a silence differs per request family. Mid-stream service errors
+/// carry structured metadata but can also echo generated text in their prose.
 pub(crate) async fn recv_stream_event(
     operation: &'static str,
     bounds: StreamBounds,
@@ -791,14 +788,30 @@ pub(crate) async fn recv_stream_event(
     match tokio::time::timeout(bounds.idle, stream.recv()).await {
         Ok(Ok(event)) => Ok(event),
         Ok(Err(error)) => {
-            tracing::error!(operation, "Bedrock stream failed");
+            let message = if let Some(service) = error.as_service_error() {
+                let code = provider_diagnostic::safe_service_code(
+                    service.meta().code().unwrap_or("UnknownServiceError"),
+                );
+                let provider_message = provider_diagnostic::ProviderMessage::new(
+                    service.meta().message().unwrap_or_default(),
+                );
+                tracing::error!(
+                    operation,
+                    code,
+                    provider_reason = provider_message.reason(),
+                    provider_field = provider_message.field(),
+                    provider_summary = %provider_message,
+                    "Bedrock stream failed"
+                );
+                format!("{operation} stream failed ({code}): {provider_message}")
+            } else {
+                tracing::error!(operation, "Bedrock stream transport failed");
+                format!("{operation} stream transport failed before the response completed")
+            };
             Err(BedrockError::StreamInterrupted {
                 operation,
                 kind: crate::error::StreamInterruption::Dropped,
-                message: format!(
-                    "{operation} failed before the response completed: {}",
-                    DisplayErrorContext(&error)
-                ),
+                message,
             })
         }
         Err(_elapsed) => {

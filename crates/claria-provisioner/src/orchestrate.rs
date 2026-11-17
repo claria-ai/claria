@@ -327,7 +327,7 @@ pub async fn destroy_all(
             Err(error) => {
                 tracing::warn!(
                     addr = %addr,
-                    error_sha256 = %claria_core::provider_diagnostic::message_sha256(&error.to_string()),
+                    error = %error,
                     "could not read resource during teardown — falling back to the state record"
                 );
                 false
