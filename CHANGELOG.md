@@ -2,7 +2,7 @@
 
 All notable changes to Claria are documented here.
 
-## [Unreleased]
+## [0.36.2] — 2026-11-18
 
 - Bedrock, Transcribe, and S3 failures retain service codes, request IDs, and readable PHI-safe reasons in diagnostics
 - Document-shaped Bedrock validation failures identify the document instead of incorrectly blaming the model

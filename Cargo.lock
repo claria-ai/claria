@@ -1243,7 +1243,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claria"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "claria-bedrock"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "claria-billing"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-config",
  "aws-sdk-costexplorer",
@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "claria-core"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "jiff",
  "serde",
@@ -1321,7 +1321,7 @@ dependencies = [
 
 [[package]]
 name = "claria-desktop"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "argon2",
  "aws-config",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "claria-docx"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "claria-core",
  "docx-rs",
@@ -1389,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "claria-docx-cli"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "clap",
  "claria-docx",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "claria-eval"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "claria-mock-aws"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-smithy-eventstream",
  "aws-smithy-types",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "claria-provisioner"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "claria-records"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1505,7 +1505,7 @@ dependencies = [
 
 [[package]]
 name = "claria-report-store"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "claria-storage"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -1549,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "claria-transcribe"
-version = "0.36.1"
+version = "0.36.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
