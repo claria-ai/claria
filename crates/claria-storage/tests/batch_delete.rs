@@ -174,6 +174,7 @@ async fn per_object_failure_inside_a_200_is_an_error_not_a_success() {
             assert_eq!(failed, 1);
             assert!(details.contains("records/locked.txt"), "got: {details}");
             assert!(details.contains("AccessDenied"), "got: {details}");
+            assert!(!details.contains("Access Denied"), "got: {details}");
         }
         other => panic!("expected DeleteObjects, got {other:?}"),
     }

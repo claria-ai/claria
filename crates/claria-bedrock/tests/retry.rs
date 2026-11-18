@@ -18,7 +18,7 @@ fn service(code: &str, status: Option<u16>) -> BedrockError {
         status,
         code: code.to_string(),
         request_id: None,
-        message: "synthetic".to_string(),
+        message: "synthetic".into(),
     }
 }
 

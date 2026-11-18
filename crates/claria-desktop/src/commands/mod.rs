@@ -2,8 +2,8 @@
 //!
 //! Every command follows the same shape: a thin `#[tauri::command]` wrapper
 //! whose body runs inside [`run`], which flattens the rich [`CommandError`]
-//! exactly once at the boundary — logging the full chain, then prefixing the
-//! operation name onto the string the frontend receives.
+//! exactly once at the boundary — logging a PHI-safe typed diagnostic, then
+//! prefixing the operation name onto the string the frontend receives.
 
 pub mod billing;
 pub mod chat;
@@ -105,9 +105,8 @@ impl From<eyre::Report> for CommandError {
 
 /// Flatten a command body's error at the Tauri boundary.
 ///
-/// This is the single place a command's rich error is logged (the full chain,
-/// with the operation name) and the single place it is stringified for the
-/// frontend, prefixed with the same operation name.
+/// This is the single place a command's safe diagnostic is logged and the
+/// error is stringified for the frontend, prefixed with the operation name.
 pub(crate) async fn run<T, F>(operation: &'static str, command: F) -> Result<T, String>
 where
     F: Future<Output = Result<T, CommandError>>,
@@ -121,9 +120,115 @@ pub(crate) fn flatten<T>(
     result: Result<T, CommandError>,
 ) -> Result<T, String> {
     result.map_err(|error| {
-        tracing::error!(operation, error = ?error, "command failed");
+        // Keep useful typed diagnostics without copying arbitrary user,
+        // document, or provider text from untrusted error variants.
+        let error_kind = match &error {
+            CommandError::Storage(_) => "storage",
+            CommandError::Bedrock(_) => "bedrock",
+            CommandError::Records(_) => "records",
+            CommandError::Provisioner(_) => "provisioner",
+            CommandError::ReportPipeline(_) => "report_pipeline",
+            CommandError::ReportStore(_) => "report_store",
+            CommandError::Transcribe(_) => "transcribe",
+            CommandError::Billing(_) => "billing",
+            CommandError::Docx(_) => "docx",
+            CommandError::Uuid(_) => "uuid",
+            CommandError::Json(_) => "json",
+            CommandError::Msg(_) => "message",
+        };
+        let diagnostic = safe_command_diagnostic(&error);
+        tracing::error!(operation, error_kind, diagnostic, "command failed");
         format!("{operation}: {error}")
     })
+}
+
+fn safe_bedrock_diagnostic(error: &claria_bedrock::error::BedrockError) -> String {
+    error.log_diagnostic()
+}
+
+fn safe_command_diagnostic(error: &CommandError) -> String {
+    use claria::ReportPipelineError;
+    use claria_transcribe::TranscribeError;
+    match error {
+        CommandError::Storage(error) => error.to_string(),
+        CommandError::Bedrock(error) => safe_bedrock_diagnostic(error),
+        CommandError::Provisioner(error) => error.to_string(),
+        CommandError::Billing(error) => error.to_string(),
+        CommandError::Uuid(error) => error.to_string(),
+        CommandError::Json(error) => error.to_string(),
+        CommandError::Transcribe(
+            error @ (TranscribeError::ProviderApi { .. }
+            | TranscribeError::JobFailed(_)
+            | TranscribeError::Api(_)
+            | TranscribeError::Timeout { .. }),
+        ) => error.to_string(),
+        CommandError::Transcribe(_) => "transcription operation failed".to_string(),
+        CommandError::ReportPipeline(ReportPipelineError::Storage { source, .. }) => {
+            source.to_string()
+        }
+        CommandError::ReportPipeline(ReportPipelineError::TurnFailed { code, source, .. }) => {
+            let cause = source
+                .as_ref()
+                .and_then(|source| source.downcast_ref::<claria_bedrock::error::BedrockError>())
+                .map(safe_bedrock_diagnostic)
+                .unwrap_or_else(|| "cause unavailable".to_string());
+            format!("report turn failed ({code:?}): {cause}")
+        }
+        CommandError::ReportPipeline(_) => "report operation failed".to_string(),
+        CommandError::Records(error) => error.to_string(),
+        CommandError::ReportStore(claria_report_store::ReportStoreError::Storage {
+            operation,
+            source,
+        }) => format!("report storage unavailable while {operation}: {source}"),
+        CommandError::ReportStore(_) => "report store operation failed".to_string(),
+        CommandError::Docx(_) => "DOCX operation failed".to_string(),
+        CommandError::Msg(_) => "command rejected request".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use tracing_subscriber::prelude::*;
+
+    #[test]
+    fn command_sink_preserves_bedrock_reason_without_document_name() {
+        let buffer = claria_desktop::console::ConsoleBuffer::new();
+        let subscriber = tracing_subscriber::registry()
+            .with(claria_desktop::console::ConsoleLayer::new(buffer.clone()));
+        let error = CommandError::Bedrock(claria_bedrock::error::BedrockError::Service {
+            operation: "document extraction Converse",
+            status: Some(400),
+            code: "ValidationException".into(),
+            request_id: Some("TJB5XE1VNSK6BA8D".into()),
+            message: "The format of the value at messages.0.content.1.document.name is invalid: Jane Doe.docx".into(),
+        });
+        tracing::subscriber::with_default(subscriber, || {
+            let rendered = flatten::<()>("extract_record_file", Err(error)).unwrap_err();
+            assert!(rendered.contains("the document name is invalid"));
+            assert!(!rendered.contains("Jane Doe"));
+        });
+        let log = buffer.to_text();
+        assert!(log.contains("ValidationException"), "{log}");
+        assert!(log.contains("the document name is invalid"), "{log}");
+        assert!(!log.contains("Jane Doe"), "{log}");
+    }
+
+    #[test]
+    fn command_sink_keeps_safe_s3_code_and_request_id() {
+        let buffer = claria_desktop::console::ConsoleBuffer::new();
+        let subscriber = tracing_subscriber::registry()
+            .with(claria_desktop::console::ConsoleLayer::new(buffer.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            let error = CommandError::Storage(claria_storage::error::StorageError::GetObject(
+                "code=AccessDenied request_id=TJB5XE1VNSK6BA8D reason=access_denied".into(),
+            ));
+            let _ = flatten::<()>("get_record_file", Err(error));
+        });
+        let log = buffer.to_text();
+        assert!(log.contains("code=AccessDenied"), "{log}");
+        assert!(log.contains("TJB5XE1VNSK6BA8D"), "{log}");
+    }
 }
 
 /// Parse a frontend-supplied UUID string.

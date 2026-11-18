@@ -1,9 +1,10 @@
 use aws_sdk_s3::{
     Client,
-    error::{DisplayErrorContext, SdkError},
+    error::{DisplayErrorContext, ProvideErrorMetadata, SdkError},
+    operation::RequestId,
 };
 use aws_smithy_types::byte_stream::ByteStream;
-use claria_core::s3_keys::log_safe_key;
+use claria_core::{provider_diagnostic, s3_keys::log_safe_key};
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -13,17 +14,31 @@ use crate::error::StorageError;
 /// Max concurrent per-object S3 requests when fanning out over a listing.
 pub const S3_FETCH_CONCURRENCY: usize = 16;
 
-/// Flatten an S3 SDK failure into the message a `StorageError` variant
-/// carries. Service errors keep the service's own rendering; dispatch,
-/// timeout, and response-parse failures keep their full
-/// [`DisplayErrorContext`] chain instead of collapsing to "unhandled error".
+/// Keep S3 diagnostics in `StorageError` without copying provider prose that
+/// could echo a client filename or object content into logs or support exports.
 fn sdk_error_message<E, R>(error: &SdkError<E, R>) -> String
 where
-    E: std::error::Error + Send + Sync + 'static,
+    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
     R: std::fmt::Debug,
 {
     match error.as_service_error() {
-        Some(service_error) => service_error.to_string(),
+        Some(service_error) => {
+            let message = service_error.meta().message().unwrap_or_default();
+            format!(
+                "code={} request_id={} reason={} field={} summary={}",
+                provider_diagnostic::safe_service_code(
+                    service_error.meta().code().unwrap_or("UnknownServiceError")
+                ),
+                service_error
+                    .meta()
+                    .request_id()
+                    .map(provider_diagnostic::safe_request_id)
+                    .unwrap_or("unavailable"),
+                provider_diagnostic::message_reason(message),
+                provider_diagnostic::message_field(message),
+                provider_diagnostic::message_summary(message),
+            )
+        }
         None => DisplayErrorContext(error).to_string(),
     }
 }
@@ -170,7 +185,7 @@ pub async fn put_object_from_path(
 ) -> Result<String, StorageError> {
     let body = ByteStream::from_path(path)
         .await
-        .map_err(|e| StorageError::PutObject(format!("failed to open the file to upload: {e}")))?;
+        .map_err(|_| StorageError::PutObject("failed to open upload file".into()))?;
     if let Ok(metadata) = tokio::fs::metadata(path).await {
         tracing::Span::current().record("bytes", metadata.len());
     }
@@ -383,13 +398,13 @@ pub async fn delete_objects(
             }
             let id = id
                 .build()
-                .map_err(|e| StorageError::DeleteObject(format!("invalid delete target: {e}")))?;
+                .map_err(|_| StorageError::DeleteObject("invalid delete target".into()))?;
             delete = delete.objects(id);
         }
 
         let delete = delete
             .build()
-            .map_err(|e| StorageError::DeleteObject(format!("invalid delete batch: {e}")))?;
+            .map_err(|_| StorageError::DeleteObject("invalid delete batch".into()))?;
 
         let resp = client
             .delete_objects()
@@ -408,8 +423,10 @@ pub async fn delete_objects(
                     format!(
                         "{} ({}: {})",
                         log_safe_key(e.key().unwrap_or("<unknown key>")),
-                        e.code().unwrap_or("<no code>"),
-                        e.message().unwrap_or("<no message>"),
+                        provider_diagnostic::safe_service_code(
+                            e.code().unwrap_or("UnknownServiceError")
+                        ),
+                        provider_diagnostic::message_summary(e.message().unwrap_or_default()),
                     )
                 })
                 .collect();

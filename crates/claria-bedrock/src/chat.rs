@@ -189,11 +189,7 @@ async fn fetch_active_foundation_models(
         .by_provider("anthropic")
         .send()
         .await
-        .map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::warn!(error = %msg, "ListFoundationModels failed");
-            BedrockError::Invocation(msg)
-        })?;
+        .map_err(|e| crate::converse::classify_error("ListFoundationModels", e))?;
 
     let models: Vec<(String, String)> = response
         .model_summaries()
@@ -233,11 +229,7 @@ async fn fetch_us_inference_profiles(
         .max_results(100)
         .send()
         .await
-        .map_err(|e| {
-            let msg = e.into_service_error().to_string();
-            tracing::warn!(error = %msg, "ListInferenceProfiles failed");
-            BedrockError::Invocation(msg)
-        })?;
+        .map_err(|e| crate::converse::classify_error("ListInferenceProfiles", e))?;
 
     let mut map = HashMap::new();
 
@@ -735,7 +727,7 @@ pub async fn accept_model_agreement(
         .model_id(model_id)
         .send()
         .await
-        .map_err(|e| BedrockError::Agreement(e.into_service_error().to_string()))?;
+        .map_err(|e| crate::converse::classify_error("ListFoundationModelAgreementOffers", e))?;
 
     let offers = offers_response.offers();
     if offers.is_empty() {
@@ -745,7 +737,7 @@ pub async fn accept_model_agreement(
 
     let offer_token = offers[0].offer_token();
 
-    info!(model_id, offer_token, "accepting model agreement");
+    info!(model_id, "accepting model agreement");
 
     match client
         .create_foundation_model_agreement()
@@ -758,12 +750,19 @@ pub async fn accept_model_agreement(
             info!(model_id, "model agreement accepted");
         }
         Err(e) => {
-            let msg = e.into_service_error().to_string();
-            if msg.contains("already exists") {
+            let already_exists = e
+                .as_service_error()
+                .and_then(|service| {
+                    aws_sdk_bedrock::error::ProvideErrorMetadata::meta(service).message()
+                })
+                .is_some_and(|message| message.contains("already exists"));
+            if already_exists {
                 info!(model_id, "model agreement already accepted");
             } else {
-                tracing::warn!(model_id, error = %msg, "failed to accept model agreement");
-                return Err(BedrockError::Agreement(msg));
+                return Err(crate::converse::classify_error(
+                    "CreateFoundationModelAgreement",
+                    e,
+                ));
             }
         }
     }

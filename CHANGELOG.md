@@ -2,6 +2,13 @@
 
 All notable changes to Claria are documented here.
 
+## [Unreleased]
+
+- Bedrock, Transcribe, and S3 failures retain service codes, request IDs, and readable PHI-safe reasons in diagnostics
+- Document-shaped Bedrock validation failures identify the document instead of incorrectly blaming the model
+- Frontend events reach support logs as specific fixed breadcrumbs instead of arbitrary webview error text
+- Transcribe cleanup failures leave a warn-level diagnostic without replacing the original result
+
 ## [0.36.1] — 2026-11-03
 
 - Long chats scroll inside the conversation, keeping the composer and Lucia's rail on screen

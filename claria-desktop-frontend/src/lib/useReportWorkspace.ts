@@ -820,12 +820,7 @@ export function useReportWorkspace({
         setLiveContext([]);
         return true;
       } catch (error) {
-        const diagnostic =
-          error instanceof Error ? (error.stack ?? error.message) : String(error);
-        logFrontendEvent(
-          "error",
-          `Writer whole-report generation failed: ${diagnostic}`
-        );
+        logFrontendEvent("error", "Writer whole-report generation failed");
         const outcome = reportId
           ? await adoptDraftRun(reportId, generation)
           : null;
@@ -1057,9 +1052,7 @@ export function useReportWorkspace({
           }
         );
       } catch (error) {
-        const diagnostic =
-          error instanceof Error ? (error.stack ?? error.message) : String(error);
-        logFrontendEvent("error", `Writer draft planning failed: ${diagnostic}`);
+        logFrontendEvent("error", "Writer draft planning failed");
         if (generation !== generationRef.current) return false;
         abandonAttempt(error);
         return false;
@@ -1356,9 +1349,7 @@ export function useReportWorkspace({
       await refreshCompletion(current.report_id, revision, generation);
       return true;
     } catch (error) {
-      const diagnostic =
-        error instanceof Error ? (error.stack ?? error.message) : String(error);
-      logFrontendEvent("error", `Writer review sweep failed: ${diagnostic}`);
+      logFrontendEvent("error", "Writer review sweep failed");
       if (generation !== generationRef.current) return false;
       showActionError(error);
       setSaveStatus(null);

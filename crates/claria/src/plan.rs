@@ -1081,12 +1081,15 @@ pub(crate) fn map_bedrock_error(
             ))
         }
         _ => {
-            // Structural, PHI-free: service codes, request IDs, protocol
-            // shapes. The user-facing sentence below deliberately carries none
-            // of it.
-            tracing::error!(error = %error, pass, "the analysis call failed");
+            // Provider prose can contain document text. Keep the failure
+            // type visible without forwarding the raw error.
+            tracing::error!(
+                pass,
+                failure_kind = error.protocol_failure_kind(),
+                "the analysis call failed"
+            );
             ReportPipelineError::InvalidInput(format!(
-                "Claria could not reach the {model}. Nothing was saved. The Claria Console log holds the underlying error."
+                "The {model} could not complete this request. Nothing was saved. Check the Claria Console for the failure type."
             ))
         }
     }

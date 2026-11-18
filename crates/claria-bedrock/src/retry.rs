@@ -130,7 +130,8 @@ where
                     operation = label,
                     ?elapsed,
                     budget = ?MAX_RETRY_ELAPSED,
-                    "Bedrock call is out of retry budget, surfacing the failure: {error}"
+                    diagnostic = %error.log_diagnostic(),
+                    "Bedrock call is out of retry budget, surfacing the failure"
                 );
                 return false;
             }
@@ -144,7 +145,8 @@ where
                 attempt,
                 max_attempts = MAX_ATTEMPTS,
                 ?delay,
-                "Bedrock call will be retried: {error}"
+                diagnostic = %error.log_diagnostic(),
+                "Bedrock call will be retried"
             );
             if let Some(on_retry) = on_retry {
                 on_retry(attempt, delay);

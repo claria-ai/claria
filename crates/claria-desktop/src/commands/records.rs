@@ -881,6 +881,21 @@ fn failure_code(error: &CommandError) -> ProcessingFailureCode {
         {
             ProcessingFailureCode::AccessDenied
         }
+        CommandError::Bedrock(BedrockError::Service { code, message, .. })
+            if code == "ValidationException"
+                && (matches!(
+                    message.field(),
+                    "document.name" | "document.format" | "document.source.bytes"
+                ) || matches!(
+                    message.reason(),
+                    "invalid_document_name"
+                        | "unsupported_document_format"
+                        | "document_too_large"
+                        | "invalid_document"
+                )) =>
+        {
+            ProcessingFailureCode::InvalidDocument
+        }
         CommandError::Bedrock(BedrockError::Service { code, .. })
             if code == "ResourceNotFoundException" || code == "ValidationException" =>
         {

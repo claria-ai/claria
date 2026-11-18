@@ -27,6 +27,34 @@ use claria_core::{
     },
 };
 use claria_mock_aws::{state::ScriptedBedrockResponse, testing::MockServer};
+use std::sync::{Arc, Mutex};
+use tracing::{
+    Event, Subscriber,
+    field::{Field, Visit},
+};
+use tracing_subscriber::{Layer, layer::Context, prelude::*};
+
+#[derive(Clone)]
+struct DiagnosticCapture(Arc<Mutex<String>>);
+
+struct FieldCapture(String);
+
+impl Visit for FieldCapture {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        self.0.push_str(&format!("{}={value:?} ", field.name()));
+    }
+}
+
+impl<S: Subscriber> Layer<S> for DiagnosticCapture {
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        if event.metadata().target() != "claria_bedrock::converse" {
+            return;
+        }
+        let mut fields = FieldCapture(String::new());
+        event.record(&mut fields);
+        self.0.lock().unwrap().push_str(&fields.0);
+    }
+}
 
 const MODEL_ID: &str = "us.anthropic.claude-sonnet-test";
 
@@ -916,4 +944,44 @@ async fn streamed_service_errors_keep_their_classification() {
         }
         other => panic!("expected service error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn bedrock_validation_log_keeps_reason_without_echoing_document_name() {
+    let server = MockServer::spawn().await;
+    server
+        .state
+        .write()
+        .await
+        .bedrock_text_responses
+        .push(ScriptedBedrockResponse {
+            status: 400,
+            body: serde_json::json!({
+                "message": "The format of the value at messages.0.content.1.document.name is invalid: Jane Doe intake.docx",
+                "__type": "ValidationException"
+            }),
+        });
+
+    let captured = Arc::new(Mutex::new(String::new()));
+    let subscriber = tracing_subscriber::registry().with(DiagnosticCapture(captured.clone()));
+    let guard = tracing::subscriber::set_default(subscriber);
+    let error = chat_converse_stream(
+        &sdk_config(&server.endpoint),
+        MODEL_ID,
+        "System prompt",
+        &user_messages("Hello"),
+        token_paced(CacheStrategy::disabled()),
+        |_| {},
+    )
+    .await
+    .expect_err("validation error");
+    drop(guard);
+
+    let log = captured.lock().unwrap().clone();
+    assert!(log.contains("invalid_document_name"), "{log}");
+    assert!(log.contains("document.name"), "{log}");
+    assert!(log.contains("ValidationException"), "{log}");
+    assert!(!log.contains("Jane Doe"), "{log}");
+    assert!(!format!("{error:?}").contains("Jane Doe"));
+    assert!(!error.to_string().contains("Jane Doe"));
 }

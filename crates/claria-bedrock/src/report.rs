@@ -869,30 +869,29 @@ pub(crate) async fn count_report_tokens(
         {
             let fallback_model_id = crate::chat::counting_model(config).await?;
             if fallback_model_id == counting_model_id {
-                tracing::error!(model_id, error = %error, "report CountTokens fallback unavailable");
+                tracing::error!(model_id, diagnostic = %error.log_diagnostic(), "report CountTokens fallback unavailable");
                 return Err(error);
             }
             tracing::warn!(
                 model_id,
                 counting_model_id,
                 fallback_model_id,
-                error = %error,
+                diagnostic = %error.log_diagnostic(),
                 "selected report model does not support CountTokens; using Haiku tokenizer"
             );
             converse::count_input_tokens(client, fallback_model_id, token_request)
                 .await
-                .map_err(|fallback_error| {
+                .inspect_err(|fallback_error| {
                     tracing::error!(
                         model_id,
                         fallback_model_id,
-                        error = %fallback_error,
+                        diagnostic = %fallback_error.log_diagnostic(),
                         "report CountTokens fallback failed"
                     );
-                    fallback_error
                 })
         }
         Err(error) => {
-            tracing::error!(model_id, error = %error, "report CountTokens call failed");
+            tracing::error!(model_id, diagnostic = %error.log_diagnostic(), "report CountTokens call failed");
             Err(error)
         }
     }

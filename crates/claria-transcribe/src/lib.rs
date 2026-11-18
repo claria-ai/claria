@@ -20,15 +20,69 @@ pub use types::{
     WhisperOptions,
 };
 
-use aws_sdk_transcribe::types::{
-    LanguageCode, Media, MedicalContentIdentificationType, MedicalTranscriptionSetting, Settings,
-    Specialty, TranscriptionJobStatus, Type as MedicalType,
+use aws_sdk_transcribe::{
+    error::{DisplayErrorContext, ProvideErrorMetadata, SdkError},
+    operation::RequestId,
+    types::{
+        LanguageCode, Media, MedicalContentIdentificationType, MedicalTranscriptionSetting,
+        Settings, Specialty, TranscriptionJobStatus, Type as MedicalType,
+    },
 };
 use backon::{ExponentialBuilder, Retryable};
+use claria_core::provider_diagnostic;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Write as _, time::Duration};
 use tracing::info;
 use uuid::Uuid;
+
+fn api_error<E>(operation: &'static str, error: SdkError<E>) -> TranscribeError
+where
+    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
+{
+    api_error_with_severity(operation, error, false)
+}
+
+fn api_error_with_severity<E>(
+    operation: &'static str,
+    error: SdkError<E>,
+    cleanup: bool,
+) -> TranscribeError
+where
+    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
+{
+    let status = error
+        .raw_response()
+        .map(|response| response.status().as_u16());
+    match error.as_service_error() {
+        Some(service) => {
+            let code = provider_diagnostic::safe_service_code(
+                service.meta().code().unwrap_or("UnknownServiceError"),
+            );
+            let request_id = service
+                .meta()
+                .request_id()
+                .map(provider_diagnostic::safe_request_id);
+            let message = provider_diagnostic::ProviderMessage::new(
+                service.meta().message().unwrap_or_default(),
+            );
+            if cleanup {
+                tracing::warn!(operation, ?status, code, ?request_id, provider_reason = message.reason(), provider_field = message.field(), provider_summary = %message, "Transcribe cleanup failed");
+            } else {
+                tracing::error!(operation, ?status, code, ?request_id, provider_reason = message.reason(), provider_field = message.field(), provider_summary = %message, "Transcribe API call failed");
+            }
+            TranscribeError::ProviderApi { operation, message }
+        }
+        None => {
+            let message = DisplayErrorContext(&error).to_string();
+            if cleanup {
+                tracing::warn!(operation, ?status, error = %message, "Transcribe cleanup transport failed");
+            } else {
+                tracing::error!(operation, ?status, error = %message, "Transcribe transport failed");
+            }
+            TranscribeError::Api(format!("{operation}: {message}"))
+        }
+    }
+}
 
 /// Version of the linked transcribe.cpp runtime used by Record Memo.
 pub fn runtime_version() -> String {
@@ -282,7 +336,12 @@ pub async fn transcribe_audio_with_options(
     let result = parse_transcribe_json(&body_str)?;
 
     // Clean up temporary job + intermediate JSON.
-    let _ = claria_storage::objects::delete_object(&s3, bucket, &output_key).await;
+    if claria_storage::objects::delete_object(&s3, bucket, &output_key)
+        .await
+        .is_err()
+    {
+        tracing::warn!(job_name, "temporary transcript output could not be deleted");
+    }
     delete_job(&transcribe, &job_name, engine).await;
 
     Ok(result)
@@ -342,7 +401,14 @@ async fn finish_poll(
     let err = match outcome {
         Ok(()) => return Ok(()),
         Err(PollError::Fatal(TranscribeError::JobFailed(reason))) => {
-            tracing::error!(job_name, reason = %reason, engine = ?engine, "transcription job failed");
+            tracing::error!(
+                job_name,
+                engine = ?engine,
+                provider_reason = reason.reason(),
+                provider_field = reason.field(),
+                provider_summary = %reason,
+                "transcription job failed"
+            );
             TranscribeError::JobFailed(reason)
         }
         Err(PollError::Fatal(e)) => return Err(e),
@@ -360,8 +426,8 @@ async fn finish_poll(
     Err(err)
 }
 
-/// Best-effort cleanup of a transcription job. Failures here are not worth
-/// surfacing — the caller already has a real error to report.
+/// Best-effort cleanup of a transcription job. A cleanup failure does not
+/// replace the original outcome, but its safe provider diagnostic is logged.
 async fn delete_job(
     transcribe: &aws_sdk_transcribe::Client,
     job_name: &str,
@@ -369,18 +435,24 @@ async fn delete_job(
 ) {
     match engine {
         TranscriptionEngine::Standard => {
-            let _ = transcribe
+            if let Err(error) = transcribe
                 .delete_transcription_job()
                 .transcription_job_name(job_name)
                 .send()
-                .await;
+                .await
+            {
+                let _ = api_error_with_severity("DeleteTranscriptionJob", error, true);
+            }
         }
         TranscriptionEngine::Medical => {
-            let _ = transcribe
+            if let Err(error) = transcribe
                 .delete_medical_transcription_job()
                 .medical_transcription_job_name(job_name)
                 .send()
-                .await;
+                .await
+            {
+                let _ = api_error_with_severity("DeleteMedicalTranscriptionJob", error, true);
+            }
         }
     }
 }
@@ -426,7 +498,7 @@ async fn start_standard_job(
 
     req.send()
         .await
-        .map_err(|e| TranscribeError::Api(e.into_service_error().to_string()))?;
+        .map_err(|e| api_error("StartTranscriptionJob", e))?;
     Ok(())
 }
 
@@ -465,9 +537,7 @@ async fn poll_standard_job(
             .transcription_job_name(job_name)
             .send()
             .await
-            .map_err(|e| {
-                PollError::Fatal(TranscribeError::Api(e.into_service_error().to_string()))
-            })?;
+            .map_err(|e| PollError::Fatal(api_error("GetTranscriptionJob", e)))?;
 
         let job = resp
             .transcription_job()
@@ -476,7 +546,7 @@ async fn poll_standard_job(
         match job.transcription_job_status() {
             Some(TranscriptionJobStatus::Completed) => Ok(()),
             Some(TranscriptionJobStatus::Failed) => Err(PollError::Fatal(
-                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").to_string()),
+                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").into()),
             )),
             _ => Err(PollError::Pending),
         }
@@ -527,7 +597,7 @@ async fn start_medical_job(
 
     req.send()
         .await
-        .map_err(|e| TranscribeError::Api(e.into_service_error().to_string()))?;
+        .map_err(|e| api_error("StartMedicalTranscriptionJob", e))?;
     Ok(())
 }
 
@@ -568,9 +638,7 @@ async fn poll_medical_job(
             .medical_transcription_job_name(job_name)
             .send()
             .await
-            .map_err(|e| {
-                PollError::Fatal(TranscribeError::Api(e.into_service_error().to_string()))
-            })?;
+            .map_err(|e| PollError::Fatal(api_error("GetMedicalTranscriptionJob", e)))?;
 
         let job = resp.medical_transcription_job().ok_or_else(|| {
             PollError::Fatal(TranscribeError::Api("no medical job in response".into()))
@@ -579,7 +647,7 @@ async fn poll_medical_job(
         match job.transcription_job_status() {
             Some(TranscriptionJobStatus::Completed) => Ok(()),
             Some(TranscriptionJobStatus::Failed) => Err(PollError::Fatal(
-                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").to_string()),
+                TranscribeError::JobFailed(job.failure_reason().unwrap_or("unknown").into()),
             )),
             _ => Err(PollError::Pending),
         }

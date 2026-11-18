@@ -253,14 +253,20 @@ back over `Channel<ChatStreamEvent>`. History objects live at
   `~/Library/Logs/com.claria.desktop`). The crate list every filter is built
   from is the single `CLARIA_CRATES` constant; never hardcode a second list.
 - **Frontend bridge.** `lib/logBridge.ts` → `commands/console.rs::log_frontend_event`,
-  logged under target `claria_desktop::frontend`, capped at 2000 chars and
-  stripped of control characters.
+  logged under target `claria_desktop::frontend` as a fixed readable event
+  label and byte count. The arbitrary webview string is not copied into the
+  console or rolling log files.
 - **Targets that look like modules but aren't.** `claria_bedrock::budget` and
   `claria_bedrock::cache` are `target:` overrides on individual `tracing::info!`
   calls in `converse.rs`, not modules. Grepping for a module by that name finds
   nothing.
 - PHI rules for what may appear in a log field are in **Logging & audit** below.
   The console export is a support artifact in a HIPAA app.
+- Provider errors use `claria-core/src/provider_diagnostic.rs` to render fixed
+  reason and request-field labels. `ProviderMessage` redacts both `Display`
+  and `Debug`; its raw accessor is only for explicit, non-logging uses. The
+  provider's free-form message never enters tracing because it may echo
+  document or patient data.
 
 ### Gotchas
 
@@ -679,8 +685,9 @@ adversarial review (issue #73). Violating them is a review-blocker.
 - No mirror `FooView` types when deriving (`specta::Type`, serde attrs) on the
   domain type works. A mirror must earn its life by actually differing.
 - One error convention per crate; stringify exactly once, at the Tauri
-  boundary, with an operation-name prefix. Log the rich error there before
-  flattening. Lib crates return errors; they don't also `tracing::error!` them.
+  boundary, with an operation-name prefix. Log a rich PHI-safe diagnostic
+  there before flattening. Provider call sites may also log structured safe
+  service metadata needed to distinguish request failures.
 - AWS `SdkError` fallback arms use `DisplayErrorContext`, never
   `into_service_error().to_string()` (which turns network failures into
   "unhandled error").

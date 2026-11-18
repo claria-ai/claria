@@ -6,6 +6,7 @@
 pub mod error;
 pub mod model_id;
 pub mod models;
+pub mod provider_diagnostic;
 pub mod record_text;
 pub mod s3_keys;
 pub mod sensitive;
